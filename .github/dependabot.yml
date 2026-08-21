@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # baseline PULL-PUSH-REQ-2: watch third-party Action updates even though
+  # they're SHA-pinned — Dependabot opens a PR bumping the pin (with the
+  # tag as a comment), it does not silently trust a moving tag.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"

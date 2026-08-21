@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - staticcheck
+    - unconvert
+    - unparam
+    - misspell
+    - depguard
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            # Algorithm discipline (addendum §4 / §7b): SHA-256 only,
+            # everywhere, regardless of whether a given use is
+            # "security-relevant" — GOFIPS140 strict mode doesn't care
+            # about intent, so neither does this repo's lint.
+            - pkg: "crypto/md5"
+              desc: "banned repo-wide: SHA-256 only (FIPS/algorithm discipline, addendum §4)"
+            - pkg: "crypto/sha1"
+              desc: "banned repo-wide: SHA-256 only (FIPS/algorithm discipline, addendum §4)"
+  exclusions:
+    generated: lax
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
