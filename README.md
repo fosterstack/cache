@@ -5,8 +5,10 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fosterstack/cache/badge)](https://scorecard.dev/viewer/?uri=github.com/fosterstack/cache)
 
 A self-hosted, drop-in remote build cache for **Gradle** and **Maven** — a
-single small static binary, MIT-licensed, verifiable artifacts, patched
-forever.
+single small static binary, MIT-licensed, patched forever. (Signed,
+verifiable release artifacts are the release pipeline's job, not built
+yet — see Status below; nothing to verify exists today, so this line
+doesn't claim it does.)
 
 ## Why this exists
 
@@ -92,8 +94,10 @@ implemented and tested today.
 ## Security
 
 - Static binary, zero CGO, no OS package surface to patch.
-- SHA-256 only for anything security-relevant in this codebase; no MD5/SHA-1,
-  anywhere, by policy — enforced in CI.
+- `crypto/md5` and `crypto/sha1` are banned imports, repo-wide, enforced in
+  CI (`golangci-lint` `depguard`) regardless of intended use — SHA-256 is
+  the only hash this codebase is allowed to reach for if a future feature
+  needs one.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
   and patch SLA once published.
 

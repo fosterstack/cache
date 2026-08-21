@@ -185,8 +185,28 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	}
 	if cfg.Metrics != nil {
 		cfg.Metrics.BytesWritten.Add(float64(n))
+		updateStoreGauges(cfg)
 	}
 	w.WriteHeader(http.StatusCreated)
+}
+
+// updateStoreGauges refreshes the store_bytes/store_entries gauges after a
+// successful write. Two extra read-only lookups per PUT (cheap: an
+// in-memory bbolt view transaction each) versus letting these gauges sit
+// at zero forever — which is what "Prometheus metrics" in the README
+// would otherwise silently not mean for the two numbers an operator
+// actually needs (bytes used vs. configured cap).
+func updateStoreGauges(cfg Config) {
+	if total, err := cfg.Cache.TotalSize(); err == nil {
+		cfg.Metrics.StoreBytesTotal.Set(float64(total))
+	} else {
+		cfg.Log.Error("server: store_bytes gauge update failed", "error", err)
+	}
+	if n, err := cfg.Cache.EntryCount(); err == nil {
+		cfg.Metrics.StoreEntries.Set(float64(n))
+	} else {
+		cfg.Log.Error("server: store_entries gauge update failed", "error", err)
+	}
 }
 
 func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key string) {

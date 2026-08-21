@@ -2,9 +2,13 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,5 +167,124 @@ func TestStatDoesNotAffectEvictionOrdering(t *testing.T) {
 
 	if _, _, err := c.Get(ctx, "a"); err != ErrNotFound {
 		t.Fatalf("expected a to be evicted despite Stat calls, got err = %v", err)
+	}
+}
+
+// TestConcurrentPutEvictsExactlyEnoughUnderCap is a regression test for an
+// audit finding: without serializing evictToFit, concurrent Puts each read
+// a stale total, select overlapping LRU-candidate batches, and "succeed" at
+// deleting the same already-gone entries (blobstore/metadata Delete are
+// idempotent) — the cap is never violated, but the eviction count and the
+// onEvict-driven Prometheus counter come out wildly inflated relative to
+// what was actually necessary. This asserts both the cap and the count.
+func TestConcurrentPutEvictsExactlyEnoughUnderCap(t *testing.T) {
+	const (
+		numPuts   = 40
+		entrySize = 10
+		capBytes  = 50 // room for at most 5 entries
+	)
+	var evictedCount int64
+	c := newTestCache(t, WithMaxBytes(capBytes), WithOnEvict(func(key string, size int64) {
+		atomic.AddInt64(&evictedCount, 1)
+	}))
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for i := 0; i < numPuts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key-%03d", i)
+			if _, err := c.Put(ctx, key, strings.NewReader("0123456789")); err != nil {
+				t.Errorf("Put(%s): %v", key, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	total, err := c.TotalSize()
+	if err != nil {
+		t.Fatalf("TotalSize: %v", err)
+	}
+	if total > capBytes {
+		t.Fatalf("TotalSize = %d, want <= %d", total, capBytes)
+	}
+
+	survivors, err := c.EntryCount()
+	if err != nil {
+		t.Fatalf("EntryCount: %v", err)
+	}
+	wantEvicted := int64(numPuts - survivors)
+	gotEvicted := atomic.LoadInt64(&evictedCount)
+	if gotEvicted != wantEvicted {
+		t.Fatalf("evicted count = %d, want exactly %d (numPuts=%d - survivors=%d); "+
+			"a mismatch means concurrent eviction passes are doing redundant work",
+			gotEvicted, wantEvicted, numPuts, survivors)
+	}
+}
+
+// TestEvictionGivesUpAfterRepeatedFailures is a regression test for an
+// audit finding: if every candidate in every LRU batch fails to evict
+// (e.g. a permission problem on the data directory), evictToFit used to
+// loop forever for the lifetime of the request context instead of giving
+// up — a resource-exhaustion path. This makes the shard directory
+// unwritable so Delete fails for everything in it, then asserts
+// evictToFit returns instead of hanging.
+func TestEvictionGivesUpAfterRepeatedFailures(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions don't block root, so this reproduction doesn't apply")
+	}
+	c := newTestCache(t, WithMaxBytes(5)) // cap smaller than one entry
+	ctx := context.Background()
+
+	if _, err := c.Put(ctx, "onlykey", strings.NewReader("0123456789")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Lock down every existing shard subdirectory under the blob store
+	// root (deletion needs write permission on a file's immediate parent,
+	// which — because of content-key sharding — is a subdirectory, not
+	// the root itself). Deliberately leave the root itself writable so a
+	// *new* key (a different, not-yet-existing shard) can still be
+	// written — this test wants eviction of the existing entry to fail
+	// repeatedly, not the triggering write itself to fail. Restore
+	// permissions in cleanup so t.TempDir can remove the tree afterward.
+	root := c.blobs.Root()
+	var lockedDirs []string
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && path != root {
+			lockedDirs = append(lockedDirs, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkDir: %v", err)
+	}
+	for _, dir := range lockedDirs {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatalf("chmod %s: %v", dir, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, dir := range lockedDirs {
+			_ = os.Chmod(dir, 0o750)
+		}
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := c.Put(ctx, "trigger", strings.NewReader("0123456789")); err != nil {
+			t.Errorf("Put: %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+		// evictToFit gave up after maxFailedEvictionBatches, as expected.
+	case <-time.After(5 * time.Second):
+		t.Fatal("evictToFit did not return within 5s — looks like an infinite retry loop, not a bounded give-up")
 	}
 }

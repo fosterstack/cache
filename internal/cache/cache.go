@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 
 	"github.com/fosterstack/cache/internal/blobstore"
 	"github.com/fosterstack/cache/internal/metadata"
@@ -29,6 +30,16 @@ type Cache struct {
 	maxBytes int64
 	log      *slog.Logger
 	onEvict  func(key string, size int64)
+
+	// evictMu serializes eviction passes. Without it, concurrent Puts each
+	// read a stale total, all select overlapping LRU candidates, and all
+	// "successfully" delete the same already-deleted (idempotent) entries
+	// — correctness of the cap survives, but onEvict fires many times over
+	// for a single real eviction and every extra pass is wasted I/O.
+	// Serializing only the evict-and-recheck loop (not the blob write
+	// itself) keeps writes concurrent while making eviction bookkeeping
+	// exact.
+	evictMu sync.Mutex
 }
 
 // Option configures a Cache.
@@ -117,9 +128,21 @@ func (c *Cache) Stat(key string) (int64, error) {
 	return c.blobs.Stat(key)
 }
 
+// maxFailedEvictionBatches bounds how many consecutive all-failed batches
+// evictToFit tolerates before giving up. Without this, a persistent
+// failure (e.g. a read-only data directory) turns "evict until under cap"
+// into an unbounded busy loop for the lifetime of the triggering request's
+// context — a resource-exhaustion path, not just a cosmetic bug.
+const maxFailedEvictionBatches = 3
+
 // evictToFit removes least-recently-used entries until total recorded size
-// is at or under maxBytes, or there is nothing left to evict.
+// is at or under maxBytes, or there is nothing left to evict. Callers must
+// hold no other lock on c; evictToFit takes evictMu itself so concurrent
+// Puts serialize here rather than each acting on a stale size snapshot.
 func (c *Cache) evictToFit(ctx context.Context) {
+	c.evictMu.Lock()
+	defer c.evictMu.Unlock()
+
 	total, err := c.meta.TotalSize()
 	if err != nil {
 		c.log.Error("cache: eviction: total size lookup failed", "error", err)
@@ -131,6 +154,7 @@ func (c *Cache) evictToFit(ctx context.Context) {
 
 	const batchSize = 64
 	evicted := 0
+	failedBatches := 0
 	for total > c.maxBytes {
 		select {
 		case <-ctx.Done():
@@ -145,6 +169,7 @@ func (c *Cache) evictToFit(ctx context.Context) {
 		if len(candidates) == 0 {
 			return // nothing left to evict; cap is smaller than one entry
 		}
+		progressed := false
 		for _, entry := range candidates {
 			if total <= c.maxBytes {
 				break
@@ -155,9 +180,20 @@ func (c *Cache) evictToFit(ctx context.Context) {
 			}
 			total -= entry.Size
 			evicted++
+			progressed = true
 			if c.onEvict != nil {
 				c.onEvict(entry.Key, entry.Size)
 			}
+		}
+		if progressed {
+			failedBatches = 0
+			continue
+		}
+		failedBatches++
+		if failedBatches >= maxFailedEvictionBatches {
+			c.log.Error("cache: eviction: giving up after repeated failures",
+				"consecutive_failed_batches", failedBatches, "total_bytes", total, "max_bytes", c.maxBytes)
+			return
 		}
 	}
 	if evicted > 0 {

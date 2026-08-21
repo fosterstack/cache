@@ -16,6 +16,11 @@ import (
 
 func newTestHandler(t *testing.T, auth Credentials) http.Handler {
 	t.Helper()
+	return newTestHandlerWithMaxBody(t, auth, 1<<20)
+}
+
+func newTestHandlerWithMaxBody(t *testing.T, auth Credentials, maxBody int64) http.Handler {
+	t.Helper()
 	blobs, err := blobstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("blobstore.New: %v", err)
@@ -32,7 +37,7 @@ func newTestHandler(t *testing.T, auth Credentials) http.Handler {
 	})
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
-	return New(Config{Cache: c, Metrics: m, Registry: reg, Auth: auth, MaxBodyBytes: 1 << 20})
+	return New(Config{Cache: c, Metrics: m, Registry: reg, Auth: auth, MaxBodyBytes: maxBody})
 }
 
 // mustReq builds a request and fails the test on error.
@@ -209,5 +214,67 @@ func TestMetricsEndpointExposesFscacheMetrics(t *testing.T) {
 	body := string(buf[:n])
 	if !strings.Contains(body, "fscache_http_requests_total") {
 		t.Fatalf("metrics output missing fscache_http_requests_total:\n%s", body)
+	}
+}
+
+// TestPutOverMaxBodyBytesReturns413 exercises the MaxBodyBytes cap end to
+// end, over real HTTP. Previously this fixture existed (newTestHandler set
+// MaxBodyBytes) but no test ever actually sent an oversized body, so the
+// 413 path was unverified despite looking covered.
+func TestPutOverMaxBodyBytesReturns413(t *testing.T) {
+	const limit = 16
+	h := newTestHandlerWithMaxBody(t, Credentials{}, limit)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	oversized := strings.Repeat("x", limit+1)
+	resp := doReq(t, mustReq(t, http.MethodPut, srv.URL+"/k", oversized))
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+
+	// The oversized write must not have landed: a key that was never
+	// successfully PUT should still read as missing.
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/k", ""))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET after rejected oversized PUT: status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestPutAtExactlyMaxBodyBytesSucceeds(t *testing.T) {
+	const limit = 16
+	h := newTestHandlerWithMaxBody(t, Credentials{}, limit)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	exact := strings.Repeat("x", limit)
+	resp := doReq(t, mustReq(t, http.MethodPut, srv.URL+"/k", exact))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body exactly at the limit should be accepted)", resp.StatusCode)
+	}
+}
+
+// TestMetricsReportsStoreBytesAndEntries is a regression test for an audit
+// finding: fscache_store_bytes and fscache_store_entries were registered
+// but never Set(), so they permanently reported 0 regardless of actual
+// cache contents.
+func TestMetricsReportsStoreBytesAndEntries(t *testing.T) {
+	h := newTestHandler(t, Credentials{})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	doReq(t, mustReq(t, http.MethodPut, srv.URL+"/a", "12345"))
+	doReq(t, mustReq(t, http.MethodPut, srv.URL+"/b", "67"))
+
+	resp := doReq(t, mustReq(t, http.MethodGet, srv.URL+"/metrics", ""))
+	buf := make([]byte, 64<<10)
+	n, _ := resp.Body.Read(buf)
+	body := string(buf[:n])
+
+	if !strings.Contains(body, "fscache_store_bytes 7") {
+		t.Fatalf("expected fscache_store_bytes 7 (5+2 bytes across 2 entries), got:\n%s", body)
+	}
+	if !strings.Contains(body, "fscache_store_entries 2") {
+		t.Fatalf("expected fscache_store_entries 2, got:\n%s", body)
 	}
 }
