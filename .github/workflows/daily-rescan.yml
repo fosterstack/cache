@@ -1,0 +1,80 @@
+name: Daily image rescan
+
+# Baseline checklist item 6 / DEPLOY-REQ-4: evidence the published image
+# was scanned and RECENT, not just scanned once at release time. New CVEs
+# get disclosed against unchanged bytes constantly; this is what actually
+# feeds the 24-48h SLA (brief §0.2) — it's how a regression gets noticed
+# on day 3 of a release's life, not just on release day.
+on:
+  schedule:
+    - cron: '11 7 * * *' # daily, offset from the hour to avoid GH's on-the-hour pile-up
+  workflow_dispatch: {}
+
+env:
+  IMAGE_BASE: ghcr.io/fosterstack/cache
+
+permissions:
+  contents: read
+
+jobs:
+  rescan:
+    name: rescan (${{ matrix.tag }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: [latest, debug, fips]
+    steps:
+      - name: check the tag actually exists yet (no release published before Milestone 2)
+        id: probe
+        run: |
+          if docker manifest inspect "${IMAGE_BASE}:${{ matrix.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trivy scan
+        if: steps.probe.outputs.exists == 'true'
+        id: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_BASE }}:${{ matrix.tag }}
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Grype scan
+        if: steps.probe.outputs.exists == 'true' && (success() || failure())
+        id: grype
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.IMAGE_BASE }}:${{ matrix.tag }}
+          fail-build: true
+          severity-cutoff: high
+
+      # A finding here means a CVE was disclosed against bytes we already
+      # shipped — the autonomous patch lane (brief §0.2) starts from this
+      # signal. File a tracked issue rather than only failing silently in
+      # the Actions tab; addendum §7.6's "never silently close" applies to
+      # detection, not just to code review.
+      - name: file/update a tracking issue on new findings
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const tag = context.payload && '${{ matrix.tag }}';
+            const title = `Daily rescan: new CVE(s) in :${tag}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
+            });
+            const match = existing.find(i => i.title === title);
+            const body = `Daily rescan found new findings against \`${{ env.IMAGE_BASE }}:${tag}\`.\n\nRun: ${runUrl}\n\nThis image's bytes have not changed since release — this is a newly-disclosed CVE against previously-shipped code, exactly the case the 24-48h remediation SLA (brief §0.2) targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation (addendum §7b).`;
+            if (match) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+            }

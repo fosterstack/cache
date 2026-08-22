@@ -1,0 +1,136 @@
+version: 2
+
+project_name: fscache
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: fscache
+    main: ./cmd/fscache
+    binary: fscache
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }}
+
+  # GOFIPS140=v1.0.0 selects Go's CMVP FIPS 140-3 validated cryptographic
+  # module (cert #5247) at build time — addendum §4. This is a second
+  # build variant of the same source, not a fork. Linux-only: the
+  # Compliance-tier buyer (CMMC/800-171 contractors) deploys on Linux;
+  # darwin/-fips has no market and would just double CI time for nothing.
+  - id: fscache-fips
+    main: ./cmd/fscache
+    binary: fscache-fips
+    env:
+      - CGO_ENABLED=0
+      - GOFIPS140=v1.0.0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }}
+
+archives:
+  - id: fscache-archive
+    ids:
+      - fscache
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+  - id: fscache-fips-archive
+    ids:
+      - fscache-fips
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+# Container images, built via ko (no Dockerfile, no docker daemon needed in
+# CI): three variants of the SAME two Go builds above, differing only in
+# base image / tags. Base pinned by digest, Google distroless, per Sprint 3
+# §9's firm decision. Bump these digests like any other dependency.
+kos:
+  - id: fscache-image
+    build: fscache
+    main: ./cmd/fscache
+    base_image: gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+    repositories:
+      - ghcr.io/fosterstack/cache
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{ .Version }}"
+      - latest
+    bare: true
+    sbom: spdx
+
+  # Busybox-bearing base for interactive debugging (Sprint 3 §7 item 5) —
+  # never the default; operators opt in explicitly by pulling :debug.
+  - id: fscache-debug-image
+    build: fscache
+    main: ./cmd/fscache
+    base_image: gcr.io/distroless/static-debian12:debug-nonroot@sha256:d5563cc7f2f44313f332e91138cc8c6a158899afeeeab2fce3b0f9ccdb3cf9ee
+    repositories:
+      - ghcr.io/fosterstack/cache
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{ .Version }}-debug"
+      - debug
+    bare: true
+    sbom: spdx
+
+  - id: fscache-fips-image
+    build: fscache-fips
+    main: ./cmd/fscache
+    base_image: gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+    repositories:
+      - ghcr.io/fosterstack/cache
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{ .Version }}-fips"
+      - fips
+    bare: true
+    sbom: spdx
+
+release:
+  github:
+    owner: fosterstack
+    name: cache
+  # Releases build ONLY in CI (RELEASING.md) — this is asserted by the
+  # release workflow never running goreleaser outside a GitHub Actions
+  # job, not by anything in this file. draft: true gives the release
+  # workflow a chance to attach provenance/SBOM/signatures before the
+  # release goes visible.
+  draft: true
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
