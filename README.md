@@ -5,10 +5,13 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fosterstack/cache/badge)](https://scorecard.dev/viewer/?uri=github.com/fosterstack/cache)
 
 A self-hosted, drop-in remote build cache for **Gradle** and **Maven** — a
-single small static binary, MIT-licensed, patched forever. (Signed,
-verifiable release artifacts are the release pipeline's job, not built
-yet — see Status below; nothing to verify exists today, so this line
-doesn't claim it does.)
+single small static binary, MIT-licensed, patched forever, and verifiable:
+every release is signed keylessly (Sigstore/cosign) and carries a SLSA
+provenance attestation proving which CI run built it. See
+["Verifying a release"][releasing-verify] for the exact commands — they're
+copy-pasteable against `v0.1.0` right now, not aspirational.
+
+[releasing-verify]: RELEASING.md#verifying-a-release
 
 ## Why this exists
 
@@ -38,16 +41,27 @@ Sprint 4, in progress. What's real today:
 - ✅ CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
   (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard.
-- 🚧 Not yet shipped: container image / release pipeline, one-command
-  Docker deploy, Maven and Gradle setup docs, FIPS build variant. Tracked
-  in this repo's issues as they land — see [`RELEASING.md`](RELEASING.md)
-  for how releases will be built (CI only, never from a developer
-  machine).
+- ✅ Release pipeline live (`v0.1.0`): signed, provenance-attested
+  container images (production, `-debug`, `-fips`) on GHCR, plus bare
+  binaries + checksums. See [`RELEASING.md`](RELEASING.md).
+- 🚧 Not yet shipped: one-command Docker deploy doc, Maven and Gradle
+  setup docs, offline-install doc, benchmarks against a real Gradle
+  project. Tracked in this repo's issues as they land.
 
 Full core (eviction, size limits, metrics) is free forever under MIT — see
 [`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
 SLA, and compliance artifacts on top of the same open core; nothing is
 withheld from the free tier for security.
+
+## Quickstart (Docker)
+
+```sh
+docker run -d -p 8080:8080 ghcr.io/fosterstack/cache:0.1.0
+curl localhost:8080/healthz   # -> ok
+```
+
+That's the whole install. No registration, no license key for the
+Community tier — pull, run, point your build tool at it (below).
 
 ## Build and run from source
 
