@@ -101,9 +101,16 @@ buildCache {
 ## Maven setup
 
 Basic Auth credentials come from `settings.xml` `<server>` conventions, the
-Apache extension's standard pattern. A full "Maven in 10 minutes" walkthrough
-is coming; the server-side pieces (`GET`/`PUT`/`HEAD`, Basic Auth) are
-implemented and tested today.
+Apache extension's standard pattern. See [Maven setup in 10 minutes](docs/maven.md)
+for the full walkthrough.
+
+## Documentation
+
+- [Gradle setup](docs/gradle.md) · [Maven setup](docs/maven.md)
+- [Migrate off Build Cache Node in 30 minutes](docs/migrate-from-bcn.md)
+- [One-command Docker deploy](docs/docker-deploy.md) · [Installing on disconnected networks](docs/offline-install.md)
+- [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
+- [Releasing](RELEASING.md) · [Security policy](SECURITY.md)
 
 ## Security
 

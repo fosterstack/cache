@@ -3,3 +3,5 @@
 *.db
 *.tmp-*
 .DS_Store
+bench/gradle-sample/.gradle/
+bench/gradle-sample/**/build/

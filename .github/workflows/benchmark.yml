@@ -1,0 +1,78 @@
+name: Benchmark (real Gradle project)
+
+# Sprint 4 build-scope requirement: "tests + benchmarks on a real Gradle
+# project." bench/gradle-sample/ is a small but real multi-module Java
+# project (an inter-module dependency graph, actual compilation work, a
+# JUnit test) — this workflow builds fscache from source, points the
+# sample project's remote build cache at it, and asserts real FROM-CACHE
+# hits on a from-scratch second build. This is a correctness assertion
+# (did the cache protocol round-trip actually work), not just a timing
+# number — CI runner performance varies too much run to run for a strict
+# wall-clock regression gate, but a cache miss where a hit was expected
+# fails the job.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: build fscache from source
+        run: CGO_ENABLED=0 go build -o /tmp/fscache-bench ./cmd/fscache
+
+      - name: start fscache
+        run: |
+          FSCACHE_ADDR=:18095 FSCACHE_DATA_DIR=/tmp/fscache-bench-data /tmp/fscache-bench &
+          echo $! > /tmp/fscache-bench.pid
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18095/healthz && exit 0
+            sleep 0.5
+          done
+          echo "fscache never became healthy" >&2
+          exit 1
+
+      - name: gradlew build (cold — populates the remote cache)
+        working-directory: bench/gradle-sample
+        run: ./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain
+
+      - name: remove build outputs (simulate a fresh checkout)
+        working-directory: bench/gradle-sample
+        run: find . -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +
+
+      - name: gradlew build (fresh checkout — must hit the remote cache)
+        working-directory: bench/gradle-sample
+        run: |
+          ./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain \
+            | tee /tmp/gradle-second-build.log
+
+      - name: assert real cache hits occurred
+        run: |
+          set -euo pipefail
+          hits=$(grep -c 'FROM-CACHE' /tmp/gradle-second-build.log || true)
+          echo "cache hits (FROM-CACHE task outcomes): $hits"
+          if [ "$hits" -lt 1 ]; then
+            echo "::error::Fresh-checkout build produced zero FROM-CACHE hits — the remote cache round-trip did not work." >&2
+            exit 1
+          fi
+
+      - name: stop fscache
+        if: always()
+        run: kill "$(cat /tmp/fscache-bench.pid)" 2>/dev/null || true
