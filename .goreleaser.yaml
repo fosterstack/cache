@@ -89,7 +89,7 @@ kos:
   - id: fscache-debug-image
     build: fscache
     main: ./cmd/fscache
-    base_image: gcr.io/distroless/static-debian12:debug-nonroot@sha256:d5563cc7f2f44313f332e91138cc8c6a158899afeeeab2fce3b0f9ccdb3cf9ee
+    base_image: gcr.io/distroless/static:debug-nonroot@sha256:9852e038f47deba221ddd825a46095bbf77d5a222cd6106424dce8299cf8a649
     repositories:
       - ghcr.io/fosterstack/cache
     platforms:
