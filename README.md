@@ -110,7 +110,7 @@ for the full walkthrough.
 - [Migrate off Build Cache Node in 30 minutes](docs/migrate-from-bcn.md)
 - [One-command Docker deploy](docs/docker-deploy.md) · [Installing on disconnected networks](docs/offline-install.md)
 - [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
-- [Releasing](RELEASING.md) · [Security policy](SECURITY.md)
+- [Releasing](RELEASING.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 ## Security
 
