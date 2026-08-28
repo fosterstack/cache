@@ -38,19 +38,6 @@ jobs:
       contents: write        # enable auto-merge on the PR
       pull-requests: write   # approve the PR
     steps:
-      - name: require that main has required status checks
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          rules=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
-                    --jq '[.[] | .type] | join(",")')
-          echo "effective rules on main: ${rules:-<none>}"
-          if ! printf '%s' "$rules" | grep -q 'required_status_checks'; then
-            echo "::error::main has no required_status_checks rule, so enabling auto-merge would merge this PR without waiting for CI. Configure required checks in the branch ruleset first (Tier 0). Refusing to auto-merge." >&2
-            exit 1
-          fi
-
       - name: dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
@@ -67,6 +54,20 @@ jobs:
             echo "(\`${{ steps.meta.outputs.previous-version }}\` → \`${{ steps.meta.outputs.new-version }}\`)."
             echo "The autonomous lane covers patch and minor only; this one waits for a human."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: require that main has required status checks
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                    --jq '[.[] | .type] | join(",")')
+          echo "effective rules on main: ${rules:-<none>}"
+          if ! printf '%s' "$rules" | grep -q 'required_status_checks'; then
+            echo "::error::main has no required_status_checks rule, so enabling auto-merge would merge this PR without waiting for CI. Configure required checks in the branch ruleset first (Tier 0). Refusing to auto-merge." >&2
+            exit 1
+          fi
 
       - name: approve
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
