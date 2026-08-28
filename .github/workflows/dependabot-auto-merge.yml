@@ -1,0 +1,86 @@
+name: Dependabot auto-merge
+
+# Brief §0.2(a) autonomous lane, mechanised: dependency bumps to
+# upstream-published versions ship after the full CI gate and do not wait on
+# the owner. Patch and minor only — a major bump is an API-break risk that
+# gets a human, which is the §0.2(b) instinct applied to our own deps.
+#
+# Two deliberate safety properties:
+#
+#  1. `pull_request`, NOT `pull_request_target`. The baseline
+#     (ops/docs/cicd-security-baseline.md) treats adding pull_request_target
+#     as weakening the supply-chain gate, because it runs with a writable
+#     token in the context of the BASE repo while checking out PR-authored
+#     code. This workflow also never checks out the PR at all — it only ever
+#     touches the GitHub API — so no third-party code executes here, with or
+#     without a token.
+#
+#  2. It refuses to run unless `main` actually has required status checks.
+#     "Auto-merge is gated on all checks green" is only true if the branch
+#     ruleset says which checks are required; with none configured,
+#     `--auto` merges the moment the PR is mergeable, which is immediately.
+#     The guard below fails closed rather than let that happen silently.
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: dependabot auto-merge
+    # Identity comes from the PR author, not github.actor: actor is whoever
+    # triggered THIS run, and a re-run or a synchronize can carry a
+    # different actor than the bot that opened the PR.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # enable auto-merge on the PR
+      pull-requests: write   # approve the PR
+    steps:
+      - name: require that main has required status checks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                    --jq '[.[] | .type] | join(",")')
+          echo "effective rules on main: ${rules:-<none>}"
+          if ! printf '%s' "$rules" | grep -q 'required_status_checks'; then
+            echo "::error::main has no required_status_checks rule, so enabling auto-merge would merge this PR without waiting for CI. Configure required checks in the branch ruleset first (Tier 0). Refusing to auto-merge." >&2
+            exit 1
+          fi
+
+      - name: dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: hold majors for owner review
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: |
+          {
+            echo "### Held for owner review"
+            echo
+            echo "\`${{ steps.meta.outputs.dependency-names }}\` is a **major** version bump"
+            echo "(\`${{ steps.meta.outputs.previous-version }}\` → \`${{ steps.meta.outputs.new-version }}\`)."
+            echo "The autonomous lane covers patch and minor only; this one waits for a human."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: approve
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: >-
+          gh pr review --approve "$PR_URL"
+          --body "Autonomous lane (brief 0.2a): patch/minor dependency bump to
+          an upstream-published version. Merging once every required check is green."
+
+      - name: enable auto-merge
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
