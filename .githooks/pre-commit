@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Public-repo hygiene: fosterstack/cache is public. Everything committed
+# here is world-readable the moment it is pushed, permanently — forks,
+# mirrors and GH Archive keep it, and making the repo private later does
+# not undo it. This hook rejects staged files that don't match the
+# allowlist in bin/check-file-allowlist.sh, so ops runbooks, sprint state,
+# the brief, a stray .env or an editor swap file can't slip in on
+# autopilot.
+#
+# This repo is also the one an agent may push to main autonomously for
+# dependency bumps (brief §0.2(a)), which is exactly why it needs the
+# mechanical backstop rather than relying on judgment alone.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# CI (.github/workflows/hygiene.yml) runs the same check as a backstop
+# for commits made without this hook enabled.
+
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+git diff --cached --name-only --diff-filter=ACMR | "$repo_root/bin/check-file-allowlist.sh" \
+  || { echo "pre-commit: rejected (see above). Unstage with: git restore --staged <file>" >&2; exit 1; }
