@@ -44,9 +44,17 @@ Sprint 4, in progress. What's real today:
 - ✅ Release pipeline live (`v0.1.0`): signed, provenance-attested
   container images (production, `-debug`, `-fips`) on GHCR, plus bare
   binaries + checksums. See [`RELEASING.md`](RELEASING.md).
-- 🚧 Not yet shipped: one-command Docker deploy doc, Maven and Gradle
-  setup docs, offline-install doc, benchmarks against a real Gradle
-  project. Tracked in this repo's issues as they land.
+- ✅ Benchmarked against a real multi-module Gradle project on every
+  push/PR — the gate is a correctness assertion (a from-scratch second
+  build must produce real `FROM-CACHE` hits), not just a timing number.
+- ✅ Deployment docs: [Docker](docs/docker-deploy.md) (with sizing),
+  [Kubernetes](docs/kubernetes.md), [Gradle](docs/gradle.md),
+  [Maven](docs/maven.md), and
+  [disconnected networks](docs/offline-install.md).
+- 🚧 Not yet shipped: private beta on real external CI, a Helm chart, and
+  the paid-tier features (SSO, HA/replication, license-key validation).
+  The CVE patch SLA is a roadmap commitment, not yet a live promise.
+  Tracked in this repo's issues as they land.
 
 Full core (eviction, size limits, metrics) is free forever under MIT — see
 [`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
