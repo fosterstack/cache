@@ -40,12 +40,8 @@ Sprint 4, in progress. What's real today:
 - ✅ `CGO_ENABLED=0` static binary — builds and runs today (see below).
 - ✅ CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
   (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
-  govulncheck, CodeQL, OpenSSF Scorecard.
-- ⚠️ Dependency review is configured on PRs but has **not yet passed a
-  run**: every execution so far errored with "Dependency graph is not
-  enabled" (the repo's first hours, before the graph initialised). The
-  graph is live now, but we won't claim this control until a real PR shows
-  it green — see the note on claims below.
+  govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
+  public-repo file allowlist.
 - ✅ Release pipeline live (`v0.1.0`): signed, provenance-attested
   container images (production, `-debug`, `-fips`) on GHCR, plus bare
   binaries + checksums. See [`RELEASING.md`](RELEASING.md).
