@@ -112,11 +112,37 @@ Plain manifests — Deployment, PVC, Service, `securityContext` — are in
 [Deploying on Kubernetes](kubernetes.md). Note the single-replica
 constraint documented there before you scale anything.
 
+## Platforms and multi-arch images
+
+Every image tag is a **multi-arch manifest** covering `linux/amd64` and
+`linux/arm64`, so `docker pull` (or Kubernetes, or podman) selects the right
+image for the node automatically — Apple Silicon and Graviton included. You
+never pick an architecture-specific tag.
+
+You can confirm that rather than take our word for it:
+
+```sh
+docker manifest inspect ghcr.io/fosterstack/cache:0.1.0 \
+  | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"'
+# linux/amd64
+# linux/arm64
+```
+
+Exactly two entries, both real platforms. Signatures and SBOM/provenance are
+stored as separate artifacts against each digest rather than as extra
+entries in this index, so nothing else should appear here — see
+[Verify our images](verify-images.md).
+
+There are no darwin or windows images: containers on those platforms run a
+Linux VM, and it pulls `linux/*` like any other Linux host. For a native
+macOS binary, see [Install FosterStack Cache](install.md).
+
 ## Not a container shop? Bare binary + systemd
 
-See ["Installing on disconnected networks"](offline-install.md) for the
-bare-binary + systemd path — it's the same install whether or not you're
-actually air-gapped.
+See [Install FosterStack Cache](install.md) — download, verify, and a
+systemd unit. That page is the base install for every non-container
+deployment; ["Installing on disconnected networks"](offline-install.md)
+covers only the air-gap deltas on top of it.
 
 ## Verify what you're running
 
