@@ -11,6 +11,11 @@ provenance attestation proving which CI run built it. See
 ["Verifying a release"][releasing-verify] for the exact commands — they're
 copy-pasteable against `v0.1.0` right now, not aspirational.
 
+**Website:** [fosterstack.com](https://fosterstack.com) · **Docs:**
+[Install](docs/install.md) · [Docker](docs/docker-deploy.md) ·
+[Kubernetes](docs/kubernetes.md) · [Gradle](docs/gradle.md) ·
+[Maven](docs/maven.md)
+
 [releasing-verify]: RELEASING.md#verifying-a-release
 
 ## Why this exists
