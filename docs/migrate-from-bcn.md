@@ -25,13 +25,16 @@ done.
 running the Build Cache Node container):
 
 ```sh
-docker run -d -p 8080:8080 -v fscache-data:/data ghcr.io/fosterstack/cache:0.1.0
+docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:0.1.0
 ```
 
+(The volume mounts at `/home/nonroot`, not `/data` — see
+[One-command Docker deploy](docker-deploy.md#the-one-command) for why, and
+for the compose form.)
+
 Or as a systemd-managed bare binary — see
-["Installing on disconnected networks"](offline-install.md) for that path
-even if you're not actually air-gapped; the binary/systemd instructions
-apply either way.
+[Install FosterStack Cache](install.md) for that path; it applies whether or
+not you're air-gapped, and it lists which archive to grab for your platform.
 
 **2. Update your Gradle config.** Wherever `settings.gradle(.kts)`
 currently points at your Build Cache Node's URL, change only the URL (the

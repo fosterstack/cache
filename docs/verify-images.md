@@ -65,11 +65,29 @@ only in CI" rule).
 
 All three variants of every release are signed and attested the same way.
 
+Each tag is a multi-arch manifest (`linux/amd64` + `linux/arm64`), and
+`cosign verify` above validates the **index digest** — which covers both
+platform manifests, so one verification covers every architecture. To see
+what the index contains:
+
+```sh
+docker manifest inspect ghcr.io/fosterstack/cache:0.1.0 \
+  | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)\t\(.digest)"'
+# linux/amd64   sha256:d26325eb...
+# linux/arm64   sha256:ba6e3cc6...
+```
+
+The index holds exactly the platform manifests — signatures and attestations
+are separate artifacts keyed to each digest, not extra entries here, so a
+third line would be worth asking about.
+
 ## 4. Verify the binary archives
 
 Container images aren't the only artifact. Bare-binary releases (for
 container-averse or air-gapped environments — see
-["Installing on disconnected networks"](offline-install.md)) ship a
+[Install FosterStack Cache](install.md), or
+["Installing on disconnected networks"](offline-install.md) for the air-gap
+path) ship a
 `checksums.txt` covering every archive, plus a cosign keyless blob-signature
 bundle over that file:
 

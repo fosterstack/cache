@@ -48,7 +48,8 @@ Sprint 4, in progress. What's real today:
 - ✅ Benchmarked against a real multi-module Gradle project on every
   push/PR — the gate is a correctness assertion (a from-scratch second
   build must produce real `FROM-CACHE` hits), not just a timing number.
-- ✅ Deployment docs: [Docker](docs/docker-deploy.md) (with sizing),
+- ✅ Deployment docs: [Install](docs/install.md) (binaries + systemd),
+  [Docker](docs/docker-deploy.md) (with sizing),
   [Kubernetes](docs/kubernetes.md), [Gradle](docs/gradle.md),
   [Maven](docs/maven.md), and
   [disconnected networks](docs/offline-install.md).
@@ -77,6 +78,27 @@ curl localhost:8080/healthz   # -> ok
 
 That's the whole install. No registration, no license key for the
 Community tier — pull, run, point your build tool at it (below).
+
+## Supported platforms
+
+Every release builds this whole matrix from the same source in the same CI
+run — there is no primary platform.
+
+| Artifact | Platforms |
+|---|---|
+| Binaries (`fscache`) | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` |
+| FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
+| Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
+
+FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
+Linux, so a macOS FIPS build would double CI time for a configuration nobody
+assesses. Container images ship as multi-arch manifests, so `docker pull`
+resolves the right image by itself on Apple Silicon and Graviton. Windows is
+not built and not planned — this is a server that lives next to your CI
+runners; develop on Windows via WSL2, which is `linux/amd64`.
+
+Full install instructions, including which archive to download and a systemd
+unit: **[docs/install.md](docs/install.md)**.
 
 ## Build and run from source
 
@@ -123,6 +145,7 @@ for the full walkthrough.
 
 - [Gradle setup](docs/gradle.md) · [Maven setup](docs/maven.md)
 - [Migrate off Build Cache Node in 30 minutes](docs/migrate-from-bcn.md)
+- [Install (binaries, systemd, platforms)](docs/install.md)
 - [One-command Docker deploy](docs/docker-deploy.md) · [Deploying on Kubernetes](docs/kubernetes.md)
 - [Installing on disconnected networks](docs/offline-install.md)
 - [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
