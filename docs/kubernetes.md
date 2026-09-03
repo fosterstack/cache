@@ -6,7 +6,7 @@ into one file and `kubectl apply -f` it. A Helm chart is planned
 post-launch; until then this page is the supported path.
 
 > **Pre-beta.** These manifests are validated against the Kubernetes API
-> schema and match how the image actually behaves (verified against
+> schema and match how the image behaves (verified against
 > `ghcr.io/fosterstack/cache:0.1.0`), but FosterStack Cache has not yet
 > been through a beta on a production cluster. Treat it accordingly.
 
@@ -25,7 +25,7 @@ Two consequences worth encoding in the manifest, both below:
 - `replicas: 1`, and `strategy: Recreate` — the default `RollingUpdate`
   would start the new pod before terminating the old one, and the two would
   contend for the same lock during every rollout.
-- `ReadWriteOnce` on the PVC, which is what single-writer actually wants.
+- `ReadWriteOnce` on the PVC, which is what single-writer requires.
 
 A cache is a fail-safe dependency: if it is briefly down during a rollout,
 builds miss the cache and run slower. Nothing breaks. Trading a few seconds

@@ -44,13 +44,34 @@ Practically, this means:
   gosec ./...
   ```
 - Keep the diff focused. A PR that mixes an unrelated refactor with the
-  actual fix is harder to review and more likely to sit.
+  fix is harder to review and more likely to sit.
 - If you're touching `internal/cache`'s eviction logic or anything in the
   release pipeline (`.goreleaser.yaml`, `.ko.yaml`,
   `.github/workflows/release.yml`), say so explicitly in the PR
   description — those are the two places a subtle bug is most expensive
-  (see the commit history for two real examples this project caught in
-  its own audit process, not hypotheticals).
+  (the commit history has two examples this project caught in its own
+  audit process).
+
+## Docs voice
+
+Documentation here is plain and declarative. Four rules:
+
+- **State it, don't sell it.** "Every release is signed" — not "every
+  release is rigorously signed, and you can verify it yourself right now."
+  Self-congratulation reads as weakness; a flat claim reads as confidence.
+- **No self-congratulation about our own output.** Don't tell the reader
+  that a doc is thorough, a command is copy-pasteable, or a design is
+  clever. Show the command and let them judge.
+- **No sprint numbers, internal milestones, or process vocabulary** in
+  public docs. "Sprint 4, in progress" means nothing to a reader deciding
+  whether to run this in their CI.
+- **Every claim is paired with an executable check.** If a page says the
+  image has no shell, it shows the command that demonstrates it. A claim a
+  reader cannot reproduce should be cut or moved to the roadmap, clearly
+  labeled as unshipped.
+
+Reassurance adverbs are the usual tell: *actually*, *genuinely*, *really*,
+*right now*, *truly*. If deleting the word costs nothing, delete it.
 
 ## Security issues
 

@@ -71,7 +71,7 @@ buildCache {
 }
 ```
 
-## 4. Verify it's actually being used
+## 4. Verify it's being used
 
 ```sh
 ./gradlew build --build-cache

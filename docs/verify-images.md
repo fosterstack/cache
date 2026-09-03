@@ -4,9 +4,8 @@ Every FosterStack Cache release is signed and provenance-attested by
 GitHub's own CI — not by us claiming it, by a chain you can check yourself
 in under a minute, with nothing installed but `cosign` and `gh`.
 
-This isn't a hypothetical example. Every command below was run for real
-against `v0.1.0`, on the maintainer's own laptop, with zero GitHub
-credentials configured, and succeeded.
+Every command below runs against `v0.1.0` with no GitHub credentials
+configured.
 
 ## 1. Verify the cosign signature and SLSA provenance
 
@@ -47,23 +46,75 @@ workflow run that produced the image you pulled.
 - Signer workflow: .github/workflows/release.yml@refs/tags/v0.1.0
 ```
 
-`Build workflow` is the whole point of this page: it's cryptographic
-confirmation that the bytes you pulled came out of this repository's own
-public CI pipeline — [`.github/workflows/release.yml`](../.github/workflows/release.yml),
-readable in full — not from anywhere else, and not hand-pushed by a
-developer machine (see [`RELEASING.md`](../RELEASING.md)'s "releases build
-only in CI" rule).
+`Build workflow` is cryptographic confirmation that the bytes you pulled
+came out of this repository's public CI pipeline —
+[`.github/workflows/release.yml`](../.github/workflows/release.yml),
+readable in full — and not from a developer machine (see
+[`RELEASING.md`](../RELEASING.md)'s "releases build only in CI" rule).
 
 ## 3. Which tags to verify
 
-| Tag | What it is |
-|---|---|
-| `X.Y.Z` | Production image, `gcr.io/distroless/static:nonroot` base |
-| `X.Y.Z-debug` | Same binary, busybox-bearing base — interactive troubleshooting only |
-| `X.Y.Z-fips` | Same binary, `GOFIPS140=v1.0.0` build (Go's CMVP FIPS 140-3 validated module) |
-| `latest` / `debug` / `fips` | Floating tags, always point at the newest release of that variant |
+| Tag | Base image | Shell | What it is |
+|---|---|---|---|
+| `X.Y.Z` | `gcr.io/distroless/static:nonroot` | none | Production. Deploy this one. |
+| `X.Y.Z-debug` | `gcr.io/distroless/static:debug-nonroot` | busybox at `/busybox/` | Same binary, plus troubleshooting tools. Not for deployment. |
+| `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) |
+| `latest` / `debug` / `fips` | — | — | Floating tags, always the newest release of that variant |
 
 All three variants of every release are signed and attested the same way.
+
+### The images have no shell, and `:debug`'s is not where you expect
+
+Production and `-fips` contain the `fscache` binary and nothing else — no
+shell, no package manager, no coreutils. `docker exec ... sh` into them
+fails, by design: a container with no shell has nothing for an attacker who
+gets code execution to pivot into, and no OS package surface to patch.
+
+`:debug` is the escape hatch. It is the same `fscache` binary on
+Google's `debug-nonroot` base, which adds busybox. **The layout is not the
+one you know from other Linux images.** Debian, RHEL, Amazon Linux, Alpine
+and Wolfi all give you `/bin/sh`. Distroless does not:
+
+- There is **no `/bin/sh`** and **no `/bin/bash`**. (`/bin` exists, as a
+  symlink to `usr/bin`, but contains no shell.)
+- There is **no package manager** — no `apt`, `apk`, `yum`, `dnf`. Nothing
+  to install means nothing to drift, and nothing for an attacker to use.
+- Everything busybox provides lives under **`/busybox/`** — 382 applets,
+  including `sh`, `ls`, `cat`, `ps`, `netstat`, `wget`, `grep`, `df`, `vi`.
+
+So the shell is at `/busybox/sh`:
+
+```sh
+docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+```
+
+```sh
+# a pod already running the :debug tag
+kubectl exec -it <pod> -- /busybox/sh
+```
+
+`/busybox` is on the image's `PATH`, so bare `sh` resolves too
+(`--entrypoint sh`). The full path is shown first because it works whether
+or not `PATH` survives however you invoke the container.
+
+Both commands run as the image's default user, uid **65532** (`nonroot`) —
+no `--user=root`. Clusters that enforce `runAsNonRoot` reject a root
+override, and troubleshooting as root would not reflect what the server
+sees anyway.
+
+Verify the difference yourself:
+
+```sh
+docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:0.1.0-debug -c 'id; ls /busybox | wc -l'
+# uid=65532(nonroot) gid=65532(nonroot) groups=65532(nonroot)
+# 382
+
+docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:0.1.0 -c 'echo reached'
+# error ... exec: "/busybox/sh": stat /busybox/sh: no such file or directory
+```
+
+The second command failing is the point: the production image has no shell
+to exec.
 
 Each tag is a multi-arch manifest (`linux/amd64` + `linux/arm64`), and
 `cosign verify` above validates the **index digest** — which covers both
@@ -78,8 +129,8 @@ docker manifest inspect ghcr.io/fosterstack/cache:0.1.0 \
 ```
 
 The index holds exactly the platform manifests — signatures and attestations
-are separate artifacts keyed to each digest, not extra entries here, so a
-third line would be worth asking about.
+are separate artifacts keyed to each digest, not extra entries here. A
+third line means something else is in the index.
 
 ## 4. Verify the binary archives
 

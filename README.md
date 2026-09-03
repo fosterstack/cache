@@ -8,8 +8,7 @@ A self-hosted, drop-in remote build cache for **Gradle** and **Maven** — a
 single small static binary, MIT-licensed, patched forever, and verifiable:
 every release is signed keylessly (Sigstore/cosign) and carries a SLSA
 provenance attestation proving which CI run built it. See
-["Verifying a release"][releasing-verify] for the exact commands — they're
-copy-pasteable against `v0.1.0` right now, not aspirational.
+["Verifying a release"][releasing-verify] for the commands.
 
 **Website:** [fosterstack.com](https://fosterstack.com) · **Docs:**
 [Install](docs/install.md) · [Docker](docs/docker-deploy.md) ·
@@ -36,38 +35,41 @@ same core.
 
 ## Status
 
-Sprint 4, in progress. What's real today:
+Shipped:
 
-- ✅ Cache server core: content-addressed filesystem blob store, `bbolt`
+- Cache server core: content-addressed filesystem blob store, `bbolt`
   metadata index, size-capped LRU eviction — all tested.
-- ✅ HTTP surface: `GET`/`PUT`/`HEAD`, optional Basic Auth, Prometheus
+- HTTP surface: `GET`/`PUT`/`HEAD`, optional Basic Auth, Prometheus
   metrics at `/metrics`, liveness at `/healthz`.
-- ✅ `CGO_ENABLED=0` static binary — builds and runs today (see below).
-- ✅ CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
+- `CGO_ENABLED=0` static binary — builds and runs today (see below).
+- CI on every push/PR: tests (race-enabled), `go vet`, golangci-lint
   (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
   public-repo file allowlist.
-- ✅ Release pipeline live (`v0.1.0`): signed, provenance-attested
+- Release pipeline (`v0.1.0`): signed, provenance-attested
   container images (production, `-debug`, `-fips`) on GHCR, plus bare
   binaries + checksums. See [`RELEASING.md`](RELEASING.md).
-- ✅ Benchmarked against a real multi-module Gradle project on every
+- Benchmarked against a multi-module Gradle project on every
   push/PR — the gate is a correctness assertion (a from-scratch second
   build must produce real `FROM-CACHE` hits), not just a timing number.
-- ✅ Deployment docs: [Install](docs/install.md) (binaries + systemd),
+- Deployment docs: [Install](docs/install.md) (binaries + systemd),
   [Docker](docs/docker-deploy.md) (with sizing),
   [Kubernetes](docs/kubernetes.md), [Gradle](docs/gradle.md),
   [Maven](docs/maven.md), and
   [disconnected networks](docs/offline-install.md).
-- 🚧 Not yet shipped: private beta on real external CI, a Helm chart, and
-  the paid-tier features (SSO, HA/replication, license-key validation).
-  The CVE patch SLA is a roadmap commitment, not yet a live promise.
-  Tracked in this repo's issues as they land.
 
-**On the claims above:** anything marked ✅ is something you can verify
-yourself from this repo's Actions history or by running the commands in
-[`RELEASING.md`](RELEASING.md). We would rather carry a ⚠️ than describe a
-control that has never actually run — a security claim you can't reproduce
-is worth less than no claim.
+Not yet shipped:
+
+- Private beta on external CI.
+- A Helm chart.
+- Paid-tier features: SSO, HA/replication, license-key validation.
+- The CVE patch SLA. It is a roadmap commitment, not a live promise.
+
+Tracked in this repo's issues.
+
+Every shipped item above is verifiable from this repo's Actions history or
+by running the commands in [`RELEASING.md`](RELEASING.md). Claims that
+cannot be reproduced are not listed.
 
 Full core (eviction, size limits, metrics) is free forever under MIT — see
 [`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
@@ -94,6 +96,22 @@ run — there is no primary platform.
 | Binaries (`fscache`) | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` |
 | FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
 | Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
+
+### Image variants
+
+| Tag | Shell | Use |
+|---|---|---|
+| `X.Y.Z` | none | Production |
+| `X.Y.Z-debug` | busybox at `/busybox/sh` | Interactive troubleshooting |
+| `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
+
+Production and `-fips` are distroless: the `fscache` binary and nothing
+else, so there is no shell to exec into and no package manager to patch.
+`:debug` adds busybox for troubleshooting, and its shell is at
+**`/busybox/sh`** — distroless has no `/bin/sh`, unlike Debian, Alpine or
+Wolfi. See
+[the variant docs](docs/verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect)
+and [troubleshooting](docs/docker-deploy.md#troubleshooting-with-the-debug-image).
 
 FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
 Linux, so a macOS FIPS build would double CI time for a configuration nobody

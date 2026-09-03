@@ -40,10 +40,9 @@ sizing a disk, not a compute tier.
 | **Recommended start** (~5–20 devs + CI) | 1–2 | 2 GB | 25–50 GB SSD |
 | **Larger CI farms** | 2–4 | 4–8 GB | cap + ~20% headroom |
 
-Yes, it depends on your build graph — but if you are standing at a droplet
-size picker right now, take the recommended row and move on. It is very
-hard to be CPU-bound here: the hot path is a content-addressed blob read or
-write, not computation.
+It depends on your build graph. If you are choosing a droplet size, take
+the recommended row. It is hard to be CPU-bound here: the hot path is a
+content-addressed blob read or write, not computation.
 
 **Disk is the real variable.** Size it from your eviction cap plus ~20%
 headroom, not the other way round: set `FSCACHE_MAX_BYTES` (see
@@ -136,6 +135,53 @@ entries in this index, so nothing else should appear here — see
 There are no darwin or windows images: containers on those platforms run a
 Linux VM, and it pulls `linux/*` like any other Linux host. For a native
 macOS binary, see [Install FosterStack Cache](install.md).
+
+## Troubleshooting with the `:debug` image
+
+The production image has no shell, so `docker exec ... sh` into it fails.
+That is deliberate — see [Platforms and multi-arch images](#platforms-and-multi-arch-images)
+above and the [variant docs](verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect).
+When you need a shell, run the `:debug` tag, which is the same binary on a
+base that adds busybox.
+
+**The shell is at `/busybox/sh`, not `/bin/sh`.** Distroless keeps busybox
+under `/busybox/` and ships no `/bin/sh`, no bash, and no package manager.
+If you have used Debian, RHEL, Amazon Linux, Alpine or Wolfi images, this
+is the one thing that will trip you up.
+
+```sh
+# a throwaway shell in the debug image
+docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+
+# same, with your cache volume attached, to inspect what the server sees
+docker run -it --entrypoint /busybox/sh \
+  -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:debug
+```
+
+Inside, useful things to check:
+
+```sh
+ls -la /home/nonroot/data/blobs     # is the blob store where you think it is?
+du -sh /home/nonroot/data           # how big has the cache grown?
+wget -qO- http://localhost:8080/healthz   # only if you exec into a RUNNING container
+```
+
+To get a shell in a container that is already running, swap the deployment
+to the `:debug` tag first — you cannot exec a shell into the production
+image, because there is not one to exec. On Kubernetes, with a pod running
+the `:debug` tag:
+
+```sh
+kubectl exec -it <pod> -- /busybox/sh
+```
+
+`/busybox` is on the image `PATH`, so bare `sh` also resolves. The full
+path is shown first because it works regardless of how the container was
+invoked.
+
+These run as the image's default user, uid 65532 (`nonroot`). Do not add
+`--user=root`: clusters that enforce `runAsNonRoot` reject it, and root
+would not show you what the server process sees.
 
 ## Not a container shop? Bare binary + systemd
 
