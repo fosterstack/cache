@@ -60,10 +60,18 @@ Shipped:
 
 Not yet shipped:
 
-- Private beta on external CI.
-- A Helm chart.
-- Paid-tier features: SSO, HA/replication, license-key validation.
-- The CVE patch SLA. It is a roadmap commitment, not a live promise.
+- **Production use beyond our own CI.** Nobody is running this in a real
+  build pipeline yet except us. An invited beta runs before general
+  availability.
+- **A Helm chart.** Deploying to Kubernetes today means applying the plain
+  manifests in [docs/kubernetes.md](docs/kubernetes.md).
+- **The paid tiers.** Single sign-on, high-availability replication, and
+  the license key that unlocks them are not built. Everything in this
+  repository is the free MIT core.
+- **A CVE patch commitment you can hold us to.** We aim to ship fixes for
+  dependency CVEs within 48 hours of public disclosure. That is a stated
+  intention, not a contractual promise, and it will not be one until the
+  paid tiers exist.
 
 Tracked in this repo's issues.
 
