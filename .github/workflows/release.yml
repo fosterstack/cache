@@ -52,6 +52,30 @@ jobs:
             docker image inspect "goreleaser.ko.local:${tag}" >/dev/null
           done
 
+      # The published docs tell operators to troubleshoot with
+      # `--entrypoint /busybox/sh` and state that /bin/sh does not exist.
+      # Both halves are asserted here, against the snapshot images, before
+      # anything is published — so the claim cannot ship ahead of the fact,
+      # and an upstream base change that added /bin/sh would fail the
+      # release instead of silently falsifying the documentation.
+      - name: debug variant must have a working shell at /busybox/sh
+        run: |
+          out=$(docker run --rm --entrypoint /busybox/sh goreleaser.ko.local:debug -c 'echo shell-ok')
+          if [ "$out" != "shell-ok" ]; then
+            echo "::error::/busybox/sh did not run in the debug image (docs/verify-images.md documents it as the entry point)" >&2
+            exit 1
+          fi
+          if docker run --rm --entrypoint /bin/sh goreleaser.ko.local:debug -c true 2>/dev/null; then
+            echo "::error::/bin/sh exists in the debug image, but the docs state it does not — update the docs or the base pin" >&2
+            exit 1
+          fi
+          for tag in latest fips; do
+            if docker run --rm --entrypoint /busybox/sh "goreleaser.ko.local:${tag}" -c true 2>/dev/null; then
+              echo "::error::${tag} image has a shell at /busybox/sh — production variants must not" >&2
+              exit 1
+            fi
+          done
+
       # DEPLOY-REQ-5 / scanner-input doc: multi-scanner (Trivy AND Grype),
       # asserted against every variant. Zero findings is the marketing
       # claim ("our own pipeline never publishes unscanned, scored zero by

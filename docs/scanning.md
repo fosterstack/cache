@@ -51,8 +51,7 @@ also notes there is often no genuine OS/platform gating in scanner content
 by default: a scanner may happily score a scratch image against a full
 distro benchmark and produce results that don't mean what they look like
 they mean. Don't over-read a scratch image's score against a
-Debian-shaped policy without checking what each individual rule actually
-verifies.
+Debian-shaped policy without checking what each rule verifies.
 
 ## Exit codes: don't gate on the raw process exit code
 
@@ -61,9 +60,8 @@ threshold" with "could not run at all" in ways that are easy to miss.
 **Read per-rule verdicts from the results document (JSON/SARIF), never
 gate a pipeline purely on the raw exit code** — a broken scan and a clean
 scan can both look like "exit 0" or both look like "exit 1" depending on
-flags, and conflating them ships a green gate that isn't actually
-checking anything. This is a real failure mode observed in the field, not
-a hypothetical.
+flags, and conflating them ships a green gate that checks nothing. This
+failure mode has been observed in the field.
 
 ## The `-debug` variant is different on purpose
 
