@@ -101,24 +101,34 @@ jobs:
           exit-code: '1'
           severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
 
+      # severity-cutoff: negligible is load-bearing, not decoration. The
+      # action's DEFAULT cutoff is medium, so without this line Grype was
+      # silently passing low and negligible findings that the Trivy steps
+      # above (which list every severity including UNKNOWN) would block —
+      # the two "independent scanners" were not holding the same bar.
+      # Policy: nothing reaches the registry with a known CVE at ANY
+      # severity; the only exception is a published VEX statement.
       - name: Grype scan (production image)
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: goreleaser.ko.local:latest
           fail-build: true
           only-fixed: false
+          severity-cutoff: negligible
       - name: Grype scan (debug image)
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: goreleaser.ko.local:debug
           fail-build: true
           only-fixed: false
+          severity-cutoff: negligible
       - name: Grype scan (fips image)
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: goreleaser.ko.local:fips
           fail-build: true
           only-fixed: false
+          severity-cutoff: negligible
 
   # Phase 2: only reached if every scan above was clean. Rebuilds with the
   # real tag version (this job never sees the snapshot-tagged images from
