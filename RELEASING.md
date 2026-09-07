@@ -6,7 +6,7 @@ is a hard rule, not a preference: it's what makes the SLSA provenance and
 Sigstore signatures on every release mean something (an attacker with a
 laptop cannot forge a release that GitHub's own runners never built).
 
-## Pipeline (live since v0.1.0, `.github/workflows/release.yml`)
+## Pipeline (live since v0.1.0, `.github/workflows/release.yml`) <!-- pinned: historical -->
 
 ```
 build (snapshot, local only) → scan (Trivy AND Grype, all 3 image variants)
@@ -57,7 +57,7 @@ better solved by documentation — which is what
 and [the troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image)
 now do. Do not revisit without a reason that outweighs that.
 
-- A `:X.Y.Z-fips` variant, `GOFIPS140=v1.0.0` baked in at compile time
+- A `:X.Y.Z-fips` variant, `GOFIPS140=v1.0.0` baked in at compile time <!-- pinned: upstream -->
   (Go's CMVP FIPS 140-3 validated module, cert #5247) — built from the
   first release even before the Compliance tier ships.
 - Bare binaries + `checksums.txt` (via `goreleaser`), `linux`/`darwin` ×
@@ -76,30 +76,41 @@ now do. Do not revisit without a reason that outweighs that.
 
 ## Verifying a release
 
-The commands below run against `v0.1.0` with no GitHub credentials, as an
-anonymous pull:
+Every command below runs with no GitHub credentials, as an anonymous pull.
+Resolve the current release first and the rest parameterize themselves:
+
+```sh
+VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
+        | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+echo "$VER"
+```
+
+That uses only `curl` and `sed` — no `jq`, no GNU-only flags, and no
+authentication, so it works on a stock macOS or a minimal container.
 
 ```sh
 # Image signature + provenance (cosign)
-cosign verify ghcr.io/fosterstack/cache:0.1.0 \
+cosign verify "ghcr.io/fosterstack/cache:${VER}" \
   --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 
 # GitHub's own attestation store — confirms which workflow run built it
-gh attestation verify oci://ghcr.io/fosterstack/cache:0.1.0 --owner fosterstack
+gh attestation verify "oci://ghcr.io/fosterstack/cache:${VER}" --owner fosterstack
 ```
 
-The `gh attestation verify` output includes `Build workflow:
-.github/workflows/release.yml@refs/tags/v0.1.0`. That line is
-cryptographic proof the bytes you pulled came from this repo's CI. Swap `0.1.0` for `0.1.0-debug` or
-`0.1.0-fips` to verify those variants; swap the tag for any later release.
+The `gh attestation verify` output includes a `Build workflow:` line naming
+`.github/workflows/release.yml` at the tag being verified. That line is
+cryptographic proof the bytes you pulled came from this repo's CI.
+
+The same two commands verify the other variants — use `${VER}-debug` or
+`${VER}-fips` in place of `${VER}`.
 
 The `:debug` variant's documented entry point is checked the same way. The
 docs tell users to exec `/busybox/sh`, so that path has to work:
 
 ```sh
 docker run --rm --entrypoint /busybox/sh \
-  ghcr.io/fosterstack/cache:0.1.0-debug -c 'echo shell-ok'
+  "ghcr.io/fosterstack/cache:${VER}-debug" -c 'echo shell-ok'
 # shell-ok
 ```
 
@@ -109,13 +120,46 @@ step in `.github/workflows/release.yml`. It also asserts that `/bin/sh` is
 *absent*, because the docs say so; if an upstream base change ever added
 one, the release fails rather than the documentation going quietly wrong.
 
-For the binary archives, verify `checksums.txt` against its cosign bundle
-(`checksums.txt.bundle`, attached to the GitHub release) the same way, then
-verify each archive against `checksums.txt` with `sha256sum -c`.
+### Binary archives
+
+The archives are not signed individually. `checksums.txt` is signed, and it
+pins every archive by SHA-256 — so verifying the checksums file and then
+checking an archive against it is a complete chain, not two half-measures.
+
+```sh
+# 1. Prove the checksums file is ours
+cosign verify-blob checksums.txt \
+  --bundle checksums.txt.bundle \
+  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+
+# 2. Prove the archive matches that file
+sha256sum -c <(grep "fscache_${VER}_linux_amd64.tar.gz" checksums.txt)
+```
+
+Do step 1. Without it, `checksums.txt` is self-referential: it proves the
+archive matches a file that anyone could have written.
+
+### What is signed, and what that covers
+
+| Artifact | Signature | SLSA provenance | SBOM |
+|---|---|---|---|
+| Images (`${VER}`, `-debug`, `-fips`) | cosign, per digest | yes, in the registry | SPDX, via ko |
+| Binary archives | via the signed `checksums.txt` | yes | no |
+| `checksums.txt` | cosign `sign-blob` bundle | yes | — |
+
+### VEX statements
+
+Any scanner finding we ship past is answered by a published statement in
+[`.vex/`](.vex/), attached to the release as
+`fosterstack-cache.openvex.json`. Both release scanners read it, so an
+exception is one public claim rather than two tool-local suppressions. No
+statement, no exception, no push.
 
 ## CI-only releases, verified in practice
 
-`v0.1.0` was cut four times before it published. A Go stdlib CVE
+`v0.1.0` was cut four times before it published. <!-- pinned: historical -->
+A Go stdlib CVE
 (govulncheck and Grype caught it independently), an EOL debug base image,
 and a cosign v3 flag change were each caught by the pipeline before
 anything shipped. Every fix was a normal signed

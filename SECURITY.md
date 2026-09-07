@@ -26,11 +26,58 @@ best-effort basis.
 This is a target, not a contractual penalty clause, and it does not promise
 fix-authorship timelines for code this project doesn't control.
 
-## Algorithm discipline
+## Nothing ships with a known CVE
 
-This codebase uses SHA-256 only for anything content- or
-integrity-related; `crypto/md5` and `crypto/sha1` are banned imports,
-enforced in CI regardless of intended use.
+No artifact is published with a known CVE at any severity, unless a
+published VEX statement explains why the finding does not apply.
+
+Independent scanners with deliberately different vulnerability databases run
+against every image before anything reaches the registry, each blocking at
+every severity including UNKNOWN. A finding fails the release; the images
+never leave the build runner.
+
+The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
+artifacts. Its partner is chosen for a database that disagrees with Grype's —
+different sources, low overlap, and a lead of roughly a week over public
+feeds — because two scanners that agree with each other only tell you what
+one of them already knew. Anti-correlation is the point.
+
+Exceptions are OpenVEX documents in [`.vex/`](.vex/), read by both scanners
+and published as a release asset. VEX is the single source of truth: any
+tool-specific ignore must cite the statement that governs it and may never
+stand alone. No statement, no exception, no push.
+
+Every published image is also rescanned daily, so a CVE disclosed against
+bytes we already shipped raises a tracked issue rather than waiting for
+someone to look.
+
+## Approved-only cryptography
+
+Enforcement is delegated to the validated module rather than to a list.
+
+CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
+build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
+refuses any non-approved algorithm at runtime. Any reach for non-approved
+cryptography — ours or a dependency's — fails CI on that commit.
+
+A `golangci-lint` `depguard` allowlist covers the static side: only
+in-boundary crypto imports are permitted, and third-party cryptographic
+implementations are denied outright, because `GOFIPS140` does not govern
+code outside the module.
+
+**What each half proves, stated plainly.** `fips140=only` proves the paths
+the tests execute; it says nothing about a path no test reaches. The
+allowlist is a static check: it sees imports, not behaviour. Together they
+cover more than either does alone, and neither is a proof of total coverage.
+
+The `-fips` build announces itself at startup, so the property is
+observable at runtime rather than taken on trust:
+
+```
+"fips140":"active (Go validated module, CMVP cert #5247)"
+```
+
+Standard builds report `"fips140":"off"`.
 
 ## Supported versions
 
