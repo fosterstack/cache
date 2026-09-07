@@ -14,16 +14,59 @@ linters:
   settings:
     depguard:
       rules:
-        main:
+        # Crypto imports are an ALLOWLIST, not a blocklist (punch list
+        # #10b). The previous rule named crypto/md5 and crypto/sha1
+        # specifically, which meant an enumerated list was standing in for
+        # a guarantee: crypto/rc4, crypto/des, crypto/dsa and every
+        # third-party implementation were all still importable.
+        #
+        # Inverted here. `deny: crypto` covers the whole stdlib crypto
+        # tree; `allow` re-admits only packages inside the FIPS 140-3
+        # validated module boundary. depguard resolves the most specific
+        # prefix and allow wins, so adding a new crypto import is a
+        # deliberate edit to this list rather than something that slips in.
+        #
+        # This is the STATIC half of the claim. The executing half is the
+        # fips140-only CI job, where the validated module itself refuses
+        # non-approved algorithms at runtime. SECURITY.md states both and
+        # claims neither is complete alone.
+        crypto:
+          list-mode: lax
+          allow:
+            # In-boundary and actually used today:
+            - crypto/subtle   # constant-time comparison (Basic Auth)
+            - crypto/rand     # CSPRNG (atomic-write temp names)
+            # In-boundary, permitted without a further review round:
+            - crypto/aes
+            - crypto/cipher
+            - crypto/ecdsa
+            - crypto/ed25519
+            - crypto/elliptic
+            - crypto/hmac
+            - crypto/sha256
+            - crypto/sha3
+            - crypto/sha512
+            - crypto/tls
+            - crypto/x509
           deny:
-            # Algorithm discipline (addendum §4 / §7b): SHA-256 only,
-            # everywhere, regardless of whether a given use is
-            # "security-relevant" — GOFIPS140 strict mode doesn't care
-            # about intent, so neither does this repo's lint.
+            - pkg: "crypto"
+              desc: "outside the FIPS 140-3 validated module boundary: add it to the crypto allowlist in .golangci.yml only if the module covers it and it is an approved algorithm"
+            # Named explicitly so the failure message says why, rather than
+            # only that the prefix rule caught it.
             - pkg: "crypto/md5"
-              desc: "banned repo-wide: SHA-256 only (FIPS/algorithm discipline, addendum §4)"
+              desc: "non-approved algorithm: banned repo-wide (FIPS/algorithm discipline, addendum §4)"
             - pkg: "crypto/sha1"
-              desc: "banned repo-wide: SHA-256 only (FIPS/algorithm discipline, addendum §4)"
+              desc: "non-approved algorithm: banned repo-wide (FIPS/algorithm discipline, addendum §4)"
+            - pkg: "crypto/rc4"
+              desc: "non-approved algorithm: banned repo-wide (FIPS/algorithm discipline, addendum §4)"
+            - pkg: "crypto/des"
+              desc: "non-approved algorithm: banned repo-wide (FIPS/algorithm discipline, addendum §4)"
+            - pkg: "crypto/dsa"
+              desc: "non-approved algorithm: banned repo-wide (FIPS/algorithm discipline, addendum §4)"
+            - pkg: "golang.org/x/crypto"
+              desc: "third-party crypto sits outside the validated module boundary; use the stdlib equivalent so GOFIPS140 governs it"
+            - pkg: "github.com/golang-jwt"
+              desc: "third-party crypto sits outside the validated module boundary"
   exclusions:
     generated: lax
 

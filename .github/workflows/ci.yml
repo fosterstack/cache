@@ -72,6 +72,37 @@ jobs:
         with:
           sarif_file: gosec-results.sarif
 
+  # The mechanical oracle for our FIPS claim (punch list #10a). GOFIPS140
+  # selects Go's CMVP-validated cryptographic module (cert #5247) at build
+  # time; GODEBUG=fips140=only makes that module REFUSE any non-approved
+  # algorithm at runtime rather than quietly computing it. Running the full
+  # suite under both means every crypto path the tests exercise — ours or a
+  # dependency's — is proven approved-only on every commit.
+  #
+  # This bites: verified against a probe that calls crypto/md5, which panics
+  # under fips140=only with "not allowed in FIPS 140-only mode". A gate that
+  # cannot fail would prove nothing, so that was checked before this job was
+  # written, not assumed.
+  #
+  # Scope, stated honestly because SECURITY.md says the same: =only proves
+  # the paths the tests actually execute. The depguard crypto allowlist
+  # below covers the static side. Neither alone is the whole claim.
+  fips140-only:
+    name: fips140-only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+      - name: build the -fips variant (same env as the released binary)
+        run: CGO_ENABLED=0 GOFIPS140=v1.0.0 go build -o /tmp/fscache-fips ./cmd/fscache
+      - name: full test suite, validated module, approved algorithms only
+        run: GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -race -shuffle=on ./...
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
