@@ -3,12 +3,38 @@
 ## The one command
 
 ```sh
-docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:0.1.0
+docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:latest
 ```
 
 That's a working, persistent (named volume) deployment. Point your build
 tool at it — [Gradle setup](gradle.md) / [Maven setup](maven.md) — and
 you're done.
+
+Pin a version tag for anything real; `:latest` is for a first look.
+
+### Verify it is working
+
+No Gradle project required. The cache protocol is a plain `GET`/`PUT` on the
+request path, so `curl` exercises the whole round trip:
+
+```sh
+curl -s localhost:8080/healthz                                   # -> ok
+curl -s -X PUT --data-binary 'hello' localhost:8080/testkey123   # -> 201
+curl -s localhost:8080/testkey123                                # -> hello
+docker volume inspect fscache-data                               # where the data lives
+```
+
+The same bytes coming back from the third command is the whole proof: the blob
+was written, indexed, and served.
+
+Cache keys are path segments of `[A-Za-z0-9._-]`, so `testkey123` is valid and
+a key with a space or a `/../` is rejected with `400`. There is no `/cache/`
+prefix — the entire request path is the key.
+
+Host-side inspection is the only way to look inside: the production image has no
+shell by design, so `docker exec` is deliberately foreclosed. The data sits at
+the nonroot user's home inside the container and in the named volume on the
+host.
 
 **Why the volume mounts at `/home/nonroot` and not `/data`:** the image
 sets no `FSCACHE_DATA_DIR`, so the server uses its default of `./data`,
@@ -25,7 +51,7 @@ chown the volume first:
 docker volume create fscache-data
 docker run --rm -v fscache-data:/data busybox chown 65532:65532 /data
 docker run -d -p 8080:8080 -v fscache-data:/data \
-  -e FSCACHE_DATA_DIR=/data ghcr.io/fosterstack/cache:0.1.0
+  -e FSCACHE_DATA_DIR=/data ghcr.io/fosterstack/cache:latest
 ```
 
 ## Sizing
@@ -47,7 +73,23 @@ content-addressed blob read or write, not computation.
 **Disk is the real variable.** Size it from your eviction cap plus ~20%
 headroom, not the other way round: set `FSCACHE_MAX_BYTES` (see
 [Configuration](#configuration)) to the cap you want and provision the
-volume above it. The server evicts least-recently-used entries once it
+volume above it.
+
+`FSCACHE_MAX_BYTES` is in **bytes**, so the value is easy to get wrong by a
+factor of 1024. Copy one of these rather than doing the arithmetic:
+
+| Cap | `FSCACHE_MAX_BYTES` |
+|---|---|
+| 10 GiB | `10737418240` |
+| 20 GiB | `21474836480` |
+| 50 GiB | `53687091200` |
+| 100 GiB | `107374182400` |
+
+It must be smaller than the volume. A value that looks like 20 GiB but is
+actually 20 MiB (`20971520`) produces constant eviction and a hit rate that
+never climbs — which reads like "the cache isn't helping" rather than a typo.
+`/statusz` shows the parsed cap next to current usage, which is the fastest way
+to catch it. The server evicts least-recently-used entries once it
 reaches the cap and never grows past it, so the headroom absorbs
 filesystem overhead and in-flight uploads rather than runaway growth.
 Leaving `FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small
@@ -70,7 +112,7 @@ to be writable by uid 65532; see the mount note above, and
 ```yaml
 services:
   fscache:
-    image: ghcr.io/fosterstack/cache:0.1.0
+    image: ghcr.io/fosterstack/cache:latest
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -105,6 +147,78 @@ All configuration is environment variables (see the main
 `/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
 `FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
 
+Configuration is flags and environment only, on purpose. There is no settings
+page and no runtime reconfiguration, which means the running server always
+matches the deployment manifest in your git repository — diffable, reviewable,
+and with no drift to reconcile. It also means there is no mutable admin surface
+for whoever finds the port.
+
+Basic Auth is the **client** credential: it lives in every CI runner and every
+developer's `gradle.properties`, and it answers "may you read and write cache
+entries", never "may you reconfigure this server". Read-only status is a fine
+thing to gate behind it; administration is not, and doing that properly would
+mean a second credential system, roles, and an audit log — the appliance path
+this project deliberately avoids.
+
+`/statusz` and the browser landing page sit behind Basic Auth when it is
+enabled. `/healthz` and `/metrics` stay open, so liveness probes and Prometheus
+scrapers need no credentials.
+
+## Resetting the cache
+
+There is no purge endpoint and no admin UI, by design — see
+[Configuration](#configuration) and the
+[security policy](../SECURITY.md). The server cannot be reconfigured or emptied
+at runtime by anyone, including us. Resetting means removing the data and
+restarting, which is declarative and leaves an audit trail in whatever manages
+your deployment.
+
+**docker compose**
+
+```sh
+docker compose down -v && docker compose up -d
+```
+
+`-v` removes the project-prefixed named volume; the fresh `up` re-seeds
+ownership correctly.
+
+**plain docker**
+
+```sh
+docker rm -f fscache
+docker volume rm fscache-data
+# then re-run the original docker run command
+```
+
+**Kubernetes**
+
+Delete the PersistentVolumeClaim — or scale to zero, delete the claim, and
+scale back up. Either way the pod comes back with a fresh volume.
+
+```sh
+kubectl scale deploy/fscache --replicas=0
+kubectl delete pvc fscache-data
+kubectl scale deploy/fscache --replicas=1
+```
+
+**bare binary**
+
+Stop the process, `rm -rf` the data directory, start it again.
+
+### Benchmarking honestly
+
+A cold-cache measurement has to purge **both** sides. Gradle's local build cache
+is on by default and will serve hits from the client machine no matter what you
+do to the server:
+
+```sh
+rm -rf ~/.gradle/caches/build-cache-1     # the client's cache
+./gradlew --stop                          # and the daemon holding it
+```
+
+Skip that and your "cold" number is flattered by local hits, which is how a
+remote cache gets credit for work it never did.
+
 ## Running on Kubernetes
 
 Plain manifests — Deployment, PVC, Service, `securityContext` — are in
@@ -121,7 +235,7 @@ never pick an architecture-specific tag.
 You can confirm that rather than take our word for it:
 
 ```sh
-docker manifest inspect ghcr.io/fosterstack/cache:0.1.0 \
+docker manifest inspect ghcr.io/fosterstack/cache:latest \
   | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"'
 # linux/amd64
 # linux/arm64
