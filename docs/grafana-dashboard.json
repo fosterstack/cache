@@ -1,0 +1,154 @@
+{
+  "title": "FosterStack Cache",
+  "uid": "fosterstack-cache",
+  "tags": ["fosterstack", "build-cache"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Prometheus"
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(fscache_cache_hits_total, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "label": "Instance"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Hit rate (last 5m)",
+      "description": "The number that says whether the cache is earning its keep. A cold cache reads near zero and climbs as builds populate it.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.3 },
+              { "color": "green", "value": 0.6 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(fscache_cache_hits_total{instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(fscache_cache_hits_total{instance=~\"$instance\"}[5m])) + sum(rate(fscache_cache_misses_total{instance=~\"$instance\"}[5m])), 0.0001)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "Cache size vs cap",
+      "description": "Fraction of FSCACHE_MAX_BYTES in use. Sitting at 100% is normal and healthy: the cache is full and evicting least-recently-used entries, not broken.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0 }
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(fscache_store_bytes{instance=~\"$instance\"})" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Entries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(fscache_store_entries{instance=~\"$instance\"})" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Evictions (rate)",
+      "description": "Sustained eviction with a low hit rate means the cap is too small for the working set.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fscache_evicted_entries_total{instance=~\"$instance\"}[5m]))" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Hits and misses",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "hits", "expr": "sum(rate(fscache_cache_hits_total{instance=~\"$instance\"}[5m]))" },
+        { "refId": "B", "legendFormat": "misses", "expr": "sum(rate(fscache_cache_misses_total{instance=~\"$instance\"}[5m]))" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Requests by status",
+      "description": "401 here means clients are missing or sending wrong credentials. 400 means an invalid cache key — most often a browser or probe hitting a path that is not a key.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{method}} {{status}}",
+          "expr": "sum by (method, status) (rate(fscache_http_requests_total{instance=~\"$instance\"}[5m]))"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Throughput",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "read (GET)", "expr": "sum(rate(fscache_bytes_read_total{instance=~\"$instance\"}[5m]))" },
+        { "refId": "B", "legendFormat": "written (PUT)", "expr": "sum(rate(fscache_bytes_written_total{instance=~\"$instance\"}[5m]))" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Request latency",
+      "description": "p50/p95/p99 by method. A remote cache slower than rebuilding the task is worse than no cache, so this is the panel that decides whether the cache is helping.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50 {{method}}", "expr": "histogram_quantile(0.50, sum by (le, method) (rate(fscache_http_request_duration_seconds_bucket{instance=~\"$instance\"}[5m])))" },
+        { "refId": "B", "legendFormat": "p95 {{method}}", "expr": "histogram_quantile(0.95, sum by (le, method) (rate(fscache_http_request_duration_seconds_bucket{instance=~\"$instance\"}[5m])))" },
+        { "refId": "C", "legendFormat": "p99 {{method}}", "expr": "histogram_quantile(0.99, sum by (le, method) (rate(fscache_http_request_duration_seconds_bucket{instance=~\"$instance\"}[5m])))" }
+      ]
+    }
+  ]
+}

@@ -36,6 +36,7 @@ linters:
             # In-boundary and actually used today:
             - crypto/subtle   # constant-time comparison (Basic Auth)
             - crypto/rand     # CSPRNG (atomic-write temp names)
+            - crypto/fips140  # reports whether the validated module is active
             # In-boundary, permitted without a further review round:
             - crypto/aes
             - crypto/cipher

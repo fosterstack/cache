@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fosterstack/cache/internal/blobstore"
+	"github.com/fosterstack/cache/internal/buildinfo"
 	"github.com/fosterstack/cache/internal/cache"
 	"github.com/fosterstack/cache/internal/metadata"
 	"github.com/fosterstack/cache/internal/metrics"
@@ -110,6 +111,7 @@ func run(log *slog.Logger) error {
 		Log:          log,
 		Auth:         server.Credentials{Username: cfg.username, Password: cfg.password},
 		MaxBodyBytes: cfg.maxBodyBytes,
+		MaxBytes:     cfg.maxBytes,
 	})
 
 	httpServer := &http.Server{
@@ -122,11 +124,20 @@ func run(log *slog.Logger) error {
 	if cfg.username != "" {
 		authNote = "enabled"
 	}
+	// fips140 announces the one property the -fips build exists for.
+	// Until now the startup line reported addr, data_dir, max_bytes and
+	// auth and said nothing about FIPS, so the property a compliance buyer
+	// chose this build for was unobservable at runtime. Same
+	// posture-announcement shape as the auth field beside it; this is the
+	// line an assessor screenshots.
+	bi := buildinfo.Read()
 	log.Info("fscache: starting",
+		"version", bi.Version,
 		"addr", cfg.addr,
 		"data_dir", cfg.dataDir,
 		"max_bytes", cfg.maxBytes,
 		"auth", authNote,
+		"fips140", bi.FIPSNote(),
 	)
 
 	errCh := make(chan error, 1)
