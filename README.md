@@ -3,12 +3,14 @@
 [![CI](https://github.com/fosterstack/cache/actions/workflows/ci.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fosterstack/cache/actions/workflows/codeql.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fosterstack/cache/badge)](https://scorecard.dev/viewer/?uri=github.com/fosterstack/cache)
+[![Latest release](https://img.shields.io/github/v/release/fosterstack/cache?sort=semver)](https://github.com/fosterstack/cache/releases/latest)
 
-A self-hosted, drop-in remote build cache for **Gradle** and **Maven** — a
-single small static binary, MIT-licensed, patched forever, and verifiable:
-every release is signed keylessly (Sigstore/cosign) and carries a SLSA
-provenance attestation proving which CI run built it. See
-["Verifying a release"][releasing-verify] for the commands.
+A self-hosted, drop-in remote build cache for **Gradle** and **Maven**. Ships as
+a single static binary or a distroless container image, MIT-licensed, with
+security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
+image is keylessly signed (Sigstore); every binary archive is covered by a
+signed checksums file; both carry SLSA provenance naming the CI run that built
+them. ["Verifying a release"][releasing-verify] has the commands.
 
 **Website:** [fosterstack.com](https://fosterstack.com) · **Docs:**
 [Install](docs/install.md) · [Docker](docs/docker-deploy.md) ·
@@ -46,9 +48,11 @@ Shipped:
   (staticcheck + a repo-wide `crypto/md5`/`crypto/sha1` import ban), gosec,
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
   public-repo file allowlist.
-- Release pipeline (`v0.1.0`): signed, provenance-attested
-  container images (production, `-debug`, `-fips`) on GHCR, plus bare
-  binaries + checksums. See [`RELEASING.md`](RELEASING.md).
+- Release pipeline: signed, provenance-attested container images
+  (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
+  checksums file. Every release is built only by CI, and the images are
+  scanned by two independent scanners before anything is pushed. See
+  [`RELEASING.md`](RELEASING.md).
 - Benchmarked against a multi-module Gradle project on every
   push/PR — the gate is a correctness assertion (a from-scratch second
   build must produce real `FROM-CACHE` hits), not just a timing number.
@@ -71,7 +75,9 @@ Not yet shipped:
 - **A CVE patch commitment you can hold us to.** We aim to ship fixes for
   dependency CVEs within 48 hours of public disclosure. That is a stated
   intention, not a contractual promise, and it will not be one until the
-  paid tiers exist.
+  paid tiers exist. What already runs today is the detection half: every
+  published image is rescanned daily, so a CVE disclosed against bytes we
+  already shipped raises an issue without anyone remembering to look.
 
 Tracked in this repo's issues.
 
@@ -81,15 +87,26 @@ cannot be reproduced are not listed.
 
 Full core (eviction, size limits, metrics) is free forever under MIT — see
 [`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
-SLA, and compliance artifacts on top of the same open core; nothing is
+SLA, and compliance support on top of the same open core; nothing is
 withheld from the free tier for security.
+
+The security evidence itself is public and free: SBOMs, SLSA provenance,
+signatures, scan results, VEX statements, and the FIPS 140-3 module
+certificate number are published with every release and verifiable by anyone,
+with no account and no purchase. The FIPS-mode image is publicly pullable too.
+What the Compliance tier sells is the authored analysis, the vendor signature,
+and the hours — never access to the bytes or the evidence.
 
 ## Quickstart (Docker)
 
 ```sh
-docker run -d -p 8080:8080 ghcr.io/fosterstack/cache:0.1.0
+docker run -d -p 8080:8080 ghcr.io/fosterstack/cache:latest
 curl localhost:8080/healthz   # -> ok
 ```
+
+Pin a specific version for anything beyond a first look — the badge above
+shows the current one, and [`docs/docker-deploy.md`](docs/docker-deploy.md)
+covers pinning by digest.
 
 That's the whole install. No registration, no license key for the
 Community tier — pull, run, point your build tool at it (below).
@@ -185,10 +202,13 @@ for the full walkthrough.
 ## Security
 
 - Static binary, zero CGO, no OS package surface to patch.
-- `crypto/md5` and `crypto/sha1` are banned imports, repo-wide, enforced in
-  CI (`golangci-lint` `depguard`) regardless of intended use — SHA-256 is
-  the only hash this codebase is allowed to reach for if a future feature
-  needs one.
+- Approved-only cryptography is enforced by the validated module itself, not
+  by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
+  Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A
+  `depguard` allowlist covers the static side, permitting only in-boundary
+  crypto imports and denying third-party crypto outright. Both are described
+  in [`SECURITY.md`](SECURITY.md), including what each does and does not
+  prove.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
   and patch SLA once published.
 
