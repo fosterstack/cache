@@ -63,7 +63,7 @@ readable in full — and not from a developer machine (see
 |---|---|---|---|
 | `X.Y.Z` | `gcr.io/distroless/static:nonroot` | none | Production. Deploy this one. |
 | `X.Y.Z-debug` | `gcr.io/distroless/static:debug-nonroot` | busybox at `/busybox/` | Same binary, plus troubleshooting tools. Not for deployment. |
-| `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) |
+| `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
 | `latest` / `debug` / `fips` | — | — | Floating tags, always the newest release of that variant |
 
 All three variants of every release are signed and attested the same way.

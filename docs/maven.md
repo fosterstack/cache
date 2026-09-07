@@ -19,7 +19,7 @@ In `.mvn/extensions.xml` (create the file if it doesn't exist):
   <extension>
     <groupId>org.apache.maven.extensions</groupId>
     <artifactId>maven-build-cache-extension</artifactId>
-    <version>1.3.0</version>
+    <version>1.3.0</version> <!-- pinned: upstream -->
   </extension>
 </extensions>
 ```
