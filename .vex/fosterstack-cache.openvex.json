@@ -3,7 +3,33 @@
   "@id": "https://fosterstack.com/vex/cache/openvex",
   "author": "FosterStack LLC",
   "role": "vendor",
-  "timestamp": "2026-09-07T00:00:00-04:00",
-  "version": 1,
-  "statements": []
+  "timestamp": "2026-09-07T12:00:00-04:00",
+  "version": 2,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2024-51744",
+        "name": "CVE-2024-51744",
+        "description": "Improper error handling in github.com/golang-jwt/jwt/v4 ParseWithClaims: a caller inspecting only jwt.ErrTokenExpired can overlook a co-reported jwt.ErrTokenSignatureInvalid.",
+        "aliases": [
+          "GHSA-29wx-vh33-7x7r",
+          "GO-2024-3250"
+        ]
+      },
+      "timestamp": "2026-09-07T12:00:00-04:00",
+      "products": [
+        {
+          "@id": "pkg:golang/github.com/fosterstack/cache"
+        },
+        {
+          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "component_not_present",
+      "impact_statement": "The advisory affects github.com/golang-jwt/jwt/v4 below v4.5.1. No golang-jwt module of any major version is present in FosterStack Cache: it is absent from go.sum, absent from the compiled package set, and absent from the dependency manifest embedded in the released binaries. golang-jwt/jwt/v5 appears in the module requirement graph only as a transitive requirement of packages of prometheus/client_golang and prometheus/common that this project does not import, and v5 is not affected by this advisory in any version range. Independently reproducible: `go version -m fscache` on any released binary lists the complete set of linked dependencies, and `govulncheck ./...` reports no vulnerabilities.",
+      "action_statement": "No action required. The affected component is not a dependency of this product, so no upgrade applies.",
+      "status_notes": "Raised by Snyk against the go.mod project as a module-graph finding. Verified against the shipped v0.1.0 binaries on 2026-09-07."
+    }
+  ]
 }
