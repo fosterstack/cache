@@ -113,28 +113,6 @@ For the binary archives, verify `checksums.txt` against its cosign bundle
 (`checksums.txt.bundle`, attached to the GitHub release) the same way, then
 verify each archive against `checksums.txt` with `sha256sum -c`.
 
-## One-time footnote: GHCR package visibility
-
-**Discovered during the v0.1.0 release, not obvious in advance:** GHCR
-gives every *new* container package its own visibility setting, separate
-from the repo's — a brand-new package defaults to **private** even though
-`fosterstack/cache` is a public repo. The first push under a new image
-name (or a new package, e.g. if the repo path ever changes)
-needs a one-time manual flip:
-
-`https://github.com/orgs/fosterstack/packages/container/cache/settings` →
-Change visibility → Public.
-
-Until that's done, the push and every signature/attestation step still
-succeed — but `cosign verify` / `gh attestation verify` / a plain
-`docker pull` all fail with `UNAUTHORIZED`, because the bytes are sitting
-behind a private-package auth wall despite the workflow having done
-everything right. This is a package-level setting, outside repo
-`Administration` — the interactive-session credential tier can't read or
-write it (`403` on the packages API either way), so it's an owner action
-every time a new package is created. Existing package, new
-version: no action needed, this is one-time-per-package, not per-release.
-
 ## CI-only releases, verified in practice
 
 `v0.1.0` was cut four times before it published. A Go stdlib CVE
