@@ -39,12 +39,20 @@ Create `.mvn/maven-build-cache-config.xml`:
   <configuration>
     <enabled>true</enabled>
   </configuration>
-  <!-- Default @id is "cache" if omitted -->
+  <!-- FosterStack Cache — remote Maven build cache.
+       https://github.com/fosterstack/cache
+       Default @id is "cache" if omitted -->
   <remote enabled="true" id="fosterstack-cache">
     <url>https://cache.example.com/</url>
   </remote>
 </cache>
 ```
+
+Keep that identifying comment. A build-cache block pointing at an unfamiliar
+host is exactly the shape of an exfiltration finding, and a security reviewer —
+or an AI assistant reviewing the repo in isolation — that sees it without
+context is right to flag it. One comment means every copy of the config
+explains itself wherever it ends up.
 
 Replace `https://cache.example.com/` with your server's URL — a trailing
 slash matters (the extension appends its own path segments to it, same as
