@@ -31,6 +31,17 @@ jobs:
       # go.sum, not `go mod graph`: the graph lists modules that packages we
       # do not import happen to require, which is exactly the distinction
       # the VEX statement rests on.
+      # Punch list #3c/#6c. Version literals in prose and commands rot at
+      # the next release, and this class has bitten twice: a README
+      # "Release pipeline (v0.1.0)" line, and an entire RELEASING.md
+      # verification section built around one tag. Owner doctrine is that
+      # "we need not forget" resolves to a mechanical check, never to
+      # memory. This is that check, and it lands only now that every doc is
+      # already clean, so it goes green on arrival rather than as a
+      # standing red.
+      - name: no unmarked version literals in public docs
+        run: ./bin/check-version-literals.sh
+
       - name: VEX tripwire — components answered by a VEX statement must stay absent
         run: |
           set -euo pipefail
