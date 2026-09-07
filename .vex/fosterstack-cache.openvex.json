@@ -1,0 +1,9 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://fosterstack.com/vex/cache/openvex",
+  "author": "FosterStack LLC",
+  "role": "vendor",
+  "timestamp": "2026-09-07T00:00:00-04:00",
+  "version": 1,
+  "statements": []
+}

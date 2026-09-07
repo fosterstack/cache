@@ -76,6 +76,11 @@ jobs:
             fi
           done
 
+      # Both scanners read the SAME VEX document (.vex/, punch list #4b), so
+      # an exception is a single published claim rather than two tool-local
+      # suppressions that can drift apart. No VEX statement, no exception,
+      # no push — see .vex/README.md.
+      #
       # DEPLOY-REQ-5 / scanner-input doc: multi-scanner (Trivy AND Grype),
       # asserted against every variant. Zero findings is the marketing
       # claim ("our own pipeline never publishes unscanned, scored zero by
@@ -88,18 +93,24 @@ jobs:
           image-ref: goreleaser.ko.local:latest
           exit-code: '1'
           severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
       - name: Trivy scan (debug image)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: goreleaser.ko.local:debug
           exit-code: '1'
           severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
       - name: Trivy scan (fips image)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: goreleaser.ko.local:fips
           exit-code: '1'
           severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
 
       # severity-cutoff: negligible is load-bearing, not decoration. The
       # action's DEFAULT cutoff is medium, so without this line Grype was
@@ -115,6 +126,7 @@ jobs:
           fail-build: true
           only-fixed: false
           severity-cutoff: negligible
+          vex: .vex/fosterstack-cache.openvex.json
       - name: Grype scan (debug image)
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
@@ -122,6 +134,7 @@ jobs:
           fail-build: true
           only-fixed: false
           severity-cutoff: negligible
+          vex: .vex/fosterstack-cache.openvex.json
       - name: Grype scan (fips image)
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
@@ -129,6 +142,7 @@ jobs:
           fail-build: true
           only-fixed: false
           severity-cutoff: negligible
+          vex: .vex/fosterstack-cache.openvex.json
 
   # Phase 2: only reached if every scan above was clean. Rebuilds with the
   # real tag version (this job never sees the snapshot-tagged images from
@@ -243,6 +257,14 @@ jobs:
 
       - name: upload signature material to the release
         run: gh release upload "${GITHUB_REF_NAME}" dist/checksums.txt.bundle --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The VEX ships WITH the artifacts it describes. Anyone auditing a
+      # release gets our exception claims alongside the SBOM and the
+      # provenance, instead of having to take a scan result on faith.
+      - name: publish the VEX document with the release
+        run: gh release upload "${GITHUB_REF_NAME}" .vex/fosterstack-cache.openvex.json --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -36,6 +36,10 @@ ALLOW_PATTERNS=(
   '^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$'
   '^\.github/dependabot\.yml$'
 
+  # VEX statements. Published exception claims — these ship as release
+  # assets and are meant to be read by anyone auditing an artifact.
+  '^\.vex/[A-Za-z0-9._-]+\.(json|md)$'
+
   # This mechanism itself.
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
