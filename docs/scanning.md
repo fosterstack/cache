@@ -13,7 +13,7 @@ detection**, even though there's no shell, no package manager, and no way
 to `apt-get` anything. Confirmed directly against a real build:
 
 ```
-$ trivy image ghcr.io/fosterstack/cache:0.1.0
+$ trivy image ghcr.io/fosterstack/cache:${VER}
 ...
 Detected OS   family="debian" version="13.6"
 ...

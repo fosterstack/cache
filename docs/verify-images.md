@@ -4,13 +4,18 @@ Every FosterStack Cache release is signed and provenance-attested by
 GitHub's own CI — not by us claiming it, by a chain you can check yourself
 in under a minute, with nothing installed but `cosign` and `gh`.
 
-Every command below runs against `v0.1.0` with no GitHub credentials
-configured.
+Every command below runs with no GitHub credentials configured. Resolve the
+current release once and the rest parameterize themselves:
+
+```sh
+VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
+        | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+```
 
 ## 1. Verify the cosign signature and SLSA provenance
 
 ```sh
-cosign verify ghcr.io/fosterstack/cache:0.1.0 \
+cosign verify ghcr.io/fosterstack/cache:${VER} \
   --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
@@ -32,7 +37,7 @@ recorded in the public Rekor transparency log.
 ## 2. Verify with GitHub's own attestation store
 
 ```sh
-gh attestation verify oci://ghcr.io/fosterstack/cache:0.1.0 --owner fosterstack
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack
 ```
 
 This is the more direct proof for most people: it names the exact
@@ -41,9 +46,9 @@ workflow run that produced the image you pulled.
 ```
 ✓ Verification succeeded!
 - Build repo:..... fosterstack/cache
-- Build workflow:. .github/workflows/release.yml@refs/tags/v0.1.0
+- Build workflow:. .github/workflows/release.yml@refs/tags/v${VER}
 - Signer repo:.... fosterstack/cache
-- Signer workflow: .github/workflows/release.yml@refs/tags/v0.1.0
+- Signer workflow: .github/workflows/release.yml@refs/tags/v${VER}
 ```
 
 `Build workflow` is cryptographic confirmation that the bytes you pulled
@@ -105,11 +110,11 @@ sees anyway.
 Verify the difference yourself:
 
 ```sh
-docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:0.1.0-debug -c 'id; ls /busybox | wc -l'
+docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:${VER}-debug -c 'id; ls /busybox | wc -l'
 # uid=65532(nonroot) gid=65532(nonroot) groups=65532(nonroot)
 # 382
 
-docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:0.1.0 -c 'echo reached'
+docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:${VER} -c 'echo reached'
 # error ... exec: "/busybox/sh": stat /busybox/sh: no such file or directory
 ```
 
@@ -122,7 +127,7 @@ platform manifests, so one verification covers every architecture. To see
 what the index contains:
 
 ```sh
-docker manifest inspect ghcr.io/fosterstack/cache:0.1.0 \
+docker manifest inspect ghcr.io/fosterstack/cache:${VER} \
   | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)\t\(.digest)"'
 # linux/amd64   sha256:d26325eb...
 # linux/arm64   sha256:ba6e3cc6...

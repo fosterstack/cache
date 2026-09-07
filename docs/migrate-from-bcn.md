@@ -25,7 +25,7 @@ done.
 running the Build Cache Node container):
 
 ```sh
-docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:0.1.0
+docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:latest
 ```
 
 (The volume mounts at `/home/nonroot`, not `/data` — see
@@ -73,10 +73,36 @@ image is already accruing findings today, not on the EOL date. Moving
 earlier means moving on your own schedule instead of during a January
 scramble.
 
-## What you get that the free BCN never had
+## The trade
 
-The free Build Cache Node was a dumb HTTP endpoint. FosterStack Cache adds
-(all in the free MIT core — nothing here is paywalled):
+### What you give up
+
+The free Build Cache Node had a small web UI — status, usage, settings, and a
+purge button. FosterStack Cache has no equivalent settings page, and that is a
+deliberate choice rather than a missing feature.
+
+Configuration is flags and environment variables only, so the running server
+always matches the deployment manifest in your git repository: diffable,
+reviewable, and with no drift between what is deployed and what is described.
+It also means there is no mutable admin surface for whoever finds the port —
+and an unpatched, forgotten appliance with a web console is the exact failure
+this project exists to replace.
+
+What replaces the UI:
+
+- **`/statusz`** — a read-only status page: version, uptime, cache size against
+  the configured cap, entry count, hit and miss counts. Readable in a browser
+  or as JSON. It sits behind Basic Auth when auth is enabled.
+- **`/metrics`** — the full Prometheus set, plus a
+  [Grafana dashboard](grafana-dashboard.json) in this repository.
+- **Purging** is `docker compose down -v && docker compose up -d`, or deleting
+  the PVC on Kubernetes — declarative and auditable, rather than a button
+  anyone with the page open can press. See
+  [Resetting the cache](docker-deploy.md#resetting-the-cache).
+
+### What you get that the free BCN never had
+
+FosterStack Cache adds (all in the free MIT core — nothing here is paywalled):
 
 - Size-capped LRU eviction (the free BCN required manual size management)
 - Prometheus metrics
@@ -87,6 +113,19 @@ The free Build Cache Node was a dumb HTTP endpoint. FosterStack Cache adds
   (see [Maven setup](maven.md))
 
 Paid tiers (Team/Business/Compliance) add SSO, HA/replication, a
-documented 24–48h CVE response SLA, and compliance artifacts on top of the
+documented 24–48h CVE response SLA, and compliance support on top of the
 same core — see the pricing page. Security patches are never withheld
 from the free tier.
+
+The security evidence itself is public and free: SBOMs, SLSA provenance,
+signatures, scan results, VEX statements, and the FIPS 140-3 module
+certificate number ship with every release and are verifiable by anyone, with
+no account and no purchase. The FIPS-mode image is publicly pullable too. What
+the Compliance tier sells is the authored analysis — a FIPS applicability
+statement mapping the validated module boundary onto this product — plus
+per-release attestation letters signed by FosterStack LLC, and time on your
+security questionnaires.
+
+FosterStack Cache is not "FedRAMP compliant" or "CMMC compliant". Those attach
+to your service and your organization, never to a component you deploy. This is
+validated crypto and publishable evidence **for** your compliance program.
