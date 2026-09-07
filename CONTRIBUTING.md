@@ -71,7 +71,29 @@ Documentation here is plain and declarative. Four rules:
   labeled as unshipped.
 
 Reassurance adverbs are the usual tell: *actually*, *genuinely*, *really*,
-*right now*, *truly*. If deleting the word costs nothing, delete it.
+*right now*, *simply*, *truly*. If deleting the word costs nothing, delete it.
+
+### The three failure modes
+
+Test every public sentence against all three. They are separate faults and a
+sentence can pass two and fail the third:
+
+1. **It sounds weak, or congratulates us.** Hedging and self-praise both
+   signal the same thing — that we do not trust the claim to stand alone.
+2. **It does not parse for a cold reader.** Someone with zero FosterStack
+   context, reading it once, at speed. Internal dialect is the usual culprit:
+   a phrase that is perfectly clear to whoever wrote it and opaque to
+   everyone else.
+3. **Compression has blurred which noun owns which property.** The most
+   dangerous of the three, because the sentence reads well. If a paragraph
+   moves from "a single static binary" into signing and provenance language,
+   a reader cannot tell which of those attach to the binary and which to the
+   image — and a reader who assumes wrong has been misled by us, not by their
+   own carelessness.
+
+Dense **and** precise. Density is a virtue here and the top of the README is
+deliberately a maximum-claim-per-word zone; the fix for a blurred claim is an
+ownership marker, never an extra sentence.
 
 ## Security issues
 

@@ -37,7 +37,7 @@ the SBOM and the provenance rather than having to take the scan result on faith.
 reader is entitled to check:
 
 - **`component_not_present`** — the vulnerable component is not in the artifact at
-  all. Verify by looking at what actually shipped: `go version -m <binary>` lists
+  all. Verify against what shipped: `go version -m <binary>` lists
   every linked module, and `go.sum` / `go list -deps ./...` show the build. A module
   appearing only in `go mod graph` is *not* in the binary.
 - **`vulnerable_code_not_in_execute_path`** — the component ships, but the vulnerable
