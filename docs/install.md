@@ -28,6 +28,17 @@ validated cryptographic module (cert #5247). There is no darwin FIPS build:
 the compliance buyer this serves deploys on Linux, so a macOS FIPS binary
 would double CI time for a configuration nobody assesses.
 
+The FIPS build says so at startup, so the property is observable rather than
+taken on trust:
+
+```json
+{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+```
+
+Standard builds report `"fips140":"off"`. `/statusz` reports the same field.
+An assessor can confirm which build is running from the process log and the
+install path, without access to your build pipeline.
+
 **Container images are multi-arch** (`linux/amd64` + `linux/arm64`), so
 `docker pull` resolves the right one automatically — including on Apple
 Silicon and Graviton. See
@@ -51,16 +62,27 @@ you get `darwin_arm64`, you want the Apple Silicon archive.
 ## Install
 
 ```sh
-VERSION=0.1.0
+# Resolve the current release — anonymous, no gh auth needed.
+VERSION=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
+            | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+
 PLATFORM=linux_amd64   # or the output of the command above
+BIN=fscache            # use fscache-fips for the FIPS build (Linux only)
 
-curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/fscache_${VERSION}_${PLATFORM}.tar.gz"
-tar xzf "fscache_${VERSION}_${PLATFORM}.tar.gz"
-sudo install -m 0755 fscache /usr/local/bin/fscache
+curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VERSION}/${BIN}_${VERSION}_${PLATFORM}.tar.gz"
+tar xzf "${BIN}_${VERSION}_${PLATFORM}.tar.gz"
+sudo install -m 0755 "${BIN}" "/usr/local/bin/${BIN}"
 
-fscache --version 2>/dev/null || fscache &   # starts on :8080 by default
+"${BIN}" &                                   # starts on :8080 by default
 curl -fsS localhost:8080/healthz             # -> ok
 ```
+
+`BIN` carries through every command on this page, including the systemd unit
+below. Set it once and the standard and FIPS paths are the same instructions.
+
+The FIPS build keeps `-fips` in its filename, its install path, and its process
+name on purpose: which build is running stays visible in `ps`, in the unit file,
+and to anyone auditing the host, rather than being recoverable only from logs.
 
 Then point your build tool at it: [Gradle setup](gradle.md) ·
 [Maven setup](maven.md).
@@ -91,13 +113,18 @@ including image signatures and SLSA provenance, is in
 
 ## Run it as a service (systemd)
 
+If the unit fails with `status=203/EXEC`, `ExecStart` points at a path that does
+not exist — almost always the FIPS build installed as `fscache-fips` while the
+unit still names `fscache`. The two must match.
+
+
 ```ini
 [Unit]
 Description=FosterStack Cache
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/fscache
+ExecStart=/usr/local/bin/fscache          # fscache-fips for the FIPS build — must match what you installed
 Environment=FSCACHE_ADDR=:8080
 Environment=FSCACHE_DATA_DIR=/var/lib/fscache
 Environment=FSCACHE_MAX_BYTES=53687091200

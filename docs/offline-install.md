@@ -16,8 +16,55 @@ disconnected-mode build.
 
 ## What to bring across the gap
 
+### Copy-paste: the whole set, on the connected machine
+
+Run this and everything you need is in the current directory. Set `BIN` once;
+the rest follows.
+
+```sh
+VERSION=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
+            | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+PLATFORM=linux_amd64
+BIN=fscache            # or fscache-fips for the FIPS build (Linux only)
+BASE="https://github.com/fosterstack/cache/releases/download/v${VERSION}"
+
+curl -fsSLO "${BASE}/${BIN}_${VERSION}_${PLATFORM}.tar.gz"
+curl -fsSLO "${BASE}/checksums.txt"
+curl -fsSLO "${BASE}/checksums.txt.bundle"
+```
+
+Verify before the transfer, while you still have a network. Both steps matter:
+
+```sh
+# 1. Prove the checksums file is ours
+cosign verify-blob \
+  --bundle checksums.txt.bundle \
+  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+  checksums.txt
+
+# 2. Prove your archive matches it — just the one line you care about
+sha256sum -c <(grep "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt)
+```
+
+`sha256sum -c checksums.txt` on its own fails on the archives you did not
+download. The `grep` form checks only what you have.
+
+**Bring `cosign` too.** It is a single static binary, and it will not be on a
+fresh air-gapped box — download it from
+[sigstore/cosign releases](https://github.com/sigstore/cosign/releases) and
+carry it across in the same package. Without it you can still run
+`sha256sum -c`, but be clear about what that proves: only that the archive
+matches the checksums file you carried in beside it. Nothing ties that file to
+us. The signature is what makes the chain mean anything, and it is the step an
+auditor will ask about.
+
+### The full list
+
 From a release page (e.g. `https://github.com/fosterstack/cache/releases/tag/vX.Y.Z`)
 on a connected machine, download:
+
+- `cosign` for your platform (single static binary, no dependencies).
 
 - The bare binary archive for your platform — see the [supported platforms
   table](install.md#supported-platforms) for the exact filename, e.g.
@@ -110,6 +157,18 @@ where it does, and for the compose form.
 
 The `-fips` variant (`GOFIPS140=v1.0.0`) is a second build of the same
 source, not a different distribution channel — everything above applies
-identically. It is built for `linux/amd64` and `linux/arm64` only. See the
-Compliance-tier pricing page (when live) for the attestation/evidence pack
-that pairs with this build for a CMMC/NIST SP 800-171 assessment boundary.
+identically. It is built for `linux/amd64` and `linux/arm64` only, and it is
+publicly downloadable like every other artifact; nothing about the FIPS build
+is gated.
+
+It announces itself at startup, which matters in an air gap where you cannot
+check anything against a registry after the fact:
+
+```json
+{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+```
+
+The Compliance tier sells the authored analysis that pairs with this build for
+a CMMC or NIST SP 800-171 assessment boundary — the applicability statement,
+vendor-signed attestation letters, and questionnaire support. The bytes, the
+evidence, and this binary are free.
