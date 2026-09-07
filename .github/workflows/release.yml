@@ -282,6 +282,55 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # A release the public cannot pull is a failed release. Today that
+      # fails SILENTLY: GHCR publishes new packages PRIVATE by default, and
+      # the workflow is authenticated, so every step above succeeds while
+      # the world gets UNAUTHORIZED. The visibility flip is one-time PER
+      # PACKAGE — cache is already public, so this is not a chore on any
+      # normal release — but a future new package name would walk straight
+      # into it, and nobody would notice until a user complained.
+      #
+      # Deliberately UNAUTHENTICATED: a fresh anonymous registry token and
+      # nothing else. No GITHUB_TOKEN, no docker login, no ambient
+      # credential — otherwise this would prove only that WE can pull it,
+      # which is exactly the bug. It runs BEFORE undrafting, so a release
+      # the public cannot reach never becomes visible in the first place.
+      #
+      # Any non-200 fails: 401/403 means the package is not public, 404
+      # means the tag is not there. Both are release failures.
+      - name: verify every published tag is anonymously pullable
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          repo="${IMAGE_BASE#ghcr.io/}"
+
+          token=$(curl -fsSL "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" | jq -r .token)
+          if [ -z "${token}" ] || [ "${token}" = "null" ]; then
+            echo "::error::could not obtain an anonymous pull token for ${repo}. The package is almost certainly not public — see ops runbook-ghcr.md." >&2
+            exit 1
+          fi
+
+          accept='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
+          failed=0
+          for tag in "${version}" latest "${version}-debug" debug "${version}-fips" fips; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+                     -H "Authorization: Bearer ${token}" \
+                     -H "Accept: ${accept}" \
+                     "https://ghcr.io/v2/${repo}/manifests/${tag}")
+            if [ "${code}" = "200" ]; then
+              echo "  ok        ${IMAGE_BASE}:${tag}"
+            else
+              echo "  NOT PUBLIC ${IMAGE_BASE}:${tag} (HTTP ${code})"
+              failed=1
+            fi
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::One or more published tags are not anonymously pullable. The release is NOT public and has been left as a draft. Flip the package to public (one-time, per package) — see ops runbook-ghcr.md — then re-run this workflow." >&2
+            exit 1
+          fi
+          echo "All published tags are anonymously pullable."
+
       - name: publish the release (undraft now that it's fully attested)
         run: gh release edit "${GITHUB_REF_NAME}" --draft=false
         env:
