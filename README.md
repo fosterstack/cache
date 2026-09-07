@@ -65,8 +65,7 @@ Shipped:
 Not yet shipped:
 
 - **Production use beyond our own CI.** Nobody is running this in a real
-  build pipeline yet except us. An invited beta runs before general
-  availability.
+  build pipeline yet except us.
 - **A Helm chart.** Deploying to Kubernetes today means applying the plain
   manifests in [docs/kubernetes.md](docs/kubernetes.md).
 - **The paid tiers.** Single sign-on, high-availability replication, and
@@ -79,7 +78,11 @@ Not yet shipped:
   published image is rescanned daily, so a CVE disclosed against bytes we
   already shipped raises an issue without anyone remembering to look.
 
-Tracked in this repo's issues.
+Tracked in this repo's issues, which is also where the roadmap gets argued
+with. There is no published schedule: the list above is direction, not dates.
+
+There is no waitlist and no signup. Pull the image and run it — the quickstart
+below is the whole gate.
 
 Every shipped item above is verifiable from this repo's Actions history or
 by running the commands in [`RELEASING.md`](RELEASING.md). Claims that
@@ -209,6 +212,13 @@ for the full walkthrough.
   crypto imports and denying third-party crypto outright. Both are described
   in [`SECURITY.md`](SECURITY.md), including what each does and does not
   prove.
+- **No telemetry and no phone-home.** The server makes no outbound network
+  connections at all — no usage reporting, no licence check, no update ping —
+  so it runs identically on a host with no route to the internet. Verified
+  rather than asserted: the process holds exactly one socket, its own
+  listener, at rest and under sustained load, and never opens a UDP socket, so
+  it never resolves a hostname. Reproduce it with
+  `lsof -nP -a -p <pid> -i` against a running server.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
   and patch SLA once published.
 

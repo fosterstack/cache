@@ -79,6 +79,33 @@ observable at runtime rather than taken on trust:
 
 Standard builds report `"fips140":"off"`.
 
+## Data handling
+
+The server makes **no outbound network connections**. There is no telemetry, no
+usage reporting, no licence check, and no update ping, so it behaves identically
+on a host with no route to the internet — which is also why the air-gapped
+install path is a supported configuration rather than a workaround.
+
+This is a mechanical property, not a policy promise, and it is checkable in a
+minute against a running server:
+
+```sh
+lsof -nP -a -p "$(pgrep -n fscache)" -i
+```
+
+Every socket listed should be the listener itself or a connection *accepted* on
+the listen port. An outbound connection would appear with an ephemeral local
+port and a remote address; there are none, at rest or under load.
+
+The server stores exactly what a build tool sends it: cache keys and the blobs
+they address. It has no notion of users, sessions, or identity beyond the single
+optional Basic Auth credential shared by all of its clients.
+
+There is no request access log. The only per-request logging is on failure — a
+store error or a short write to the client — and those lines carry the HTTP
+method and the cache key, never the request body, never credentials, and never a
+client address.
+
 ## Supported versions
 
 Latest minor release. This section will be updated once a release history
