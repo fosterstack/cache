@@ -7,6 +7,17 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # codeql-action ships init/autobuild/analyze/upload-sarif as separate
+    # action paths behind ONE shared version. Ungrouped, Dependabot opens a
+    # PR per path, each bumping one pin and leaving the others behind — the
+    # resulting mixed-version workflow fails with "Loaded a configuration
+    # file for version X, but running version Y", so every such PR is red by
+    # construction and none can ever merge. Grouping makes them one PR that
+    # moves all pins together. (Found Sep 7, 2026: PRs #12/#13/#15.)
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
 
   - package-ecosystem: "gomod"
     directory: "/"

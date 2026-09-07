@@ -61,11 +61,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          rules=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
-                    --jq '[.[] | .type] | join(",")')
-          echo "effective rules on main: ${rules:-<none>}"
-          if ! printf '%s' "$rules" | grep -q 'required_status_checks'; then
-            echo "::error::main has no required_status_checks rule, so enabling auto-merge would merge this PR without waiting for CI. Configure required checks in the branch ruleset first (Tier 0). Refusing to auto-merge." >&2
+          # This endpoint reports the EFFECTIVE rules on the branch,
+          # aggregating every ruleset (and classic branch protection, while
+          # any survives). It stays correct across the Sep 2026
+          # consolidation into a single ruleset — unlike the classic
+          # /branches/main/protection endpoint, which now describes a
+          # source that no longer holds the truth.
+          count=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                    --jq '[.[] | select(.type=="required_status_checks")
+                              | .parameters.required_status_checks | length]
+                          | add // 0')
+          echo "required status checks on main: ${count}"
+          if [ "${count}" -lt 1 ]; then
+            echo "::error::main has no required status checks, so enabling auto-merge would merge this PR without waiting for CI. Configure required checks in the branch ruleset first (Tier 0). Refusing to auto-merge." >&2
             exit 1
           fi
 
