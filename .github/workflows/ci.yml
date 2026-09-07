@@ -58,9 +58,17 @@ jobs:
         uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3 # v2.28.0
         with:
           args: '-fmt sarif -out gosec-results.sarif ./...'
+      # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
+      # elevate, so security-events: write is not granted and this upload
+      # cannot succeed. gosec is a REQUIRED status check: without this guard
+      # the upload failure sinks the job and every external contributor's PR
+      # arrives with a red required check it has no way to fix. The scan
+      # itself still runs and still gates the PR — only the results upload
+      # is skipped, and code scanning keeps its coverage from same-repo
+      # pushes and the default branch.
       - name: upload SARIF
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
-        if: always()
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always() && github.event.pull_request.head.repo.fork != true
         with:
           sarif_file: gosec-results.sarif
 
