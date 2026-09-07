@@ -155,7 +155,7 @@ where it does, and for the compose form.
 
 ## FIPS build note
 
-The `-fips` variant (`GOFIPS140=v1.0.0`) is a second build of the same
+The `-fips` variant (`GOFIPS140=v1.0.0` <!-- pinned: upstream -->) is a second build of the same
 source, not a different distribution channel — everything above applies
 identically. It is built for `linux/amd64` and `linux/arm64` only, and it is
 publicly downloadable like every other artifact; nothing about the FIPS build
