@@ -28,6 +28,14 @@ jobs:
       matrix:
         tag: [latest, debug, fips]
     steps:
+      # Needed only for .vex/ — this workflow scans published images by tag
+      # and never builds from the tree. Without it the VEX path below does
+      # not exist in the workspace and Trivy exits FATAL, taking the whole
+      # rescan with it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: check the tag actually exists yet (no release published before Milestone 2)
         id: probe
         run: |
@@ -37,6 +45,9 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Same VEX document as the release gate: an exception granted at
+      # release time must still hold for the life of the shipped bytes,
+      # or the rescan re-raises what we already answered in public.
       - name: Trivy scan
         if: steps.probe.outputs.exists == 'true'
         id: trivy
@@ -45,6 +56,8 @@ jobs:
           image-ref: ${{ env.IMAGE_BASE }}:${{ matrix.tag }}
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
 
       - name: Grype scan
         if: steps.probe.outputs.exists == 'true' && (success() || failure())
@@ -54,6 +67,7 @@ jobs:
           image: ${{ env.IMAGE_BASE }}:${{ matrix.tag }}
           fail-build: true
           severity-cutoff: high
+          vex: .vex/fosterstack-cache.openvex.json
 
       # A finding here means a CVE was disclosed against bytes we already
       # shipped — the autonomous patch lane (brief §0.2) starts from this

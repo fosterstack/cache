@@ -20,3 +20,22 @@ jobs:
 
       - name: check every tracked file against the allowlist
         run: git ls-files | ./bin/check-file-allowlist.sh
+
+      # VEX tripwire (punch list #4b). A dependency we answered with a VEX
+      # statement is answered on the facts as they were: golang-jwt is not
+      # in the build at all, which is why CVE-2024-51744 does not apply to
+      # us. If it ever enters go.sum, that premise is dead and the published
+      # statement becomes a false public claim — the worst failure mode an
+      # attestation has. Fail loudly and make someone re-check it.
+      #
+      # go.sum, not `go mod graph`: the graph lists modules that packages we
+      # do not import happen to require, which is exactly the distinction
+      # the VEX statement rests on.
+      - name: VEX tripwire — components answered by a VEX statement must stay absent
+        run: |
+          set -euo pipefail
+          if grep -q 'golang-jwt' go.sum; then
+            echo "::error::golang-jwt has entered go.sum. The published VEX statement for CVE-2024-51744 claims component_not_present, which is no longer true on its face. VEX statement requires review before this can merge — see .vex/README.md." >&2
+            exit 1
+          fi
+          echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
