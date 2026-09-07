@@ -77,8 +77,24 @@ jobs:
             exit 1
           fi
 
-      - name: approve
+      # The approval is an AUDIT TRAIL, not a gate. main's ruleset requires
+      # signed commits and seven status checks; it does not require pull
+      # request reviews, so nothing here depends on this succeeding.
+      #
+      # It fails by default with "GitHub Actions is not permitted to approve
+      # pull requests", and we are deliberately LEAVING IT THAT WAY. The
+      # setting that would fix it — Actions: allow creating and approving
+      # pull requests — lets any workflow in the repo self-approve, which
+      # is a supply-chain weakening that OpenSSF Scorecard flags and that
+      # our own CI/CD baseline argues against. Trading that away to get a
+      # cosmetic review on a bot PR is a bad deal.
+      #
+      # continue-on-error, not removal: if a required-review rule is ever
+      # added to main, this step starts mattering again and its failure
+      # will be visible in the run rather than silently absent.
+      - name: approve (best effort — see note above)
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
