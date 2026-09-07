@@ -144,6 +144,89 @@ jobs:
           severity-cutoff: negligible
           vex: .vex/fosterstack-cache.openvex.json
 
+      # Snyk joins the BLOCKING gate on the same terms as the others
+      # (punch list #4e), not as a report-only side channel. It is here for
+      # its proprietary database: roughly an eight-day lead over GHSA and
+      # low overlap with Grype's feed, which is the whole point of running
+      # an intentionally anti-correlated pair rather than two tools that
+      # agree with each other.
+      #
+      # The CLI version is pinned rather than tracking `latest`: this is a
+      # release gate, and an unpinned scanner is an unpinned dependency
+      # that decides what ships. Deliberately one release behind the newest
+      # so it has had exposure before it can block us.
+      - name: install the Snyk CLI
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: v1.1307.0
+
+      # A blocking gate that silently skips is worse than no gate: it looks
+      # like coverage on the dashboard and enforces nothing. If the token
+      # is missing the release fails here, loudly, rather than sailing past
+      # a scanner that never ran.
+      - name: Snyk token must be present
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "::error::SNYK_TOKEN is not available to this run, so the Snyk gate cannot execute. Refusing to publish behind a scanner that did not run. Check the org-level Actions secret (visibility: public repositories)." >&2
+            exit 1
+          fi
+
+      # No --severity-threshold anywhere below: the policy is that nothing
+      # ships with a known CVE at ANY severity, so the default (report
+      # everything) is what we want. Exceptions go through .vex/ and any
+      # .snyk entry must cite the governing statement — see .vex/README.md.
+      - name: Snyk Open Source (go.mod) and container scans
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          failed=0
+
+          {
+            echo "## Snyk scan verdicts"
+            echo
+            echo "Scanner: \`snyk $(snyk version 2>/dev/null | head -1)\`, org \`fosterstack-admin\`."
+            echo "Policy: block on a finding at any severity; exceptions only via a published VEX statement."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          run_scan() {
+            label="$1"; shift
+            out=$(mktemp)
+            if "$@" > "$out" 2>&1; then
+              echo "### ${label} — clean" >> "$GITHUB_STEP_SUMMARY"
+            else
+              rc=$?
+              failed=1
+              echo "### ${label} — FAILED (exit ${rc})" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            {
+              echo
+              echo '```'
+              tail -n 60 "$out"
+              echo '```'
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat "$out"
+            rm -f "$out"
+          }
+
+          run_scan "Open Source (go.mod)" \
+            snyk test --org=fosterstack-admin --all-projects
+
+          for tag in latest debug fips; do
+            run_scan "Container (:${tag})" \
+              snyk container test "goreleaser.ko.local:${tag}" --org=fosterstack-admin
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::Snyk reported findings (or failed to run). Nothing is published. Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
+            exit 1
+          fi
+          echo "Snyk: all scans clean." >> "$GITHUB_STEP_SUMMARY"
+
   # Phase 2: only reached if every scan above was clean. Rebuilds with the
   # real tag version (this job never sees the snapshot-tagged images from
   # phase 1 — they don't leave the phase 1 runner) and is the only place
