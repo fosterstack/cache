@@ -50,6 +50,10 @@ type Config struct {
 	// MaxBodyBytes caps request body size for PUT (0 = unlimited). Protects
 	// against unbounded client uploads exhausting disk.
 	MaxBodyBytes int64
+	// MaxBytes is the configured store cap, reported by /statusz so an
+	// operator can see used-vs-cap in one place. Reporting only; eviction
+	// is the cache's own business. 0 means unlimited.
+	MaxBytes int64
 }
 
 // New builds the top-level HTTP handler: cache GET/PUT/HEAD under "/",
@@ -62,9 +66,23 @@ func New(cfg Config) http.Handler {
 	if cfg.Registry == nil {
 		cfg.Registry = prometheus.DefaultGatherer
 	}
+	status := &statusSource{cfg: cfg, started: time.Now()}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{}))
+
+	// /statusz and the landing page sit behind the same Basic Auth as the
+	// cache when auth is enabled (punch list #8d): they are read-only, so
+	// the client credential — which already lives in every CI runner — is
+	// a fine gate for looking. /healthz and /metrics stay open, matching
+	// what liveness probes and Prometheus scrapers expect.
+	mux.Handle("GET /statusz", withAuth(cfg.Auth, http.HandlerFunc(status.handleStatus)))
+
+	// Exact-match "/{$}" so ONLY the bare root reaches the landing page.
+	// Go's ServeMux gives the longest pattern precedence, so every real
+	// cache key still routes to the cache handler below.
+	mux.Handle("GET /{$}", withAuth(cfg.Auth, withMetrics(cfg.Metrics, http.HandlerFunc(status.handleRoot))))
 
 	cacheHandler := withAuth(cfg.Auth, withMetrics(cfg.Metrics, cacheEndpoint(cfg)))
 	mux.Handle("/", cacheHandler)

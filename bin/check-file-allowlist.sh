@@ -25,8 +25,9 @@ ALLOW_PATTERNS=(
   '^(README|SECURITY|CONTRIBUTING|RELEASING)\.md$'
   '^LICENSE$'
 
-  # Published documentation.
+  # Published documentation, plus the Grafana dashboard operators import.
   '^docs/[A-Za-z0-9._-]+\.md$'
+  '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
   '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml)$'
