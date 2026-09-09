@@ -41,6 +41,19 @@ ALLOW_PATTERNS=(
   # assets and are meant to be read by anyone auditing an artifact.
   '^\.vex/[A-Za-z0-9._-]+\.(json|md)$'
 
+  # Requirements traceability (traceability-plan.md §5): the baseline, its
+  # schema, the AC-to-evidence mappings, the generated matrix, and the
+  # validator/generator tool (a separate Go module so its YAML dependency
+  # stays out of the product's go.mod and SBOM). Source and module files
+  # only — a compiled binary never belongs in the tree.
+  '^requirements/[A-Za-z0-9._-]+\.(yaml|json)$'
+  '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
+  '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
+  '^docs/quality/[A-Za-z0-9._-]+\.md$'
+  '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
+  '^tools/requirements/[A-Za-z0-9._-]+\.go$'
+  '^tools/requirements/go\.(mod|sum)$'
+
   # This mechanism itself.
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'

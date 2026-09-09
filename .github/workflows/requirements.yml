@@ -1,0 +1,32 @@
+name: Requirements
+
+# Validates the requirements baseline and the traceability matrix
+# (traceability-plan.md §6): schema conformance, duplicate IDs, ACs under
+# the wrong requirement, mappings referencing unknown ACs, approval-state
+# consistency, and freshness of the generated matrix. CI verifies; it never
+# commits generated output — generation happens locally and lands through
+# normal review, so a write token can't rewrite the record.
+#
+# Becomes the required check `requirements` when the owner adds it to the
+# ruleset (listed in the Phase 2 final set).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  requirements:
+    name: requirements
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+      - name: validate requirements and matrix freshness
+        run: go -C tools/requirements run . check
