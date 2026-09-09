@@ -26,15 +26,36 @@ best-effort basis.
 This is a target, not a contractual penalty clause, and it does not promise
 fix-authorship timelines for code this project doesn't control.
 
+## v0.1.0 and the pre-remediation pipeline <!-- pinned: historical -->
+
+v0.1.0 (tagged Aug 21, 2026) was built and published by the pre-remediation <!-- pinned: historical -->
+release pipeline. Its published images were not scanned before publication:
+the pipeline scanned a snapshot build and published a separate build of the
+same commit. The published v0.1.0 digests have been rescanned since, at <!-- pinned: historical -->
+every severity, with the published VEX applied — see the
+[rescan runs](https://github.com/fosterstack/cache/actions/workflows/rescan-v010.yml)
+for the verdicts. The next release is the first to carry the full evidence
+chain: one build, scanned and tested by digest, promoted without a rebuild.
+
 ## Nothing ships with a known CVE
 
-No artifact is published with a known CVE at any severity, unless a
-published VEX statement explains why the finding does not apply.
+The policy: no artifact is published with a known CVE at any severity,
+unless a published VEX statement explains why the finding does not apply.
+How completely the pipeline enforces that policy today is stated below,
+exactly.
 
 Independent scanners with deliberately different vulnerability databases run
-against every image before anything reaches the registry, each blocking at
-every severity including UNKNOWN. A finding fails the release; the images
-never leave the build runner.
+in the release workflow, each blocking at every severity including UNKNOWN.
+The scanner set is [one list in the repo](.github/policy/scanners.json);
+nothing hard-codes a count or a name.
+
+What the release workflow does today, stated exactly: a pre-publish snapshot
+build is scanned, and a finding fails the release before the publish job
+runs. The published images are a **separate build of the same commit** — the
+scanned build and the published build are not the same bytes, so the scan
+verdict attaches to the release's source, not to the published digests. That
+gap is the subject of the Sep 2026 release-chain rework; until it closes,
+the published digests' scan coverage is the daily rescan.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
 artifacts. Its partner is chosen for a database that disagrees with Grype's —
@@ -47,9 +68,10 @@ and published as a release asset. VEX is the single source of truth: any
 tool-specific ignore must cite the statement that governs it and may never
 stand alone. No statement, no exception, no push.
 
-Every published image is also rescanned daily, so a CVE disclosed against
-bytes we already shipped raises a tracked issue rather than waiting for
-someone to look.
+Every published image is also rescanned daily — currently at CRITICAL and
+HIGH severity, which is softer than the release gate — so a CVE disclosed
+against bytes we already shipped raises a tracked issue rather than waiting
+for someone to look.
 
 ## Approved-only cryptography
 
@@ -58,7 +80,14 @@ Enforcement is delegated to the validated module rather than to a list.
 CI runs the full test suite under `GODEBUG=fips140=only` against the FIPS
 build, where Go's FIPS 140-3 validated module (CMVP certificate #5247)
 refuses any non-approved algorithm at runtime. Any reach for non-approved
-cryptography — ours or a dependency's — fails CI on that commit.
+cryptography — ours or a dependency's — fails that commit's `fips140-only`
+check.
+
+Two limits of that claim, stated so it cannot be over-read: the check proves
+the paths the test suite executes, built in FIPS mode — it does not exercise
+the released `fscache-fips` binary or image, which no test currently runs;
+and its status as a merge-blocking check is set by the repository ruleset,
+which is listed in [.github/policy/required-checks.json](.github/policy/required-checks.json).
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
 in-boundary crypto imports are permitted, and third-party cryptographic

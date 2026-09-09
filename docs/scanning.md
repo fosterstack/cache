@@ -1,9 +1,10 @@
 # Scanning FosterStack in your compliance pipeline
 
-FosterStack Cache's images are scanned by **Trivy AND Grype**, independently,
-on every release before it's pushed — never after (see
-[`RELEASING.md`](../RELEASING.md)). This page is about what to expect when
-*you* scan our image too, since a minimal image scans differently from a
+Every scanner in [the repo's scanner list](../.github/policy/scanners.json)
+runs against a snapshot build of every release, and every published image is
+rescanned daily; [`RELEASING.md`](../RELEASING.md) states exactly what the
+release scan does and does not attach to. This page is about what to expect
+when *you* scan our image, since a minimal image scans differently from a
 typical distro image in ways that surprise people the first time.
 
 ## What to expect

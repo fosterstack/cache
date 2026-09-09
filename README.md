@@ -5,7 +5,9 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fosterstack/cache/badge)](https://scorecard.dev/viewer/?uri=github.com/fosterstack/cache)
 [![Latest release](https://img.shields.io/github/v/release/fosterstack/cache?sort=semver)](https://github.com/fosterstack/cache/releases/latest)
 
-A self-hosted, drop-in remote build cache for **Gradle** and **Maven**. Ships as
+A self-hosted, drop-in remote build cache for **Gradle** — and for **Maven**
+through the Apache Maven Build Cache Extension (implemented; acceptance
+coverage in progress). Ships as
 a single static binary or a distroless container image, MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is keylessly signed (Sigstore); every binary archive is covered by a
@@ -28,8 +30,9 @@ Gradle (no Develocity subscription) need a maintained, drop-in replacement.
 FosterStack Cache speaks Gradle's documented [`HttpBuildCache`][gradle-http]
 protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
 Maven Build Cache Extension][maven-cache]'s remote HTTP mode
-(`GET`/`PUT`/`HEAD`), so it's a drop-in for both build tools — same server,
-same core.
+(`GET`/`PUT`/`HEAD`) — same server, same core. The Gradle path is
+acceptance-tested against a real multi-module build in CI; the Maven path is
+implemented and its acceptance coverage is in progress.
 
 [bcn-eol]: https://docs.develocity.ai/bcn/21.2/
 [gradle-http]: https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote
@@ -50,12 +53,16 @@ Shipped:
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
   (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
-  checksums file. Every release is built only by CI, and the images are
-  scanned by two independent scanners before anything is pushed. See
-  [`RELEASING.md`](RELEASING.md).
-- Benchmarked against a multi-module Gradle project on every
-  push/PR — the gate is a correctness assertion (a from-scratch second
-  build must produce real `FROM-CACHE` hits), not just a timing number.
+  checksums file. Every release is built only by CI. A pre-publish snapshot
+  build is scanned by every scanner in the repo's list; the published images
+  are a separate build of the same commit and are covered by the daily
+  rescan. [`RELEASING.md`](RELEASING.md) describes the pipeline as it is,
+  including that gap.
+- Acceptance-tested against a real multi-module Gradle project on every
+  push/PR — a from-scratch second build must produce real `FROM-CACHE`
+  hits, with the sample's local build cache disabled so a hit is remote
+  evidence. There is no benchmark suite yet; this is a correctness gate,
+  not a performance number.
 - Deployment docs: [Install](docs/install.md) (binaries + systemd),
   [Docker](docs/docker-deploy.md) (with sizing),
   [Kubernetes](docs/kubernetes.md), [Gradle](docs/gradle.md),
@@ -84,9 +91,10 @@ with. There is no published schedule: the list above is direction, not dates.
 There is no waitlist and no signup. Pull the image and run it — the quickstart
 below is the whole gate.
 
-Every shipped item above is verifiable from this repo's Actions history or
-by running the commands in [`RELEASING.md`](RELEASING.md). Claims that
-cannot be reproduced are not listed.
+Each item above names the workflow or command that demonstrates it —
+Actions history for the CI claims, the commands in
+[`RELEASING.md`](RELEASING.md) for signatures and provenance. What those
+commands prove, and what they do not, is stated in RELEASING.md itself.
 
 Full core (eviction, size limits, metrics) is free forever under MIT — see
 [`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
@@ -94,9 +102,10 @@ SLA, and compliance support on top of the same open core; nothing is
 withheld from the free tier for security.
 
 The security evidence itself is public and free: SBOMs, SLSA provenance,
-signatures, scan results, VEX statements, and the FIPS 140-3 module
-certificate number are published with every release and verifiable by anyone,
-with no account and no purchase. The FIPS-mode image is publicly pullable too.
+signatures, VEX statements, and the FIPS 140-3 module certificate number are
+published with every release and verifiable by anyone, with no account and
+no purchase. Scan verdicts are visible in the public CI logs; they are not
+yet attached to releases as durable, digest-bound evidence. The FIPS-mode image is publicly pullable too.
 What the Compliance tier sells is the authored analysis, the vendor signature,
 and the hours — never access to the bytes or the evidence.
 

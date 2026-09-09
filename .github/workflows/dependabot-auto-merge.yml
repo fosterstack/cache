@@ -55,25 +55,42 @@ jobs:
             echo "The autonomous lane covers patch and minor only; this one waits for a human."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: require that main has required status checks
+      - name: require that main enforces the exact expected check set
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # This endpoint reports the EFFECTIVE rules on the branch,
-          # aggregating every ruleset (and classic branch protection, while
-          # any survives). It stays correct across the Sep 2026
-          # consolidation into a single ruleset — unlike the classic
-          # /branches/main/protection endpoint, which now describes a
-          # source that no longer holds the truth.
-          count=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
-                    --jq '[.[] | select(.type=="required_status_checks")
-                              | .parameters.required_status_checks | length]
-                          | add // 0')
-          echo "required status checks on main: ${count}"
-          if [ "${count}" -lt 1 ]; then
-            echo "::error::main has no required status checks, so enabling auto-merge would merge this PR without waiting for CI. Configure required checks in the branch ruleset first (Tier 0). Refusing to auto-merge." >&2
+          # The Sep 8 audit (§13) found the old guard checked only that AT
+          # LEAST ONE required check existed: six of seven checks could be
+          # removed from the ruleset and auto-merge would still arm. The
+          # guard now compares the EFFECTIVE required-check set on main —
+          # contexts and integration IDs both — against the single source
+          # of truth in .github/policy/required-checks.json, and refuses to
+          # auto-merge on any difference in either direction. A missing
+          # check means the gate was weakened; an unexpected extra check
+          # means the list is stale; both are a human's problem, not a
+          # robot's judgment call.
+          #
+          # The /rules/branches/main endpoint reports effective rules
+          # aggregated across every ruleset, so this stays correct if
+          # rules are ever split across rulesets again.
+          actual=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" \
+                     --jq '[.[] | select(.type=="required_status_checks")
+                                | .parameters.required_status_checks[]
+                                | {context, integration_id}] | sort_by(.context)')
+          # The list is fetched from protected MAIN via the API, never
+          # from a checkout: this workflow deliberately checks out nothing
+          # (see the header), and the PR's own copy of the list is exactly
+          # what an attacker editing the list would control. Same
+          # trust-source rule as the release chain's allowed-signers fetch.
+          expected=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
+                       --jq '.content' | base64 -d \
+                     | jq '[.required_checks[]] | sort_by(.context)')
+          echo "expected: $(jq -c '[.[].context]' <<<"${expected}")"
+          echo "actual:   $(jq -c '[.[].context]' <<<"${actual}")"
+          if [ "$(jq -cS . <<<"${actual}")" != "$(jq -cS . <<<"${expected}")" ]; then
+            echo "::error::The required-check set on main does not match .github/policy/required-checks.json (contexts and integration IDs must both match, exactly). Auto-merge refuses to arm until they agree — update the ruleset (owner) or the list (PR), whichever is wrong." >&2
             exit 1
           fi
 
