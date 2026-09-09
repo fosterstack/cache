@@ -1,0 +1,27 @@
+{
+  "comment": [
+    "The single source of truth for the required-check set on main.",
+    "Consumed by the Dependabot auto-merge guard today and by the release",
+    "chain's source-admission stage when it lands. The GitHub ruleset",
+    "(main-protection) must match this list EXACTLY - contexts and",
+    "integration IDs both; the guard fails closed on any difference in",
+    "either direction. integration_id 15368 is GitHub Actions: it pins each",
+    "context to check runs produced by Actions, so a check run with the",
+    "same name from any other app does not satisfy the requirement.",
+    "Editing this list does not change the ruleset; only the owner can do",
+    "that, in the GitHub UI. Edit here first, then the owner updates the",
+    "ruleset to match - the guard stays red in between, which is the",
+    "correct failure mode."
+  ],
+  "required_checks": [
+    { "context": "test", "integration_id": 15368 },
+    { "context": "lint", "integration_id": 15368 },
+    { "context": "gosec", "integration_id": 15368 },
+    { "context": "govulncheck", "integration_id": 15368 },
+    { "context": "analyze (go)", "integration_id": 15368 },
+    { "context": "allowlist", "integration_id": 15368 },
+    { "context": "dependency-review", "integration_id": 15368 },
+    { "context": "fips140-only", "integration_id": 15368 },
+    { "context": "acceptance-gradle", "integration_id": 15368 }
+  ]
+}

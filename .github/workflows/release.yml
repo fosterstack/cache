@@ -1,10 +1,14 @@
 name: Release
 
-# Baseline checklist item 4 / scanner-input doc: pipeline order is fixed
-# as build -> test -> scan -> SBOM -> SLSA provenance -> cosign sign ->
-# push, visibly, in two jobs so nothing can be pushed before it's scanned
-# clean. Releases build ONLY here — see RELEASING.md; this workflow is the
-# only place `goreleaser release` (without --snapshot) is ever invoked.
+# Two jobs: build-and-scan builds a SNAPSHOT and scans it; publish then
+# REBUILDS and pushes. The published build is not the scanned build — the
+# scan verdict attaches to the commit, not to the published digests (Sep 8
+# audit §2; RELEASING.md states the same gap publicly). This workflow also
+# runs no tests, despite what its comments used to claim. The release-chain
+# rework replaces this file stage by stage; until then, this header tells
+# the truth about it. Releases build ONLY here — see RELEASING.md; this
+# workflow is the only place `goreleaser release` (without --snapshot) is
+# ever invoked.
 on:
   push:
     tags:
@@ -81,12 +85,11 @@ jobs:
       # suppressions that can drift apart. No VEX statement, no exception,
       # no push — see .vex/README.md.
       #
-      # DEPLOY-REQ-5 / scanner-input doc: multi-scanner (Trivy AND Grype),
-      # asserted against every variant. Zero findings is the marketing
-      # claim ("our own pipeline never publishes unscanned, scored zero by
-      # two independent scanners") — this is where that claim gets tested,
-      # not assumed. A finding here fails the workflow and the images
-      # simply never reach the publish job.
+      # Multi-scanner, asserted against every variant of the SNAPSHOT
+      # build. A finding here fails the workflow and the publish job never
+      # runs — but what publish pushes is a separate build of the same
+      # commit, so this scan clears the source, not the published bytes.
+      # The scanner set is .github/policy/scanners.json.
       - name: Trivy scan (production image)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

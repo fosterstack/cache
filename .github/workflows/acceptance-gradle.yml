@@ -1,15 +1,17 @@
-name: Benchmark (real Gradle project)
+name: Gradle acceptance
 
-# Sprint 4 build-scope requirement: "tests + benchmarks on a real Gradle
-# project." bench/gradle-sample/ is a small but real multi-module Java
-# project (an inter-module dependency graph, actual compilation work, a
-# JUnit test) — this workflow builds fscache from source, points the
-# sample project's remote build cache at it, and asserts real FROM-CACHE
-# hits on a from-scratch second build. This is a correctness assertion
-# (did the cache protocol round-trip actually work), not just a timing
-# number — CI runner performance varies too much run to run for a strict
-# wall-clock regression gate, but a cache miss where a hit was expected
-# fails the job.
+# Renamed from "Benchmark" (Sep 8 audit, §22): this workflow records no
+# timing, throughput, or regression baseline — it is an acceptance test
+# and is now named as one. bench/gradle-sample/ is a small but real
+# multi-module Java project (an inter-module dependency graph, actual
+# compilation work, a JUnit test) — this workflow builds fscache from
+# source, points the sample project's remote build cache at it, and
+# asserts real FROM-CACHE hits on a from-scratch second build. The
+# sample's local build cache is disabled in settings.gradle.kts, so a
+# FROM-CACHE label is remote-cache evidence, not a local hit. A real
+# benchmark suite (statistical, trend-reported, never a pass/fail gate
+# on a shared runner) is a separate future thing; do not reuse this
+# name for it.
 on:
   push:
     branches: [main]
@@ -19,8 +21,8 @@ permissions:
   contents: read
 
 jobs:
-  benchmark:
-    name: benchmark
+  acceptance-gradle:
+    name: acceptance-gradle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

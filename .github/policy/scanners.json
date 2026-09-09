@@ -1,0 +1,11 @@
+{
+  "comment": [
+    "The single source of truth for the vulnerability-scanner set. A",
+    "release is clean when every scanner in this list says so; policy and",
+    "docs read this list and never hard-code a scanner count or name.",
+    "Removing Trivy on the standing trigger (first tagged release with a",
+    "green Snyk gate) is an edit to this list plus the workflow steps,",
+    "nothing else."
+  ],
+  "scanners": [ "trivy", "grype", "snyk" ]
+}
