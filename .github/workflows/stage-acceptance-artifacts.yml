@@ -133,8 +133,12 @@ jobs:
           for _ in $(seq 1 20); do curl -sf localhost:19010/healthz >/dev/null && break; sleep 0.5; done
           curl -s -X PUT --data-binary 'artifact-bytes' localhost:19010/acckey -o /dev/null -w 'PUT %{http_code}\n'
           [ "$(curl -s localhost:19010/acckey)" = "artifact-bytes" ] || { echo "::error::round trip failed in the production image" >&2; exit 1; }
-          docker top fa-prod -o uid,comm | tail -1
-          docker top fa-prod -o uid | tail -1 | grep -q 65532 || { echo "::error::production container not running as uid 65532" >&2; exit 1; }
+          # docker top with custom -o columns is unreliable across runner
+          # ps versions; read the process uid from /proc via the PID.
+          cpid=$(docker inspect -f '{{.State.Pid}}' fa-prod)
+          cuid=$(stat -c %u "/proc/${cpid}")
+          echo "container pid=${cpid} uid=${cuid}"
+          [ "${cuid}" = "65532" ] || { echo "::error::production container running as uid ${cuid}, want 65532" >&2; exit 1; }
 
           # shell-lessness per variant (REQ-PLAT-003-AC1)
           if docker run --rm --entrypoint /busybox/sh fa-production -c true 2>/dev/null; then
