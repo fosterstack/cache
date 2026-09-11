@@ -234,3 +234,60 @@ func TestRenderIsDeterministicAndCarriesCorrectCommand(t *testing.T) {
 		t.Error("generated output still carries the broken root-module command form")
 	}
 }
+
+// ── Evidence references (mapping phase) ──────────────────────────────
+
+func fixtureWithMappings(t *testing.T, mappingsYAML string) {
+	t.Helper()
+	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
+	if err := os.WriteFile("test-evidence/mappings.yaml", []byte(mappingsYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMappingToMissingGoTestFails(t *testing.T) {
+	fixtureWithMappings(t, `mappings:
+  - ac: REQ-TEST-001-AC1
+    evidence:
+      - type: go-test
+        ref: internal/server:TestDoesNotExistAnywhere
+`)
+	wantInvalid(t, "does not exist")
+}
+
+func TestMappingWithBadRefFormatFails(t *testing.T) {
+	fixtureWithMappings(t, `mappings:
+  - ac: REQ-TEST-001-AC1
+    evidence:
+      - type: go-test
+        ref: no-colon-here
+`)
+	wantInvalid(t, "not <dir>:<TestName>")
+}
+
+func TestMappingWithUnknownEvidenceTypeFails(t *testing.T) {
+	fixtureWithMappings(t, `mappings:
+  - ac: REQ-TEST-001-AC1
+    evidence:
+      - type: vibes
+        ref: something
+`)
+	wantInvalid(t, "unknown evidence type")
+}
+
+func TestMappingToExistingGoTestPasses(t *testing.T) {
+	fixtureWithMappings(t, `mappings:
+  - ac: REQ-TEST-001-AC1
+    evidence:
+      - type: go-test
+        ref: pkg:TestReal
+`)
+	if err := os.MkdirAll("pkg", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "package pkg\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n"
+	if err := os.WriteFile("pkg/pkg_test.go", []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantValid(t)
+}

@@ -201,6 +201,16 @@ Basic Auth credentials come from `settings.xml` `<server>` conventions, the
 Apache extension's standard pattern. See [Maven setup in 10 minutes](docs/maven.md)
 for the full walkthrough.
 
+## Product promises and proof
+
+Every externally observable behavior of this server is a written requirement
+with measurable acceptance criteria, and the matrix at
+[docs/quality/traceability.md](docs/quality/traceability.md) maps each
+criterion to its evidence — including, honestly, the criteria that have no
+sufficient evidence yet. The baseline was extracted from the code and docs
+and owner-approved; since Sep 8, 2026, acceptance criteria are written
+before implementation. CI fails if the matrix drifts from its sources.
+
 ## Documentation
 
 - [Gradle setup](docs/gradle.md) · [Maven setup](docs/maven.md)
