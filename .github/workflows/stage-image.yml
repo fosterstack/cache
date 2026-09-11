@@ -75,7 +75,7 @@ jobs:
           tar xzf dist/fscache-fips_*_linux_arm64.tar.gz -C /tmp/imgctx/binaries/arm64 fscache-fips
           cp build/docker/Dockerfile.* /tmp/imgctx/
 
-      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: assemble all variants (deterministic; provenance/SBOM exporters off)
         id: build
