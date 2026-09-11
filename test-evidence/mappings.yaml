@@ -93,3 +93,18 @@ mappings:
   - ac: REQ-DEPLOY-003-AC1
     evidence:
       - { type: manual, ref: "2026-09-11 verified run on kind v0.33.0 / K8s v1.37.0 against the published 0.1.0 image: 4 doc manifests applied verbatim, pod Ready, healthz+metrics open, authenticated PUT 201 / GET returned bytes, unauthenticated GET 401, runner secretKeyRef probe printed FSCACHE_USERNAME=gradle and a set password (cache PR run record)" }
+  - ac: REQ-CFG-001-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestDefaultsWithNoEnvironment" }
+  - ac: REQ-CFG-001-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestCustomValidValuesHonored" }
+  - ac: REQ-CFG-002-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestOneCredentialAloneFails" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1, the commit adding these tests against preserved old behavior)" }
+  - ac: REQ-CFG-003-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestZeroRemainsValid" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1 — silent-fallback behavior failing the new assertions before the implementation commit)" }

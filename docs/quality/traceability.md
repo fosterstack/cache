@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 42 |
 | Acceptance criteria | 53 |
 | Release-blocking ACs | 33 |
-| ACs with mapped evidence | 22 |
-| Release-blocking ACs with mapped evidence | 11 |
+| ACs with mapped evidence | 26 |
+| Release-blocking ACs with mapped evidence | 15 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 37 |
 | Confidence: implementation-only | 4 |
@@ -115,8 +115,8 @@ The server shall be configured solely by environment variables: FSCACHE_ADDR (de
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-001-AC1 | Given a server started with no environment variables set; when it starts; then it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth | unit | yes | approved | none mapped |
-| REQ-CFG-001-AC2 | Given a server started with every variable set to a custom valid value; when it starts; then each value is honored, observably (listen address, data location, cap behavior, auth behavior) | component | yes | approved | none mapped |
+| REQ-CFG-001-AC1 | Given a server started with no environment variables set; when it starts; then it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth | unit | yes | approved | 1 item(s) |
+| REQ-CFG-001-AC2 | Given a server started with every variable set to a custom valid value; when it starts; then each value is honored, observably (listen address, data location, cap behavior, auth behavior) | component | yes | approved | 1 item(s) |
 
 ### REQ-CFG-002 — Credentials are both-or-neither
 
@@ -126,7 +126,7 @@ The server shall refuse to start when exactly one of FSCACHE_USERNAME and FSCACH
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | approved | none mapped |
+| REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | approved | 2 item(s) |
 
 ### REQ-CFG-003 — Invalid configuration fails startup
 
@@ -136,7 +136,7 @@ The server shall refuse to start when a numeric configuration variable (FSCACHE_
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-003-AC1 | Given an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value; when the server starts; then startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES | unit | yes | approved | none mapped |
+| REQ-CFG-003-AC1 | Given an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value; when the server starts; then startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES | unit | yes | approved | 3 item(s) |
 
 ## Authentication
 
