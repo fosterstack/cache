@@ -720,6 +720,30 @@ requirements:
         verification: { method: component, release_blocking: false }
         status: approved
 
+  - id: REQ-DEPLOY-003
+    title: Documented Kubernetes deployment works as written
+    statement: >
+      The manifest set and smoke commands published in docs/kubernetes.md
+      shall work exactly as written against a release image: applying the
+      documented Secret, PersistentVolumeClaim, Deployment, and Service
+      yields a Ready pod; the documented port-forward smoke commands
+      succeed, with /healthz and /metrics open and the cache surface
+      requiring the Secret's credentials; and the documented runner-side
+      secretKeyRef wiring injects FSCACHE_USERNAME and FSCACHE_PASSWORD
+      under exactly those names.
+    source: [docs/kubernetes.md, owner remediation input 2026-09-10 section 3]
+    tier: community
+    introduced: v0.1.0
+    origin: audit-2026-09-10
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-DEPLOY-003-AC1
+        given: a fresh Kubernetes cluster and the release-candidate image
+        when: the documented manifests are applied verbatim and the documented smoke commands run through a port-forward
+        then: the pod becomes Ready; healthz and metrics answer without credentials; the authenticated PUT/GET round-trips; the unauthenticated cache request returns 401; and a pod using the documented runner env block sees FSCACHE_USERNAME and FSCACHE_PASSWORD populated
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
   # ── FIPS ──────────────────────────────────────────────────────────────
 
   - id: REQ-FIPS-001

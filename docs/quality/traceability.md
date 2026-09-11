@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 40 |
-| Acceptance criteria | 51 |
-| Release-blocking ACs | 31 |
-| ACs with mapped evidence | 21 |
-| Release-blocking ACs with mapped evidence | 10 |
+| Active requirements | 41 |
+| Acceptance criteria | 52 |
+| Release-blocking ACs | 32 |
+| ACs with mapped evidence | 22 |
+| Release-blocking ACs with mapped evidence | 11 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 35 |
+| Confidence: documented | 36 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -369,6 +369,16 @@ The metadata store shall be single-writer: a second process pointed at the same 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | approved | none mapped |
+
+### REQ-DEPLOY-003 — Documented Kubernetes deployment works as written
+
+The manifest set and smoke commands published in docs/kubernetes.md shall work exactly as written against a release image: applying the documented Secret, PersistentVolumeClaim, Deployment, and Service yields a Ready pod; the documented port-forward smoke commands succeed, with /healthz and /metrics open and the cache surface requiring the Secret's credentials; and the documented runner-side secretKeyRef wiring injects FSCACHE_USERNAME and FSCACHE_PASSWORD under exactly those names.
+
+*Introduced v0.1.0 · tier community · confidence documented · source: docs/kubernetes.md; owner remediation input 2026-09-10 section 3*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEPLOY-003-AC1 | Given a fresh Kubernetes cluster and the release-candidate image; when the documented manifests are applied verbatim and the documented smoke commands run through a port-forward; then the pod becomes Ready; healthz and metrics answer without credentials; the authenticated PUT/GET round-trips; the unauthenticated cache request returns 401; and a pod using the documented runner env block sees FSCACHE_USERNAME and FSCACHE_PASSWORD populated | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ## FIPS 140-3
 
