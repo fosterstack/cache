@@ -231,13 +231,15 @@ before implementation. CI fails if the matrix drifts from its sources.
   crypto imports and denying third-party crypto outright. Both are described
   in [`SECURITY.md`](SECURITY.md), including what each does and does not
   prove.
-- **No telemetry and no phone-home.** The server makes no outbound network
-  connections at all — no usage reporting, no licence check, no update ping —
-  so it runs identically on a host with no route to the internet. Verified
-  rather than asserted: the process holds exactly one socket, its own
-  listener, at rest and under sustained load, and never opens a UDP socket, so
-  it never resolves a hostname. Reproduce it with
-  `lsof -nP -a -p <pid> -i` against a running server.
+- **No telemetry and no required FosterStack connection.** The server
+  reports nothing to us — no usage reporting, no licence check, no update
+  ping — and today's free core initiates no outbound connections at all, so
+  it runs identically on a host with no route to the internet. When paid
+  features ship, traffic you configure will exist (an identity provider for
+  SSO, peer replicas for replication) — connections to endpoints you
+  choose, never to FosterStack. Check the current behavior yourself:
+  `lsof -nP -a -p <pid> -i` against a running server shows one listening
+  socket and accepted inbound connections, nothing else.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
   and patch SLA once published.
 
