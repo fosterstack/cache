@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 44 |
-| Acceptance criteria | 57 |
-| Release-blocking ACs | 36 |
+| Active requirements | 46 |
+| Acceptance criteria | 60 |
+| Release-blocking ACs | 38 |
 | ACs with mapped evidence | 31 |
 | Release-blocking ACs with mapped evidence | 19 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 39 |
+| Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -180,6 +180,29 @@ A server with authentication disabled shall accept requests that carry an Author
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | none mapped |
+
+## HTTP
+
+### REQ-HTTP-001 — Server timeouts
+
+The HTTP server shall run with explicit timeouts, generous where a legitimate cache transfer is slow and tight where only a stuck or idle connection waits - ReadHeaderTimeout 10s, IdleTimeout 120s, and read/write deadlines of 20 minutes per request (enough for the documented 1 GiB body cap over a slow CI link, roughly 0.9 MB/s sustained, and finite where today is infinite). The values are configuration constants proposed by engineering on 2026-09-11 and adjustable by requirement change, not by silent edit.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: test-strategy.md section 2.3; audit section 19*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-HTTP-001-AC1 | Given the constructed HTTP server; when its timeout configuration is examined; then ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset | unit | yes | approved | none mapped |
+
+### REQ-HTTP-002 — Bounded concurrent uploads
+
+The server shall bound concurrent PUT processing: at most FSCACHE_MAX_CONCURRENT_UPLOADS uploads in flight (default 32; 0 disables the bound), with excess requests refused with HTTP 429 and a Retry-After header, storing nothing. Build clients treat any error as a cache miss, so a refused upload degrades a build's caching, never the build. Slow clients can therefore hold at most a bounded number of upload slots, temp files, and file handles.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: test-strategy.md section 2.3; audit section 19*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | none mapped |
+| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule | unit |  | approved | none mapped |
 
 ## Storage
 

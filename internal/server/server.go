@@ -54,6 +54,30 @@ type Config struct {
 	// operator can see used-vs-cap in one place. Reporting only; eviction
 	// is the cache's own business. 0 means unlimited.
 	MaxBytes int64
+	// MaxConcurrentUploads bounds PUTs in flight (REQ-HTTP-002).
+	// 0 disables the bound.
+	MaxConcurrentUploads int
+}
+
+// Timeout constants (REQ-HTTP-001): generous where a legitimate transfer
+// is slow, tight where only a stuck or idle connection waits.
+const (
+	ReadHeaderTimeout = 10 * time.Second
+	IdleTimeout       = 120 * time.Second
+	// ReadTimeout / WriteTimeout cover a full request: the documented
+	// 1 GiB body cap over a slow CI link (~0.9 MB/s sustained) fits.
+	ReadTimeout  = 20 * time.Minute
+	WriteTimeout = 20 * time.Minute
+)
+
+// NewHTTPServer builds the http.Server with the required timeouts
+// (REQ-HTTP-001) around the handler from New.
+func NewHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: ReadHeaderTimeout,
+	}
 }
 
 // New builds the top-level HTTP handler: cache GET/PUT/HEAD under "/",
