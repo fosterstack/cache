@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 46 |
-| Acceptance criteria | 60 |
-| Release-blocking ACs | 38 |
-| ACs with mapped evidence | 34 |
-| Release-blocking ACs with mapped evidence | 21 |
+| Acceptance criteria | 63 |
+| Release-blocking ACs | 41 |
+| ACs with mapped evidence | 38 |
+| Release-blocking ACs with mapped evidence | 25 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
@@ -480,7 +480,10 @@ A real multi-module Gradle build configured per docs/gradle.md, with its local b
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-GRADLE-001-AC1 | Given the sample project and an empty cache; when a cold build then a from-scratch second build run against the server; then the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits | acceptance-gradle | yes | approved | none mapped |
+| REQ-GRADLE-001-AC1 | Given the sample project, an empty cache, and the checked-in list of expected cacheable tasks; when a cold build then a from-scratch second build run against the server; then the second build restores EXACTLY the expected task set FROM-CACHE - an unexpected miss fails, and an unlisted restored task fails too | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-GRADLE-001-AC2 | Given the same two builds; when the server's /metrics are read after each; then the cold build shows one upload per expected task and zero hits; the warm build shows one server-side hit per expected task and no further uploads | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-GRADLE-001-AC3 | Given the compiled outputs of the cold build, checksummed; when the warm build restores from the cache; then every restored output is byte-identical to the cold build's | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-GRADLE-001-AC4 | Given the warm build's log; when it is scanned for remote-cache errors Gradle treats as non-fatal; then none are present - a silently degraded remote is a failure of this workflow, not a pass | acceptance-gradle | yes | approved | 1 item(s) |
 
 ## Maven
 
