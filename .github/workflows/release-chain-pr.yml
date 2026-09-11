@@ -44,6 +44,13 @@ jobs:
       dist-artifact: dist-snapshot
       expected-checksums: ${{ needs.build.outputs.checksums }}
 
+  artifact-acceptance:
+    needs: build
+    uses: ./.github/workflows/stage-acceptance-artifacts.yml
+    with:
+      dist-artifact: dist-snapshot
+      expected-checksums: ${{ needs.build.outputs.checksums }}
+
   reproducibility:
     name: reproducibility
     needs: [assemble-a, assemble-b]
