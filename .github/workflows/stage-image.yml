@@ -1,0 +1,101 @@
+name: 'Stage: image assembly'
+
+# Release-chain image-assembly stage (release-chain-design.md §2 Stage 3):
+# verify the build stage's archives, extract the exact binaries, assemble
+# each variant with a COPY-only Dockerfile via buildx. Zero RUN steps, so
+# multi-arch needs no emulation and each image is a pure function of
+# (base digest, binary bytes) — which is what makes the reproducibility
+# stage's digest-equality check meaningful rather than hopeful.
+#
+# PR mode builds to a local OCI archive and emits the digest; nothing is
+# pushed anywhere. Release mode (the tag chain, later phase items) pushes
+# by digest to the private candidates package and signs the image-build
+# predicate with buildkit's version recorded as a material.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'pr (local oci, no push) or release (push candidates by digest)'
+        required: true
+        type: string
+      dist-artifact:
+        description: 'name of the uploaded dist artifact to consume'
+        required: true
+        type: string
+      expected-checksums:
+        description: 'checksums.txt content from the build stage — verified before any byte is used'
+        required: true
+        type: string
+    outputs:
+      digests:
+        description: 'JSON {production, debug, fips} index digests'
+        value: ${{ jobs.assemble.outputs.digests }}
+
+permissions:
+  contents: read
+
+jobs:
+  assemble:
+    name: assemble
+    runs-on: ubuntu-latest
+    outputs:
+      digests: ${{ steps.build.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: dist/
+
+      # Verify-before-consume: the archives must match the digests the
+      # BUILDER emitted. In the full chain this comparison is against the
+      # signed build predicate; the checksums travel through workflow
+      # outputs (same trust domain) until the admission stage lands.
+      - name: verify the archives against the builder's digests
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+          # every non-SBOM archive named by the builder must be present
+          grep -oE '[^ ]+\.tar\.gz$' /tmp/expected-checksums.txt | while read -r f; do
+            [ -f "dist/$f" ] || { echo "::error::builder-named archive missing: $f" >&2; exit 1; }
+          done
+        env:
+          EXPECTED: ${{ inputs.expected-checksums }}
+
+      - name: extract the exact binaries into the build context
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/imgctx/binaries/amd64 /tmp/imgctx/binaries/arm64
+          tar xzf dist/fscache_*_linux_amd64.tar.gz  -C /tmp/imgctx/binaries/amd64 fscache
+          tar xzf dist/fscache_*_linux_arm64.tar.gz  -C /tmp/imgctx/binaries/arm64 fscache
+          tar xzf dist/fscache-fips_*_linux_amd64.tar.gz -C /tmp/imgctx/binaries/amd64 fscache-fips
+          tar xzf dist/fscache-fips_*_linux_arm64.tar.gz -C /tmp/imgctx/binaries/arm64 fscache-fips
+          cp build/docker/Dockerfile.* /tmp/imgctx/
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: assemble all variants (deterministic; provenance/SBOM exporters off)
+        id: build
+        run: |
+          set -euo pipefail
+          SDE=$(git log -1 --format=%ct)
+          echo "SOURCE_DATE_EPOCH=${SDE} (commit timestamp)"
+          echo "buildkit/buildx material: $(docker buildx version)"
+          cd /tmp/imgctx
+          declare -A digest
+          for v in production debug fips; do
+            SOURCE_DATE_EPOCH="${SDE}" docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -f "Dockerfile.${v}" \
+              --provenance=false --sbom=false \
+              --output "type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true" \
+              --metadata-file "/tmp/${v}.json" . >/dev/null
+            digest[$v]=$(jq -r '."containerimage.digest"' "/tmp/${v}.json")
+            echo "${v}: ${digest[$v]}"
+          done
+          jq -n --arg p "${digest[production]}" --arg d "${digest[debug]}" --arg f "${digest[fips]}" \
+            '{production:$p, debug:$d, fips:$f}' | tee /tmp/digests.json
+          echo "digests=$(jq -c . /tmp/digests.json)" >> "$GITHUB_OUTPUT"
