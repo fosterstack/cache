@@ -11,8 +11,16 @@ on:
     branches: [main]
   pull_request:
 
+# The caller's permission grant must COVER what called workflows request:
+# a called job cannot escalate past this block, and requesting more than
+# the caller grants fails the whole run at startup (found the hard way -
+# every early chain run was a startup_failure with zero jobs). id-token
+# and attestations are unused in PR/snapshot mode but must be grantable
+# for the shared stage files.
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   build:
