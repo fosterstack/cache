@@ -80,18 +80,30 @@ Our release pipeline's scan step is public —
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) — so
 the exact invocation we gate releases on is not a secret:
 
+The gate's policy is every severity, with the published VEX applied — so
+a faithful reproduction uses the same. The VEX document ships with each
+release as `fosterstack-cache.openvex.json` and lives in-repo at
+[`.vex/`](../.vex/):
+
 ```sh
+# Same severity policy and VEX as the release gate:
 trivy image --scanners vuln \
   --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+  --vex fosterstack-cache.openvex.json \
   ghcr.io/fosterstack/cache:X.Y.Z
 
-grype ghcr.io/fosterstack/cache:X.Y.Z --fail-on medium
+grype ghcr.io/fosterstack/cache:X.Y.Z \
+  --fail-on negligible --vex fosterstack-cache.openvex.json
 ```
+
+Run without `--vex` to see raw findings including the ones we have
+publicly dispositioned — the difference between the two runs is exactly
+the set of published VEX statements, which is how you audit them.
 
 ## Marketing claim, with the receipt
 
-"Scanned by Trivy and Grype on every release, results published" is not a
-claim we're asking you to take on faith — every release's scan is the CI
-run itself, public, in this repo's Actions tab. See
+"Every scanner in the repo's list runs on every release, verdicts in the
+public CI run" is not a claim we're asking you to take on faith — the scan
+IS the CI run, public, in this repo's Actions tab. See
 [Verify our images](verify-images.md) for how to confirm the exact image
 you pulled came from that same run.
