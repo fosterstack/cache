@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 46 |
 | Acceptance criteria | 63 |
 | Release-blocking ACs | 41 |
-| ACs with mapped evidence | 46 |
-| Release-blocking ACs with mapped evidence | 28 |
+| ACs with mapped evidence | 50 |
+| Release-blocking ACs with mapped evidence | 32 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
@@ -371,7 +371,7 @@ Every release shall ship static (CGO_ENABLED=0) binaries for linux/amd64, linux/
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 
@@ -391,7 +391,7 @@ The production and -fips images shall contain no shell; the -debug image shall p
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-003-AC1 | Given the three release images; when shell presence is probed in each; then production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-PLAT-003-AC1 | Given the three release images; when shell presence is probed in each; then production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-004 — Nonroot container execution
 
@@ -445,8 +445,8 @@ The -fips build shall link Go's CMVP-validated FIPS 140-3 cryptographic module (
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-001-AC1 | Given the released fscache-fips artifact, in a supported environment; when its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined; then the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion | acceptance-release-artifact | yes | approved | none mapped |
-| REQ-FIPS-001-AC2 | Given a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on); when the same evidence check runs against it; then it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-FIPS-001-AC1 | Given the released fscache-fips artifact, in a supported environment; when its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined; then the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion | acceptance-release-artifact | yes | approved | 1 item(s) |
+| REQ-FIPS-001-AC2 | Given a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on); when the same evidence check runs against it; then it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-FIPS-002 — FIPS posture observable and truthful at runtime
 
