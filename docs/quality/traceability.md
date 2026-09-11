@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 41 |
-| Acceptance criteria | 52 |
-| Release-blocking ACs | 32 |
+| Active requirements | 42 |
+| Acceptance criteria | 53 |
+| Release-blocking ACs | 33 |
 | ACs with mapped evidence | 22 |
 | Release-blocking ACs with mapped evidence | 11 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 36 |
+| Confidence: documented | 37 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -111,7 +111,7 @@ The server shall be configured solely by environment variables: FSCACHE_ADDR (de
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md configuration table; docs/docker-deploy.md "Configuration"; cmd/fscache/main.go*
 
-> Known defect recorded at extraction, not blessed as behavior: at the extracted revision an unparseable numeric value silently falls back to the default (a FSCACHE_MAX_BYTES typo can make a bounded cache unbounded). The fail-closed replacement is a v0.2.0 requirement written by remediation item 1.2 before its implementation; it is not part of this baseline.
+> Known defect recorded at extraction, not blessed as behavior: at the extracted revision an unparseable numeric value silently fell back to the default. The fail-closed replacement is REQ-CFG-003 (v0.2.0, requirements-first).
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -127,6 +127,16 @@ The server shall refuse to start when exactly one of FSCACHE_USERNAME and FSCACH
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | approved | none mapped |
+
+### REQ-CFG-003 — Invalid configuration fails startup
+
+The server shall refuse to start when a numeric configuration variable (FSCACHE_MAX_BYTES, FSCACHE_MAX_BODY_BYTES) is unparseable, carries trailing garbage, is negative, or overflows, exiting non-zero with a message naming the variable and the offending value. It shall never silently substitute a default for an invalid value: a typo in a size cap must stop the server, not unbound the cache.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: test-strategy.md §2.1; audit §16; backlog entry resolved by this requirement*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CFG-003-AC1 | Given an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value; when the server starts; then startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES | unit | yes | approved | none mapped |
 
 ## Authentication
 

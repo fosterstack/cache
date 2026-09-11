@@ -33,7 +33,7 @@ type config struct {
 	maxBodyBytes int64
 }
 
-func loadConfig() config {
+func loadConfig() (config, error) {
 	cfg := config{
 		addr:         envOr("FSCACHE_ADDR", ":8080"),
 		dataDir:      envOr("FSCACHE_DATA_DIR", "./data"),
@@ -42,7 +42,10 @@ func loadConfig() config {
 		password:     os.Getenv("FSCACHE_PASSWORD"),
 		maxBodyBytes: envInt64("FSCACHE_MAX_BODY_BYTES", 1<<30), // 1 GiB default cap per blob
 	}
-	return cfg
+	if (cfg.username == "") != (cfg.password == "") {
+		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
+	}
+	return cfg, nil
 }
 
 func envOr(key, def string) string {
@@ -73,10 +76,9 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
-	cfg := loadConfig()
-
-	if (cfg.username == "") != (cfg.password == "") {
-		return errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
 	}
 
 	blobs, err := blobstore.New(filepath.Join(cfg.dataDir, "blobs"))
