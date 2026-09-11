@@ -67,10 +67,12 @@ requirements:
     statement: >
       The server shall treat the entire request path, with the leading slash
       removed, as the cache key - no path prefix exists and none is required
-      on either side - EXCEPT the server's reserved application endpoints
-      ("/", /healthz, /metrics, /statusz), which are not cache keys: a
-      request to a reserved path is answered by that endpoint, never by the
-      cache namespace.
+      on either side. This requirement covers only the non-reserved cache
+      namespace: the reserved application paths ("/", /healthz, /metrics,
+      /statusz) are outside it, their GET behavior is specified by their own
+      requirements (REQ-OBS-001, REQ-OBS-002, REQ-OBS-003, REQ-PROTO-006),
+      and reserved-path handling for other methods is an open decision
+      recorded in backlog.yaml.
     source: [docs/gradle.md "trailing slash", docs/docker-deploy.md, internal/server/server.go cacheEndpoint]
     tier: community
     introduced: v0.1.0
@@ -107,15 +109,17 @@ requirements:
       answer 307 to the normalized path) BEFORE key validation runs, so a
       helper-level test cannot stand in for this HTTP contract, and a
       redirect-following client may resubmit to the normalized key.
-      Whether malformed paths must be rejected or may be normalized is an
-      open product decision in backlog.yaml; evidence for this criterion
-      must exercise the real routing stack with raw AND percent-encoded
-      malformed paths and confirm no unintended write occurs.
+      The AC states the 400 contract the requirement promises; the current
+      implementation does NOT satisfy it for router-normalized forms, and
+      that documented discrepancy stands until the reject-vs-normalize
+      decision in backlog.yaml is made and the server is fixed,
+      requirements-first. A weaker check must not certify the stronger
+      promise.
     acceptance_criteria:
       - id: REQ-PROTO-003-AC1
-        given: a running server, exercised through its real HTTP routing stack
-        when: a client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form
-        then: no such request stores or retrieves data under an unintended key and none creates a file outside the store root; requests reaching key validation return 400
+        given: a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects
+        when: the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form
+        then: every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root
         verification: { method: http-integration, release_blocking: true }
         status: proposed
       - id: REQ-PROTO-003-AC2
@@ -686,9 +690,10 @@ requirements:
     statement: >
       The startup log and /statusz shall report the actual FIPS operating
       mode and the actual module identity truthfully in every runtime
-      configuration, including runtime overrides: a -fips build reports
-      active with its module identified; a standard build reports off by
-      default; and a standard build with FIPS mode enabled at runtime
+      configuration, including runtime overrides: a -fips build in its
+      default runtime configuration reports active with its module
+      identified; a standard build in its default configuration reports
+      off; and a standard build with FIPS mode enabled at runtime
       (GODEBUG=fips140=on) shall not claim the validated module or its
       certificate. The report shall never state more than the binary can
       know about itself.

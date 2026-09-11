@@ -85,7 +85,11 @@ EXTRA_FIELDS
 	} else {
 		doc = strings.ReplaceAll(doc, "EXTRA_FIELDS\n", "")
 	}
-	doc = strings.ReplaceAll(doc, "AC_STATUS", acStatus)
+	if acStatus == "OMIT" {
+		doc = strings.ReplaceAll(doc, "        status: AC_STATUS\n", "")
+	} else {
+		doc = strings.ReplaceAll(doc, "AC_STATUS", acStatus)
+	}
 	return doc
 }
 
@@ -174,12 +178,12 @@ func TestImpossibleCalendarDateFails(t *testing.T) {
 
 func TestApprovedBaselineWithProposedACFails(t *testing.T) {
 	fixture(t, minimal("true", `"2026-09-11"`, "2026-09-08", "proposed", ""))
-	wantInvalid(t, "still proposed")
+	wantInvalid(t, `must be "approved"`)
 }
 
 func TestUnapprovedBaselineWithApprovedACFails(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "approved", ""))
-	wantInvalid(t, "baseline is not")
+	wantInvalid(t, `must be "proposed"`)
 }
 
 func TestFullyProposedUnapprovedIsValid(t *testing.T) {
@@ -190,6 +194,18 @@ func TestFullyProposedUnapprovedIsValid(t *testing.T) {
 func TestFullyApprovedWithDateIsValid(t *testing.T) {
 	fixture(t, minimal("true", `"2026-09-11"`, "2026-09-08", "approved", ""))
 	wantValid(t)
+}
+
+// ── Omitted status is never defaulted (round-2 finding 1) ────────────
+
+func TestOmittedStatusFailsUnderApprovedBaseline(t *testing.T) {
+	fixture(t, minimal("true", `"2026-09-11"`, "2026-09-08", "OMIT", ""))
+	wantInvalid(t, "status")
+}
+
+func TestOmittedStatusFailsUnderUnapprovedBaseline(t *testing.T) {
+	fixture(t, minimal("false", "", "2026-09-08", "OMIT", ""))
+	wantInvalid(t, "status")
 }
 
 // ── Single YAML document (handoff item 7) ────────────────────────────

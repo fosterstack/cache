@@ -41,7 +41,7 @@ The server shall store a blob on PUT, return the identical bytes on GET, report 
 
 ### REQ-PROTO-002 — Request path is the cache key
 
-The server shall treat the entire request path, with the leading slash removed, as the cache key - no path prefix exists and none is required on either side - EXCEPT the server's reserved application endpoints ("/", /healthz, /metrics, /statusz), which are not cache keys: a request to a reserved path is answered by that endpoint, never by the cache namespace.
+The server shall treat the entire request path, with the leading slash removed, as the cache key - no path prefix exists and none is required on either side. This requirement covers only the non-reserved cache namespace: the reserved application paths ("/", /healthz, /metrics, /statusz) are outside it, their GET behavior is specified by their own requirements (REQ-OBS-001, REQ-OBS-002, REQ-OBS-003, REQ-PROTO-006), and reserved-path handling for other methods is an open decision recorded in backlog.yaml.
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/gradle.md "trailing slash"; docs/docker-deploy.md; internal/server/server.go cacheEndpoint*
 
@@ -57,11 +57,11 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/docker-deploy.md "Verify it is working"; internal/blobstore/blobstore.go ValidateKey*
 
-> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. Whether malformed paths must be rejected or may be normalized is an open product decision in backlog.yaml; evidence for this criterion must exercise the real routing stack with raw AND percent-encoded malformed paths and confirm no unintended write occurs.
+> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. The AC states the 400 contract the requirement promises; the current implementation does NOT satisfy it for router-normalized forms, and that documented discrepancy stands until the reject-vs-normalize decision in backlog.yaml is made and the server is fixed, requirements-first. A weaker check must not certify the stronger promise.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack; when a client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then no such request stores or retrieves data under an unintended key and none creates a file outside the store root; requests reaching key validation return 400 | http-integration | yes | proposed | none mapped |
+| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | proposed | none mapped |
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | proposed | none mapped |
 
 ### REQ-PROTO-004 — Method surface
@@ -363,7 +363,7 @@ The -fips build shall link Go's CMVP-validated FIPS 140-3 cryptographic module (
 
 ### REQ-FIPS-002 — FIPS posture observable and truthful at runtime
 
-The startup log and /statusz shall report the actual FIPS operating mode and the actual module identity truthfully in every runtime configuration, including runtime overrides: a -fips build reports active with its module identified; a standard build reports off by default; and a standard build with FIPS mode enabled at runtime (GODEBUG=fips140=on) shall not claim the validated module or its certificate. The report shall never state more than the binary can know about itself.
+The startup log and /statusz shall report the actual FIPS operating mode and the actual module identity truthfully in every runtime configuration, including runtime overrides: a -fips build in its default runtime configuration reports active with its module identified; a standard build in its default configuration reports off; and a standard build with FIPS mode enabled at runtime (GODEBUG=fips140=on) shall not claim the validated module or its certificate. The report shall never state more than the binary can know about itself.
 
 *Introduced v0.2.0 · tier community · confidence documented · source: docs/install.md; docs/offline-install.md; internal/buildinfo*
 
@@ -455,4 +455,3 @@ The complete server — cache protocol, eviction, size caps, auth, metrics, stat
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-LIC-001-AC1 | Given the repository and a release; when the license and artifact set are examined; then the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists | manual |  | proposed | none mapped |
-

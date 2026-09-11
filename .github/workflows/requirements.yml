@@ -28,5 +28,14 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
+      # The validator's own regression suite runs FIRST. `run . check`
+      # exercises the validator against the real baseline only; the tests
+      # cover the inputs the baseline doesn't contain (omitted status,
+      # malformed dates, second documents, deprecations), and the nested
+      # module is excluded from the product CI's `go test ./...`, so
+      # without this step they execute nowhere in CI (round-2 review,
+      # finding 2 — proven by a deliberate failure in a disposable copy).
+      - name: validator regression tests
+        run: go -C tools/requirements test -race -shuffle=on ./...
       - name: validate requirements and matrix freshness
         run: go -C tools/requirements run . check

@@ -47,7 +47,7 @@
             "type": "array", "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["id", "given", "when", "then", "verification"],
+              "required": ["id", "given", "when", "then", "verification", "status"],
               "additionalProperties": false,
               "properties": {
                 "id": { "type": "string", "pattern": "^REQ-[A-Z]+-[0-9]{3}-AC[0-9]+$" },

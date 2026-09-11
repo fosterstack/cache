@@ -248,17 +248,24 @@ func validate(f File, m Mappings) []string {
 		}
 	}
 
-	// 4. Approval-state consistency, both directions. The owner approval
-	// is an all-at-once transition: an unapproved baseline must not
-	// contain approved ACs, and an APPROVED baseline must not still
-	// contain proposed ACs — a mixed state is always a mistake.
+	// 4. Approval-state consistency, exact-state. The owner approval is
+	// an all-at-once transition, so under each baseline state there is
+	// exactly ONE acceptable AC status: "approved" when the baseline is
+	// approved, "proposed" when it is not. Anything else — the other
+	// status, a typo, or an OMITTED status decoding to the empty string —
+	// fails. An absent status is never defaulted: the round-2 review
+	// showed the earlier two-branch check let a missing status slip past
+	// both branches, so a baseline could publish an approval header while
+	// a criterion's status was silently blank.
+	expectedStatus := "proposed"
+	if f.Baseline.Approved {
+		expectedStatus = "approved"
+	}
 	for _, r := range f.Requirements {
 		for _, ac := range r.ACs {
-			if !f.Baseline.Approved && ac.Status == "approved" {
-				fail("AC %s is marked approved but the baseline is not", ac.ID)
-			}
-			if f.Baseline.Approved && ac.Status == "proposed" {
-				fail("baseline is approved but AC %s is still proposed — approval is all-at-once", ac.ID)
+			if ac.Status != expectedStatus {
+				fail("AC %s has status %q; every AC must be %q while the baseline approved=%v (an omitted status is not defaulted)",
+					ac.ID, ac.Status, expectedStatus, f.Baseline.Approved)
 			}
 		}
 	}
@@ -417,7 +424,10 @@ func render(f File, m Mappings) string {
 		}
 		w("")
 	}
-	return b.String()
+	// Exactly one trailing newline: the per-requirement blocks above end
+	// with a blank spacer line, which at the end of the file becomes a
+	// blank line at EOF and trips diff hygiene.
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
 func esc(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "|", "\\|") }
