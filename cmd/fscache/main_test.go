@@ -123,6 +123,8 @@ func TestZeroRemainsValid(t *testing.T) {
 	t.Setenv("FSCACHE_MAX_BODY_BYTES", "0")
 	if _, err := loadConfig(); err != nil {
 		t.Fatalf("zero must remain valid: %v", err)
+	}
+}
 
 // REQ-STORE-005-AC3, the marker half: present after write, absent after
 // clear, detection distinguishes the two, and clearing an absent marker
