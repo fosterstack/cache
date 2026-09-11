@@ -90,3 +90,6 @@ mappings:
   - ac: REQ-LIC-001-AC1
     evidence:
       - { type: manual, ref: "LICENSE is MIT; v0.1.0 artifact inventory shows one public channel, no gated artifact, no license-key gate (verified 2026-09-11)" }
+  - ac: REQ-DEPLOY-003-AC1
+    evidence:
+      - { type: manual, ref: "2026-09-11 verified run on kind v0.33.0 / K8s v1.37.0 against the published 0.1.0 image: 4 doc manifests applied verbatim, pod Ready, healthz+metrics open, authenticated PUT 201 / GET returned bytes, unauthenticated GET 401, runner secretKeyRef probe printed FSCACHE_USERNAME=gradle and a set password (cache PR run record)" }
