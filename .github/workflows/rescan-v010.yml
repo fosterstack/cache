@@ -1,0 +1,137 @@
+name: Rescan v0.1.0 (one-shot)
+
+# Phase 0 of the Sep 8 audit remediation. v0.1.0 was released through the
+# pre-remediation pipeline: the build that was scanned was not the build
+# that was published, so the published images shipped without a pre-push
+# scan and have been covered since only by the daily rescan at
+# CRITICAL/HIGH. This workflow scans the exact PUBLISHED v0.1.0 digests —
+# resolved from the registry once, on Sep 8 2026, and hard-coded below so
+# this run cannot be redirected by a tag move — at every severity, with
+# every scanner in .github/policy/scanners.json, applying the published
+# VEX. Trivy and Grype verdicts were also recorded from a local run in the
+# Phase 0 PR; this run exists because SNYK_TOKEN is an Actions-only org
+# secret, so the Snyk leg can only execute here.
+#
+# One-shot by design: dispatch it once, link the run from the Phase 0 PR
+# and the v0.1.0 release notes, then this file can be deleted when the
+# rebuilt daily rescan (digest-based, full severity, all scanners) lands.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/fosterstack/cache
+  # Resolved by tag exactly once (Sep 8, 2026) and pinned:
+  #   0.1.0 / latest -> prod, 0.1.0-debug / debug, 0.1.0-fips / fips
+  DIGEST_PROD: sha256:2ec45a131312597be2ebc601407bbc57f81939fc2efd849f527a230fda70d8c0
+  DIGEST_DEBUG: sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d
+  DIGEST_FIPS: sha256:9635f797d3c8d1998710375577430b9ef68da444b80a89e8773a6b8c51b05206
+
+jobs:
+  rescan-v010:
+    name: rescan-v010
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: this run must cover exactly the scanners in the policy list
+        run: |
+          set -euo pipefail
+          want=$(jq -r '.scanners | sort | join(",")' .github/policy/scanners.json)
+          have="grype,snyk,trivy"
+          if [ "${want}" != "${have}" ]; then
+            echo "::error::scanners.json lists [${want}] but this workflow runs [${have}] — update the workflow to match the list." >&2
+            exit 1
+          fi
+
+      - name: Trivy (all severities, VEX applied)
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_PROD }}
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+      - name: Trivy (debug)
+        if: always()
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_DEBUG }}
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+      - name: Trivy (fips)
+        if: always()
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_FIPS }}
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+
+      - name: Grype (cutoff negligible, VEX applied)
+        if: always()
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ghcr.io/fosterstack/cache@${{ env.DIGEST_PROD }}
+          fail-build: true
+          only-fixed: false
+          severity-cutoff: negligible
+          vex: .vex/fosterstack-cache.openvex.json
+      - name: Grype (debug)
+        if: always()
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ghcr.io/fosterstack/cache@${{ env.DIGEST_DEBUG }}
+          fail-build: true
+          only-fixed: false
+          severity-cutoff: negligible
+          vex: .vex/fosterstack-cache.openvex.json
+      - name: Grype (fips)
+        if: always()
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ghcr.io/fosterstack/cache@${{ env.DIGEST_FIPS }}
+          fail-build: true
+          only-fixed: false
+          severity-cutoff: negligible
+          vex: .vex/fosterstack-cache.openvex.json
+
+      - name: install the Snyk CLI
+        if: always()
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: v1.1307.0
+      - name: Snyk container test (all three digests, no severity threshold)
+        if: always()
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "::error::SNYK_TOKEN unavailable — the Snyk leg did not run. This is a scanner-operational failure, not a clean verdict." >&2
+            exit 1
+          fi
+          failed=0
+          {
+            echo "## Snyk verdicts — published v0.1.0 digests"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for pair in "prod ${DIGEST_PROD}" "debug ${DIGEST_DEBUG}" "fips ${DIGEST_FIPS}"; do
+            name="${pair%% *}"; digest="${pair#* }"
+            out=$(mktemp)
+            if snyk container test "${IMAGE}@${digest}" --org=fosterstack-admin > "$out" 2>&1; then
+              echo "### ${name} (@${digest}) — clean" >> "$GITHUB_STEP_SUMMARY"
+            else
+              failed=1
+              echo "### ${name} (@${digest}) — FINDINGS OR FAILURE" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            { echo '```'; tail -n 40 "$out"; echo '```'; echo; } >> "$GITHUB_STEP_SUMMARY"
+            cat "$out"; rm -f "$out"
+          done
+          exit "${failed}"

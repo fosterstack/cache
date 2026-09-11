@@ -9,17 +9,29 @@ laptop cannot forge a release that GitHub's own runners never built).
 ## Pipeline (live since v0.1.0, `.github/workflows/release.yml`) <!-- pinned: historical -->
 
 ```
-build (snapshot, local only) → scan (Trivy AND Grype, all 3 image variants)
-  → [gate] → build (real) → push → SBOM (ko) → cosign sign (keyless)
-  → SLSA provenance attestation → gh attestation verify → publish release
+build A (snapshot, local only) → scan A (every scanner in the repo's list)
+  → [gate] → build B (real) → push B → SBOM (ko) → cosign sign B (keyless)
+  → SLSA provenance attestation for B → gh attestation verify → publish
 ```
 
-Two jobs, a hard dependency between them: `build-and-scan` builds every
-artifact in `goreleaser --snapshot` mode (verified: this never touches a
-real registry — `ko` loads images into the runner's local Docker daemon
-instead of pushing) and scans all three image variants with both Trivy and
-Grype. `publish` only runs if that job succeeds, and is the only place in
-this repo that ever pushes to GHCR. A release is never pushed unscanned.
+Two jobs, a hard dependency between them — and one gap, stated plainly
+because this file describes the pipeline as it is. `build-and-scan` builds
+every artifact in `goreleaser --snapshot` mode (this never touches a real
+registry — `ko` loads images into the runner's local Docker daemon instead
+of pushing) and scans all three image variants with every scanner in
+[`.github/policy/scanners.json`](.github/policy/scanners.json). `publish`
+only runs if that job succeeds, and is the only place in this repo that
+ever pushes to GHCR.
+
+**The gap:** `publish` runs a second build. The bytes that are pushed,
+signed, and attested (build B) are not the bytes that were scanned
+(build A). Both come from the same commit, but byte identity between the
+two builds is not established, so the scan verdict attaches to the source,
+not to the published digests. The signatures and provenance on a release
+are accurate about what they say — which workflow run produced which
+digest — and say nothing about scanning. Published digests are covered by
+the daily rescan. Closing this gap (one build, scanned and tested by
+digest, promoted without a rebuild) is the Sep 2026 release-chain rework.
 
 ## Cutting a release
 
