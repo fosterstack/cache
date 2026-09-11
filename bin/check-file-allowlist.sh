@@ -70,8 +70,14 @@ ALLOW_PATTERNS=(
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
   '^bench/gradle-sample/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(kts|java|properties|jar)$'
+<<<<<<< HEAD
   # The acceptance expectation: which tasks the warm build must restore.
   '^bench/gradle-sample/expected-from-cache\.txt$'
+=======
+
+  # The real Maven project the Maven acceptance workflow builds.
+  '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
+>>>>>>> 9e0ed1d (Maven acceptance: the eight audit-§21 scenarios against a real project)
 )
 
 blocked=()
