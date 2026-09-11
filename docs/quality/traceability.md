@@ -16,12 +16,12 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 38 |
-| Acceptance criteria | 46 |
-| Release-blocking ACs | 26 |
+| Active requirements | 40 |
+| Acceptance criteria | 51 |
+| Release-blocking ACs | 31 |
 | ACs with mapped evidence | 0 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 33 |
+| Confidence: documented | 35 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -39,11 +39,11 @@ The server shall store a blob on PUT, return the identical bytes on GET, report 
 
 ### REQ-PROTO-002 — Request path is the cache key
 
-The server shall treat the entire request path, with the leading slash removed, as the cache key - no path prefix exists and none is required on either side. This requirement covers only the non-reserved cache namespace: the reserved application paths ("/", /healthz, /metrics, /statusz) are outside it, their GET behavior is specified by their own requirements (REQ-OBS-001, REQ-OBS-002, REQ-OBS-003, REQ-PROTO-006), and reserved-path handling for other methods is an open decision recorded in backlog.yaml.
+The server shall treat the entire request path, with the leading slash removed, as the cache key - no path prefix exists and none is required on either side. This requirement covers only the non-reserved cache namespace: the reserved application paths ("/", /healthz, /metrics, /statusz) are outside it, their GET behavior is specified by their own requirements (REQ-OBS-001, REQ-OBS-002, REQ-OBS-003, REQ-PROTO-006), and reserved-path write handling is specified by REQ-PROTO-007.
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/gradle.md "trailing slash"; docs/docker-deploy.md; internal/server/server.go cacheEndpoint*
 
-> Recorded at review (Sep 10): a PUT to a reserved path such as /healthz is currently accepted into the cache namespace while its GET answers with the endpoint response, so those bytes are stored but unreachable over HTTP. The unqualified round-trip claim would overlook that collision; behavior at the reserved paths themselves is a product question tracked in backlog.yaml.
+> Recorded at review (Sep 10): a PUT to a reserved path such as /healthz is currently accepted into the cache namespace while its GET answers with the endpoint response. DECIDED (owner, 2026-09-11): reserved paths refuse writes — REQ-PROTO-007 is the contract, and the server change ships in v0.2.0.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -55,7 +55,7 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/docker-deploy.md "Verify it is working"; internal/blobstore/blobstore.go ValidateKey*
 
-> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. The AC states the 400 contract the requirement promises; the current implementation does NOT satisfy it for router-normalized forms, and that documented discrepancy stands until the reject-vs-normalize decision in backlog.yaml is made and the server is fixed, requirements-first. A weaker check must not certify the stronger promise.
+> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. The current implementation does not satisfy this for router-normalized forms; the server change ships in v0.2.0 and this AC is its acceptance contract. A weaker check must not certify the stronger promise.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -91,6 +91,16 @@ The server shall answer a browser GET of the bare root with an HTML landing page
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-PROTO-006-AC1 | Given a running server holding a stored key; when a client GETs / and then GETs the stored key; then the root returns 200 HTML linking /statusz, and the stored key still returns its bytes | http-integration |  | approved | none mapped |
+
+### REQ-PROTO-007 — Reserved paths refuse writes
+
+PUT and DELETE to the reserved application paths ("/", /healthz, /metrics, /statusz) shall return HTTP 405 with "Allow: GET, HEAD" and shall store nothing: the reserved namespace is read-only, and a write aimed at it is a client error, never a silent cache entry.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: owner decision 2026-09-11; resolving the reserved-path backlog entry from the Sep 10 PR 43 review*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-PROTO-007-AC1 | Given a running server; when a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz; then every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before | http-integration | yes | approved | none mapped |
 
 ## Configuration
 
@@ -200,12 +210,25 @@ With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED LIVE-CACHE BLOB
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Full core"; docs/docker-deploy.md "Sizing"; internal/cache/cache.go*
 
-> Recorded at review (Sep 10): the implementation writes the incoming object before evicting, and an entry LARGER than the whole cap is accepted and then immediately evicted itself (write succeeds, read returns not-found, indexed total returns to zero). The oversized- entry policy is an open product decision in backlog.yaml; this criterion is therefore limited to entries that individually fit within the cap, so it describes the extracted contract without silently strengthening it.
+> Recorded at review (Sep 10): the implementation writes the incoming object before evicting, and an entry LARGER than the whole cap is accepted and then immediately evicted itself (write succeeds, read returns not-found, indexed total returns to zero). The oversized- entry policy is an open product decision in backlog.yaml; this criterion is therefore limited to entries that individually fit within the cap, so it describes the extracted contract without silently strengthening it. DECIDED (owner, 2026-09-11): oversized entries are rejected — REQ-EVICT-002 is the contract, and the server change ships in v0.2.0.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-EVICT-001-AC1 | Given a server with a small cap, holding entries that exceed it in aggregate, where each entry's individual size is at most the cap; when a new entry no larger than the cap is stored; then least-recently-used entries are removed until the new entry fits, the new entry is retrievable afterward, and the committed live-cache blob bytes, measured after the operation completes, do not exceed the cap | component | yes | approved | none mapped |
 | REQ-EVICT-001-AC2 | Given a capped store where an old key is re-read; when eviction next runs; then the re-read key is treated as recently used and outlives never-read older entries | component |  | approved | none mapped |
+
+### REQ-EVICT-002 — Oversized entries are rejected, not churned
+
+A PUT whose entry is larger than the configured cache cap (FSCACHE_MAX_BYTES, when set) shall be rejected with HTTP 413 and the response header "X-FSCache-Reject: entry-exceeds-cache-cap", storing nothing and evicting nothing. This rejection is distinct from the body-limit rejection (REQ-PROTO-005): a request over FSCACHE_MAX_BODY_BYTES is refused for its size on the wire and does not carry this header; a request over the cache cap is refused because it can never live in the cache, and says so. Build clients treat any 413 as a cache miss, so a build containing such an artifact completes normally without remote caching for it.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: owner decision 2026-09-11; resolving the oversized-entry backlog entry from the Sep 10 PR 43 review*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | none mapped |
+| REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | none mapped |
+| REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | none mapped |
+| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | none mapped |
 
 ## Observability
 

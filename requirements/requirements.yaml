@@ -72,8 +72,7 @@ requirements:
       namespace: the reserved application paths ("/", /healthz, /metrics,
       /statusz) are outside it, their GET behavior is specified by their own
       requirements (REQ-OBS-001, REQ-OBS-002, REQ-OBS-003, REQ-PROTO-006),
-      and reserved-path handling for other methods is an open decision
-      recorded in backlog.yaml.
+      and reserved-path write handling is specified by REQ-PROTO-007.
     source: [docs/gradle.md "trailing slash", docs/docker-deploy.md, internal/server/server.go cacheEndpoint]
     tier: community
     introduced: v0.1.0
@@ -81,10 +80,9 @@ requirements:
     notes: >
       Recorded at review (Sep 10): a PUT to a reserved path such as
       /healthz is currently accepted into the cache namespace while its
-      GET answers with the endpoint response, so those bytes are stored
-      but unreachable over HTTP. The unqualified round-trip claim would
-      overlook that collision; behavior at the reserved paths themselves
-      is a product question tracked in backlog.yaml.
+      GET answers with the endpoint response. DECIDED (owner, 2026-09-11):
+      reserved paths refuse writes — REQ-PROTO-007 is the contract, and
+      the server change ships in v0.2.0.
     acceptance_criteria:
       - id: REQ-PROTO-002-AC1
         given: a running server
@@ -110,11 +108,11 @@ requirements:
       answer 307 to the normalized path) BEFORE key validation runs, so a
       helper-level test cannot stand in for this HTTP contract, and a
       redirect-following client may resubmit to the normalized key.
-      The AC states the 400 contract the requirement promises; the current
-      implementation does NOT satisfy it for router-normalized forms, and
-      that documented discrepancy stands until the reject-vs-normalize
-      decision in backlog.yaml is made and the server is fixed,
-      requirements-first. A weaker check must not certify the stronger
+      DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP
+      400 through the real router — never normalized, no redirects. The
+      current implementation does not satisfy this for router-normalized
+      forms; the server change ships in v0.2.0 and this AC is its
+      acceptance contract. A weaker check must not certify the stronger
       promise.
     acceptance_criteria:
       - id: REQ-PROTO-003-AC1
@@ -184,6 +182,25 @@ requirements:
         verification: { method: http-integration, release_blocking: false }
         status: approved
 
+  - id: REQ-PROTO-007
+    title: Reserved paths refuse writes
+    statement: >
+      PUT and DELETE to the reserved application paths ("/", /healthz,
+      /metrics, /statusz) shall return HTTP 405 with "Allow: GET, HEAD" and
+      shall store nothing: the reserved namespace is read-only, and a write
+      aimed at it is a client error, never a silent cache entry.
+    source: [owner decision 2026-09-11, resolving the reserved-path backlog entry from the Sep 10 PR 43 review]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-10; owner decision 2026-09-11
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PROTO-007-AC1
+        given: a running server
+        when: a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz
+        then: 'every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before'
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
   # ── Configuration ─────────────────────────────────────────────────────
 
   - id: REQ-CFG-001
@@ -396,7 +413,9 @@ requirements:
       entry policy is an open product decision in backlog.yaml; this
       criterion is therefore limited to entries that individually fit
       within the cap, so it describes the extracted contract without
-      silently strengthening it.
+      silently strengthening it. DECIDED (owner, 2026-09-11): oversized
+      entries are rejected — REQ-EVICT-002 is the contract, and the server
+      change ships in v0.2.0.
     acceptance_criteria:
       - id: REQ-EVICT-001-AC1
         given: a server with a small cap, holding entries that exceed it in aggregate, where each entry's individual size is at most the cap
@@ -409,6 +428,50 @@ requirements:
         when: eviction next runs
         then: the re-read key is treated as recently used and outlives never-read older entries
         verification: { method: component, release_blocking: false }
+        status: approved
+
+  - id: REQ-EVICT-002
+    title: Oversized entries are rejected, not churned
+    statement: >
+      A PUT whose entry is larger than the configured cache cap
+      (FSCACHE_MAX_BYTES, when set) shall be rejected with HTTP 413 and the
+      response header "X-FSCache-Reject: entry-exceeds-cache-cap", storing
+      nothing and evicting nothing. This rejection is distinct from the
+      body-limit rejection (REQ-PROTO-005): a request over
+      FSCACHE_MAX_BODY_BYTES is refused for its size on the wire and does
+      not carry this header; a request over the cache cap is refused
+      because it can never live in the cache, and says so. Build clients
+      treat any 413 as a cache miss, so a build containing such an
+      artifact completes normally without remote caching for it.
+    source: [owner decision 2026-09-11, resolving the oversized-entry backlog entry from the Sep 10 PR 43 review]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-10; owner decision 2026-09-11
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-EVICT-002-AC1
+        given: a server with a small configured cache cap holding existing entries
+        when: a client PUTs an entry larger than the whole cap
+        then: 'the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit'
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-EVICT-002-AC2
+        given: the same server
+        when: a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap
+        then: the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-EVICT-002-AC3
+        given: a real Gradle build producing one cacheable output larger than the configured cap
+        when: the build runs against the server twice
+        then: both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-EVICT-002-AC4
+        given: a real Maven build producing one cacheable output larger than the configured cap
+        when: the build runs against the server twice
+        then: both builds complete successfully with the oversized output uncached and other outputs still cached
+        verification: { method: acceptance-maven, release_blocking: true }
         status: approved
 
   # ── Observability ─────────────────────────────────────────────────────
