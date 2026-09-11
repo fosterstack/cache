@@ -14,10 +14,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -46,17 +47,18 @@ type AC struct {
 }
 
 type Requirement struct {
-	ID         string   `yaml:"id"`
-	Title      string   `yaml:"title"`
-	Statement  string   `yaml:"statement"`
-	Source     []string `yaml:"source"`
-	Tier       string   `yaml:"tier"`
-	Introduced string   `yaml:"introduced"`
-	Origin     string   `yaml:"origin"`
-	Deprecated bool     `yaml:"deprecated"`
-	Confidence string   `yaml:"confidence"`
-	Notes      string   `yaml:"notes"`
-	ACs        []AC     `yaml:"acceptance_criteria"`
+	ID               string   `yaml:"id"`
+	Title            string   `yaml:"title"`
+	Statement        string   `yaml:"statement"`
+	Source           []string `yaml:"source"`
+	Tier             string   `yaml:"tier"`
+	Introduced       string   `yaml:"introduced"`
+	Origin           string   `yaml:"origin"`
+	Deprecated       bool     `yaml:"deprecated"`
+	DeprecatedReason string   `yaml:"deprecated_reason"`
+	Confidence       string   `yaml:"confidence"`
+	Notes            string   `yaml:"notes"`
+	ACs              []AC     `yaml:"acceptance_criteria"`
 }
 
 type File struct {
@@ -92,26 +94,26 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "validate":
-		f, m := load()
-		validate(f, m)
+		f, m := mustLoad()
+		mustBeValid(f, m)
 		fmt.Println("requirements: valid")
 	case "generate":
-		f, m := load()
-		validate(f, m)
+		f, m := mustLoad()
+		mustBeValid(f, m)
 		if err := os.WriteFile(outFile, []byte(render(f, m)), 0o644); err != nil {
 			fatal("write %s: %v", outFile, err)
 		}
 		fmt.Println("wrote", outFile)
 	case "check":
-		f, m := load()
-		validate(f, m)
+		f, m := mustLoad()
+		mustBeValid(f, m)
 		want := render(f, m)
 		got, err := os.ReadFile(outFile)
 		if err != nil {
-			fatal("%s missing — run `go run ./tools/requirements generate` and commit it", outFile)
+			fatal("%s missing — run `go -C tools/requirements run . generate` and commit it", outFile)
 		}
 		if string(got) != want {
-			fatal("%s is STALE relative to the requirements sources — regenerate and commit it (CI never commits generated output itself)", outFile)
+			fatal("%s is STALE relative to the requirements sources — run `go -C tools/requirements run . generate` and commit it (CI never commits generated output itself)", outFile)
 		}
 		fmt.Println("requirements: valid; matrix fresh")
 	default:
@@ -127,27 +129,57 @@ func repoRoot() string {
 	return strings.TrimSpace(string(out))
 }
 
-func load() (File, Mappings) {
-	var f File
-	unmarshalStrict(reqFile, &f)
-	var m Mappings
-	unmarshalStrict(mapFile, &m)
+func mustLoad() (File, Mappings) {
+	f, m, err := load()
+	if err != nil {
+		fatal("%v", err)
+	}
 	return f, m
 }
 
-func unmarshalStrict(path string, v any) {
+func mustBeValid(f File, m Mappings) {
+	if errs := validate(f, m); len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "requirements:", e)
+		}
+		os.Exit(1)
+	}
+}
+
+func load() (File, Mappings, error) {
+	var f File
+	if err := unmarshalStrict(reqFile, &f); err != nil {
+		return f, Mappings{}, err
+	}
+	var m Mappings
+	if err := unmarshalStrict(mapFile, &m); err != nil {
+		return f, m, err
+	}
+	return f, m, nil
+}
+
+// unmarshalStrict decodes exactly ONE YAML document: unknown fields are
+// rejected, and a second document in the same file is an error rather
+// than silently ignored — a trailing "---" section would otherwise be
+// invisible to validation while looking authoritative to a reader.
+func unmarshalStrict(path string, v any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		fatal("read %s: %v", path, err)
+		return fmt.Errorf("read %s: %w", path, err)
 	}
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil {
-		fatal("parse %s: %v", path, err)
+		return fmt.Errorf("parse %s: %w", path, err)
 	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("parse %s: more than one YAML document in the file — everything after the first document is ignored by tooling and must not exist", path)
+	}
+	return nil
 }
 
-func validate(f File, m Mappings) {
+func validate(f File, m Mappings) []string {
 	var errs []string
 	fail := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
 
@@ -163,6 +195,11 @@ func validate(f File, m Mappings) {
 		fatal("parse %s: %v", schemaFile, err)
 	}
 	c := jsonschema.NewCompiler()
+	// Format assertions are opt-in in this schema dialect; without this the
+	// declared `format: date` is decorative and "definitely-not-a-date"
+	// passes. The explicit calendar checks below are kept as well, so an
+	// impossible date fails even if the library's format check is lenient.
+	c.AssertFormat()
 	if err := c.AddResource(schemaFile, sch); err != nil {
 		fatal("schema: %v", err)
 	}
@@ -211,12 +248,17 @@ func validate(f File, m Mappings) {
 		}
 	}
 
-	// 4. Approval-state consistency: an unapproved baseline must not
-	// contain approved ACs, and approval requires a date.
+	// 4. Approval-state consistency, both directions. The owner approval
+	// is an all-at-once transition: an unapproved baseline must not
+	// contain approved ACs, and an APPROVED baseline must not still
+	// contain proposed ACs — a mixed state is always a mistake.
 	for _, r := range f.Requirements {
 		for _, ac := range r.ACs {
 			if !f.Baseline.Approved && ac.Status == "approved" {
 				fail("AC %s is marked approved but the baseline is not", ac.ID)
+			}
+			if f.Baseline.Approved && ac.Status == "proposed" {
+				fail("baseline is approved but AC %s is still proposed — approval is all-at-once", ac.ID)
 			}
 		}
 	}
@@ -224,12 +266,25 @@ func validate(f File, m Mappings) {
 		fail("baseline approved without approved_on")
 	}
 
-	if len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintln(os.Stderr, "requirements:", e)
-		}
-		os.Exit(1)
+	// 5. Dates must be real calendar dates, not merely non-empty strings.
+	if _, err := time.Parse("2006-01-02", f.Baseline.ExtractedOn); err != nil {
+		fail("baseline.extracted_on %q is not a valid date: %v", f.Baseline.ExtractedOn, err)
 	}
+	if f.Baseline.ApprovedOn != "" {
+		if _, err := time.Parse("2006-01-02", f.Baseline.ApprovedOn); err != nil {
+			fail("baseline.approved_on %q is not a valid date: %v", f.Baseline.ApprovedOn, err)
+		}
+	}
+
+	// 6. A deprecated requirement must say why: the reason is the record
+	// that outlives the requirement.
+	for _, r := range f.Requirements {
+		if r.Deprecated && strings.TrimSpace(r.DeprecatedReason) == "" {
+			fail("requirement %s is deprecated without a deprecated_reason", r.ID)
+		}
+	}
+
+	return errs
 }
 
 // toJSONTypes converts YAML-decoded values to what the schema library
@@ -269,7 +324,7 @@ func render(f File, m Mappings) string {
 	w("# Product promises and proof")
 	w("")
 	w("<!-- GENERATED by tools/requirements — do not edit. Regenerate with:")
-	w("     go run ./tools/requirements generate -->")
+	w("     go -C tools/requirements run . generate -->")
 	w("")
 	w("Every externally observable behavior of FosterStack Cache, as a stable")
 	w("requirement with measurable acceptance criteria, and the evidence for each.")
@@ -327,8 +382,15 @@ func render(f File, m Mappings) string {
 			w("## %s", groupTitle(g))
 			w("")
 		}
-		w("### %s — %s", r.ID, r.Title)
-		w("")
+		if r.Deprecated {
+			w("### %s — %s (DEPRECATED)", r.ID, r.Title)
+			w("")
+			w("> **Deprecated:** %s", strings.TrimSpace(strings.ReplaceAll(r.DeprecatedReason, "\n", " ")))
+			w("")
+		} else {
+			w("### %s — %s", r.ID, r.Title)
+			w("")
+		}
 		w("%s", strings.TrimSpace(r.Statement))
 		w("")
 		w("*Introduced %s · tier %s · confidence %s · source: %s*",
@@ -387,5 +449,3 @@ func fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "requirements: "+format+"\n", a...)
 	os.Exit(1)
 }
-
-var _ = filepath.Join

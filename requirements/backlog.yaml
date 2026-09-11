@@ -28,3 +28,42 @@ backlog:
     note: Issue #10; before beta.
   - title: Paid tiers (SSO, HA/replication, contractual CVE SLA)
     note: Described publicly as direction, not sold as available.
+  - title: buildinfo FIPS label overstates what it knows
+    note: >
+      internal/buildinfo hardcodes "CMVP cert #5247" behind a mode check, so
+      a STANDARD build running with GODEBUG=fips140=on reports the validated
+      module's certificate without containing the frozen module (reproduced
+      in the Sep 10 PR #43 review). The report must be derived from the
+      module identity actually selected into the binary, never from mode
+      alone. Product fix, requirements-first, governed by revised
+      REQ-FIPS-002; origin audit-2026-09-10 (PR #43 review, finding 1).
+  - title: Malformed-path policy - reject or normalize, decide explicitly
+    note: >
+      Go's HTTP router 307-redirects some dot-segment and repeated-slash
+      paths (/a/../b, /a//b, /a/./b) to the normalized form BEFORE key
+      validation, so a redirect-following client resubmits to the
+      normalized key instead of receiving the documented 400 (reproduced in
+      the Sep 10 PR #43 review). Decide whether malformed paths are
+      rejected or normalization is the documented contract, align server
+      and requirement, and cover raw and percent-encoded forms. Origin
+      audit-2026-09-10 (PR #43 review, finding 2).
+  - title: Oversized entry policy
+    note: >
+      An upload larger than the entire FSCACHE_MAX_BYTES cap is currently
+      accepted, written to disk, and then evicted itself - the client gets
+      success for an entry that is immediately unretrievable, and the
+      write transiently uses disk beyond the cap (reproduced in the Sep 10
+      PR #43 review). Choosing rejection, or making temporary-disk
+      guarantees, is new product behavior needing its own requirement;
+      until then REQ-EVICT-001 is scoped to entries that individually fit.
+      Related: temporary/in-flight disk usage and concurrent-write headroom
+      need requirements before any hard filesystem quota is claimed.
+      Origin audit-2026-09-10 (PR #43 review, finding 5).
+  - title: Reserved-path PUT behavior
+    note: >
+      A PUT to a reserved endpoint path (e.g. /healthz) is accepted into
+      the cache namespace while its GET answers as the endpoint - stored
+      bytes that are unreachable over HTTP (Sep 10 PR #43 review). Decide
+      whether such PUTs should be rejected; REQ-PROTO-002 now scopes the
+      round-trip contract to non-reserved paths. Origin audit-2026-09-10
+      (PR #43 review, additional clarifications).

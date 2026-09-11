@@ -66,17 +66,27 @@ requirements:
     title: Request path is the cache key
     statement: >
       The server shall treat the entire request path, with the leading slash
-      removed, as the cache key; no path prefix exists and none is required
-      on either side.
+      removed, as the cache key - no path prefix exists and none is required
+      on either side - EXCEPT the server's reserved application endpoints
+      ("/", /healthz, /metrics, /statusz), which are not cache keys: a
+      request to a reserved path is answered by that endpoint, never by the
+      cache namespace.
     source: [docs/gradle.md "trailing slash", docs/docker-deploy.md, internal/server/server.go cacheEndpoint]
     tier: community
     introduced: v0.1.0
     confidence: documented
+    notes: >
+      Recorded at review (Sep 10): a PUT to a reserved path such as
+      /healthz is currently accepted into the cache namespace while its
+      GET answers with the endpoint response, so those bytes are stored
+      but unreachable over HTTP. The unqualified round-trip claim would
+      overlook that collision; behavior at the reserved paths themselves
+      is a product question tracked in backlog.yaml.
     acceptance_criteria:
       - id: REQ-PROTO-002-AC1
         given: a running server
-        when: a client PUTs to /a/nested/key and GETs /a/nested/key
-        then: the round trip succeeds, and the same bytes are not visible under any other path
+        when: a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path
+        then: the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints
         verification: { method: http-integration, release_blocking: true }
         status: proposed
 
@@ -91,12 +101,22 @@ requirements:
     tier: community
     introduced: v0.1.0
     confidence: documented
+    notes: >
+      Recorded at review (Sep 10): Go's HTTP router redirects some
+      dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b
+      answer 307 to the normalized path) BEFORE key validation runs, so a
+      helper-level test cannot stand in for this HTTP contract, and a
+      redirect-following client may resubmit to the normalized key.
+      Whether malformed paths must be rejected or may be normalized is an
+      open product decision in backlog.yaml; evidence for this criterion
+      must exercise the real routing stack with raw AND percent-encoded
+      malformed paths and confirm no unintended write occurs.
     acceptance_criteria:
       - id: REQ-PROTO-003-AC1
-        given: a running server
-        when: a client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment
-        then: every such request returns 400 and no file is created outside the store root
-        verification: { method: unit, release_blocking: true }
+        given: a running server, exercised through its real HTTP routing stack
+        when: a client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form
+        then: no such request stores or retrieves data under an unintended key and none creates a file outside the store root; requests reaching key validation return 400
+        verification: { method: http-integration, release_blocking: true }
         status: proposed
       - id: REQ-PROTO-003-AC2
         given: the bare root path (empty key) via PUT
@@ -350,18 +370,33 @@ requirements:
   - id: REQ-EVICT-001
     title: Size-capped LRU eviction
     statement: >
-      With FSCACHE_MAX_BYTES set, the server shall evict least-recently-used
-      entries once the cap is reached and shall not grow the store past the
-      cap; with the cap at 0 the store shall be unbounded.
+      With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED
+      LIVE-CACHE BLOB BYTES - the total size of indexed, retrievable
+      entries, measured after an operation completes - by evicting
+      least-recently-used entries; with the cap at 0 the store shall be
+      unbounded. This is a bounded live-cache size with documented
+      temporary headroom, not a hard filesystem quota: temporary and
+      in-flight disk usage during writes, and concurrent-write headroom,
+      are outside this requirement and need requirements of their own
+      before any hard disk ceiling is claimed.
     source: [README.md "Full core", docs/docker-deploy.md "Sizing", internal/cache/cache.go]
     tier: community
     introduced: v0.1.0
     confidence: documented
+    notes: >
+      Recorded at review (Sep 10): the implementation writes the incoming
+      object before evicting, and an entry LARGER than the whole cap is
+      accepted and then immediately evicted itself (write succeeds, read
+      returns not-found, indexed total returns to zero). The oversized-
+      entry policy is an open product decision in backlog.yaml; this
+      criterion is therefore limited to entries that individually fit
+      within the cap, so it describes the extracted contract without
+      silently strengthening it.
     acceptance_criteria:
       - id: REQ-EVICT-001-AC1
-        given: a server with a small cap and entries exceeding it
-        when: a new entry is stored
-        then: the least-recently-used entries are removed until the new entry fits, and total size never exceeds the cap
+        given: a server with a small cap, holding entries that exceed it in aggregate, where each entry's individual size is at most the cap
+        when: a new entry no larger than the cap is stored
+        then: least-recently-used entries are removed until the new entry fits, the new entry is retrievable afterward, and the committed live-cache blob bytes, measured after the operation completes, do not exceed the cap
         verification: { method: component, release_blocking: true }
         status: proposed
       - id: REQ-EVICT-001-AC2
@@ -504,9 +539,9 @@ requirements:
     confidence: documented
     acceptance_criteria:
       - id: REQ-PRIV-001-AC1
-        given: a running server under load and then idle
-        when: its open sockets are observed over the whole period
-        then: the only sockets are its listener and accepted inbound connections, and no UDP socket is ever opened
+        given: a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods
+        when: the run completes and the egress record is examined
+        then: the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative
         verification: { method: acceptance-container, release_blocking: true }
         status: proposed
 
@@ -624,34 +659,54 @@ requirements:
     statement: >
       The -fips build shall link Go's CMVP-validated FIPS 140-3
       cryptographic module (certificate #5247), selected at build time by
-      GOFIPS140.
+      GOFIPS140. Enabled mode alone is not this requirement: a standard
+      build can enable FIPS mode at runtime (GODEBUG=fips140=on) without
+      containing the frozen validated module, so evidence must establish
+      the module identity, not just the mode.
     source: [README.md "Image variants", docs/install.md FIPS section, .goreleaser.yaml fscache-fips]
     tier: community
     introduced: v0.1.0
     confidence: documented
     acceptance_criteria:
       - id: REQ-FIPS-001-AC1
-        given: the released fscache-fips binary
-        when: crypto/fips140 state is interrogated at runtime
-        then: the module reports enabled
+        given: the released fscache-fips artifact, in a supported environment
+        when: its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined
+        then: the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: proposed
+      - id: REQ-FIPS-001-AC2
+        given: a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on)
+        when: the same evidence check runs against it
+        then: it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: proposed
 
   - id: REQ-FIPS-002
-    title: FIPS posture observable at runtime
+    title: FIPS posture observable and truthful at runtime
     statement: >
-      The startup log and /statusz shall report the FIPS posture truthfully
-      per build - "active" with the module and certificate named on -fips
-      builds, "off" on standard builds.
+      The startup log and /statusz shall report the actual FIPS operating
+      mode and the actual module identity truthfully in every runtime
+      configuration, including runtime overrides: a -fips build reports
+      active with its module identified; a standard build reports off by
+      default; and a standard build with FIPS mode enabled at runtime
+      (GODEBUG=fips140=on) shall not claim the validated module or its
+      certificate. The report shall never state more than the binary can
+      know about itself.
     source: [docs/install.md, docs/offline-install.md, internal/buildinfo]
     tier: community
     introduced: v0.2.0
     confidence: documented
+    notes: >
+      Known discrepancy at extraction, recorded in backlog.yaml: the
+      current internal/buildinfo note hardcodes the certificate label
+      behind a mode check, so a runtime-enabled standard build would
+      overstate its posture. The product fix is later requirements-first
+      work, not part of this baseline PR.
     acceptance_criteria:
       - id: REQ-FIPS-002-AC1
-        given: one standard and one -fips build
+        given: three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on
         when: each starts and /statusz is read
-        then: the standard build reports fips140 off and the -fips build reports active with the certificate number
+        then: the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: proposed
 
