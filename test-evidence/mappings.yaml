@@ -158,3 +158,21 @@ mappings:
   - ac: REQ-MAVEN-001-AC2
     evidence:
       - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }
+  - ac: REQ-PROTO-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestNestedKeyRoundTripOverHTTP" }
+  - ac: REQ-AUTH-004-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestCredentialsIgnoredByNoAuthServer" }
+  - ac: REQ-OBS-005-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestRouteSurfaceIsCachePlusReadOnlyEndpoints" }
+  - ac: REQ-STORE-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestInterruptedUploadLeavesNoPartialAndPreservesPrevious" }
+  - ac: REQ-STORE-003-AC1
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestOnDiskPermissionsAreTight" }
+  - ac: REQ-DEPLOY-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }

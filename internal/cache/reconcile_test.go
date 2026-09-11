@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fosterstack/cache/internal/blobstore"
 	"github.com/fosterstack/cache/internal/metadata"
@@ -181,3 +182,72 @@ func TestAdoptedBlobParticipatesInEviction(t *testing.T) {
 		t.Errorf("TotalSize %d exceeds cap after eviction", total)
 	}
 }
+
+// REQ-STORE-002-AC1: an upload whose body fails mid-stream leaves no
+// partial entry, and a failed overwrite preserves the previous value.
+func TestInterruptedUploadLeavesNoPartialAndPreservesPrevious(t *testing.T) {
+	blobDir, metaPath := t.TempDir(), filepath.Join(t.TempDir(), "meta.db")
+	blobs, meta := openTestStores(t, blobDir, metaPath)
+	c := New(blobs, meta)
+	defer func() { _ = c.Close() }()
+
+	// Fresh key: failed upload -> absent, not truncated.
+	_, err := c.Put(context.Background(), "fresh/key", failingReader{})
+	if err == nil {
+		t.Fatal("Put with a failing body reported success")
+	}
+	if _, _, err := c.Get(context.Background(), "fresh/key"); err == nil {
+		t.Error("a partial entry is retrievable after a failed upload")
+	}
+
+	// Overwrite: the previous complete value survives the failure.
+	put(t, c, "existing/key", "original-value")
+	if _, err := c.Put(context.Background(), "existing/key", failingReader{}); err == nil {
+		t.Fatal("overwrite with failing body reported success")
+	}
+	rc, _, err := c.Get(context.Background(), "existing/key")
+	if err != nil {
+		t.Fatalf("previous value lost after failed overwrite: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	if b, _ := io.ReadAll(rc); string(b) != "original-value" {
+		t.Errorf("previous value corrupted: %q", b)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read(p []byte) (int, error) {
+	p[0] = 'x'
+	return 1, io.ErrUnexpectedEOF
+}
+
+// REQ-DEPLOY-002-AC1: the metadata store is single-writer — a second
+// process (simulated by a second Open on the same file) must not obtain
+// the store while the first holds it.
+func TestSecondOpenOnSameMetadataStoreDoesNotProceed(t *testing.T) {
+	metaPath := filepath.Join(t.TempDir(), "meta.db")
+	first, err := metadata.Open(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+
+	opened := make(chan struct{})
+	go func() {
+		second, err := metadata.Open(metaPath)
+		if err == nil {
+			_ = second.Close()
+		}
+		close(opened)
+	}()
+	select {
+	case <-opened:
+		t.Fatal("a second open on the same metadata store succeeded while the first held it — single-writer is not being enforced")
+	case <-timeAfter(500):
+		// Blocked on the file lock: exactly right. The goroutine stays
+		// blocked until first.Close in cleanup releases the lock.
+	}
+}
+
+func timeAfter(ms int) <-chan time.Time { return time.After(time.Duration(ms) * time.Millisecond) }
