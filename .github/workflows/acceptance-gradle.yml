@@ -51,22 +51,38 @@ jobs:
           echo "fscache never became healthy" >&2
           exit 1
 
+      # --info so Gradle logs each task's cache key: the assertions below
+      # verify the EXACT key of every expected task on the server, which
+      # is environment-independent — a fresh runner also uploads Gradle's
+      # Kotlin-DSL script-compilation entries, so a raw PUT count is not a
+      # stable expectation (found empirically: 6 task entries + 9 script
+      # entries on CI vs 6 total on a warmed-up machine).
       - name: gradlew build (cold — populates the remote cache)
         working-directory: bench/gradle-sample
-        run: ./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain
+        run: |
+          ./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain --info 2>&1 \
+            | tee /tmp/cold.log | grep -E '> Task|BUILD' || true
 
-      # REQ-GRADLE-001-AC2 (cold half): the cold build must have UPLOADED —
-      # server-side evidence from /metrics, one PUT per expected-cacheable
-      # task, and zero hits (nothing was there to hit).
-      - name: assert the cold build populated the cache (server-side evidence)
+      # REQ-GRADLE-001-AC2 (cold half): every expected task's OWN cache
+      # entry is on the server — verified key by key with HEAD (which does
+      # not perturb the hit/miss counters) — and nothing was served from
+      # an empty cache.
+      - name: assert the cold build stored every expected task's entry
         run: |
           set -euo pipefail
-          expected=$(wc -l < bench/gradle-sample/expected-from-cache.txt | tr -d ' ')
+          : > /tmp/task-keys.txt
+          while read -r task; do
+            key=$(grep -oE "Build cache key for task '${task}' is [0-9a-f]+" /tmp/cold.log | awk '{print $NF}' | head -1)
+            if [ -z "${key}" ]; then
+              echo "::error::no cache key logged for expected task ${task} — did it execute as cacheable?" >&2; exit 1
+            fi
+            echo "${task} ${key}" >> /tmp/task-keys.txt
+            code=$(curl -s -o /dev/null -w '%{http_code}' -I "localhost:18095/${key}")
+            [ "${code}" = "200" ] || { echo "::error::entry for ${task} (key ${key}) not on the server (HEAD=${code})" >&2; exit 1; }
+            echo "stored: ${task} -> ${key}"
+          done < bench/gradle-sample/expected-from-cache.txt
           curl -s localhost:18095/metrics > /tmp/metrics-cold.txt
-          puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-cold.txt)
           hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-cold.txt)
-          echo "cold: PUTs=${puts:-0} hits=${hits:-0} (expected ${expected} PUTs, 0 hits)"
-          [ "${puts:-0}" -eq "${expected}" ] || { echo "::error::cold build uploaded ${puts:-0} entries, expected ${expected}" >&2; exit 1; }
           [ "${hits:-0}" -eq 0 ] || { echo "::error::cold build had ${hits} hits against an empty cache" >&2; exit 1; }
 
       # REQ-GRADLE-001-AC3: snapshot the compiled outputs so the warm
@@ -105,18 +121,21 @@ jobs:
             exit 1
           fi
 
-      # REQ-GRADLE-001-AC2 (warm half): the hits happened ON THE SERVER —
-      # exactly one per expected task, and no further uploads.
+      # REQ-GRADLE-001-AC2 (warm half): the restores happened ON THE
+      # SERVER — at least one hit per expected task (script-compilation
+      # entries also hit, so >= not ==), and the warm build uploaded
+      # NOTHING new (restored outputs must not re-upload).
       - name: assert the warm build hit the server (server-side evidence)
         run: |
           set -euo pipefail
           expected=$(wc -l < bench/gradle-sample/expected-from-cache.txt | tr -d ' ')
+          cold_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-cold.txt)
           curl -s localhost:18095/metrics > /tmp/metrics-warm.txt
           hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-warm.txt)
-          puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-warm.txt)
-          echo "warm: cumulative hits=${hits:-0} PUTs=${puts:-0} (expected ${expected} hits, still ${expected} PUTs)"
-          [ "${hits:-0}" -eq "${expected}" ] || { echo "::error::server saw ${hits:-0} cache hits, expected ${expected}" >&2; exit 1; }
-          [ "${puts:-0}" -eq "${expected}" ] || { echo "::error::warm build uploaded again (PUTs=${puts:-0}) — restored outputs should not re-upload" >&2; exit 1; }
+          warm_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-warm.txt)
+          echo "warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)"
+          [ "${hits:-0}" -ge "${expected}" ] || { echo "::error::server saw ${hits:-0} hits, expected at least ${expected}" >&2; exit 1; }
+          [ "${warm_puts:-0}" -eq "${cold_puts:-0}" ] || { echo "::error::the warm build uploaded new entries — restored outputs must not re-upload" >&2; exit 1; }
 
       # REQ-GRADLE-001-AC3: restored outputs are byte-identical to what the
       # cold build produced.
