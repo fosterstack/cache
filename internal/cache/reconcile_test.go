@@ -47,12 +47,12 @@ func TestRestartPersistence(t *testing.T) {
 
 	blobs2, meta2 := openTestStores(t, blobDir, metaPath)
 	c2 := New(blobs2, meta2)
-	defer c2.Close()
+	defer func() { _ = c2.Close() }()
 	rc, size, err := c2.Get(context.Background(), "restart/key")
 	if err != nil {
 		t.Fatalf("Get after reopen: %v", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	b, _ := io.ReadAll(rc)
 	if string(b) != "survives" || size != int64(len("survives")) {
 		t.Errorf("got %q (size %d) after restart", b, size)
@@ -70,7 +70,7 @@ func TestPutFailsAndRemovesBlobWhenMetadataFails(t *testing.T) {
 	blobDir, metaPath := t.TempDir(), filepath.Join(t.TempDir(), "meta.db")
 	blobs, meta := openTestStores(t, blobDir, metaPath)
 	c := New(blobs, meta)
-	defer blobs.Close()
+	defer func() { _ = blobs.Close() }()
 
 	if err := meta.Close(); err != nil { // the injection
 		t.Fatalf("closing metadata store: %v", err)
@@ -94,7 +94,7 @@ func TestReconcileAdoptsOrphanBlob(t *testing.T) {
 		t.Fatalf("seed blob: %v", err)
 	}
 	c := New(blobs, meta)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	stats, err := c.Reconcile(context.Background())
 	if err != nil {
@@ -119,7 +119,7 @@ func TestReconcileDropsDanglingRecord(t *testing.T) {
 		t.Fatalf("seed record: %v", err)
 	}
 	c := New(blobs, meta)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	stats, err := c.Reconcile(context.Background())
 	if err != nil {
@@ -138,7 +138,7 @@ func TestReconcileMixedStateTotalsCorrect(t *testing.T) {
 	blobDir, metaPath := t.TempDir(), filepath.Join(t.TempDir(), "meta.db")
 	blobs, meta := openTestStores(t, blobDir, metaPath)
 	c := New(blobs, meta)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	put(t, c, "healthy/key", "abc")                                             // consistent
 	if _, err := blobs.Put("orphan/k", strings.NewReader("dddd")); err != nil { // orphan
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestAdoptedBlobParticipatesInEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := New(blobs, meta, WithMaxBytes(12))
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if _, err := c.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
