@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -34,13 +35,21 @@ type config struct {
 }
 
 func loadConfig() (config, error) {
+	maxBytes, err := envSize("FSCACHE_MAX_BYTES", 0)
+	if err != nil {
+		return config{}, err
+	}
+	maxBodyBytes, err := envSize("FSCACHE_MAX_BODY_BYTES", 1<<30) // 1 GiB default cap per blob
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
 		addr:         envOr("FSCACHE_ADDR", ":8080"),
 		dataDir:      envOr("FSCACHE_DATA_DIR", "./data"),
-		maxBytes:     envInt64("FSCACHE_MAX_BYTES", 0),
+		maxBytes:     maxBytes,
 		username:     os.Getenv("FSCACHE_USERNAME"),
 		password:     os.Getenv("FSCACHE_PASSWORD"),
-		maxBodyBytes: envInt64("FSCACHE_MAX_BODY_BYTES", 1<<30), // 1 GiB default cap per blob
+		maxBodyBytes: maxBodyBytes,
 	}
 	if (cfg.username == "") != (cfg.password == "") {
 		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
@@ -55,16 +64,25 @@ func envOr(key, def string) string {
 	return def
 }
 
-func envInt64(key string, def int64) int64 {
+// envSize parses a non-negative byte count from the environment, failing
+// closed (REQ-CFG-003): an unparseable value, trailing garbage, a
+// negative number, or an overflow stops startup with the variable and the
+// value named. A silent default here once turned a bounded cache
+// unbounded on a units typo — the exact bug this replaces. strconv, not
+// Sscanf: Sscanf's %d happily reads "12abc" as 12.
+func envSize(key string, def int64) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
-	var n int64
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return def
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid byte count (whole non-negative decimal number): %w", key, v, err)
 	}
-	return n
+	if n < 0 {
+		return 0, fmt.Errorf("%s=%q is negative; a byte count cannot be", key, v)
+	}
+	return n, nil
 }
 
 func main() {
