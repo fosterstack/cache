@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 46 |
 | Acceptance criteria | 60 |
 | Release-blocking ACs | 38 |
-| ACs with mapped evidence | 31 |
-| Release-blocking ACs with mapped evidence | 19 |
+| ACs with mapped evidence | 34 |
+| Release-blocking ACs with mapped evidence | 21 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
@@ -191,7 +191,7 @@ The HTTP server shall run with explicit timeouts, generous where a legitimate ca
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-HTTP-001-AC1 | Given the constructed HTTP server; when its timeout configuration is examined; then ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset | unit | yes | approved | none mapped |
+| REQ-HTTP-001-AC1 | Given the constructed HTTP server; when its timeout configuration is examined; then ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset | unit | yes | approved | 2 item(s) |
 
 ### REQ-HTTP-002 — Bounded concurrent uploads
 
@@ -201,8 +201,8 @@ The server shall bound concurrent PUT processing: at most FSCACHE_MAX_CONCURRENT
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | none mapped |
-| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule | unit |  | approved | none mapped |
+| REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | 3 item(s) |
+| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule | unit |  | approved | 1 item(s) |
 
 ## Storage
 

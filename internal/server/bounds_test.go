@@ -63,7 +63,7 @@ func TestConcurrentUploadBoundRefusesExcessWith429(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/slow-key", slow)
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode != http.StatusCreated {
 				firstDone <- io.ErrUnexpectedEOF
 				return

@@ -71,12 +71,17 @@ const (
 )
 
 // NewHTTPServer builds the http.Server with the required timeouts
-// (REQ-HTTP-001) around the handler from New.
+// (REQ-HTTP-001) around the handler from New. Every timeout is explicit:
+// an unset Go timeout is infinite, and an infinite timeout is a resource
+// leak with a slow-enough client attached.
 func NewHTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
 		ReadHeaderTimeout: ReadHeaderTimeout,
+		ReadTimeout:       ReadTimeout,
+		WriteTimeout:      WriteTimeout,
+		IdleTimeout:       IdleTimeout,
 	}
 }
 
@@ -108,7 +113,7 @@ func New(cfg Config) http.Handler {
 	// cache key still routes to the cache handler below.
 	mux.Handle("GET /{$}", withAuth(cfg.Auth, withMetrics(cfg.Metrics, http.HandlerFunc(status.handleRoot))))
 
-	cacheHandler := withAuth(cfg.Auth, withMetrics(cfg.Metrics, cacheEndpoint(cfg)))
+	cacheHandler := withAuth(cfg.Auth, withMetrics(cfg.Metrics, withUploadBound(cfg, cacheEndpoint(cfg))))
 	mux.Handle("/", cacheHandler)
 
 	return mux
@@ -138,6 +143,32 @@ func withAuth(creds Credentials, next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// withUploadBound refuses PUTs beyond the configured concurrency bound
+// with 429 + Retry-After (REQ-HTTP-002). A non-blocking semaphore, not a
+// queue: a build client treats any error as a cache miss and moves on, so
+// making it wait would spend its build time to save our threads. Zero
+// disables the bound.
+func withUploadBound(cfg Config, next http.Handler) http.Handler {
+	if cfg.MaxConcurrentUploads <= 0 {
+		return next
+	}
+	slots := make(chan struct{}, cfg.MaxConcurrentUploads)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			next.ServeHTTP(w, r)
+			return
+		}
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "too many concurrent uploads", http.StatusTooManyRequests)
+		}
 	})
 }
 
