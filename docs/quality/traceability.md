@@ -8,9 +8,7 @@ requirement with measurable acceptance criteria, and the evidence for each.
 The machine-readable source is [`requirements/requirements.yaml`](../../requirements/requirements.yaml);
 this page is a generated view of it and CI fails if the two drift.
 
-Baseline extracted from `acd8bac2f9427dee63c71384dcbfecdb5c7ccf1b` on 2026-09-08. **Owner review of the baseline is
-pending; every acceptance criterion below is `proposed`, and no test
-mapping happens until the baseline is approved.**
+Baseline extracted from `acd8bac2f9427dee63c71384dcbfecdb5c7ccf1b` on 2026-09-08; approved by the owner on 2026-09-11.
 
 The baseline was extracted from the documentation and implementation at the
 revision above — it is retroactive and described as exactly that. Since
@@ -36,8 +34,8 @@ The server shall store a blob on PUT, return the identical bytes on GET, report 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-001-AC1 | Given a running server with an empty store; when a client PUTs a body to /some-key and then GETs /some-key; then the PUT returns 201, the GET returns 200 with byte-identical content and a correct Content-Length | http-integration | yes | proposed | none mapped |
-| REQ-PROTO-001-AC2 | Given a stored key; when a client sends HEAD for that key and GET for an absent key; then HEAD returns 200 with the stored size and no body; the GET of the absent key returns 404 | http-integration | yes | proposed | none mapped |
+| REQ-PROTO-001-AC1 | Given a running server with an empty store; when a client PUTs a body to /some-key and then GETs /some-key; then the PUT returns 201, the GET returns 200 with byte-identical content and a correct Content-Length | http-integration | yes | approved | none mapped |
+| REQ-PROTO-001-AC2 | Given a stored key; when a client sends HEAD for that key and GET for an absent key; then HEAD returns 200 with the stored size and no body; the GET of the absent key returns 404 | http-integration | yes | approved | none mapped |
 
 ### REQ-PROTO-002 — Request path is the cache key
 
@@ -49,7 +47,7 @@ The server shall treat the entire request path, with the leading slash removed, 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-002-AC1 | Given a running server; when a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path; then the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints | http-integration | yes | proposed | none mapped |
+| REQ-PROTO-002-AC1 | Given a running server; when a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path; then the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints | http-integration | yes | approved | none mapped |
 
 ### REQ-PROTO-003 — Key validation
 
@@ -61,8 +59,8 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | proposed | none mapped |
-| REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | proposed | none mapped |
+| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | none mapped |
+| REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 
 ### REQ-PROTO-004 — Method surface
 
@@ -72,7 +70,7 @@ The server shall answer methods other than GET, PUT, and HEAD on cache paths wit
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-004-AC1 | Given a running server; when a client sends DELETE to a cache path; then the response is 405 with "Allow: GET, PUT, HEAD" | http-integration |  | proposed | none mapped |
+| REQ-PROTO-004-AC1 | Given a running server; when a client sends DELETE to a cache path; then the response is 405 with "Allow: GET, PUT, HEAD" | http-integration |  | approved | none mapped |
 
 ### REQ-PROTO-005 — Body-size cap
 
@@ -82,7 +80,7 @@ The server shall reject a PUT whose body exceeds FSCACHE_MAX_BODY_BYTES with HTT
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-005-AC1 | Given a server with a small configured body cap; when a client PUTs a body larger than the cap; then the response is 413 and a subsequent GET of that key returns 404 | http-integration | yes | proposed | none mapped |
+| REQ-PROTO-005-AC1 | Given a server with a small configured body cap; when a client PUTs a body larger than the cap; then the response is 413 and a subsequent GET of that key returns 404 | http-integration | yes | approved | none mapped |
 
 ### REQ-PROTO-006 — Browser landing page
 
@@ -92,7 +90,7 @@ The server shall answer a browser GET of the bare root with an HTML landing page
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-006-AC1 | Given a running server holding a stored key; when a client GETs / and then GETs the stored key; then the root returns 200 HTML linking /statusz, and the stored key still returns its bytes | http-integration |  | proposed | none mapped |
+| REQ-PROTO-006-AC1 | Given a running server holding a stored key; when a client GETs / and then GETs the stored key; then the root returns 200 HTML linking /statusz, and the stored key still returns its bytes | http-integration |  | approved | none mapped |
 
 ## Configuration
 
@@ -106,8 +104,8 @@ The server shall be configured solely by environment variables: FSCACHE_ADDR (de
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-001-AC1 | Given a server started with no environment variables set; when it starts; then it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth | unit | yes | proposed | none mapped |
-| REQ-CFG-001-AC2 | Given a server started with every variable set to a custom valid value; when it starts; then each value is honored, observably (listen address, data location, cap behavior, auth behavior) | component | yes | proposed | none mapped |
+| REQ-CFG-001-AC1 | Given a server started with no environment variables set; when it starts; then it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth | unit | yes | approved | none mapped |
+| REQ-CFG-001-AC2 | Given a server started with every variable set to a custom valid value; when it starts; then each value is honored, observably (listen address, data location, cap behavior, auth behavior) | component | yes | approved | none mapped |
 
 ### REQ-CFG-002 — Credentials are both-or-neither
 
@@ -117,7 +115,7 @@ The server shall refuse to start when exactly one of FSCACHE_USERNAME and FSCACH
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | proposed | none mapped |
+| REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | approved | none mapped |
 
 ## Authentication
 
@@ -129,8 +127,8 @@ When credentials are configured, the server shall require HTTP Basic Auth on eve
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-001-AC1 | Given a server with credentials configured; when requests arrive with no credentials, wrong credentials, and correct credentials; then the first two receive 401 with WWW-Authenticate and cause no store change; the third succeeds | http-integration | yes | proposed | none mapped |
-| REQ-AUTH-001-AC2 | Given a server with credentials configured; when /statusz and the root landing page are requested without credentials; then both return 401; with credentials both return 200 | http-integration |  | proposed | none mapped |
+| REQ-AUTH-001-AC1 | Given a server with credentials configured; when requests arrive with no credentials, wrong credentials, and correct credentials; then the first two receive 401 with WWW-Authenticate and cause no store change; the third succeeds | http-integration | yes | approved | none mapped |
+| REQ-AUTH-001-AC2 | Given a server with credentials configured; when /statusz and the root landing page are requested without credentials; then both return 401; with credentials both return 200 | http-integration |  | approved | none mapped |
 
 ### REQ-AUTH-002 — Constant-time credential comparison
 
@@ -140,7 +138,7 @@ The server shall compare presented credentials in constant time, with both usern
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-002-AC1 | Given the auth implementation; when it is inspected; then comparison uses crypto/subtle.ConstantTimeCompare for both fields with no short-circuit between them | inspection |  | proposed | none mapped |
+| REQ-AUTH-002-AC1 | Given the auth implementation; when it is inspected; then comparison uses crypto/subtle.ConstantTimeCompare for both fields with no short-circuit between them | inspection |  | approved | none mapped |
 
 ### REQ-AUTH-003 — Probes and scrapers stay open
 
@@ -150,7 +148,7 @@ The server shall compare presented credentials in constant time, with both usern
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-003-AC1 | Given a server with credentials configured; when /healthz and /metrics are requested without credentials; then both return 200 | http-integration | yes | proposed | none mapped |
+| REQ-AUTH-003-AC1 | Given a server with credentials configured; when /healthz and /metrics are requested without credentials; then both return 200 | http-integration | yes | approved | none mapped |
 
 ### REQ-AUTH-004 — Credentials tolerated by a no-auth server
 
@@ -160,7 +158,7 @@ A server with authentication disabled shall accept requests that carry an Author
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | proposed | none mapped |
+| REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | none mapped |
 
 ## Storage
 
@@ -172,7 +170,7 @@ Stored entries shall survive a clean server restart: a key stored before shutdow
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | proposed | none mapped |
+| REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | none mapped |
 
 ### REQ-STORE-002 — Atomic writes
 
@@ -182,7 +180,7 @@ An interrupted or failed upload shall leave no partial entry: a key is either fu
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-002-AC1 | Given an upload that fails or is cancelled mid-body; when the same key is subsequently requested; then either 404 (never stored) or the previous complete value; never truncated bytes | component | yes | proposed | none mapped |
+| REQ-STORE-002-AC1 | Given an upload that fails or is cancelled mid-body; when the same key is subsequently requested; then either 404 (never stored) or the previous complete value; never truncated bytes | component | yes | approved | none mapped |
 
 ### REQ-STORE-003 — Tight on-disk permissions
 
@@ -192,7 +190,7 @@ The store shall create directories with mode 0750 and blob files with mode 0600.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-003-AC1 | Given a fresh store that has accepted one entry; when the on-disk tree is examined; then every directory is 0750 and every blob file 0600 | component |  | proposed | none mapped |
+| REQ-STORE-003-AC1 | Given a fresh store that has accepted one entry; when the on-disk tree is examined; then every directory is 0750 and every blob file 0600 | component |  | approved | none mapped |
 
 ## Eviction
 
@@ -206,8 +204,8 @@ With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED LIVE-CACHE BLOB
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-EVICT-001-AC1 | Given a server with a small cap, holding entries that exceed it in aggregate, where each entry's individual size is at most the cap; when a new entry no larger than the cap is stored; then least-recently-used entries are removed until the new entry fits, the new entry is retrievable afterward, and the committed live-cache blob bytes, measured after the operation completes, do not exceed the cap | component | yes | proposed | none mapped |
-| REQ-EVICT-001-AC2 | Given a capped store where an old key is re-read; when eviction next runs; then the re-read key is treated as recently used and outlives never-read older entries | component |  | proposed | none mapped |
+| REQ-EVICT-001-AC1 | Given a server with a small cap, holding entries that exceed it in aggregate, where each entry's individual size is at most the cap; when a new entry no larger than the cap is stored; then least-recently-used entries are removed until the new entry fits, the new entry is retrievable afterward, and the committed live-cache blob bytes, measured after the operation completes, do not exceed the cap | component | yes | approved | none mapped |
+| REQ-EVICT-001-AC2 | Given a capped store where an old key is re-read; when eviction next runs; then the re-read key is treated as recently used and outlives never-read older entries | component |  | approved | none mapped |
 
 ## Observability
 
@@ -219,7 +217,7 @@ The server shall answer GET /healthz with HTTP 200 and body "ok".
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-001-AC1 | Given a running server; when GET /healthz; then 200 with body "ok" | http-integration | yes | proposed | none mapped |
+| REQ-OBS-001-AC1 | Given a running server; when GET /healthz; then 200 with body "ok" | http-integration | yes | approved | none mapped |
 
 ### REQ-OBS-002 — Prometheus metrics
 
@@ -229,7 +227,7 @@ GET /metrics shall expose, in Prometheus format, at least fscache_http_requests_
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-002-AC1 | Given a server that served one hit and one miss; when /metrics is scraped; then every named metric is present and hits/misses read 1 and 1 | http-integration | yes | proposed | none mapped |
+| REQ-OBS-002-AC1 | Given a server that served one hit and one miss; when /metrics is scraped; then every named metric is present and hits/misses read 1 and 1 | http-integration | yes | approved | none mapped |
 
 ### REQ-OBS-003 — Read-only status page
 
@@ -239,8 +237,8 @@ GET /statusz shall return the server's state — version, revision, FIPS posture
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-003-AC1 | Given a server with known traffic counts; when /statusz is fetched as JSON and /metrics is scraped; then hits, misses, entries, and store bytes agree exactly between the two | http-integration |  | proposed | none mapped |
-| REQ-OBS-003-AC2 | Given a request with an HTML Accept header; when /statusz is fetched; then the response is HTML containing no form, button, or state-changing control | http-integration |  | proposed | none mapped |
+| REQ-OBS-003-AC1 | Given a server with known traffic counts; when /statusz is fetched as JSON and /metrics is scraped; then hits, misses, entries, and store bytes agree exactly between the two | http-integration |  | approved | none mapped |
+| REQ-OBS-003-AC2 | Given a request with an HTML Accept header; when /statusz is fetched; then the response is HTML containing no form, button, or state-changing control | http-integration |  | approved | none mapped |
 
 ### REQ-OBS-004 — Startup announcement
 
@@ -250,7 +248,7 @@ The startup log line shall announce version, listen address, data directory, siz
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-004-AC1 | Given a starting server; when the first log line is emitted; then it contains version, addr, data_dir, max_bytes, auth, and fips140 fields | component |  | proposed | none mapped |
+| REQ-OBS-004-AC1 | Given a starting server; when the first log line is emitted; then it contains version, addr, data_dir, max_bytes, auth, and fips140 fields | component |  | approved | none mapped |
 
 ### REQ-OBS-005 — No mutable admin surface
 
@@ -260,7 +258,7 @@ The server shall expose no endpoint that changes configuration or purges data; e
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-005-AC1 | Given the full route surface; when it is enumerated; then only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT | http-integration |  | proposed | none mapped |
+| REQ-OBS-005-AC1 | Given the full route surface; when it is enumerated; then only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT | http-integration |  | approved | none mapped |
 
 ### REQ-OBS-006 — Failure-only request logging, no sensitive fields
 
@@ -270,7 +268,7 @@ The server shall write no per-request access log; the only per-request logging s
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-006-AC1 | Given the server's logging call sites; when they are inspected; then per-request logging exists only on failure paths and logs only method, key, and error | inspection |  | proposed | none mapped |
+| REQ-OBS-006-AC1 | Given the server's logging call sites; when they are inspected; then per-request logging exists only on failure paths and logs only method, key, and error | inspection |  | approved | none mapped |
 
 ## Privacy
 
@@ -282,7 +280,7 @@ The server shall make no outbound network connections — no telemetry, no updat
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PRIV-001-AC1 | Given a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods; when the run completes and the egress record is examined; then the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative | acceptance-container | yes | proposed | none mapped |
+| REQ-PRIV-001-AC1 | Given a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods; when the run completes and the egress record is examined; then the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative | acceptance-container | yes | approved | none mapped |
 
 ## Platforms and artifacts
 
@@ -294,7 +292,7 @@ Every release shall ship static (CGO_ENABLED=0) binaries for linux/amd64, linux/
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 
@@ -304,7 +302,7 @@ Every release shall ship three image variants — production, -debug, -fips — 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-002-AC1 | Given a release's three image manifests; when each is inspected and run on both architectures; then both platform entries exist and the container serves cache traffic on each | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-PLAT-002-AC1 | Given a release's three image manifests; when each is inspected and run on both architectures; then both platform entries exist and the container serves cache traffic on each | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-PLAT-003 — Shell-lessness per variant
 
@@ -314,7 +312,7 @@ The production and -fips images shall contain no shell; the -debug image shall p
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-003-AC1 | Given the three release images; when shell presence is probed in each; then production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-PLAT-003-AC1 | Given the three release images; when shell presence is probed in each; then production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-PLAT-004 — Nonroot container execution
 
@@ -324,7 +322,7 @@ The container images shall run as the nonroot user (uid 65532) with the server's
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-004-AC1 | Given a running production container with no overrides; when its process identity and data path are observed; then the process runs as uid 65532 and data lands under /home/nonroot | acceptance-container |  | proposed | none mapped |
+| REQ-PLAT-004-AC1 | Given a running production container with no overrides; when its process identity and data path are observed; then the process runs as uid 65532 and data lands under /home/nonroot | acceptance-container |  | approved | none mapped |
 
 ## Deployment
 
@@ -336,7 +334,7 @@ On SIGTERM or interrupt the server shall stop accepting connections and shut dow
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-DEPLOY-001-AC1 | Given a running server; when SIGTERM is delivered; then the process logs shutdown and exits zero within the drain window | component |  | proposed | none mapped |
+| REQ-DEPLOY-001-AC1 | Given a running server; when SIGTERM is delivered; then the process logs shutdown and exits zero within the drain window | component |  | approved | none mapped |
 
 ### REQ-DEPLOY-002 — Single-writer store
 
@@ -346,7 +344,7 @@ The metadata store shall be single-writer: a second process pointed at the same 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | proposed | none mapped |
+| REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | approved | none mapped |
 
 ## FIPS 140-3
 
@@ -358,8 +356,8 @@ The -fips build shall link Go's CMVP-validated FIPS 140-3 cryptographic module (
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-001-AC1 | Given the released fscache-fips artifact, in a supported environment; when its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined; then the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion | acceptance-release-artifact | yes | proposed | none mapped |
-| REQ-FIPS-001-AC2 | Given a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on); when the same evidence check runs against it; then it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-FIPS-001-AC1 | Given the released fscache-fips artifact, in a supported environment; when its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined; then the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-FIPS-001-AC2 | Given a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on); when the same evidence check runs against it; then it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-FIPS-002 — FIPS posture observable and truthful at runtime
 
@@ -371,7 +369,7 @@ The startup log and /statusz shall report the actual FIPS operating mode and the
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-FIPS-003 — Approved-only crypto enforcement in CI
 
@@ -381,7 +379,7 @@ Every commit shall run the full test suite under GODEBUG=fips140=only against a 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-003-AC1 | Given the CI configuration; when a commit lands; then the fips140-only job runs the full race-enabled suite under the validated module in only-mode | ci-workflow |  | proposed | none mapped |
+| REQ-FIPS-003-AC1 | Given the CI configuration; when a commit lands; then the fips140-only job runs the full race-enabled suite under the validated module in only-mode | ci-workflow |  | approved | none mapped |
 
 ## Gradle
 
@@ -393,7 +391,7 @@ A real multi-module Gradle build configured per docs/gradle.md, with its local b
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-GRADLE-001-AC1 | Given the sample project and an empty cache; when a cold build then a from-scratch second build run against the server; then the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits | acceptance-gradle | yes | proposed | none mapped |
+| REQ-GRADLE-001-AC1 | Given the sample project and an empty cache; when a cold build then a from-scratch second build run against the server; then the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits | acceptance-gradle | yes | approved | none mapped |
 
 ## Maven
 
@@ -407,8 +405,8 @@ The server shall interoperate with the Apache Maven Build Cache Extension's remo
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-MAVEN-001-AC1 | Given a real multi-module Maven project with the extension in remote mode and local caching disabled; when a cold build then a clean second build run against the server; then the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic | acceptance-maven | yes | proposed | none mapped |
-| REQ-MAVEN-001-AC2 | Given the same project with wrong and then missing credentials against an auth-enabled server; when builds run; then both fail in the documented way and store nothing | acceptance-maven |  | proposed | none mapped |
+| REQ-MAVEN-001-AC1 | Given a real multi-module Maven project with the extension in remote mode and local caching disabled; when a cold build then a clean second build run against the server; then the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic | acceptance-maven | yes | approved | none mapped |
+| REQ-MAVEN-001-AC2 | Given the same project with wrong and then missing credentials against an auth-enabled server; when builds run; then both fail in the documented way and store nothing | acceptance-maven |  | approved | none mapped |
 
 ## Release evidence
 
@@ -420,7 +418,7 @@ Every release image shall carry a cosign keyless signature and a SLSA provenance
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-001-AC1 | Given a published release; when the documented cosign and gh attestation commands run anonymously against each image digest and the checksums bundle; then every verification succeeds and names this repository's release workflow | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-REL-001-AC1 | Given a published release; when the documented cosign and gh attestation commands run anonymously against each image digest and the checksums bundle; then every verification succeeds and names this repository's release workflow | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-REL-002 — Anonymous availability
 
@@ -430,7 +428,7 @@ Every published release tag shall be anonymously pullable from GHCR, and the fre
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-002-AC1 | Given a published release; when every published tag is pulled with no registry credential; then every manifest fetch returns 200 | acceptance-release-artifact | yes | proposed | none mapped |
+| REQ-REL-002-AC1 | Given a published release; when every published tag is pulled with no registry credential; then every manifest fetch returns 200 | acceptance-release-artifact | yes | approved | none mapped |
 
 ### REQ-REL-003 — VEX-only scan exceptions
 
@@ -442,7 +440,7 @@ No artifact shall be published with a known CVE at any severity unless a publish
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-003-AC1 | Given the scanner configurations and the VEX document; when they are compared; then every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document | inspection |  | proposed | none mapped |
+| REQ-REL-003-AC1 | Given the scanner configurations and the VEX document; when they are compared; then every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document | inspection |  | approved | none mapped |
 
 ## Licensing
 
@@ -454,4 +452,4 @@ The complete server — cache protocol, eviction, size caps, auth, metrics, stat
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-LIC-001-AC1 | Given the repository and a release; when the license and artifact set are examined; then the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists | manual |  | proposed | none mapped |
+| REQ-LIC-001-AC1 | Given the repository and a release; when the license and artifact set are examined; then the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists | manual |  | approved | none mapped |
