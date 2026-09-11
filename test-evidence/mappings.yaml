@@ -1,17 +1,92 @@
 # AC-to-evidence mappings (traceability-plan.md §5).
 #
-# EMPTY BY DESIGN. The mapping step is stopped until the owner approves the
-# extracted baseline (ccode-input-audit-remediation.md Phase 1 item 1: "hand
-# the extracted baseline to the owner for review BEFORE mapping existing
-# tests to it"). Mapping an unapproved AC would bake today's tests into the
-# review — the exact reverse-engineering the traceability plan forbids.
+# Mapping opened 2026-09-11, after owner approval of the baseline. Rules
+# applied here, conservatively:
 #
-# Entry shape, once mapping begins:
-#   - ac: REQ-PROTO-001-AC1
-#     evidence:
-#       - type: go-test            # go-test | workflow-job | manual | inspection
-#         ref: internal/server/TestPutThenGetRoundTrip
-#       - type: red-run            # failing-first proof for release-blocking ACs
-#         ref: <CI run URL showing the test red before the implementation>
+# - An AC is mapped only to evidence at (or above) its required depth. A
+#   blobstore or helper test never stands in for an http-integration AC,
+#   and a workflow weaker than the AC's assertions is not mapped (the
+#   Gradle acceptance workflow asserts less than REQ-GRADLE-001-AC1
+#   demands, so it stays unmapped until remediation item 1.5 strengthens
+#   it).
+# - An AC whose behavior the current implementation does not satisfy
+#   (REQ-PROTO-003-AC1) is never mapped to a passing test.
+# - v0.2.0 contracts without implementations, and ACs whose evidence class
+#   does not exist yet (acceptance-release-artifact, denied-egress runs),
+#   stay unmapped. Unmapped release-blocking ACs are the to-do list the
+#   matrix exists to expose.
+#
+# go-test refs are "<package dir>:<TestName>" and the validator fails if
+# the named test does not exist in that directory.
 
-mappings: []
+mappings:
+  - ac: REQ-PROTO-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutThenGetRoundTrip" }
+  - ac: REQ-PROTO-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHeadReportsExistenceAndSize" }
+      - { type: go-test, ref: "internal/server:TestGetMissingReturns404" }
+  - ac: REQ-PROTO-004-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMethodNotAllowed" }
+  - ac: REQ-PROTO-005-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutOverMaxBodyBytesReturns413" }
+      - { type: go-test, ref: "internal/server:TestPutAtExactlyMaxBodyBytesSucceeds" }
+  - ac: REQ-PROTO-006-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestRootServesLandingPageNot400" }
+      - { type: go-test, ref: "internal/server:TestRootLandingDoesNotShadowCacheKeys" }
+  - ac: REQ-AUTH-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestBasicAuthRequiredWhenConfigured" }
+  - ac: REQ-AUTH-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatusSurfacesRespectBasicAuth" }
+  - ac: REQ-AUTH-002-AC1
+    evidence:
+      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare on both fields, both always evaluated (re-verified 2026-09-11)" }
+  - ac: REQ-AUTH-003-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMetricsAndHealthzStayOpenWhenAuthEnabled" }
+  - ac: REQ-EVICT-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestEvictionKeepsUnderCapAndKeepsNewest" }
+      - { type: go-test, ref: "internal/cache:TestConcurrentPutEvictsExactlyEnoughUnderCap" }
+      - { type: go-test, ref: "internal/cache:TestNoCapMeansNoEviction" }
+  - ac: REQ-EVICT-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestGetTouchProtectsFromEviction" }
+  - ac: REQ-OBS-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzUnauthenticated" }
+  - ac: REQ-OBS-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMetricsEndpointExposesFscacheMetrics" }
+      - { type: go-test, ref: "internal/server:TestMetricsReportsStoreBytesAndEntries" }
+  - ac: REQ-OBS-003-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetrics" }
+      - { type: go-test, ref: "internal/server:TestStatuszReportsCacheStateAsJSON" }
+  - ac: REQ-OBS-003-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszServesHTMLToBrowsers" }
+  - ac: REQ-OBS-006-AC1
+    evidence:
+      - { type: inspection, ref: "internal/server/server.go: per-request logging exists at exactly two failure sites (short write, store error), fields method/key/error only (re-verified 2026-09-11)" }
+  - ac: REQ-FIPS-003-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
+  - ac: REQ-REL-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/release.yml: cosign sign per digest, attest-build-provenance, and gh attestation verify gate - executed on the v0.1.0 release" }
+  - ac: REQ-REL-002-AC1
+    evidence:
+      - { type: manual, ref: "v0.1.0 anonymous-pull verification (cache PR #28 body): all six published tags returned HTTP 200 to a fresh anonymous registry token, 2026-09-07; the release.yml gate now enforces it before undrafting" }
+  - ac: REQ-REL-003-AC1
+    evidence:
+      - { type: inspection, ref: ".vex/fosterstack-cache.openvex.json v3 consumed by every scanner in release.yml, daily-rescan.yml and rescan-v010.yml; .grype.yaml ignore list empty since 2026-09-10 (PR #44)" }
+  - ac: REQ-LIC-001-AC1
+    evidence:
+      - { type: manual, ref: "LICENSE is MIT; v0.1.0 artifact inventory shows one public channel, no gated artifact, no license-key gate (verified 2026-09-11)" }

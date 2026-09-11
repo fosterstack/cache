@@ -121,6 +121,30 @@ func main() {
 	}
 }
 
+// goTestExists reports whether a Go test function with the given name is
+// declared in any _test.go file under dir (non-recursive — the ref names
+// the package directory).
+func goTestExists(dir, name string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	needle := "func " + name + "("
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(dir + "/" + e.Name())
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(b), needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func repoRoot() string {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
@@ -238,13 +262,36 @@ func validate(f File, m Mappings) []string {
 		}
 	}
 
-	// 3. Mappings must reference known ACs.
+	// 3. Mappings must reference known ACs, carry evidence, and — for
+	// go-test evidence — reference tests that exist. The ref format for
+	// go-test is "<package dir>:<TestName>"; the validator greps that
+	// directory's sources for the function, so a renamed or deleted test
+	// breaks the requirements check instead of silently orphaning an AC.
 	for _, mp := range m.Mappings {
 		if !seenAC[mp.AC] {
 			fail("mappings.yaml references unknown AC %s", mp.AC)
 		}
 		if len(mp.Evidence) == 0 {
 			fail("mapping for %s lists no evidence", mp.AC)
+		}
+		for _, ev := range mp.Evidence {
+			switch ev.Type {
+			case "go-test":
+				dir, name, ok := strings.Cut(ev.Ref, ":")
+				if !ok || dir == "" || name == "" {
+					fail("mapping for %s: go-test ref %q is not <dir>:<TestName>", mp.AC, ev.Ref)
+					continue
+				}
+				if !goTestExists(dir, name) {
+					fail("mapping for %s references go-test %s in %s, which does not exist", mp.AC, name, dir)
+				}
+			case "workflow-job", "manual", "inspection", "red-run":
+				if strings.TrimSpace(ev.Ref) == "" {
+					fail("mapping for %s: empty %s ref", mp.AC, ev.Type)
+				}
+			default:
+				fail("mapping for %s: unknown evidence type %q", mp.AC, ev.Type)
+			}
 		}
 	}
 
@@ -376,6 +423,18 @@ func render(f File, m Mappings) string {
 	w("| Acceptance criteria | %d |", acTotal)
 	w("| Release-blocking ACs | %d |", blocking)
 	w("| ACs with mapped evidence | %d |", mapped)
+	blockingMapped := 0
+	for _, r := range f.Requirements {
+		if r.Deprecated {
+			continue
+		}
+		for _, ac := range r.ACs {
+			if ac.Verification.ReleaseBlocking && evidence[ac.ID] > 0 {
+				blockingMapped++
+			}
+		}
+	}
+	w("| Release-blocking ACs with mapped evidence | %d |", blockingMapped)
 	for _, k := range sortedKeys(byConf) {
 		w("| Confidence: %s | %d |", k, byConf[k])
 	}
