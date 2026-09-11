@@ -72,6 +72,21 @@ func New(blobs *blobstore.Store, meta *metadata.Store, opts ...Option) *Cache {
 	return c
 }
 
+// ReconcileStats reports what a startup reconciliation found and fixed.
+type ReconcileStats struct {
+	AdoptedBlobs     int // blobs with no metadata record, now indexed
+	DroppedRecords   int // records with no blob, now removed
+	RemovedTempFiles int
+}
+
+// Reconcile repairs the metadata index against the blob store: blobs are
+// truth, the index is rebuildable (REQ-STORE-005). Scaffold: behavior
+// lands in the next commit; this no-op exists so the failing tests
+// compile against the final API.
+func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
+	return ReconcileStats{}, nil
+}
+
 // Close releases the underlying blob store and metadata index. It closes
 // both even if the first Close fails, and reports the first error.
 func (c *Cache) Close() error {
