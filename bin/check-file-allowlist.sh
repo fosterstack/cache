@@ -66,6 +66,8 @@ ALLOW_PATTERNS=(
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
   '^bench/gradle-sample/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(kts|java|properties|jar)$'
+  # The acceptance expectation: which tasks the warm build must restore.
+  '^bench/gradle-sample/expected-from-cache\.txt$'
 )
 
 blocked=()

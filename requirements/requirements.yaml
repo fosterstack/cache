@@ -965,9 +965,27 @@ requirements:
     confidence: documented
     acceptance_criteria:
       - id: REQ-GRADLE-001-AC1
-        given: the sample project and an empty cache
+        given: the sample project, an empty cache, and the checked-in list of expected cacheable tasks
         when: a cold build then a from-scratch second build run against the server
-        then: the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits
+        then: the second build restores EXACTLY the expected task set FROM-CACHE - an unexpected miss fails, and an unlisted restored task fails too
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-GRADLE-001-AC2
+        given: the same two builds
+        when: the server's /metrics are read after each
+        then: the cold build shows one upload per expected task and zero hits; the warm build shows one server-side hit per expected task and no further uploads
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-GRADLE-001-AC3
+        given: the compiled outputs of the cold build, checksummed
+        when: the warm build restores from the cache
+        then: every restored output is byte-identical to the cold build's
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-GRADLE-001-AC4
+        given: the warm build's log
+        when: it is scanned for remote-cache errors Gradle treats as non-fatal
+        then: none are present - a silently degraded remote is a failure of this workflow, not a pass
         verification: { method: acceptance-gradle, release_blocking: true }
         status: approved
 

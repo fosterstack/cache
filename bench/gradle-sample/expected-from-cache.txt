@@ -1,0 +1,6 @@
+:core:compileJava
+:module-a:compileJava
+:module-b:compileJava
+:module-c:compileJava
+:module-c:compileTestJava
+:module-c:test

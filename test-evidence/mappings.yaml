@@ -140,3 +140,15 @@ mappings:
   - ac: REQ-HTTP-002-AC2
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+  - ac: REQ-GRADLE-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
+  - ac: REQ-GRADLE-001-AC2
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml steps 'assert the cold build populated the cache' + 'assert the warm build hit the server' (exact-count /metrics assertions)" }
+  - ac: REQ-GRADLE-001-AC3
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml sha256 comparison of build/classes trees across cold and restored builds" }
+  - ac: REQ-GRADLE-001-AC4
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert no remote-cache errors were silently ignored'" }
