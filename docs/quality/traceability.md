@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 46 |
 | Acceptance criteria | 63 |
 | Release-blocking ACs | 41 |
-| ACs with mapped evidence | 40 |
-| Release-blocking ACs with mapped evidence | 26 |
+| ACs with mapped evidence | 46 |
+| Release-blocking ACs with mapped evidence | 28 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
@@ -48,7 +48,7 @@ The server shall treat the entire request path, with the leading slash removed, 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-002-AC1 | Given a running server; when a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path; then the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints | http-integration | yes | approved | none mapped |
+| REQ-PROTO-002-AC1 | Given a running server; when a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path; then the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints | http-integration | yes | approved | 1 item(s) |
 
 ### REQ-PROTO-003 — Key validation
 
@@ -179,7 +179,7 @@ A server with authentication disabled shall accept requests that carry an Author
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | none mapped |
+| REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | 1 item(s) |
 
 ## HTTP
 
@@ -224,7 +224,7 @@ An interrupted or failed upload shall leave no partial entry: a key is either fu
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-002-AC1 | Given an upload that fails or is cancelled mid-body; when the same key is subsequently requested; then either 404 (never stored) or the previous complete value; never truncated bytes | component | yes | approved | none mapped |
+| REQ-STORE-002-AC1 | Given an upload that fails or is cancelled mid-body; when the same key is subsequently requested; then either 404 (never stored) or the previous complete value; never truncated bytes | component | yes | approved | 1 item(s) |
 
 ### REQ-STORE-003 — Tight on-disk permissions
 
@@ -234,7 +234,7 @@ The store shall create directories with mode 0750 and blob files with mode 0600.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-003-AC1 | Given a fresh store that has accepted one entry; when the on-disk tree is examined; then every directory is 0750 and every blob file 0600 | component |  | approved | none mapped |
+| REQ-STORE-003-AC1 | Given a fresh store that has accepted one entry; when the on-disk tree is examined; then every directory is 0750 and every blob file 0600 | component |  | approved | 1 item(s) |
 
 ### REQ-STORE-004 — A stored reply means a stored entry
 
@@ -337,7 +337,7 @@ The server shall expose no endpoint that changes configuration or purges data; e
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-005-AC1 | Given the full route surface; when it is enumerated; then only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT | http-integration |  | approved | none mapped |
+| REQ-OBS-005-AC1 | Given the full route surface; when it is enumerated; then only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT | http-integration |  | approved | 1 item(s) |
 
 ### REQ-OBS-006 — Failure-only request logging, no sensitive fields
 
@@ -423,7 +423,7 @@ The metadata store shall be single-writer: a second process pointed at the same 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | approved | none mapped |
+| REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | approved | 1 item(s) |
 
 ### REQ-DEPLOY-003 — Documented Kubernetes deployment works as written
 
