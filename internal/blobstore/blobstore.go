@@ -217,3 +217,66 @@ func randomTempName() (string, error) {
 	}
 	return ".tmp-" + hex.EncodeToString(buf[:]), nil
 }
+
+// Walk calls fn for every stored blob with its reconstructed key and
+// on-disk size, and reports (without visiting) stale temporary files left
+// by interrupted writes. It exists for startup reconciliation: blobs are
+// truth, the metadata index is rebuildable, and this is how the truth is
+// enumerated. The on-disk layout is <parent dirs>/<shard>/<leaf>, so a
+// key is the file's path with the shard directory (the leaf's first two
+// characters) removed.
+func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string, err error) {
+	var walk func(rel string) error
+	walk = func(rel string) error {
+		f, err := s.root.Open(path.Join(".", rel))
+		if err != nil {
+			return fmt.Errorf("blobstore: walk open %q: %w", rel, err)
+		}
+		entries, err := f.ReadDir(-1)
+		closeErr := f.Close()
+		if err != nil {
+			return fmt.Errorf("blobstore: walk read %q: %w", rel, err)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		for _, e := range entries {
+			child := path.Join(rel, e.Name())
+			if e.IsDir() {
+				if err := walk(child); err != nil {
+					return err
+				}
+				continue
+			}
+			if strings.HasPrefix(e.Name(), ".tmp-") {
+				staleTemp = append(staleTemp, child)
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				return fmt.Errorf("blobstore: walk stat %q: %w", child, err)
+			}
+			// Invert relPath: drop the shard directory (parent of the leaf).
+			parts := strings.Split(child, "/")
+			if len(parts) < 2 {
+				continue // a file at the root is not a blob this store wrote
+			}
+			keyParts := append(append([]string{}, parts[:len(parts)-2]...), parts[len(parts)-1])
+			key := path.Join(keyParts...)
+			if ValidateKey(key) != nil {
+				continue // not a shape this store produces; leave it alone
+			}
+			if err := fn(key, info.Size()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk("."); err != nil {
+		return staleTemp, err
+	}
+	return staleTemp, nil
+}
+
+// RemoveStaleTemp deletes a stale temporary file found by Walk.
+func (s *Store) RemoveStaleTemp(rel string) error { return s.root.Remove(rel) }

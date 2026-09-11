@@ -57,6 +57,38 @@ func loadConfig() (config, error) {
 	return cfg, nil
 }
 
+// uncleanMarkerPath is the marker's location inside the data directory —
+// beside the stores it speaks for, so it travels with the volume.
+func uncleanMarkerPath(dataDir string) string {
+	return filepath.Join(dataDir, ".unclean-shutdown")
+}
+
+func markerPresent(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func writeMarker(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("removed on clean shutdown; presence at startup triggers reconciliation\n"), 0o600)
+}
+
+func clearMarker(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -99,6 +131,20 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Unclean-shutdown marker (REQ-STORE-005): present at startup means
+	// the last process did not exit cleanly, so the stores may disagree
+	// and reconciliation must run before serving. It is removed only
+	// after a clean shutdown's successful Close — a crash, a kill, or a
+	// failed close all leave it in place for the next start to see.
+	marker := uncleanMarkerPath(cfg.dataDir)
+	wasUnclean, err := markerPresent(marker)
+	if err != nil {
+		return fmt.Errorf("check shutdown marker: %w", err)
+	}
+	if err := writeMarker(marker); err != nil {
+		return fmt.Errorf("write shutdown marker: %w", err)
+	}
+
 	blobs, err := blobstore.New(filepath.Join(cfg.dataDir, "blobs"))
 	if err != nil {
 		return fmt.Errorf("open blob store: %w", err)
@@ -120,9 +166,25 @@ func run(log *slog.Logger) error {
 	)
 	defer func() {
 		if err := c.Close(); err != nil {
-			log.Error("fscache: store close failed", "error", err)
+			log.Error("fscache: store close failed; unclean marker kept", "error", err)
+			return
+		}
+		if err := clearMarker(marker); err != nil {
+			log.Error("fscache: shutdown marker not cleared; next start will reconcile", "error", err)
 		}
 	}()
+
+	if wasUnclean {
+		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
+		stats, err := c.Reconcile(context.Background())
+		if err != nil {
+			return fmt.Errorf("startup reconciliation: %w", err)
+		}
+		log.Info("fscache: reconciled",
+			"adopted_blobs", stats.AdoptedBlobs,
+			"dropped_records", stats.DroppedRecords,
+			"removed_temp_files", stats.RemovedTempFiles)
+	}
 
 	handler := server.New(server.Config{
 		Cache:        c,

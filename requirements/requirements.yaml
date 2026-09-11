@@ -407,6 +407,62 @@ requirements:
         verification: { method: component, release_blocking: false }
         status: approved
 
+  - id: REQ-STORE-004
+    title: A stored reply means a stored entry
+    statement: >
+      A PUT shall succeed only when the blob is on disk AND its metadata
+      record is written: if the metadata record fails, the server shall
+      remove the blob and fail the PUT. A cache that says "stored" has
+      stored it — retrievable, indexed, counted, and evictable.
+    source: [audit-response-2026-09-08 §4.7 (decided), test-strategy.md §2.2, audit §18]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-STORE-004-AC1
+        given: a cache whose metadata store fails on the record step
+        when: a client PUTs an entry
+        then: the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward
+        verification: { method: component, release_blocking: true }
+        status: approved
+
+  - id: REQ-STORE-005
+    title: Startup reconciliation after unclean shutdown
+    statement: >
+      The server shall write a marker file at startup and remove it on
+      clean shutdown. When the marker is present at startup (an unclean
+      exit), the server shall reconcile the two stores before serving:
+      blobs without a metadata record are adopted (size from disk, recency
+      now), records without a blob are dropped, stale temporary files are
+      removed, totals are recomputed, and the reconciliation counts are
+      logged. Blobs are truth; metadata is a rebuildable index. Clean
+      restarts skip the walk.
+    source: [audit-response-2026-09-08 §4.7 (decided), test-strategy.md §2.2, audit §18]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-STORE-005-AC1
+        given: a store holding a blob with no metadata record (as after a crash between the two writes)
+        when: reconciliation runs
+        then: the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-STORE-005-AC2
+        given: a metadata record whose blob is missing
+        when: reconciliation runs
+        then: the record is dropped and totals no longer include it
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-STORE-005-AC3
+        given: a data directory with an unclean-shutdown marker and one of each inconsistency
+        when: the server starts
+        then: reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk
+        verification: { method: component, release_blocking: false }
+        status: approved
+
   # ── Eviction ──────────────────────────────────────────────────────────
 
   - id: REQ-EVICT-001
