@@ -1,0 +1,17 @@
+# AC-to-evidence mappings (traceability-plan.md §5).
+#
+# EMPTY BY DESIGN. The mapping step is stopped until the owner approves the
+# extracted baseline (ccode-input-audit-remediation.md Phase 1 item 1: "hand
+# the extracted baseline to the owner for review BEFORE mapping existing
+# tests to it"). Mapping an unapproved AC would bake today's tests into the
+# review — the exact reverse-engineering the traceability plan forbids.
+#
+# Entry shape, once mapping begins:
+#   - ac: REQ-PROTO-001-AC1
+#     evidence:
+#       - type: go-test            # go-test | workflow-job | manual | inspection
+#         ref: internal/server/TestPutThenGetRoundTrip
+#       - type: red-run            # failing-first proof for release-blocking ACs
+#         ref: <CI run URL showing the test red before the implementation>
+
+mappings: []

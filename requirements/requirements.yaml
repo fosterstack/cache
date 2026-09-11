@@ -1,0 +1,868 @@
+# FosterStack Cache — requirements.
+#
+# The only place requirements live (traceability-plan.md §5). The baseline
+# below was EXTRACTED from the repository at the audited revision — read from
+# the docs and the implementation, then written down — and is described
+# publicly as exactly that. It is not requirements-first and does not claim
+# to be. Requirements added after Sep 8, 2026 are written before their
+# implementation and carry an `origin`.
+#
+# Rules (traceability-plan.md):
+# - Never reverse-engineer an AC from a test. Read the claim, write the AC,
+#   then look for the test.
+# - Implementation code is never verification.
+# - Requirements are deprecated, never deleted.
+# - `confidence` records where a requirement came from:
+#     documented          — a public doc states it
+#     implementation-only — the code does it; no doc promises it
+#     claimed-unverified  — a public doc claims it; no evidence exists yet
+#     ambiguous           — sources disagree or the claim is unclear
+# - AC status is exact-state: every AC is `approved` while the baseline is
+#   approved (flipped all-at-once by owner approval, granted 2026-09-11)
+#   and `proposed` otherwise. An omitted status never validates.
+
+baseline:
+  extracted_from: acd8bac2f9427dee63c71384dcbfecdb5c7ccf1b
+  extracted_on: 2026-09-08
+  approved: true
+  approved_on: 2026-09-11
+  note: >
+    Extraction sources: README.md, SECURITY.md, RELEASING.md, CONTRIBUTING.md,
+    docs/*.md (nine files), cmd/fscache, internal/{server,cache,blobstore,
+    metadata,metrics,buildinfo}, .goreleaser.yaml, and the CI workflows, all
+    at the extracted_from revision. Behaviors present at that revision but
+    not in the v0.1.0 tag (the status page family and the fips140 startup
+    field, shipped Sep 7) carry introduced: v0.2.0 - the first release that
+    will contain them. Future behavior is in backlog.yaml, not here.
+
+requirements:
+
+  # ── Cache protocol ────────────────────────────────────────────────────
+
+  - id: REQ-PROTO-001
+    title: HTTP cache round trip
+    statement: >
+      The server shall store a blob on PUT, return the identical bytes on
+      GET, report existence and size on HEAD, and return 404 for a key that
+      has no entry.
+    source: [README.md "Why this exists", docs/gradle.md, docs/docker-deploy.md "Verify it is working", internal/server/server.go]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PROTO-001-AC1
+        given: a running server with an empty store
+        when: a client PUTs a body to /some-key and then GETs /some-key
+        then: the PUT returns 201, the GET returns 200 with byte-identical content and a correct Content-Length
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-PROTO-001-AC2
+        given: a stored key
+        when: a client sends HEAD for that key and GET for an absent key
+        then: HEAD returns 200 with the stored size and no body; the GET of the absent key returns 404
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+
+  - id: REQ-PROTO-002
+    title: Request path is the cache key
+    statement: >
+      The server shall treat the entire request path, with the leading slash
+      removed, as the cache key - no path prefix exists and none is required
+      on either side. This requirement covers only the non-reserved cache
+      namespace: the reserved application paths ("/", /healthz, /metrics,
+      /statusz) are outside it, their GET behavior is specified by their own
+      requirements (REQ-OBS-001, REQ-OBS-002, REQ-OBS-003, REQ-PROTO-006),
+      and reserved-path handling for other methods is an open decision
+      recorded in backlog.yaml.
+    source: [docs/gradle.md "trailing slash", docs/docker-deploy.md, internal/server/server.go cacheEndpoint]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    notes: >
+      Recorded at review (Sep 10): a PUT to a reserved path such as
+      /healthz is currently accepted into the cache namespace while its
+      GET answers with the endpoint response, so those bytes are stored
+      but unreachable over HTTP. The unqualified round-trip claim would
+      overlook that collision; behavior at the reserved paths themselves
+      is a product question tracked in backlog.yaml.
+    acceptance_criteria:
+      - id: REQ-PROTO-002-AC1
+        given: a running server
+        when: a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path
+        then: the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+
+  - id: REQ-PROTO-003
+    title: Key validation
+    statement: >
+      The server shall reject, with HTTP 400, any key whose segments are not
+      1-255 characters of [A-Za-z0-9._-], any key of more than 16 segments,
+      any empty key, and any "." or ".." segment; path traversal shall not
+      be able to escape the store root.
+    source: [docs/docker-deploy.md "Verify it is working", internal/blobstore/blobstore.go ValidateKey]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    notes: >
+      Recorded at review (Sep 10): Go's HTTP router redirects some
+      dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b
+      answer 307 to the normalized path) BEFORE key validation runs, so a
+      helper-level test cannot stand in for this HTTP contract, and a
+      redirect-following client may resubmit to the normalized key.
+      The AC states the 400 contract the requirement promises; the current
+      implementation does NOT satisfy it for router-normalized forms, and
+      that documented discrepancy stands until the reject-vs-normalize
+      decision in backlog.yaml is made and the server is fixed,
+      requirements-first. A weaker check must not certify the stronger
+      promise.
+    acceptance_criteria:
+      - id: REQ-PROTO-003-AC1
+        given: a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects
+        when: the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form
+        then: every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-PROTO-003-AC2
+        given: the bare root path (empty key) via PUT
+        when: a client PUTs to /
+        then: the server returns 400
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  - id: REQ-PROTO-004
+    title: Method surface
+    statement: >
+      The server shall answer methods other than GET, PUT, and HEAD on cache
+      paths with HTTP 405 and an Allow header naming the three supported
+      methods.
+    source: [internal/server/server.go cacheEndpoint]
+    tier: community
+    introduced: v0.1.0
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-PROTO-004-AC1
+        given: a running server
+        when: a client sends DELETE to a cache path
+        then: 'the response is 405 with "Allow: GET, PUT, HEAD"'
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  - id: REQ-PROTO-005
+    title: Body-size cap
+    statement: >
+      The server shall reject a PUT whose body exceeds FSCACHE_MAX_BODY_BYTES
+      with HTTP 413, without storing a partial entry; the default cap shall
+      be 1 GiB.
+    source: [README.md configuration table, internal/server/server.go handlePut]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PROTO-005-AC1
+        given: a server with a small configured body cap
+        when: a client PUTs a body larger than the cap
+        then: the response is 413 and a subsequent GET of that key returns 404
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+
+  - id: REQ-PROTO-006
+    title: Browser landing page
+    statement: >
+      The server shall answer a browser GET of the bare root with an HTML
+      landing page (HTTP 200) rather than an error, without shadowing any
+      cache key.
+    source: [internal/server/status.go handleRoot, docs/migrate-from-bcn.md]
+    tier: community
+    introduced: v0.2.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PROTO-006-AC1
+        given: a running server holding a stored key
+        when: a client GETs / and then GETs the stored key
+        then: the root returns 200 HTML linking /statusz, and the stored key still returns its bytes
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  # ── Configuration ─────────────────────────────────────────────────────
+
+  - id: REQ-CFG-001
+    title: Configuration surface and defaults
+    statement: >
+      The server shall be configured solely by environment variables:
+      FSCACHE_ADDR (default ":8080"), FSCACHE_DATA_DIR (default "./data"),
+      FSCACHE_MAX_BYTES (default 0, unbounded), FSCACHE_MAX_BODY_BYTES
+      (default 1 GiB), FSCACHE_USERNAME and FSCACHE_PASSWORD (default
+      unset). No runtime reconfiguration surface shall exist.
+    source: [README.md configuration table, docs/docker-deploy.md "Configuration", cmd/fscache/main.go]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    notes: >
+      Known defect recorded at extraction, not blessed as behavior: at the
+      extracted revision an unparseable numeric value silently falls back to
+      the default (a FSCACHE_MAX_BYTES typo can make a bounded cache
+      unbounded). The fail-closed replacement is a v0.2.0 requirement
+      written by remediation item 1.2 before its implementation; it is not
+      part of this baseline.
+    acceptance_criteria:
+      - id: REQ-CFG-001-AC1
+        given: a server started with no environment variables set
+        when: it starts
+        then: it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CFG-001-AC2
+        given: a server started with every variable set to a custom valid value
+        when: it starts
+        then: each value is honored, observably (listen address, data location, cap behavior, auth behavior)
+        verification: { method: component, release_blocking: true }
+        status: approved
+
+  - id: REQ-CFG-002
+    title: Credentials are both-or-neither
+    statement: >
+      The server shall refuse to start when exactly one of FSCACHE_USERNAME
+      and FSCACHE_PASSWORD is set, with an error naming both variables.
+    source: [README.md configuration table "required together", cmd/fscache/main.go run]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-CFG-002-AC1
+        given: an environment with only FSCACHE_USERNAME set
+        when: the server starts
+        then: it exits non-zero with a message naming both variables, and the same holds for password-only
+        verification: { method: unit, release_blocking: true }
+        status: approved
+
+  # ── Authentication ────────────────────────────────────────────────────
+
+  - id: REQ-AUTH-001
+    title: Basic Auth on the cache surface
+    statement: >
+      When credentials are configured, the server shall require HTTP Basic
+      Auth on every cache request and on the status surfaces, answering
+      unauthenticated or wrong-credential requests with 401 and a
+      WWW-Authenticate header, and never storing or serving data for them.
+    source: [README.md, docs/gradle.md §2, docs/kubernetes.md, internal/server/server.go withAuth]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-AUTH-001-AC1
+        given: a server with credentials configured
+        when: requests arrive with no credentials, wrong credentials, and correct credentials
+        then: the first two receive 401 with WWW-Authenticate and cause no store change; the third succeeds
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-AUTH-001-AC2
+        given: a server with credentials configured
+        when: /statusz and the root landing page are requested without credentials
+        then: both return 401; with credentials both return 200
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  - id: REQ-AUTH-002
+    title: Constant-time credential comparison
+    statement: >
+      The server shall compare presented credentials in constant time, with
+      both username and password comparisons always evaluated.
+    source: [SECURITY.md "Data handling" context, www index "Authentication" card, internal/server/server.go withAuth]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-AUTH-002-AC1
+        given: the auth implementation
+        when: it is inspected
+        then: comparison uses crypto/subtle.ConstantTimeCompare for both fields with no short-circuit between them
+        verification: { method: inspection, release_blocking: false }
+        status: approved
+
+  - id: REQ-AUTH-003
+    title: Probes and scrapers stay open
+    statement: >
+      /healthz and /metrics shall remain reachable without credentials even
+      when authentication is enabled.
+    source: [docs/gradle.md §6, docs/kubernetes.md, internal/server/server.go New]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-AUTH-003-AC1
+        given: a server with credentials configured
+        when: /healthz and /metrics are requested without credentials
+        then: both return 200
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+
+  - id: REQ-AUTH-004
+    title: Credentials tolerated by a no-auth server
+    statement: >
+      A server with authentication disabled shall accept requests that carry
+      an Authorization header, ignoring the header, so one client
+      configuration works against test and production instances.
+    source: [docs/gradle.md §2 "Configure the credentials block unconditionally"]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-AUTH-004-AC1
+        given: a server with no credentials configured
+        when: a client PUTs and GETs with a Basic Auth header present
+        then: the round trip succeeds exactly as without the header
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  # ── Storage ───────────────────────────────────────────────────────────
+
+  - id: REQ-STORE-001
+    title: Durable storage across restart
+    statement: >
+      Stored entries shall survive a clean server restart: a key stored
+      before shutdown shall be retrievable, byte-identical, after the
+      process is stopped and started against the same data directory.
+    source: [docs/docker-deploy.md "persistent (named volume) deployment", docs/install.md systemd unit]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-STORE-001-AC1
+        given: a server that stored a key and shut down cleanly
+        when: a new process starts on the same data directory and the key is requested
+        then: the identical bytes return, and store totals reflect the entry
+        verification: { method: component, release_blocking: true }
+        status: approved
+
+  - id: REQ-STORE-002
+    title: Atomic writes
+    statement: >
+      An interrupted or failed upload shall leave no partial entry: a key is
+      either fully stored and retrievable or absent, and a failed overwrite
+      shall preserve the previous value.
+    source: [internal/blobstore/blobstore.go temp-file-and-rename write path]
+    tier: community
+    introduced: v0.1.0
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-STORE-002-AC1
+        given: an upload that fails or is cancelled mid-body
+        when: the same key is subsequently requested
+        then: either 404 (never stored) or the previous complete value; never truncated bytes
+        verification: { method: component, release_blocking: true }
+        status: approved
+
+  - id: REQ-STORE-003
+    title: Tight on-disk permissions
+    statement: >
+      The store shall create directories with mode 0750 and blob files with
+      mode 0600.
+    source: [internal/blobstore/blobstore.go dirPerm/filePerm]
+    tier: community
+    introduced: v0.1.0
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-STORE-003-AC1
+        given: a fresh store that has accepted one entry
+        when: the on-disk tree is examined
+        then: every directory is 0750 and every blob file 0600
+        verification: { method: component, release_blocking: false }
+        status: approved
+
+  # ── Eviction ──────────────────────────────────────────────────────────
+
+  - id: REQ-EVICT-001
+    title: Size-capped LRU eviction
+    statement: >
+      With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED
+      LIVE-CACHE BLOB BYTES - the total size of indexed, retrievable
+      entries, measured after an operation completes - by evicting
+      least-recently-used entries; with the cap at 0 the store shall be
+      unbounded. This is a bounded live-cache size with documented
+      temporary headroom, not a hard filesystem quota: temporary and
+      in-flight disk usage during writes, and concurrent-write headroom,
+      are outside this requirement and need requirements of their own
+      before any hard disk ceiling is claimed.
+    source: [README.md "Full core", docs/docker-deploy.md "Sizing", internal/cache/cache.go]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    notes: >
+      Recorded at review (Sep 10): the implementation writes the incoming
+      object before evicting, and an entry LARGER than the whole cap is
+      accepted and then immediately evicted itself (write succeeds, read
+      returns not-found, indexed total returns to zero). The oversized-
+      entry policy is an open product decision in backlog.yaml; this
+      criterion is therefore limited to entries that individually fit
+      within the cap, so it describes the extracted contract without
+      silently strengthening it.
+    acceptance_criteria:
+      - id: REQ-EVICT-001-AC1
+        given: a server with a small cap, holding entries that exceed it in aggregate, where each entry's individual size is at most the cap
+        when: a new entry no larger than the cap is stored
+        then: least-recently-used entries are removed until the new entry fits, the new entry is retrievable afterward, and the committed live-cache blob bytes, measured after the operation completes, do not exceed the cap
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-EVICT-001-AC2
+        given: a capped store where an old key is re-read
+        when: eviction next runs
+        then: the re-read key is treated as recently used and outlives never-read older entries
+        verification: { method: component, release_blocking: false }
+        status: approved
+
+  # ── Observability ─────────────────────────────────────────────────────
+
+  - id: REQ-OBS-001
+    title: Liveness endpoint
+    statement: The server shall answer GET /healthz with HTTP 200 and body "ok".
+    source: [README.md quickstart, docs/docker-deploy.md, internal/server/server.go handleHealthz]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-OBS-001-AC1
+        given: a running server
+        when: GET /healthz
+        then: 200 with body "ok"
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+
+  - id: REQ-OBS-002
+    title: Prometheus metrics
+    statement: >
+      GET /metrics shall expose, in Prometheus format, at least
+      fscache_http_requests_total (by method and status),
+      fscache_cache_hits_total, fscache_cache_misses_total,
+      fscache_bytes_read_total, fscache_bytes_written_total,
+      fscache_http_request_duration_seconds, fscache_evicted_entries_total,
+      fscache_store_bytes, and fscache_store_entries, and the counters shall
+      move with real traffic.
+    source: [README.md, docs/gradle.md §6, internal/metrics/metrics.go]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-OBS-002-AC1
+        given: a server that served one hit and one miss
+        when: /metrics is scraped
+        then: every named metric is present and hits/misses read 1 and 1
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+
+  - id: REQ-OBS-003
+    title: Read-only status page
+    statement: >
+      GET /statusz shall return the server's state — version, revision, FIPS
+      posture, uptime, store bytes against the configured cap, entry count,
+      hit and miss counts with ratio, evictions, and auth state — as JSON to
+      non-browser clients and HTML to browsers, with counters read from the
+      same values that feed /metrics so the two cannot disagree.
+    source: [docs/migrate-from-bcn.md "What replaces the UI", docs/gradle.md §6, internal/server/status.go]
+    tier: community
+    introduced: v0.2.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-OBS-003-AC1
+        given: a server with known traffic counts
+        when: /statusz is fetched as JSON and /metrics is scraped
+        then: hits, misses, entries, and store bytes agree exactly between the two
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+      - id: REQ-OBS-003-AC2
+        given: a request with an HTML Accept header
+        when: /statusz is fetched
+        then: the response is HTML containing no form, button, or state-changing control
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  - id: REQ-OBS-004
+    title: Startup announcement
+    statement: >
+      The startup log line shall announce version, listen address, data
+      directory, size cap, auth state, and FIPS posture.
+    source: [docs/install.md FIPS section, cmd/fscache/main.go]
+    tier: community
+    introduced: v0.2.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-OBS-004-AC1
+        given: a starting server
+        when: the first log line is emitted
+        then: it contains version, addr, data_dir, max_bytes, auth, and fips140 fields
+        verification: { method: component, release_blocking: false }
+        status: approved
+
+  - id: REQ-OBS-005
+    title: No mutable admin surface
+    statement: >
+      The server shall expose no endpoint that changes configuration or
+      purges data; every non-cache surface is read-only, and resetting the
+      cache is deleting the data directory and restarting.
+    source: [docs/docker-deploy.md "Resetting the cache" and "Configuration", SECURITY.md, docs/migrate-from-bcn.md]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-OBS-005-AC1
+        given: the full route surface
+        when: it is enumerated
+        then: only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT
+        verification: { method: http-integration, release_blocking: false }
+        status: approved
+
+  - id: REQ-OBS-006
+    title: Failure-only request logging, no sensitive fields
+    statement: >
+      The server shall write no per-request access log; the only per-request
+      logging shall be failure paths, carrying HTTP method and cache key and
+      never a request body, credential, or client address.
+    source: [SECURITY.md "Data handling"]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-OBS-006-AC1
+        given: the server's logging call sites
+        when: they are inspected
+        then: per-request logging exists only on failure paths and logs only method, key, and error
+        verification: { method: inspection, release_blocking: false }
+        status: approved
+
+  # ── Privacy ───────────────────────────────────────────────────────────
+
+  - id: REQ-PRIV-001
+    title: No outbound connections
+    statement: >
+      The server shall make no outbound network connections — no telemetry,
+      no update check, no licence check, no name resolution — at rest or
+      under load, and shall run identically on a host with no route to the
+      internet.
+    source: [SECURITY.md "Data handling", README.md security section, www "What we do not collect"]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PRIV-001-AC1
+        given: a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods
+        when: the run completes and the egress record is examined
+        then: the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative
+        verification: { method: acceptance-container, release_blocking: true }
+        status: approved
+
+  # ── Platforms and artifacts ───────────────────────────────────────────
+
+  - id: REQ-PLAT-001
+    title: Binary platform matrix
+    statement: >
+      Every release shall ship static (CGO_ENABLED=0) binaries for
+      linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64, and
+      FIPS-variant binaries for the two Linux platforms only.
+    source: [README.md "Supported platforms", docs/install.md, .goreleaser.yaml]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PLAT-001-AC1
+        given: a release's artifact set
+        when: it is enumerated
+        then: exactly the six archives exist and each binary executes on its platform (or a documented equivalent)
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-PLAT-002
+    title: Image variants and multi-arch
+    statement: >
+      Every release shall ship three image variants — production, -debug,
+      -fips — each a multi-arch manifest for linux/amd64 and linux/arm64.
+    source: [README.md "Image variants", docs/verify-images.md, .goreleaser.yaml]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PLAT-002-AC1
+        given: a release's three image manifests
+        when: each is inspected and run on both architectures
+        then: both platform entries exist and the container serves cache traffic on each
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-PLAT-003
+    title: Shell-lessness per variant
+    statement: >
+      The production and -fips images shall contain no shell; the -debug
+      image shall provide busybox with its shell at /busybox/sh and no
+      /bin/sh.
+    source: [README.md "Image variants", docs/verify-images.md, release.yml shell assertions]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PLAT-003-AC1
+        given: the three release images
+        when: shell presence is probed in each
+        then: production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-PLAT-004
+    title: Nonroot container execution
+    statement: >
+      The container images shall run as the nonroot user (uid 65532) with
+      the server's default data path resolving under that user's home.
+    source: [docs/docker-deploy.md "Why the volume mounts at /home/nonroot", docs/kubernetes.md securityContext]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-PLAT-004-AC1
+        given: a running production container with no overrides
+        when: its process identity and data path are observed
+        then: the process runs as uid 65532 and data lands under /home/nonroot
+        verification: { method: acceptance-container, release_blocking: false }
+        status: approved
+
+  - id: REQ-DEPLOY-001
+    title: Graceful shutdown
+    statement: >
+      On SIGTERM or interrupt the server shall stop accepting connections
+      and shut down within its drain window, exiting cleanly.
+    source: [cmd/fscache/main.go signal handling, docs/kubernetes.md probes]
+    tier: community
+    introduced: v0.1.0
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-DEPLOY-001-AC1
+        given: a running server
+        when: SIGTERM is delivered
+        then: the process logs shutdown and exits zero within the drain window
+        verification: { method: component, release_blocking: false }
+        status: approved
+
+  - id: REQ-DEPLOY-002
+    title: Single-writer store
+    statement: >
+      The metadata store shall be single-writer: a second process pointed at
+      the same data directory shall fail to start or block on the lock
+      rather than corrupt the store.
+    source: [docs/kubernetes.md "Read this before you scale"]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-DEPLOY-002-AC1
+        given: a running server on a data directory
+        when: a second server process starts on the same directory
+        then: the second process does not serve traffic against the same store, and the first is unaffected
+        verification: { method: component, release_blocking: false }
+        status: approved
+
+  # ── FIPS ──────────────────────────────────────────────────────────────
+
+  - id: REQ-FIPS-001
+    title: Validated-module FIPS build
+    statement: >
+      The -fips build shall link Go's CMVP-validated FIPS 140-3
+      cryptographic module (certificate #5247), selected at build time by
+      GOFIPS140. Enabled mode alone is not this requirement: a standard
+      build can enable FIPS mode at runtime (GODEBUG=fips140=on) without
+      containing the frozen validated module, so evidence must establish
+      the module identity, not just the mode.
+    source: [README.md "Image variants", docs/install.md FIPS section, .goreleaser.yaml fscache-fips]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-FIPS-001-AC1
+        given: the released fscache-fips artifact, in a supported environment
+        when: its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined
+        then: the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+      - id: REQ-FIPS-001-AC2
+        given: a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on)
+        when: the same evidence check runs against it
+        then: it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-FIPS-002
+    title: FIPS posture observable and truthful at runtime
+    statement: >
+      The startup log and /statusz shall report the actual FIPS operating
+      mode and the actual module identity truthfully in every runtime
+      configuration, including runtime overrides: a -fips build in its
+      default runtime configuration reports active with its module
+      identified; a standard build in its default configuration reports
+      off; and a standard build with FIPS mode enabled at runtime
+      (GODEBUG=fips140=on) shall not claim the validated module or its
+      certificate. The report shall never state more than the binary can
+      know about itself.
+    source: [docs/install.md, docs/offline-install.md, internal/buildinfo]
+    tier: community
+    introduced: v0.2.0
+    confidence: documented
+    notes: >
+      Known discrepancy at extraction, recorded in backlog.yaml: the
+      current internal/buildinfo note hardcodes the certificate label
+      behind a mode check, so a runtime-enabled standard build would
+      overstate its posture. The product fix is later requirements-first
+      work, not part of this baseline PR.
+    acceptance_criteria:
+      - id: REQ-FIPS-002-AC1
+        given: three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on
+        when: each starts and /statusz is read
+        then: the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-FIPS-003
+    title: Approved-only crypto enforcement in CI
+    statement: >
+      Every commit shall run the full test suite under GODEBUG=fips140=only
+      against a GOFIPS140 build, and a depguard allowlist shall permit only
+      in-boundary crypto imports; the two are described publicly as the
+      executing and static halves, neither complete alone.
+    source: [SECURITY.md "Approved-only cryptography", .github/workflows/ci.yml fips140-only, .golangci.yml]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-FIPS-003-AC1
+        given: the CI configuration
+        when: a commit lands
+        then: the fips140-only job runs the full race-enabled suite under the validated module in only-mode
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  # ── Build tools ───────────────────────────────────────────────────────
+
+  - id: REQ-GRADLE-001
+    title: Gradle remote-cache interoperability
+    statement: >
+      A real multi-module Gradle build configured per docs/gradle.md, with
+      its local build cache disabled, shall populate the cache on a cold
+      build and restore tasks FROM-CACHE on a from-scratch second build.
+    source: [README.md, docs/gradle.md, acceptance-gradle workflow, bench/gradle-sample]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-GRADLE-001-AC1
+        given: the sample project and an empty cache
+        when: a cold build then a from-scratch second build run against the server
+        then: the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+
+  - id: REQ-MAVEN-001
+    title: Maven Build Cache Extension interoperability
+    statement: >
+      The server shall interoperate with the Apache Maven Build Cache
+      Extension's remote HTTP mode: a real multi-module Maven build shall
+      populate the cache and a clean second build shall restore from it,
+      including Basic Auth via settings.xml conventions.
+    source: [README.md (qualified claim), docs/maven.md]
+    tier: community
+    introduced: v0.1.0
+    confidence: claimed-unverified
+    notes: >
+      The public claim is qualified (Phase 0) until acceptance coverage
+      exists; remediation item 1.6 builds it. The only Maven-specific
+      evidence at extraction is a blob-store path-shape test, which is not
+      interoperability evidence.
+    acceptance_criteria:
+      - id: REQ-MAVEN-001-AC1
+        given: a real multi-module Maven project with the extension in remote mode and local caching disabled
+        when: a cold build then a clean second build run against the server
+        then: the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic
+        verification: { method: acceptance-maven, release_blocking: true }
+        status: approved
+      - id: REQ-MAVEN-001-AC2
+        given: the same project with wrong and then missing credentials against an auth-enabled server
+        when: builds run
+        then: both fail in the documented way and store nothing
+        verification: { method: acceptance-maven, release_blocking: false }
+        status: approved
+
+  # ── Release evidence and licensing ────────────────────────────────────
+
+  - id: REQ-REL-001
+    title: Signed, attested releases
+    statement: >
+      Every release image shall carry a cosign keyless signature and a SLSA
+      provenance attestation per digest; binary archives shall be covered by
+      a cosign-signed checksums file; the verification commands shall run
+      with no credentials.
+    source: [README.md headline, RELEASING.md "Verifying a release", docs/verify-images.md]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-REL-001-AC1
+        given: a published release
+        when: the documented cosign and gh attestation commands run anonymously against each image digest and the checksums bundle
+        then: every verification succeeds and names this repository's release workflow
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-REL-002
+    title: Anonymous availability
+    statement: >
+      Every published release tag shall be anonymously pullable from GHCR,
+      and the free tier shall require no account, registration, or license
+      key.
+    source: [README.md quickstart, release.yml anonymous-pull gate, www]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-REL-002-AC1
+        given: a published release
+        when: every published tag is pulled with no registry credential
+        then: every manifest fetch returns 200
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
+
+  - id: REQ-REL-003
+    title: VEX-only scan exceptions
+    statement: >
+      No artifact shall be published with a known CVE at any severity unless
+      a published OpenVEX statement in .vex/ explains non-applicability;
+      tool-specific ignores shall reference the governing statement and
+      never stand alone.
+    source: [SECURITY.md, .vex/README.md]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    notes: >
+      Enforcement at extraction is qualified publicly (Phase 0): the release
+      scan runs against a snapshot build, not the published bytes, and one
+      pre-doctrine grype-only ignore exists without a governing statement
+      (CVE-2025-60876). Both are open remediation items.
+    acceptance_criteria:
+      - id: REQ-REL-003-AC1
+        given: the scanner configurations and the VEX document
+        when: they are compared
+        then: every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document
+        verification: { method: inspection, release_blocking: false }
+        status: approved
+
+  - id: REQ-LIC-001
+    title: MIT core, nothing withheld
+    statement: >
+      The complete server — cache protocol, eviction, size caps, auth,
+      metrics, status page, FIPS build — shall be MIT-licensed and free;
+      security patches shall never be withheld from, delayed for, or
+      embargoed against the free tier.
+    source: [LICENSE, README.md "Full core", SECURITY.md, www trust list]
+    tier: community
+    introduced: v0.1.0
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-LIC-001-AC1
+        given: the repository and a release
+        when: the license and artifact set are examined
+        then: the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists
+        verification: { method: manual, release_blocking: false }
+        status: approved
