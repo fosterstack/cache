@@ -1,0 +1,125 @@
+name: 'Stage: build'
+
+# Release-chain build stage (release-chain-design.md §2 Stage 2), a
+# reusable workflow so the stage has its own OIDC identity
+# (job_workflow_ref names THIS file) and downstream verifiers can require
+# "signed by the build stage", not merely "signed by the repository".
+#
+# One controlled operation: compile the binaries and produce the archives,
+# checksums, and per-archive SBOMs. Materials are pinned — the toolchain
+# comes from go.mod with GOTOOLCHAIN=local so Go cannot download a newer
+# one, and the module manifests are verified, never mutated. In release
+# mode the stage signs a build predicate whose subjects are the archive
+# digests from checksums.txt: the digests are emitted HERE, by the
+# builder, at the source — never resolved from a registry later.
+#
+# Source-admission verification on entry arrives with the admission stage
+# (Phase 2 item 3); until then release.yml remains the only tag-triggered
+# entry point and this stage runs in PR (snapshot) mode.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'snapshot (PRs) or release (tag chain)'
+        required: true
+        type: string
+    outputs:
+      checksums:
+        description: 'sha256 lines for the produced archives'
+        value: ${{ jobs.build.outputs.checksums }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write     # release mode: sign the build predicate
+      attestations: write
+    outputs:
+      checksums: ${{ steps.sums.outputs.checksums }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+
+      - name: pin the toolchain to go.mod (no silent upgrades)
+        run: |
+          echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
+          go version
+
+      - name: verify module manifests (a build must not mutate its inputs)
+        run: |
+          go mod verify
+          git diff --exit-code go.mod go.sum
+
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        # Dependabot's github-actions ecosystem watches this pin; syft's
+        # own identity is recorded in every SBOM document it produces.
+
+      - name: goreleaser (binaries, archives, checksums, SBOMs — no images)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '2.17.1'
+          args: release ${{ inputs.mode == 'snapshot' && '--snapshot' || '' }} --clean --skip=publish,announce${{ inputs.mode == 'snapshot' && ',validate' || '' }}
+
+      - name: capture the builder's own digests
+        id: sums
+        run: |
+          set -euo pipefail
+          echo "archive digests, emitted at the source:"
+          cat dist/checksums.txt
+          {
+            echo 'checksums<<EOF'
+            cat dist/checksums.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: upload dist
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee28f014d99 # v4.6.2
+        with:
+          name: dist-${{ inputs.mode }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: write the build predicate
+        if: inputs.mode == 'release'
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg goversion "$(go version)" \
+            --arg goreleaser "2.17.1" \
+            --arg commit "$GITHUB_SHA" \
+            --arg ref "$GITHUB_REF" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --rawfile gosum go.sum \
+            '{
+              stage: "build",
+              materials: {
+                go_toolchain: $goversion,
+                goreleaser: $goreleaser,
+                commit: $commit,
+                ref: $ref,
+                gosum_sha256: ($gosum | @base64)
+              },
+              run: $run
+            }' > /tmp/build-predicate.json
+          jq . /tmp/build-predicate.json
+
+      - name: sign the build predicate (subjects = the archive digests)
+        if: inputs.mode == 'release'
+        uses: actions/attest@ce27ba3b4a9a139d9a20a4a07d69fabb52f1e5bc # v3.0.0
+        with:
+          subject-checksums: dist/checksums.txt
+          predicate-type: 'https://fosterstack.com/attestations/build/v1'
+          predicate-path: /tmp/build-predicate.json
