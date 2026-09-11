@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cache xmlns="http://maven.apache.org/BUILD-CACHE-CONFIG/1.0.0"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://maven.apache.org/BUILD-CACHE-CONFIG/1.0.0 https://maven.apache.org/xsd/build-cache-config-1.0.0.xsd">
+  <configuration>
+    <enabled>true</enabled>
+    <!-- The URL is supplied per-run via -Dmaven.build.cache.remote.url
+         (property interpolation does not reach this file); save-to-remote
+         likewise via -Dmaven.build.cache.remote.save.enabled=true. -->
+    <remote enabled="true" id="fscache">
+      <url>http://localhost:0/overridden-per-run</url>
+    </remote>
+    <!-- The local cache directory is pointed somewhere disposable by the
+         workflow (-Dmaven.build.cache.location), and wiped between the
+         cold and warm builds so a warm hit is REMOTE evidence. -->
+  </configuration>
+</cache>

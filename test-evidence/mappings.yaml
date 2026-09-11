@@ -152,3 +152,9 @@ mappings:
   - ac: REQ-GRADLE-001-AC4
     evidence:
       - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert no remote-cache errors were silently ignored'" }
+  - ac: REQ-MAVEN-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenarios 1-6: cold uploads (exact counts), local wiped, remote restore of both modules, byte-identical jars, server-side metrics, settings.xml auth - counts measured empirically 2026-09-11" }
+  - ac: REQ-MAVEN-001-AC2
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }

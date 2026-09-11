@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 46 |
 | Acceptance criteria | 63 |
 | Release-blocking ACs | 41 |
-| ACs with mapped evidence | 38 |
-| Release-blocking ACs with mapped evidence | 25 |
+| ACs with mapped evidence | 40 |
+| Release-blocking ACs with mapped evidence | 26 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
@@ -493,12 +493,12 @@ The server shall interoperate with the Apache Maven Build Cache Extension's remo
 
 *Introduced v0.1.0 · tier community · confidence claimed-unverified · source: README.md (qualified claim); docs/maven.md*
 
-> The public claim is qualified (Phase 0) until acceptance coverage exists; remediation item 1.6 builds it. The only Maven-specific evidence at extraction is a blob-store path-shape test, which is not interoperability evidence.
+> Acceptance coverage built 2026-09-11 (remediation item 1.6): acceptance-maven.yml runs the eight audit-§21 scenarios against a real multi-module project, over an extension-version matrix that IS the compatibility policy (a version not in the matrix is not a claim). Empirical facts the assertions rest on: cold = 2 lookup 404s + 5 uploads; warm restores both modules ("Found cached build, restoring"); wrong/missing credentials complete the build with logged errors, 401 at the server, and nothing stored - which is the documented failure mode for build-cache clients.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-MAVEN-001-AC1 | Given a real multi-module Maven project with the extension in remote mode and local caching disabled; when a cold build then a clean second build run against the server; then the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic | acceptance-maven | yes | approved | none mapped |
-| REQ-MAVEN-001-AC2 | Given the same project with wrong and then missing credentials against an auth-enabled server; when builds run; then both fail in the documented way and store nothing | acceptance-maven |  | approved | none mapped |
+| REQ-MAVEN-001-AC1 | Given a real multi-module Maven project with the extension in remote mode and local caching disabled; when a cold build then a clean second build run against the server; then the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic | acceptance-maven | yes | approved | 1 item(s) |
+| REQ-MAVEN-001-AC2 | Given the same project with wrong and then missing credentials against an auth-enabled server; when builds run; then both complete (remote-cache failures are non-fatal by design), both log the extension's download/upload errors, the server answers 401, and nothing is stored - the documented failure mode, asserted exactly | acceptance-maven |  | approved | 1 item(s) |
 
 ## Release evidence
 

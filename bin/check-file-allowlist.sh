@@ -72,6 +72,9 @@ ALLOW_PATTERNS=(
   '^bench/gradle-sample/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(kts|java|properties|jar)$'
   # The acceptance expectation: which tasks the warm build must restore.
   '^bench/gradle-sample/expected-from-cache\.txt$'
+
+  # The real Maven project the Maven acceptance workflow builds.
+  '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
 )
 
 blocked=()
