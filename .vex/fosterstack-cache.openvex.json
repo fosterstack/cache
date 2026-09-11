@@ -3,8 +3,8 @@
   "@id": "https://fosterstack.com/vex/cache/openvex",
   "author": "FosterStack LLC",
   "role": "vendor",
-  "timestamp": "2026-09-07T12:00:00-04:00",
-  "version": 2,
+  "timestamp": "2026-09-10T09:00:00-04:00",
+  "version": 3,
   "statements": [
     {
       "vulnerability": {
@@ -30,6 +30,105 @@
       "impact_statement": "The advisory affects github.com/golang-jwt/jwt/v4 below v4.5.1. No golang-jwt module of any major version is present in FosterStack Cache: it is absent from go.sum, absent from the compiled package set, and absent from the dependency manifest embedded in the released binaries. golang-jwt/jwt/v5 appears in the module requirement graph only as a transitive requirement of packages of prometheus/client_golang and prometheus/common that this project does not import, and v5 is not affected by this advisory in any version range. Independently reproducible: `go version -m fscache` on any released binary lists the complete set of linked dependencies, and `govulncheck ./...` reports no vulnerabilities.",
       "action_statement": "No action required. The affected component is not a dependency of this product, so no upgrade applies.",
       "status_notes": "Raised by Snyk against the go.mod project as a module-graph finding. Verified against the shipped v0.1.0 binaries on 2026-09-07."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2025-60876",
+        "name": "CVE-2025-60876",
+        "description": "BusyBox wget HTTP request-line splitting via crafted request targets."
+      },
+      "timestamp": "2026-09-10T09:00:00-04:00",
+      "products": [
+        {
+          "@id": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "identifiers": {
+            "purl": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/busybox@1.37.0"
+            }
+          ]
+        },
+        {
+          "@id": "ghcr.io/fosterstack/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/busybox@1.37.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "This statement is bound to the published v0.1.0 :debug image digest. busybox is present only in the :debug image variant, included solely so an operator can exec an interactive shell (/busybox/sh) for troubleshooting; the production and -fips variants contain no busybox at all. Nothing in this product invokes any busybox applet: the server is a single Go binary that never shells out, so the vulnerable wget code path is never executed during operation. The vulnerability is reachable only by an operator who has already exec'd into the container and runs wget by hand against attacker-supplied input. This statement supersedes the pre-VEX-doctrine suppression that lived in .grype.yaml with the same analysis; the analysis is unchanged, now published in the policy-governed location.",
+      "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2025-46394",
+        "name": "CVE-2025-46394",
+        "description": "BusyBox tar: filenames can be hidden from a listing through terminal escape sequences in archive entries (CVSS 3.3, local, requires the victim to list a crafted archive)."
+      },
+      "timestamp": "2026-09-10T09:00:00-04:00",
+      "products": [
+        {
+          "@id": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "identifiers": {
+            "purl": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/busybox@1.37.0"
+            }
+          ]
+        },
+        {
+          "@id": "ghcr.io/fosterstack/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/busybox@1.37.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "This statement is bound to the published v0.1.0 :debug image digest. busybox is present only in the :debug image variant, included solely so an operator can exec an interactive shell (/busybox/sh) for troubleshooting; the production and -fips variants contain no busybox at all. Nothing in this product invokes any busybox applet: the server is a single Go binary that never shells out, so the vulnerable tar code path is never executed during operation. The vulnerability is reachable only by an operator who has already exec'd into the container and runs tar by hand against attacker-supplied input.",
+      "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2024-58251",
+        "name": "CVE-2024-58251",
+        "description": "BusyBox netstat: a process argv[0] containing a terminal escape sequence can make the terminal unresponsive for a user running netstat (local DoS, requires user interaction)."
+      },
+      "timestamp": "2026-09-10T09:00:00-04:00",
+      "products": [
+        {
+          "@id": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "identifiers": {
+            "purl": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d"
+          },
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/busybox@1.37.0"
+            }
+          ]
+        },
+        {
+          "@id": "ghcr.io/fosterstack/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "subcomponents": [
+            {
+              "@id": "pkg:generic/busybox@1.37.0"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "This statement is bound to the published v0.1.0 :debug image digest. busybox is present only in the :debug image variant, included solely so an operator can exec an interactive shell (/busybox/sh) for troubleshooting; the production and -fips variants contain no busybox at all. Nothing in this product invokes any busybox applet: the server is a single Go binary that never shells out, so the vulnerable netstat code path is never executed during operation. The vulnerability is reachable only by an operator who has already exec'd into the container and runs netstat by hand against attacker-supplied input.",
+      "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
     }
   ]
 }
