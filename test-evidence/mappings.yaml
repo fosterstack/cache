@@ -128,3 +128,15 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUncleanShutdownMarkerLifecycle" }
       - { type: inspection, ref: "cmd/fscache/main.go run(): reconcile-before-serve on marker present; marker cleared only after successful clean Close (2026-09-11)" }
+  - ac: REQ-HTTP-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
+      - { type: red-run, ref: "PR #58 commit 907c545 (scaffold sets only the header timeout; test asserts all four — red before the implementation commit; CI run linked from the PR checks)" }
+  - ac: REQ-HTTP-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestConcurrentUploadBoundRefusesExcessWith429" }
+      - { type: go-test, ref: "internal/server:TestZeroUploadBoundMeansUnbounded" }
+      - { type: red-run, ref: "PR #58 commit 907c545 (unbounded scaffold; the 429 assertion red before the implementation commit)" }
+  - ac: REQ-HTTP-002-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }

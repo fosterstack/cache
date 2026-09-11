@@ -19,6 +19,27 @@ func newTestHandler(t *testing.T, auth Credentials) http.Handler {
 	return newTestHandlerWithMaxBody(t, auth, 1<<20)
 }
 
+func newTestHandlerWithUploadLimit(t *testing.T, limit int) http.Handler {
+	t.Helper()
+	blobs, err := blobstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobstore.New: %v", err)
+	}
+	meta, err := metadata.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("metadata.Open: %v", err)
+	}
+	c := cache.New(blobs, meta)
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	return New(Config{Cache: c, Metrics: m, Registry: reg, MaxBodyBytes: 1 << 20, MaxConcurrentUploads: limit})
+}
+
 func newTestHandlerWithMaxBody(t *testing.T, auth Credentials, maxBody int64) http.Handler {
 	t.Helper()
 	blobs, err := blobstore.New(t.TempDir())

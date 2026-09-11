@@ -352,6 +352,59 @@ requirements:
         verification: { method: http-integration, release_blocking: false }
         status: approved
 
+  - id: REQ-HTTP-001
+    title: Server timeouts
+    statement: >
+      The HTTP server shall run with explicit timeouts, generous where a
+      legitimate cache transfer is slow and tight where only a stuck or
+      idle connection waits - ReadHeaderTimeout 10s, IdleTimeout 120s, and
+      read/write deadlines of 20 minutes per request (enough for the
+      documented 1 GiB body cap over a slow CI link, roughly 0.9 MB/s
+      sustained, and finite where today is infinite). The values are
+      configuration constants proposed by engineering on 2026-09-11 and
+      adjustable by requirement change, not by silent edit.
+    source: [test-strategy.md section 2.3, audit section 19]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-HTTP-001-AC1
+        given: the constructed HTTP server
+        when: its timeout configuration is examined
+        then: ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset
+        verification: { method: unit, release_blocking: true }
+        status: approved
+
+  - id: REQ-HTTP-002
+    title: Bounded concurrent uploads
+    statement: >
+      The server shall bound concurrent PUT processing: at most
+      FSCACHE_MAX_CONCURRENT_UPLOADS uploads in flight (default 32; 0
+      disables the bound), with excess requests refused with HTTP 429 and
+      a Retry-After header, storing nothing. Build clients treat any error
+      as a cache miss, so a refused upload degrades a build's caching,
+      never the build. Slow clients can therefore hold at most a bounded
+      number of upload slots, temp files, and file handles.
+    source: [test-strategy.md section 2.3, audit section 19]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-HTTP-002-AC1
+        given: a server configured with an upload concurrency limit of 1 and one slow upload in progress
+        when: a second PUT arrives
+        then: it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-HTTP-002-AC2
+        given: an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value
+        when: the server starts
+        then: startup fails per REQ-CFG-003's fail-closed rule
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   # ── Storage ───────────────────────────────────────────────────────────
 
   - id: REQ-STORE-001

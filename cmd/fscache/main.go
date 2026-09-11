@@ -26,12 +26,13 @@ import (
 )
 
 type config struct {
-	addr         string
-	dataDir      string
-	maxBytes     int64
-	username     string
-	password     string
-	maxBodyBytes int64
+	addr                 string
+	dataDir              string
+	maxBytes             int64
+	username             string
+	password             string
+	maxBodyBytes         int64
+	maxConcurrentUploads int64
 }
 
 func loadConfig() (config, error) {
@@ -43,13 +44,18 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	maxUploads, err := envSize("FSCACHE_MAX_CONCURRENT_UPLOADS", 32)
+	if err != nil {
+		return config{}, err
+	}
 	cfg := config{
-		addr:         envOr("FSCACHE_ADDR", ":8080"),
-		dataDir:      envOr("FSCACHE_DATA_DIR", "./data"),
-		maxBytes:     maxBytes,
-		username:     os.Getenv("FSCACHE_USERNAME"),
-		password:     os.Getenv("FSCACHE_PASSWORD"),
-		maxBodyBytes: maxBodyBytes,
+		addr:                 envOr("FSCACHE_ADDR", ":8080"),
+		dataDir:              envOr("FSCACHE_DATA_DIR", "./data"),
+		maxBytes:             maxBytes,
+		username:             os.Getenv("FSCACHE_USERNAME"),
+		password:             os.Getenv("FSCACHE_PASSWORD"),
+		maxBodyBytes:         maxBodyBytes,
+		maxConcurrentUploads: maxUploads,
 	}
 	if (cfg.username == "") != (cfg.password == "") {
 		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
@@ -187,20 +193,17 @@ func run(log *slog.Logger) error {
 	}
 
 	handler := server.New(server.Config{
-		Cache:        c,
-		Metrics:      m,
-		Registry:     prometheus.DefaultGatherer,
-		Log:          log,
-		Auth:         server.Credentials{Username: cfg.username, Password: cfg.password},
-		MaxBodyBytes: cfg.maxBodyBytes,
-		MaxBytes:     cfg.maxBytes,
+		Cache:                c,
+		Metrics:              m,
+		Registry:             prometheus.DefaultGatherer,
+		Log:                  log,
+		Auth:                 server.Credentials{Username: cfg.username, Password: cfg.password},
+		MaxBodyBytes:         cfg.maxBodyBytes,
+		MaxBytes:             cfg.maxBytes,
+		MaxConcurrentUploads: int(cfg.maxConcurrentUploads),
 	})
 
-	httpServer := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := server.NewHTTPServer(cfg.addr, handler)
 
 	authNote := "disabled"
 	if cfg.username != "" {
