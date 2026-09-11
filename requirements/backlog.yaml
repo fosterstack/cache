@@ -5,11 +5,6 @@
 # future behavior; this file is where it waits so the baseline stays clean.
 
 backlog:
-  - title: Fail-closed configuration parsing
-    note: >
-      Invalid numeric env values reject startup instead of silently falling
-      back to defaults. Being written requirements-first by remediation item
-      1.2 (origin audit-2026-09-08); listed here only until that PR lands.
   - title: Crash-consistency reconciliation
     note: >
       Marker file, unclean-start walk, fail-the-PUT on metadata failure.
