@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 44 |
 | Acceptance criteria | 57 |
 | Release-blocking ACs | 36 |
-| ACs with mapped evidence | 26 |
-| Release-blocking ACs with mapped evidence | 15 |
+| ACs with mapped evidence | 31 |
+| Release-blocking ACs with mapped evidence | 19 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 39 |
 | Confidence: implementation-only | 4 |
@@ -191,7 +191,7 @@ Stored entries shall survive a clean server restart: a key stored before shutdow
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | none mapped |
+| REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | 1 item(s) |
 
 ### REQ-STORE-002 — Atomic writes
 
@@ -221,7 +221,7 @@ A PUT shall succeed only when the blob is on disk AND its metadata record is wri
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-004-AC1 | Given a cache whose metadata store fails on the record step; when a client PUTs an entry; then the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward | component | yes | approved | none mapped |
+| REQ-STORE-004-AC1 | Given a cache whose metadata store fails on the record step; when a client PUTs an entry; then the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward | component | yes | approved | 2 item(s) |
 
 ### REQ-STORE-005 — Startup reconciliation after unclean shutdown
 
@@ -231,9 +231,9 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-005-AC1 | Given a store holding a blob with no metadata record (as after a crash between the two writes); when reconciliation runs; then the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction | component | yes | approved | none mapped |
-| REQ-STORE-005-AC2 | Given a metadata record whose blob is missing; when reconciliation runs; then the record is dropped and totals no longer include it | component | yes | approved | none mapped |
-| REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | none mapped |
+| REQ-STORE-005-AC1 | Given a store holding a blob with no metadata record (as after a crash between the two writes); when reconciliation runs; then the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction | component | yes | approved | 3 item(s) |
+| REQ-STORE-005-AC2 | Given a metadata record whose blob is missing; when reconciliation runs; then the record is dropped and totals no longer include it | component | yes | approved | 2 item(s) |
+| REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
 
 ## Eviction
 

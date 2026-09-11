@@ -108,3 +108,23 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
       - { type: go-test, ref: "cmd/fscache:TestZeroRemainsValid" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1 — silent-fallback behavior failing the new assertions before the implementation commit)" }
+  - ac: REQ-STORE-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
+  - ac: REQ-STORE-004-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestPutFailsAndRemovesBlobWhenMetadataFails" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274 — the PUT reporting success on a failed metadata record, before the implementation commit)" }
+  - ac: REQ-STORE-005-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestReconcileAdoptsOrphanBlob" }
+      - { type: go-test, ref: "internal/cache:TestAdoptedBlobParticipatesInEviction" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274, no-op Reconcile failing the adoption assertions)" }
+  - ac: REQ-STORE-005-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestReconcileDropsDanglingRecord" }
+      - { type: go-test, ref: "internal/cache:TestReconcileMixedStateTotalsCorrect" }
+  - ac: REQ-STORE-005-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUncleanShutdownMarkerLifecycle" }
+      - { type: inspection, ref: "cmd/fscache/main.go run(): reconcile-before-serve on marker present; marker cleared only after successful clean Close (2026-09-11)" }
