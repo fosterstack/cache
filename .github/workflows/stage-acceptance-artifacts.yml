@@ -88,7 +88,10 @@ jobs:
         run: |
           set -euo pipefail
           run_and_capture() { # binary, extra env, port
-            FSCACHE_ADDR=":$3" FSCACHE_DATA_DIR="/tmp/fa-$3" $2 "$1" & pid=$!
+            # The server's own stdout must NOT leak into this function's
+            # command substitution — redirect it to a log file, or the
+            # captured "posture" is the startup line, not the field.
+            FSCACHE_ADDR=":$3" FSCACHE_DATA_DIR="/tmp/fa-$3" $2 "$1" > "/tmp/fa-$3.log" 2>&1 & pid=$!
             for _ in $(seq 1 20); do curl -sf "localhost:$3/healthz" >/dev/null && break; sleep 0.5; done
             posture=$(curl -s "localhost:$3/statusz" | jq -r '.fips140_note')
             kill $pid 2>/dev/null || true
