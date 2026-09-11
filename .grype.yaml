@@ -1,17 +1,16 @@
-# Documented, justified vulnerability-scan suppressions — a VEX
-# assessment per addendum §7b's "no upstream fix exists" branch, not a
-# blanket noise filter. Every entry here needs: no upstream fix
-# available, and a specific reason this product's usage isn't affected.
-# Re-review each entry whenever the underlying image is bumped.
-ignore:
-  - vulnerability: CVE-2025-60876
-    reason: >
-      BusyBox wget HTTP request-line splitting. OSV lists no fixed
-      version (unresolved, affects all releases through 1.37.0 as of
-      this review). VEX: NOT AFFECTED — busybox ships only in the
-      :debug image variant, solely for interactive shell access when an
-      operator execs in (Sprint 3 §7 item 5); nothing in this product
-      invokes `busybox wget` automatically, so the vulnerable
-      request-target parsing path is never reached during normal
-      operation. The production and -fips image variants don't contain
-      busybox at all. Re-review when upstream ships a fix.
+# Scanner suppressions live in .vex/, not here.
+#
+# Every exception is a published OpenVEX statement in
+# .vex/fosterstack-cache.openvex.json, consumed by every scanner in
+# .github/policy/scanners.json via their --vex inputs in CI. A Grype-only
+# ignore in this file is invisible to the other scanners and to anyone
+# auditing the release evidence — exactly the tool-local suppression the
+# policy forbids (SECURITY.md; .vex/README.md).
+#
+# This file stays so that a future entry has to displace this comment to
+# exist, and because a bare `grype` run without --vex (a contributor's
+# local scan) will report the :debug image's busybox findings — that is
+# expected; the published VEX is the disposition. History: until Sep 10,
+# 2026 this file carried the CVE-2025-60876 analysis; it is now statement
+# 2 of the VEX document, unchanged in substance.
+ignore: []
