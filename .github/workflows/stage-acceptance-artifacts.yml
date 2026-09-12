@@ -25,6 +25,20 @@ on:
       expected-checksums:
         required: true
         type: string
+      mode:
+        description: "'archives' (assemble locally, PR chain) or 'candidates' (exercise the pushed digests)"
+        required: false
+        type: string
+        default: 'archives'
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests (candidates mode)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      results:
+        description: 'JSON list of the AC IDs this stage asserted, with results'
+        value: ${{ jobs.artifacts.outputs.results }}
 
 permissions:
   contents: read
@@ -33,6 +47,11 @@ jobs:
   artifacts:
     name: artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read      # candidates mode: pull the private digests
+    outputs:
+      results: ${{ steps.results.outputs.results }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -114,7 +133,8 @@ jobs:
       # REQ-PLAT-002 (index halves) + REQ-PLAT-003 + REQ-PLAT-004 + serve
       # traffic: assemble the production and debug images from these exact
       # binaries and exercise them.
-      - name: assemble and exercise the images built from these binaries
+      - name: assemble the images from these binaries (archives mode)
+        if: inputs.mode != 'candidates'
         run: |
           set -euo pipefail
           mkdir -p /tmp/ctx/binaries/amd64 /tmp/ctx/binaries/arm64
@@ -128,6 +148,22 @@ jobs:
             docker build -q -f Dockerfile.$v -t "fa-$v" . >/dev/null
           done
 
+      - name: pull the exact candidates by digest (candidates mode)
+        if: inputs.mode == 'candidates'
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::candidates mode with no digest for ${v}" >&2; exit 1; }
+            docker pull -q "${repo}@${d}"
+            docker tag "${repo}@${d}" "fa-${v}"
+          done
+
+      - name: exercise the images
+        run: |
+          set -euo pipefail
           # production serves cache traffic, as nonroot, data under /home/nonroot
           docker run -d --name fa-prod -p 127.0.0.1:19010:8080 fa-production
           for _ in $(seq 1 20); do curl -sf localhost:19010/healthz >/dev/null && break; sleep 0.5; done
@@ -158,3 +194,41 @@ jobs:
           [ "$(curl -s -u acc:accpw localhost:19011/fk)" = "fips-bytes" ] || { echo "::error::fips image round trip failed" >&2; exit 1; }
           docker rm -f fa-prod fa-fipsrun >/dev/null
           echo "all image scenarios passed"
+
+      # The arm64 leg, candidates mode only: boot the arm64 child of the
+      # production index under QEMU and require a healthy answer. Slow
+      # but real — the evidence-depth table's "documented equivalent".
+      - name: arm64 production candidate boots and serves (QEMU)
+        if: inputs.mode == 'candidates'
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - name: run the arm64 candidate
+        if: inputs.mode == 'candidates'
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          d=$(jq -r '.production' <<<'${{ inputs.digests }}')
+          docker pull -q --platform linux/arm64 "${repo}@${d}"
+          docker run -d --name fa-arm64 --platform linux/arm64 -p 127.0.0.1:19021:8080 "${repo}@${d}"
+          ok=0
+          for _ in $(seq 1 60); do curl -sf localhost:19021/healthz >/dev/null && { ok=1; break; }; sleep 1; done
+          [ "$ok" = 1 ] || { echo "::error::arm64 candidate never became healthy under QEMU" >&2; docker logs fa-arm64 >&2 || true; exit 1; }
+          curl -s -X PUT --data-binary 'arm-bytes' localhost:19021/armkey -o /dev/null
+          [ "$(curl -s localhost:19021/armkey)" = "arm-bytes" ] || { echo "::error::arm64 round trip failed" >&2; exit 1; }
+          docker rm -f fa-arm64 >/dev/null
+          echo "arm64 candidate serves cache traffic under QEMU"
+
+      # Reached only when every assertion above passed.
+      - name: report the ACs this stage asserted
+        id: results
+        run: |
+          set -euo pipefail
+          arm64='documented-equivalent'
+          if [ '${{ inputs.mode }}' = 'candidates' ]; then arm64='pass-qemu'; fi
+          jq -c -n --arg arm "$arm64" '[
+            {ac: "REQ-PLAT-001-AC1", result: "pass"},
+            {ac: "REQ-PLAT-002-AC1", result: "pass", note: ("arm64 leg: " + $arm)},
+            {ac: "REQ-PLAT-003-AC1", result: "pass"},
+            {ac: "REQ-FIPS-001-AC1", result: "pass"},
+            {ac: "REQ-FIPS-001-AC2", result: "pass"},
+            {ac: "REQ-FIPS-002-AC1", result: "pass"}
+          ]' | sed 's/^/results=/' >> "$GITHUB_OUTPUT"

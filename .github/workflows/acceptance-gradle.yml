@@ -16,6 +16,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release-chain mode (design §2 Stage 5): the chain calls this suite
+  # with the candidate image digest; the server under test is then the
+  # exact candidate, not a from-source build. The suite itself is
+  # identical either way — same sample build, same per-task cache-key
+  # assertions.
+  workflow_call:
+    inputs:
+      image-ref:
+        description: 'candidate image reference (@sha256) to run the server from; empty = build from source'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      results:
+        description: 'JSON list of the AC IDs this suite asserted, with results'
+        value: ${{ jobs.acceptance-gradle.outputs.results }}
 
 permissions:
   contents: read
@@ -24,6 +40,8 @@ jobs:
   acceptance-gradle:
     name: acceptance-gradle
     runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.results.outputs.results }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -38,9 +56,11 @@ jobs:
           java-version: '21'
 
       - name: build fscache from source
+        if: inputs.image-ref == ''
         run: CGO_ENABLED=0 go build -o /tmp/fscache-bench ./cmd/fscache
 
       - name: start fscache
+        if: inputs.image-ref == ''
         run: |
           FSCACHE_ADDR=:18095 FSCACHE_DATA_DIR=/tmp/fscache-bench-data /tmp/fscache-bench &
           echo $! > /tmp/fscache-bench.pid
@@ -49,6 +69,20 @@ jobs:
             sleep 0.5
           done
           echo "fscache never became healthy" >&2
+          exit 1
+
+      - name: start the exact candidate image (release-chain mode)
+        if: inputs.image-ref != ''
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 '${{ inputs.image-ref }}'
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18095/healthz && exit 0
+            sleep 0.5
+          done
+          echo "candidate image never became healthy" >&2
+          docker logs fscache-acc >&2 || true
           exit 1
 
       # --info so Gradle logs each task's cache key: the assertions below
@@ -162,6 +196,13 @@ jobs:
             exit 1
           fi
           echo "no ignored remote-cache errors in the warm build log"
+
+      # Reached only when every assertion above passed; the aggregation
+      # stage merges this into the acceptance predicate (chain mode).
+      - name: report the ACs this suite asserted
+        id: results
+        run: |
+          echo 'results=[{"ac":"REQ-GRADLE-001-AC1","result":"pass"},{"ac":"REQ-GRADLE-001-AC2","result":"pass"},{"ac":"REQ-GRADLE-001-AC3","result":"pass"},{"ac":"REQ-GRADLE-001-AC4","result":"pass"},{"ac":"REQ-EVICT-002-AC3","result":"pass"}]' >> "$GITHUB_OUTPUT"
 
       - name: stop fscache
         if: always()

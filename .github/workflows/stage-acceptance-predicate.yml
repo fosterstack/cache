@@ -1,0 +1,102 @@
+name: 'Stage: acceptance predicate'
+
+# Release-chain verification stage, acceptance half's aggregation
+# (release-chain-design.md §2 Stage 5). The three release-mode acceptance
+# suites — release-artifact, Gradle, Maven — each assert their ACs
+# against the exact candidate digests and report the AC IDs they
+# asserted. This stage enumerates EVERY acceptance-method AC from
+# requirements.yaml at the tagged commit, merges the suites' reported
+# results, marks anything not reported as not-run (preserved, never
+# hidden), and signs the acceptance predicate naming the digests and the
+# per-AC results. The authorization stage requires this predicate.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+      artifacts-results:
+        description: 'JSON AC results from the release-artifact suite'
+        required: true
+        type: string
+      gradle-results:
+        description: 'JSON AC results from the Gradle suite'
+        required: true
+        type: string
+      maven-results:
+        description: 'JSON AC results from the Maven suite'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  predicate:
+    name: acceptance-predicate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: merge suite results over the full acceptance AC set
+        env:
+          ARTIFACTS: ${{ inputs.artifacts-results }}
+          GRADLE: ${{ inputs.gradle-results }}
+          MAVEN: ${{ inputs.maven-results }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, yaml
+          doc = yaml.safe_load(open('requirements/requirements.yaml'))
+          acceptance = {}
+          for req in doc.get('requirements', []):
+              for ac in req.get('acceptance_criteria', []):
+                  m = (ac.get('verification') or {}).get('method', '')
+                  if m.startswith('acceptance'):
+                      acceptance[ac['id']] = {'method': m, 'result': 'not-run'}
+          reported = {}
+          for var in ('ARTIFACTS', 'GRADLE', 'MAVEN'):
+              for r in json.loads(os.environ[var] or '[]'):
+                  reported[r['ac']] = r
+          unknown = sorted(set(reported) - set(acceptance))
+          if unknown:
+              raise SystemExit(f"suites reported ACs not in requirements.yaml: {unknown}")
+          for ac_id, r in reported.items():
+              acceptance[ac_id]['result'] = r['result']
+              if 'note' in r:
+                  acceptance[ac_id]['note'] = r['note']
+          out = [{'ac': k, **v} for k, v in sorted(acceptance.items())]
+          json.dump(out, open('/tmp/ac-results.json', 'w'), indent=1)
+          ran = sum(1 for r in out if r['result'] != 'not-run')
+          print(f"{ran}/{len(out)} acceptance ACs asserted by the suites")
+          for r in out:
+              print(f"  {r['ac']}: {r['result']}")
+          PY
+
+      - name: write the acceptance predicate
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg sha "${GITHUB_SHA}" \
+            --argjson digests '${{ inputs.digests }}' \
+            --slurpfile results /tmp/ac-results.json \
+            '{sha: $sha, index_digests: $digests, ac_results: $results[0]}' \
+            > /tmp/acceptance-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/acceptance-subjects.txt
+          cat /tmp/acceptance-predicate.json
+
+      - name: sign the acceptance predicate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/acceptance-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/acceptance/v1
+          predicate-path: /tmp/acceptance-predicate.json
