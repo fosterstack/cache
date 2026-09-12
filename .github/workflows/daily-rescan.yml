@@ -1,24 +1,75 @@
 name: Daily image rescan
 
-# Baseline checklist item 6 / DEPLOY-REQ-4: evidence the published image
-# was scanned and RECENT, not just scanned once at release time. New CVEs
-# get disclosed against unchanged bytes constantly; this is what actually
-# feeds the 24-48h SLA (brief §0.2) — it's how a regression gets noticed
-# on day 3 of a release's life, not just on release day.
+# Release-chain daily rescan (release-chain-design.md §3): reads
+# release-manifest.json from every published release that carries one
+# and scans the DIGESTS it names — never tags, which can move — with
+# every scanner in .github/policy/scanners.json at the same
+# block-at-any-severity policy as the release gate, VEX the only
+# exception. New CVEs get disclosed against unchanged bytes constantly;
+# this is what feeds the 24-48h response SLA.
+#
+# Output is deliberately shaped as the seed of the VEX adjudication
+# pipeline (ops_dossier_vex_service.md §9): one digest-keyed statement
+# per (release, variant, scanner), carrying the scanner's identity and
+# database state, the normalized findings, and the VEX evidence that was
+# applied — uploaded as an artifact every run, clean or not. No product
+# features; just don't preclude them.
+#
+# v0.1.0 predates release manifests and stays covered by the
+# rescan-v010.yml stopgap until it is superseded.
+
 on:
   schedule:
-    - cron: '11 7 * * *' # daily, offset from the hour to avoid GH's on-the-hour pile-up
+    - cron: '11 7 * * *' # offset from the hour to avoid GH's on-the-hour pile-up
   workflow_dispatch: {}
-
-env:
-  IMAGE_BASE: ghcr.io/fosterstack/cache
 
 permissions:
   contents: read
 
 jobs:
+  manifests:
+    name: enumerate release manifests
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.collect.outputs.targets }}
+      any: ${{ steps.collect.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: collect (release, variant, digest, scanner) targets
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scanners=$(jq -c '.scanners' .github/policy/scanners.json)
+          : > /tmp/targets.jsonl
+          for tag in $(gh release list --limit 100 --json tagName,isDraft \
+                        --jq '.[] | select(.isDraft | not) | .tagName'); do
+            if gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json" 2>/dev/null; then
+              jq -c --arg tag "$tag" --argjson scanners "$scanners" \
+                '.images[] as $img | $scanners[] as $s |
+                 {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s}' \
+                "/tmp/m-${tag}.json" >> /tmp/targets.jsonl
+            fi
+          done
+          targets=$(jq -s -c '.' /tmp/targets.jsonl)
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+          n=$(jq 'length' <<<"$targets")
+          if [ "$n" -eq 0 ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "no manifest-bearing releases yet — nothing to rescan (v0.1.0 is the stopgap's job)"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "rescanning ${n} (release, variant, scanner) targets"
+          fi
+
   rescan:
-    name: rescan (${{ matrix.tag }})
+    name: ${{ matrix.target.scanner }} ${{ matrix.target.release }} ${{ matrix.target.variant }}
+    needs: manifests
+    if: needs.manifests.outputs.any == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,69 +77,153 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tag: [latest, debug, fips]
+        target: ${{ fromJSON(needs.manifests.outputs.targets) }}
     steps:
-      # Needed only for .vex/ — this workflow scans published images by tag
-      # and never builds from the tree. Without it the VEX path below does
-      # not exist in the workspace and Trivy exits FATAL, taking the whole
-      # rescan with it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: check the tag actually exists yet (no release published before Milestone 2)
-        id: probe
-        run: |
-          if docker manifest inspect "${IMAGE_BASE}:${{ matrix.tag }}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Same VEX document as the release gate: an exception granted at
-      # release time must still hold for the life of the shipped bytes,
-      # or the rescan re-raises what we already answered in public.
-      - name: Trivy scan
-        if: steps.probe.outputs.exists == 'true'
+      # ---- trivy ---------------------------------------------------------
+      - name: Trivy rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'trivy'
         id: trivy
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_BASE }}:${{ matrix.tag }}
+          image-ref: ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}
           exit-code: '1'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
+          format: json
+          output: /tmp/findings-raw.json
         env:
           TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
 
-      - name: Grype scan
-        if: steps.probe.outputs.exists == 'true' && (success() || failure())
+      # ---- grype ---------------------------------------------------------
+      - name: Grype rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'grype'
         id: grype
+        continue-on-error: true
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image: ${{ env.IMAGE_BASE }}:${{ matrix.tag }}
+          image: ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}
           fail-build: true
-          severity-cutoff: high
+          only-fixed: false
+          severity-cutoff: negligible
+          output-format: json
+          output-file: /tmp/findings-raw.json
           vex: .vex/fosterstack-cache.openvex.json
 
-      # A finding here means a CVE was disclosed against bytes we already
-      # shipped — the autonomous patch lane (brief §0.2) starts from this
-      # signal. File a tracked issue rather than only failing silently in
-      # the Actions tab; addendum §7.6's "never silently close" applies to
-      # detection, not just to code review.
-      - name: file/update a tracking issue on new findings
-        if: failure()
+      # ---- snyk ----------------------------------------------------------
+      - name: install the Snyk CLI (pinned)
+        if: matrix.target.scanner == 'snyk'
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: v1.1307.0
+      - name: Snyk rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'snyk'
+        id: snyk
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a rescan that silently skips a scanner is not a rescan" >&2; exit 1; }
+          snyk container test \
+            "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
+            --org=fosterstack-admin --json-file-output=/tmp/findings-raw.json
+
+      # ---- statement -----------------------------------------------------
+      - name: write the digest-keyed rescan statement
+        id: statement
+        run: |
+          set -euo pipefail
+          outcome='clean'
+          case '${{ matrix.target.scanner }}' in
+            trivy) [ '${{ steps.trivy.outcome }}' = 'success' ] || outcome='findings' ;;
+            grype) [ '${{ steps.grype.outcome }}' = 'success' ] || outcome='findings' ;;
+            snyk)  [ '${{ steps.snyk.outcome }}'  = 'success' ] || outcome='findings' ;;
+          esac
+          python3 - "$outcome" <<'PY'
+          import json, sys, hashlib, datetime, os
+          outcome = sys.argv[1]
+          scanner = '${{ matrix.target.scanner }}'
+          findings = []
+          try:
+              raw = json.load(open('/tmp/findings-raw.json'))
+              if scanner == 'trivy':
+                  for res in raw.get('Results') or []:
+                      for v in res.get('Vulnerabilities') or []:
+                          findings.append({'id': v.get('VulnerabilityID'),
+                                           'severity': (v.get('Severity') or '').lower(),
+                                           'package': v.get('PkgName'),
+                                           'fixed_in': v.get('FixedVersion') or None})
+              elif scanner == 'grype':
+                  for m in raw.get('matches') or []:
+                      findings.append({'id': m['vulnerability'].get('id'),
+                                       'severity': (m['vulnerability'].get('severity') or '').lower(),
+                                       'package': m.get('artifact', {}).get('name'),
+                                       'fixed_in': (m['vulnerability'].get('fix') or {}).get('versions') or None})
+              elif scanner == 'snyk':
+                  for v in raw.get('vulnerabilities') or []:
+                      findings.append({'id': v.get('identifiers', {}).get('CVE', [v.get('id')])[0] if v.get('identifiers', {}).get('CVE') else v.get('id'),
+                                       'severity': (v.get('severity') or '').lower(),
+                                       'package': v.get('packageName'),
+                                       'fixed_in': v.get('nearestFixedInVersion') or None})
+          except FileNotFoundError:
+              pass
+          vex_doc = '.vex/fosterstack-cache.openvex.json'
+          vex = json.load(open(vex_doc))
+          statement = {
+              'schema': 'https://fosterstack.com/rescan-statement/v1',
+              'scanned_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+              'release': '${{ matrix.target.release }}',
+              'variant': '${{ matrix.target.variant }}',
+              'digest': '${{ matrix.target.digest }}',
+              'image_ref': 'ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}',
+              'scanner': scanner,
+              'policy': 'block at any severity; the published VEX document is the only exception',
+              'verdict': outcome,
+              'findings': findings,
+              'vex': {
+                  'document': vex_doc,
+                  'sha256': hashlib.sha256(open(vex_doc, 'rb').read()).hexdigest(),
+                  'statements': vex.get('statements', []),
+              },
+          }
+          json.dump(statement, open('/tmp/rescan-statement.json', 'w'), indent=1)
+          print(json.dumps({'verdict': outcome, 'count': len(findings)}))
+          PY
+          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
+
+      - name: upload the statement (evidence, clean or not)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rescan-${{ matrix.target.release }}-${{ matrix.target.variant }}-${{ matrix.target.scanner }}
+          path: /tmp/rescan-statement.json
+          retention-days: 90
+
+      - name: file/update a tracking issue on findings
+        if: steps.statement.outputs.outcome == 'findings'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const tag = context.payload && '${{ matrix.tag }}';
-            const title = `Daily rescan: new CVE(s) in :${tag}`;
+            const t = ${{ toJSON(matrix.target) }};
+            const short = t.digest.replace('sha256:', '').slice(0, 12);
+            const title = `Daily rescan: findings in ${t.release} ${t.variant} @${short} (${t.scanner})`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The daily rescan found new findings.\n\n- release: \`${t.release}\`\n- variant: \`${t.variant}\`\n- digest: \`${t.digest}\`\n- scanner: \`${t.scanner}\`\n- statement artifact: \`rescan-${t.release}-${t.variant}-${t.scanner}\` on ${runUrl}\n\nThese bytes have not changed since release — this is a newly-disclosed CVE against previously-shipped code, the case the 24-48h response SLA targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation.`;
             const { data: existing } = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
             });
             const match = existing.find(i => i.title === title);
-            const body = `Daily rescan found new findings against \`${{ env.IMAGE_BASE }}:${tag}\`.\n\nRun: ${runUrl}\n\nThis image's bytes have not changed since release — this is a newly-disclosed CVE against previously-shipped code, exactly the case the 24-48h remediation SLA (brief §0.2) targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation (addendum §7b).`;
             if (match) {
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
             } else {
               await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
             }
+
+      - name: a findings verdict fails the run (visible red, same bar as the gate)
+        if: steps.statement.outputs.outcome == 'findings'
+        run: |
+          echo "::error::rescan found findings for ${{ matrix.target.release }} ${{ matrix.target.variant }} (${{ matrix.target.scanner }}) — see the tracking issue" >&2
+          exit 1
