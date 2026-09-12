@@ -1,0 +1,7 @@
+# Allowed signers for release tags and commits (release-chain-design.md §2
+# Stage 1). The admission stage fetches THIS FILE FROM PROTECTED MAIN -
+# never from the tagged commit, because the tagged commit is the thing
+# being admitted. Format: ssh allowed-signers (principal, options, key).
+# Squash merges made in the GitHub UI are GPG-signed by GitHub's web-flow
+# key instead - that key is pinned separately in github-web-flow.gpg.
+fosterstackhq+admin@gmail.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFVcPx76HtkGjZMTk9sGBQw4FpNUsfWCVW+6vVVKl8my

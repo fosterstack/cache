@@ -1,0 +1,215 @@
+name: 'Stage: source admission'
+
+# Release-chain source-admission stage (release-chain-design.md §2 Stage 1),
+# a reusable workflow so this stage has its own OIDC identity and every
+# later stage can require "signed by the admission stage" specifically.
+#
+# Runs BEFORE any repository-controlled command: nothing from the tagged
+# commit is executed here — policy inputs (allowed signers, the pinned
+# web-flow key, the required-check list) are read from protected main,
+# never from the tag, because the tagged commit is the thing being
+# admitted. The stage admits a tag only when:
+#   - the ref is an annotated v* tag whose SSH signature verifies against
+#     .github/policy/allowed_signers as fetched from origin/main;
+#   - the tagged commit's signature verifies against that list OR against
+#     the pinned GitHub web-flow key (squash merges made in the GitHub UI
+#     are GPG-signed by GitHub, not by the owner);
+#   - the commit is an ancestor of origin/main;
+#   - the exact SHA has every required check green — the exact expected
+#     set from .github/policy/required-checks.json, matched by name AND
+#     the GitHub Actions integration id via the check-runs API, with the
+#     commit-status API consulted for any gate that reports as a status;
+#   - an approved requirements baseline exists for the version
+#     (requirements/releases/<tag>.yaml at the tagged commit).
+# It then writes a canonical admission.json recording what it verified and
+# signs a source-admission predicate whose subject is that file's sha256.
+# The file travels to the build stage as a workflow artifact; the build
+# stage recomputes its digest and verifies the predicate before building.
+# (Deviation from the design's "regenerates the same canonical file":
+# re-querying the check-runs API downstream is race-prone; verifying the
+# signed file's digest proves the same thing without the race.)
+#
+# A refs/tags/v* ruleset (creation restricted to the owner, signed tags
+# required) is layered underneath as GitHub's promise — owner click, see
+# the PR that introduced this file. This check is the evidence; both.
+
+on:
+  workflow_call:
+    outputs:
+      tag:
+        description: 'the admitted tag (vX.Y.Z)'
+        value: ${{ jobs.admit.outputs.tag }}
+      sha:
+        description: 'the admitted commit SHA'
+        value: ${{ jobs.admit.outputs.sha }}
+      admission-artifact:
+        description: 'artifact name carrying the signed admission.json'
+        value: admission
+
+permissions:
+  contents: read
+
+jobs:
+  admit:
+    name: source-admission
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      id-token: write     # sign the source-admission predicate
+      attestations: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: resolve tag and commit from the trusted event payload
+        id: resolve
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF}" in
+            refs/tags/v*) ;;
+            *) echo "::error::admission runs only for refs/tags/v* (got ${GITHUB_REF})" >&2; exit 1 ;;
+          esac
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: fetch policy from protected main (never from the tagged commit)
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          mkdir -p /tmp/policy
+          git show origin/main:.github/policy/allowed_signers      > /tmp/policy/allowed_signers
+          git show origin/main:.github/policy/github-web-flow.gpg  > /tmp/policy/github-web-flow.gpg
+          git show origin/main:.github/policy/required-checks.json > /tmp/policy/required-checks.json
+
+      - name: verify the annotated tag signature against the allowed-signers list
+        id: tagsig
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.resolve.outputs.tag }}'
+          [ "$(git cat-file -t "refs/tags/${TAG}")" = "tag" ] \
+            || { echo "::error::${TAG} is not an annotated tag" >&2; exit 1; }
+          git config gpg.ssh.allowedSignersFile /tmp/policy/allowed_signers
+          git verify-tag "${TAG}"
+          principal=$(git verify-tag --raw "${TAG}" 2>&1 | awk '/GOODSIG/ {print $3; exit}')
+          fpr=$(git verify-tag --raw "${TAG}" 2>&1 | awk '/GOODSIG/ {print $2; exit}')
+          echo "principal=${principal}" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=${fpr}" >> "$GITHUB_OUTPUT"
+          echo "tag ${TAG} signed by ${principal} (${fpr})"
+
+      - name: verify the tagged commit signature (owner SSH key or pinned web-flow key)
+        id: commitsig
+        run: |
+          set -euo pipefail
+          SHA='${{ steps.resolve.outputs.sha }}'
+          if git verify-commit "${SHA}" 2>/dev/null; then
+            echo "signer=owner-ssh" >> "$GITHUB_OUTPUT"
+            echo "commit ${SHA}: valid SSH signature from the allowed-signers list"
+            exit 0
+          fi
+          GNUPGHOME=$(mktemp -d); export GNUPGHOME
+          gpg --quiet --import /tmp/policy/github-web-flow.gpg
+          git -c gpg.format=openpgp verify-commit "${SHA}" 2>/dev/null \
+            || { echo "::error::commit ${SHA} signature verifies against neither the allowed-signers list nor the pinned web-flow key" >&2; exit 1; }
+          keyid=$(git log -1 --format='%GK' "${SHA}")
+          gpg --list-keys --with-colons | grep -Eq "^(pub|sub):.*:${keyid}:" \
+            || { echo "::error::commit ${SHA} signed by ${keyid}, which is not in the pinned web-flow keyring" >&2; exit 1; }
+          echo "signer=github-web-flow:${keyid}" >> "$GITHUB_OUTPUT"
+          echo "commit ${SHA}: valid GPG signature from pinned web-flow key ${keyid}"
+
+      - name: the tagged commit must be on main
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor '${{ steps.resolve.outputs.sha }}' origin/main \
+            || { echo "::error::tagged commit is not an ancestor of origin/main" >&2; exit 1; }
+
+      - name: every required check green on the exact SHA (check-runs AND statuses)
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA='${{ steps.resolve.outputs.sha }}'
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?filter=latest" --paginate \
+            --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id}]' | jq -s 'add' > /tmp/check-runs.json
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status" \
+            --jq '[.statuses[] | {context, state, id}]' > /tmp/statuses.json
+          jq -c '.required_checks[]' /tmp/policy/required-checks.json | while read -r req; do
+            ctx=$(jq -r '.context' <<<"$req")
+            app=$(jq -r '.integration_id' <<<"$req")
+            hit=$(jq -r --arg c "$ctx" --argjson a "$app" \
+              '[.[] | select(.name == $c and .app_id == $a and .conclusion == "success")] | first | .id // empty' /tmp/check-runs.json)
+            if [ -n "$hit" ]; then
+              jq -n --arg c "$ctx" --arg id "$hit" '{context: $c, source: "check-run", id: ($id|tonumber), conclusion: "success"}'
+              continue
+            fi
+            shit=$(jq -r --arg c "$ctx" \
+              '[.[] | select(.context == $c and .state == "success")] | first | .id // empty' /tmp/statuses.json)
+            if [ -n "$shit" ]; then
+              jq -n --arg c "$ctx" --arg id "$shit" '{context: $c, source: "status", id: ($id|tonumber), conclusion: "success"}'
+              continue
+            fi
+            echo "::error::required check '${ctx}' (app ${app}) is not green on ${SHA}" >&2
+            exit 1
+          done | jq -s '.' > /tmp/verified-checks.json
+          n_req=$(jq '.required_checks | length' /tmp/policy/required-checks.json)
+          n_got=$(jq 'length' /tmp/verified-checks.json)
+          [ "$n_got" = "$n_req" ] || { echo "::error::verified ${n_got} of ${n_req} required checks" >&2; exit 1; }
+          echo "all ${n_got} required checks green on ${SHA}"
+
+      - name: an approved requirements baseline must exist for this version
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.resolve.outputs.tag }}'
+          f="requirements/releases/${TAG}.yaml"
+          git show "${{ steps.resolve.outputs.sha }}:${f}" > /tmp/release-baseline.yaml \
+            || { echo "::error::${f} does not exist at the tagged commit — freeze the release baseline first" >&2; exit 1; }
+          grep -Eq '^\s*approved:\s*true\s*$' /tmp/release-baseline.yaml \
+            || { echo "::error::${f} exists but is not approved" >&2; exit 1; }
+
+      - name: write canonical admission.json
+        id: admission
+        run: |
+          set -euo pipefail
+          jq -S -n \
+            --arg tag '${{ steps.resolve.outputs.tag }}' \
+            --arg sha '${{ steps.resolve.outputs.sha }}' \
+            --arg tag_principal '${{ steps.tagsig.outputs.principal }}' \
+            --arg tag_fpr '${{ steps.tagsig.outputs.fingerprint }}' \
+            --arg commit_signer '${{ steps.commitsig.outputs.signer }}' \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --slurpfile checks /tmp/verified-checks.json \
+            '{
+              tag: $tag,
+              sha: $sha,
+              tag_signature: { principal: $tag_principal, key_fingerprint: $tag_fpr },
+              commit_signature: $commit_signer,
+              required_checks: $checks[0],
+              baseline: ("requirements/releases/" + $tag + ".yaml"),
+              run: { id: ($run_id|tonumber), attempt: ($run_attempt|tonumber) }
+            }' > admission.json
+          sha256=$(sha256sum admission.json | cut -d' ' -f1)
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+          cat admission.json
+
+      - name: sign the source-admission predicate (subject = admission.json)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: admission.json
+          subject-digest: sha256:${{ steps.admission.outputs.sha256 }}
+          predicate-type: https://fosterstack.com/attestations/source-admission/v1
+          predicate-path: admission.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admission
+          path: admission.json
+          if-no-files-found: error
+          retention-days: 30
