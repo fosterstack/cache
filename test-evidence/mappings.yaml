@@ -108,6 +108,21 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
       - { type: go-test, ref: "cmd/fscache:TestZeroRemainsValid" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1 — silent-fallback behavior failing the new assertions before the implementation commit)" }
+  - ac: REQ-AUTH-005-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34711575692/job/103601176857 (test check red on the scaffold commit — read-only GET answered 401, 403 semantics absent, before the implementation commit)" }
+  - ac: REQ-AUTH-005-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsAuthSemantics" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34711575692/job/103601176857 (same red run)" }
+  - ac: REQ-AUTH-005-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestLoadConfigReadOnlyCredentials" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34711575692/job/103601176857 (same red run — incomplete/unanchored/ambiguous pairs accepted before the implementation commit)" }
+  - ac: REQ-AUTH-005-AC4
+    evidence:
+      - { type: inspection, ref: "internal/server/server.go withAuth — all four subtle.ConstantTimeCompare calls evaluated unconditionally; pair selection happens after both comparisons complete" }
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }

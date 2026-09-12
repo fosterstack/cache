@@ -352,6 +352,50 @@ requirements:
         verification: { method: http-integration, release_blocking: false }
         status: approved
 
+  - id: REQ-AUTH-005
+    title: Read-only credentials
+    statement: >
+      In addition to the read-write credential pair, the server shall
+      support an optional read-only credential pair (FSCACHE_RO_USERNAME
+      and FSCACHE_RO_PASSWORD, default unset). Read-only credentials
+      authenticate exactly like read-write credentials for GET and HEAD on
+      every authenticated surface, and receive HTTP 403 with nothing
+      stored for PUT and DELETE: developer laptops read, only the
+      identities holding the read-write pair write. Configuration is
+      fail-closed: the pair is both-or-neither, requires the read-write
+      pair to be configured, and its username must differ from the
+      read-write username.
+    source: [github issue 8 "read-only client mode", competitive-2026-09]
+    tier: community
+    introduced: v0.2.0
+    origin: github issue 8; competitive-2026-09; owner decision 2026-09-12
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-AUTH-005-AC1
+        given: a server with both credential pairs configured and a stored key
+        when: GET, HEAD, PUT, and DELETE arrive with read-only credentials, and the same requests arrive with read-write credentials
+        then: with read-only credentials GET and HEAD succeed identically to read-write, PUT and DELETE return 403 and store nothing; with read-write credentials all behave as without the read-only pair
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-AUTH-005-AC2
+        given: a server with both credential pairs configured
+        when: requests arrive with wrong credentials and with valid read-only credentials
+        then: 'wrong credentials receive 401 with WWW-Authenticate; valid read-only credentials never receive 401, and their 403 carries no WWW-Authenticate - the identity was accepted, the verb was refused'
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-AUTH-005-AC3
+        given: environments with an incomplete read-only pair, a read-only pair without the read-write pair, and a read-only username equal to the read-write username
+        when: the server starts
+        then: each start fails non-zero with a message naming the offending variables; a complete, distinct configuration starts
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-AUTH-005-AC4
+        given: the auth implementation with two credential pairs
+        when: it is inspected
+        then: every credential comparison uses crypto/subtle.ConstantTimeCompare and all comparisons are evaluated with no short-circuit that leaks which pair matched
+        verification: { method: inspection, release_blocking: false }
+        status: approved
+
   - id: REQ-HTTP-001
     title: Server timeouts
     statement: >

@@ -47,6 +47,9 @@ type Config struct {
 	Registry prometheus.Gatherer
 	Log      *slog.Logger
 	Auth     Credentials
+	// ROAuth is the optional read-only credential pair (REQ-AUTH-005):
+	// valid for GET and HEAD, refused with 403 for writes.
+	ROAuth Credentials
 	// MaxBodyBytes caps request body size for PUT (0 = unlimited). Protects
 	// against unbounded client uploads exhausting disk.
 	MaxBodyBytes int64
@@ -106,14 +109,14 @@ func New(cfg Config) http.Handler {
 	// the client credential — which already lives in every CI runner — is
 	// a fine gate for looking. /healthz and /metrics stay open, matching
 	// what liveness probes and Prometheus scrapers expect.
-	mux.Handle("GET /statusz", withAuth(cfg.Auth, http.HandlerFunc(status.handleStatus)))
+	mux.Handle("GET /statusz", withAuth(cfg.Auth, cfg.ROAuth, http.HandlerFunc(status.handleStatus)))
 
 	// Exact-match "/{$}" so ONLY the bare root reaches the landing page.
 	// Go's ServeMux gives the longest pattern precedence, so every real
 	// cache key still routes to the cache handler below.
-	mux.Handle("GET /{$}", withAuth(cfg.Auth, withMetrics(cfg.Metrics, http.HandlerFunc(status.handleRoot))))
+	mux.Handle("GET /{$}", withAuth(cfg.Auth, cfg.ROAuth, withMetrics(cfg.Metrics, http.HandlerFunc(status.handleRoot))))
 
-	cacheHandler := withAuth(cfg.Auth, withMetrics(cfg.Metrics, withUploadBound(cfg, cacheEndpoint(cfg))))
+	cacheHandler := withAuth(cfg.Auth, cfg.ROAuth, withMetrics(cfg.Metrics, withUploadBound(cfg, cacheEndpoint(cfg))))
 	mux.Handle("/", cacheHandler)
 
 	return mux
@@ -129,17 +132,32 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 // timing (COMMIT-REQ style hygiene: this is exactly the kind of small
 // correctness detail the addendum's algorithm-discipline section expects
 // applied to all code, not just the crypto module choice).
-func withAuth(creds Credentials, next http.Handler) http.Handler {
+//
+// Two pairs (REQ-AUTH-005): the read-write pair passes everything
+// through; the read-only pair passes GET and HEAD and answers writes
+// with 403 and no WWW-Authenticate - the identity was accepted, the
+// verb was refused, so re-presenting the same credentials cannot help.
+// All four comparisons are evaluated on every request; nothing
+// short-circuits on which pair matched.
+func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	if !creds.enabled() {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
-		passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
-		if !ok || !userOK || !passOK {
+		rwUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
+		rwPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
+		roUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(ro.Username)) == 1
+		roPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(ro.Password)) == 1
+		isRW := rwUserOK && rwPassOK
+		isRO := ro.enabled() && roUserOK && roPassOK
+		if !ok || (!isRW && !isRO) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="fosterstack-cache"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isRW && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "read-only credentials", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
