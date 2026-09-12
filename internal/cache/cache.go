@@ -72,6 +72,73 @@ func New(blobs *blobstore.Store, meta *metadata.Store, opts ...Option) *Cache {
 	return c
 }
 
+// ReconcileStats reports what a startup reconciliation found and fixed.
+type ReconcileStats struct {
+	AdoptedBlobs     int // blobs with no metadata record, now indexed
+	DroppedRecords   int // records with no blob, now removed
+	RemovedTempFiles int
+}
+
+// Reconcile repairs the metadata index against the blob store after an
+// unclean shutdown (REQ-STORE-005): blobs are truth, the index is
+// rebuildable. Blobs with no record are adopted (size from disk, recency
+// now); records with no blob are dropped; stale temp files from
+// interrupted writes are removed. Totals correct themselves because
+// Record and Delete maintain them.
+func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
+	var stats ReconcileStats
+
+	indexed := map[string]bool{}
+	entries, err := c.meta.All()
+	if err != nil {
+		return stats, fmt.Errorf("cache: reconcile: read index: %w", err)
+	}
+	for _, e := range entries {
+		indexed[e.Key] = true
+	}
+
+	onDisk := map[string]bool{}
+	staleTemp, err := c.blobs.Walk(func(key string, size int64) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		onDisk[key] = true
+		if !indexed[key] {
+			if err := c.meta.Record(key, size); err != nil {
+				return fmt.Errorf("adopt %q: %w", key, err)
+			}
+			stats.AdoptedBlobs++
+		}
+		return nil
+	})
+	if err != nil {
+		return stats, fmt.Errorf("cache: reconcile: %w", err)
+	}
+
+	for _, e := range entries {
+		if !onDisk[e.Key] {
+			if err := c.meta.Delete(e.Key); err != nil {
+				return stats, fmt.Errorf("cache: reconcile: drop %q: %w", e.Key, err)
+			}
+			stats.DroppedRecords++
+		}
+	}
+
+	for _, tmp := range staleTemp {
+		if err := c.blobs.RemoveStaleTemp(tmp); err != nil {
+			c.log.Warn("cache: reconcile: stale temp file not removed", "path", tmp, "error", err)
+			continue
+		}
+		stats.RemovedTempFiles++
+	}
+
+	c.log.Info("cache: reconciliation complete",
+		"adopted_blobs", stats.AdoptedBlobs,
+		"dropped_records", stats.DroppedRecords,
+		"removed_temp_files", stats.RemovedTempFiles)
+	return stats, nil
+}
+
 // Close releases the underlying blob store and metadata index. It closes
 // both even if the first Close fails, and reports the first error.
 func (c *Cache) Close() error {
@@ -98,10 +165,16 @@ func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error)
 		return 0, err
 	}
 	if err := c.meta.Record(key, n); err != nil {
-		// The blob is safely on disk; only bookkeeping failed. Log and
-		// continue — a missing metadata record just means this key won't
-		// be considered for eviction until the next successful write.
-		c.log.Error("cache: metadata record failed", "key", key, "error", err)
+		// REQ-STORE-004: a cache that says "stored" has stored it. An
+		// unindexed blob is invisible to eviction and totals, so the write
+		// is undone and the client told the truth. The delete is
+		// best-effort — if it also fails, startup reconciliation adopts
+		// the orphan later, which is the recovery path for exactly this.
+		if delErr := c.blobs.Delete(key); delErr != nil {
+			c.log.Error("cache: blob cleanup after metadata failure also failed; startup reconciliation will adopt it",
+				"key", key, "record_error", err, "delete_error", delErr)
+		}
+		return 0, fmt.Errorf("cache: metadata record for %q failed, entry not stored: %w", key, err)
 	}
 	if c.maxBytes > 0 {
 		c.evictToFit(ctx)

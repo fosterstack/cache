@@ -1,0 +1,183 @@
+name: Maven acceptance
+
+# Phase 1 item 6 (test-strategy §2.5; audit §21's eight scenarios). A real
+# multi-module Maven project (bench/maven-sample: app -> lib edge, real
+# compilation, a JUnit test) built against fscache through the Maven Build
+# Cache Extension's remote HTTP mode. The local cache directory is pointed
+# at a disposable path and wiped between builds, so a warm restore is
+# REMOTE evidence. Every count asserted below was measured empirically
+# before this workflow was written (2026-09-11): a cold build performs 2
+# lookup GETs (404) and 5 uploads; a warm build restores both modules.
+#
+# Compatibility policy (scenario 8): the versions this matrix tests are
+# the versions we claim to work with — the sample pins the newest tested
+# version, and the matrix also runs the oldest supported one. A version
+# not in this matrix is not a claim.
+#
+# Wrong/missing credentials (scenario 7) behave the way build caches
+# document: the build COMPLETES (remote failures are non-fatal), the
+# extension logs "Error downloading/uploading cache item ... 401", and the
+# server stores nothing. The assertion is exactly that — completed build,
+# 401s at the server, zero stored entries — not a build failure.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  COLD_LOOKUPS: "2"   # GET 404s on an empty cache
+  COLD_UPLOADS: "5"   # buildinfo + artifacts across both modules
+  MODULES: "2"
+
+jobs:
+  acceptance-maven:
+    name: acceptance-maven
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extension-version: ["1.2.0", "1.2.3"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: pin the matrix extension version
+        run: |
+          sed -i "s|<version>[0-9.]*</version>|<version>${{ matrix.extension-version }}</version>|" \
+            bench/maven-sample/.mvn/extensions.xml
+          grep version bench/maven-sample/.mvn/extensions.xml
+
+      - name: build fscache and start it WITH Basic Auth
+        run: |
+          CGO_ENABLED=0 go build -o /tmp/fscache-mvn ./cmd/fscache
+          FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
+            FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
+            /tmp/fscache-mvn & echo $! > /tmp/fscache-mvn.pid
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
+          done
+          echo "server never became healthy" >&2; exit 1
+
+      - name: write settings.xml credential sets
+        run: |
+          mkdir -p /tmp/m2-good /tmp/m2-bad
+          cat > /tmp/m2-good/settings.xml <<'XML'
+          <settings>
+            <servers>
+              <server><id>fscache</id><username>mvn</username><password>acceptance-secret</password></server>
+            </servers>
+          </settings>
+          XML
+          sed 's/acceptance-secret/WRONG-password/' /tmp/m2-good/settings.xml > /tmp/m2-bad/settings.xml
+
+      # Scenarios 1 + 6: a real multi-module build uploads remote entries,
+      # authenticated via the documented settings.xml <server> conventions.
+      - name: cold build (uploads; Basic Auth via settings.xml)
+        working-directory: bench/maven-sample
+        run: |
+          rm -rf /tmp/mvn-bc lib/target app/target
+          mvn -B -s /tmp/m2-good/settings.xml verify \
+            -Dmaven.build.cache.location=/tmp/mvn-bc \
+            -Dmaven.build.cache.remote.url=http://localhost:18098/maven \
+            -Dmaven.build.cache.remote.save.enabled=true
+
+      - name: assert the cold build populated the remote (server-side evidence)
+        run: |
+          set -euo pipefail
+          curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt
+          puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/m-cold.txt || true)
+          gets404=$(awk '/^fscache_http_requests_total\{method="GET",status="404"\}/ {print $2}' /tmp/m-cold.txt || true)
+          echo "cold: uploads=${puts:-0} lookups-missed=${gets404:-0}"
+          [ "${puts:-0}" -eq "$COLD_UPLOADS" ] || { echo "::error::cold uploads ${puts:-0}, expected $COLD_UPLOADS" >&2; exit 1; }
+          [ "${gets404:-0}" -eq "$COLD_LOOKUPS" ] || { echo "::error::cold lookups ${gets404:-0}, expected $COLD_LOOKUPS" >&2; exit 1; }
+
+      - name: checksum the cold build's artifacts
+        working-directory: bench/maven-sample
+        run: sha256sum lib/target/lib-*.jar app/target/app-*.jar | tee /tmp/cold-jars.sha256
+
+      # Scenario 2: local outputs AND local cache removed — the warm build
+      # can only be served by the remote.
+      - name: wipe local outputs and local cache
+        working-directory: bench/maven-sample
+        run: rm -rf /tmp/mvn-bc lib/target app/target
+
+      # Scenarios 3 + 5: the clean second build restores from fscache, and
+      # the server's counters prove where the bytes came from.
+      - name: warm build (must restore from the remote)
+        working-directory: bench/maven-sample
+        run: |
+          mvn -B -s /tmp/m2-good/settings.xml verify \
+            -Dmaven.build.cache.location=/tmp/mvn-bc \
+            -Dmaven.build.cache.remote.url=http://localhost:18098/maven \
+            -Dmaven.build.cache.remote.save.enabled=true | tee /tmp/warm.log
+
+      - name: assert both modules restored, served by the remote
+        run: |
+          set -euo pipefail
+          restored=$(grep -c 'Found cached build, restoring' /tmp/warm.log || true)
+          echo "restored modules: ${restored}"
+          [ "${restored}" -eq "$MODULES" ] || { echo "::error::${restored} modules restored, expected $MODULES" >&2; exit 1; }
+          curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt
+          hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/m-warm.txt)
+          echo "server-side cache hits: ${hits:-0}"
+          [ "${hits:-0}" -ge "$MODULES" ] || { echo "::error::server saw ${hits:-0} hits; the restore did not come from the remote" >&2; exit 1; }
+
+      # Scenario 4: restored artifacts are the same bytes the cold build
+      # uploaded.
+      - name: assert restored artifacts are byte-identical
+        working-directory: bench/maven-sample
+        run: |
+          set -euo pipefail
+          sha256sum lib/target/lib-*.jar app/target/app-*.jar > /tmp/warm-jars.sha256
+          diff -u /tmp/cold-jars.sha256 /tmp/warm-jars.sha256
+          echo "restored jars byte-identical"
+
+      # Scenario 7: wrong credentials, then no credentials. Documented
+      # behavior: build completes, errors logged, server 401s, nothing
+      # stored.
+      - name: wrong and missing credentials fail the documented way
+        working-directory: bench/maven-sample
+        run: |
+          set -euo pipefail
+          before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
+            | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
+
+          rm -rf /tmp/mvn-bad lib/target app/target
+          mvn -B -s /tmp/m2-bad/settings.xml verify \
+            -Dmaven.build.cache.location=/tmp/mvn-bad \
+            -Dmaven.build.cache.remote.url=http://localhost:18098/maven \
+            -Dmaven.build.cache.remote.save.enabled=true | tee /tmp/bad.log
+          grep -q 'Error downloading cache item' /tmp/bad.log \
+            || { echo "::error::wrong credentials produced no logged download errors" >&2; exit 1; }
+
+          rm -rf /tmp/mvn-none lib/target app/target
+          mvn -B verify \
+            -Dmaven.build.cache.location=/tmp/mvn-none \
+            -Dmaven.build.cache.remote.url=http://localhost:18098/maven \
+            -Dmaven.build.cache.remote.save.enabled=true | tee /tmp/none.log
+          grep -q 'Error downloading cache item' /tmp/none.log \
+            || { echo "::error::missing credentials produced no logged download errors" >&2; exit 1; }
+
+          after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
+            | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
+          echo "stored uploads before=${before_puts} after=${after_puts}"
+          [ "${after_puts}" -eq "${before_puts}" ] \
+            || { echo "::error::unauthenticated runs stored entries on the server" >&2; exit 1; }
+
+      - name: stop fscache
+        if: always()
+        run: kill "$(cat /tmp/fscache-mvn.pid)" 2>/dev/null || true
