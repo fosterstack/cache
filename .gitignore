@@ -6,3 +6,7 @@
 bench/gradle-sample/.gradle/
 bench/gradle-sample/**/build/
 tools/requirements/requirements
+
+# Maven acceptance sample build outputs
+bench/maven-sample/**/target/
+bench/maven-sample/target/

@@ -181,3 +181,21 @@ func (s *Store) Count() (int, error) {
 	})
 	return n, err
 }
+
+// All returns every entry in the index. It exists for startup
+// reconciliation, which must compare the complete index against the
+// complete blob set.
+func (s *Store) All() ([]Entry, error) {
+	var out []Entry
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
+			e, err := decode(string(k), v)
+			if err != nil {
+				return err
+			}
+			out = append(out, e)
+			return nil
+		})
+	})
+	return out, err
+}

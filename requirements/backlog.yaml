@@ -5,19 +5,16 @@
 # future behavior; this file is where it waits so the baseline stays clean.
 
 backlog:
-  - title: Fail-closed configuration parsing
+  - title: In-flight upload BYTE budget
     note: >
-      Invalid numeric env values reject startup instead of silently falling
-      back to defaults. Being written requirements-first by remediation item
-      1.2 (origin audit-2026-09-08); listed here only until that PR lands.
-  - title: Crash-consistency reconciliation
-    note: >
-      Marker file, unclean-start walk, fail-the-PUT on metadata failure.
-      Remediation item 1.3, requirements-first, origin audit-2026-09-08.
-  - title: HTTP resource bounds
-    note: >
-      Read/write/idle timeouts, concurrency and in-flight-byte limits.
-      Remediation item 1.4, requirements-first, origin audit-2026-09-08.
+      REQ-HTTP-002 bounds upload COUNT; the per-request body cap times the
+      concurrency bound already yields a worst-case byte ceiling (default
+      32 x 1 GiB). A tighter shared byte budget across in-flight uploads
+      (rejecting when the sum of declared Content-Lengths exceeds a cap,
+      with a policy for unknown lengths) is deferred until a deployment
+      demonstrates the count bound is insufficient - the unknown-length
+      policy should be designed against a real case, not invented.
+      Origin audit-2026-09-08, narrowed 2026-09-11.
   - title: Human-readable size units (FSCACHE_MAX_SIZE)
     note: Issue #29; v0.2 consideration, keeps _BYTES working.
   - title: Helm chart

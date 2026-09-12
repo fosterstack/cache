@@ -23,3 +23,17 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # The distroless base digests. CRITICAL (owner, Sep 8): nothing had
+  # watched these since Sprint 3 — the pins lived in .goreleaser.yaml and
+  # .ko.yaml where no ecosystem looks. The FROM lines are written
+  # image:tag@sha256 because Dependabot's docker ecosystem does not update
+  # a bare image@sha256 line; with a tag to track it bumps the digest. A
+  # base bump is patch/minor for the auto-merge lane; the reproducibility
+  # check and release-artifact acceptance are the gates that catch a bad
+  # base. The debug image's busybox comes from static:debug-nonroot and
+  # moves with it — no separate tracking.
+  - package-ecosystem: "docker"
+    directory: "/build/docker"
+    schedule:
+      interval: "weekly"
