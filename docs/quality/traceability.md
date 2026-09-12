@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 46 |
-| Acceptance criteria | 63 |
-| Release-blocking ACs | 41 |
+| Active requirements | 47 |
+| Acceptance criteria | 67 |
+| Release-blocking ACs | 44 |
 | ACs with mapped evidence | 50 |
 | Release-blocking ACs with mapped evidence | 32 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 41 |
+| Confidence: documented | 42 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -180,6 +180,19 @@ A server with authentication disabled shall accept requests that carry an Author
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | 1 item(s) |
+
+### REQ-AUTH-005 — Read-only credentials
+
+In addition to the read-write credential pair, the server shall support an optional read-only credential pair (FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD, default unset). Read-only credentials authenticate exactly like read-write credentials for GET and HEAD on every authenticated surface, and receive HTTP 403 with nothing stored for PUT and DELETE: developer laptops read, only the identities holding the read-write pair write. Configuration is fail-closed: the pair is both-or-neither, requires the read-write pair to be configured, and its username must differ from the read-write username.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: github issue 8 "read-only client mode"; competitive-2026-09*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-AUTH-005-AC1 | Given a server with both credential pairs configured and a stored key; when GET, HEAD, PUT, and DELETE arrive with read-only credentials, and the same requests arrive with read-write credentials; then with read-only credentials GET and HEAD succeed identically to read-write, PUT and DELETE return 403 and store nothing; with read-write credentials all behave as without the read-only pair | http-integration | yes | approved | none mapped |
+| REQ-AUTH-005-AC2 | Given a server with both credential pairs configured; when requests arrive with wrong credentials and with valid read-only credentials; then wrong credentials receive 401 with WWW-Authenticate; valid read-only credentials never receive 401, and their 403 carries no WWW-Authenticate - the identity was accepted, the verb was refused | http-integration | yes | approved | none mapped |
+| REQ-AUTH-005-AC3 | Given environments with an incomplete read-only pair, a read-only pair without the read-write pair, and a read-only username equal to the read-write username; when the server starts; then each start fails non-zero with a message naming the offending variables; a complete, distinct configuration starts | unit | yes | approved | none mapped |
+| REQ-AUTH-005-AC4 | Given the auth implementation with two credential pairs; when it is inspected; then every credential comparison uses crypto/subtle.ConstantTimeCompare and all comparisons are evaluated with no short-circuit that leaks which pair matched | inspection |  | approved | none mapped |
 
 ## HTTP
 

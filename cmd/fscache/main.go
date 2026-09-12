@@ -31,6 +31,8 @@ type config struct {
 	maxBytes             int64
 	username             string
 	password             string
+	roUsername           string
+	roPassword           string
 	maxBodyBytes         int64
 	maxConcurrentUploads int64
 }
@@ -54,6 +56,8 @@ func loadConfig() (config, error) {
 		maxBytes:             maxBytes,
 		username:             os.Getenv("FSCACHE_USERNAME"),
 		password:             os.Getenv("FSCACHE_PASSWORD"),
+		roUsername:           os.Getenv("FSCACHE_RO_USERNAME"),
+		roPassword:           os.Getenv("FSCACHE_RO_PASSWORD"),
 		maxBodyBytes:         maxBodyBytes,
 		maxConcurrentUploads: maxUploads,
 	}

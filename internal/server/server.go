@@ -47,6 +47,9 @@ type Config struct {
 	Registry prometheus.Gatherer
 	Log      *slog.Logger
 	Auth     Credentials
+	// ROAuth is the optional read-only credential pair (REQ-AUTH-005):
+	// valid for GET and HEAD, refused with 403 for writes.
+	ROAuth Credentials
 	// MaxBodyBytes caps request body size for PUT (0 = unlimited). Protects
 	// against unbounded client uploads exhausting disk.
 	MaxBodyBytes int64
