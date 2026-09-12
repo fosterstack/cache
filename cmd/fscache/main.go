@@ -64,6 +64,17 @@ func loadConfig() (config, error) {
 	if (cfg.username == "") != (cfg.password == "") {
 		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
 	}
+	if (cfg.roUsername == "") != (cfg.roPassword == "") {
+		return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD must both be set or both be empty")
+	}
+	if cfg.roUsername != "" {
+		if cfg.username == "" {
+			return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD require FSCACHE_USERNAME and FSCACHE_PASSWORD: a read-only pair with no read-write pair would leave nothing able to write")
+		}
+		if cfg.roUsername == cfg.username {
+			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: identical usernames make the credential tier ambiguous")
+		}
+	}
 	return cfg, nil
 }
 
@@ -202,6 +213,7 @@ func run(log *slog.Logger) error {
 		Registry:             prometheus.DefaultGatherer,
 		Log:                  log,
 		Auth:                 server.Credentials{Username: cfg.username, Password: cfg.password},
+		ROAuth:               server.Credentials{Username: cfg.roUsername, Password: cfg.roPassword},
 		MaxBodyBytes:         cfg.maxBodyBytes,
 		MaxBytes:             cfg.maxBytes,
 		MaxConcurrentUploads: int(cfg.maxConcurrentUploads),
