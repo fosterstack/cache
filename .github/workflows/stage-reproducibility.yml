@@ -1,0 +1,132 @@
+name: 'Stage: reproducibility'
+
+# Release-chain reproducibility stage (release-chain-design.md §2 Stage 4),
+# release mode. PR mode's equivalent lives in release-chain-pr.yml as the
+# two-assembly digest comparison; THIS stage is the tag chain's version:
+# verify the image-build predicate for the pushed candidate digests, then
+# repeat the assembly from the same verified dist/ on a fresh runner with
+# a local OCI output — no push — and assert the locally computed index
+# digests equal the verified pushed ones, variant for variant. If they
+# differ the release fails and we learn something; nothing papers over it.
+# Signs a reproducibility predicate naming the same digests.
+
+on:
+  workflow_call:
+    inputs:
+      dist-artifact:
+        description: 'name of the uploaded dist artifact to consume'
+        required: true
+        type: string
+      expected-checksums:
+        description: 'checksums.txt content from the build stage'
+        required: true
+        type: string
+      digests:
+        description: 'JSON {production, debug, fips} index digests from the image stage'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    name: reproducibility
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read      # read the candidate digests' attestations
+      id-token: write     # sign the reproducibility predicate
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: log in to GHCR (private candidates package)
+        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: verify the image-build predicate for every candidate digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
+            gh attestation verify "oci://${repo}@${d}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type https://fosterstack.com/attestations/image-build/v1 \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-image.yml" >/dev/null
+            echo "image-build predicate verified for ${v} at ${d}"
+          done
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: dist/
+
+      - name: verify the archives (checksums and signed build predicate)
+        env:
+          EXPECTED: ${{ inputs.expected-checksums }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+          grep -oE '[^ ]+$' /tmp/expected-checksums.txt | while read -r f; do
+            gh attestation verify "dist/$f" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type https://fosterstack.com/attestations/build/v1 \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null
+          done
+          echo "all archives verified against the signed build predicate"
+
+      - name: extract the exact binaries into the build context
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/imgctx/binaries/amd64 /tmp/imgctx/binaries/arm64
+          tar xzf dist/fscache_*_linux_amd64.tar.gz  -C /tmp/imgctx/binaries/amd64 fscache
+          tar xzf dist/fscache_*_linux_arm64.tar.gz  -C /tmp/imgctx/binaries/arm64 fscache
+          tar xzf dist/fscache-fips_*_linux_amd64.tar.gz -C /tmp/imgctx/binaries/amd64 fscache-fips
+          tar xzf dist/fscache-fips_*_linux_arm64.tar.gz -C /tmp/imgctx/binaries/arm64 fscache-fips
+          cp build/docker/Dockerfile.* /tmp/imgctx/
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: rebuild locally and assert digest equality against the verified push
+        id: rebuild
+        run: |
+          set -euo pipefail
+          SDE=$(git log -1 --format=%ct)
+          echo "buildkit/buildx material: $(docker buildx version)"
+          cd /tmp/imgctx
+          for v in production debug fips; do
+            SOURCE_DATE_EPOCH="${SDE}" docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -f "Dockerfile.${v}" \
+              --provenance=false --sbom=false \
+              --output "type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true" \
+              --metadata-file "/tmp/${v}.json" . >/dev/null
+            local_d=$(jq -r '."containerimage.digest"' "/tmp/${v}.json")
+            pushed_d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            if [ "$local_d" != "$pushed_d" ]; then
+              echo "::error::${v} is NOT reproducible: pushed ${pushed_d}, rebuilt ${local_d}" >&2
+              exit 1
+            fi
+            echo "${v}: reproducible at ${local_d}"
+          done
+          jq -c . <<<'${{ inputs.digests }}' | while read -r d; do
+            jq -n --argjson digests "$d" --arg sha "${GITHUB_SHA}" --arg buildx "$(docker buildx version)" \
+              '{sha: $sha, index_digests: $digests, method: "independent local rebuild, oci output, digest equality", buildx: $buildx}'
+          done > /tmp/repro-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/repro-subjects.txt
+
+      - name: sign the reproducibility predicate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/repro-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/reproducibility/v1
+          predicate-path: /tmp/repro-predicate.json
