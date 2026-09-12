@@ -21,6 +21,11 @@ permissions:
   contents: read
   id-token: write
   attestations: write
+  # stage-image's job now REQUESTS packages: write for release-mode
+  # candidate pushes; the caller must cover the request or every run is a
+  # startup_failure with zero jobs. PR mode never uses it, and fork or
+  # Dependabot events have it silently downgraded to read by GitHub.
+  packages: write
 
 jobs:
   build:
