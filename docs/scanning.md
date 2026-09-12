@@ -23,7 +23,7 @@ Detected OS   family="debian" version="13.6"
 ├──────────────────────────────────┼──────────┼─────────────────┤
 │ ghcr.io/fosterstack/cache (debian)│  debian  │        0        │
 ├──────────────────────────────────┼──────────┼─────────────────┤
-│ ko-app/fscache                    │ gobinary │        0        │
+│ usr/local/bin/fscache             │ gobinary │        0        │
 └──────────────────────────────────┴──────────┴─────────────────┘
 ```
 
