@@ -13,9 +13,11 @@ name: 'Stage: build'
 # digests from checksums.txt: the digests are emitted HERE, by the
 # builder, at the source — never resolved from a registry later.
 #
-# Source-admission verification on entry arrives with the admission stage
-# (Phase 2 item 3); until then release.yml remains the only tag-triggered
-# entry point and this stage runs in PR (snapshot) mode.
+# Release mode verifies the source-admission predicate on entry: the
+# admission.json produced by stage-admission.yml arrives as an artifact,
+# its digest is recomputed here, and the signed predicate is verified for
+# that digest, for this commit, with the admission stage workflow as the
+# required signer. No admission, no build.
 
 on:
   workflow_call:
@@ -24,6 +26,11 @@ on:
         description: 'snapshot (PRs) or release (tag chain)'
         required: true
         type: string
+      admission-artifact:
+        description: 'artifact carrying the signed admission.json (required in release mode)'
+        required: false
+        type: string
+        default: ''
     outputs:
       checksums:
         description: 'sha256 lines for the produced archives'
@@ -46,6 +53,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: release mode requires an admission artifact
+        if: inputs.mode == 'release' && inputs.admission-artifact == ''
+        run: |
+          echo "::error::release mode with no admission artifact — the chain must enter through stage-admission" >&2
+          exit 1
+
+      - name: verify the source-admission predicate on entry
+        if: inputs.mode == 'release'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.admission-artifact }}
+          path: /tmp/admission
+
+      - name: admission predicate must be signed by the admission stage for this commit
+        if: inputs.mode == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          f=/tmp/admission/admission.json
+          gh attestation verify "$f" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --predicate-type https://fosterstack.com/attestations/source-admission/v1 \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml" \
+            --format json \
+            --jq '.[0].verificationResult.statement.predicate | {tag, sha}' > /tmp/admitted.json
+          adm_sha=$(jq -r '.sha' /tmp/admitted.json)
+          adm_tag=$(jq -r '.tag' /tmp/admitted.json)
+          [ "$adm_sha" = "${GITHUB_SHA}" ] \
+            || { echo "::error::admission predicate admits ${adm_sha}, this build is at ${GITHUB_SHA}" >&2; exit 1; }
+          [ "$adm_tag" = "${GITHUB_REF_NAME}" ] \
+            || { echo "::error::admission predicate admits tag ${adm_tag}, this ref is ${GITHUB_REF_NAME}" >&2; exit 1; }
+          echo "admitted: ${adm_tag} at ${adm_sha}"
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
