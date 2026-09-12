@@ -48,23 +48,68 @@ This names the exact workflow run that produced the image you pulled
 same identity flags, if you prefer to stay in cosign).
 
 What neither step tells you, stated so nobody over-reads them: whether the
-artifact was scanned or tested. Those are separate evidence classes;
-[SECURITY.md](../SECURITY.md) says exactly what attaches to a release
-today.
+artifact was scanned or tested. Those are separate statements — and they
+are also attached to the digest, verifiable the same way. See
+"Verify the whole chain" below.
 
 ```
 ✓ Verification succeeded!
 - Build repo:..... fosterstack/cache
-- Build workflow:. .github/workflows/release.yml@refs/tags/v${VER}
+- Build workflow:. .github/workflows/stage-image.yml@refs/tags/v${VER}
 - Signer repo:.... fosterstack/cache
-- Signer workflow: .github/workflows/release.yml@refs/tags/v${VER}
+- Signer workflow: .github/workflows/stage-image.yml@refs/tags/v${VER}
 ```
 
 `Build workflow` is cryptographic confirmation that the bytes you pulled
-came out of this repository's public CI pipeline —
-[`.github/workflows/release.yml`](../.github/workflows/release.yml),
+came out of this repository's public CI pipeline — the image-assembly
+stage of [`.github/workflows/release.yml`](../.github/workflows/release.yml),
 readable in full — and not from a developer machine (see
 [`RELEASING.md`](../RELEASING.md)'s "releases build only in CI" rule).
+
+## 2b. Verify the whole chain
+
+Every stage of the release chain signs its own statement about the exact
+digest you pulled, and each is independently verifiable. The one that
+implies all the others:
+
+```sh
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack \
+  --predicate-type https://fosterstack.com/attestations/release-authorization/v1
+```
+
+That statement exists only if the authorization stage verified the full
+graph for this digest — admission, build, image assembly,
+reproducibility, one scan verdict per scanner, acceptance — and its
+predicate body lists the Rekor log index of everything it checked.
+
+The individual statements, all verifiable with the same command shape
+(`--predicate-type <type>`):
+
+| Predicate type | Signed by | Says |
+|---|---|---|
+| `https://fosterstack.com/attestations/image-build/v1` | the image-assembly stage | how this digest was assembled: base digest, binary hashes, Dockerfile hash |
+| `https://fosterstack.com/attestations/reproducibility/v1` | the reproducibility stage | an independent rebuild produced this exact digest |
+| `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
+| `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
+| `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
+
+The scanner list lives in
+[`.github/policy/scanners.json`](../.github/policy/scanners.json) — the
+per-scanner types track that list, not this table.
+
+`release-manifest.json` on the release page carries the same evidence in
+one file: every digest, both registry references, per-AC results, and
+the Rekor log indexes.
+
+### The Docker Hub mirror
+
+The same images, same digests, are mirrored at
+`docker.io/fosterstack/cache` for tooling that defaults to Docker Hub.
+GHCR is canonical. Everything on this page verifies identically against
+either registry, because verification is keyed to the digest, not the
+registry. One practical note: Docker Hub rate-limits anonymous pulls by
+the **puller's** IP and login (not by anything we control) — if you hit
+a limit, authenticate with any free Docker account or pull from GHCR.
 
 ## 3. Which tags to verify
 
