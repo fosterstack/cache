@@ -123,6 +123,7 @@ jobs:
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
             vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}"
+            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}"
             vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}"
             for s in $scanners; do
               vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}"
