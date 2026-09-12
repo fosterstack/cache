@@ -1,0 +1,76 @@
+name: Release chain (PR proof)
+
+# Runs the rebuilt chain's first two stages on every PR and proves the
+# reproducibility property the release chain will later REQUIRE: the same
+# attested binaries, assembled twice in two independent jobs, must yield
+# identical image index digests for every variant. The word
+# "reproducible" enters public docs only after this check passes on main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The caller's permission grant must COVER what called workflows request:
+# a called job cannot escalate past this block, and requesting more than
+# the caller grants fails the whole run at startup (found the hard way -
+# every early chain run was a startup_failure with zero jobs). id-token
+# and attestations are unused in PR/snapshot mode but must be grantable
+# for the shared stage files.
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/stage-build.yml
+    with:
+      mode: snapshot
+
+  assemble-a:
+    needs: build
+    uses: ./.github/workflows/stage-image.yml
+    with:
+      mode: pr
+      dist-artifact: dist-snapshot
+      expected-checksums: ${{ needs.build.outputs.checksums }}
+
+  assemble-b:
+    needs: build
+    uses: ./.github/workflows/stage-image.yml
+    with:
+      mode: pr
+      dist-artifact: dist-snapshot
+      expected-checksums: ${{ needs.build.outputs.checksums }}
+
+  artifact-acceptance:
+    needs: build
+    uses: ./.github/workflows/stage-acceptance-artifacts.yml
+    with:
+      dist-artifact: dist-snapshot
+      expected-checksums: ${{ needs.build.outputs.checksums }}
+
+  reproducibility:
+    name: reproducibility
+    needs: [assemble-a, assemble-b]
+    runs-on: ubuntu-latest
+    steps:
+      - name: two independent assemblies must agree, digest for digest
+        run: |
+          set -euo pipefail
+          a='${{ needs.assemble-a.outputs.digests }}'
+          b='${{ needs.assemble-b.outputs.digests }}'
+          echo "assembly A: $a"
+          echo "assembly B: $b"
+          for v in production debug fips; do
+            da=$(jq -r --arg v "$v" '.[$v]' <<<"$a")
+            db=$(jq -r --arg v "$v" '.[$v]' <<<"$b")
+            if [ -z "$da" ] || [ "$da" = "null" ]; then
+              echo "::error::assembly A produced no digest for ${v}" >&2; exit 1
+            fi
+            if [ "$da" != "$db" ]; then
+              echo "::error::${v} is NOT reproducible: ${da} vs ${db}" >&2; exit 1
+            fi
+            echo "${v}: reproducible at ${da}"
+          done
