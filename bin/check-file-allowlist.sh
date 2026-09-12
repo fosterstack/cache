@@ -45,6 +45,7 @@ ALLOW_PATTERNS=(
   # and the scanner set, consumed by the auto-merge guard and the release
   # workflows.
   '^\.github/policy/[A-Za-z0-9._-]+\.json$'
+  '^\.github/policy/[A-Za-z0-9._-]+\.txt$'
 
   # VEX statements. Published exception claims — these ship as release
   # assets and are meant to be read by anyone auditing an artifact.
