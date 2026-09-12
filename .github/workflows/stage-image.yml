@@ -191,3 +191,13 @@ jobs:
           subject-checksums: /tmp/image-subjects.txt
           predicate-type: https://fosterstack.com/attestations/image-build/v1
           predicate-path: /tmp/image-build-predicate.json
+
+      # SLSA build provenance for the images themselves: this is the
+      # statement `gh attestation verify oci://…` checks by default, i.e.
+      # the command the public docs give customers. Verified by the
+      # authorization stage and by customers; consumed, therefore created.
+      - name: attest build provenance for the images
+        if: inputs.mode == 'release'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: /tmp/image-subjects.txt
