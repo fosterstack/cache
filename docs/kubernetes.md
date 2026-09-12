@@ -282,13 +282,24 @@ request 401s silently (see [gradle.md](gradle.md#5-credentials-that-stop-working
 spec:
   containers:
     - name: runner
-      envFrom:
-        - secretRef:
-            name: fscache-auth      # same Secret the server uses
+      env:
+        - name: FSCACHE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: fscache-auth    # same Secret the server uses
+              key: username
+        - name: FSCACHE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fscache-auth
+              key: password
 ```
 
-That puts `FSCACHE_USERNAME` and `FSCACHE_PASSWORD` in the build environment,
-which is what the `settings.gradle.kts` above reads.
+The explicit `secretKeyRef` mapping matters: the Secret's keys are
+`username` and `password`, so an `envFrom` shortcut would inject variables
+with *those* names — not the `FSCACHE_USERNAME` and `FSCACHE_PASSWORD` the
+`settings.gradle.kts` above reads — and every request would 401 silently.
+(An earlier revision of this page made exactly that mistake.)
 
 ## Reaching it from outside the cluster
 
@@ -304,10 +315,15 @@ kubectl port-forward svc/fscache 8080:80
 Then, in another terminal:
 
 ```sh
+# healthz and metrics stay open without credentials:
 curl -s localhost:8080/healthz                                   # -> ok
-curl -s -X PUT --data-binary 'hello' localhost:8080/testkey123   # -> 201
-curl -s localhost:8080/testkey123                                # -> hello
 curl -s localhost:8080/metrics | grep fscache_cache
+
+# the cache surface needs the credentials from the fscache-auth Secret:
+curl -s -u gradle:CHANGE-ME -X PUT --data-binary 'hello' \
+  localhost:8080/testkey123                                      # stores it
+curl -s -u gradle:CHANGE-ME localhost:8080/testkey123            # -> hello
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/testkey123  # -> 401 without them
 ```
 
 If those four work, the deployment is correct and anything that fails later is

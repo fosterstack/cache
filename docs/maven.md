@@ -19,13 +19,16 @@ In `.mvn/extensions.xml` (create the file if it doesn't exist):
   <extension>
     <groupId>org.apache.maven.extensions</groupId>
     <artifactId>maven-build-cache-extension</artifactId>
-    <version>1.3.0</version> <!-- pinned: upstream -->
+    <version>1.2.3</version> <!-- pinned: upstream -->
   </extension>
 </extensions>
 ```
 
 Check [Maven Central](https://search.maven.org/artifact/org.apache.maven.extensions/maven-build-cache-extension)
-for the current version.
+for the current version. The versions our CI acceptance-tests against are
+the ones in [`acceptance-maven.yml`](../.github/workflows/acceptance-maven.yml)'s
+matrix; a version outside that matrix is not something we claim to have
+tested.
 
 ## 2. Point it at your FosterStack Cache server
 
