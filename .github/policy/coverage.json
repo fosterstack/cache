@@ -1,0 +1,12 @@
+{
+  "comment": [
+    "The coverage ratchet (test-strategy.md §6). floor is the gate the",
+    "coverage check enforces on every PR: total statement coverage of",
+    "non-excluded Go code must be >= floor. Set to the measured number",
+    "on the day the gate landed (69.2% on 2026-09-12); raise it as",
+    "Phase 1 tests land; hold at 100. Never lower it in the same PR",
+    "that lowers coverage. Exclusions live in coverage-exclusions.txt,",
+    "one path prefix per line with a reason, reviewed like ACs."
+  ],
+  "floor": 69.0
+}
