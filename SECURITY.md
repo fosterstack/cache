@@ -110,10 +110,15 @@ Standard builds report `"fips140":"off"`.
 
 ## Data handling
 
-The server makes **no outbound network connections**. There is no telemetry, no
-usage reporting, no licence check, and no update ping, so it behaves identically
-on a host with no route to the internet — which is also why the air-gapped
-install path is a supported configuration rather than a workaround.
+The server sends **no telemetry and requires no FosterStack connection** —
+no usage reporting, no licence check, no update ping, ever. Today's free
+core initiates no outbound network connections at all, so it behaves
+identically on a host with no route to the internet — which is also why the
+air-gapped install path is a supported configuration rather than a
+workaround. When the paid features ship, traffic that you configure will
+exist — an identity provider for SSO, peer replicas for replication — and
+those are connections to endpoints you choose; nothing will ever connect to
+FosterStack.
 
 This is a mechanical property, not a policy promise, and it is checkable in a
 minute against a running server:
