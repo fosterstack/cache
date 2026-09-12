@@ -111,7 +111,7 @@ place to start, not an issue against this repo.
 FosterStack Cache is, as far as we've found, the only maintained,
 purpose-built remote-cache **server** for Maven — the alternative is
 Develocity's Maven extension, which requires a full Develocity
-subscription (same ~$17.5k/yr+ floor as their Gradle offering). If you're
+subscription. If you're
 already running FosterStack Cache for Gradle, pointing Maven modules at
 the same server (mixed Gradle+Maven shops, one deploy) is the whole
 pitch: "one self-hosted cache server for Gradle **and** Maven."
