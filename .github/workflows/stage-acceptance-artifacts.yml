@@ -200,7 +200,7 @@ jobs:
       # but real — the evidence-depth table's "documented equivalent".
       - name: arm64 production candidate boots and serves (QEMU)
         if: inputs.mode == 'candidates'
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
       - name: run the arm64 candidate
         if: inputs.mode == 'candidates'
         run: |
