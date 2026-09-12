@@ -3,8 +3,15 @@
 ## The one command
 
 ```sh
-docker run -d -p 8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:latest
+docker run -d -p 127.0.0.1:8080:8080 -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:latest
 ```
+
+The `127.0.0.1:` prefix binds the port to loopback: the cache is reachable
+from this machine only, which is the right shape for a trial — a bare
+`-p 8080:8080` publishes to every interface, and on a cloud host that is a
+world-writable, unauthenticated cache the moment the command returns. The
+production shape (all interfaces, Basic Auth on) is the compose example
+below.
 
 That's a working, persistent (named volume) deployment. Point your build
 tool at it — [Gradle setup](gradle.md) / [Maven setup](maven.md) — and
@@ -50,7 +57,7 @@ chown the volume first:
 ```sh
 docker volume create fscache-data
 docker run --rm -v fscache-data:/data busybox chown 65532:65532 /data
-docker run -d -p 8080:8080 -v fscache-data:/data \
+docker run -d -p 127.0.0.1:8080:8080 -v fscache-data:/data \
   -e FSCACHE_DATA_DIR=/data ghcr.io/fosterstack/cache:latest
 ```
 
@@ -109,19 +116,24 @@ to be writable by uid 65532; see the mount note above, and
 
 ## A slightly more real deployment (docker-compose)
 
+This is the production shape, and it is authenticated on purpose: it
+publishes on every interface so CI runners can reach it, and a cache that
+untrusted parties can write to can feed bytes into your builds — so the
+port never opens beyond loopback without the credential.
+
 ```yaml
 services:
   fscache:
     image: ghcr.io/fosterstack/cache:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8080:8080"                    # all interfaces — which is why auth is on
     volumes:
       - fscache-data:/home/nonroot     # see "The one command" for why this path
     environment:
       FSCACHE_MAX_BYTES: "53687091200"   # 50 GiB — size to your CI volume
-      # FSCACHE_USERNAME: gradle          # uncomment to require Basic Auth
-      # FSCACHE_PASSWORD: change-me       # and set both together
+      FSCACHE_USERNAME: gradle
+      FSCACHE_PASSWORD: change-me        # generate one: openssl rand -base64 24
 
 volumes:
   fscache-data:

@@ -1,56 +1,41 @@
 # Contributing
 
-Thanks for considering it — this is a small, MIT-licensed project and outside
-contributions are welcome. A few things are worth knowing up front so
-there are no surprises.
+Thanks for being here. This file is short because the policy is simple, and
+we'd rather be clear than welcoming-sounding.
 
-## Every outside PR gets owner review before merge
+## We don't take code contributions right now
 
-There's no auto-merge path for external contributors, and there isn't a
-bot approving PRs on the maintainer's behalf. A pull request from anyone
-outside the org gets read and reviewed by a human before it merges — no
-exceptions, regardless of how green the CI checks are.
+Not a judgment of anyone's code — it's how this company is built. The
+implementation here is done by AI agents working under automated gates:
+requirements first, adversarial review, signed evidence at each step. An
+outside diff is the one input that can't go through those gates unreviewed,
+and a one-person review operation would either become the bottleneck or
+become careless. So we close outside pull requests, kindly, and re-file
+what they were trying to do as an issue.
 
-This isn't distrust of any particular contributor — it's the standing
-policy for any code or configuration influenced by input this project
-doesn't control: *no code influenced by untrusted input ships without
-owner review.* An outside PR is exactly that category, the same as an
-unsolicited vulnerability report with a suggested patch. It's also the
-concrete version of a documented supply-chain control (NIST SP 800-204D
-`PULL-PUSH-REQ-3` — see `ops/docs/cicd-security-baseline.md`, cited from
-this repo's CI-hardening notes): outside-collaborator PRs require
-approval before any workflow runs against them.
+Pull requests stay enabled because our own tooling uses them (Dependabot
+and the engineering agents). If you open one, expect a friendly close with
+a link back here.
 
-Practically, this means:
-- CI won't run automatically on a first-time contributor's PR until a
-  maintainer approves the run.
-- Fork PRs never get repository secrets, ever — no workflow in this repo
-  uses `pull_request_target` with a checkout of PR code, which is the
-  standard way that boundary gets accidentally broken. If you see one,
-  that's a bug, not a feature.
-- Review turnaround has no SLA. This is presently a one-person-plus-CI
-  operation; a quiet PR isn't necessarily a rejected one.
+## What we want, and will act on
 
-## Before opening a PR
+- **Issues.** Bugs, surprising behavior, docs that misled you, questions
+  the docs should have answered. These directly move the roadmap.
+- **Reproductions.** A failing case is worth more than a patch: we can act
+  on it through the gates, and you'll be credited in the fix.
+- **Technical feedback.** On the requirements and acceptance criteria in
+  [docs/quality/traceability.md](docs/quality/traceability.md) especially —
+  arguing with an acceptance criterion is arguing with the product, in
+  exactly the venue where it changes things.
+- **Security reports**, through GitHub's private vulnerability reporting —
+  see [SECURITY.md](SECURITY.md). Researchers: send the report, not the
+  patch, and you'll be credited in the fix.
 
-- Run the full local check suite — it's the same one CI runs:
-  ```sh
-  go build ./...
-  go vet ./...
-  go test -race ./...
-  golangci-lint run ./...     # staticcheck, gofmt/goimports, plus a
-                               # repo-wide crypto/md5+crypto/sha1 import ban
-  govulncheck ./...
-  gosec ./...
-  ```
-- Keep the diff focused. A PR that mixes an unrelated refactor with the
-  fix is harder to review and more likely to sit.
-- If you're touching `internal/cache`'s eviction logic or anything in the
-  release pipeline (`.goreleaser.yaml`, `.ko.yaml`,
-  `.github/workflows/release.yml`), say so explicitly in the PR
-  description — those are the two places a subtle bug is most expensive
-  (the commit history has two examples this project caught in its own
-  audit process).
+## Forking
+
+The core is MIT-licensed and you are welcome to fork it. ("The core," not
+"fully open source": enterprise code will be source-available under a
+commercial license in the same repository when it exists.)
 
 ## Docs voice
 

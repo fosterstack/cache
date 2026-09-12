@@ -40,6 +40,7 @@ ALLOW_PATTERNS=(
   # says a workflow file may live here, not that it may change freely.
   '^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$'
   '^\.github/dependabot\.yml$'
+  '^\.github/PULL_REQUEST_TEMPLATE\.md$'
   # Policy lists: the single sources of truth for the required-check set
   # and the scanner set, consumed by the auto-merge guard and the release
   # workflows.
