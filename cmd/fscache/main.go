@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -25,24 +26,73 @@ import (
 )
 
 type config struct {
-	addr         string
-	dataDir      string
-	maxBytes     int64
-	username     string
-	password     string
-	maxBodyBytes int64
+	addr                 string
+	dataDir              string
+	maxBytes             int64
+	username             string
+	password             string
+	maxBodyBytes         int64
+	maxConcurrentUploads int64
 }
 
-func loadConfig() config {
-	cfg := config{
-		addr:         envOr("FSCACHE_ADDR", ":8080"),
-		dataDir:      envOr("FSCACHE_DATA_DIR", "./data"),
-		maxBytes:     envInt64("FSCACHE_MAX_BYTES", 0),
-		username:     os.Getenv("FSCACHE_USERNAME"),
-		password:     os.Getenv("FSCACHE_PASSWORD"),
-		maxBodyBytes: envInt64("FSCACHE_MAX_BODY_BYTES", 1<<30), // 1 GiB default cap per blob
+func loadConfig() (config, error) {
+	maxBytes, err := envSize("FSCACHE_MAX_BYTES", 0)
+	if err != nil {
+		return config{}, err
 	}
-	return cfg
+	maxBodyBytes, err := envSize("FSCACHE_MAX_BODY_BYTES", 1<<30) // 1 GiB default cap per blob
+	if err != nil {
+		return config{}, err
+	}
+	maxUploads, err := envSize("FSCACHE_MAX_CONCURRENT_UPLOADS", 32)
+	if err != nil {
+		return config{}, err
+	}
+	cfg := config{
+		addr:                 envOr("FSCACHE_ADDR", ":8080"),
+		dataDir:              envOr("FSCACHE_DATA_DIR", "./data"),
+		maxBytes:             maxBytes,
+		username:             os.Getenv("FSCACHE_USERNAME"),
+		password:             os.Getenv("FSCACHE_PASSWORD"),
+		maxBodyBytes:         maxBodyBytes,
+		maxConcurrentUploads: maxUploads,
+	}
+	if (cfg.username == "") != (cfg.password == "") {
+		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
+	}
+	return cfg, nil
+}
+
+// uncleanMarkerPath is the marker's location inside the data directory —
+// beside the stores it speaks for, so it travels with the volume.
+func uncleanMarkerPath(dataDir string) string {
+	return filepath.Join(dataDir, ".unclean-shutdown")
+}
+
+func markerPresent(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func writeMarker(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("removed on clean shutdown; presence at startup triggers reconciliation\n"), 0o600)
+}
+
+func clearMarker(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func envOr(key, def string) string {
@@ -52,16 +102,25 @@ func envOr(key, def string) string {
 	return def
 }
 
-func envInt64(key string, def int64) int64 {
+// envSize parses a non-negative byte count from the environment, failing
+// closed (REQ-CFG-003): an unparseable value, trailing garbage, a
+// negative number, or an overflow stops startup with the variable and the
+// value named. A silent default here once turned a bounded cache
+// unbounded on a units typo — the exact bug this replaces. strconv, not
+// Sscanf: Sscanf's %d happily reads "12abc" as 12.
+func envSize(key string, def int64) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
-	var n int64
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return def
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a valid byte count (whole non-negative decimal number): %w", key, v, err)
 	}
-	return n
+	if n < 0 {
+		return 0, fmt.Errorf("%s=%q is negative; a byte count cannot be", key, v)
+	}
+	return n, nil
 }
 
 func main() {
@@ -73,10 +132,23 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 
-	if (cfg.username == "") != (cfg.password == "") {
-		return errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
+	// Unclean-shutdown marker (REQ-STORE-005): present at startup means
+	// the last process did not exit cleanly, so the stores may disagree
+	// and reconciliation must run before serving. It is removed only
+	// after a clean shutdown's successful Close — a crash, a kill, or a
+	// failed close all leave it in place for the next start to see.
+	marker := uncleanMarkerPath(cfg.dataDir)
+	wasUnclean, err := markerPresent(marker)
+	if err != nil {
+		return fmt.Errorf("check shutdown marker: %w", err)
+	}
+	if err := writeMarker(marker); err != nil {
+		return fmt.Errorf("write shutdown marker: %w", err)
 	}
 
 	blobs, err := blobstore.New(filepath.Join(cfg.dataDir, "blobs"))
@@ -100,25 +172,38 @@ func run(log *slog.Logger) error {
 	)
 	defer func() {
 		if err := c.Close(); err != nil {
-			log.Error("fscache: store close failed", "error", err)
+			log.Error("fscache: store close failed; unclean marker kept", "error", err)
+			return
+		}
+		if err := clearMarker(marker); err != nil {
+			log.Error("fscache: shutdown marker not cleared; next start will reconcile", "error", err)
 		}
 	}()
 
+	if wasUnclean {
+		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
+		stats, err := c.Reconcile(context.Background())
+		if err != nil {
+			return fmt.Errorf("startup reconciliation: %w", err)
+		}
+		log.Info("fscache: reconciled",
+			"adopted_blobs", stats.AdoptedBlobs,
+			"dropped_records", stats.DroppedRecords,
+			"removed_temp_files", stats.RemovedTempFiles)
+	}
+
 	handler := server.New(server.Config{
-		Cache:        c,
-		Metrics:      m,
-		Registry:     prometheus.DefaultGatherer,
-		Log:          log,
-		Auth:         server.Credentials{Username: cfg.username, Password: cfg.password},
-		MaxBodyBytes: cfg.maxBodyBytes,
-		MaxBytes:     cfg.maxBytes,
+		Cache:                c,
+		Metrics:              m,
+		Registry:             prometheus.DefaultGatherer,
+		Log:                  log,
+		Auth:                 server.Credentials{Username: cfg.username, Password: cfg.password},
+		MaxBodyBytes:         cfg.maxBodyBytes,
+		MaxBytes:             cfg.maxBytes,
+		MaxConcurrentUploads: int(cfg.maxConcurrentUploads),
 	})
 
-	httpServer := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := server.NewHTTPServer(cfg.addr, handler)
 
 	authNote := "disabled"
 	if cfg.username != "" {

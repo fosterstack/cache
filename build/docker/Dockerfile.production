@@ -1,0 +1,18 @@
+# Production image: the upstream distroless base, pinned by digest, with
+# one binary added by COPY. Zero RUN steps — nothing executes at build
+# time, so multi-arch assembly needs no emulation and the layer is a pure
+# function of the binary bytes. The binary comes from the SAME archives
+# the build stage attested; the assembly workflow verifies them first.
+#
+# FROM is written image:tag@sha256 (not bare @sha256) because Dependabot's
+# docker ecosystem only updates the digest when a tag is present to track.
+FROM gcr.io/distroless/static:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+
+ARG TARGETARCH
+COPY --chmod=0755 binaries/${TARGETARCH}/fscache /usr/local/bin/fscache
+
+# Same runtime contract as the ko-built images: cwd is the nonroot home so
+# the default FSCACHE_DATA_DIR=./data resolves to /home/nonroot/data
+# (docker-deploy.md's volume guidance depends on it).
+WORKDIR /home/nonroot
+ENTRYPOINT ["/usr/local/bin/fscache"]

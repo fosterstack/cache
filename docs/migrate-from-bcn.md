@@ -14,10 +14,29 @@ same self-hosted model, actively maintained.
 There is no data to migrate. A build cache is disposable by design — every
 entry is reproducible from source, so an empty cache on day one just means
 your first build after cutover repopulates it (same as any cold cache).
-That's the whole reason this category of infrastructure is fail-safe:
+That's why this category of infrastructure is fail-safe against ordinary
+availability failures: if the cache is down, unreachable, or empty, the
 worst case is a slower build, never a correctness problem or lost work.
 So "migration" here means: stand up the new server, point Gradle at it,
 done.
+
+That fail-safe claim is scoped to availability, deliberately. A cache that
+serves *wrong bytes* — because something untrusted could write to it — is a
+different failure class entirely, which is what the next paragraph is about.
+
+## Who may write to your cache
+
+Treat the cache as part of your build's supply chain, because it is: any
+writer can influence what later builds consume as task outputs. Two rules
+follow. Run it with Basic Auth anywhere untrusted parties could reach the
+port, and share the credential only with CI and developers you already
+trust to write code. And know what the client-side "push disabled" setting
+is: `isPush = false` in a Gradle config is that *client* volunteering not to
+upload — it is not a server-side permission, and any client holding the
+credential can still write. Today the server has one credential and one
+permission level; a real server-side split (read-only clients, per-writer
+identity) is tracked as issue #8 and specified as a requirement before it
+is built.
 
 ## Step by step
 

@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 41 |
-| Acceptance criteria | 52 |
-| Release-blocking ACs | 32 |
-| ACs with mapped evidence | 22 |
-| Release-blocking ACs with mapped evidence | 11 |
+| Active requirements | 46 |
+| Acceptance criteria | 63 |
+| Release-blocking ACs | 41 |
+| ACs with mapped evidence | 50 |
+| Release-blocking ACs with mapped evidence | 32 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 36 |
+| Confidence: documented | 41 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -48,7 +48,7 @@ The server shall treat the entire request path, with the leading slash removed, 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-002-AC1 | Given a running server; when a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path; then the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints | http-integration | yes | approved | none mapped |
+| REQ-PROTO-002-AC1 | Given a running server; when a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path; then the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints | http-integration | yes | approved | 1 item(s) |
 
 ### REQ-PROTO-003 — Key validation
 
@@ -111,12 +111,12 @@ The server shall be configured solely by environment variables: FSCACHE_ADDR (de
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md configuration table; docs/docker-deploy.md "Configuration"; cmd/fscache/main.go*
 
-> Known defect recorded at extraction, not blessed as behavior: at the extracted revision an unparseable numeric value silently falls back to the default (a FSCACHE_MAX_BYTES typo can make a bounded cache unbounded). The fail-closed replacement is a v0.2.0 requirement written by remediation item 1.2 before its implementation; it is not part of this baseline.
+> Known defect recorded at extraction, not blessed as behavior: at the extracted revision an unparseable numeric value silently fell back to the default. The fail-closed replacement is REQ-CFG-003 (v0.2.0, requirements-first).
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-001-AC1 | Given a server started with no environment variables set; when it starts; then it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth | unit | yes | approved | none mapped |
-| REQ-CFG-001-AC2 | Given a server started with every variable set to a custom valid value; when it starts; then each value is honored, observably (listen address, data location, cap behavior, auth behavior) | component | yes | approved | none mapped |
+| REQ-CFG-001-AC1 | Given a server started with no environment variables set; when it starts; then it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth | unit | yes | approved | 1 item(s) |
+| REQ-CFG-001-AC2 | Given a server started with every variable set to a custom valid value; when it starts; then each value is honored, observably (listen address, data location, cap behavior, auth behavior) | component | yes | approved | 1 item(s) |
 
 ### REQ-CFG-002 — Credentials are both-or-neither
 
@@ -126,7 +126,17 @@ The server shall refuse to start when exactly one of FSCACHE_USERNAME and FSCACH
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | approved | none mapped |
+| REQ-CFG-002-AC1 | Given an environment with only FSCACHE_USERNAME set; when the server starts; then it exits non-zero with a message naming both variables, and the same holds for password-only | unit | yes | approved | 2 item(s) |
+
+### REQ-CFG-003 — Invalid configuration fails startup
+
+The server shall refuse to start when a numeric configuration variable (FSCACHE_MAX_BYTES, FSCACHE_MAX_BODY_BYTES) is unparseable, carries trailing garbage, is negative, or overflows, exiting non-zero with a message naming the variable and the offending value. It shall never silently substitute a default for an invalid value: a typo in a size cap must stop the server, not unbound the cache.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: test-strategy.md §2.1; audit §16; backlog entry resolved by this requirement*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CFG-003-AC1 | Given an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value; when the server starts; then startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES | unit | yes | approved | 3 item(s) |
 
 ## Authentication
 
@@ -169,7 +179,30 @@ A server with authentication disabled shall accept requests that carry an Author
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | none mapped |
+| REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | 1 item(s) |
+
+## HTTP
+
+### REQ-HTTP-001 — Server timeouts
+
+The HTTP server shall run with explicit timeouts, generous where a legitimate cache transfer is slow and tight where only a stuck or idle connection waits - ReadHeaderTimeout 10s, IdleTimeout 120s, and read/write deadlines of 20 minutes per request (enough for the documented 1 GiB body cap over a slow CI link, roughly 0.9 MB/s sustained, and finite where today is infinite). The values are configuration constants proposed by engineering on 2026-09-11 and adjustable by requirement change, not by silent edit.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: test-strategy.md section 2.3; audit section 19*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-HTTP-001-AC1 | Given the constructed HTTP server; when its timeout configuration is examined; then ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset | unit | yes | approved | 2 item(s) |
+
+### REQ-HTTP-002 — Bounded concurrent uploads
+
+The server shall bound concurrent PUT processing: at most FSCACHE_MAX_CONCURRENT_UPLOADS uploads in flight (default 32; 0 disables the bound), with excess requests refused with HTTP 429 and a Retry-After header, storing nothing. Build clients treat any error as a cache miss, so a refused upload degrades a build's caching, never the build. Slow clients can therefore hold at most a bounded number of upload slots, temp files, and file handles.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: test-strategy.md section 2.3; audit section 19*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | 3 item(s) |
+| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule | unit |  | approved | 1 item(s) |
 
 ## Storage
 
@@ -181,7 +214,7 @@ Stored entries shall survive a clean server restart: a key stored before shutdow
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | none mapped |
+| REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | 1 item(s) |
 
 ### REQ-STORE-002 — Atomic writes
 
@@ -191,7 +224,7 @@ An interrupted or failed upload shall leave no partial entry: a key is either fu
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-002-AC1 | Given an upload that fails or is cancelled mid-body; when the same key is subsequently requested; then either 404 (never stored) or the previous complete value; never truncated bytes | component | yes | approved | none mapped |
+| REQ-STORE-002-AC1 | Given an upload that fails or is cancelled mid-body; when the same key is subsequently requested; then either 404 (never stored) or the previous complete value; never truncated bytes | component | yes | approved | 1 item(s) |
 
 ### REQ-STORE-003 — Tight on-disk permissions
 
@@ -201,7 +234,29 @@ The store shall create directories with mode 0750 and blob files with mode 0600.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-003-AC1 | Given a fresh store that has accepted one entry; when the on-disk tree is examined; then every directory is 0750 and every blob file 0600 | component |  | approved | none mapped |
+| REQ-STORE-003-AC1 | Given a fresh store that has accepted one entry; when the on-disk tree is examined; then every directory is 0750 and every blob file 0600 | component |  | approved | 1 item(s) |
+
+### REQ-STORE-004 — A stored reply means a stored entry
+
+A PUT shall succeed only when the blob is on disk AND its metadata record is written: if the metadata record fails, the server shall remove the blob and fail the PUT. A cache that says "stored" has stored it — retrievable, indexed, counted, and evictable.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: audit-response-2026-09-08 §4.7 (decided); test-strategy.md §2.2; audit §18*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-STORE-004-AC1 | Given a cache whose metadata store fails on the record step; when a client PUTs an entry; then the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward | component | yes | approved | 2 item(s) |
+
+### REQ-STORE-005 — Startup reconciliation after unclean shutdown
+
+The server shall write a marker file at startup and remove it on clean shutdown. When the marker is present at startup (an unclean exit), the server shall reconcile the two stores before serving: blobs without a metadata record are adopted (size from disk, recency now), records without a blob are dropped, stale temporary files are removed, totals are recomputed, and the reconciliation counts are logged. Blobs are truth; metadata is a rebuildable index. Clean restarts skip the walk.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: audit-response-2026-09-08 §4.7 (decided); test-strategy.md §2.2; audit §18*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-STORE-005-AC1 | Given a store holding a blob with no metadata record (as after a crash between the two writes); when reconciliation runs; then the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction | component | yes | approved | 3 item(s) |
+| REQ-STORE-005-AC2 | Given a metadata record whose blob is missing; when reconciliation runs; then the record is dropped and totals no longer include it | component | yes | approved | 2 item(s) |
+| REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
 
 ## Eviction
 
@@ -282,7 +337,7 @@ The server shall expose no endpoint that changes configuration or purges data; e
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-005-AC1 | Given the full route surface; when it is enumerated; then only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT | http-integration |  | approved | none mapped |
+| REQ-OBS-005-AC1 | Given the full route surface; when it is enumerated; then only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT | http-integration |  | approved | 1 item(s) |
 
 ### REQ-OBS-006 — Failure-only request logging, no sensitive fields
 
@@ -316,7 +371,7 @@ Every release shall ship static (CGO_ENABLED=0) binaries for linux/amd64, linux/
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 
@@ -336,7 +391,7 @@ The production and -fips images shall contain no shell; the -debug image shall p
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-003-AC1 | Given the three release images; when shell presence is probed in each; then production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-PLAT-003-AC1 | Given the three release images; when shell presence is probed in each; then production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-004 — Nonroot container execution
 
@@ -368,7 +423,7 @@ The metadata store shall be single-writer: a second process pointed at the same 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | approved | none mapped |
+| REQ-DEPLOY-002-AC1 | Given a running server on a data directory; when a second server process starts on the same directory; then the second process does not serve traffic against the same store, and the first is unaffected | component |  | approved | 1 item(s) |
 
 ### REQ-DEPLOY-003 — Documented Kubernetes deployment works as written
 
@@ -390,8 +445,8 @@ The -fips build shall link Go's CMVP-validated FIPS 140-3 cryptographic module (
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-001-AC1 | Given the released fscache-fips artifact, in a supported environment; when its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined; then the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion | acceptance-release-artifact | yes | approved | none mapped |
-| REQ-FIPS-001-AC2 | Given a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on); when the same evidence check runs against it; then it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-FIPS-001-AC1 | Given the released fscache-fips artifact, in a supported environment; when its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined; then the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion | acceptance-release-artifact | yes | approved | 1 item(s) |
+| REQ-FIPS-001-AC2 | Given a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on); when the same evidence check runs against it; then it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-FIPS-002 — FIPS posture observable and truthful at runtime
 
@@ -425,7 +480,10 @@ A real multi-module Gradle build configured per docs/gradle.md, with its local b
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-GRADLE-001-AC1 | Given the sample project and an empty cache; when a cold build then a from-scratch second build run against the server; then the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits | acceptance-gradle | yes | approved | none mapped |
+| REQ-GRADLE-001-AC1 | Given the sample project, an empty cache, and the checked-in list of expected cacheable tasks; when a cold build then a from-scratch second build run against the server; then the second build restores EXACTLY the expected task set FROM-CACHE - an unexpected miss fails, and an unlisted restored task fails too | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-GRADLE-001-AC2 | Given the same two builds; when the server's /metrics are read after each; then the cold build shows one upload per expected task and zero hits; the warm build shows one server-side hit per expected task and no further uploads | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-GRADLE-001-AC3 | Given the compiled outputs of the cold build, checksummed; when the warm build restores from the cache; then every restored output is byte-identical to the cold build's | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-GRADLE-001-AC4 | Given the warm build's log; when it is scanned for remote-cache errors Gradle treats as non-fatal; then none are present - a silently degraded remote is a failure of this workflow, not a pass | acceptance-gradle | yes | approved | 1 item(s) |
 
 ## Maven
 
@@ -435,12 +493,12 @@ The server shall interoperate with the Apache Maven Build Cache Extension's remo
 
 *Introduced v0.1.0 · tier community · confidence claimed-unverified · source: README.md (qualified claim); docs/maven.md*
 
-> The public claim is qualified (Phase 0) until acceptance coverage exists; remediation item 1.6 builds it. The only Maven-specific evidence at extraction is a blob-store path-shape test, which is not interoperability evidence.
+> Acceptance coverage built 2026-09-11 (remediation item 1.6): acceptance-maven.yml runs the eight audit-§21 scenarios against a real multi-module project, over an extension-version matrix that IS the compatibility policy (a version not in the matrix is not a claim). Empirical facts the assertions rest on: cold = 2 lookup 404s + 5 uploads; warm restores both modules ("Found cached build, restoring"); wrong/missing credentials complete the build with logged errors, 401 at the server, and nothing stored - which is the documented failure mode for build-cache clients.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-MAVEN-001-AC1 | Given a real multi-module Maven project with the extension in remote mode and local caching disabled; when a cold build then a clean second build run against the server; then the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic | acceptance-maven | yes | approved | none mapped |
-| REQ-MAVEN-001-AC2 | Given the same project with wrong and then missing credentials against an auth-enabled server; when builds run; then both fail in the documented way and store nothing | acceptance-maven |  | approved | none mapped |
+| REQ-MAVEN-001-AC1 | Given a real multi-module Maven project with the extension in remote mode and local caching disabled; when a cold build then a clean second build run against the server; then the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic | acceptance-maven | yes | approved | 1 item(s) |
+| REQ-MAVEN-001-AC2 | Given the same project with wrong and then missing credentials against an auth-enabled server; when builds run; then both complete (remote-cache failures are non-fatal by design), both log the extension's download/upload errors, the server answers 401, and nothing is stored - the documented failure mode, asserted exactly | acceptance-maven |  | approved | 1 item(s) |
 
 ## Release evidence
 

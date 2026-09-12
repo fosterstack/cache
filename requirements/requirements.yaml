@@ -217,11 +217,9 @@ requirements:
     confidence: documented
     notes: >
       Known defect recorded at extraction, not blessed as behavior: at the
-      extracted revision an unparseable numeric value silently falls back to
-      the default (a FSCACHE_MAX_BYTES typo can make a bounded cache
-      unbounded). The fail-closed replacement is a v0.2.0 requirement
-      written by remediation item 1.2 before its implementation; it is not
-      part of this baseline.
+      extracted revision an unparseable numeric value silently fell back to
+      the default. The fail-closed replacement is REQ-CFG-003 (v0.2.0,
+      requirements-first).
     acceptance_criteria:
       - id: REQ-CFG-001-AC1
         given: a server started with no environment variables set
@@ -250,6 +248,28 @@ requirements:
         given: an environment with only FSCACHE_USERNAME set
         when: the server starts
         then: it exits non-zero with a message naming both variables, and the same holds for password-only
+        verification: { method: unit, release_blocking: true }
+        status: approved
+
+  - id: REQ-CFG-003
+    title: Invalid configuration fails startup
+    statement: >
+      The server shall refuse to start when a numeric configuration variable
+      (FSCACHE_MAX_BYTES, FSCACHE_MAX_BODY_BYTES) is unparseable, carries
+      trailing garbage, is negative, or overflows, exiting non-zero with a
+      message naming the variable and the offending value. It shall never
+      silently substitute a default for an invalid value: a typo in a size
+      cap must stop the server, not unbound the cache.
+    source: [test-strategy.md §2.1, audit §16, backlog entry resolved by this requirement]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-CFG-003-AC1
+        given: an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value
+        when: the server starts
+        then: startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES
         verification: { method: unit, release_blocking: true }
         status: approved
 
@@ -332,6 +352,59 @@ requirements:
         verification: { method: http-integration, release_blocking: false }
         status: approved
 
+  - id: REQ-HTTP-001
+    title: Server timeouts
+    statement: >
+      The HTTP server shall run with explicit timeouts, generous where a
+      legitimate cache transfer is slow and tight where only a stuck or
+      idle connection waits - ReadHeaderTimeout 10s, IdleTimeout 120s, and
+      read/write deadlines of 20 minutes per request (enough for the
+      documented 1 GiB body cap over a slow CI link, roughly 0.9 MB/s
+      sustained, and finite where today is infinite). The values are
+      configuration constants proposed by engineering on 2026-09-11 and
+      adjustable by requirement change, not by silent edit.
+    source: [test-strategy.md section 2.3, audit section 19]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-HTTP-001-AC1
+        given: the constructed HTTP server
+        when: its timeout configuration is examined
+        then: ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset
+        verification: { method: unit, release_blocking: true }
+        status: approved
+
+  - id: REQ-HTTP-002
+    title: Bounded concurrent uploads
+    statement: >
+      The server shall bound concurrent PUT processing: at most
+      FSCACHE_MAX_CONCURRENT_UPLOADS uploads in flight (default 32; 0
+      disables the bound), with excess requests refused with HTTP 429 and
+      a Retry-After header, storing nothing. Build clients treat any error
+      as a cache miss, so a refused upload degrades a build's caching,
+      never the build. Slow clients can therefore hold at most a bounded
+      number of upload slots, temp files, and file handles.
+    source: [test-strategy.md section 2.3, audit section 19]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-HTTP-002-AC1
+        given: a server configured with an upload concurrency limit of 1 and one slow upload in progress
+        when: a second PUT arrives
+        then: it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds
+        verification: { method: http-integration, release_blocking: true }
+        status: approved
+      - id: REQ-HTTP-002-AC2
+        given: an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value
+        when: the server starts
+        then: startup fails per REQ-CFG-003's fail-closed rule
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   # ── Storage ───────────────────────────────────────────────────────────
 
   - id: REQ-STORE-001
@@ -384,6 +457,62 @@ requirements:
         given: a fresh store that has accepted one entry
         when: the on-disk tree is examined
         then: every directory is 0750 and every blob file 0600
+        verification: { method: component, release_blocking: false }
+        status: approved
+
+  - id: REQ-STORE-004
+    title: A stored reply means a stored entry
+    statement: >
+      A PUT shall succeed only when the blob is on disk AND its metadata
+      record is written: if the metadata record fails, the server shall
+      remove the blob and fail the PUT. A cache that says "stored" has
+      stored it — retrievable, indexed, counted, and evictable.
+    source: [audit-response-2026-09-08 §4.7 (decided), test-strategy.md §2.2, audit §18]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-STORE-004-AC1
+        given: a cache whose metadata store fails on the record step
+        when: a client PUTs an entry
+        then: the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward
+        verification: { method: component, release_blocking: true }
+        status: approved
+
+  - id: REQ-STORE-005
+    title: Startup reconciliation after unclean shutdown
+    statement: >
+      The server shall write a marker file at startup and remove it on
+      clean shutdown. When the marker is present at startup (an unclean
+      exit), the server shall reconcile the two stores before serving:
+      blobs without a metadata record are adopted (size from disk, recency
+      now), records without a blob are dropped, stale temporary files are
+      removed, totals are recomputed, and the reconciliation counts are
+      logged. Blobs are truth; metadata is a rebuildable index. Clean
+      restarts skip the walk.
+    source: [audit-response-2026-09-08 §4.7 (decided), test-strategy.md §2.2, audit §18]
+    tier: community
+    introduced: v0.2.0
+    origin: audit-2026-09-08
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-STORE-005-AC1
+        given: a store holding a blob with no metadata record (as after a crash between the two writes)
+        when: reconciliation runs
+        then: the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-STORE-005-AC2
+        given: a metadata record whose blob is missing
+        when: reconciliation runs
+        then: the record is dropped and totals no longer include it
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-STORE-005-AC3
+        given: a data directory with an unclean-shutdown marker and one of each inconsistency
+        when: the server starts
+        then: reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk
         verification: { method: component, release_blocking: false }
         status: approved
 
@@ -836,9 +965,27 @@ requirements:
     confidence: documented
     acceptance_criteria:
       - id: REQ-GRADLE-001-AC1
-        given: the sample project and an empty cache
+        given: the sample project, an empty cache, and the checked-in list of expected cacheable tasks
         when: a cold build then a from-scratch second build run against the server
-        then: the second build restores the expected cacheable tasks FROM-CACHE, and server metrics show the uploads and hits
+        then: the second build restores EXACTLY the expected task set FROM-CACHE - an unexpected miss fails, and an unlisted restored task fails too
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-GRADLE-001-AC2
+        given: the same two builds
+        when: the server's /metrics are read after each
+        then: the cold build shows one upload per expected task and zero hits; the warm build shows one server-side hit per expected task and no further uploads
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-GRADLE-001-AC3
+        given: the compiled outputs of the cold build, checksummed
+        when: the warm build restores from the cache
+        then: every restored output is byte-identical to the cold build's
+        verification: { method: acceptance-gradle, release_blocking: true }
+        status: approved
+      - id: REQ-GRADLE-001-AC4
+        given: the warm build's log
+        when: it is scanned for remote-cache errors Gradle treats as non-fatal
+        then: none are present - a silently degraded remote is a failure of this workflow, not a pass
         verification: { method: acceptance-gradle, release_blocking: true }
         status: approved
 
@@ -854,10 +1001,15 @@ requirements:
     introduced: v0.1.0
     confidence: claimed-unverified
     notes: >
-      The public claim is qualified (Phase 0) until acceptance coverage
-      exists; remediation item 1.6 builds it. The only Maven-specific
-      evidence at extraction is a blob-store path-shape test, which is not
-      interoperability evidence.
+      Acceptance coverage built 2026-09-11 (remediation item 1.6):
+      acceptance-maven.yml runs the eight audit-§21 scenarios against a
+      real multi-module project, over an extension-version matrix that IS
+      the compatibility policy (a version not in the matrix is not a
+      claim). Empirical facts the assertions rest on: cold = 2 lookup
+      404s + 5 uploads; warm restores both modules ("Found cached build,
+      restoring"); wrong/missing credentials complete the build with
+      logged errors, 401 at the server, and nothing stored - which is the
+      documented failure mode for build-cache clients.
     acceptance_criteria:
       - id: REQ-MAVEN-001-AC1
         given: a real multi-module Maven project with the extension in remote mode and local caching disabled
@@ -868,7 +1020,7 @@ requirements:
       - id: REQ-MAVEN-001-AC2
         given: the same project with wrong and then missing credentials against an auth-enabled server
         when: builds run
-        then: both fail in the documented way and store nothing
+        then: both complete (remote-cache failures are non-fatal by design), both log the extension's download/upload errors, the server answers 401, and nothing is stored - the documented failure mode, asserted exactly
         verification: { method: acceptance-maven, release_blocking: false }
         status: approved
 

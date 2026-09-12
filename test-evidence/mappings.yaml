@@ -93,3 +93,98 @@ mappings:
   - ac: REQ-DEPLOY-003-AC1
     evidence:
       - { type: manual, ref: "2026-09-11 verified run on kind v0.33.0 / K8s v1.37.0 against the published 0.1.0 image: 4 doc manifests applied verbatim, pod Ready, healthz+metrics open, authenticated PUT 201 / GET returned bytes, unauthenticated GET 401, runner secretKeyRef probe printed FSCACHE_USERNAME=gradle and a set password (cache PR run record)" }
+  - ac: REQ-CFG-001-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestDefaultsWithNoEnvironment" }
+  - ac: REQ-CFG-001-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestCustomValidValuesHonored" }
+  - ac: REQ-CFG-002-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestOneCredentialAloneFails" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1, the commit adding these tests against preserved old behavior)" }
+  - ac: REQ-CFG-003-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestZeroRemainsValid" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1 — silent-fallback behavior failing the new assertions before the implementation commit)" }
+  - ac: REQ-STORE-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
+  - ac: REQ-STORE-004-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestPutFailsAndRemovesBlobWhenMetadataFails" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274 — the PUT reporting success on a failed metadata record, before the implementation commit)" }
+  - ac: REQ-STORE-005-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestReconcileAdoptsOrphanBlob" }
+      - { type: go-test, ref: "internal/cache:TestAdoptedBlobParticipatesInEviction" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274, no-op Reconcile failing the adoption assertions)" }
+  - ac: REQ-STORE-005-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestReconcileDropsDanglingRecord" }
+      - { type: go-test, ref: "internal/cache:TestReconcileMixedStateTotalsCorrect" }
+  - ac: REQ-STORE-005-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUncleanShutdownMarkerLifecycle" }
+      - { type: inspection, ref: "cmd/fscache/main.go run(): reconcile-before-serve on marker present; marker cleared only after successful clean Close (2026-09-11)" }
+  - ac: REQ-HTTP-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
+      - { type: red-run, ref: "PR #58 commit 907c545 (scaffold sets only the header timeout; test asserts all four — red before the implementation commit; CI run linked from the PR checks)" }
+  - ac: REQ-HTTP-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestConcurrentUploadBoundRefusesExcessWith429" }
+      - { type: go-test, ref: "internal/server:TestZeroUploadBoundMeansUnbounded" }
+      - { type: red-run, ref: "PR #58 commit 907c545 (unbounded scaffold; the 429 assertion red before the implementation commit)" }
+  - ac: REQ-HTTP-002-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+  - ac: REQ-GRADLE-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
+  - ac: REQ-GRADLE-001-AC2
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml steps 'assert the cold build populated the cache' + 'assert the warm build hit the server' (exact-count /metrics assertions)" }
+  - ac: REQ-GRADLE-001-AC3
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml sha256 comparison of build/classes trees across cold and restored builds" }
+  - ac: REQ-GRADLE-001-AC4
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert no remote-cache errors were silently ignored'" }
+  - ac: REQ-MAVEN-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenarios 1-6: cold uploads (exact counts), local wiped, remote restore of both modules, byte-identical jars, server-side metrics, settings.xml auth - counts measured empirically 2026-09-11" }
+  - ac: REQ-MAVEN-001-AC2
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }
+  - ac: REQ-PROTO-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestNestedKeyRoundTripOverHTTP" }
+  - ac: REQ-AUTH-004-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestCredentialsIgnoredByNoAuthServer" }
+  - ac: REQ-OBS-005-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestRouteSurfaceIsCachePlusReadOnlyEndpoints" }
+  - ac: REQ-STORE-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestInterruptedUploadLeavesNoPartialAndPreservesPrevious" }
+  - ac: REQ-STORE-003-AC1
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestOnDiskPermissionsAreTight" }
+  - ac: REQ-DEPLOY-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
+  - ac: REQ-PLAT-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: six-archive set asserted, linux/amd64 binaries executed; darwin and arm64 execution are documented equivalents pending runner legs" }
+  - ac: REQ-PLAT-003-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: no shell in production/fips, /busybox/sh runs and /bin/sh absent in debug - against images assembled from the exact attested binaries" }
+  - ac: REQ-FIPS-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: GOFIPS140=v1.0.0 read from the artifact's embedded build info, plus active runtime posture" }
+  - ac: REQ-FIPS-001-AC2
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the standard binary embeds NO GOFIPS140 selection - the module check distinguishes a mode-enabled impostor from the validated-module build" }

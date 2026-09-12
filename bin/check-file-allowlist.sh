@@ -32,6 +32,10 @@ ALLOW_PATTERNS=(
   # Build, lint, scan and release configuration.
   '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml)$'
 
+  # Image-assembly Dockerfiles (release chain stage 3): COPY-only, FROM
+  # pinned image:tag@sha256, watched by Dependabot's docker ecosystem.
+  '^build/docker/Dockerfile\.[a-z]+$'
+
   # CI/CD. Note these are ALSO gated in autoMode soft_deny — the allowlist
   # says a workflow file may live here, not that it may change freely.
   '^\.github/workflows/[A-Za-z0-9._-]+\.ya?ml$'
@@ -67,6 +71,11 @@ ALLOW_PATTERNS=(
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
   '^bench/gradle-sample/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(kts|java|properties|jar)$'
+  # The acceptance expectation: which tasks the warm build must restore.
+  '^bench/gradle-sample/expected-from-cache\.txt$'
+
+  # The real Maven project the Maven acceptance workflow builds.
+  '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
 )
 
 blocked=()

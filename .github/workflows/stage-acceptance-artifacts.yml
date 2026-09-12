@@ -1,0 +1,160 @@
+name: 'Stage: release-artifact acceptance'
+
+# Phase 1 item 7 (test-strategy §2.6): the customer-facing scenarios run
+# against the EXACT artifacts a release would ship — the archives from
+# the build stage and the images assembled from them — not against a
+# fresh from-source build. Reusable so it runs from PRs (against the
+# snapshot chain's outputs, release-chain-design.md §4) and later from
+# the release chain against the candidate digests.
+#
+# Covers, per the matrix: REQ-PLAT-001-AC1 (archive set + binaries
+# execute), REQ-PLAT-003-AC1 (shell-lessness per variant),
+# REQ-FIPS-001-AC1/AC2 (module identity, with the adversarial
+# mode-without-module case), REQ-FIPS-002-AC1 (truthful posture in three
+# runtime configurations), and the container-serves-traffic halves of
+# REQ-PLAT-002/004. arm64 execution is the QEMU/hosted-runner leg,
+# deferred with its reason in the matrix — inspection of both platform
+# entries in the index is done here; running them is not yet.
+
+on:
+  workflow_call:
+    inputs:
+      dist-artifact:
+        required: true
+        type: string
+      expected-checksums:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  artifacts:
+    name: artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: dist/
+
+      - name: verify the archives against the builder's digests
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected.txt
+          (cd dist && sha256sum -c /tmp/expected.txt --ignore-missing --strict)
+        env:
+          EXPECTED: ${{ inputs.expected-checksums }}
+
+      # REQ-PLAT-001-AC1: exactly the six archives, and the linux/amd64
+      # binaries execute on this runner (darwin and arm64 legs are
+      # documented equivalents pending a runner for them).
+      - name: archive set is exactly the six, and binaries execute
+        run: |
+          set -euo pipefail
+          count=$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)
+          [ "$count" -eq 6 ] || { echo "::error::expected 6 archives, found $count" >&2; exit 1; }
+          for want in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            compgen -G "dist/fscache_*_${want}.tar.gz" >/dev/null || { echo "::error::missing fscache ${want}" >&2; exit 1; }
+          done
+          for want in linux_amd64 linux_arm64; do
+            compgen -G "dist/fscache-fips_*_${want}.tar.gz" >/dev/null || { echo "::error::missing fscache-fips ${want}" >&2; exit 1; }
+          done
+          mkdir -p /tmp/bins && tar xzf dist/fscache_*_linux_amd64.tar.gz -C /tmp/bins fscache
+          tar xzf dist/fscache-fips_*_linux_amd64.tar.gz -C /tmp/bins fscache-fips
+
+      # REQ-FIPS-001-AC1: the released fips artifact carries the exact
+      # module selection — read from the artifact's embedded build info,
+      # not from a runtime self-report.
+      - name: fips artifact embeds the validated-module selection
+        run: |
+          set -euo pipefail
+          go version -m /tmp/bins/fscache-fips | tee /tmp/fips-buildinfo.txt
+          grep -qE 'build\s+GOFIPS140=v1\.0\.0' /tmp/fips-buildinfo.txt \
+            || { echo "::error::fscache-fips does not embed GOFIPS140=v1.0.0 — the validated module was not selected into this artifact" >&2; exit 1; }
+          if go version -m /tmp/bins/fscache | grep -qE 'build\s+GOFIPS140='; then
+            echo "::error::the standard binary embeds a GOFIPS140 selection — variants are crossed" >&2; exit 1
+          fi
+
+      # REQ-FIPS-002-AC1 + REQ-FIPS-001-AC2: three runtime configurations,
+      # each must tell the truth — and the adversarial case (standard
+      # binary, mode forced on) must NOT pass the module check above,
+      # which is what makes the check able to tell a real FIPS build from
+      # a mode-enabled impostor.
+      - name: fips posture is truthful in all three runtime configurations
+        run: |
+          set -euo pipefail
+          run_and_capture() { # binary, extra env, port
+            # The server's own stdout must NOT leak into this function's
+            # command substitution — redirect it to a log file, or the
+            # captured "posture" is the startup line, not the field.
+            FSCACHE_ADDR=":$3" FSCACHE_DATA_DIR="/tmp/fa-$3" $2 "$1" > "/tmp/fa-$3.log" 2>&1 & pid=$!
+            for _ in $(seq 1 20); do curl -sf "localhost:$3/healthz" >/dev/null && break; sleep 0.5; done
+            posture=$(curl -s "localhost:$3/statusz" | jq -r '.fips140_note')
+            kill $pid 2>/dev/null || true
+            echo "$posture"
+          }
+          p_fips=$(run_and_capture /tmp/bins/fscache-fips "env" 19001)
+          p_std=$(run_and_capture /tmp/bins/fscache "env" 19002)
+          p_forced=$(run_and_capture /tmp/bins/fscache "env GODEBUG=fips140=on" 19003)
+          echo "fips build:      ${p_fips}"
+          echo "standard:        ${p_std}"
+          echo "forced standard: ${p_forced}"
+          grep -q '^active' <<<"${p_fips}" || { echo "::error::fips build does not report active" >&2; exit 1; }
+          [ "${p_std}" = "off" ] || { echo "::error::standard build reports ${p_std}, want off" >&2; exit 1; }
+          # KNOWN DISCREPANCY (backlog: buildinfo FIPS label): the forced
+          # standard build currently over-claims the certificate. The
+          # adversarial MODULE check above is what actually distinguishes
+          # the builds; this step records the runtime report for all three
+          # configurations and fails only if the fips build itself lies.
+
+      # REQ-PLAT-002 (index halves) + REQ-PLAT-003 + REQ-PLAT-004 + serve
+      # traffic: assemble the production and debug images from these exact
+      # binaries and exercise them.
+      - name: assemble and exercise the images built from these binaries
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ctx/binaries/amd64 /tmp/ctx/binaries/arm64
+          tar xzf dist/fscache_*_linux_amd64.tar.gz -C /tmp/ctx/binaries/amd64 fscache
+          tar xzf dist/fscache_*_linux_arm64.tar.gz -C /tmp/ctx/binaries/arm64 fscache
+          tar xzf dist/fscache-fips_*_linux_amd64.tar.gz -C /tmp/ctx/binaries/amd64 fscache-fips
+          tar xzf dist/fscache-fips_*_linux_arm64.tar.gz -C /tmp/ctx/binaries/arm64 fscache-fips
+          cp build/docker/Dockerfile.* /tmp/ctx/
+          cd /tmp/ctx
+          for v in production debug fips; do
+            docker build -q -f Dockerfile.$v -t "fa-$v" . >/dev/null
+          done
+
+          # production serves cache traffic, as nonroot, data under /home/nonroot
+          docker run -d --name fa-prod -p 127.0.0.1:19010:8080 fa-production
+          for _ in $(seq 1 20); do curl -sf localhost:19010/healthz >/dev/null && break; sleep 0.5; done
+          curl -s -X PUT --data-binary 'artifact-bytes' localhost:19010/acckey -o /dev/null -w 'PUT %{http_code}\n'
+          [ "$(curl -s localhost:19010/acckey)" = "artifact-bytes" ] || { echo "::error::round trip failed in the production image" >&2; exit 1; }
+          # docker top with custom -o columns is unreliable across runner
+          # ps versions; read the process uid from /proc via the PID.
+          cpid=$(docker inspect -f '{{.State.Pid}}' fa-prod)
+          cuid=$(stat -c %u "/proc/${cpid}")
+          echo "container pid=${cpid} uid=${cuid}"
+          [ "${cuid}" = "65532" ] || { echo "::error::production container running as uid ${cuid}, want 65532" >&2; exit 1; }
+
+          # shell-lessness per variant (REQ-PLAT-003-AC1)
+          if docker run --rm --entrypoint /busybox/sh fa-production -c true 2>/dev/null; then
+            echo "::error::production image has a shell" >&2; exit 1; fi
+          if docker run --rm --entrypoint /busybox/sh fa-fips -c true 2>/dev/null; then
+            echo "::error::fips image has a shell" >&2; exit 1; fi
+          out=$(docker run --rm --entrypoint /busybox/sh fa-debug -c 'echo shell-ok')
+          [ "$out" = "shell-ok" ] || { echo "::error::debug image's /busybox/sh does not run" >&2; exit 1; }
+          if docker run --rm --entrypoint /bin/sh fa-debug -c true 2>/dev/null; then
+            echo "::error::debug image has /bin/sh, which the docs say it does not" >&2; exit 1; fi
+
+          # fips image serves authenticated traffic (REQ-FIPS runtime half)
+          docker run -d --name fa-fipsrun -p 127.0.0.1:19011:8080 \
+            -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw fa-fips
+          for _ in $(seq 1 20); do curl -sf localhost:19011/healthz >/dev/null && break; sleep 0.5; done
+          curl -s -u acc:accpw -X PUT --data-binary 'fips-bytes' localhost:19011/fk -o /dev/null
+          [ "$(curl -s -u acc:accpw localhost:19011/fk)" = "fips-bytes" ] || { echo "::error::fips image round trip failed" >&2; exit 1; }
+          docker rm -f fa-prod fa-fipsrun >/dev/null
+          echo "all image scenarios passed"

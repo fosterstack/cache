@@ -12,7 +12,12 @@ VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest 
         | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
 ```
 
-## 1. Verify the cosign signature and SLSA provenance
+## 1. Verify the signature
+
+Two different things get verified on an image, and they answer two
+different questions. **The signature** answers: did FosterStack's release
+workflow sign these exact bytes? It vouches for identity and integrity of
+the artifact, nothing more.
 
 ```sh
 cosign verify ghcr.io/fosterstack/cache:${VER} \
@@ -20,28 +25,32 @@ cosign verify ghcr.io/fosterstack/cache:${VER} \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
-Expected output includes two claim types on the same image digest:
-
-```
-[
-  { "critical": { ... }, "optional": {}, ... "type": "https://sigstore.dev/cosign/sign/v1" },
-  { "critical": { ... }, "optional": {}, ... "type": "https://slsa.dev/provenance/v1" }
-]
-```
-
 There is no signing key to leak, steal, or rotate — the certificate is
 short-lived, minted by Sigstore's Fulcio from a GitHub Actions OIDC token
 at the moment the release workflow ran, and the signature's existence is
 recorded in the public Rekor transparency log.
 
-## 2. Verify with GitHub's own attestation store
+## 2. Verify the provenance attestation
+
+**The attestation** answers a different question: what *produced* these
+bytes? It is a signed statement about the build — which repository, which
+workflow file, which run — not merely a signature over the artifact.
+Verifying it is a separate step with a separate meaning: a valid signature
+with no attestation tells you who signed, but nothing about how the thing
+was built.
 
 ```sh
 gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack
 ```
 
-This is the more direct proof for most people: it names the exact
-workflow run that produced the image you pulled.
+This names the exact workflow run that produced the image you pulled
+(equivalently: `cosign verify-attestation --type slsaprovenance` with the
+same identity flags, if you prefer to stay in cosign).
+
+What neither step tells you, stated so nobody over-reads them: whether the
+artifact was scanned or tested. Those are separate evidence classes;
+[SECURITY.md](../SECURITY.md) says exactly what attaches to a release
+today.
 
 ```
 ✓ Verification succeeded!
@@ -72,8 +81,14 @@ All three variants of every release are signed and attested the same way.
 
 Production and `-fips` contain the `fscache` binary and nothing else — no
 shell, no package manager, no coreutils. `docker exec ... sh` into them
-fails, by design: a container with no shell has nothing for an attacker who
-gets code execution to pivot into, and no OS package surface to patch.
+fails, by design. What that buys, stated precisely: no shell and no package
+manager means an attacker who gains code execution has no on-image tooling
+to work with — no `sh` for a reverse shell one-liner, nothing to download
+or install helpers with — and there is no OS package surface to patch or
+drift. What it does not prevent: code execution itself, anything an
+attacker can do through the process's own capabilities and syscalls, or
+attacks that bring their own tooling. A minimal image narrows the toolbox;
+it is not a sandbox.
 
 `:debug` is the escape hatch. It is the same `fscache` binary on
 Google's `debug-nonroot` base, which adds busybox. **The layout is not the
