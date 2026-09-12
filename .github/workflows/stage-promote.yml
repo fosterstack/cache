@@ -210,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign-blob --yes dist/checksums.txt \
-            --bundle /tmp/checksums.txt.cosign.bundle
+            --bundle /tmp/checksums.txt.bundle
 
       - name: create the draft release and upload every file
         env:
@@ -222,7 +222,7 @@ jobs:
             --title "fscache ${ver}" \
             --notes "See release-manifest.json for the full evidence bundle: image digests (GHCR canonical, Docker Hub mirror — identical digests), archive checksums, requirements baseline, per-AC acceptance results, and the Rekor log index of every verified statement in the release chain."
           gh release upload "$ver" \
-            dist/*.tar.gz dist/checksums.txt /tmp/checksums.txt.cosign.bundle \
+            dist/*.tar.gz dist/checksums.txt /tmp/checksums.txt.bundle \
             /tmp/release-manifest.json \
             .vex/fosterstack-cache.openvex.json
           if compgen -G 'dist/*.sbom.json' >/dev/null; then
