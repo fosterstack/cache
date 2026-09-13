@@ -1,0 +1,21 @@
+{
+  "comment": [
+    "Published releases that predate release-manifest.json and must stay",
+    "in the daily rescan's inventory until the supported-release policy",
+    "retires them (audit F12). Each lists the exact published digests -",
+    "never tags. v0.1.0 was built by the pre-remediation pipeline; its",
+    "digests were resolved once (Sep 8 2026) and pinned. Remove an entry",
+    "only when that version is formally out of support, not when a newer",
+    "release ships."
+  ],
+  "releases": [
+    {
+      "version": "v0.1.0",
+      "images": [
+        { "variant": "production", "digest": "sha256:2ec45a131312597be2ebc601407bbc57f81939fc2efd849f527a230fda70d8c0" },
+        { "variant": "debug", "digest": "sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d" },
+        { "variant": "fips", "digest": "sha256:9635f797d3c8d1998710375577430b9ef68da444b80a89e8773a6b8c51b05206" }
+      ]
+    }
+  ]
+}

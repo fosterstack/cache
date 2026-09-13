@@ -112,7 +112,10 @@ jobs:
           src="ghcr.io/${{ github.repository_owner }}/cache-candidates"
           ghcr="ghcr.io/${{ github.repository_owner }}/cache"
           hub="docker.io/fosterstack/cache"
-          ver="${GITHUB_REF_NAME}"
+          # F11: image tags are UNPREFIXED (0.2.0), matching v0.1.0's
+          # published tags and the docs' latest-release resolver which
+          # strips the leading v. The git/release tag stays vX.Y.Z.
+          ver="${GITHUB_REF_NAME#v}"
           tag_for() { case "$1" in production) echo "$ver";; debug) echo "$ver-debug";; fips) echo "$ver-fips";; esac; }
           float_for() { case "$1" in production) echo "latest";; debug) echo "debug";; fips) echo "fips";; esac; }
           for v in production debug fips; do
@@ -252,7 +255,7 @@ jobs:
           DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG
           ghcr="ghcr.io/${{ github.repository_owner }}/cache"
           hub="docker.io/fosterstack/cache"
-          ver="${GITHUB_REF_NAME}"
+          ver="${GITHUB_REF_NAME#v}"
           for pair in "production:${ver}" "debug:${ver}-debug" "fips:${ver}-fips"; do
             v="${pair%%:*}"; t="${pair#*:}"
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')

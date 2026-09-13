@@ -58,10 +58,12 @@ jobs:
       digests: ${{ needs.image.outputs.digests }}
 
   scans:
-    needs: [image, reproducibility]
+    needs: [build, image, reproducibility]
     uses: ./.github/workflows/stage-verify.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
+      dist-artifact: dist-release
+      expected-checksums: ${{ needs.build.outputs.checksums }}
     secrets: inherit
 
   acceptance-artifacts:

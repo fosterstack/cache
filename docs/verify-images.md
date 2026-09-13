@@ -43,9 +43,10 @@ was built.
 gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack
 ```
 
-This names the exact workflow run that produced the image you pulled
-(equivalently: `cosign verify-attestation --type slsaprovenance` with the
-same identity flags, if you prefer to stay in cosign).
+This names the exact workflow run that produced the image you pulled.
+The SLSA provenance is stored in GitHub's attestation store (queried by
+the command above), not pushed as a registry attestation, so verify it
+through `gh attestation verify` rather than `cosign verify-attestation`.
 
 What neither step tells you, stated so nobody over-reads them: whether the
 artifact was scanned or tested. Those are separate statements — and they
@@ -73,7 +74,9 @@ digest you pulled, and each is independently verifiable. The one that
 implies all the others:
 
 ```sh
-gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack \
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
+  --repo fosterstack/cache \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-authorize.yml \
   --predicate-type https://fosterstack.com/attestations/release-authorization/v1
 ```
 
@@ -81,6 +84,17 @@ That statement exists only if the authorization stage verified the full
 graph for this digest — admission, build, image assembly,
 reproducibility, one scan verdict per scanner, acceptance — and its
 predicate body lists the Rekor log index of everything it checked.
+Pinning `--signer-workflow` is what makes this "signed by the
+authorization stage" rather than merely "signed by something in this
+repo." **These chain predicates exist for releases built by the new
+chain (v0.2.0 and later);** v0.1.0 carries only the image signature and
+SLSA provenance shown above.
+
+`gh attestation verify` reads GitHub's attestation API and therefore
+needs a token in the environment (`GH_TOKEN` or `gh auth login`) even
+for a public repo — it authenticates you to the API, not to the image.
+The image pull and the **cosign** verification below are the fully
+anonymous routes; use those where "no credentials" is the requirement.
 
 The individual statements, all verifiable with the same command shape
 (`--predicate-type <type>`):

@@ -46,25 +46,55 @@ jobs:
           set -euo pipefail
           scanners=$(jq -c '.scanners' .github/policy/scanners.json)
           : > /tmp/targets.jsonl
+
+          # F12: legacy releases that predate release-manifest.json are
+          # covered from a committed inventory, so the daily rescan never
+          # silently stops covering the current public release.
+          jq -c --argjson scanners "$scanners" \
+            '.releases[] as $r | $r.images[] as $img | $scanners[] as $s |
+             {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: "legacy-inventory"}' \
+            .github/policy/legacy-releases.json >> /tmp/targets.jsonl
+          legacy_versions=$(jq -r '[.releases[].version] | join(" ")' .github/policy/legacy-releases.json)
+
+          # Manifest-bearing releases: enumerate ASSETS first, so we can
+          # tell an intentional legacy absence (no manifest asset) from a
+          # FAILED read of a manifest that is present (F13).
           for tag in $(gh release list --limit 100 --json tagName,isDraft \
                         --jq '.[] | select(.isDraft | not) | .tagName'); do
-            if gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json" 2>/dev/null; then
-              jq -c --arg tag "$tag" --argjson scanners "$scanners" \
-                '.images[] as $img | $scanners[] as $s |
-                 {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s}' \
-                "/tmp/m-${tag}.json" >> /tmp/targets.jsonl
+            case " $legacy_versions " in *" $tag "*) continue ;; esac
+            has_manifest=$(gh release view "$tag" --json assets \
+              --jq '[.assets[] | select(.name == "release-manifest.json")] | length')
+            if [ "$has_manifest" -eq 0 ]; then
+              echo "note: ${tag} has no release-manifest.json asset and is not in the legacy inventory — skipping (add it to legacy-releases.json if it must be scanned)"
+              continue
             fi
+            # The asset exists: a failed download/parse is an ERROR, not
+            # an empty result that would erase the release from coverage.
+            if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
+              echo "::error::release-manifest.json is present on ${tag} but could not be downloaded — refusing to drop it from the rescan" >&2
+              exit 1
+            fi
+            jq empty "/tmp/m-${tag}.json" 2>/dev/null \
+              || { echo "::error::release-manifest.json on ${tag} is not valid JSON" >&2; exit 1; }
+            imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
+            [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${tag} lists no images" >&2; exit 1; }
+            jq -c --arg tag "$tag" --argjson scanners "$scanners" \
+              '.images[] as $img | $scanners[] as $s |
+               {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
+              "/tmp/m-${tag}.json" >> /tmp/targets.jsonl
           done
+
           targets=$(jq -s -c '.' /tmp/targets.jsonl)
           echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           n=$(jq 'length' <<<"$targets")
+          # There is ALWAYS at least the legacy inventory, so an empty set
+          # means the inventory itself is broken - fail, do not no-op.
           if [ "$n" -eq 0 ]; then
-            echo "any=false" >> "$GITHUB_OUTPUT"
-            echo "no manifest-bearing releases yet — nothing to rescan (v0.1.0 is the stopgap's job)"
-          else
-            echo "any=true" >> "$GITHUB_OUTPUT"
-            echo "rescanning ${n} (release, variant, scanner) targets"
+            echo "::error::no rescan targets at all - the legacy inventory is empty or unreadable" >&2
+            exit 1
           fi
+          echo "any=true" >> "$GITHUB_OUTPUT"
+          echo "rescanning ${n} (release, variant, scanner) targets"
 
   rescan:
     name: ${{ matrix.target.scanner }} ${{ matrix.target.release }} ${{ matrix.target.variant }}
@@ -74,6 +104,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -83,35 +114,36 @@ jobs:
         with:
           persist-credentials: false
 
-      # ---- trivy ---------------------------------------------------------
+      # ---- trivy (CLI: reliable version/db, by digest) -------------------
       - name: Trivy rescan (by digest, JSON findings)
         if: matrix.target.scanner == 'trivy'
         id: trivy
         continue-on-error: true
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
-          format: json
-          output: /tmp/findings-raw.json
         env:
           TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        run: |
+          set -euo pipefail
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          trivy image --quiet --exit-code 1 \
+            --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+            --vex "${TRIVY_VEX}" \
+            --format json --output /tmp/findings-raw.json \
+            "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
 
-      # ---- grype ---------------------------------------------------------
+      # ---- grype (CLI: reliable version/db, by digest) -------------------
       - name: Grype rescan (by digest, JSON findings)
         if: matrix.target.scanner == 'grype'
         id: grype
         continue-on-error: true
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          image: ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}
-          fail-build: true
-          only-fixed: false
-          severity-cutoff: negligible
-          output-format: json
-          output-file: /tmp/findings-raw.json
-          vex: .vex/fosterstack-cache.openvex.json
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          grype "registry:ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
+            --fail-on negligible \
+            --vex .vex/fosterstack-cache.openvex.json \
+            -o json --file /tmp/findings-raw.json
 
       # ---- snyk ----------------------------------------------------------
       - name: install the Snyk CLI (pinned)
@@ -132,6 +164,24 @@ jobs:
             "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
             --org=fosterstack-admin --json-file-output=/tmp/findings-raw.json
 
+      # ---- scanner identity (F14) ----------------------------------------
+      - name: record scanner version and database state
+        run: |
+          set -euo pipefail
+          : > /tmp/scanner-meta
+          case '${{ matrix.target.scanner }}' in
+            trivy)
+              echo "version=$(trivy --version 2>/dev/null | awk 'NR==1{print $2}')" >> /tmp/scanner-meta
+              echo "db=$(trivy version --format json 2>/dev/null | jq -r '.VulnerabilityDB.UpdatedAt // "unknown"')" >> /tmp/scanner-meta ;;
+            grype)
+              echo "version=$(grype version 2>/dev/null | awk '/^Version:/{print $2}')" >> /tmp/scanner-meta
+              echo "db=$(grype db status 2>/dev/null | awk '/Built|built/{print $NF; exit}')" >> /tmp/scanner-meta ;;
+            snyk)
+              echo "version=$(snyk version 2>/dev/null | head -1)" >> /tmp/scanner-meta
+              echo "db=service-side (Snyk SaaS; no local database timestamp)" >> /tmp/scanner-meta ;;
+          esac
+          cat /tmp/scanner-meta
+
       # ---- statement -----------------------------------------------------
       - name: write the digest-keyed rescan statement
         id: statement
@@ -147,6 +197,14 @@ jobs:
           import json, sys, hashlib, datetime, os
           outcome = sys.argv[1]
           scanner = '${{ matrix.target.scanner }}'
+          meta = {}
+          try:
+              for line in open('/tmp/scanner-meta'):
+                  if '=' in line:
+                      k, v = line.rstrip('\n').split('=', 1)
+                      meta[k] = v
+          except FileNotFoundError:
+              pass
           findings = []
           try:
               raw = json.load(open('/tmp/findings-raw.json'))
@@ -181,13 +239,26 @@ jobs:
               'digest': '${{ matrix.target.digest }}',
               'image_ref': 'ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}',
               'scanner': scanner,
+              'scanner_version': meta.get('version', 'unknown'),
+              'scanner_database': meta.get('db', 'unknown'),
               'policy': 'block at any severity; the published VEX document is the only exception',
               'verdict': outcome,
               'findings': findings,
+              'raw_report': {
+                  'path': 'findings-raw.json',
+                  'sha256': (hashlib.sha256(open('/tmp/findings-raw.json','rb').read()).hexdigest()
+                             if os.path.exists('/tmp/findings-raw.json') else None),
+              },
               'vex': {
                   'document': vex_doc,
                   'sha256': hashlib.sha256(open(vex_doc, 'rb').read()).hexdigest(),
-                  'statements': vex.get('statements', []),
+                  'applicable_statements': [
+                      st for st in vex.get('statements', [])
+                      if any(str(p.get('@id','')).endswith('${{ matrix.target.digest }}'.split(':')[-1])
+                             or '${{ matrix.target.digest }}' in json.dumps(p)
+                             for p in (st.get('products') or []))
+                  ],
+                  'document_statement_count': len(vex.get('statements', [])),
               },
           }
           json.dump(statement, open('/tmp/rescan-statement.json', 'w'), indent=1)
@@ -195,11 +266,18 @@ jobs:
           PY
           echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
 
-      - name: upload the statement (evidence, clean or not)
+      - name: stage the raw report beside the statement
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rescan-out
+          cp /tmp/rescan-statement.json /tmp/rescan-out/
+          [ -f /tmp/findings-raw.json ] && cp /tmp/findings-raw.json /tmp/rescan-out/ || true
+
+      - name: upload the statement AND the raw report (evidence, clean or not)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rescan-${{ matrix.target.release }}-${{ matrix.target.variant }}-${{ matrix.target.scanner }}
-          path: /tmp/rescan-statement.json
+          path: /tmp/rescan-out/
           retention-days: 90
 
       - name: file/update a tracking issue on findings
