@@ -83,8 +83,30 @@ type Mappings struct {
 	} `yaml:"mappings"`
 }
 
+// exit is os.Exit behind a seam so tests can call main() in-process and
+// observe the status instead of the test binary terminating. Behavior is
+// unchanged: main still exits with exactly the code runCLI returns.
+var exit = os.Exit
+
 func main() {
-	if len(os.Args) < 2 {
+	exit(runCLI(os.Args))
+}
+
+// runCLI is the command dispatch, split out of main as a testability
+// seam: it returns the process exit code instead of calling os.Exit, and
+// takes argv explicitly. fatal (and mustBeValid) abandon the command by
+// panicking with an exitCode, which is recovered here — so the stderr
+// output and exit status of every failure path are byte-for-byte what
+// they were when fatal called os.Exit directly.
+func runCLI(args []string) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Anything other than an exitCode is a programming error; the
+			// type assertion re-panics on it.
+			code = int(r.(exitCode))
+		}
+	}()
+	if len(args) < 2 {
 		fatal("usage: requirements validate|generate|check|freeze <version>")
 	}
 	// Run from the repo root regardless of invocation directory.
@@ -93,7 +115,7 @@ func main() {
 			fatal("chdir repo root: %v", err)
 		}
 	}
-	switch os.Args[1] {
+	switch args[1] {
 	case "validate":
 		f, m := mustLoad()
 		mustBeValid(f, m)
@@ -106,8 +128,8 @@ func main() {
 		}
 		fmt.Println("wrote", outFile)
 	case "freeze":
-		freeze()
-		return
+		freeze(args)
+		return 0
 	case "check":
 		f, m := mustLoad()
 		mustBeValid(f, m)
@@ -121,9 +143,16 @@ func main() {
 		}
 		fmt.Println("requirements: valid; matrix fresh")
 	default:
-		fatal("unknown command %q", os.Args[1])
+		fatal("unknown command %q", args[1])
 	}
+	return 0
 }
+
+// yamlMarshal is yaml.Marshal behind a seam: marshaling freeze's fixed
+// struct of strings/bools/slices cannot fail in practice, so the error
+// branch below is only reachable by substituting this in a test. The
+// production value is exactly yaml.Marshal; behavior is unchanged.
+var yamlMarshal = yaml.Marshal
 
 // freeze writes requirements/releases/<version>.yaml: the immutable
 // release baseline the source-admission stage and the acceptance
@@ -133,11 +162,11 @@ func main() {
 // checks that can only run against the published release). It is written
 // UNAPPROVED - the owner reviews and flips approved:true; nothing here
 // approves a release on the owner's behalf.
-func freeze() {
-	if len(os.Args) != 3 {
+func freeze(args []string) {
+	if len(args) != 3 {
 		fatal("usage: requirements freeze <version>  (e.g. v0.2.0)")
 	}
-	version := os.Args[2]
+	version := args[2]
 	if _, err := os.Stat(reqFile); err != nil {
 		if err := os.Chdir(repoRoot()); err != nil {
 			fatal("chdir repo root: %v", err)
@@ -197,7 +226,7 @@ func freeze() {
 		BlockingACs:     blocking,
 		Note:            "Frozen release baseline. Owner reviews and sets approved: true with approved_on. Admission verifies this file structurally; the acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.",
 	}
-	body, err := yaml.Marshal(out)
+	body, err := yamlMarshal(out)
 	if err != nil {
 		fatal("marshal frozen baseline: %v", err)
 	}
@@ -259,7 +288,7 @@ func mustBeValid(f File, m Mappings) {
 		for _, e := range errs {
 			fmt.Fprintln(os.Stderr, "requirements:", e)
 		}
-		os.Exit(1)
+		panic(exitCode(1))
 	}
 }
 
@@ -296,6 +325,14 @@ func unmarshalStrict(path string, v any) error {
 	return nil
 }
 
+// newCompiler constructs the JSON-Schema compiler used by validate. It
+// is a seam variable because AddResource cannot fail when handed a fresh
+// compiler and the constant schemaFile URL; a test substitutes a
+// constructor whose compiler already holds that URL, making AddResource
+// return the library's real ResourceExistsError. The production value is
+// exactly jsonschema.NewCompiler; behavior is unchanged.
+var newCompiler = jsonschema.NewCompiler
+
 func validate(f File, m Mappings) []string {
 	var errs []string
 	fail := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
@@ -311,7 +348,7 @@ func validate(f File, m Mappings) []string {
 	if err != nil {
 		fatal("parse %s: %v", schemaFile, err)
 	}
-	c := jsonschema.NewCompiler()
+	c := newCompiler()
 	// Format assertions are opt-in in this schema dialect; without this the
 	// declared `format: date` is decorative and "definitely-not-a-date"
 	// passes. The explicit calendar checks below are kept as well, so an
@@ -607,7 +644,14 @@ func sortedKeys(m map[string]int) []string {
 	return ks
 }
 
+// exitCode is the panic payload fatal and mustBeValid use to abandon the
+// current command; runCLI recovers it and returns it as the process exit
+// status. This replaces direct os.Exit calls so tests can exercise every
+// failure path in-process — the printed output and final status are
+// identical to the previous behavior.
+type exitCode int
+
 func fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "requirements: "+format+"\n", a...)
-	os.Exit(1)
+	panic(exitCode(1))
 }
