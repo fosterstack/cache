@@ -1,0 +1,160 @@
+name: 'Stage: release authorization'
+
+# Release-chain authorization stage (release-chain-design.md §2 Stage 6):
+# the only stage that can authorize promotion. It verifies the ENTIRE
+# graph for the candidate digests D — source admission, build (and
+# build provenance), image-build, reproducibility, one scan predicate
+# per scanner in the policy list, and acceptance — each signed by the
+# expected stage workflow and naming D or the admitted commit. Any
+# missing or failing predicate fails closed. It then signs a
+# release-authorization predicate, subject D: "D is approved for this
+# version", listing the Rekor log index of every statement it verified.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+      admission-artifact:
+        description: 'artifact carrying the signed admission.json'
+        required: true
+        type: string
+      dist-artifact:
+        description: 'the dist artifact (archives verified against the build predicate)'
+        required: true
+        type: string
+      expected-checksums:
+        description: 'checksums.txt content from the build stage'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: release-authorization
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read      # read attestations against the private candidates
+      id-token: write     # sign the release-authorization predicate
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: log in to GHCR (private candidates package)
+        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.admission-artifact }}
+          path: /tmp/admission
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: dist/
+
+      - name: verify the full graph for D — fail closed on anything missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ inputs.expected-checksums }}
+        run: |
+          set -euo pipefail
+          : > /tmp/verified-statements.jsonl
+
+          record() { # label, verify-output-json
+            jq -c --arg label "$1" \
+              '.[0] | {label: $label,
+                       predicate_type: .verificationResult.statement.predicateType,
+                       log_index: (.verificationResult.tlogEntries[0].logIndex // null)}' \
+              <<<"$2" >> /tmp/verified-statements.jsonl
+          }
+
+          vrf() { # subject, predicate-type, signer-workflow-file, label
+            out=$(gh attestation verify "$1" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type "$2" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/$3" \
+              --format json) \
+              || { echo "::error::graph verification failed: $4 ($2 by $3 on $1)" >&2; exit 1; }
+            record "$4" "$out"
+          }
+
+          # 1. source admission — and it must admit THIS commit and tag
+          out=$(gh attestation verify /tmp/admission/admission.json \
+            --repo "${GITHUB_REPOSITORY}" \
+            --predicate-type https://fosterstack.com/attestations/source-admission/v1 \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml" \
+            --format json)
+          adm_sha=$(jq -r '.[0].verificationResult.statement.predicate.sha' <<<"$out")
+          adm_tag=$(jq -r '.[0].verificationResult.statement.predicate.tag' <<<"$out")
+          [ "$adm_sha" = "${GITHUB_SHA}" ] || { echo "::error::admission is for ${adm_sha}, chain runs at ${GITHUB_SHA}" >&2; exit 1; }
+          [ "$adm_tag" = "${GITHUB_REF_NAME}" ] || { echo "::error::admission is for ${adm_tag}, chain runs for ${GITHUB_REF_NAME}" >&2; exit 1; }
+          record "source-admission" "$out"
+
+          # 2. build predicate + build provenance over every archive
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+          grep -oE '[^ ]+$' /tmp/expected-checksums.txt | while read -r f; do
+            gh attestation verify "dist/$f" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type https://fosterstack.com/attestations/build/v1 \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null \
+              || { echo "::error::build predicate missing for $f" >&2; exit 1; }
+            gh attestation verify "dist/$f" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null \
+              || { echo "::error::build provenance missing for $f" >&2; exit 1; }
+          done
+          vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
+            https://fosterstack.com/attestations/build/v1 stage-build.yml build
+          vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
+            https://slsa.dev/provenance/v1 stage-build.yml build-provenance
+
+          # 3. per-digest: image-build, reproducibility, every scanner, acceptance
+          scanners=$(jq -r '.scanners[]' .github/policy/scanners.json)
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
+            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}"
+            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}"
+            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}"
+            for s in $scanners; do
+              vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}"
+            done
+            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}"
+          done
+          echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
+
+      - name: write and sign the release-authorization predicate
+        id: predicate
+        run: |
+          set -euo pipefail
+          jq -s -n \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg sha "${GITHUB_SHA}" \
+            --argjson digests '${{ inputs.digests }}' \
+            --slurpfile statements /tmp/verified-statements.jsonl \
+            '{
+              statement: ("digests approved for " + $tag),
+              tag: $tag, sha: $sha, index_digests: $digests,
+              verified_statements: $statements[0]
+            }' > /tmp/authorization-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/authorization-subjects.txt
+          cat /tmp/authorization-predicate.json
+
+      - name: sign it
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/authorization-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/release-authorization/v1
+          predicate-path: /tmp/authorization-predicate.json

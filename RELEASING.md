@@ -6,32 +6,52 @@ is a hard rule, not a preference: it's what makes the SLSA provenance and
 Sigstore signatures on every release mean something (an attacker with a
 laptop cannot forge a release that GitHub's own runners never built).
 
-## Pipeline (live since v0.1.0, `.github/workflows/release.yml`) <!-- pinned: historical -->
+## Pipeline (`.github/workflows/release.yml`)
 
 ```
-build A (snapshot, local only) → scan A (every scanner in the repo's list)
-  → [gate] → build B (real) → push B → SBOM (ko) → cosign sign B (keyless)
-  → SLSA provenance attestation for B → gh attestation verify → publish
+source admission → build (binaries) → image assembly → reproducibility
+  → { scans, acceptance } → release authorization → promotion
 ```
 
-Two jobs, a hard dependency between them — and one gap, stated plainly
-because this file describes the pipeline as it is. `build-and-scan` builds
-every artifact in `goreleaser --snapshot` mode (this never touches a real
-registry — `ko` loads images into the runner's local Docker daemon instead
-of pushing) and scans all three image variants with every scanner in
-[`.github/policy/scanners.json`](.github/policy/scanners.json). `publish`
-only runs if that job succeeds, and is the only place in this repo that
-ever pushes to GHCR.
+One build, one set of digests, promoted without a rebuild. Each stage is
+a reusable workflow with its own OIDC identity; each signs a predicate
+about what it produced or verified, and each verifies its inputs'
+predicates on entry — so the bytes that are scanned, tested, and finally
+made public are provably the same bytes, referenced by digest at every
+step, never re-resolved from a registry.
 
-**The gap:** `publish` runs a second build. The bytes that are pushed,
-signed, and attested (build B) are not the bytes that were scanned
-(build A). Both come from the same commit, but byte identity between the
-two builds is not established, so the scan verdict attaches to the source,
-not to the published digests. The signatures and provenance on a release
-are accurate about what they say — which workflow run produced which
-digest — and say nothing about scanning. Published digests are covered by
-the daily rescan. Closing this gap (one build, scanned and tested by
-digest, promoted without a rebuild) is the Sep 2026 release-chain rework.
+- **Source admission** runs before any repository-controlled command:
+  the tag's SSH signature and the tagged commit's signature are checked
+  against the allowed-signers list on protected `main`, the commit must
+  be an ancestor of `main` with every required check green on the exact
+  SHA, and an approved requirements baseline must exist for the version.
+- **Build** compiles the binary matrix with a toolchain pinned to
+  `go.mod` (`GOTOOLCHAIN=local`, `go mod verify`, manifests never
+  mutated), produces the archives, `checksums.txt`, and per-archive
+  SBOMs, and signs a build predicate whose subjects are the archive
+  digests as the builder itself emitted them.
+- **Image assembly** verifies each archive against that signed predicate
+  before opening it, assembles each variant with a COPY-only Dockerfile
+  (digest-pinned distroless base, zero `RUN`), and pushes by digest only
+  to a private candidates package — no tags, nothing public.
+- **Reproducibility** repeats the assembly on a separate runner and
+  asserts the digests come out identical. The images are reproducible,
+  and this check is what makes that a tested claim rather than a
+  promise: if it ever fails, the release fails.
+- **Scans**: every scanner in
+  [`.github/policy/scanners.json`](.github/policy/scanners.json) runs
+  against the exact candidate digests; block at any severity; a
+  published VEX statement is the only exception. **Acceptance**: the
+  release-artifact scenarios plus the Gradle and Maven acceptance
+  suites run against the exact candidate image.
+- **Release authorization** verifies the entire graph — every predicate,
+  signed by the expected stage, naming these digests — and is the only
+  stage that can approve promotion. Anything missing fails closed.
+- **Promotion** copies the approved digests to the public registries
+  with no build step of any kind, asserts the public digest equals the
+  candidate digest after every copy, signs, publishes the release
+  files, re-verifies everything as an anonymous customer would, and
+  only then undrafts the release.
 
 ## Cutting a release
 
@@ -47,8 +67,12 @@ release path.
 ## What a release contains
 
 - `linux/amd64` + `linux/arm64` container images on a digest-pinned
-  `gcr.io/distroless/static:nonroot` base (built with `ko`, zero
-  Dockerfile, zero docker daemon needed to build), at `ghcr.io/fosterstack/cache:X.Y.Z`.
+  `gcr.io/distroless/static:nonroot` base (a COPY-only Dockerfile: the
+  verified release binary added to the unmodified base, zero `RUN`
+  steps, reproducible digests), at `ghcr.io/fosterstack/cache:X.Y.Z` —
+  and mirrored, same digests, at `docker.io/fosterstack/cache:X.Y.Z`.
+  GHCR is canonical; the Docker Hub mirror exists for tooling that
+  defaults there. Pull-by-digest is identical at either.
 - A `:X.Y.Z-debug` variant on `gcr.io/distroless/static:debug-nonroot`
   (busybox shell at `/busybox/sh`, for interactive troubleshooting only —
   never the default). See below on why there is no `/bin/sh`.
@@ -74,14 +98,22 @@ now do. Do not revisit without a reason that outweighs that.
   first release even before the Compliance tier ships.
 - Bare binaries + `checksums.txt` (via `goreleaser`), `linux`/`darwin` ×
   `amd64`/`arm64`, for container-averse or air-gapped environments.
-- Per image: an SPDX SBOM (`ko`'s own SBOM generation, attached to the
-  pushed image as an OCI referrer — this is where the SBOM materializes,
-  no separate step), a cosign keyless signature, and a SLSA provenance
-  attestation.
+- Per image: a cosign keyless signature **in both registries**, a SLSA
+  provenance attestation, and the full release-chain predicates
+  (image-build, reproducibility, per-scanner scan verdicts, acceptance,
+  release authorization) in GitHub's attestation store, keyed to the
+  image digest. The SBOMs of record are the per-archive SPDX documents
+  on the release page — the image is the unmodified distroless base
+  plus exactly that archive's binary.
 - For the binary archives: a SLSA provenance attestation covering
   `dist/*.tar.gz` + `checksums.txt`, and a cosign keyless blob signature
   bundle (`checksums.txt.bundle`) covering every archive transitively by
   hash.
+- `release-manifest.json`: the release evidence bundle — every artifact
+  digest, both registry references per image, the requirements-baseline
+  and test-evidence hashes, per-AC acceptance results, and the Rekor log
+  index of every statement the authorization stage verified. The daily
+  rescan reads this file's digests, never tags.
 - All Sigstore material is keyless: identity-bound short-lived certs from
   Fulcio via GitHub OIDC, logged to Rekor. No signing key exists anywhere
   to steal.
@@ -156,7 +188,7 @@ archive matches a file that anyone could have written.
 
 | Artifact | Signature | SLSA provenance | SBOM |
 |---|---|---|---|
-| Images (`${VER}`, `-debug`, `-fips`) | cosign, per digest | yes, in the registry | SPDX, via ko |
+| Images (`${VER}`, `-debug`, `-fips`) | cosign, per digest, both registries | yes, in the attestation store | via the archive SBOMs |
 | Binary archives | via the signed `checksums.txt` | yes | no |
 | `checksums.txt` | cosign `sign-blob` bundle | yes | — |
 
