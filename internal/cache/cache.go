@@ -24,10 +24,39 @@ var ErrNotFound = blobstore.ErrNotFound
 // ErrInvalidKey is returned when a key fails validation.
 var ErrInvalidKey = blobstore.ErrInvalidKey
 
+// blobStore and metaStore name the operations Cache needs from its two
+// backing stores. They are interfaces (satisfied by *blobstore.Store and
+// *metadata.Store, the only production implementations, which New still
+// takes concretely) purely as a testability seam: tests wrap the real
+// stores to inject failures the filesystem and bbolt cannot produce on
+// demand — a Close or Delete error, a metadata write that fails
+// mid-reconcile. Behavior is unchanged.
+type blobStore interface {
+	Put(key string, r io.Reader) (int64, error)
+	Get(key string) (io.ReadCloser, int64, error)
+	Stat(key string) (int64, error)
+	Delete(key string) error
+	Walk(fn func(key string, size int64) error) (staleTemp []string, err error)
+	RemoveStaleTemp(rel string) error
+	Root() string
+	Close() error
+}
+
+type metaStore interface {
+	Record(key string, size int64) error
+	Touch(key string) error
+	Delete(key string) error
+	TotalSize() (int64, error)
+	LeastRecentlyUsed(n int) ([]metadata.Entry, error)
+	Count() (int, error)
+	All() ([]metadata.Entry, error)
+	Close() error
+}
+
 // Cache is a size-capped, LRU-evicting content store.
 type Cache struct {
-	blobs    *blobstore.Store
-	meta     *metadata.Store
+	blobs    blobStore
+	meta     metaStore
 	maxBytes int64
 	log      *slog.Logger
 	onEvict  func(key string, size int64)

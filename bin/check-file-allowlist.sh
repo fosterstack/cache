@@ -70,6 +70,7 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-version-literals\.sh$'
+  '^bin/coverage-gate\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

@@ -46,37 +46,40 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
-      - name: measure statement coverage (race detector on, atomic mode)
-        run: go test -race -covermode=atomic -coverprofile=/tmp/cover.out ./...
-      - name: apply the committed exclusions and enforce the floor
+      # Two Go modules, each measured and reported separately (an honest
+      # denominator - a root `go test ./...` does not include the nested
+      # tools/requirements module). -coverpkg=./... on the root credits a
+      # statement executed as a dependency of another package's test.
+      - name: measure root product module
+        run: go test -race -covermode=atomic -coverpkg=./... -coverprofile=/tmp/root.out ./...
+      - name: measure tools/requirements module
+        run: go -C tools/requirements test -covermode=atomic -coverprofile=/tmp/req.out ./...
+      # Enforce ZERO uncovered eligible statements per module (not a
+      # rounded 100.0% display). Exclusions live in the committed policy
+      # file and there are none.
+      - name: enforce the coverage floor
         run: |
           set -euo pipefail
-          cp /tmp/cover.out /tmp/cover-filtered.out
-          grep -vE '^\s*(#|$)' .github/policy/coverage-exclusions.txt 2>/dev/null | \
-            while read -r prefix _reason; do
-              grep -v "^github.com/fosterstack/cache/${prefix}" /tmp/cover-filtered.out > /tmp/c.tmp
-              mv /tmp/c.tmp /tmp/cover-filtered.out
-              echo "excluded: ${prefix}"
-            done || true
-          total=$(go tool cover -func=/tmp/cover-filtered.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
-          floor=$(jq -r '.floor' .github/policy/coverage.json)
+          max=$(jq -r '.max_uncovered' .github/policy/coverage.json)
+          fail=0
           {
-            echo "## Statement coverage"
-            echo
-            echo "Total: **${total}%** (floor: ${floor}%)"
+            echo "## Statement coverage (zero-uncovered gate, max_uncovered=${max})"
             echo
             echo '```'
-            go tool cover -func=/tmp/cover-filtered.out | awk -F/ '{print $NF}' | sort | tail -40
+            bash bin/coverage-gate.sh /tmp/root.out "root module" || fail=1
+            bash bin/coverage-gate.sh /tmp/req.out  "tools/requirements module" || fail=1
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "total=${total}% floor=${floor}%"
-          awk -v t="$total" -v f="$floor" 'BEGIN { exit (t+0 >= f+0) ? 0 : 1 }' \
-            || { echo "::error::coverage ${total}% is below the committed floor ${floor}% — add tests, or (owner-reviewed) adjust .github/policy/coverage.json" >&2; exit 1; }
-      - name: publish the profile as evidence
+          bash bin/coverage-gate.sh /tmp/root.out "root module"
+          bash bin/coverage-gate.sh /tmp/req.out  "tools/requirements module"
+          [ "$fail" -eq 0 ] || exit 1
+      - name: publish both profiles as evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage-profile
-          path: /tmp/cover.out
+          name: coverage-profiles
+          path: |
+            /tmp/root.out
+            /tmp/req.out
           retention-days: 90
 
   lint:
