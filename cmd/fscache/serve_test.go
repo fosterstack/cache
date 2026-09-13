@@ -376,21 +376,50 @@ func TestServeAuthAndEviction(t *testing.T) {
 
 	// Read the bound address back via the ready hook by resolving the env.
 	addr := os.Getenv("FSCACHE_ADDR")
+	evicted := make(chan bool, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() {
 		errc <- serve(ctx, quietLogger(), func() {
-			// Drive two authenticated PUTs so the second evicts the first.
-			for _, k := range []string{"k1", "k2"} {
+			defer cancel()
+			// Wait for the listener to actually accept before driving
+			// traffic (ready() fires at goroutine handoff, which can
+			// precede the bind - the source of a CI-only flake).
+			ready := false
+			for range 100 {
+				resp, err := http.Get("http://" + addr + "/healthz")
+				if err == nil {
+					_ = resp.Body.Close()
+					ready = true
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if !ready {
+				evicted <- false
+				return
+			}
+			// Two authenticated 40-byte PUTs against a 64-byte cap: the
+			// second must evict the first, firing the onEvict callback.
+			put := func(k string) {
 				req, _ := http.NewRequest(http.MethodPut, "http://"+addr+"/"+k,
 					strings.NewReader(strings.Repeat("x", 40)))
 				req.SetBasicAuth("u", "p")
-				resp, err := http.DefaultClient.Do(req)
-				if err == nil {
+				if resp, err := http.DefaultClient.Do(req); err == nil {
 					_ = resp.Body.Close()
 				}
 			}
-			cancel()
+			put("k1")
+			put("k2")
+			// The oversized-for-the-cap pair must have evicted k1.
+			req, _ := http.NewRequest(http.MethodGet, "http://"+addr+"/k1", nil)
+			req.SetBasicAuth("u", "p")
+			resp, err := http.DefaultClient.Do(req)
+			gone := err == nil && resp.StatusCode == http.StatusNotFound
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			evicted <- gone
 		})
 	}()
 	select {
@@ -398,8 +427,11 @@ func TestServeAuthAndEviction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serve returned %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("serve did not shut down")
+	}
+	if !<-evicted {
+		t.Fatal("expected k1 to be evicted (onEvict callback path); it was not")
 	}
 }
 
