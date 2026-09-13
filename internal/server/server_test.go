@@ -420,3 +420,97 @@ func TestReadOnlyCredentialsAuthSemantics(t *testing.T) {
 		t.Fatal("403 carries WWW-Authenticate - retrying with the same valid credentials cannot help")
 	}
 }
+
+func newTestHandlerWithCap(t *testing.T, capBytes, maxBody int64) http.Handler {
+	t.Helper()
+	blobs, err := blobstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobstore.New: %v", err)
+	}
+	meta, err := metadata.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("metadata.Open: %v", err)
+	}
+	c := cache.New(blobs, meta, cache.WithMaxBytes(capBytes))
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	return New(Config{Cache: c, Metrics: m, Registry: reg, MaxBytes: capBytes, MaxBodyBytes: maxBody})
+}
+
+// REQ-EVICT-002-AC1: an entry larger than the whole cache cap is 413
+// with the documented reject header, stores nothing, and evicts nothing.
+func TestOversizedEntryRejectedNotChurned(t *testing.T) {
+	h := newTestHandlerWithCap(t, 1024, 1<<20)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp := doReq(t, mustReq(t, http.MethodPut, srv.URL+"/small", strings.Repeat("a", 100)))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("small PUT status = %d, want 201", resp.StatusCode)
+	}
+
+	resp = doReq(t, mustReq(t, http.MethodPut, srv.URL+"/big", strings.Repeat("b", 2000)))
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized PUT status = %d, want 413", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FSCache-Reject"); got != "entry-exceeds-cache-cap" {
+		t.Fatalf("X-FSCache-Reject = %q, want entry-exceeds-cache-cap", got)
+	}
+
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/big", ""))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET of rejected key = %d, want 404 (nothing stored)", resp.StatusCode)
+	}
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/small", ""))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET of pre-existing key = %d, want 200 (nothing evicted)", resp.StatusCode)
+	}
+}
+
+// REQ-EVICT-002-AC1, streaming half: a chunked upload with no declared
+// length must be rejected the moment it exceeds the cap, with the same
+// header - a lying or absent Content-Length cannot smuggle an oversized
+// entry into the store.
+func TestOversizedChunkedEntryRejected(t *testing.T) {
+	h := newTestHandlerWithCap(t, 1024, 1<<20)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/chunky", strings.NewReader(strings.Repeat("c", 4096)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.ContentLength = -1 // force chunked transfer encoding
+	resp := doReq(t, req)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked oversized PUT status = %d, want 413", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FSCache-Reject"); got != "entry-exceeds-cache-cap" {
+		t.Fatalf("X-FSCache-Reject = %q, want entry-exceeds-cache-cap", got)
+	}
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/chunky", ""))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET of rejected chunked key = %d, want 404", resp.StatusCode)
+	}
+}
+
+// REQ-EVICT-002-AC2: the body-limit 413 and the cache-cap 413 stay
+// distinguishable - only the latter carries the reject header.
+func TestBodyLimitRejectionCarriesNoRejectHeader(t *testing.T) {
+	h := newTestHandlerWithCap(t, 1<<20, 512)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp := doReq(t, mustReq(t, http.MethodPut, srv.URL+"/toobig", strings.Repeat("d", 600)))
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("over-body-limit PUT status = %d, want 413", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FSCache-Reject"); got != "" {
+		t.Fatalf("body-limit 413 carries X-FSCache-Reject %q; the two rejections must stay distinguishable", got)
+	}
+}

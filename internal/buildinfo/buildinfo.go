@@ -24,8 +24,15 @@ type Info struct {
 	Revision string
 	// Modified reports whether the working tree was dirty at build time.
 	Modified bool
-	// FIPS140 reports whether the validated cryptographic module is active.
+	// FIPS140 reports whether fips140 mode is enabled at runtime. Mode
+	// alone does not establish the validated module: GODEBUG=fips140=on
+	// forces the mode in ANY build. FIPSModule is the other half.
 	FIPS140 bool
+	// FIPSModule is the Go Cryptographic Module version selected into
+	// this binary at build time (the GOFIPS140 build setting), empty for
+	// a standard build. Only a binary built with the validated module
+	// version may claim the certificate.
+	FIPSModule string
 }
 
 // Read returns the running binary's build information.
@@ -44,6 +51,8 @@ func Read() Info {
 			info.Revision = s.Value
 		case "vcs.modified":
 			info.Modified = s.Value == "true"
+		case "GOFIPS140":
+			info.FIPSModule = s.Value
 		}
 	}
 	return info

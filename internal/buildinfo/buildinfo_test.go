@@ -39,3 +39,49 @@ func TestFIPSNoteMatchesRuntimeState(t *testing.T) {
 		t.Errorf("FIPSNote() = %q, want %q on a standard build", note, "off")
 	}
 }
+
+// REQ-FIPS-002: the posture line must tell the truth in every
+// combination of runtime mode and build-time module selection. The
+// forced-standard case (mode on, no module selected) previously
+// over-claimed the certificate - the exact discrepancy the Sep 10
+// review recorded and the Sep 12 review found still reported as a pass.
+func TestFIPSNoteIsTruthfulPerModeAndModule(t *testing.T) {
+	cases := []struct {
+		name string
+		info Info
+		want string
+	}{
+		{
+			name: "validated build, mode on",
+			info: Info{FIPS140: true, FIPSModule: "v1.0.0"},
+			want: "active (Go validated module v1.0.0, CMVP cert #5247)",
+		},
+		{
+			name: "standard build, mode forced at runtime",
+			info: Info{FIPS140: true, FIPSModule: ""},
+			want: "active (fips140 mode forced at runtime; not the validated-module build)",
+		},
+		{
+			name: "validated module linked, mode disabled",
+			info: Info{FIPS140: false, FIPSModule: "v1.0.0"},
+			want: "off (validated module v1.0.0 linked, mode disabled at runtime)",
+		},
+		{
+			name: "standard build, mode off",
+			info: Info{FIPS140: false, FIPSModule: ""},
+			want: "off",
+		},
+		{
+			name: "unrecognized module version never claims the certificate",
+			info: Info{FIPS140: true, FIPSModule: "v1.1.0"},
+			want: "active (Go module v1.1.0; certificate status not asserted)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.info.FIPSNote(); got != tc.want {
+				t.Fatalf("FIPSNote() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
