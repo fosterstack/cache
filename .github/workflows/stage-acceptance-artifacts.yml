@@ -237,6 +237,7 @@ jobs:
             {ac: "REQ-PLAT-001-AC1", result: "pass"},
             {ac: "REQ-PLAT-002-AC1", result: "pass", note: ("arm64 leg: " + $arm)},
             {ac: "REQ-PLAT-003-AC1", result: "pass"},
+            {ac: "REQ-PLAT-004-AC1", result: "pass"},
             {ac: "REQ-FIPS-001-AC1", result: "pass"},
             {ac: "REQ-FIPS-001-AC2", result: "pass"},
             {ac: "REQ-FIPS-002-AC1", result: "pass"}

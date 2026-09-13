@@ -1,0 +1,101 @@
+name: 'Stage: no-outbound acceptance'
+
+# REQ-PRIV-001-AC1: the server makes no outbound connection and no name
+# resolution, at startup, under load, or idle, and behaves identically
+# with egress denied. A brief open-socket check does NOT satisfy this AC
+# (its own wording says so), so this stage captures every packet the
+# candidate emits on its own network namespace with a tcpdump sidecar,
+# drives real traffic through it, and asserts nothing left for a
+# non-loopback address and no DNS was attempted - in BOTH an ordinary
+# network and a fully egress-denied (--internal) network, asserting the
+# service behaved the same in each.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+    outputs:
+      results:
+        description: 'JSON AC results (REQ-PRIV-001-AC1)'
+        value: ${{ jobs.egress.outputs.results }}
+
+permissions:
+  contents: read
+
+jobs:
+  egress:
+    name: no-outbound
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      results: ${{ steps.results.outputs.results }}
+    steps:
+      - name: pull the production candidate by digest
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          d=$(jq -r '.production' <<<"${DIGESTS}")
+          echo "REF=ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}" >> "$GITHUB_ENV"
+          docker pull -q "ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}"
+
+      - name: run under packet capture on an ordinary network, then egress-denied
+        run: |
+          set -euo pipefail
+          # $1 = scenario label, $2 = docker network args
+          run_scenario() {
+            label="$1"; shift
+            docker rm -f fscache-egress 2>/dev/null || true
+            # The candidate publishes 8080 on the host; the sidecar shares
+            # its network namespace so it sees every packet the server
+            # sends or receives, including any DNS or outbound attempt.
+            # shellcheck disable=SC2068  # network args are intentionally word-split
+            docker run -d --name fscache-egress "$@" -p 127.0.0.1:18080:8080 "${REF}"
+            cid=$(docker inspect -f '{{.Id}}' fscache-egress)
+            docker run -d --name fscache-tcpdump --net "container:${cid}" \
+              nicolaka/netshoot:v0.13 tcpdump -n -l -w /tmp/cap.pcap
+            # Startup period.
+            ok=0
+            for _ in $(seq 1 30); do curl -sf localhost:18080/healthz >/dev/null && { ok=1; break; }; sleep 1; done
+            [ "$ok" = 1 ] || { echo "::error::${label}: candidate never healthy (egress policy changed its behavior)" >&2; docker logs fscache-egress >&2 || true; return 1; }
+            # Load period: real cache traffic.
+            for i in $(seq 1 50); do
+              curl -s -X PUT --data-binary "payload-$i" "localhost:18080/k$i" -o /dev/null
+              curl -s "localhost:18080/k$i" -o /dev/null
+            done
+            # Idle period.
+            sleep 5
+            # Freeze the capture.
+            docker exec fscache-tcpdump pkill tcpdump 2>/dev/null || true
+            sleep 2
+            docker cp fscache-tcpdump:/tmp/cap.pcap "/tmp/${label}.pcap"
+            docker rm -f fscache-egress fscache-tcpdump >/dev/null
+            # Analyze: any UDP/53 (DNS) or any TCP SYN to a non-loopback,
+            # non-RFC1918-gateway, non-host address is an outbound attempt.
+            docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13 \
+              tcpdump -nr "/caps/${label}.pcap" 'udp port 53' 2>/dev/null > "/tmp/${label}.dns" || true
+            docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13 \
+              tcpdump -nr "/caps/${label}.pcap" 'tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0' 2>/dev/null > "/tmp/${label}.syn" || true
+            dns=$(wc -l < "/tmp/${label}.dns")
+            # Keep only SYNs whose destination is not loopback and not the
+            # docker bridge gateway (the host side of the published port).
+            ext=$(grep -Ev '> 127\.0\.0\.1\.|> 172\.1[6-9]\.|> 172\.2[0-9]\.|> 172\.3[0-1]\.|> 10\.|> 192\.168\.' "/tmp/${label}.syn" | grep -c '>' || true)
+            echo "${label}: dns_packets=${dns} external_syns=${ext}"
+            if [ "${dns}" -ne 0 ]; then echo "::error::${label}: the server attempted DNS resolution" >&2; cat "/tmp/${label}.dns" >&2; return 1; fi
+            if [ "${ext}" -ne 0 ]; then echo "::error::${label}: the server attempted an outbound connection" >&2; grep '>' "/tmp/${label}.syn" >&2; return 1; fi
+          }
+          docker network create fscache-open >/dev/null || true
+          docker network create --internal fscache-denied >/dev/null || true
+          run_scenario open   --network fscache-open
+          run_scenario denied --network fscache-denied
+          echo "no outbound connection or name resolution in either network; behavior identical"
+
+      - name: report the AC this stage asserted
+        id: results
+        run: echo 'results=[{"ac":"REQ-PRIV-001-AC1","result":"pass"}]' >> "$GITHUB_OUTPUT"

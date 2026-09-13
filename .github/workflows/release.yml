@@ -85,14 +85,28 @@ jobs:
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
 
+  acceptance-egress:
+    needs: [image, reproducibility]
+    uses: ./.github/workflows/stage-acceptance-egress.yml
+    with:
+      digests: ${{ needs.image.outputs.digests }}
+
+  acceptance-k8s:
+    needs: [image, reproducibility]
+    uses: ./.github/workflows/stage-acceptance-k8s.yml
+    with:
+      digests: ${{ needs.image.outputs.digests }}
+
   acceptance-predicate:
-    needs: [image, acceptance-artifacts, acceptance-gradle, acceptance-maven]
+    needs: [image, acceptance-artifacts, acceptance-gradle, acceptance-maven, acceptance-egress, acceptance-k8s]
     uses: ./.github/workflows/stage-acceptance-predicate.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
       artifacts-results: ${{ needs.acceptance-artifacts.outputs.results }}
       gradle-results: ${{ needs.acceptance-gradle.outputs.results }}
       maven-results: ${{ needs.acceptance-maven.outputs.results }}
+      egress-results: ${{ needs.acceptance-egress.outputs.results }}
+      k8s-results: ${{ needs.acceptance-k8s.outputs.results }}
 
   authorization:
     needs: [admission, build, image, scans, acceptance-predicate]

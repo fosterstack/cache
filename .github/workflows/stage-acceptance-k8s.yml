@@ -1,0 +1,125 @@
+name: 'Stage: Kubernetes acceptance'
+
+# REQ-DEPLOY-003-AC1: the manifests and smoke commands published in
+# docs/kubernetes.md work exactly as written against a release image.
+# This stage extracts the documented Secret, PVC, Deployment, and
+# Service manifests straight from the doc (so a doc that drifts from
+# reality fails here), substitutes only the image with the exact
+# candidate digest, applies them to a kind cluster, and runs the
+# documented port-forward smoke checks: Ready pod; healthz and metrics
+# open; authenticated PUT/GET round-trip; unauthenticated 401; and the
+# secretKeyRef-injected FSCACHE_USERNAME/FSCACHE_PASSWORD present.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+    outputs:
+      results:
+        description: 'JSON AC results (REQ-DEPLOY-003-AC1)'
+        value: ${{ jobs.k8s.outputs.results }}
+
+permissions:
+  contents: read
+
+jobs:
+  k8s:
+    name: kubernetes-deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      results: ${{ steps.results.outputs.results }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: create a kind cluster
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: fscache-accept
+
+      - name: load the exact production candidate into the cluster
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          d=$(jq -r '.production' <<<"${DIGESTS}")
+          ref="ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}"
+          docker pull -q "$ref"
+          docker tag "$ref" fscache-candidate:accept
+          kind load docker-image fscache-candidate:accept --name fscache-accept
+          echo "CANDIDATE_LOCAL=fscache-candidate:accept" >> "$GITHUB_ENV"
+
+      - name: extract the documented manifests verbatim (image substituted)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, os
+          doc = open("docs/kubernetes.md").read()
+          # Grab the first fenced yaml block under each documented H2.
+          want = ["## Secret (credentials)", "## PersistentVolumeClaim",
+                  "## Deployment", "## Service"]
+          blocks = []
+          for heading in want:
+              i = doc.index(heading)
+              m = re.search(r"```yaml\n(.*?)```", doc[i:], re.S)
+              if not m:
+                  raise SystemExit(f"no yaml block under {heading!r}")
+              blocks.append(m.group(1).rstrip())
+          manifest = "\n---\n".join(blocks)
+          # Substitute ONLY the image tag with the loaded candidate; keep
+          # imagePullPolicy Never so kind uses the loaded image.
+          manifest = manifest.replace("ghcr.io/fosterstack/cache:X.Y.Z", os.environ["CANDIDATE_LOCAL"])
+          manifest = manifest.replace(
+              "image: " + os.environ["CANDIDATE_LOCAL"],
+              "image: " + os.environ["CANDIDATE_LOCAL"] + "\n          imagePullPolicy: Never")
+          open("/tmp/fscache-k8s.yaml", "w").write(manifest)
+          print(manifest)
+          PY
+
+      - name: apply and wait for Ready
+        run: |
+          set -euo pipefail
+          kubectl apply -f /tmp/fscache-k8s.yaml
+          kubectl rollout status deploy/fscache --timeout=180s \
+            || { kubectl describe pods -l app.kubernetes.io/name=fscache; kubectl logs -l app.kubernetes.io/name=fscache --tail=50; exit 1; }
+
+      - name: the secretKeyRef env is populated under exactly those names
+        run: |
+          set -euo pipefail
+          pod=$(kubectl get pod -l app.kubernetes.io/name=fscache -o jsonpath='{.items[0].metadata.name}')
+          for var in FSCACHE_USERNAME FSCACHE_PASSWORD; do
+            val=$(kubectl get pod "$pod" -o jsonpath="{.spec.containers[0].env[?(@.name=='${var}')].valueFrom.secretKeyRef.name}")
+            [ "$val" = "fscache-auth" ] || { echo "::error::${var} is not wired to the fscache-auth Secret" >&2; exit 1; }
+          done
+
+      - name: documented port-forward smoke checks
+        run: |
+          set -euo pipefail
+          kubectl port-forward svc/fscache 18080:80 >/tmp/pf.log 2>&1 &
+          pf=$!
+          trap 'kill $pf 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do curl -sf localhost:18080/healthz >/dev/null && break; sleep 1; done
+          # healthz and metrics open without credentials
+          curl -sf localhost:18080/healthz >/dev/null || { echo "::error::/healthz not open" >&2; exit 1; }
+          curl -sf localhost:18080/metrics >/dev/null || { echo "::error::/metrics not open" >&2; exit 1; }
+          # credentials from the documented Secret (base64 of the doc values)
+          user=$(kubectl get secret fscache-auth -o jsonpath='{.data.username}' | base64 -d)
+          pass=$(kubectl get secret fscache-auth -o jsonpath='{.data.password}' | base64 -d)
+          # unauthenticated cache request -> 401
+          code=$(curl -s -o /dev/null -w '%{http_code}' localhost:18080/k)
+          [ "$code" = "401" ] || { echo "::error::unauthenticated cache request returned ${code}, want 401" >&2; exit 1; }
+          # authenticated round-trip
+          curl -sf -u "$user:$pass" -X PUT --data-binary 'k8s-bytes' localhost:18080/acc -o /dev/null
+          got=$(curl -sf -u "$user:$pass" localhost:18080/acc)
+          [ "$got" = "k8s-bytes" ] || { echo "::error::authenticated round-trip failed (got '${got}')" >&2; exit 1; }
+          echo "REQ-DEPLOY-003-AC1: manifests applied verbatim; pod Ready; smoke checks pass"
+
+      - name: report the AC this stage asserted
+        id: results
+        run: echo 'results=[{"ac":"REQ-DEPLOY-003-AC1","result":"pass"}]' >> "$GITHUB_OUTPUT"

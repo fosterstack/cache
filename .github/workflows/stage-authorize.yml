@@ -66,14 +66,27 @@ jobs:
           set -euo pipefail
           : > /tmp/verified-statements.jsonl
 
+          # F10: the durable log index lives in the verified BUNDLE, not
+          # at .verificationResult.tlogEntries. Extract it from the real
+          # shape and fail if a mandatory statement has none.
           record() { # label, verify-output-json
-            jq -c --arg label "$1" \
+            li=$(jq -r '.[0].attestation.bundle.verificationMaterial.tlogEntries[0].logIndex // .[0].verificationResult.signature.certificate.transparencyLogEntries[0].logIndex // empty' <<<"$2")
+            if [ -z "$li" ]; then
+              echo "::error::verified statement '$1' has no transparency-log index — refusing to record an unverifiable reference" >&2
+              exit 1
+            fi
+            jq -c --arg label "$1" --arg li "$li" \
               '.[0] | {label: $label,
                        predicate_type: .verificationResult.statement.predicateType,
-                       log_index: (.verificationResult.tlogEntries[0].logIndex // null)}' \
+                       log_index: $li}' \
               <<<"$2" >> /tmp/verified-statements.jsonl
           }
 
+          # F08: every verified statement must NAME the admitted commit
+          # (its predicate .sha, when present, must equal GITHUB_SHA) and,
+          # for digest-subject predicates, the digest being authorized.
+          # vrf enforces the sha binding; enforce_verdict/enforce_digest
+          # add typed-content policy on top.
           vrf() { # subject, predicate-type, signer-workflow-file, label
             out=$(gh attestation verify "$1" \
               --repo "${GITHUB_REPOSITORY}" \
@@ -81,7 +94,13 @@ jobs:
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/$3" \
               --format json) \
               || { echo "::error::graph verification failed: $4 ($2 by $3 on $1)" >&2; exit 1; }
+            psha=$(jq -r '.[0].verificationResult.statement.predicate.sha // empty' <<<"$out")
+            if [ -n "$psha" ] && [ "$psha" != "${GITHUB_SHA}" ]; then
+              echo "::error::$4 predicate names source ${psha}, not the admitted ${GITHUB_SHA}" >&2
+              exit 1
+            fi
             record "$4" "$out"
+            printf '%s' "$out"
           }
 
           # 1. source admission — and it must admit THIS commit and tag
@@ -112,9 +131,9 @@ jobs:
               || { echo "::error::build provenance missing for $f" >&2; exit 1; }
           done
           vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
-            https://fosterstack.com/attestations/build/v1 stage-build.yml build
+            https://fosterstack.com/attestations/build/v1 stage-build.yml build >/dev/null
           vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
-            https://slsa.dev/provenance/v1 stage-build.yml build-provenance
+            https://slsa.dev/provenance/v1 stage-build.yml build-provenance >/dev/null
 
           # 3. per-digest: image-build, reproducibility, every scanner, acceptance
           scanners=$(jq -r '.scanners[]' .github/policy/scanners.json)
@@ -122,13 +141,18 @@ jobs:
           for v in production debug fips; do
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
-            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}"
-            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}"
-            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}"
+            ib=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}")
+            # the image-build predicate must name THIS digest as the variant's index
+            got=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$ib")
+            [ "$got" = "$d" ] || { echo "::error::image-build:${v} predicate names ${got}, authorizing ${d}" >&2; exit 1; }
+            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}" >/dev/null
+            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}" >/dev/null
             for s in $scanners; do
-              vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}"
+              sc=$(vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}")
+              verdict=$(jq -r '.[0].verificationResult.statement.predicate.verdict // "missing"' <<<"$sc")
+              [ "$verdict" = "pass" ] || { echo "::error::scan-${s}:${v} verdict is ${verdict}, not pass" >&2; exit 1; }
             done
-            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}"
+            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}" >/dev/null
           done
           echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
 
@@ -144,8 +168,11 @@ jobs:
             '{
               statement: ("digests approved for " + $tag),
               tag: $tag, sha: $sha, index_digests: $digests,
-              verified_statements: $statements[0]
+              verified_statements: $statements
             }' > /tmp/authorization-predicate.json
+          nstmt=$(jq '.verified_statements | length' /tmp/authorization-predicate.json)
+          echo "authorization records ${nstmt} verified statements"
+          [ "$nstmt" -ge 10 ] || { echo "::error::only ${nstmt} statements in the authorization inventory — the graph is incomplete" >&2; exit 1; }
           for v in production debug fips; do
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             echo "${d#sha256:}  cache-candidates-${v}"
