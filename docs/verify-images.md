@@ -86,9 +86,7 @@ reproducibility, one scan verdict per scanner, acceptance — and its
 predicate body lists the Rekor log index of everything it checked.
 Pinning `--signer-workflow` is what makes this "signed by the
 authorization stage" rather than merely "signed by something in this
-repo." **These chain predicates exist for releases built by the new
-chain (v0.2.0 and later);** v0.1.0 carries only the image signature and
-SLSA provenance shown above.
+repo." **These chain predicates exist for releases built by the new chain (v0.2.0 and later); the previous release carries only the image signature and SLSA provenance shown above.** <!-- pinned: historical -->
 
 `gh attestation verify` reads GitHub's attestation API and therefore
 needs a token in the environment (`GH_TOKEN` or `gh auth login`) even
