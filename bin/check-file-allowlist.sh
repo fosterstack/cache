@@ -30,7 +30,7 @@ ALLOW_PATTERNS=(
   '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
-  '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml)$'
+  '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
 
   # Image-assembly Dockerfiles (release chain stage 3): COPY-only, FROM
   # pinned image:tag@sha256, watched by Dependabot's docker ecosystem.

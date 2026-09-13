@@ -1,0 +1,19 @@
+# Mutation-testing configuration (test-strategy.md §6). Tool: gremlins
+# (github.com/go-gremlins/gremlins), chosen over go-mutesting for its
+# per-mutant coverage-guided execution (it only runs mutants on covered
+# code, so a run is bounded by coverage rather than the whole tree) and
+# its typed mutator set. Results are ADVISORY: the mutation score is
+# published beside statement coverage, not gated, per §6 ("advisory at
+# first, gated once the baseline is known").
+unleash:
+  # Only mutate code the tests execute; with 100% statement coverage this
+  # is the whole product, but it keeps the run honest if coverage regresses.
+  coverage: true
+  # A generous per-mutant timeout: a mutant that makes a test loop must be
+  # counted as killed-by-timeout, not as a runner flake.
+  timeout-coefficient: 3
+  threshold:
+    # Advisory: efficacy/coverage are reported, never fail the run. When
+    # the baseline is agreed the owner sets these to gate.
+    efficacy: 0
+    mutant-coverage: 0
