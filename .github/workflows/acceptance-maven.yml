@@ -24,6 +24,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release-chain mode (design §2 Stage 5): the chain calls this suite
+  # with the candidate image digest; the server under test is then the
+  # exact candidate, not a from-source build.
+  workflow_call:
+    inputs:
+      image-ref:
+        description: 'candidate image reference (@sha256) to run the server from; empty = build from source'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      results:
+        description: 'JSON list of the AC IDs this suite asserted, with results'
+        value: ${{ jobs.acceptance-maven.outputs.results }}
 
 permissions:
   contents: read
@@ -37,6 +51,8 @@ jobs:
   acceptance-maven:
     name: acceptance-maven
     runs-on: ubuntu-latest
+    outputs:
+      results: ${{ steps.results.outputs.results }}
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +78,7 @@ jobs:
           grep version bench/maven-sample/.mvn/extensions.xml
 
       - name: build fscache and start it WITH Basic Auth
+        if: inputs.image-ref == ''
         run: |
           CGO_ENABLED=0 go build -o /tmp/fscache-mvn ./cmd/fscache
           FSCACHE_ADDR=:18098 FSCACHE_DATA_DIR=/tmp/fscache-mvn-data \
@@ -71,6 +88,21 @@ jobs:
             curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
           done
           echo "server never became healthy" >&2; exit 1
+
+      - name: start the exact candidate image WITH Basic Auth (release-chain mode)
+        if: inputs.image-ref != ''
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          docker run -d --name fscache-mvn-acc -p 127.0.0.1:18098:8080 \
+            -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \
+            '${{ inputs.image-ref }}'
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
+          done
+          echo "candidate image never became healthy" >&2
+          docker logs fscache-mvn-acc >&2 || true
+          exit 1
 
       - name: write settings.xml credential sets
         run: |
@@ -177,6 +209,13 @@ jobs:
           echo "stored uploads before=${before_puts} after=${after_puts}"
           [ "${after_puts}" -eq "${before_puts}" ] \
             || { echo "::error::unauthenticated runs stored entries on the server" >&2; exit 1; }
+
+      # Reached only when every assertion above passed (matrix legs
+      # report identical results; last writer wins, harmlessly).
+      - name: report the ACs this suite asserted
+        id: results
+        run: |
+          echo 'results=[{"ac":"REQ-MAVEN-001-AC1","result":"pass"},{"ac":"REQ-MAVEN-001-AC2","result":"pass"},{"ac":"REQ-EVICT-002-AC4","result":"pass"}]' >> "$GITHUB_OUTPUT"
 
       - name: stop fscache
         if: always()
