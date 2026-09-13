@@ -53,7 +53,7 @@ func TestFIPSNoteIsTruthfulPerModeAndModule(t *testing.T) {
 	}{
 		{
 			name: "validated build, mode on",
-			info: Info{FIPS140: true, FIPSModule: "v1.0.0"},
+			info: Info{FIPS140: true, FIPSModule: "v1.0.0-c2097c7c"},
 			want: "active (Go validated module v1.0.0, CMVP cert #5247)",
 		},
 		{
@@ -63,7 +63,7 @@ func TestFIPSNoteIsTruthfulPerModeAndModule(t *testing.T) {
 		},
 		{
 			name: "validated module linked, mode disabled",
-			info: Info{FIPS140: false, FIPSModule: "v1.0.0"},
+			info: Info{FIPS140: false, FIPSModule: "v1.0.0-c2097c7c"},
 			want: "off (validated module v1.0.0 linked, mode disabled at runtime)",
 		},
 		{

@@ -219,6 +219,88 @@ jobs:
           [ "${after_puts}" -eq "${before_puts}" ] \
             || { echo "::error::unauthenticated runs stored entries on the server" >&2; exit 1; }
 
+      # ── REQ-EVICT-002-AC4 ────────────────────────────────────────────
+      # Same shape as the Gradle AC3 scenario: one module output larger
+      # than the cap; the build completes twice, the oversized archive is
+      # 413'd with the documented header, the small module still caches.
+      - name: start a capped server (source mode)
+        if: inputs.image-ref == ''
+        run: |
+          set -euo pipefail
+          FSCACHE_ADDR=:18099 FSCACHE_DATA_DIR=/tmp/fscache-mvn-capped \
+            FSCACHE_USERNAME=mvn FSCACHE_PASSWORD=acceptance-secret \
+            FSCACHE_MAX_BYTES=262144 /tmp/fscache-mvn & echo $! > /tmp/fscache-mvn-capped.pid
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
+          done
+          echo "capped server never became healthy" >&2; exit 1
+
+      - name: start a capped candidate (release-chain mode)
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          docker run -d --name fscache-mvn-capped -e FSCACHE_MAX_BYTES=262144 \
+            -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \
+            -p 127.0.0.1:18099:8080 "${IMAGE_REF}"
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18099/healthz && exit 0; sleep 0.5
+          done
+          echo "capped candidate never became healthy" >&2
+          docker logs fscache-mvn-capped >&2 || true
+          exit 1
+
+      - name: REQ-EVICT-002-AC4 — oversized module output never caches, the build never cares
+        run: |
+          set -euo pipefail
+          # An incompressible 512 KiB resource makes the app module's cache
+          # archive exceed the 256 KiB cap even after the cache's gzip; the
+          # lib module stays small and caches normally.
+          for copy in a b; do
+            cp -r bench/maven-sample "/tmp/mvn-capped-${copy}"
+            rm -rf "/tmp/mvn-capped-${copy}/lib/target" "/tmp/mvn-capped-${copy}/app/target"
+            mkdir -p "/tmp/mvn-capped-${copy}/app/src/main/resources"
+            head -c 524288 /dev/urandom > "/tmp/mvn-capped-${copy}/app/src/main/resources/bench-large.bin"
+          done
+          run_build() { # dir, cache-location
+            (cd "$1" && mvn -B -q -s /tmp/m2-good/settings.xml verify \
+              -Dmaven.build.cache.location="$2" \
+              -Dmaven.build.cache.remote.url=http://localhost:18099/maven \
+              -Dmaven.build.cache.remote.save.enabled=true)
+          }
+          run_build /tmp/mvn-capped-a /tmp/mvn-bc-capped-a \
+            || { echo "::error::first capped build failed - an oversized output must be a cache miss, never a build failure" >&2; exit 1; }
+          run_build /tmp/mvn-capped-b /tmp/mvn-bc-capped-b \
+            || { echo "::error::second capped build failed" >&2; exit 1; }
+          # Other outputs (the lib module) still cache remotely.
+          curl -s -u mvn:acceptance-secret localhost:18099/metrics > /tmp/mvn-capped-metrics.txt
+          put201=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/mvn-capped-metrics.txt)
+          [ "${put201:-0}" -ge 1 ] || { echo "::error::no entry was stored - other modules must still cache" >&2; exit 1; }
+          # The app module's oversized archive is NOT remotely cached: the
+          # extension keeps only a local/ copy for an output the remote
+          # refused (Maven client-side-skips or falls back on the 413,
+          # rather than always surfacing a server 413 the way Gradle does).
+          if find /tmp/mvn-capped-a -path '*/app/*/fscache/*.jar' | grep -q .; then
+            echo "::error::the oversized app archive was remotely cached despite the cap" >&2; exit 1
+          fi
+          # The rejection MECHANISM, probed directly and unconditionally.
+          head -c 524288 /dev/urandom > /tmp/mvn-oversized-probe.bin
+          hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT \
+            --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)
+          grep -q '^HTTP/[0-9.]* 413' <<<"$hdr" || { echo "::error::oversized probe was not 413" >&2; exit 1; }
+          grep -qi '^X-FSCache-Reject: entry-exceeds-cache-cap' <<<"$hdr" \
+            || { echo "::error::413 lacks the X-FSCache-Reject: entry-exceeds-cache-cap header" >&2; exit 1; }
+          code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I http://localhost:18099/maven/oversizedprobe)
+          [ "$code" = "404" ] || { echo "::error::rejected entry is retrievable (${code}) - it was stored" >&2; exit 1; }
+          echo "REQ-EVICT-002-AC4: both builds succeeded; oversized output uncached (local-only); reject mechanism verified"
+
+      - name: stop the capped server
+        if: always()
+        run: |
+          kill "$(cat /tmp/fscache-mvn-capped.pid)" 2>/dev/null || true
+          docker rm -f fscache-mvn-capped 2>/dev/null || true
+
       # Reached only when every assertion above passed (matrix legs
       # report identical results; last writer wins, harmlessly).
       - name: report the ACs this suite asserted

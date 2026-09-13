@@ -8,6 +8,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,7 +160,34 @@ func (c *Cache) Close() error {
 // returned: a failed eviction pass must never fail the write that
 // triggered it (writes fail safe; the cache degrades toward "too big",
 // never toward "lost the client's data").
+// ErrEntryTooLarge reports a PUT whose entry exceeds the configured
+// cache cap (REQ-EVICT-002): the entry can never live in the cache, so
+// it is rejected up front - nothing stored, nothing evicted - instead
+// of being written and then churning every resident entry out.
+var ErrEntryTooLarge = errors.New("cache: entry exceeds the configured cache cap")
+
+// capReader fails the read with ErrEntryTooLarge once more than limit
+// bytes have been consumed, so a chunked or mis-declared upload is
+// stopped at the cap rather than trusted for its Content-Length.
+type capReader struct {
+	r     io.Reader
+	limit int64
+	read  int64
+}
+
+func (cr *capReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.read += int64(n)
+	if cr.read > cr.limit {
+		return n, ErrEntryTooLarge
+	}
+	return n, err
+}
+
 func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error) {
+	if c.maxBytes > 0 {
+		r = &capReader{r: r, limit: c.maxBytes}
+	}
 	n, err := c.blobs.Put(key, r)
 	if err != nil {
 		return 0, err

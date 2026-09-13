@@ -122,13 +122,22 @@ jobs:
           echo "fips build:      ${p_fips}"
           echo "standard:        ${p_std}"
           echo "forced standard: ${p_forced}"
-          grep -q '^active' <<<"${p_fips}" || { echo "::error::fips build does not report active" >&2; exit 1; }
-          [ "${p_std}" = "off" ] || { echo "::error::standard build reports ${p_std}, want off" >&2; exit 1; }
-          # KNOWN DISCREPANCY (backlog: buildinfo FIPS label): the forced
-          # standard build currently over-claims the certificate. The
-          # adversarial MODULE check above is what actually distinguishes
-          # the builds; this step records the runtime report for all three
-          # configurations and fails only if the fips build itself lies.
+          # REQ-FIPS-002-AC1: every posture must be truthful, including
+          # the adversarial forced-standard case. The validated build
+          # names the module and certificate; the standard build is off;
+          # the forced-standard build reports mode-forced and must NEVER
+          # claim the validated module or certificate (the exact
+          # over-claim the Sep 10/12 reviews flagged, now fixed).
+          [ "${p_fips}" = "active (Go validated module v1.0.0, CMVP cert #5247)" ] \
+            || { echo "::error::fips build posture is ${p_fips}, want the validated-module line" >&2; exit 1; }
+          [ "${p_std}" = "off" ] \
+            || { echo "::error::standard build reports ${p_std}, want off" >&2; exit 1; }
+          [ "${p_forced}" = "active (fips140 mode forced at runtime; not the validated-module build)" ] \
+            || { echo "::error::forced-standard posture is ${p_forced} - it must not claim the validated module or certificate" >&2; exit 1; }
+          case "${p_forced}" in
+            *"cert #5247"*|*"validated module"*)
+              echo "::error::forced-standard build claims the certificate or validated module - REQ-FIPS-002 violation" >&2; exit 1 ;;
+          esac
 
       # REQ-PLAT-002 (index halves) + REQ-PLAT-003 + REQ-PLAT-004 + serve
       # traffic: assemble the production and debug images from these exact

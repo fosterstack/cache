@@ -265,6 +265,14 @@ func handleHead(w http.ResponseWriter, cfg Config, key string) {
 }
 
 func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
+	// REQ-EVICT-002 fast path: an entry that declares itself larger than
+	// the whole cache cap is refused before a byte is read. The cache
+	// layer's capped reader is the backstop for chunked or mis-declared
+	// bodies.
+	if cfg.MaxBytes > 0 && r.ContentLength > cfg.MaxBytes {
+		writeStoreError(w, cfg, cache.ErrEntryTooLarge, "PUT", key)
+		return
+	}
 	body := r.Body
 	if cfg.MaxBodyBytes > 0 {
 		body = http.MaxBytesReader(w, r.Body, cfg.MaxBodyBytes)
@@ -309,6 +317,12 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, blobstore.ErrInvalidKey):
 		http.Error(w, "invalid key", http.StatusBadRequest)
+	case errors.Is(err, cache.ErrEntryTooLarge):
+		// Distinct from the body-limit 413 below: this entry can never
+		// live in the cache at any transfer size, and the header says so
+		// (REQ-EVICT-002-AC2 keeps the two rejections distinguishable).
+		w.Header().Set("X-FSCache-Reject", "entry-exceeds-cache-cap")
+		http.Error(w, "entry exceeds the configured cache cap", http.StatusRequestEntityTooLarge)
 	default:
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
