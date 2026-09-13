@@ -11,7 +11,8 @@ import (
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"FSCACHE_ADDR", "FSCACHE_DATA_DIR", "FSCACHE_MAX_BYTES",
-		"FSCACHE_MAX_BODY_BYTES", "FSCACHE_USERNAME", "FSCACHE_PASSWORD"} {
+		"FSCACHE_MAX_BODY_BYTES", "FSCACHE_USERNAME", "FSCACHE_PASSWORD",
+		"FSCACHE_RO_USERNAME", "FSCACHE_RO_PASSWORD"} {
 		t.Setenv(k, "")
 	}
 }
@@ -151,5 +152,68 @@ func TestUncleanShutdownMarkerLifecycle(t *testing.T) {
 	}
 	if err := clearMarker(m); err != nil {
 		t.Fatalf("clearing an absent marker must be a no-op, got %v", err)
+	}
+}
+
+// REQ-AUTH-005-AC3: the read-only pair is fail-closed configuration -
+// incomplete, unanchored (no read-write pair), or ambiguous (same
+// username) must stop the server before it serves anything.
+func TestLoadConfigReadOnlyCredentials(t *testing.T) {
+	clearEnv(t)
+
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantErr string
+	}{
+		{
+			name:    "ro username without ro password",
+			env:     map[string]string{"FSCACHE_USERNAME": "ci", "FSCACHE_PASSWORD": "pw", "FSCACHE_RO_USERNAME": "dev"},
+			wantErr: "FSCACHE_RO_USERNAME",
+		},
+		{
+			name:    "ro password without ro username",
+			env:     map[string]string{"FSCACHE_USERNAME": "ci", "FSCACHE_PASSWORD": "pw", "FSCACHE_RO_PASSWORD": "rpw"},
+			wantErr: "FSCACHE_RO_USERNAME",
+		},
+		{
+			name:    "ro pair without read-write pair",
+			env:     map[string]string{"FSCACHE_RO_USERNAME": "dev", "FSCACHE_RO_PASSWORD": "rpw"},
+			wantErr: "FSCACHE_USERNAME",
+		},
+		{
+			name:    "ro username equals read-write username",
+			env:     map[string]string{"FSCACHE_USERNAME": "ci", "FSCACHE_PASSWORD": "pw", "FSCACHE_RO_USERNAME": "ci", "FSCACHE_RO_PASSWORD": "rpw"},
+			wantErr: "differ",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			_, err := loadConfig()
+			if err == nil {
+				t.Fatalf("loadConfig() = nil error, want error mentioning %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not mention %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+
+	// A complete, distinct configuration starts and carries both pairs.
+	clearEnv(t)
+	t.Setenv("FSCACHE_USERNAME", "ci")
+	t.Setenv("FSCACHE_PASSWORD", "pw")
+	t.Setenv("FSCACHE_RO_USERNAME", "dev")
+	t.Setenv("FSCACHE_RO_PASSWORD", "rpw")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() with a complete distinct pair: %v", err)
+	}
+	if cfg.roUsername != "dev" || cfg.roPassword != "rpw" {
+		t.Fatalf("read-only pair not carried: %+v", cfg)
 	}
 }

@@ -14,14 +14,61 @@
     "correct failure mode."
   ],
   "required_checks": [
-    { "context": "test", "integration_id": 15368 },
-    { "context": "lint", "integration_id": 15368 },
-    { "context": "gosec", "integration_id": 15368 },
-    { "context": "govulncheck", "integration_id": 15368 },
-    { "context": "analyze (go)", "integration_id": 15368 },
-    { "context": "allowlist", "integration_id": 15368 },
-    { "context": "dependency-review", "integration_id": 15368 },
-    { "context": "fips140-only", "integration_id": 15368 },
-    { "context": "acceptance-gradle", "integration_id": 15368 }
+    {
+      "context": "test",
+      "integration_id": 15368
+    },
+    {
+      "context": "lint",
+      "integration_id": 15368
+    },
+    {
+      "context": "gosec",
+      "integration_id": 15368
+    },
+    {
+      "context": "govulncheck",
+      "integration_id": 15368
+    },
+    {
+      "context": "analyze (go)",
+      "integration_id": 15368
+    },
+    {
+      "context": "allowlist",
+      "integration_id": 15368
+    },
+    {
+      "context": "dependency-review",
+      "integration_id": 15368
+    },
+    {
+      "context": "fips140-only",
+      "integration_id": 15368
+    },
+    {
+      "context": "acceptance-gradle",
+      "integration_id": 15368
+    },
+    {
+      "context": "acceptance-maven (1.2.0)",
+      "integration_id": 15368
+    },
+    {
+      "context": "acceptance-maven (1.2.3)",
+      "integration_id": 15368
+    },
+    {
+      "context": "requirements",
+      "integration_id": 15368
+    },
+    {
+      "context": "reproducibility",
+      "integration_id": 15368
+    },
+    {
+      "context": "coverage",
+      "integration_id": 15368
+    }
   ]
 }
