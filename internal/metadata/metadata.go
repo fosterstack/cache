@@ -17,6 +17,18 @@ import (
 
 var bucketName = []byte("entries")
 
+// now returns the current time. It is a package variable so tests can inject
+// a clock: encode's negative-timestamp check inside Touch is otherwise
+// unreachable, because the decoded size is already validated non-negative and
+// the real time.Now never predates the Unix epoch.
+var now = time.Now
+
+// openDB is bbolt.Open behind a package variable so tests can exercise Open's
+// bucket-initialization failure path, which requires a database that opens
+// successfully but rejects writes (e.g. one opened read-only) — a state the
+// exported Open signature cannot otherwise produce.
+var openDB = bbolt.Open
+
 // Entry is a snapshot of one key's bookkeeping record.
 type Entry struct {
 	Key        string
@@ -32,7 +44,7 @@ type Store struct {
 
 // Open opens (creating if necessary) a bbolt database at path.
 func Open(path string) (*Store, error) {
-	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 5 * time.Second})
+	db, err := openDB(path, 0o600, &bbolt.Options{Timeout: 5 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("metadata: open: %w", err)
 	}
@@ -93,7 +105,7 @@ func decodeSize(buf []byte) (int64, error) {
 // Record upserts a key's size and sets last-access to now. Call this on
 // every successful Put.
 func (s *Store) Record(key string, size int64) error {
-	val, err := encode(size, time.Now())
+	val, err := encode(size, now())
 	if err != nil {
 		return err
 	}
@@ -117,7 +129,7 @@ func (s *Store) Touch(key string) error {
 		if err != nil {
 			return err
 		}
-		val, err := encode(size, time.Now())
+		val, err := encode(size, now())
 		if err != nil {
 			return err
 		}

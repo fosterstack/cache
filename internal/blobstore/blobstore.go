@@ -48,6 +48,25 @@ const (
 	filePerm fs.FileMode = 0o600
 )
 
+// Test seams. Production behavior is identical (each is the plain os call
+// it names); tests override these to exercise error paths that cannot be
+// reached through the real filesystem: crypto/rand.Read never returns an
+// error on Go 1.24+, and fsync/close/fstat on a healthy local file — or
+// readdir/close on an open directory handle — have no portable fault
+// injection.
+var (
+	randRead   = rand.Read
+	fileSync   = (*os.File).Sync
+	fileClose  = (*os.File).Close
+	fileStat   = (*os.File).Stat
+	dirClose   = (*os.File).Close
+	readDirAll = func(f *os.File) ([]os.DirEntry, error) { return f.ReadDir(-1) }
+	// On some platforms (e.g. darwin's getattrlistbulk-backed ReadDir) the
+	// entries above carry their stat info eagerly, so DirEntry.Info cannot
+	// fail even for a file deleted mid-walk.
+	dirEntryInfo = os.DirEntry.Info
+)
+
 // Store is a content-addressed blob store rooted at a directory on disk.
 type Store struct {
 	root   *os.Root
@@ -143,10 +162,10 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("blobstore: write: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := fileSync(tmp); err != nil {
 		return 0, fmt.Errorf("blobstore: fsync: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
+	if err := fileClose(tmp); err != nil {
 		return 0, fmt.Errorf("blobstore: close temp file: %w", err)
 	}
 	if err := s.root.Rename(tmpRel, dest); err != nil {
@@ -169,7 +188,7 @@ func (s *Store) Get(key string) (io.ReadCloser, int64, error) {
 		}
 		return nil, 0, fmt.Errorf("blobstore: open: %w", err)
 	}
-	info, err := f.Stat()
+	info, err := fileStat(f)
 	if err != nil {
 		_ = f.Close()
 		return nil, 0, fmt.Errorf("blobstore: stat: %w", err)
@@ -212,7 +231,7 @@ func (s *Store) Root() string { return s.rootAt }
 
 func randomTempName() (string, error) {
 	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
+	if _, err := randRead(buf[:]); err != nil {
 		return "", err
 	}
 	return ".tmp-" + hex.EncodeToString(buf[:]), nil
@@ -232,8 +251,8 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 		if err != nil {
 			return fmt.Errorf("blobstore: walk open %q: %w", rel, err)
 		}
-		entries, err := f.ReadDir(-1)
-		closeErr := f.Close()
+		entries, err := readDirAll(f)
+		closeErr := dirClose(f)
 		if err != nil {
 			return fmt.Errorf("blobstore: walk read %q: %w", rel, err)
 		}
@@ -252,7 +271,7 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 				staleTemp = append(staleTemp, child)
 				continue
 			}
-			info, err := e.Info()
+			info, err := dirEntryInfo(e)
 			if err != nil {
 				return fmt.Errorf("blobstore: walk stat %q: %w", child, err)
 			}

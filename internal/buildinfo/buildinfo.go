@@ -36,10 +36,17 @@ type Info struct {
 	FIPSModule string
 }
 
+// readBuildInfo is a testability seam over debug.ReadBuildInfo. Under
+// `go test` the runtime always returns ok=true with a populated Main, so
+// the not-ok and empty-version paths below are unreachable without
+// overriding this variable. Production behavior is unchanged: nothing
+// outside the package's own tests reassigns it.
+var readBuildInfo = debug.ReadBuildInfo
+
 // Read returns the running binary's build information.
 func Read() Info {
 	info := Info{Version: "unknown", FIPS140: fips140.Enabled()}
-	bi, ok := debug.ReadBuildInfo()
+	bi, ok := readBuildInfo()
 	if !ok {
 		return info
 	}
