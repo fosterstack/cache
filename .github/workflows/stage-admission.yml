@@ -8,19 +8,28 @@ name: 'Stage: source admission'
 # commit is executed here — policy inputs (allowed signers, the pinned
 # web-flow key, the required-check list) are read from protected main,
 # never from the tag, because the tagged commit is the thing being
-# admitted. The stage admits a tag only when:
+# admitted. Tag-derived strings are consumed ONLY through environment
+# variables, never interpolated into shell text (audit F01), and the tag
+# must match the strict release-version syntax before anything else
+# looks at it. The stage admits a tag only when:
 #   - the ref is an annotated v* tag whose SSH signature verifies against
-#     .github/policy/allowed_signers as fetched from origin/main;
+#     .github/policy/allowed_signers as fetched from origin/main, with
+#     non-empty signer principal and key fingerprint extracted from the
+#     verifier's actual output format;
 #   - the tagged commit's signature verifies against that list OR against
 #     the pinned GitHub web-flow key (squash merges made in the GitHub UI
 #     are GPG-signed by GitHub, not by the owner);
 #   - the commit is an ancestor of origin/main;
-#   - the exact SHA has every required check green — the exact expected
-#     set from .github/policy/required-checks.json, matched by name AND
-#     the GitHub Actions integration id via the check-runs API, with the
-#     commit-status API consulted for any gate that reports as a status;
+#   - every required check is green with the required GitHub Actions
+#     integration id — push-scoped checks on the EXACT tagged SHA, and
+#     pull_request-scoped checks (which never run on main commits) on
+#     the head of the merged PR that produced this exact commit (audit
+#     F02). Legacy commit statuses NEVER satisfy an app-pinned check
+#     (audit F03); they are recorded as informational evidence only;
 #   - an approved requirements baseline exists for the version
-#     (requirements/releases/<tag>.yaml at the tagged commit).
+#     (requirements/releases/<tag>.yaml at the tagged commit), validated
+#     structurally — version match, boolean approval, real date — not by
+#     grepping for a line.
 # It then writes a canonical admission.json recording what it verified and
 # signs a source-admission predicate whose subject is that file's sha256.
 # The file travels to the build stage as a workflow artifact; the build
@@ -29,9 +38,10 @@ name: 'Stage: source admission'
 # re-querying the check-runs API downstream is race-prone; verifying the
 # signed file's digest proves the same thing without the race.)
 #
-# A refs/tags/v* ruleset (creation restricted to the owner, signed tags
-# required) is layered underneath as GitHub's promise — owner click, see
-# the PR that introduced this file. This check is the evidence; both.
+# The refs/tags/v* rulesets (see the integrated PR body: an immutability
+# ruleset with no bypass for updates/deletions, and a creation ruleset
+# with an owner bypass) are layered underneath as GitHub's promise. This
+# check is the evidence; both.
 
 on:
   workflow_call:
@@ -57,22 +67,34 @@ jobs:
       contents: read
       checks: read
       statuses: read
+      pull-requests: read # F02: locate the merged PR for PR-scoped checks
       id-token: write     # sign the source-admission predicate
       attestations: write
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - name: resolve tag and commit from the trusted event payload
+      - name: resolve and validate the tag from the trusted event payload
         id: resolve
+        # GITHUB_REF_NAME/GITHUB_SHA come from the runner environment, not
+        # from expression interpolation into shell text. The syntax gate
+        # rejects any ref that is not a strict release version BEFORE any
+        # other step consumes it — a Git-valid tag name like
+        # v';echo${IFS}pwned;# fails here without reaching a shell.
         run: |
           set -euo pipefail
           case "${GITHUB_REF}" in
-            refs/tags/v*) ;;
-            *) echo "::error::admission runs only for refs/tags/v* (got ${GITHUB_REF})" >&2; exit 1 ;;
+            refs/tags/*) ;;
+            *) echo "::error::admission runs only for tag pushes (got ${GITHUB_REF})" >&2; exit 1 ;;
           esac
-          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "${GITHUB_REF_NAME}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'; then
+            echo "::error::tag does not match the release version syntax vMAJOR.MINOR.PATCH[-rc.N]" >&2
+            exit 1
+          fi
+          {
+            echo "tag=${GITHUB_REF_NAME}"
+            echo "sha=${GITHUB_SHA}"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,106 +114,170 @@ jobs:
         id: tagsig
         run: |
           set -euo pipefail
-          TAG='${{ steps.resolve.outputs.tag }}'
-          [ "$(git cat-file -t "refs/tags/${TAG}")" = "tag" ] \
-            || { echo "::error::${TAG} is not an annotated tag" >&2; exit 1; }
+          [ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag" ] \
+            || { echo "::error::${GITHUB_REF_NAME} is not an annotated tag" >&2; exit 1; }
           git config gpg.ssh.allowedSignersFile /tmp/policy/allowed_signers
-          git verify-tag "${TAG}"
-          principal=$(git verify-tag --raw "${TAG}" 2>&1 | awk '/GOODSIG/ {print $3; exit}')
-          fpr=$(git verify-tag --raw "${TAG}" 2>&1 | awk '/GOODSIG/ {print $2; exit}')
-          echo "principal=${principal}" >> "$GITHUB_OUTPUT"
-          echo "fingerprint=${fpr}" >> "$GITHUB_OUTPUT"
-          echo "tag ${TAG} signed by ${principal} (${fpr})"
+          git verify-tag "${GITHUB_REF_NAME}"
+          # git's SSH verification reports:
+          #   Good "git" signature for <principal> with <type> key SHA256:<fp>
+          # (probed against a real owner-key-signed tag; there is no
+          # GPG-style GOODSIG line for SSH signatures).
+          line=$(git verify-tag "${GITHUB_REF_NAME}" 2>&1 | grep '^Good "git" signature for ' || true)
+          principal=$(sed -n 's/^Good "git" signature for \([^ ]*\) with .* key \(SHA256:[^ ]*\)$/\1/p' <<<"$line")
+          fpr=$(sed -n 's/^Good "git" signature for \([^ ]*\) with .* key \(SHA256:[^ ]*\)$/\2/p' <<<"$line")
+          if [ -z "$principal" ] || [ -z "$fpr" ]; then
+            echo "::error::tag signature verified but signer metadata could not be extracted — refusing to admit with empty evidence" >&2
+            exit 1
+          fi
+          {
+            echo "principal=${principal}"
+            echo "fingerprint=${fpr}"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag ${GITHUB_REF_NAME} signed by ${principal} (${fpr})"
 
       - name: verify the tagged commit signature (owner SSH key or pinned web-flow key)
         id: commitsig
         run: |
           set -euo pipefail
-          SHA='${{ steps.resolve.outputs.sha }}'
-          if git verify-commit "${SHA}" 2>/dev/null; then
+          if git verify-commit "${GITHUB_SHA}" 2>/dev/null; then
             echo "signer=owner-ssh" >> "$GITHUB_OUTPUT"
-            echo "commit ${SHA}: valid SSH signature from the allowed-signers list"
+            echo "commit ${GITHUB_SHA}: valid SSH signature from the allowed-signers list"
             exit 0
           fi
           GNUPGHOME=$(mktemp -d); export GNUPGHOME
           gpg --quiet --import /tmp/policy/github-web-flow.gpg
-          git -c gpg.format=openpgp verify-commit "${SHA}" 2>/dev/null \
-            || { echo "::error::commit ${SHA} signature verifies against neither the allowed-signers list nor the pinned web-flow key" >&2; exit 1; }
-          keyid=$(git log -1 --format='%GK' "${SHA}")
+          git -c gpg.format=openpgp verify-commit "${GITHUB_SHA}" 2>/dev/null \
+            || { echo "::error::commit ${GITHUB_SHA} signature verifies against neither the allowed-signers list nor the pinned web-flow key" >&2; exit 1; }
+          keyid=$(git log -1 --format='%GK' "${GITHUB_SHA}")
           gpg --list-keys --with-colons | grep -Eq "^(pub|sub):.*:${keyid}:" \
-            || { echo "::error::commit ${SHA} signed by ${keyid}, which is not in the pinned web-flow keyring" >&2; exit 1; }
+            || { echo "::error::commit ${GITHUB_SHA} signed by ${keyid}, which is not in the pinned web-flow keyring" >&2; exit 1; }
           echo "signer=github-web-flow:${keyid}" >> "$GITHUB_OUTPUT"
-          echo "commit ${SHA}: valid GPG signature from pinned web-flow key ${keyid}"
+          echo "commit ${GITHUB_SHA}: valid GPG signature from pinned web-flow key ${keyid}"
 
       - name: the tagged commit must be on main
         run: |
           set -euo pipefail
-          git merge-base --is-ancestor '${{ steps.resolve.outputs.sha }}' origin/main \
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main \
             || { echo "::error::tagged commit is not an ancestor of origin/main" >&2; exit 1; }
 
-      - name: every required check green on the exact SHA (check-runs AND statuses)
+      # F02/F03: two evidence classes, no status fallback.
+      #   scope=push          -> the check ran on the EXACT tagged SHA.
+      #   scope=pull_request  -> the check never runs on main commits;
+      #     evidence is the merged PR whose squash produced exactly this
+      #     SHA (merge_commit_sha equality, base main, state merged),
+      #     with the check green on that PR's head, same app pin.
+      # An app-pinned check is satisfied ONLY by that app's check run;
+      # commit statuses are recorded as information, never as satisfaction.
+      - name: every required check green, app-pinned, per its scope
         id: checks
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          SHA='${{ steps.resolve.outputs.sha }}'
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?filter=latest" --paginate \
-            --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id}]' | jq -s 'add' > /tmp/check-runs.json
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status" \
-            --jq '[.statuses[] | {context, state, id}]' > /tmp/statuses.json
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest" --paginate \
+            --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id, head_sha}]' | jq -s 'add' > /tmp/sha-check-runs.json
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/status" \
+            --jq '[.statuses[] | {context, state, id}]' > /tmp/sha-statuses.json
+
+          # Locate the merged PR that produced this exact commit, for
+          # pull_request-scoped evidence. Fail closed if none matches.
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '[.[] | select(.merge_commit_sha == "'"${GITHUB_SHA}"'" and .base.ref == "main" and .merged_at != null) | {number, head_sha: .head.sha}]' \
+            > /tmp/merged-pr.json
+          pr_head=$(jq -r '.[0].head_sha // empty' /tmp/merged-pr.json)
+          pr_num=$(jq -r '.[0].number // empty' /tmp/merged-pr.json)
+          if [ -n "$pr_head" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${pr_head}/check-runs?filter=latest" --paginate \
+              --jq '[.check_runs[] | {name, conclusion, app_id: .app.id, id}]' | jq -s 'add' > /tmp/pr-check-runs.json
+          else
+            echo '[]' > /tmp/pr-check-runs.json
+          fi
+
           jq -c '.required_checks[]' /tmp/policy/required-checks.json | while read -r req; do
             ctx=$(jq -r '.context' <<<"$req")
             app=$(jq -r '.integration_id' <<<"$req")
-            hit=$(jq -r --arg c "$ctx" --argjson a "$app" \
-              '[.[] | select(.name == $c and .app_id == $a and .conclusion == "success")] | first | .id // empty' /tmp/check-runs.json)
-            if [ -n "$hit" ]; then
-              jq -n --arg c "$ctx" --arg id "$hit" '{context: $c, source: "check-run", id: ($id|tonumber), conclusion: "success"}'
-              continue
-            fi
-            shit=$(jq -r --arg c "$ctx" \
-              '[.[] | select(.context == $c and .state == "success")] | first | .id // empty' /tmp/statuses.json)
-            if [ -n "$shit" ]; then
-              jq -n --arg c "$ctx" --arg id "$shit" '{context: $c, source: "status", id: ($id|tonumber), conclusion: "success"}'
-              continue
-            fi
-            echo "::error::required check '${ctx}' (app ${app}) is not green on ${SHA}" >&2
-            exit 1
+            scope=$(jq -r '.scope // "push"' <<<"$req")
+            case "$scope" in
+              push)
+                hit=$(jq -r --arg c "$ctx" --argjson a "$app" \
+                  '[.[] | select(.name == $c and .app_id == $a and .conclusion == "success")] | first | .id // empty' /tmp/sha-check-runs.json)
+                [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the tagged commit" >&2; exit 1; }
+                jq -n --arg c "$ctx" --arg id "$hit" --arg sha "${GITHUB_SHA}" \
+                  '{context: $c, source: "check-run-on-tagged-sha", evidence_sha: $sha, id: ($id|tonumber), conclusion: "success"}'
+                ;;
+              pull_request)
+                [ -n "$pr_head" ] || { echo "::error::required check '${ctx}' is pull_request-scoped but no merged PR produced this exact commit" >&2; exit 1; }
+                hit=$(jq -r --arg c "$ctx" --argjson a "$app" \
+                  '[.[] | select(.name == $c and .app_id == $a and .conclusion == "success")] | first | .id // empty' /tmp/pr-check-runs.json)
+                [ -n "$hit" ] || { echo "::error::required check '${ctx}' (app ${app}) is not green on the head of merged PR #${pr_num}" >&2; exit 1; }
+                jq -n --arg c "$ctx" --arg id "$hit" --arg pr "$pr_num" --arg head "$pr_head" \
+                  '{context: $c, source: "check-run-on-merged-pr-head", pr: ($pr|tonumber), evidence_sha: $head, id: ($id|tonumber), conclusion: "success"}'
+                ;;
+              *)
+                echo "::error::unknown scope '${scope}' for required check '${ctx}' — policy error" >&2; exit 1
+                ;;
+            esac
           done | jq -s '.' > /tmp/verified-checks.json
           n_req=$(jq '.required_checks | length' /tmp/policy/required-checks.json)
           n_got=$(jq 'length' /tmp/verified-checks.json)
           [ "$n_got" = "$n_req" ] || { echo "::error::verified ${n_got} of ${n_req} required checks" >&2; exit 1; }
-          echo "all ${n_got} required checks green on ${SHA}"
+          echo "all ${n_got} required checks green (app-pinned, scope-aware)"
 
-      - name: an approved requirements baseline must exist for this version
+      - name: an approved requirements baseline must exist for this version (structural check)
         run: |
           set -euo pipefail
-          TAG='${{ steps.resolve.outputs.tag }}'
-          f="requirements/releases/${TAG}.yaml"
-          git show "${{ steps.resolve.outputs.sha }}:${f}" > /tmp/release-baseline.yaml \
+          f="requirements/releases/${GITHUB_REF_NAME}.yaml"
+          git show "${GITHUB_SHA}:${f}" > /tmp/release-baseline.yaml \
             || { echo "::error::${f} does not exist at the tagged commit — freeze the release baseline first" >&2; exit 1; }
-          grep -Eq '^\s*approved:\s*true\s*$' /tmp/release-baseline.yaml \
-            || { echo "::error::${f} exists but is not approved" >&2; exit 1; }
+          TAG="${GITHUB_REF_NAME}" python3 - <<'PY'
+          import datetime, os, sys, yaml
+          d = yaml.safe_load(open('/tmp/release-baseline.yaml'))
+          tag = os.environ['TAG']
+          errs = []
+          if not isinstance(d, dict):
+              errs.append('baseline is not a mapping')
+          else:
+              if d.get('version') != tag:
+                  errs.append(f"version is {d.get('version')!r}, tag is {tag!r}")
+              if d.get('approved') is not True:
+                  errs.append(f"approved is {d.get('approved')!r}, not boolean true")
+              try:
+                  datetime.date.fromisoformat(str(d.get('approved_on')))
+              except ValueError:
+                  errs.append(f"approved_on {d.get('approved_on')!r} is not a real date")
+              if not d.get('requirements_sha256'):
+                  errs.append('requirements_sha256 missing - the baseline must pin the requirements it froze')
+          if errs:
+              print('::error::release baseline invalid: ' + '; '.join(errs), file=sys.stderr)
+              sys.exit(1)
+          print(f"baseline {tag}: approved {d['approved_on']}, requirements {d['requirements_sha256'][:12]}")
+          PY
 
       - name: write canonical admission.json
         id: admission
+        env:
+          TAG_PRINCIPAL: ${{ steps.tagsig.outputs.principal }}
+          TAG_FPR: ${{ steps.tagsig.outputs.fingerprint }}
+          COMMIT_SIGNER: ${{ steps.commitsig.outputs.signer }}
         run: |
           set -euo pipefail
           jq -S -n \
-            --arg tag '${{ steps.resolve.outputs.tag }}' \
-            --arg sha '${{ steps.resolve.outputs.sha }}' \
-            --arg tag_principal '${{ steps.tagsig.outputs.principal }}' \
-            --arg tag_fpr '${{ steps.tagsig.outputs.fingerprint }}' \
-            --arg commit_signer '${{ steps.commitsig.outputs.signer }}' \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg tag_principal "${TAG_PRINCIPAL}" \
+            --arg tag_fpr "${TAG_FPR}" \
+            --arg commit_signer "${COMMIT_SIGNER}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --slurpfile checks /tmp/verified-checks.json \
+            --slurpfile statuses /tmp/sha-statuses.json \
             '{
               tag: $tag,
               sha: $sha,
               tag_signature: { principal: $tag_principal, key_fingerprint: $tag_fpr },
               commit_signature: $commit_signer,
               required_checks: $checks[0],
+              informational_statuses: $statuses[0],
               baseline: ("requirements/releases/" + $tag + ".yaml"),
               run: { id: ($run_id|tonumber), attempt: ($run_attempt|tonumber) }
             }' > admission.json

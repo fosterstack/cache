@@ -86,7 +86,7 @@ jobs:
           # trust-source rule as the release chain's allowed-signers fetch.
           expected=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
                        --jq '.content' | base64 -d \
-                     | jq '[.required_checks[]] | sort_by(.context)')
+                     | jq '[.required_checks[] | {context, integration_id}] | sort_by(.context)')
           echo "expected: $(jq -c '[.[].context]' <<<"${expected}")"
           echo "actual:   $(jq -c '[.[].context]' <<<"${actual}")"
           if [ "$(jq -cS . <<<"${actual}")" != "$(jq -cS . <<<"${expected}")" ]; then

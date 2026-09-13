@@ -40,6 +40,13 @@ jobs:
   acceptance-gradle:
     name: acceptance-gradle
     runs-on: ubuntu-latest
+    # F05: release mode pulls the deliberately private candidates package;
+    # a called workflow's unspecified permissions become NONE regardless
+    # of the caller's ceiling, so the job must ask for packages: read
+    # itself. Harmless in PR mode (unused; downgraded on forks).
+    permissions:
+      contents: read
+      packages: read
     outputs:
       results: ${{ steps.results.outputs.results }}
     steps:
@@ -73,10 +80,12 @@ jobs:
 
       - name: start the exact candidate image (release-chain mode)
         if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
         run: |
           set -euo pipefail
           echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
-          docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 '${{ inputs.image-ref }}'
+          docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 "${IMAGE_REF}"
           for _ in $(seq 1 20); do
             curl -sf http://localhost:18095/healthz && exit 0
             sleep 0.5
