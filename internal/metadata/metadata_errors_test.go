@@ -14,8 +14,12 @@ import (
 
 // putRaw writes raw bytes directly into the entries bucket, bypassing encode,
 // to simulate an on-disk corrupt record.
-func putRaw(t *testing.T, s *Store, key string, val []byte) {
+// putRaw injects raw bytes under a fixed key so decode-path tests can
+// surface a malformed record. The key is constant on purpose - callers
+// only need one corrupt entry present.
+func putRaw(t *testing.T, s *Store, val []byte) {
 	t.Helper()
+	const key = "bad"
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketName).Put([]byte(key), val)
 	})
@@ -151,7 +155,7 @@ func TestRecordRejectsNegativeSize(t *testing.T) {
 
 func TestTouchSurfacesCorruptRecord(t *testing.T) {
 	s := newTestStore(t)
-	putRaw(t, s, "bad", corruptRecord())
+	putRaw(t, s, corruptRecord())
 	if err := s.Touch("bad"); err == nil {
 		t.Fatal("Touch on corrupt record: want error, got nil")
 	}
@@ -186,7 +190,7 @@ func TestTotalSizeEmpty(t *testing.T) {
 func TestTotalSizeSurfacesCorruptRecord(t *testing.T) {
 	s := newTestStore(t)
 	mustRecord(t, s, "good", 10)
-	putRaw(t, s, "bad", corruptRecord())
+	putRaw(t, s, corruptRecord())
 	if _, err := s.TotalSize(); err == nil {
 		t.Fatal("TotalSize with corrupt record: want error, got nil")
 	}
@@ -206,7 +210,7 @@ func TestLeastRecentlyUsedEmpty(t *testing.T) {
 func TestLeastRecentlyUsedSurfacesCorruptRecord(t *testing.T) {
 	s := newTestStore(t)
 	mustRecord(t, s, "good", 10)
-	putRaw(t, s, "bad", corruptRecord())
+	putRaw(t, s, corruptRecord())
 	if _, err := s.LeastRecentlyUsed(5); err == nil {
 		t.Fatal("LeastRecentlyUsed with corrupt record: want error, got nil")
 	}
@@ -246,7 +250,7 @@ func TestAllReturnsEveryEntry(t *testing.T) {
 func TestAllSurfacesCorruptRecord(t *testing.T) {
 	s := newTestStore(t)
 	mustRecord(t, s, "good", 10)
-	putRaw(t, s, "bad", corruptRecord())
+	putRaw(t, s, corruptRecord())
 	if _, err := s.All(); err == nil {
 		t.Fatal("All with corrupt record: want error, got nil")
 	}

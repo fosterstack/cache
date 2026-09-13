@@ -6,10 +6,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-
-	"github.com/prometheus/client_golang/prometheus"
-
-	"github.com/fosterstack/cache/internal/cache"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +13,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/fosterstack/cache/internal/cache"
 )
 
 var (
