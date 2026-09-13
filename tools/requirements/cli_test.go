@@ -39,8 +39,8 @@ func withCapture(t *testing.T, fn func()) (stdout, stderr string, panicked any) 
 		fn()
 	}()
 	os.Stdout, os.Stderr = oldOut, oldErr
-	wOut.Close()
-	wErr.Close()
+	_ = wOut.Close()
+	_ = wErr.Close()
 	ob, _ := io.ReadAll(rOut)
 	eb, _ := io.ReadAll(rErr)
 	return string(ob), string(eb), panicked
@@ -103,7 +103,7 @@ func gitInitHere(t *testing.T) {
 
 // chdirTemp moves into a fresh temp directory that contains no
 // requirements file, restoring the previous directory on cleanup.
-func chdirTemp(t *testing.T) string {
+func chdirTemp(t *testing.T) {
 	t.Helper()
 	orig, err := os.Getwd()
 	if err != nil {
@@ -118,7 +118,6 @@ func chdirTemp(t *testing.T) string {
 			t.Fatal(err)
 		}
 	})
-	return dir
 }
 
 // richYAML is a schema-valid approved baseline exercising every render
