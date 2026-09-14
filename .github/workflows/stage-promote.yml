@@ -193,7 +193,13 @@ jobs:
               requirements_baseline: {path: $baseline, sha256: $baseline_sha},
               test_evidence: {path: "test-evidence/mappings.yaml", sha256: $evidence_sha},
               verified_statements: $statements[0],
-              ac_results: $acs[0]
+              ac_results: $acs[0],
+              publication_evidence: {
+                note: "Publication-phase ACs (REQ-REL-001-AC1, REQ-REL-002-AC1) are recorded in a SEPARATE signed publication attestation over these same image digests, produced after the anonymous customer-verification and every-tag anonymous-pull checks pass. This manifest is assembled and signed BEFORE those checks, so its ac_results shows them deferred; the durable pass record is the publication attestation. It is not mutated after signing.",
+                predicate_type: "https://fosterstack.com/attestations/publication/v1",
+                signer_workflow: (($workflow | split("@")[0]) | sub("^[^/]+/[^/]+/"; "") | sub("stage-promote.yml.*"; "stage-promote.yml")),
+                verify: "gh attestation verify oci://<image>@<digest> --repo \($workflow | split("/")[0:2] | join("/")) --predicate-type https://fosterstack.com/attestations/publication/v1 --signer-workflow \($workflow | split("/")[0:2] | join("/"))/.github/workflows/stage-promote.yml"
+              }
             }' > /tmp/release-manifest.json
           jq . /tmp/release-manifest.json >/dev/null
           cat /tmp/release-manifest.json
@@ -273,7 +279,12 @@ jobs:
         run: |
           set -euo pipefail
           DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG   # anonymous registry access
-          idflags=( --certificate-identity-regexp '^https://github\.com/fosterstack/cache/'
+          # B05: pin the RELEASE signer to the exact promotion workflow that
+          # cosign-signs the public digests (stage-promote.yml), not "any
+          # workflow in this repo". The SAN is
+          # https://github.com/<repo>/.github/workflows/stage-promote.yml@<ref>.
+          signer="^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-promote\.yml@"
+          idflags=( --certificate-identity-regexp "$signer"
                     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
           ghcr="ghcr.io/${{ github.repository_owner }}/cache"
           hub="docker.io/fosterstack/cache"
@@ -284,11 +295,20 @@ jobs:
                 || { echo "::error::anonymous cosign verify failed for ${reg}@${d}" >&2; exit 1; }
             done
           done
-          # NEGATIVE CONTROL: a wrong signer identity MUST be rejected.
-          if cosign verify "${ghcr}@$(jq -r '.production' <<<'${{ inputs.digests }}')" \
+          d0=$(jq -r '.production' <<<'${{ inputs.digests }}')
+          # NEGATIVE CONTROL 1: a different REPOSITORY must be rejected.
+          if cosign verify "${ghcr}@${d0}" \
                --certificate-identity-regexp '^https://github\.com/attacker/' \
                --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
-            echo "::error::cosign verify accepted a WRONG signer identity - the customer check is not sound" >&2; exit 1
+            echo "::error::cosign verify accepted a WRONG repository identity" >&2; exit 1
+          fi
+          # NEGATIVE CONTROL 2: a same-repo WRONG WORKFLOW must be rejected -
+          # the signature identifies the release (promotion) workflow, not
+          # merely "something in this repo".
+          if cosign verify "${ghcr}@${d0}" \
+               --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-image\.yml@" \
+               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
+            echo "::error::cosign verify accepted a same-repo WRONG workflow identity (stage-image.yml) - the signer pin is too loose" >&2; exit 1
           fi
           # Checksums bundle, verified anonymously (cosign verify-blob).
           cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" \
@@ -355,15 +375,12 @@ jobs:
           predicate-type: https://fosterstack.com/attestations/publication/v1
           predicate-path: /tmp/publication-predicate.json
 
-      - name: fold the publication outcomes into the release manifest and re-upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          jq '.publication_ac_results = (input | .publication_ac_results)' \
-            /tmp/release-manifest.json /tmp/publication-predicate.json > /tmp/release-manifest.final.json
-          mv /tmp/release-manifest.final.json /tmp/release-manifest.json
-          gh release upload "${GITHUB_REF_NAME}" /tmp/release-manifest.json --clobber
+      # B05: the manifest is NOT mutated after it was signed and attached
+      # as a registry referrer. The publication outcomes live only in the
+      # separate signed publication attestation over the same digests; the
+      # manifest already points a customer to it (publication_evidence).
+      # This keeps the signed asset, the registry referrer, and the
+      # published release asset byte-identical.
 
       - name: undraft — the release is public
         env:

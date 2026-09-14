@@ -143,11 +143,20 @@ cosign verify "ghcr.io/fosterstack/cache:${VER}" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 
 # GitHub's own attestation store — confirms which workflow run built it.
-# Needs a token (GH_TOKEN / gh auth login); pin the producing stage.
+# Needs a token (GH_TOKEN / gh auth login). Pin the producing workflow:
 gh attestation verify "oci://ghcr.io/fosterstack/cache:${VER}" \
   --repo fosterstack/cache \
   --signer-workflow fosterstack/cache/.github/workflows/stage-image.yml
 ```
+
+The `--signer-workflow` to pin is **version-scoped**: releases built by
+the current chain use `stage-image.yml`, while the earliest release used
+the old `release.yml` — pin whichever matches the `${VER}` you resolved. <!-- pinned: historical -->
+On a current-chain release the image signature is made by the promotion
+workflow (`stage-promote.yml`), and the publication-phase outcomes
+(anonymous verification and every-tag anonymous pull) are recorded in a
+separate signed attestation over the same digests — see
+[docs/verify-images.md](docs/verify-images.md#2b-verify-the-whole-chain).
 
 The `gh attestation verify` output includes a `Build workflow:` line naming
 the image-assembly stage (`.github/workflows/stage-image.yml`) at the tag

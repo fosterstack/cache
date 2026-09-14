@@ -64,7 +64,15 @@ jobs:
               if [ -s "$f" ]; then
                 echo
                 echo "### ${m} module"
-                jq -r '"- mutants: \(.mutants_total)  killed: \(.mutants_killed)  lived: \(.mutants_lived)  not-covered: \(.mutants_not_covered)\n- test efficacy: \(.test_efficacy)%  mutant coverage: \(.mutations_coverage)%"' "$f"
+                # gremlins' top-level mutants_total EXCLUDES timed-out and
+                # not-covered mutants, so report ALL per-mutant statuses
+                # from the file - a timeout is not a proven kill.
+                jq -r '
+                  ([.files[].mutations[].status] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $st
+                  | "- statuses: killed \($st.KILLED // 0), lived \($st.LIVED // 0), timed-out \($st["TIMED OUT"] // 0), not-covered \($st["NOT COVERED"] // 0), not-viable \($st["NOT VIABLE"] // 0)"
+                  + "\n- total mutants generated: \([.files[].mutations[]] | length)  (gremlins mutants_total, which excludes timeouts/not-covered: \(.mutants_total))"
+                  + "\n- test efficacy (advisory): \(.test_efficacy)%  mutant coverage: \(.mutations_coverage)%"
+                  + "\n- NOTE: timed-out mutants are NOT counted as proven kills; the score is advisory."' "$f"
               fi
             done
           } >> "$GITHUB_STEP_SUMMARY"
