@@ -71,6 +71,7 @@ ALLOW_PATTERNS=(
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
+  '^bin/check-workflow-permissions\.py$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

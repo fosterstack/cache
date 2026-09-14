@@ -29,6 +29,7 @@ permissions:
   packages: write
   checks: read
   statuses: read
+  pull-requests: read   # admission verifies pull_request-scoped checks on the merged-PR head (R01)
 
 jobs:
   admission:
