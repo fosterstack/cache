@@ -214,10 +214,14 @@ jobs:
           rc=0
           child_no=0
           : > /tmp/children-scanned.jsonl
-          # B04: `--fail-on negligible` makes grype exit nonzero (1) on a
-          # FINDING. Capture it with `|| code=$?` so errexit does not abort
-          # the loop; the per-child exit code + report path are recorded and
-          # the merge/classification happens once in bin/rescan-statement.py.
+          # B04: `--fail-on negligible` makes grype exit nonzero on a
+          # FINDING. Grype v0.98.0 returns 2 for a vulnerability match and
+          # 1 for an operational error (the reverse of its --help text;
+          # see cmd/grype/cli/cli.go at v0.98.0) - the exit-code contract
+          # is in bin/rescan-statement.py. Capture it with `|| code=$?` so
+          # errexit does not abort the loop; the per-child exit code +
+          # report path are recorded and the merge/classification happens
+          # once in bin/rescan-statement.py.
           while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))

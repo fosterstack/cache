@@ -19,6 +19,19 @@ sendmmsg. The return status is deliberately ignored - a kernel-rejected
 attempt (ENETUNREACH/EPERM/...) is still a forbidden attempt. Inbound
 server operations (bind/listen/accept/recv*) are not outbound initiation
 and are used only to confirm the trace is a real, usable strace.
+
+KNOWN LIMITATIONS (documented, not claimed fixed; owner-accepted for
+v0.2.0, tracked to the Chainguard/melange+apko CI rebuild):
+  - strace can ABBREVIATE a very large sendmmsg message array with "...",
+    in which case destinations past the abbreviation point are not in the
+    text and cannot be parsed. Running strace with a large -s / -v would
+    reduce this; the parser does not currently force it.
+  - thread-interleaving reassembly handles the common <unfinished>/
+    <... resumed> split but is not exhaustive for deeply interleaved -f
+    output.
+These are detector edge cases, not evidence of cache leakage: the clean
+cache passes and the connect and single-message sendmmsg canaries are
+rejected. Do not read this analyzer as exhaustive outbound detection.
 """
 import re
 import sys

@@ -153,15 +153,34 @@ child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
 assert_stmt "grype clean" grype "$mf" clean false 0
 
+# Grype v0.98.0: exit 2 = findings, 1 = operational error (B04g).
 mf=$D/m; : >"$mf"
-child "$mf" 1 linux/amd64 1 "$GRYPE_FIND"
+child "$mf" 1 linux/amd64 2 "$GRYPE_FIND"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
-assert_stmt "grype finding (amd64, exit 1)" grype "$mf" findings true 1
+assert_stmt "grype finding (amd64, exit 2)" grype "$mf" findings true 1
+
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
+child "$mf" 2 linux/arm64 2 "$GRYPE_FIND"
+assert_stmt "grype finding (arm64, exit 2)" grype "$mf" findings true 1
+
+# exit 1 is an OPERATIONAL error for grype, even with valid-shaped JSON.
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 1 "$GRYPE_CLEAN"
+child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
+assert_stmt "grype operational exit 1 (valid JSON)" grype "$mf" error false 0
 
 mf=$D/m; : >"$mf"
 child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
 child "$mf" 2 linux/arm64 137 "$GRYPE_CLEAN"
 assert_stmt "grype operational exit 137" grype "$mf" error false 0
+
+# finding (exit 2) on one child + operational failure (exit 1) on the
+# other: incomplete AND the finding is retained and notified.
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 2 "$GRYPE_FIND"
+child "$mf" 2 linux/arm64 1 "$GRYPE_CLEAN"
+assert_stmt "grype finding/2 + operational/1" grype "$mf" error true 1
 
 mf=$D/m; : >"$mf"
 child "$mf" 1 linux/amd64 1 "$GRYPE_ERROBJ"
