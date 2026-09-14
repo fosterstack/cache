@@ -6,6 +6,33 @@ name: 'Stage: no-outbound acceptance'
 # (its own wording says so).
 #
 # Design (audit R05 / B03 remediation):
+#  * The CANDIDATE ITSELF is syscall-traced from its very first instruction.
+#    Packet capture is blind to a prohibited connection the kernel rejects
+#    BEFORE a packet is emitted (e.g. connect() -> ENETUNREACH on the
+#    --internal network, or a filtered destination): no packet, nothing to
+#    capture, so it silently "passes". The audit proved exactly this false
+#    pass with a canary whose launcher does one connect([2001:db8::7]:80)
+#    (returns "network is unreachable") then execs the real cache binary; both
+#    candidate logs recorded the failed connect yet packet analysis reported
+#    zero violations. The fix: run the candidate UNDER a syscall tracer as its
+#    ENTRYPOINT, so tracing begins before the cache's first instruction and
+#    covers startup/load/idle across ALL threads and children (strace -f). The
+#    candidate image is distroless (no strace inside and, being a static-Go
+#    image, no libc loader either), so a STATICALLY-LINKED strace is built
+#    from pinned source and mounted in; the entrypoint is overridden to that
+#    strace, which then execs the real /usr/local/bin/fscache. This is
+#    race-free (the tracer is PID 1; the cache cannot run untraced) and needs
+#    no change to the candidate image. A connect()/sendto()/sendmsg() to any
+#    AF_INET/AF_INET6 destination that is not loopback or the netns's own
+#    address - INCLUDING a call that returned an error - is a VIOLATION (the
+#    AC forbids the ATTEMPT, not merely a completed connection), as is ANY
+#    name resolution (any datagram/connect to port 53). Process attribution is
+#    inherent: strace follows only the candidate's own process tree, so the
+#    in-netns loopback test client (curl in the netns-owner container, a
+#    separate process) is never conflated with candidate traffic. Both the
+#    packet check AND the candidate-syscall check must be clean for the AC to
+#    pass; a missing/empty/unparseable trace, or a tracer that fails to
+#    acquire or to exec in the libc-less image, fails the job (fail closed).
 #  * A netshoot "netns owner" holds the candidate's network namespace so a
 #    tcpdump sidecar can be attached and confirmed RUNNING before the
 #    candidate exists; the candidate is then started INTO that already
@@ -45,6 +72,14 @@ name: 'Stage: no-outbound acceptance'
 #    denied before a packet is emitted, so that last control is observed by
 #    syscall attribution (strace) while the packet monitor is shown blind to
 #    it - proving both the gap and the attribution method that closes it.
+#  * A candidate-trace analyzer self-test (control C) drives the SAME
+#    analyze_strace() used to judge the real candidate against two crafted
+#    fixtures: a "clean" trace (loopback/self connects, accept, bind) that
+#    must yield zero violations, and a "canary" trace containing the exact
+#    packetless connect([2001:db8::7]:80) = ENETUNREACH that fooled packet
+#    capture - which must be FLAGGED. Because the real candidate is judged by
+#    this same function, the audit's canary image would fail through the same
+#    path that passes the clean cache; the clean cache emits no such syscall.
 
 on:
   workflow_call:
@@ -88,8 +123,111 @@ jobs:
           set -euo pipefail
 
           NETSHOOT=nicolaka/netshoot:v0.13
+          # Builder for the static strace and a libc-less image used to PROVE
+          # the tracer is truly static (pin by digest in production hardening).
+          ALPINE=alpine:3.20
+          DISTROLESS=gcr.io/distroless/static-debian12:nonroot
+          # strace release built from source, statically linked, so it can be
+          # the entrypoint of the distroless (no libc) candidate image.
+          STRACE_VER=6.9
+          # SHA256 of https://strace.io/files/${STRACE_VER}/strace-${STRACE_VER}.tar.xz
+          # (official release host). Cross-verified: this tarball's sha512 equals
+          # Alpine 3.20's recorded strace-6.9 sha512, and its size (2,466,252 B)
+          # matches strace.io's published size. Empty => fail closed.
+          STRACE_SHA256='da189e990a82e3ca3a5a4631012f7ecfd489dab459854d82d8caf6a865c1356a'
+          # Host dirs: the static strace binary (mounted read-only into the
+          # candidate) and the per-scenario trace output (mounted read-write).
+          TRACE_BIN=/tmp/fstrace/bin
+          TRACE_OUT=/tmp/fstrace/out
+          # The candidate image's real entrypoint (what strace execs).
+          CANDIDATE_ENTRYPOINT=/usr/local/bin/fscache
 
           fail() { echo "::error::$*" >&2; exit 1; }
+
+          # ------------------------------------------------------------------
+          # get_static_strace
+          # Build a statically-linked strace from pinned, checksum-verified
+          # source in a pinned Alpine (musl) builder, write it to TRACE_BIN,
+          # and PROVE it executes with no libc present by running `strace -V`
+          # inside a distroless "static" image (the same class of image as the
+          # candidate). Any failure fails the job (fail closed): a tracer that
+          # cannot run in the candidate's environment would let the candidate
+          # run untraced, which is precisely the audited gap.
+          # ------------------------------------------------------------------
+          get_static_strace() {
+            rm -rf "$TRACE_BIN" "$TRACE_OUT"
+            mkdir -p "$TRACE_BIN" "$TRACE_OUT"
+            chmod 0777 "$TRACE_OUT"
+            [ -n "$STRACE_SHA256" ] || fail "STRACE_SHA256 is not pinned; refusing to build the syscall tracer from unverified source (fail closed). Pin the published checksum of strace-${STRACE_VER}.tar.xz."
+            docker run --rm -v "$TRACE_BIN":/out -e V="$STRACE_VER" -e SUM="$STRACE_SHA256" "$ALPINE" sh -euc '
+              apk add --no-cache build-base linux-headers curl xz >/dev/null
+              cd /tmp
+              curl -fsSLO "https://strace.io/files/${V}/strace-${V}.tar.xz"
+              echo "${SUM}  strace-${V}.tar.xz" | sha256sum -c -
+              tar -xf "strace-${V}.tar.xz"
+              cd "strace-${V}"
+              ./configure --disable-mpers LDFLAGS="-static -pthread" >/dev/null
+              make -j"$(nproc)" >/dev/null
+              if [ -x src/strace ]; then cp src/strace /out/strace; else cp strace /out/strace; fi
+              chmod 0755 /out/strace
+            ' || fail "static strace build failed (checksum mismatch or build error) - failing closed"
+            [ -s "$TRACE_BIN/strace" ] || fail "static strace binary not produced - failing closed"
+            # PROOF the tracer runs in a libc-less image (like the candidate):
+            # strace -V prints its version and exits 0 with no target. If the
+            # binary were dynamically linked this errors (no loader) and fails.
+            if ! docker run --rm -v "$TRACE_BIN":/trace:ro --entrypoint /trace/strace "$DISTROLESS" -V > /tmp/strace.ver 2>&1; then
+              cat /tmp/strace.ver >&2 || true
+              fail "the built strace did not execute in a libc-less distroless image - it is not usable as the candidate entrypoint (fail closed)"
+            fi
+            echo "static tracer ready: $(head -n1 /tmp/strace.ver)"
+          }
+
+          # ------------------------------------------------------------------
+          # analyze_strace <strace-file> <label> <own_ip> <own_ip6>
+          #
+          # Parse the CANDIDATE's own syscall trace. A VIOLATION is any
+          # connect()/sendto()/sendmsg() whose AF_INET/AF_INET6 destination is
+          # not an allowed EXACT address - INCLUDING calls that returned an
+          # error (ENETUNREACH/EPERM/ECONNREFUSED/...). The AC forbids the
+          # ATTEMPT, so return status is deliberately ignored. Name resolution
+          # (any such call to port 53) is a violation regardless of address.
+          # Allowed destinations are EXACTLY loopback (127.0.0.1 / ::1) and the
+          # netns's own IP (self); the in-netns test client reaches the server
+          # over loopback. bind/listen/accept/socket are ignored (a server
+          # binding its own address and accepting inbound is not an outbound
+          # attempt). Writes /tmp/<label>.sys.ext (flagged calls),
+          # /tmp/<label>.sys.dnscount and /tmp/<label>.sys.extcount. A missing,
+          # empty or unparseable trace fails the job (monitor failure).
+          # ------------------------------------------------------------------
+          analyze_strace() {
+            local sfile="$1" label="$2" own="$3" own6="$4"
+            local allowed
+            allowed="127.0.0.1 ::1 ${own}"
+            [ -n "$own6" ] && [ "$own6" != "invalid IP" ] && allowed="${allowed} ${own6}"
+            [ -s "$sfile" ] || { echo "::error::${label}: candidate syscall trace ${sfile} missing or empty (tracer failure)" >&2; return 1; }
+            awk -v allowed="$allowed" '
+              BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+              /connect\(|sendto\(|sendmsg\(/ {
+                if ($0 !~ /sa_family=AF_INET6?[,)]/) next   # only IPv4/IPv6 attempts
+                call = "connect"
+                if ($0 ~ /sendto\(/)  call = "sendto"
+                if ($0 ~ /sendmsg\(/) call = "sendmsg"
+                dst = ""
+                if (match($0, /inet_addr\("[0-9.]+"\)/)) {
+                  dst = substr($0, RSTART, RLENGTH); gsub(/inet_addr\("|"\)/, "", dst)
+                } else if (match($0, /inet_pton\(AF_INET6, "[0-9A-Fa-f:.]+"/)) {
+                  dst = substr($0, RSTART, RLENGTH); sub(/inet_pton\(AF_INET6, "/, "", dst); sub(/"$/, "", dst)
+                }
+                if (dst == "") next        # AF_INET(6) with no parseable literal
+                port = ""
+                if (match($0, /htons\([0-9]+\)/)) { port = substr($0, RSTART, RLENGTH); gsub(/htons\(|\)/, "", port) }
+                if (port == "53") { print "DNS " call " " dst ":" port; next }
+                if (dst in ok) next        # loopback / self - the only allowed path
+                print "OUT " call " " dst ":" port
+              }' "$sfile" > "/tmp/${label}.sys.ext" || { echo "::error::${label}: candidate trace parse failed" >&2; return 1; }
+            grep -c '^DNS ' "/tmp/${label}.sys.ext" | tr -d ' ' > "/tmp/${label}.sys.dnscount" || true
+            grep -c '^OUT ' "/tmp/${label}.sys.ext" | tr -d ' ' > "/tmp/${label}.sys.extcount" || true
+          }
 
           # ------------------------------------------------------------------
           # analyze_pcap <pcap> <label> <own_ip> <own_ip6>
@@ -219,7 +357,22 @@ jobs:
             start_stack "$label" "$net"
             # Start the candidate INTO the already-monitored netns (no -p: it
             # shares the owner's namespace). No host port is published anywhere.
-            docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" "$REF" >/dev/null
+            #
+            # The candidate runs UNDER the static strace as its ENTRYPOINT, so
+            # tracing starts before the cache's first instruction and follows
+            # every thread/child (-f). We trace network syscalls only (low
+            # overhead) with -yy (decode socket addresses) and -qq (quiet
+            # attach/exit noise), writing to a per-scenario file in the
+            # read-write TRACE_OUT mount; the read-only TRACE_BIN mount carries
+            # the tracer. strace then execs the real entrypoint. SYS_PTRACE and
+            # an unconfined seccomp/apparmor profile are required for ptrace.
+            # FSCACHE_* env is inherited unchanged (none is set here), so the
+            # cache runs identically to a bare `docker run "$REF"`.
+            docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" \
+              --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+              -v "$TRACE_BIN":/trace:ro -v "$TRACE_OUT":/out \
+              --entrypoint /trace/strace "$REF" \
+              -f -e trace=network -yy -qq -o "/out/${label}.strace" "$CANDIDATE_ENTRYPOINT" >/dev/null
             # ---- startup interval (capture already running) ----
             # The client runs INSIDE the shared netns, so it reaches the server
             # over loopback with no egress and no host port - identical on the
@@ -263,21 +416,46 @@ jobs:
             # ---- idle interval ----
             sleep 6
             # ---- freeze and analyze ----
+            # Stop the capture, then stop the candidate so strace detaches,
+            # flushes and closes its trace file before we read it. SIGTERM
+            # (docker stop) lets strace flush; -o output is line-oriented.
             freeze_capture "$label"
+            docker stop -t 15 "fscache-cand-${label}" >/dev/null 2>&1 || true
+            sleep 1
+            # (1) packet analysis (unchanged): sees emitted packets.
             analyze_pcap "/tmp/${label}.pcap" "$label" "$OWN_IP" "$OWN_IP6"
-            local dns ext
+            # (2) candidate syscall analysis: sees the ATTEMPT even when no
+            #     packet is emitted (the audited packetless-connect gap).
+            analyze_strace "$TRACE_OUT/${label}.strace" "$label" "$OWN_IP" "$OWN_IP6"
+            local dns ext sdns sext
             dns=$(cat "/tmp/${label}.dnscount")
             ext=$(cat "/tmp/${label}.extcount")
-            echo "${label}: allowed_exact={127.0.0.1, ::1, ${OWN_IP} (self)${OWN_IP6:+, ${OWN_IP6} (self6)}} dns_packets=${dns} non_allowed_outbound=${ext}"
+            sdns=$(cat "/tmp/${label}.sys.dnscount")
+            sext=$(cat "/tmp/${label}.sys.extcount")
+            echo "${label}: allowed_exact={127.0.0.1, ::1, ${OWN_IP} (self)${OWN_IP6:+, ${OWN_IP6} (self6)}} packet[dns=${dns} non_allowed_outbound=${ext}] syscall[dns=${sdns} non_allowed_attempts=${sext}]"
             teardown "$label"
+            # Both observers must be clean. Packet capture proves nothing was
+            # emitted; syscall attribution proves nothing was even ATTEMPTED
+            # (incl. attempts the kernel rejected before a packet - the false
+            # pass the audit demonstrated with connect([2001:db8::7]:80)).
             if [ "$dns" -ne 0 ]; then
-              echo "::error::${label}: candidate attempted name resolution (DNS)" >&2
+              echo "::error::${label}: candidate attempted name resolution (DNS) - seen on the wire" >&2
               cat "/tmp/${label}.dnsraw" >&2 || true
               return 1
             fi
             if [ "$ext" -ne 0 ]; then
-              echo "::error::${label}: candidate attempted an outbound connection (UDP/TCP) to a non-allowed address" >&2
+              echo "::error::${label}: candidate attempted an outbound connection (UDP/TCP) to a non-allowed address - seen on the wire" >&2
               cat "/tmp/${label}.ext" >&2 || true
+              return 1
+            fi
+            if [ "$sdns" -ne 0 ]; then
+              echo "::error::${label}: candidate made a name-resolution syscall (connect/sendto/sendmsg to :53)" >&2
+              grep '^DNS ' "/tmp/${label}.sys.ext" >&2 || true
+              return 1
+            fi
+            if [ "$sext" -ne 0 ]; then
+              echo "::error::${label}: candidate attempted an outbound connection syscall to a non-allowed address (attempt forbidden even if the kernel rejected it before a packet)" >&2
+              grep '^OUT ' "/tmp/${label}.sys.ext" >&2 || true
               return 1
             fi
           }
@@ -354,12 +532,45 @@ jobs:
             echo "control B: packet monitor non_allowed_outbound=$(cat /tmp/ctldenied.extcount) (blind); strace observed the connect():"
             grep -E 'connect\(.*203\.0\.113\.7' /tmp/ctldenied.strace | head -n 2 || true
             teardown ctldenied
+
+            echo "-- control C: candidate-trace analyzer self-test (clean passes, canary fails) --"
+            # Drive the SAME analyze_strace() that judges the real candidate
+            # against two crafted traces. This proves - without building the
+            # canary image in the workflow - that the audited packetless connect
+            # is caught by the candidate-trace path, while the clean cache's
+            # loopback/self/bind syscalls pass.
+            #
+            # Clean fixture: a connect to the server's own loopback listener, an
+            # inbound accept, and a bind to the wildcard address - all allowed;
+            # zero violations expected.
+            cat > /tmp/selfclean.strace <<'CLEAN'
+          connect(5<TCP:[127.0.0.1:0]>, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
+          accept4(7, {sa_family=AF_INET, sin_port=htons(40000), sin_addr=inet_addr("127.0.0.1")}, [16], SOCK_CLOEXEC) = 9
+          bind(4, {sa_family=AF_INET6, sin6_port=htons(8080), inet_pton(AF_INET6, "::", &sin6_addr), sin6_scope_id=0}, 28) = 0
+          CLEAN
+            analyze_strace /tmp/selfclean.strace selfclean 127.0.0.1 ::1
+            [ "$(cat /tmp/selfclean.sys.dnscount)" = 0 ] && [ "$(cat /tmp/selfclean.sys.extcount)" = 0 ] \
+              || fail "control C: analyzer flagged a CLEAN loopback/self/bind trace - the clean cache would false-fail"
+            # Canary fixture: the EXACT packetless attempt the audit used - a
+            # failed connect() to the IPv6 documentation address, returning
+            # ENETUNREACH. It must be flagged despite the error return and
+            # despite no packet ever leaving.
+            cat > /tmp/selfcanary.strace <<'CANARY'
+          connect(3, {sa_family=AF_INET6, sin6_port=htons(80), inet_pton(AF_INET6, "2001:db8::7", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network unreachable)
+          CANARY
+            analyze_strace /tmp/selfcanary.strace selfcanary 127.0.0.1 ::1
+            grep -q '^OUT connect 2001:db8::7:80$' /tmp/selfcanary.sys.ext \
+              || fail "control C: candidate-trace analyzer FAILED to flag the packetless canary connect([2001:db8::7]:80) - the audited false pass is not closed"
+            echo "control C: clean=0 violations; canary flagged: $(cat /tmp/selfcanary.sys.ext)"
           }
 
           docker network create fscache-open >/dev/null 2>&1 || true
           docker network create --internal fscache-denied >/dev/null 2>&1 || true
           docker network create fscache-nc-open >/dev/null 2>&1 || true
           docker network create --internal fscache-nc-denied >/dev/null 2>&1 || true
+
+          echo "== phase pre-0: build and prove the static candidate tracer =="
+          get_static_strace
 
           echo "== phase 0: negative controls (prove the monitor detects every branch) =="
           negative_controls
@@ -376,7 +587,7 @@ jobs:
             exit 1
           fi
 
-          echo "REQ-PRIV-001-AC1: monitor proven to catch DNS, non-DNS UDP and TCP SYN to non-allowed addresses (incl. denied-before-packet via syscall attribution); no DNS and no non-allowed outbound at startup, under load or idle in either policy; identical status codes and returned bytes across policies."
+          echo "REQ-PRIV-001-AC1: the candidate was syscall-traced from its first instruction (static strace as entrypoint, -f across all threads/children) AND packet-captured in both policies. Packet monitor proven to catch DNS, non-DNS UDP and TCP SYN to non-allowed addresses; the candidate-trace analyzer proven (control C) to flag the packetless connect([2001:db8::7]:80) that packet capture misses while passing the clean loopback/self path. No DNS and no non-allowed outbound - emitted OR merely attempted (incl. kernel-rejected before a packet) - at startup, under load or idle in either policy; identical status codes and returned bytes across policies."
 
       - name: retain capture and analysis evidence
         if: always()
@@ -392,6 +603,7 @@ jobs:
             /tmp/*.ext
             /tmp/*.strace
             /tmp/*.summary
+            /tmp/fstrace/out/*.strace
           if-no-files-found: warn
 
       - name: report the AC this stage asserted
