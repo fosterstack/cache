@@ -50,10 +50,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      contents: write     # create the draft release and upload assets
-      packages: write     # push public images, signatures, referrers
-      id-token: write     # cosign keyless signing
-      attestations: read
+      contents: write       # create the draft release and upload assets
+      packages: write       # push public images, signatures, referrers
+      id-token: write       # cosign keyless signing
+      attestations: write   # actions/attest signs the publication-outcomes predicate (B01)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
