@@ -138,15 +138,31 @@ jobs:
           echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
           ref="ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
           : > /tmp/children.txt
-          if docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/dev/null \
-             && jq -e '.manifests' /tmp/index.json >/dev/null 2>&1; then
+          # A FAILED or MALFORMED enumeration must REJECT the run (B04): a
+          # lost platform inventory must never be silently downgraded to a
+          # single-arch index scan. Only a VALID manifest that genuinely has
+          # no platform children falls back to "scan the index as itself".
+          if ! docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
+            echo "::error::could not inspect ${ref} to enumerate platform children — refusing to rescan on an unknown platform inventory" >&2
+            cat /tmp/inspect.err >&2 || true
+            exit 1
+          fi
+          if ! jq -e . /tmp/index.json >/dev/null 2>&1; then
+            echo "::error::imagetools inspect for ${ref} did not return valid JSON — refusing to guess the platform inventory" >&2
+            exit 1
+          fi
+          if jq -e '.manifests' /tmp/index.json >/dev/null 2>&1; then
+            # A multi-platform index: enumerate the real OS/arch children.
             jq -r --arg repo "ghcr.io/${{ github.repository_owner }}/cache" \
               '.manifests[] | select(.platform.os != "unknown")
                | "\(.platform.os)/\(.platform.architecture)\t\($repo)@\(.digest)"' \
               /tmp/index.json >> /tmp/children.txt
-          fi
-          # Fallback: a single-arch image (no children) is scanned as itself.
-          if [ ! -s /tmp/children.txt ]; then
+            if [ ! -s /tmp/children.txt ]; then
+              echo "::error::index ${ref} lists no usable platform children (all 'unknown') — refusing to rescan an empty inventory" >&2
+              exit 1
+            fi
+          else
+            # A valid single-arch image manifest (no child list): scan as itself.
             printf 'index\t%s\n' "$ref" >> /tmp/children.txt
           fi
           echo "children to scan:"; cat /tmp/children.txt
@@ -161,23 +177,47 @@ jobs:
         run: |
           set -euo pipefail
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
-          echo '[]' > /tmp/findings-raw.json
           : > /tmp/scanned-platforms.txt
           rc=0
+          op_fail=0
+          child_no=0
+          reports=()
+          # B04: a FINDING makes trivy exit nonzero (--exit-code 1). Capture
+          # that with `|| code=$?` so errexit does NOT abort the loop before
+          # the code is read, the platform is recorded, the next child is
+          # scanned, or the reports are merged. Every child is scanned.
           while IFS=$'\t' read -r platform ref; do
+            [ -n "$platform" ] || continue
+            child_no=$((child_no + 1))
+            out="/tmp/findings-child-${child_no}.json"
             echo "trivy: ${platform} ${ref}"
+            code=0
             trivy image --quiet --exit-code 1 \
               --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
               --vex "${TRIVY_VEX}" \
-              --format json --output "/tmp/findings-${platform//\//-}.json" \
-              "${ref}"; code=$?
+              --format json --output "$out" \
+              "${ref}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
             echo "${platform}" >> /tmp/scanned-platforms.txt
+            # A FINDING still yields a valid report (with vulnerabilities); an
+            # OPERATIONAL failure yields no valid report for this child.
+            if [ -s "$out" ] && jq empty "$out" 2>/dev/null; then
+              reports+=("$out")
+            else
+              echo "::warning::trivy produced no valid report for ${platform}" >&2
+              op_fail=1
+            fi
           done < /tmp/children.txt
           echo "$rc" > /tmp/scanner-rc
-          # merge per-child reports for the statement
-          jq -s 'add // []' /tmp/findings-*.json > /tmp/findings-raw.json 2>/dev/null || true
-          jq -s '{Results: (map(.Results // []) | add)}' /tmp/findings-*.json > /tmp/findings-merged.json 2>/dev/null && mv /tmp/findings-merged.json /tmp/findings-raw.json || true
+          echo "$op_fail" > /tmp/scanner-op-fail
+          # Merge ONLY the explicit per-child input files (never a glob that
+          # could slurp the aggregate output), so a finding in any child is
+          # present when the statement is written.
+          if [ "${#reports[@]}" -gt 0 ]; then
+            jq -s '{Results: (map(.Results // []) | add)}' "${reports[@]}" > /tmp/findings-raw.json
+          else
+            echo '{"Results":[]}' > /tmp/findings-raw.json
+          fi
           exit $rc
 
       # ---- grype (CLI: reliable version/db, by digest) -------------------
@@ -190,20 +230,43 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
           : > /tmp/scanned-platforms.txt
           rc=0
+          op_fail=0
+          child_no=0
+          reports=()
+          # B04: `--fail-on negligible` makes grype exit nonzero on a FINDING.
+          # Capture it with `|| code=$?` so errexit does not abort the loop —
+          # a grype finding is aggregated and classified as a finding, not
+          # dropped and misreported as an operational error.
           while IFS=$'\t' read -r platform ref; do
+            [ -n "$platform" ] || continue
+            child_no=$((child_no + 1))
+            out="/tmp/grype-child-${child_no}.json"
             echo "grype: ${platform} ${ref}"
             plat_arg=""
             case "$platform" in */*) plat_arg="--platform ${platform}";; esac
+            code=0
             # shellcheck disable=SC2086
             grype "registry:${ref}" $plat_arg \
               --fail-on negligible \
               --vex .vex/fosterstack-cache.openvex.json \
-              -o json --file "/tmp/grype-${platform//\//-}.json"; code=$?
+              -o json --file "$out" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
             echo "${platform}" >> /tmp/scanned-platforms.txt
+            if [ -s "$out" ] && jq empty "$out" 2>/dev/null; then
+              reports+=("$out")
+            else
+              echo "::warning::grype produced no valid report for ${platform}" >&2
+              op_fail=1
+            fi
           done < /tmp/children.txt
           echo "$rc" > /tmp/scanner-rc
-          jq -s '{matches: (map(.matches // []) | add)}' /tmp/grype-*.json > /tmp/findings-raw.json 2>/dev/null || echo '{"matches":[]}' > /tmp/findings-raw.json
+          echo "$op_fail" > /tmp/scanner-op-fail
+          # Merge ONLY the explicit per-child input files.
+          if [ "${#reports[@]}" -gt 0 ]; then
+            jq -s '{matches: (map(.matches // []) | add)}' "${reports[@]}" > /tmp/findings-raw.json
+          else
+            echo '{"matches":[]}' > /tmp/findings-raw.json
+          fi
           exit $rc
 
       # ---- snyk ----------------------------------------------------------
@@ -224,7 +287,16 @@ jobs:
           snyk container test \
             "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
             --org=fosterstack-admin --json-file-output=/tmp/findings-raw.json; echo "$?" > /tmp/scanner-rc
+          # B04: Snyk container test only covers the multi-arch index's
+          # selected architecture; it does NOT independently scan the
+          # per-platform children. Rather than silently scan one arch and
+          # claim the whole digest, record that scope limitation EXPLICITLY
+          # in the statement. Per-child platform coverage is provided by
+          # Trivy and Grype in the same (release, variant, scanner) matrix.
           printf 'index (snyk scans the index arch)\n' > /tmp/scanned-platforms.txt
+          cat > /tmp/scan-scope.json <<'JSON'
+          {"scanner": "snyk", "coverage": "index-selected-arch-only", "note": "Snyk container test scans the multi-arch index's selected architecture only; the per-platform children are NOT independently scanned by this scanner. Per-child coverage for this digest is provided by the trivy and grype targets in the same rescan matrix."}
+          JSON
 
       # ---- scanner identity (F14) ----------------------------------------
       - name: record scanner version and database state
@@ -256,6 +328,14 @@ jobs:
               rc = int(open('/tmp/scanner-rc').read().strip() or '0')
           except (FileNotFoundError, ValueError):
               rc = 1
+          # B04: a per-child OPERATIONAL failure (a scanned child that
+          # produced no valid report) is recorded by the scanner loop. It is
+          # authoritative: incomplete platform coverage is never a clean or
+          # findings verdict, it is an error, even if the merged report parses.
+          try:
+              op_fail = open('/tmp/scanner-op-fail').read().strip() == '1'
+          except FileNotFoundError:
+              op_fail = False
           meta = {}
           try:
               for line in open('/tmp/scanner-meta'):
@@ -295,7 +375,7 @@ jobs:
           # (completion note). findings count is authoritative for
           # clean-vs-findings; a nonzero rc with no parsed findings is an
           # error, and an unparseable report is an error.
-          if not report_ok:
+          if not report_ok or op_fail:
               outcome = 'error'
           elif len(findings) > 0:
               outcome = 'findings'
@@ -307,6 +387,14 @@ jobs:
               scanned_platforms = [p for p in open('/tmp/scanned-platforms.txt').read().splitlines() if p]
           except FileNotFoundError:
               scanned_platforms = []
+          # B04: an explicit per-scanner coverage-scope limitation (e.g. Snyk
+          # only scans the index's selected arch) is recorded so the digest
+          # claim is never overstated. Absent for full-per-child scanners.
+          scope_limitation = None
+          try:
+              scope_limitation = json.load(open('/tmp/scan-scope.json'))
+          except (FileNotFoundError, json.JSONDecodeError):
+              scope_limitation = None
           vex_doc = '.vex/fosterstack-cache.openvex.json'
           vex = json.load(open(vex_doc))
           statement = {
@@ -320,6 +408,7 @@ jobs:
               'scanner_version': meta.get('version', 'unknown'),
               'scanner_database': meta.get('db', 'unknown'),
               'scanned_platforms': scanned_platforms,
+              'coverage_scope_limitation': scope_limitation,
               'policy': 'block at any severity; the published VEX document is the only exception',
               'verdict': outcome,
               'findings': findings,
