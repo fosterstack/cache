@@ -147,36 +147,22 @@ jobs:
             cat /tmp/inspect.err >&2 || true
             exit 1
           fi
-          if ! jq -e . /tmp/index.json >/dev/null 2>&1; then
-            echo "::error::imagetools inspect for ${ref} did not return valid JSON — refusing to guess the platform inventory" >&2
-            exit 1
-          fi
-          # B04c: validate the recognized manifest SHAPE before trusting the
-          # inventory. `{}` and `{"manifests":null}` are NOT single-arch
-          # images, and a descriptor with a null platform is NOT a child —
-          # each must fail the job, never be downgraded to a lone index scan.
-          if jq -e '(.manifests | type) == "array"' /tmp/index.json >/dev/null 2>&1; then
-            # A multi-platform index: enumerate ONLY descriptors that carry a
-            # real, known os/arch. A null or "unknown" platform is not a child.
-            jq -r --arg repo "ghcr.io/${{ github.repository_owner }}/cache" \
-              '.manifests[]
-               | select(.platform != null
-                        and .platform.os != null and .platform.os != "unknown"
-                        and .platform.architecture != null and .platform.architecture != "unknown")
-               | "\(.platform.os)/\(.platform.architecture)\t\($repo)@\(.digest)"' \
-              /tmp/index.json >> /tmp/children.txt
-            if [ ! -s /tmp/children.txt ]; then
-              echo "::error::index ${ref} lists no usable platform children (empty, all 'unknown', or without a real .platform.os/.platform.architecture) — refusing to rescan an empty inventory" >&2
-              exit 1
-            fi
-          elif jq -e '(.config != null) and ((.layers | type) == "array")' /tmp/index.json >/dev/null 2>&1; then
-            # A RECOGNIZED single-image manifest (an OCI/Docker image manifest
-            # has .config and .layers, NOT an index): scan it as itself.
-            printf 'index\t%s\n' "$ref" >> /tmp/children.txt
-          else
-            echo "::error::${ref} is neither a recognized multi-platform index (.manifests[] with real platforms) nor a single-image manifest (.config + .layers) — refusing to guess the platform inventory" >&2
-            exit 1
-          fi
+          # B04c/B04f: shape + descriptor validation lives in the extracted,
+          # unit-tested bin/rescan-statement.py so the "every expected image
+          # descriptor must have a usable platform" rule is exercised by
+          # bin/rescan-statement-test.sh, not just an external probe. It
+          # rejects invalid JSON, `{}`, `{"manifests":null}`, and — crucially
+          # — a multi-platform index in which ANY plain image descriptor has a
+          # null/empty/"unknown" platform (a lost platform is never downgraded
+          # to a single-arch scan). A descriptor without a usable platform is
+          # tolerated only when it is EXPLICITLY an attestation/referrer
+          # descriptor. A recognized single-image manifest (.config + .layers)
+          # still falls back to scanning the index as itself.
+          python3 bin/rescan-statement.py enumerate \
+            --index /tmp/index.json \
+            --repo "ghcr.io/${{ github.repository_owner }}/cache" \
+            --ref "$ref" \
+            --out /tmp/children.txt
           echo "children to scan:"; cat /tmp/children.txt
 
       # ---- trivy (CLI: reliable version/db, by digest) -------------------
@@ -189,15 +175,17 @@ jobs:
         run: |
           set -euo pipefail
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
-          : > /tmp/scanned-platforms.txt
           rc=0
-          op_fail=0
           child_no=0
-          reports=()
+          : > /tmp/children-scanned.jsonl
           # B04: a FINDING makes trivy exit nonzero (--exit-code 1). Capture
           # that with `|| code=$?` so errexit does NOT abort the loop before
-          # the code is read, the platform is recorded, the next child is
-          # scanned, or the reports are merged. Every child is scanned.
+          # the exit code is recorded, the platform is captured, or the next
+          # child is scanned. Every child is scanned, its OWN exit code and
+          # report path recorded per child; the merge, shape validation and
+          # exit-code classification happen once, in the unit-tested
+          # bin/rescan-statement.py, so no finding is dropped (deterministic,
+          # explicit per-child inputs — no glob).
           while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
@@ -210,30 +198,9 @@ jobs:
               --format json --output "$out" \
               "${ref}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            echo "${platform}" >> /tmp/scanned-platforms.txt
-            # A FINDING still yields a valid report (with vulnerabilities); an
-            # OPERATIONAL failure yields no valid report for this child.
-            # B04c: JSON syntax is not enough — require the recognized Trivy
-            # report SHAPE (a .Results array, or at least a .SchemaVersion).
-            # A child whose output is any other JSON object (an error object,
-            # a crash dump) is an operational failure, never merged as empty.
-            if [ -s "$out" ] && jq -e '((.Results | type) == "array") or (.SchemaVersion != null)' "$out" >/dev/null 2>&1; then
-              reports+=("$out")
-            else
-              echo "::warning::trivy produced no valid report for ${platform}" >&2
-              op_fail=1
-            fi
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
+              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
-          echo "$rc" > /tmp/scanner-rc
-          echo "$op_fail" > /tmp/scanner-op-fail
-          # Merge ONLY the explicit per-child input files (never a glob that
-          # could slurp the aggregate output), so a finding in any child is
-          # present when the statement is written.
-          if [ "${#reports[@]}" -gt 0 ]; then
-            jq -s '{Results: (map(.Results // []) | add)}' "${reports[@]}" > /tmp/findings-raw.json
-          else
-            echo '{"Results":[]}' > /tmp/findings-raw.json
-          fi
           exit $rc
 
       # ---- grype (CLI: reliable version/db, by digest) -------------------
@@ -244,15 +211,13 @@ jobs:
         run: |
           set -euo pipefail
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
-          : > /tmp/scanned-platforms.txt
           rc=0
-          op_fail=0
           child_no=0
-          reports=()
-          # B04: `--fail-on negligible` makes grype exit nonzero on a FINDING.
-          # Capture it with `|| code=$?` so errexit does not abort the loop —
-          # a grype finding is aggregated and classified as a finding, not
-          # dropped and misreported as an operational error.
+          : > /tmp/children-scanned.jsonl
+          # B04: `--fail-on negligible` makes grype exit nonzero (1) on a
+          # FINDING. Capture it with `|| code=$?` so errexit does not abort
+          # the loop; the per-child exit code + report path are recorded and
+          # the merge/classification happens once in bin/rescan-statement.py.
           while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
@@ -267,25 +232,9 @@ jobs:
               --vex .vex/fosterstack-cache.openvex.json \
               -o json --file "$out" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            echo "${platform}" >> /tmp/scanned-platforms.txt
-            # B04c: require the recognized Grype report SHAPE (a .matches
-            # array AND a .descriptor). Any other JSON object is an
-            # operational failure for this child, never merged as clean.
-            if [ -s "$out" ] && jq -e '((.matches | type) == "array") and (.descriptor != null)' "$out" >/dev/null 2>&1; then
-              reports+=("$out")
-            else
-              echo "::warning::grype produced no valid report for ${platform}" >&2
-              op_fail=1
-            fi
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
+              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
-          echo "$rc" > /tmp/scanner-rc
-          echo "$op_fail" > /tmp/scanner-op-fail
-          # Merge ONLY the explicit per-child input files.
-          if [ "${#reports[@]}" -gt 0 ]; then
-            jq -s '{matches: (map(.matches // []) | add)}' "${reports[@]}" > /tmp/findings-raw.json
-          else
-            echo '{"matches":[]}' > /tmp/findings-raw.json
-          fi
           exit $rc
 
       # ---- snyk ----------------------------------------------------------
@@ -304,21 +253,22 @@ jobs:
           set -euo pipefail
           [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a rescan that silently skips a scanner is not a rescan" >&2; exit 1; }
           index_ref="ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
-          : > /tmp/scanned-platforms.txt
           rc=0
-          op_fail=0
           child_no=0
-          reports=()
+          : > /tmp/children-scanned.jsonl
           # B04a: Snyk container supports multi-platform scanning, so cover
           # every required CHILD, not just the index's default arch. Reuse the
           # same child inventory Trivy/Grype enumerate and run Snyk per child
           # with explicit platform selection (`snyk container test <ref>
-          # --platform=linux/amd64`). Aggregate one result per required child
-          # so an arm64-only Snyk finding still reaches the report AND the
-          # notification, exactly like the other scanners.
+          # --platform=linux/amd64`). Record one result per required child.
           # B04b: snyk exits nonzero (1) on a FINDING; capture it with
           # `|| code=$?` so errexit does not abort the loop before the next
-          # child is scanned, the platform is recorded, or reports are merged.
+          # child is scanned or its exit code is recorded.
+          # B04d: the child report carries OS findings at top-level
+          # .vulnerabilities AND application findings under
+          # .applications[].vulnerabilities — bin/rescan-statement.py
+          # normalizes BOTH, so an arm64 application-only finding still
+          # reaches the statement AND the notification.
           while IFS=$'\t' read -r platform _; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
@@ -331,28 +281,9 @@ jobs:
             snyk container test "${index_ref}" $plat_arg \
               --org=fosterstack-admin --json-file-output="$out" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            echo "${platform}" >> /tmp/scanned-platforms.txt
-            # B04c: a Snyk report is valid only with the recognized shape (a
-            # .vulnerabilities array). Any other output (an error object, a
-            # crash) is an OPERATIONAL failure for this child, never merged
-            # as an empty/clean result set.
-            if [ -s "$out" ] && jq -e '(.vulnerabilities | type) == "array"' "$out" >/dev/null 2>&1; then
-              reports+=("$out")
-            else
-              echo "::warning::snyk produced no valid report for ${platform}" >&2
-              op_fail=1
-            fi
+            jq -nc --arg p "$platform" --arg r "$index_ref" --argjson e "$code" --arg f "$out" \
+              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
-          echo "$rc" > /tmp/scanner-rc
-          echo "$op_fail" > /tmp/scanner-op-fail
-          # Merge ONLY the explicit per-child files (never a glob that could
-          # slurp the aggregate output), so a finding in any child — e.g.
-          # arm64-only — is present when the statement is written.
-          if [ "${#reports[@]}" -gt 0 ]; then
-            jq -s '{vulnerabilities: (map(.vulnerabilities // []) | add)}' "${reports[@]}" > /tmp/findings-raw.json
-          else
-            echo '{"vulnerabilities":[]}' > /tmp/findings-raw.json
-          fi
           exit $rc
 
       # ---- scanner identity (F14) ----------------------------------------
@@ -374,138 +305,53 @@ jobs:
           cat /tmp/scanner-meta
 
       # ---- statement -----------------------------------------------------
+      # The merge, OS+application normalization (B04d), and exit-code
+      # classification (B04e) live in the unit-tested bin/rescan-statement.py
+      # (exercised by bin/rescan-statement-test.sh in the requirements CI
+      # job), not inline here — so a regression is caught in PR CI. It reads
+      # the per-child manifest each scanner loop wrote (platform, ref, exit
+      # code, report path), applies each scanner's OWN exit-code contract
+      # INDEPENDENTLY of parse success, merges OS AND application findings
+      # from every child preserving platform + project context, and writes
+      # the statement, the merged raw report, and the outcome/has_findings
+      # step outputs.
       - name: write the digest-keyed rescan statement
         id: statement
         run: |
           set -euo pipefail
-          python3 <<'PY'
-          import json, sys, hashlib, datetime, os
-          scanner = '${{ matrix.target.scanner }}'
-          try:
-              rc = int(open('/tmp/scanner-rc').read().strip() or '0')
-          except (FileNotFoundError, ValueError):
-              rc = 1
-          # B04: a per-child OPERATIONAL failure (a scanned child that
-          # produced no valid report) is recorded by the scanner loop. It is
-          # authoritative: incomplete platform coverage is never a clean or
-          # findings verdict, it is an error, even if the merged report parses.
-          try:
-              op_fail = open('/tmp/scanner-op-fail').read().strip() == '1'
-          except FileNotFoundError:
-              op_fail = False
-          meta = {}
-          try:
-              for line in open('/tmp/scanner-meta'):
-                  if '=' in line:
-                      k, v = line.rstrip('\n').split('=', 1)
-                      meta[k] = v
-          except FileNotFoundError:
-              pass
-          findings = []
-          report_ok = True
-          try:
-              raw = json.load(open('/tmp/findings-raw.json'))
-              if scanner == 'trivy':
-                  for res in raw.get('Results') or []:
-                      for v in res.get('Vulnerabilities') or []:
-                          findings.append({'id': v.get('VulnerabilityID'),
-                                           'severity': (v.get('Severity') or '').lower(),
-                                           'package': v.get('PkgName'),
-                                           'fixed_in': v.get('FixedVersion') or None})
-              elif scanner == 'grype':
-                  for m in raw.get('matches') or []:
-                      findings.append({'id': m['vulnerability'].get('id'),
-                                       'severity': (m['vulnerability'].get('severity') or '').lower(),
-                                       'package': m.get('artifact', {}).get('name'),
-                                       'fixed_in': (m['vulnerability'].get('fix') or {}).get('versions') or None})
-              elif scanner == 'snyk':
-                  for v in raw.get('vulnerabilities') or []:
-                      findings.append({'id': v.get('identifiers', {}).get('CVE', [v.get('id')])[0] if v.get('identifiers', {}).get('CVE') else v.get('id'),
-                                       'severity': (v.get('severity') or '').lower(),
-                                       'package': v.get('packageName'),
-                                       'fixed_in': v.get('nearestFixedInVersion') or None})
-          except (FileNotFoundError, json.JSONDecodeError):
-              report_ok = False
-          # B04b: track FINDINGS and scan COMPLETENESS INDEPENDENTLY. A real
-          # CVE must always be notified, even when another child failed
-          # operationally in the same run; and an incomplete run must still
-          # FAIL. `has_findings` drives the notification (issue) step; the
-          # verdict drives the pass/fail signal. So a mixed finding+error run
-          # NOTIFIES (has_findings) AND FAILS (verdict='error').
-          has_findings = len(findings) > 0
-          # An operational failure (crashed tool / no valid report from a
-          # scanned child) is authoritative for COMPLETENESS: the run is
-          # incomplete, so its verdict is 'error' even if findings were also
-          # collected — never label an incomplete run as clean CVE evidence.
-          # Otherwise findings win over clean, and a nonzero rc with no
-          # parsed findings is an error.
-          if not report_ok or op_fail:
-              outcome = 'error'
-          elif has_findings:
-              outcome = 'findings'
-          elif rc != 0:
-              outcome = 'error'
-          else:
-              outcome = 'clean'
-          try:
-              scanned_platforms = [p for p in open('/tmp/scanned-platforms.txt').read().splitlines() if p]
-          except FileNotFoundError:
-              scanned_platforms = []
-          # B04: an explicit per-scanner coverage-scope limitation (e.g. Snyk
-          # only scans the index's selected arch) is recorded so the digest
-          # claim is never overstated. Absent for full-per-child scanners.
-          scope_limitation = None
-          try:
-              scope_limitation = json.load(open('/tmp/scan-scope.json'))
-          except (FileNotFoundError, json.JSONDecodeError):
-              scope_limitation = None
-          vex_doc = '.vex/fosterstack-cache.openvex.json'
-          vex = json.load(open(vex_doc))
-          statement = {
-              'schema': 'https://fosterstack.com/rescan-statement/v1',
-              'scanned_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
-              'release': '${{ matrix.target.release }}',
-              'variant': '${{ matrix.target.variant }}',
-              'digest': '${{ matrix.target.digest }}',
-              'image_ref': 'ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}',
-              'scanner': scanner,
-              'scanner_version': meta.get('version', 'unknown'),
-              'scanner_database': meta.get('db', 'unknown'),
-              'scanned_platforms': scanned_platforms,
-              'coverage_scope_limitation': scope_limitation,
-              'policy': 'block at any severity; the published VEX document is the only exception',
-              'verdict': outcome,
-              'findings': findings,
-              'raw_report': {
-                  'path': 'findings-raw.json',
-                  'sha256': (hashlib.sha256(open('/tmp/findings-raw.json','rb').read()).hexdigest()
-                             if os.path.exists('/tmp/findings-raw.json') else None),
-              },
-              'vex': {
-                  'document': vex_doc,
-                  'sha256': hashlib.sha256(open(vex_doc, 'rb').read()).hexdigest(),
-                  'applicable_statements': [
-                      st for st in vex.get('statements', [])
-                      if any(str(p.get('@id','')).endswith('${{ matrix.target.digest }}'.split(':')[-1])
-                             or '${{ matrix.target.digest }}' in json.dumps(p)
-                             for p in (st.get('products') or []))
-                  ],
-                  'document_statement_count': len(vex.get('statements', [])),
-              },
-          }
-          json.dump(statement, open('/tmp/rescan-statement.json', 'w'), indent=1)
-          print(json.dumps({'verdict': outcome, 'count': len(findings), 'platforms': scanned_platforms}))
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as gh:
-              gh.write(f'outcome={outcome}\n')
-              gh.write(f'has_findings={"true" if has_findings else "false"}\n')
-          PY
+          python3 bin/rescan-statement.py statement \
+            --scanner '${{ matrix.target.scanner }}' \
+            --children /tmp/children-scanned.jsonl \
+            --meta /tmp/scanner-meta \
+            --vex .vex/fosterstack-cache.openvex.json \
+            --scope-file /tmp/scan-scope.json \
+            --release '${{ matrix.target.release }}' \
+            --variant '${{ matrix.target.variant }}' \
+            --digest '${{ matrix.target.digest }}' \
+            --image-ref 'ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}' \
+            --scanned-at "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
+            --raw-out /tmp/findings-raw.json \
+            --out /tmp/rescan-statement.json \
+            --github-output "$GITHUB_OUTPUT"
 
-      - name: stage the raw report beside the statement
+      - name: stage the raw report AND the per-child reports beside the statement
         run: |
           set -euo pipefail
           mkdir -p /tmp/rescan-out
           cp /tmp/rescan-statement.json /tmp/rescan-out/
           [ -f /tmp/findings-raw.json ] && cp /tmp/findings-raw.json /tmp/rescan-out/ || true
+          # B04d: retain the ORIGINAL per-child reports too, so the raw
+          # evidence that carries e.g. an arm64 application-only finding
+          # survives artifact upload, not just the merged report. The child
+          # paths come from the deterministic per-child manifest (no glob).
+          if [ -f /tmp/children-scanned.jsonl ]; then
+            mkdir -p /tmp/rescan-out/children
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              f=$(jq -r '.report' <<<"$line")
+              [ -f "$f" ] && cp "$f" /tmp/rescan-out/children/ || true
+            done < /tmp/children-scanned.jsonl
+          fi
 
       - name: upload the statement AND the raw report (evidence, clean or not)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

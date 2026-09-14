@@ -54,3 +54,13 @@ jobs:
       # external probe.
       - name: authorization acceptance-content policy regressions
         run: bash bin/authorize-acceptance-check-test.sh
+      # Repeatable regressions for the daily image rescan's merge,
+      # classification and platform-enumeration logic (audit B04d/B04e/B04f):
+      # the extracted bin/rescan-statement.py is exercised against real
+      # CLI-shaped fixtures (Snyk OS/application/mixed, Trivy/Grype
+      # clean/finding/error/malformed, finding+operational-exit, and the
+      # multi-arch/null-platform/empty-arch/unknown/single-image enumeration
+      # cases), so a scanner-evidence regression is caught in PR CI. Pure
+      # python3 + jq — no network, gh or scanners.
+      - name: daily-rescan merge/classification/enumeration regressions
+        run: bash bin/rescan-statement-test.sh
