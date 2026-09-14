@@ -23,7 +23,14 @@ awk -v label="$label" -v prefixes="$prefixes" '
       if (c[k]+0 > 0) covered += n[k]
       else { uncov += n[k]; uncovlines = uncovlines "\n    " k }
     }
-    pct = (total>0) ? 100.0*covered/total : 100.0
+    # An empty profile is NOT 100%: 0/0 would silently pass a module with
+    # no measured statements (a broken build, a wrong path). Require at
+    # least one eligible statement.
+    if (total == 0) {
+      printf "::error::%s has no eligible statements - an empty coverage profile is not 100%%\n", label
+      exit 1
+    }
+    pct = 100.0*covered/total
     printf "%s: %d/%d statements covered (%.2f%%), %d uncovered\n", label, covered, total, pct, uncov
     if (uncov > 0) { printf "::error::%s has %d uncovered eligible statements:%s\n", label, uncov, uncovlines; exit 1 }
   }
