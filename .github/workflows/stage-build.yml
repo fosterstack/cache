@@ -78,6 +78,8 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --predicate-type https://fosterstack.com/attestations/source-admission/v1 \
             --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml" \
+            --source-digest "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
             --format json \
             --jq '.[0].verificationResult.statement.predicate | {tag, sha}' > /tmp/admitted.json
           adm_sha=$(jq -r '.sha' /tmp/admitted.json)

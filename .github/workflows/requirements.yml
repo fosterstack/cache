@@ -46,3 +46,11 @@ jobs:
       # release time. Approval is checked only at release admission.
       - name: frozen baseline consistency (approval-agnostic)
         run: go -C tools/requirements run . verify-freeze v0.2.0
+      # Repeatable semantic regressions for the authorization stage's
+      # acceptance-content policy (audit B02b): the extracted validator is
+      # exercised here against the frozen baseline with valid/empty/
+      # missing/skip/invalid/fail/duplicate/unknown fixtures, so a
+      # weakening of the policy is caught in PR CI, not only by an
+      # external probe.
+      - name: authorization acceptance-content policy regressions
+        run: bash bin/authorize-acceptance-check-test.sh

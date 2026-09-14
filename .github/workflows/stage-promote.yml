@@ -72,6 +72,8 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --predicate-type https://fosterstack.com/attestations/release-authorization/v1 \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml" \
+              --source-digest "${GITHUB_SHA}" \
+              --source-ref "${GITHUB_REF}" \
               --format json > "/tmp/auth-${v}.json"
             auth_tag=$(jq -r '.[0].verificationResult.statement.predicate.tag' "/tmp/auth-${v}.json")
             auth_sha=$(jq -r '.[0].verificationResult.statement.predicate.sha' "/tmp/auth-${v}.json")
@@ -166,6 +168,8 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --predicate-type https://fosterstack.com/attestations/acceptance/v1 \
             --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-acceptance-predicate.yml" \
+            --source-digest "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
             --format json | jq '.[0].verificationResult.statement.predicate.ac_results' > /tmp/ac-results.json
           jq -c '.[0].verificationResult.statement.predicate.verified_statements' /tmp/auth-production.json > /tmp/verified.json
           jq -R -s '[split("\n")[] | select(length > 0) | split("  ") | {sha256: .[0], name: .[1]}]' \
@@ -266,7 +270,9 @@ jobs:
             gh attestation verify "oci://${ghcr}@${d}" \
               --repo "${GITHUB_REPOSITORY}" \
               --predicate-type https://fosterstack.com/attestations/release-authorization/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml" >/dev/null
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml" \
+              --source-digest "${GITHUB_SHA}" \
+              --source-ref "${GITHUB_REF}" >/dev/null
           done
 
       - name: documented ANONYMOUS customer verification (cosign, no credentials)
