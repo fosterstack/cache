@@ -127,12 +127,12 @@ jobs:
           persist-credentials: false
 
       # Enumerate the platform CHILDREN of the index so both
-      # architectures are scanned, not just the runner's default
-      # (completion note: the ongoing rescan must cover each child, like
-      # the release scanner). platforms.txt: one "os/arch<TAB>childref"
-      # per line, always including the index itself as a fallback.
+      # architectures are scanned by EVERY scanner, not just the runner's
+      # default (B04a: the ongoing rescan must cover each child for Trivy,
+      # Grype AND Snyk, like the release scanner). children.txt: one
+      # "os/arch<TAB>childref" per line; a recognized single-image
+      # manifest falls back to the index itself.
       - name: enumerate platform children
-        if: matrix.target.scanner == 'trivy' || matrix.target.scanner == 'grype'
         run: |
           set -euo pipefail
           echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
@@ -151,19 +151,31 @@ jobs:
             echo "::error::imagetools inspect for ${ref} did not return valid JSON — refusing to guess the platform inventory" >&2
             exit 1
           fi
-          if jq -e '.manifests' /tmp/index.json >/dev/null 2>&1; then
-            # A multi-platform index: enumerate the real OS/arch children.
+          # B04c: validate the recognized manifest SHAPE before trusting the
+          # inventory. `{}` and `{"manifests":null}` are NOT single-arch
+          # images, and a descriptor with a null platform is NOT a child —
+          # each must fail the job, never be downgraded to a lone index scan.
+          if jq -e '(.manifests | type) == "array"' /tmp/index.json >/dev/null 2>&1; then
+            # A multi-platform index: enumerate ONLY descriptors that carry a
+            # real, known os/arch. A null or "unknown" platform is not a child.
             jq -r --arg repo "ghcr.io/${{ github.repository_owner }}/cache" \
-              '.manifests[] | select(.platform.os != "unknown")
+              '.manifests[]
+               | select(.platform != null
+                        and .platform.os != null and .platform.os != "unknown"
+                        and .platform.architecture != null and .platform.architecture != "unknown")
                | "\(.platform.os)/\(.platform.architecture)\t\($repo)@\(.digest)"' \
               /tmp/index.json >> /tmp/children.txt
             if [ ! -s /tmp/children.txt ]; then
-              echo "::error::index ${ref} lists no usable platform children (all 'unknown') — refusing to rescan an empty inventory" >&2
+              echo "::error::index ${ref} lists no usable platform children (empty, all 'unknown', or without a real .platform.os/.platform.architecture) — refusing to rescan an empty inventory" >&2
               exit 1
             fi
-          else
-            # A valid single-arch image manifest (no child list): scan as itself.
+          elif jq -e '(.config != null) and ((.layers | type) == "array")' /tmp/index.json >/dev/null 2>&1; then
+            # A RECOGNIZED single-image manifest (an OCI/Docker image manifest
+            # has .config and .layers, NOT an index): scan it as itself.
             printf 'index\t%s\n' "$ref" >> /tmp/children.txt
+          else
+            echo "::error::${ref} is neither a recognized multi-platform index (.manifests[] with real platforms) nor a single-image manifest (.config + .layers) — refusing to guess the platform inventory" >&2
+            exit 1
           fi
           echo "children to scan:"; cat /tmp/children.txt
 
@@ -201,7 +213,11 @@ jobs:
             echo "${platform}" >> /tmp/scanned-platforms.txt
             # A FINDING still yields a valid report (with vulnerabilities); an
             # OPERATIONAL failure yields no valid report for this child.
-            if [ -s "$out" ] && jq empty "$out" 2>/dev/null; then
+            # B04c: JSON syntax is not enough — require the recognized Trivy
+            # report SHAPE (a .Results array, or at least a .SchemaVersion).
+            # A child whose output is any other JSON object (an error object,
+            # a crash dump) is an operational failure, never merged as empty.
+            if [ -s "$out" ] && jq -e '((.Results | type) == "array") or (.SchemaVersion != null)' "$out" >/dev/null 2>&1; then
               reports+=("$out")
             else
               echo "::warning::trivy produced no valid report for ${platform}" >&2
@@ -252,7 +268,10 @@ jobs:
               -o json --file "$out" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
             echo "${platform}" >> /tmp/scanned-platforms.txt
-            if [ -s "$out" ] && jq empty "$out" 2>/dev/null; then
+            # B04c: require the recognized Grype report SHAPE (a .matches
+            # array AND a .descriptor). Any other JSON object is an
+            # operational failure for this child, never merged as clean.
+            if [ -s "$out" ] && jq -e '((.matches | type) == "array") and (.descriptor != null)' "$out" >/dev/null 2>&1; then
               reports+=("$out")
             else
               echo "::warning::grype produced no valid report for ${platform}" >&2
@@ -282,21 +301,59 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a rescan that silently skips a scanner is not a rescan" >&2; exit 1; }
-          snyk container test \
-            "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
-            --org=fosterstack-admin --json-file-output=/tmp/findings-raw.json; echo "$?" > /tmp/scanner-rc
-          # B04: Snyk container test only covers the multi-arch index's
-          # selected architecture; it does NOT independently scan the
-          # per-platform children. Rather than silently scan one arch and
-          # claim the whole digest, record that scope limitation EXPLICITLY
-          # in the statement. Per-child platform coverage is provided by
-          # Trivy and Grype in the same (release, variant, scanner) matrix.
-          printf 'index (snyk scans the index arch)\n' > /tmp/scanned-platforms.txt
-          cat > /tmp/scan-scope.json <<'JSON'
-          {"scanner": "snyk", "coverage": "index-selected-arch-only", "note": "Snyk container test scans the multi-arch index's selected architecture only; the per-platform children are NOT independently scanned by this scanner. Per-child coverage for this digest is provided by the trivy and grype targets in the same rescan matrix."}
-          JSON
+          index_ref="ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
+          : > /tmp/scanned-platforms.txt
+          rc=0
+          op_fail=0
+          child_no=0
+          reports=()
+          # B04a: Snyk container supports multi-platform scanning, so cover
+          # every required CHILD, not just the index's default arch. Reuse the
+          # same child inventory Trivy/Grype enumerate and run Snyk per child
+          # with explicit platform selection (`snyk container test <ref>
+          # --platform=linux/amd64`). Aggregate one result per required child
+          # so an arm64-only Snyk finding still reaches the report AND the
+          # notification, exactly like the other scanners.
+          # B04b: snyk exits nonzero (1) on a FINDING; capture it with
+          # `|| code=$?` so errexit does not abort the loop before the next
+          # child is scanned, the platform is recorded, or reports are merged.
+          while IFS=$'\t' read -r platform _; do
+            [ -n "$platform" ] || continue
+            child_no=$((child_no + 1))
+            out="/tmp/snyk-child-${child_no}.json"
+            plat_arg=""
+            case "$platform" in */*) plat_arg="--platform=${platform}";; esac
+            echo "snyk: ${platform} ${index_ref} ${plat_arg}"
+            code=0
+            # shellcheck disable=SC2086
+            snyk container test "${index_ref}" $plat_arg \
+              --org=fosterstack-admin --json-file-output="$out" || code=$?
+            [ "$code" -gt "$rc" ] && rc=$code
+            echo "${platform}" >> /tmp/scanned-platforms.txt
+            # B04c: a Snyk report is valid only with the recognized shape (a
+            # .vulnerabilities array). Any other output (an error object, a
+            # crash) is an OPERATIONAL failure for this child, never merged
+            # as an empty/clean result set.
+            if [ -s "$out" ] && jq -e '(.vulnerabilities | type) == "array"' "$out" >/dev/null 2>&1; then
+              reports+=("$out")
+            else
+              echo "::warning::snyk produced no valid report for ${platform}" >&2
+              op_fail=1
+            fi
+          done < /tmp/children.txt
+          echo "$rc" > /tmp/scanner-rc
+          echo "$op_fail" > /tmp/scanner-op-fail
+          # Merge ONLY the explicit per-child files (never a glob that could
+          # slurp the aggregate output), so a finding in any child — e.g.
+          # arm64-only — is present when the statement is written.
+          if [ "${#reports[@]}" -gt 0 ]; then
+            jq -s '{vulnerabilities: (map(.vulnerabilities // []) | add)}' "${reports[@]}" > /tmp/findings-raw.json
+          else
+            echo '{"vulnerabilities":[]}' > /tmp/findings-raw.json
+          fi
+          exit $rc
 
       # ---- scanner identity (F14) ----------------------------------------
       - name: record scanner version and database state
@@ -369,15 +426,22 @@ jobs:
                                        'fixed_in': v.get('nearestFixedInVersion') or None})
           except (FileNotFoundError, json.JSONDecodeError):
               report_ok = False
-          # Distinguish a COMPLETED scan (clean or with findings) from an
-          # operational FAILURE (tool crashed / produced no valid report):
-          # never label an operational failure as clean CVE evidence
-          # (completion note). findings count is authoritative for
-          # clean-vs-findings; a nonzero rc with no parsed findings is an
-          # error, and an unparseable report is an error.
+          # B04b: track FINDINGS and scan COMPLETENESS INDEPENDENTLY. A real
+          # CVE must always be notified, even when another child failed
+          # operationally in the same run; and an incomplete run must still
+          # FAIL. `has_findings` drives the notification (issue) step; the
+          # verdict drives the pass/fail signal. So a mixed finding+error run
+          # NOTIFIES (has_findings) AND FAILS (verdict='error').
+          has_findings = len(findings) > 0
+          # An operational failure (crashed tool / no valid report from a
+          # scanned child) is authoritative for COMPLETENESS: the run is
+          # incomplete, so its verdict is 'error' even if findings were also
+          # collected — never label an incomplete run as clean CVE evidence.
+          # Otherwise findings win over clean, and a nonzero rc with no
+          # parsed findings is an error.
           if not report_ok or op_fail:
               outcome = 'error'
-          elif len(findings) > 0:
+          elif has_findings:
               outcome = 'findings'
           elif rc != 0:
               outcome = 'error'
@@ -433,6 +497,7 @@ jobs:
           print(json.dumps({'verdict': outcome, 'count': len(findings), 'platforms': scanned_platforms}))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as gh:
               gh.write(f'outcome={outcome}\n')
+              gh.write(f'has_findings={"true" if has_findings else "false"}\n')
           PY
 
       - name: stage the raw report beside the statement
@@ -449,8 +514,12 @@ jobs:
           path: /tmp/rescan-out/
           retention-days: 90
 
+      # B04b: notify on ANY real finding, independently of completeness. This
+      # fires on has_findings (not outcome=='findings'), so a run that both
+      # found a CVE AND had an operational failure still files the issue —
+      # while the operational error still fails the run below.
       - name: file/update a tracking issue on findings
-        if: steps.statement.outputs.outcome == 'findings'
+        if: steps.statement.outputs.has_findings == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
