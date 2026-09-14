@@ -111,6 +111,26 @@ jobs:
               if [ -n "$mcommit" ] && [ "$mcommit" != "${GITHUB_SHA}" ]; then
                 echo "::error::$4 predicate materials.commit is ${mcommit}, not the admitted ${GITHUB_SHA}" >&2; exit 1
               fi
+            else
+              # R08: "slsa" mode is NOT exempt from source binding. The
+              # --signer-workflow pin (kept) only constrains the PRODUCING
+              # workflow file; it does not bind the source revision. SLSA v1
+              # provenance carries the source under
+              # .predicate.buildDefinition.resolvedDependencies[] as a
+              # git+https://github.com/<repo> URI with .digest.gitCommit
+              # (GitHub also mirrors it at
+              # .buildDefinition.internalParameters.github.sha). Extract that
+              # commit and require it == the admitted GITHUB_SHA. If the
+              # structure genuinely yields no commit, fail closed rather than
+              # skip.
+              scommit=$(jq -r --arg repo "${GITHUB_REPOSITORY}" '
+                ( [ .[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[]?
+                    | select((.uri // "") | startswith("git+https://github.com/" + $repo))
+                    | .digest.gitCommit // empty ]
+                  + [ .[0].verificationResult.statement.predicate.buildDefinition.internalParameters.github.sha // empty ] )
+                | map(select(. != "")) | unique | .[0] // empty' <<<"$out")
+              [ -n "$scommit" ] || { echo "::error::$4 SLSA provenance yields no source commit (no git+https://github.com/${GITHUB_REPOSITORY} resolvedDependency with a gitCommit) - refusing to bind it to the release" >&2; exit 1; }
+              [ "$scommit" = "${GITHUB_SHA}" ] || { echo "::error::$4 SLSA provenance names source ${scommit}, not the admitted ${GITHUB_SHA}" >&2; exit 1; }
             fi
             record "$4" "$out"
             printf '%s' "$out"
@@ -128,25 +148,27 @@ jobs:
           [ "$adm_tag" = "${GITHUB_REF_NAME}" ] || { echo "::error::admission is for ${adm_tag}, chain runs for ${GITHUB_REF_NAME}" >&2; exit 1; }
           record "source-admission" "$out"
 
-          # 2. build predicate + build provenance over every archive
+          # 2. build predicate + build provenance over EVERY archive.
+          # R08: validate all archives, not just the first, and do it through
+          # vrf so each archive's build predicate is source-bound (strict:
+          # .sha and .materials.commit == GITHUB_SHA) and its SLSA provenance
+          # source is bound to the admitted commit. A foreign source hiding in
+          # a later archive is otherwise admitted. Iterate without a pipe so a
+          # vrf failure exits the step directly instead of only a subshell.
           printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
           (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
-          grep -oE '[^ ]+$' /tmp/expected-checksums.txt | while read -r f; do
-            gh attestation verify "dist/$f" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://fosterstack.com/attestations/build/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null \
-              || { echo "::error::build predicate missing for $f" >&2; exit 1; }
-            gh attestation verify "dist/$f" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://slsa.dev/provenance/v1 \
-              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null \
-              || { echo "::error::build provenance missing for $f" >&2; exit 1; }
+          # Read archive names into an array via process substitution (not a
+          # pipe) so the loop runs in THIS shell and a vrf failure inside it
+          # exits the step, and without mapfile so it stays portable.
+          archives=()
+          while read -r f; do archives+=("$f"); done < <(grep -oE '[^ ]+$' /tmp/expected-checksums.txt)
+          [ "${#archives[@]}" -ge 1 ] || { echo "::error::no archives listed in the expected checksums" >&2; exit 1; }
+          for f in "${archives[@]}"; do
+            vrf "dist/$f" \
+              https://fosterstack.com/attestations/build/v1 stage-build.yml "build:$f" strict >/dev/null
+            vrf "dist/$f" \
+              https://slsa.dev/provenance/v1 stage-build.yml "build-provenance:$f" slsa >/dev/null
           done
-          vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
-            https://fosterstack.com/attestations/build/v1 stage-build.yml build strict >/dev/null
-          vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
-            https://slsa.dev/provenance/v1 stage-build.yml build-provenance slsa >/dev/null
 
           # 3. per-digest: image-build, reproducibility, every scanner, acceptance
           scanners=$(jq -r '.scanners[]' .github/policy/scanners.json)
@@ -172,15 +194,118 @@ jobs:
             acc=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}" strict)
             agot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$acc")
             [ "$agot" = "$d" ] || { echo "::error::acceptance:${v} predicate names ${agot}, authorizing ${d}" >&2; exit 1; }
-            # R08: authorization independently enforces the acceptance
-            # CONTENT, not just its signature - any failed AC, or any
-            # not-run AC that is not publication-phase, fails the release.
-            bad=$(jq -r '[.[0].verificationResult.statement.predicate.ac_results[]
-                          | select(.result == "fail"
-                                   or (.result == "not-run" and (.phase // "candidate") != "publication"))
-                          | .ac] | join(",")' <<<"$acc")
-            [ -z "$bad" ] || { echo "::error::acceptance:${v} predicate carries non-passing candidate ACs: ${bad}" >&2; exit 1; }
+            # R08: capture the production variant's acceptance CONTENT so the
+            # strict validator below can enforce it against the frozen
+            # baseline. The weak inline filter (only "fail"/some "not-run")
+            # is replaced by that validator, which requires the COMPLETE
+            # required candidate set to be present and passing.
+            if [ "$v" = "production" ]; then
+              jq '.[0].verificationResult.statement.predicate.ac_results // empty' <<<"$acc" \
+                > /tmp/authorize-ac-results.json
+            fi
           done
+
+          # R08: independently re-enforce the acceptance predicate CONTENT
+          # against the FROZEN, owner-approved baseline at this tag (mirrors
+          # how stage-acceptance-predicate.yml derives the required set). The
+          # signature/digest bind above proves it is the right, freshly signed
+          # statement; this proves it actually attests a COMPLETE pass, so a
+          # validly signed but incomplete/incorrect acceptance predicate for
+          # the same subject is rejected.
+          [ -s /tmp/authorize-ac-results.json ] \
+            || { echo "::error::no production acceptance predicate content captured to validate" >&2; exit 1; }
+          TAG="${GITHUB_REF_NAME}" ACFILE=/tmp/authorize-ac-results.json python3 - <<'PY'
+          import json, os, sys, yaml
+
+          tag = os.environ["TAG"]
+          # The FROZEN baseline is the authority for the required set (F07),
+          # not the working requirements.yaml.
+          frozen_path = f"requirements/releases/{tag}.yaml"
+          try:
+              frozen = yaml.safe_load(open(frozen_path))
+          except FileNotFoundError:
+              print(f"::error::frozen baseline {frozen_path} missing - cannot authorize", file=sys.stderr)
+              sys.exit(1)
+
+          blocking = frozen.get("release_blocking_acs") or []
+          # Only acceptance-METHOD candidate ACs are asserted in this
+          # predicate; the others were gated upstream (mirror the acceptance
+          # stage's derivation exactly).
+          candidate_required = {
+              b["id"] for b in blocking
+              if b.get("phase") == "candidate" and str(b.get("method", "")).startswith("acceptance")
+          }
+          publication_acs = {b["id"] for b in blocking if b.get("phase") == "publication"}
+          if not candidate_required:
+              print("::error::no candidate-phase acceptance-method blocking ACs in the frozen baseline - the gate would enforce nothing", file=sys.stderr)
+              sys.exit(1)
+
+          # The allowed universe of AC ids = every non-deprecated
+          # acceptance-method AC in the tagged requirements.yaml (this is what
+          # the acceptance stage may legitimately report, including
+          # non-blocking informational ones) plus the publication ids. Any id
+          # outside it is an injected/unknown entry and is rejected.
+          reqs = yaml.safe_load(open("requirements/requirements.yaml"))
+          allowed = set(publication_acs)
+          for r in reqs.get("requirements", []):
+              if r.get("deprecated"):
+                  continue
+              for ac in r.get("acceptance_criteria", []):
+                  m = (ac.get("verification") or {}).get("method", "")
+                  if m.startswith("acceptance"):
+                      allowed.add(ac["id"])
+
+          try:
+              rows = json.load(open(os.environ["ACFILE"]))
+          except (OSError, ValueError) as e:
+              print(f"::error::acceptance:production ac_results unreadable: {e}", file=sys.stderr)
+              sys.exit(1)
+          if not isinstance(rows, list) or not rows:
+              print("::error::acceptance:production predicate carries an empty ac_results - refusing to authorize", file=sys.stderr)
+              sys.exit(1)
+
+          # Only these tokens are meaningful; anything else (e.g. "banana")
+          # is an invalid result.
+          valid_tokens = {"pass", "fail", "skip", "not-run", "deferred-to-publication"}
+          seen = {}
+          for rec in rows:
+              if not isinstance(rec, dict):
+                  print(f"::error::acceptance:production has a malformed ac_results entry: {rec!r}", file=sys.stderr)
+                  sys.exit(1)
+              ac_id = rec.get("ac")
+              res = rec.get("result")
+              if ac_id is None:
+                  print(f"::error::acceptance:production has an ac_results entry with no ac id: {rec!r}", file=sys.stderr)
+                  sys.exit(1)
+              if res not in valid_tokens:
+                  print(f"::error::acceptance:production reports an invalid result for {ac_id}: {res!r}", file=sys.stderr)
+                  sys.exit(1)
+              if ac_id in seen:
+                  print(f"::error::acceptance:production reports {ac_id} more than once", file=sys.stderr)
+                  sys.exit(1)
+              if ac_id not in allowed:
+                  print(f"::error::acceptance:production reports an AC not in the {tag} baseline: {ac_id}", file=sys.stderr)
+                  sys.exit(1)
+              seen[ac_id] = res
+
+          # Every required candidate AC must be present exactly once and pass;
+          # missing/skip/not-run/fail/invalid all fail the release.
+          missing = sorted(candidate_required - set(seen))
+          if missing:
+              print(f"::error::acceptance:production predicate is missing required candidate ACs: {', '.join(missing)}", file=sys.stderr)
+              sys.exit(1)
+          notpass = sorted(f"{a}={seen[a]}" for a in candidate_required if seen[a] != "pass")
+          if notpass:
+              print(f"::error::acceptance:production predicate carries non-passing candidate ACs: {', '.join(notpass)}", file=sys.stderr)
+              sys.exit(1)
+          # Publication-phase ids, if present, may only be pass or the
+          # designated deferral marker.
+          badpub = sorted(f"{a}={seen[a]}" for a in publication_acs if a in seen and seen[a] not in ("pass", "deferred-to-publication"))
+          if badpub:
+              print(f"::error::acceptance:production predicate has invalid publication-phase outcomes: {', '.join(badpub)}", file=sys.stderr)
+              sys.exit(1)
+          print(f"acceptance content verified: {len(candidate_required)} required candidate ACs present and passing")
+          PY
           echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
 
       - name: write and sign the release-authorization predicate
