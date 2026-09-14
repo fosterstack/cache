@@ -87,17 +87,30 @@ jobs:
           # for digest-subject predicates, the digest being authorized.
           # vrf enforces the sha binding; enforce_verdict/enforce_digest
           # add typed-content policy on top.
-          vrf() { # subject, predicate-type, signer-workflow-file, label
+          # $5 = binding mode: "strict" (a custom predicate MUST carry
+          # .predicate.sha == GITHUB_SHA, present) or "slsa" (SLSA
+          # provenance, bound by --signer-workflow to the producing stage
+          # at this ref; it has no .predicate.sha field). "when present"
+          # is not enough - the build predicate's source lives under
+          # .materials.commit and a foreign one would otherwise slip past
+          # a missing top-level field (R08).
+          vrf() { # subject, predicate-type, signer-workflow-file, label, mode
             out=$(gh attestation verify "$1" \
               --repo "${GITHUB_REPOSITORY}" \
               --predicate-type "$2" \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/$3" \
               --format json) \
               || { echo "::error::graph verification failed: $4 ($2 by $3 on $1)" >&2; exit 1; }
-            psha=$(jq -r '.[0].verificationResult.statement.predicate.sha // empty' <<<"$out")
-            if [ -n "$psha" ] && [ "$psha" != "${GITHUB_SHA}" ]; then
-              echo "::error::$4 predicate names source ${psha}, not the admitted ${GITHUB_SHA}" >&2
-              exit 1
+            if [ "${5:-strict}" = "strict" ]; then
+              psha=$(jq -r '.[0].verificationResult.statement.predicate.sha // empty' <<<"$out")
+              [ -n "$psha" ] || { echo "::error::$4 predicate carries no source sha - refusing to bind it to the release" >&2; exit 1; }
+              [ "$psha" = "${GITHUB_SHA}" ] || { echo "::error::$4 predicate names source ${psha}, not the admitted ${GITHUB_SHA}" >&2; exit 1; }
+              # the build predicate additionally records source under
+              # .materials.commit; when present it must agree too.
+              mcommit=$(jq -r '.[0].verificationResult.statement.predicate.materials.commit // empty' <<<"$out")
+              if [ -n "$mcommit" ] && [ "$mcommit" != "${GITHUB_SHA}" ]; then
+                echo "::error::$4 predicate materials.commit is ${mcommit}, not the admitted ${GITHUB_SHA}" >&2; exit 1
+              fi
             fi
             record "$4" "$out"
             printf '%s' "$out"
@@ -131,9 +144,9 @@ jobs:
               || { echo "::error::build provenance missing for $f" >&2; exit 1; }
           done
           vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
-            https://fosterstack.com/attestations/build/v1 stage-build.yml build >/dev/null
+            https://fosterstack.com/attestations/build/v1 stage-build.yml build strict >/dev/null
           vrf "dist/$(grep -oE '[^ ]+$' /tmp/expected-checksums.txt | head -1)" \
-            https://slsa.dev/provenance/v1 stage-build.yml build-provenance >/dev/null
+            https://slsa.dev/provenance/v1 stage-build.yml build-provenance slsa >/dev/null
 
           # 3. per-digest: image-build, reproducibility, every scanner, acceptance
           scanners=$(jq -r '.scanners[]' .github/policy/scanners.json)
@@ -141,18 +154,32 @@ jobs:
           for v in production debug fips; do
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
-            ib=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}")
+            ib=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}" strict)
             # the image-build predicate must name THIS digest as the variant's index
             got=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$ib")
             [ "$got" = "$d" ] || { echo "::error::image-build:${v} predicate names ${got}, authorizing ${d}" >&2; exit 1; }
-            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}" >/dev/null
-            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}" >/dev/null
+            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}" slsa >/dev/null
+            repro=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}" strict)
+            rgot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$repro")
+            [ "$rgot" = "$d" ] || { echo "::error::reproducibility:${v} predicate names ${rgot}, authorizing ${d}" >&2; exit 1; }
             for s in $scanners; do
-              sc=$(vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}")
+              sc=$(vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}" strict)
               verdict=$(jq -r '.[0].verificationResult.statement.predicate.verdict // "missing"' <<<"$sc")
               [ "$verdict" = "pass" ] || { echo "::error::scan-${s}:${v} verdict is ${verdict}, not pass" >&2; exit 1; }
+              sgot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$sc")
+              [ "$sgot" = "$d" ] || { echo "::error::scan-${s}:${v} predicate names ${sgot}, authorizing ${d}" >&2; exit 1; }
             done
-            vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}" >/dev/null
+            acc=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}" strict)
+            agot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$acc")
+            [ "$agot" = "$d" ] || { echo "::error::acceptance:${v} predicate names ${agot}, authorizing ${d}" >&2; exit 1; }
+            # R08: authorization independently enforces the acceptance
+            # CONTENT, not just its signature - any failed AC, or any
+            # not-run AC that is not publication-phase, fails the release.
+            bad=$(jq -r '[.[0].verificationResult.statement.predicate.ac_results[]
+                          | select(.result == "fail"
+                                   or (.result == "not-run" and (.phase // "candidate") != "publication"))
+                          | .ac] | join(",")' <<<"$acc")
+            [ -z "$bad" ] || { echo "::error::acceptance:${v} predicate carries non-passing candidate ACs: ${bad}" >&2; exit 1; }
           done
           echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
 

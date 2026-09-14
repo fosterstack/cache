@@ -137,21 +137,24 @@ jobs:
         if: inputs.mode == 'release'
         run: |
           set -euo pipefail
+          gosum_sha256=$(sha256sum go.sum | cut -d' ' -f1)
           jq -n \
             --arg goversion "$(go version)" \
             --arg goreleaser "2.17.1" \
             --arg commit "$GITHUB_SHA" \
             --arg ref "$GITHUB_REF" \
             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --rawfile gosum go.sum \
+            --arg gosum "$gosum_sha256" \
             '{
               stage: "build",
+              sha: $commit,
+              ref: $ref,
               materials: {
                 go_toolchain: $goversion,
                 goreleaser: $goreleaser,
                 commit: $commit,
                 ref: $ref,
-                gosum_sha256: ($gosum | @base64)
+                gosum_sha256: $gosum
               },
               run: $run
             }' > /tmp/build-predicate.json
