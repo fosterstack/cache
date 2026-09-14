@@ -131,15 +131,26 @@ above — verify it (needs a token), pinned to the promotion workflow and
 this release ref:
 
 ```sh
+# Verify the attestation AND extract its predicate as JSON, then assert
+# the two release ACs are pass and bound to this tag/digest - a signature
+# alone is not the outcome.
 gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
   --repo fosterstack/cache \
   --predicate-type https://fosterstack.com/attestations/publication/v1 \
   --signer-workflow fosterstack/cache/.github/workflows/stage-promote.yml \
-  --source-ref "refs/tags/v${VER}"
+  --source-ref "refs/tags/v${VER}" \
+  --format json \
+  --jq '.[0].verificationResult.statement.predicate' > /tmp/pub.json
+
+# tag binding, then both ACs pass:
+jq -e --arg t "v${VER}" '.tag == $t' /tmp/pub.json >/dev/null \
+  && jq -e '[.publication_ac_results[] | select(.ac=="REQ-REL-001-AC1" or .ac=="REQ-REL-002-AC1") | .result] | (length==2 and all(.=="pass"))' /tmp/pub.json >/dev/null \
+  && echo "publication outcomes: REQ-REL-001-AC1 and REQ-REL-002-AC1 both pass for v${VER}"
 ```
 
-Its predicate's `publication_ac_results` records both ACs as `pass`; a
-signature alone is not the outcome — read those fields.
+The `--jq`/`jq` extraction reads the predicate's `publication_ac_results`
+directly, so the customer checks the outcome fields, not merely that a
+signature exists.
 
 The scanner list lives in
 [`.github/policy/scanners.json`](../.github/policy/scanners.json) — the

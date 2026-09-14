@@ -192,10 +192,12 @@ pins every archive by SHA-256 — so verifying the checksums file and then
 checking an archive against it is a complete chain, not two half-measures.
 
 ```sh
-# 1. Prove the checksums file is ours
+# 1. Prove the checksums file is ours. The checksums bundle is signed by
+#    the promotion workflow at this release tag - pin it (same identity as
+#    the image signature above), not "any workflow in this repo".
 cosign verify-blob checksums.txt \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 
 # 2. Prove the archive matches that file
