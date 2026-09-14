@@ -28,27 +28,55 @@ jobs:
           check-latest: true
       - name: install gremlins (pinned)
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
-      - name: unleash gremlins on the product packages
+      # gremlins takes a DIRECTORY, not a Go package pattern: `./...`
+      # produced "No results to report" and no JSON while exiting 0 (R10).
+      # Each MODULE is scanned separately with its directory argument; the
+      # root scan excludes the nested tools/requirements module (its own
+      # go.mod, covered by its own suite). The mutation SCORE stays
+      # advisory, but an absent/empty report or a tool failure is a
+      # failure - a green run with no mutations is not a baseline.
+      - name: unleash gremlins per module
         id: run
         run: |
           set -uo pipefail
+          gremlins="$(go env GOPATH)/bin/gremlins"
+          fail=0
+          run_module() { # label, out.json, log, workdir, extra-args...
+            local label="$1" out="$2" log="$3" wd="$4"; shift 4
+            echo "== gremlins: ${label} =="
+            ( cd "$wd" && "$gremlins" unleash --output "$out" "$@" . ) 2>&1 | tee "$log"
+            local rc="${PIPESTATUS[0]}"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::gremlins failed for ${label} (exit ${rc})" >&2; fail=1; return
+            fi
+            if [ ! -s "$out" ] || ! jq -e '.mutants_total > 0' "$out" >/dev/null 2>&1; then
+              echo "::error::gremlins produced no mutations for ${label} - not a valid baseline" >&2; fail=1; return
+            fi
+          }
+          run_module "root product module" /tmp/mutation-root.json /tmp/mutation-root.log "$GITHUB_WORKSPACE" -E 'tools/requirements/.*'
+          run_module "tools/requirements module" /tmp/mutation-req.json /tmp/mutation-req.log "$GITHUB_WORKSPACE/tools/requirements"
           {
             echo "## Mutation testing (advisory)"
             echo
-            echo "Tool: gremlins v0.6.0. Score is advisory (test-strategy §6)."
-            echo
-            echo '```'
-            "$(go env GOPATH)/bin/gremlins" unleash --output /tmp/mutation.json \
-              ./... 2>&1 | tee /tmp/mutation.log | tail -40
-            echo '```'
+            echo "Tool: gremlins v0.6.0. The score is advisory (test-strategy §6); an absent or empty report fails the run, a low efficacy does not."
+            for m in root req; do
+              f="/tmp/mutation-${m}.json"
+              if [ -s "$f" ]; then
+                echo
+                echo "### ${m} module"
+                jq -r '"- mutants: \(.mutants_total)  killed: \(.mutants_killed)  lived: \(.mutants_lived)  not-covered: \(.mutants_not_covered)\n- test efficacy: \(.test_efficacy)%  mutant coverage: \(.mutations_coverage)%"' "$f"
+              fi
+            done
           } >> "$GITHUB_STEP_SUMMARY"
-          # never fail the run; the threshold in .gremlins.yaml is 0
-          exit 0
-      - name: upload the mutation report
+          [ "$fail" -eq 0 ] || exit 1
+      - name: upload the mutation reports
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutation-report
           path: |
-            /tmp/mutation.json
-            /tmp/mutation.log
+            /tmp/mutation-root.json
+            /tmp/mutation-root.log
+            /tmp/mutation-req.json
+            /tmp/mutation-req.log
           retention-days: 90
