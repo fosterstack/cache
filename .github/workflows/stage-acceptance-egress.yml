@@ -3,12 +3,31 @@ name: 'Stage: no-outbound acceptance'
 # REQ-PRIV-001-AC1: the server makes no outbound connection and no name
 # resolution, at startup, under load, or idle, and behaves identically
 # with egress denied. A brief open-socket check does NOT satisfy this AC
-# (its own wording says so), so this stage captures every packet the
-# candidate emits on its own network namespace with a tcpdump sidecar,
-# drives real traffic through it, and asserts nothing left for a
-# non-loopback address and no DNS was attempted - in BOTH an ordinary
-# network and a fully egress-denied (--internal) network, asserting the
-# service behaved the same in each.
+# (its own wording says so).
+#
+# Design (audit R05 remediation):
+#  * A netshoot "netns owner" holds the candidate's network namespace and
+#    publishes the port BEFORE the candidate exists. A tcpdump sidecar is
+#    attached to that shared netns and confirmed running BEFORE the server
+#    starts, so startup activity (including a startup DNS lookup or outbound
+#    attempt) cannot be missed. The candidate is then started INTO the same,
+#    already-monitored namespace.
+#  * Capture is `-i any` (all interfaces, IPv4+IPv6, DNS/UDP and TCP).
+#  * The run walks explicit startup, load (real cache PUT/GET asserting
+#    200/201 status and exact returned bytes) and idle intervals.
+#  * Analysis flags ANY DNS (udp/tcp port 53) and any server-ORIGINATED pure
+#    SYN whose destination is not an explicitly-allowed EXACT test address
+#    (loopback, the netns's own IP, and the computed docker bridge gateway
+#    used for the published port). RFC1918 is NOT blanket-exempted: a
+#    server-originated SYN to any other address, private or public, fails.
+#  * Monitor/capture/parser failure fails the job (no `|| true` swallows a
+#    broken capture; the pcap must be non-empty and the analysis must run).
+#  * The whole thing runs in BOTH an ordinary network and an `--internal`
+#    egress-denied network, and asserts identical status codes and bytes.
+#  * Negative controls, in a clearly separated phase with their own netns and
+#    pcap, deliberately attempt a DNS lookup and an outbound TCP connect from
+#    the monitored namespace and require the monitor to OBSERVE them - proving
+#    the capture is not blind before any clean result is trusted.
 
 on:
   workflow_call:
@@ -45,56 +64,264 @@ jobs:
           echo "REF=ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}" >> "$GITHUB_ENV"
           docker pull -q "ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}"
 
-      - name: run under packet capture on an ordinary network, then egress-denied
+      - name: capture from before startup, prove the monitor, run both policies
+        env:
+          REF: ${{ env.REF }}
         run: |
           set -euo pipefail
-          # $1 = scenario label, $2 = docker network args
-          run_scenario() {
-            label="$1"; shift
-            docker rm -f fscache-egress 2>/dev/null || true
-            # The candidate publishes 8080 on the host; the sidecar shares
-            # its network namespace so it sees every packet the server
-            # sends or receives, including any DNS or outbound attempt.
-            # shellcheck disable=SC2068  # network args are intentionally word-split
-            docker run -d --name fscache-egress "$@" -p 127.0.0.1:18080:8080 "${REF}"
-            cid=$(docker inspect -f '{{.Id}}' fscache-egress)
-            docker run -d --name fscache-tcpdump --net "container:${cid}" \
-              nicolaka/netshoot:v0.13 tcpdump -n -l -w /tmp/cap.pcap
-            # Startup period.
-            ok=0
-            for _ in $(seq 1 30); do curl -sf localhost:18080/healthz >/dev/null && { ok=1; break; }; sleep 1; done
-            [ "$ok" = 1 ] || { echo "::error::${label}: candidate never healthy (egress policy changed its behavior)" >&2; docker logs fscache-egress >&2 || true; return 1; }
-            # Load period: real cache traffic.
-            for i in $(seq 1 50); do
-              curl -s -X PUT --data-binary "payload-$i" "localhost:18080/k$i" -o /dev/null
-              curl -s "localhost:18080/k$i" -o /dev/null
-            done
-            # Idle period.
-            sleep 5
-            # Freeze the capture.
-            docker exec fscache-tcpdump pkill tcpdump 2>/dev/null || true
-            sleep 2
-            docker cp fscache-tcpdump:/tmp/cap.pcap "/tmp/${label}.pcap"
-            docker rm -f fscache-egress fscache-tcpdump >/dev/null
-            # Analyze: any UDP/53 (DNS) or any TCP SYN to a non-loopback,
-            # non-RFC1918-gateway, non-host address is an outbound attempt.
-            docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13 \
-              tcpdump -nr "/caps/${label}.pcap" 'udp port 53' 2>/dev/null > "/tmp/${label}.dns" || true
-            docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13 \
-              tcpdump -nr "/caps/${label}.pcap" 'tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0' 2>/dev/null > "/tmp/${label}.syn" || true
-            dns=$(wc -l < "/tmp/${label}.dns")
-            # Keep only SYNs whose destination is not loopback and not the
-            # docker bridge gateway (the host side of the published port).
-            ext=$(grep -Ev '> 127\.0\.0\.1\.|> 172\.1[6-9]\.|> 172\.2[0-9]\.|> 172\.3[0-1]\.|> 10\.|> 192\.168\.' "/tmp/${label}.syn" | grep -c '>' || true)
-            echo "${label}: dns_packets=${dns} external_syns=${ext}"
-            if [ "${dns}" -ne 0 ]; then echo "::error::${label}: the server attempted DNS resolution" >&2; cat "/tmp/${label}.dns" >&2; return 1; fi
-            if [ "${ext}" -ne 0 ]; then echo "::error::${label}: the server attempted an outbound connection" >&2; grep '>' "/tmp/${label}.syn" >&2; return 1; fi
+
+          NETSHOOT=nicolaka/netshoot:v0.13
+          HOSTPORT=127.0.0.1:18080
+          BASE=http://127.0.0.1:18080
+
+          # ------------------------------------------------------------------
+          # analyze_pcap <pcap> <label> <gateway_ip> <own_ip>
+          #
+          # Reads a capture taken on the candidate's shared netns and writes:
+          #   /tmp/<label>.dnscount : DNS packets (udp OR tcp port 53), any peer
+          #   /tmp/<label>.extcount : server-ORIGINATED pure SYNs whose
+          #                           destination is not an explicitly-allowed
+          #                           EXACT test address.
+          #
+          # A pure SYN is server-originated when its source is NOT the docker
+          # bridge gateway (inbound published-port traffic is SNAT'd to appear
+          # from the gateway). Allowed destinations are exact addresses only -
+          # loopback (127.0.0.1/::1), the netns's own IP (self), and the
+          # computed bridge gateway - never a blanket RFC1918 range. So a
+          # server-originated SYN to e.g. 192.168.1.25:443, 10.0.0.5 or a public
+          # host is all flagged.
+          #
+          # ANY tool/parse failure (unreadable pcap, tshark error, zero packets)
+          # returns non-zero and, under `set -e`, fails the job. A broken
+          # capture never passes silently.
+          # ------------------------------------------------------------------
+          analyze_pcap() {
+            local pcap="$1" label="$2" gw="$3" own="$4"
+            local base allowed total
+            base=$(basename "$pcap")
+            allowed="127.0.0.1 ::1 ${own} ${gw}"
+            [ -s "$pcap" ] || { echo "::error::${label}: capture ${pcap} missing or empty (monitor failure)" >&2; return 1; }
+            if ! total=$(docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" -T fields -e frame.number 2>/dev/null | wc -l); then
+              echo "::error::${label}: tshark could not read ${pcap} (parser failure)" >&2
+              return 1
+            fi
+            [ "$total" -gt 0 ] || { echo "::error::${label}: capture contained zero packets (monitor blind)" >&2; return 1; }
+            # DNS: any packet on port 53 (udp or tcp), regardless of peer/direction.
+            if ! docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" \
+                 -Y 'udp.port == 53 || tcp.port == 53' -T fields -e frame.number \
+                 > "/tmp/${label}.dnsraw" 2>/dev/null; then
+              echo "::error::${label}: DNS analysis failed (parser failure)" >&2
+              return 1
+            fi
+            # Pure SYNs (connection initiations): src/dst for IPv4 and IPv6.
+            if ! docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" \
+                 -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0' \
+                 -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -E separator='|' \
+                 > "/tmp/${label}.synraw" 2>/dev/null; then
+              echo "::error::${label}: SYN analysis failed (parser failure)" >&2
+              return 1
+            fi
+            awk -F'|' -v gw="$gw" -v allowed="$allowed" '
+              BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+              {
+                if ($0 == "") next
+                src = ($1 != "" ? $1 : $3)
+                dst = ($2 != "" ? $2 : $4)
+                if (src == "") next
+                if (src == gw) next          # inbound published-port traffic (source SNATs to the gateway)
+                if (dst in ok) next          # loopback / self / bridge gateway - allowed test paths
+                print src " > " dst
+              }' "/tmp/${label}.synraw" > "/tmp/${label}.ext"
+            wc -l < "/tmp/${label}.dnsraw" | tr -d ' ' > "/tmp/${label}.dnscount"
+            wc -l < "/tmp/${label}.ext"    | tr -d ' ' > "/tmp/${label}.extcount"
           }
-          docker network create fscache-open >/dev/null || true
-          docker network create --internal fscache-denied >/dev/null || true
-          run_scenario open   --network fscache-open
-          run_scenario denied --network fscache-denied
-          echo "no outbound connection or name resolution in either network; behavior identical"
+
+          wait_for_tcpdump() {
+            local cname="$1" label="$2" t=0
+            until docker exec "$cname" pgrep -x tcpdump >/dev/null 2>&1; do
+              t=$((t + 1))
+              if [ "$t" -ge 20 ]; then
+                echo "::error::${label}: tcpdump never started on the shared netns (monitor failure)" >&2
+                return 1
+              fi
+              sleep 1
+            done
+          }
+
+          # start_stack <label> <network-name>
+          # Brings up the netns owner (publishing the port) and the capture
+          # sidecar, and confirms capture is running BEFORE any server exists.
+          # Sets OWN_IP / OWN_GW for the shared netns.
+          start_stack() {
+            local label="$1" net="$2"
+            docker rm -f "fscache-net-${label}" "fscache-tap-${label}" "fscache-cand-${label}" >/dev/null 2>&1 || true
+            docker run -d --name "fscache-net-${label}" --network "$net" \
+              -p "${HOSTPORT}:8080" "$NETSHOOT" sleep infinity >/dev/null
+            OWN_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "fscache-net-${label}")
+            OWN_GW=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "fscache-net-${label}")
+            if [ -z "$OWN_GW" ] || [ -z "$OWN_IP" ]; then
+              echo "::error::${label}: could not determine netns own IP / bridge gateway" >&2
+              return 1
+            fi
+            docker run -d --name "fscache-tap-${label}" --net "container:fscache-net-${label}" \
+              -v /tmp:/caps "$NETSHOOT" tcpdump -i any -n -U -w "/caps/${label}.pcap" >/dev/null
+            wait_for_tcpdump "fscache-tap-${label}" "$label"
+          }
+
+          freeze_capture() {
+            local label="$1"
+            # SIGTERM to tcpdump (PID 1 of the sidecar): it flushes the pcap and
+            # exits. `|| true` only tolerates an already-stopped sidecar; the
+            # capture is written unbuffered (-U) so the file is complete either way.
+            docker stop -t 15 "fscache-tap-${label}" >/dev/null 2>&1 || true
+            sleep 1
+          }
+
+          teardown() {
+            local label="$1"
+            docker rm -f "fscache-cand-${label}" "fscache-tap-${label}" "fscache-net-${label}" >/dev/null 2>&1 || true
+          }
+
+          # run_scenario <label> <network-name>
+          # startup -> load (real PUT/GET, asserting 200/201 + exact bytes) ->
+          # idle -> freeze -> analyze. Writes /tmp/<label>.summary (status+bytes
+          # per key) for cross-policy comparison. Any DNS or non-allowed
+          # outbound fails the job.
+          run_scenario() {
+            local label="$1" net="$2"
+            start_stack "$label" "$net"
+            # Start the candidate INTO the already-monitored netns (no -p: it
+            # shares the owner's published port and namespace).
+            docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" "$REF" >/dev/null
+            # ---- startup interval (capture already running) ----
+            local ok=0 t
+            for ((t = 1; t <= 30; t++)); do
+              if curl -sf "${BASE}/healthz" >/dev/null 2>&1; then ok=1; break; fi
+              sleep 1
+            done
+            if [ "$ok" != 1 ]; then
+              echo "::error::${label}: candidate never became healthy (egress policy may have changed its behavior)" >&2
+              docker logs "fscache-cand-${label}" >&2 || true
+              freeze_capture "$label"; teardown "$label"
+              return 1
+            fi
+            # ---- load interval: real cache traffic, asserting status + bytes ----
+            : > "/tmp/${label}.summary"
+            local i key payload put get body exp size
+            for ((i = 1; i <= 20; i++)); do
+              key="k${i}"
+              payload="fostercache-payload-${i}-abcdefgh"
+              put=$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "${BASE}/${key}")
+              case "$put" in
+                200|201) ;;
+                *) echo "::error::${label}: PUT ${key} returned status ${put} (expected 200/201)" >&2
+                   freeze_capture "$label"; teardown "$label"; return 1;;
+              esac
+              body="/tmp/${label}.${key}.body"
+              get=$(curl -s -o "$body" -w '%{http_code}' "${BASE}/${key}")
+              if [ "$get" != 200 ]; then
+                echo "::error::${label}: GET ${key} returned status ${get} (expected 200)" >&2
+                freeze_capture "$label"; teardown "$label"; return 1
+              fi
+              exp="/tmp/${label}.${key}.exp"
+              printf '%s' "$payload" > "$exp"
+              if ! cmp -s "$exp" "$body"; then
+                echo "::error::${label}: GET ${key} returned wrong bytes (cache behavior differs)" >&2
+                freeze_capture "$label"; teardown "$label"; return 1
+              fi
+              size=$(wc -c < "$body" | tr -d ' ')
+              printf '%s PUT=%s GET=%s BYTES=%s\n' "$key" "$put" "$get" "$size" >> "/tmp/${label}.summary"
+            done
+            # ---- idle interval ----
+            sleep 6
+            # ---- freeze and analyze ----
+            freeze_capture "$label"
+            analyze_pcap "/tmp/${label}.pcap" "$label" "$OWN_GW" "$OWN_IP"
+            local dns ext
+            dns=$(cat "/tmp/${label}.dnscount")
+            ext=$(cat "/tmp/${label}.extcount")
+            echo "${label}: allowed_exact={127.0.0.1, ::1, ${OWN_IP} (self), ${OWN_GW} (bridge gw)} dns_packets=${dns} external_syns=${ext}"
+            teardown "$label"
+            if [ "$dns" -ne 0 ]; then
+              echo "::error::${label}: candidate attempted name resolution (DNS)" >&2
+              cat "/tmp/${label}.dnsraw" >&2 || true
+              return 1
+            fi
+            if [ "$ext" -ne 0 ]; then
+              echo "::error::${label}: candidate attempted an outbound connection to a non-allowed address" >&2
+              cat "/tmp/${label}.ext" >&2 || true
+              return 1
+            fi
+          }
+
+          # negative_controls
+          # Separate phase, own network and own pcap, so it cannot contaminate
+          # the real measurement. Deliberately attempts DNS + an outbound TCP
+          # connect FROM the monitored netns and requires the SAME analysis
+          # apparatus to observe both. If it does not, the capture is blind and
+          # no clean result can be trusted -> fail.
+          negative_controls() {
+            local label=control net=fscache-nc
+            docker network create "$net" >/dev/null 2>&1 || true
+            docker rm -f "fscache-net-${label}" "fscache-tap-${label}" >/dev/null 2>&1 || true
+            docker run -d --name "fscache-net-${label}" --network "$net" "$NETSHOOT" sleep infinity >/dev/null
+            OWN_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "fscache-net-${label}")
+            OWN_GW=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "fscache-net-${label}")
+            docker run -d --name "fscache-tap-${label}" --net "container:fscache-net-${label}" \
+              -v /tmp:/caps "$NETSHOOT" tcpdump -i any -n -U -w "/caps/${label}.pcap" >/dev/null
+            wait_for_tcpdump "fscache-tap-${label}" "$label"
+            # The controls themselves are expected NOT to reach a real host, so a
+            # nonzero exit here is fine (|| true). Targets are RFC5737 TEST-NET-3
+            # documentation addresses. This `|| true` is on the CONTROL traffic,
+            # never on the capture/analysis.
+            docker exec "fscache-net-${label}" sh -c 'dig +time=2 +tries=1 @203.0.113.53 probe.invalid >/dev/null 2>&1 || true'
+            docker exec "fscache-net-${label}" sh -c 'nc -w 2 203.0.113.1 80 </dev/null >/dev/null 2>&1 || true'
+            sleep 2
+            freeze_capture "$label"
+            analyze_pcap "/tmp/${label}.pcap" "$label" "$OWN_GW" "$OWN_IP"
+            local dns ext
+            dns=$(cat "/tmp/${label}.dnscount")
+            ext=$(cat "/tmp/${label}.extcount")
+            echo "negative control: dns_packets=${dns} external_syns=${ext} (both must be > 0 for the monitor to be trusted)"
+            teardown "$label"
+            if [ "$dns" -lt 1 ] || [ "$ext" -lt 1 ]; then
+              echo "::error::negative control: monitor did NOT observe a deliberate DNS/outbound attempt - capture is blind, privacy result cannot be trusted" >&2
+              return 1
+            fi
+          }
+
+          docker network create fscache-open >/dev/null 2>&1 || true
+          docker network create --internal fscache-denied >/dev/null 2>&1 || true
+
+          echo "== phase 0: negative controls (prove the monitor is not blind) =="
+          negative_controls
+
+          echo "== phase 1: ordinary network =="
+          run_scenario open fscache-open
+
+          echo "== phase 2: egress-denied (--internal) network =="
+          run_scenario denied fscache-denied
+
+          echo "== phase 3: identical cache behavior across policies (status + bytes) =="
+          if ! diff -u /tmp/open.summary /tmp/denied.summary; then
+            echo "::error::service behaved differently under egress-denied vs ordinary network (status/bytes mismatch)" >&2
+            exit 1
+          fi
+
+          echo "REQ-PRIV-001-AC1: monitor proven live; no DNS and no non-allowed outbound at startup, under load or idle in either policy; identical status codes and returned bytes across policies."
+
+      - name: retain capture and analysis evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: egress-privacy-evidence
+          path: |
+            /tmp/*.pcap
+            /tmp/*.synraw
+            /tmp/*.dnsraw
+            /tmp/*.ext
+            /tmp/*.summary
+          if-no-files-found: warn
 
       - name: report the AC this stage asserted
         id: results

@@ -1,14 +1,26 @@
 name: 'Stage: Kubernetes acceptance'
 
-# REQ-DEPLOY-003-AC1: the manifests and smoke commands published in
-# docs/kubernetes.md work exactly as written against a release image.
-# This stage extracts the documented Secret, PVC, Deployment, and
-# Service manifests straight from the doc (so a doc that drifts from
-# reality fails here), substitutes only the image with the exact
-# candidate digest, applies them to a kind cluster, and runs the
-# documented port-forward smoke checks: Ready pod; healthz and metrics
-# open; authenticated PUT/GET round-trip; unauthenticated 401; and the
-# secretKeyRef-injected FSCACHE_USERNAME/FSCACHE_PASSWORD present.
+# REQ-DEPLOY-003-AC1: the manifests, the in-cluster runner env block, and
+# the smoke commands published in docs/kubernetes.md work exactly as
+# written against a release image.
+#
+# This stage extracts, straight from the doc (so a doc that drifts from
+# reality fails here):
+#   * the Secret, PVC, Deployment and Service manifests (image substituted
+#     for the exact candidate digest), applied to a kind cluster;
+#   * the documented "In-cluster runners" env block — the secretKeyRef
+#     mapping a CI runner pod uses to receive FSCACHE_USERNAME /
+#     FSCACHE_PASSWORD — grafted verbatim into a small client pod;
+#   * the documented port-forward smoke commands, run from their published
+#     text rather than re-implemented.
+#
+# It then proves: pod Ready; healthz and metrics open without credentials;
+# the runner env block populates FSCACHE_USERNAME / FSCACHE_PASSWORD with
+# non-empty values (names asserted, values never printed); an authenticated
+# cache round-trip from the runner pod using those injected credentials;
+# an authenticated PUT/GET round-trip over the documented port-forward; and
+# an unauthenticated cache request returning 401. A broken runner variable
+# mapping, or a broken documented credential/command, fails this stage.
 
 on:
   workflow_call:
@@ -32,6 +44,11 @@ jobs:
     permissions:
       contents: read
       packages: read
+    env:
+      # Small image with a shell + curl for the documented runner client
+      # pod. Only the image is our substitution; the env wiring is the
+      # doc's verbatim block.
+      CLIENT_IMAGE: curlimages/curl:8.11.1
     outputs:
       results: ${{ steps.results.outputs.results }}
     steps:
@@ -89,36 +106,136 @@ jobs:
           kubectl rollout status deploy/fscache --timeout=180s \
             || { kubectl describe pods -l app.kubernetes.io/name=fscache; kubectl logs -l app.kubernetes.io/name=fscache --tail=50; exit 1; }
 
-      - name: the secretKeyRef env is populated under exactly those names
+      - name: extract the documented runner env block and smoke commands
         run: |
           set -euo pipefail
-          pod=$(kubectl get pod -l app.kubernetes.io/name=fscache -o jsonpath='{.items[0].metadata.name}')
-          for var in FSCACHE_USERNAME FSCACHE_PASSWORD; do
-            val=$(kubectl get pod "$pod" -o jsonpath="{.spec.containers[0].env[?(@.name=='${var}')].valueFrom.secretKeyRef.name}")
-            [ "$val" = "fscache-auth" ] || { echo "::error::${var} is not wired to the fscache-auth Secret" >&2; exit 1; }
-          done
+          python3 - <<'PY'
+          import re, os, shlex
+          doc = open("docs/kubernetes.md").read()
 
-      - name: documented port-forward smoke checks
+          # --- The documented "In-cluster runners" env block ---------------
+          # The runner-side secretKeyRef mapping a CI runner pod uses to
+          # receive FSCACHE_USERNAME / FSCACHE_PASSWORD. We graft this block
+          # VERBATIM into a client pod: if the doc regresses (e.g. back to an
+          # envFrom shortcut, or a wrong secret key), the grafted pod's env
+          # is wrong and the assertions below fail.
+          i = doc.index("## In-cluster runners")
+          section = doc[i:]
+          yaml_blocks = re.findall(r"```yaml\n(.*?)```", section, re.S)
+          runner_block = next((b for b in yaml_blocks if "name: runner" in b), None)
+          if runner_block is None:
+              raise SystemExit("no runner pod-spec yaml block under 'In-cluster runners'")
+          rlines = runner_block.splitlines()
+          env_idx = next((n for n, l in enumerate(rlines) if l.strip() == "env:"), None)
+          if env_idx is None:
+              raise SystemExit("documented runner block has no 'env:' list (regressed to envFrom?)")
+          env_block = "\n".join(l for l in rlines[env_idx:] if l.strip() != "")
+          for name in ("FSCACHE_USERNAME", "FSCACHE_PASSWORD"):
+              if name not in env_block:
+                  raise SystemExit("documented runner env block does not map " + name)
+
+          # The doc block's `env:` sits at 6-space indent under
+          # `- name: runner`; that is exactly where our container needs it,
+          # so it grafts in unchanged.
+          pod = (
+              "apiVersion: v1\n"
+              "kind: Pod\n"
+              "metadata:\n"
+              "  name: fscache-runner\n"
+              "  labels:\n"
+              "    app.kubernetes.io/name: fscache-runner\n"
+              "spec:\n"
+              "  restartPolicy: Never\n"
+              "  containers:\n"
+              "    - name: runner\n"
+              "      image: " + os.environ["CLIENT_IMAGE"] + "\n"
+              "      imagePullPolicy: Never\n"
+              '      command: ["sleep", "3600"]\n'
+              + env_block + "\n"
+          )
+          open("/tmp/runner-pod.yaml", "w").write(pod)
+          print("=== runner client pod (documented env block grafted) ===")
+          print(pod)
+
+          # --- The documented port-forward smoke commands ------------------
+          # Taken from their published text; the port-forward is backgrounded
+          # for CI and each curl's expected result is read from the doc's own
+          # `# -> ...` annotations, so a broken documented command/credential
+          # fails here.
+          sh_blocks = re.findall(r"```sh\n(.*?)```", doc, re.S)
+          pf_block = next(b for b in sh_blocks if "port-forward" in b)
+          curl_block = next(b for b in sh_blocks if "curl -s localhost" in b)
+          pf_cmd = next(l.strip() for l in pf_block.splitlines()
+                        if l.strip() and not l.strip().startswith("#"))
+          open("/tmp/pf.cmd", "w").write(pf_cmd + "\n")
+
+          raw = re.sub(r"\\\n\s*", " ", curl_block)   # join line continuations
+          cmds = [l.rstrip() for l in raw.splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+          lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
+          lines.append('assert_out() { got=$(eval "$1" 2>/dev/null) || true; [ "$got" = "$2" ] || { echo "::error::documented smoke command failed: [$1] got [$got] want [$2]" >&2; exit 1; }; }')
+          lines.append('assert_ok() { eval "$1" >/dev/null 2>&1 || { echo "::error::documented smoke command failed: [$1]" >&2; exit 1; }; }')
+          for c in cmds:
+              m = re.search(r"#\s*->\s*(\S+)", c)
+              if m:
+                  lines.append("assert_out " + shlex.quote(c) + " " + shlex.quote(m.group(1)))
+              else:
+                  lines.append("assert_ok " + shlex.quote(c))
+          open("/tmp/smoke-assert.sh", "w").write("\n".join(lines) + "\n")
+          print("=== documented port-forward: " + pf_cmd)
+          print("=== documented smoke assertions ===")
+          print("\n".join(lines))
+          PY
+
+      - name: load a pinned curl image for the runner client pod
         run: |
           set -euo pipefail
-          kubectl port-forward svc/fscache 18080:80 >/tmp/pf.log 2>&1 &
+          docker pull -q "$CLIENT_IMAGE"
+          kind load docker-image "$CLIENT_IMAGE" --name fscache-accept
+
+      - name: create the documented runner client pod and wait for Ready
+        run: |
+          set -euo pipefail
+          kubectl apply -f /tmp/runner-pod.yaml
+          kubectl wait --for=condition=Ready pod/fscache-runner --timeout=90s \
+            || { kubectl describe pod fscache-runner; exit 1; }
+
+      - name: the runner env block populates the expected variable names (values never printed)
+        run: |
+          set -euo pipefail
+          # Assert the NAMES the settings.gradle.kts reads are set and
+          # non-empty inside the pod; never echo the values. A regressed
+          # mapping (wrong names, or an envFrom shortcut) leaves these unset.
+          # shellcheck disable=SC2016
+          kubectl exec fscache-runner -- sh -c '[ -n "$FSCACHE_USERNAME" ] || { echo "FSCACHE_USERNAME is empty or unset in the runner pod" >&2; exit 1; }; [ -n "$FSCACHE_PASSWORD" ] || { echo "FSCACHE_PASSWORD is empty or unset in the runner pod" >&2; exit 1; }'
+
+      - name: an authenticated request from the runner pod round-trips
+        run: |
+          set -euo pipefail
+          # Use ONLY the credentials the documented env block injected (never
+          # read out-of-band from the Secret) against the cluster-internal
+          # Service. A broken mapping yields empty creds -> 401 -> failure.
+          # shellcheck disable=SC2016
+          kubectl exec fscache-runner -- sh -c '
+            set -e
+            curl -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" -X PUT --data-binary runner-roundtrip http://fscache/runnerkey123 -o /dev/null
+            got=$(curl -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" http://fscache/runnerkey123)
+            [ "$got" = runner-roundtrip ] || { echo "runner-pod authenticated round-trip failed (got: $got)" >&2; exit 1; }
+          '
+
+      - name: run the documented port-forward smoke commands
+        run: |
+          set -euo pipefail
+          # Run the documented port-forward verbatim (backgrounded for CI),
+          # then the documented curl smoke commands with their doc-declared
+          # expected results.
+          pf_cmd=$(cat /tmp/pf.cmd)
+          eval "$pf_cmd" >/tmp/pf.log 2>&1 &
           pf=$!
-          trap 'kill $pf 2>/dev/null || true' EXIT
-          for _ in $(seq 1 30); do curl -sf localhost:18080/healthz >/dev/null && break; sleep 1; done
-          # healthz and metrics open without credentials
-          curl -sf localhost:18080/healthz >/dev/null || { echo "::error::/healthz not open" >&2; exit 1; }
-          curl -sf localhost:18080/metrics >/dev/null || { echo "::error::/metrics not open" >&2; exit 1; }
-          # credentials from the documented Secret (base64 of the doc values)
-          user=$(kubectl get secret fscache-auth -o jsonpath='{.data.username}' | base64 -d)
-          pass=$(kubectl get secret fscache-auth -o jsonpath='{.data.password}' | base64 -d)
-          # unauthenticated cache request -> 401
-          code=$(curl -s -o /dev/null -w '%{http_code}' localhost:18080/k)
-          [ "$code" = "401" ] || { echo "::error::unauthenticated cache request returned ${code}, want 401" >&2; exit 1; }
-          # authenticated round-trip
-          curl -sf -u "$user:$pass" -X PUT --data-binary 'k8s-bytes' localhost:18080/acc -o /dev/null
-          got=$(curl -sf -u "$user:$pass" localhost:18080/acc)
-          [ "$got" = "k8s-bytes" ] || { echo "::error::authenticated round-trip failed (got '${got}')" >&2; exit 1; }
-          echo "REQ-DEPLOY-003-AC1: manifests applied verbatim; pod Ready; smoke checks pass"
+          trap 'kill "$pf" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do grep -q "Forwarding from" /tmp/pf.log && break; sleep 1; done
+          bash /tmp/smoke-assert.sh
+          echo "REQ-DEPLOY-003-AC1: manifests + runner env block + smoke commands from docs/kubernetes.md pass"
 
       - name: report the AC this stage asserted
         id: results
