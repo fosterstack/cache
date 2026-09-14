@@ -143,6 +143,9 @@ jobs:
 
           # ENFORCE: every candidate-phase blocking AC must be present and
           # pass. not-run, fail, skip, or absence all fail the release.
+          if not candidate_required:
+              print("::error::no candidate-phase acceptance-method blocking ACs derived from the baseline - the gate would enforce nothing", file=sys.stderr)
+              sys.exit(1)
           failures = []
           for ac_id in sorted(candidate_required):
               got = acceptance.get(ac_id, {}).get("result", "not-run")

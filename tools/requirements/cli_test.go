@@ -804,3 +804,175 @@ func TestRenderApprovedBaselineWithEvidenceAndGroups(t *testing.T) {
 		t.Error("rendered output must end with exactly one trailing newline")
 	}
 }
+
+// ── verify-freeze ────────────────────────────────────────────────────
+
+func TestVerifyFreezeConsistent(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	code, stdout, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 0 {
+		t.Fatalf("verify-freeze code = %d, want 0 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stdout, "consistent with requirements.yaml") {
+		t.Fatalf("stdout %q lacks the consistency confirmation", stdout)
+	}
+}
+
+func TestVerifyFreezeRequiresVersionArg(t *testing.T) {
+	richFixture(t)
+	code, _, stderr := runCommand(t, "verify-freeze")
+	if code != 1 || !strings.Contains(stderr, "usage: requirements verify-freeze") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeMissingFile(t *testing.T) {
+	richFixture(t)
+	code, _, stderr := runCommand(t, "verify-freeze", "v9.9.9")
+	if code != 1 || !strings.Contains(stderr, "read requirements/releases/v9.9.9.yaml") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsStaleHash(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	// Mutate requirements.yaml after freezing: the recorded hash is now stale.
+	raw, _ := os.ReadFile("requirements/requirements.yaml")
+	if err := os.WriteFile("requirements/requirements.yaml", append(raw, []byte("\n# drift\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "does not match the current requirements.yaml") {
+		t.Fatalf("stale hash not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsWrongVersion(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	// Rename the file so the on-disk version no longer matches the argument.
+	raw, _ := os.ReadFile("requirements/releases/v0.2.0.yaml")
+	if err := os.WriteFile("requirements/releases/v0.3.0.yaml", raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.3.0")
+	if code != 1 || !strings.Contains(stderr, "version is") {
+		t.Fatalf("wrong version not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsDroppedRequiredEntry(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	// Remove one release_blocking_acs entry from the frozen file only,
+	// leaving requirements.yaml (and its hash) untouched by regenerating
+	// the hash-bearing line? No - drop an entry AND keep hash: the hash is
+	// of requirements.yaml, unchanged, so the count mismatch must fire.
+	raw, _ := os.ReadFile("requirements/releases/v0.2.0.yaml")
+	var fb map[string]any
+	if err := yaml.Unmarshal(raw, &fb); err != nil {
+		t.Fatal(err)
+	}
+	acs := fb["release_blocking_acs"].([]any)
+	fb["release_blocking_acs"] = acs[:len(acs)-1] // drop the last
+	out, _ := yaml.Marshal(fb)
+	if err := os.WriteFile("requirements/releases/v0.2.0.yaml", out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "release_blocking_acs has") {
+		t.Fatalf("dropped entry not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsRephrasedEntry(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	raw, _ := os.ReadFile("requirements/releases/v0.2.0.yaml")
+	var fb map[string]any
+	if err := yaml.Unmarshal(raw, &fb); err != nil {
+		t.Fatal(err)
+	}
+	acs := fb["release_blocking_acs"].([]any)
+	first := acs[0].(map[string]any)
+	first["phase"] = "publication" // wrong phase for a candidate AC
+	out, _ := yaml.Marshal(fb)
+	if err := os.WriteFile("requirements/releases/v0.2.0.yaml", out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "the requirements derive") {
+		t.Fatalf("rephrased entry not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsEmptyRequiredSet(t *testing.T) {
+	// A requirements file with no release-blocking ACs.
+	fixture(t, minimal("false", "", "2026-09-08", "approved", ""))
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "refusing an empty required set") {
+		t.Fatalf("empty set not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsMalformedRequirements(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	if err := os.WriteFile("requirements/requirements.yaml", []byte("::: not yaml :::\n  - ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "parse requirements/requirements.yaml") {
+		t.Fatalf("malformed requirements not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeRejectsMalformedFrozenFile(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	if err := os.WriteFile("requirements/releases/v0.2.0.yaml", []byte("::: not yaml :::\n  - ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "parse requirements/releases/v0.2.0.yaml") {
+		t.Fatalf("malformed frozen file not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifyFreezeSurfacesRequirementsReadError(t *testing.T) {
+	richFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	// Replace requirements.yaml with a directory: os.Stat still succeeds
+	// (so runCLI does not chdir away), but ReadFile fails.
+	if err := os.Remove("requirements/requirements.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir("requirements/requirements.yaml", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "read requirements/requirements.yaml") {
+		t.Fatalf("read error not surfaced: code=%d stderr=%q", code, stderr)
+	}
+}

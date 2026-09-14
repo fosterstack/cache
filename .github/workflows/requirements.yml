@@ -39,3 +39,10 @@ jobs:
         run: go -C tools/requirements test -race -shuffle=on ./...
       - name: validate requirements and matrix freshness
         run: go -C tools/requirements run . check
+      # R07: the frozen release baseline must stay consistent with
+      # requirements.yaml (exact hash + complete blocking set) even while
+      # it is unapproved - a stale or hand-edited freeze that silently
+      # changes what admission enforces is caught here, in PR CI, not at
+      # release time. Approval is checked only at release admission.
+      - name: frozen baseline consistency (approval-agnostic)
+        run: go -C tools/requirements run . verify-freeze v0.2.0

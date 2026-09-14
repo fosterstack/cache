@@ -107,7 +107,7 @@ func runCLI(args []string) (code int) {
 		}
 	}()
 	if len(args) < 2 {
-		fatal("usage: requirements validate|generate|check|freeze <version>")
+		fatal("usage: requirements validate|generate|check|freeze <version>|verify-freeze <version>")
 	}
 	// Run from the repo root regardless of invocation directory.
 	if _, err := os.Stat(reqFile); err != nil {
@@ -130,6 +130,15 @@ func runCLI(args []string) (code int) {
 	case "freeze":
 		freeze(args)
 		return 0
+	case "verify-freeze":
+		if len(args) != 3 {
+			fatal("usage: requirements verify-freeze <version>")
+		}
+		if reason := verifyFreeze(args[2]); reason != "" {
+			fatal("frozen baseline inconsistent: %s", reason)
+		}
+		fmt.Printf("frozen baseline %s is consistent with requirements.yaml\n", args[2])
+		return 0
 	case "check":
 		f, m := mustLoad()
 		mustBeValid(f, m)
@@ -146,6 +155,104 @@ func runCLI(args []string) (code int) {
 		fatal("unknown command %q", args[1])
 	}
 	return 0
+}
+
+// frozenAC is one release-blocking acceptance criterion in a frozen
+// baseline, with the phase that decides where it is enforced.
+type frozenAC struct {
+	ID     string `yaml:"id"`
+	Method string `yaml:"method"`
+	Phase  string `yaml:"phase"`
+}
+
+// publicationACs can only be checked against the published release
+// (signature/attestation verification, anonymous pull); everything else
+// is a candidate-phase check.
+var publicationACs = map[string]bool{
+	"REQ-REL-001-AC1": true,
+	"REQ-REL-002-AC1": true,
+}
+
+// blockingSet derives the complete, sorted release-blocking AC set from
+// the requirements. It is the single source of truth shared by freeze
+// (which records it) and verify-freeze (which re-derives and compares).
+func blockingSet(f File) []frozenAC {
+	var blocking []frozenAC
+	for _, r := range f.Requirements {
+		if r.Deprecated {
+			continue
+		}
+		for _, ac := range r.ACs {
+			if !ac.Verification.ReleaseBlocking {
+				continue
+			}
+			phase := "candidate"
+			if publicationACs[ac.ID] {
+				phase = "publication"
+			}
+			blocking = append(blocking, frozenAC{ID: ac.ID, Method: ac.Verification.Method, Phase: phase})
+		}
+	}
+	sort.Slice(blocking, func(i, j int) bool { return blocking[i].ID < blocking[j].ID })
+	return blocking
+}
+
+// frozenBaseline is the on-disk shape of requirements/releases/<v>.yaml.
+type frozenBaseline struct {
+	Version         string     `yaml:"version"`
+	Approved        bool       `yaml:"approved"`
+	ApprovedOn      string     `yaml:"approved_on"`
+	RequirementsSHA string     `yaml:"requirements_sha256"`
+	FrozenFrom      string     `yaml:"frozen_from"`
+	BlockingACs     []frozenAC `yaml:"release_blocking_acs"`
+	Note            string     `yaml:"note"`
+}
+
+// verifyFreeze re-derives the hash and blocking set from requirements.yaml
+// and asserts the frozen baseline for the version matches EXACTLY - stale
+// hash, dropped/added/re-phased/wrong-method entry, or an empty set all
+// fail. Approval is NOT checked here: this runs in PR CI where the
+// baseline is legitimately unapproved (R07). Returns the reason on
+// mismatch, empty string on success.
+func verifyFreeze(version string) string {
+	raw, err := os.ReadFile(reqFile)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v", reqFile, err)
+	}
+	sum := fmt.Sprintf("%x", sha256.Sum256(raw))
+	var f File
+	if err := yaml.Unmarshal(raw, &f); err != nil {
+		return fmt.Sprintf("parse %s: %v", reqFile, err)
+	}
+	path := "requirements/releases/" + version + ".yaml"
+	fraw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v", path, err)
+	}
+	var fb frozenBaseline
+	if err := yaml.Unmarshal(fraw, &fb); err != nil {
+		return fmt.Sprintf("parse %s: %v", path, err)
+	}
+	if fb.Version != version {
+		return fmt.Sprintf("%s: version is %q, want %q", path, fb.Version, version)
+	}
+	if fb.RequirementsSHA != sum {
+		return fmt.Sprintf("%s: requirements_sha256 %s does not match the current requirements.yaml (%s) - re-freeze after the change", path, fb.RequirementsSHA, sum)
+	}
+	want := blockingSet(f)
+	if len(want) == 0 {
+		return "requirements.yaml declares no release-blocking ACs - refusing an empty required set"
+	}
+	if len(fb.BlockingACs) != len(want) {
+		return fmt.Sprintf("%s: release_blocking_acs has %d entries, the requirements derive %d", path, len(fb.BlockingACs), len(want))
+	}
+	for i, w := range want {
+		g := fb.BlockingACs[i]
+		if g.ID != w.ID || g.Method != w.Method || g.Phase != w.Phase {
+			return fmt.Sprintf("%s: release_blocking_acs[%d] is {%s %s %s}, the requirements derive {%s %s %s}", path, i, g.ID, g.Method, g.Phase, w.ID, w.Method, w.Phase)
+		}
+	}
+	return ""
 }
 
 // yamlMarshal is yaml.Marshal behind a seam: marshaling freeze's fixed
@@ -181,43 +288,8 @@ func freeze(args []string) {
 	if err := yaml.Unmarshal(raw, &f); err != nil {
 		fatal("parse %s: %v", reqFile, err)
 	}
-	// Publication-phase ACs can only be checked against the published
-	// release (signature/attestation verification, anonymous pull).
-	publication := map[string]bool{
-		"REQ-REL-001-AC1": true,
-		"REQ-REL-002-AC1": true,
-	}
-	type frozenAC struct {
-		ID     string `yaml:"id"`
-		Method string `yaml:"method"`
-		Phase  string `yaml:"phase"`
-	}
-	var blocking []frozenAC
-	for _, r := range f.Requirements {
-		if r.Deprecated {
-			continue
-		}
-		for _, ac := range r.ACs {
-			if !ac.Verification.ReleaseBlocking {
-				continue
-			}
-			phase := "candidate"
-			if publication[ac.ID] {
-				phase = "publication"
-			}
-			blocking = append(blocking, frozenAC{ID: ac.ID, Method: ac.Verification.Method, Phase: phase})
-		}
-	}
-	sort.Slice(blocking, func(i, j int) bool { return blocking[i].ID < blocking[j].ID })
-	out := struct {
-		Version         string     `yaml:"version"`
-		Approved        bool       `yaml:"approved"`
-		ApprovedOn      string     `yaml:"approved_on"`
-		RequirementsSHA string     `yaml:"requirements_sha256"`
-		FrozenFrom      string     `yaml:"frozen_from"`
-		BlockingACs     []frozenAC `yaml:"release_blocking_acs"`
-		Note            string     `yaml:"note"`
-	}{
+	blocking := blockingSet(f)
+	out := frozenBaseline{
 		Version:         version,
 		Approved:        false,
 		ApprovedOn:      "",

@@ -223,12 +223,25 @@ jobs:
           [ "$n_got" = "$n_req" ] || { echo "::error::verified ${n_got} of ${n_req} required checks" >&2; exit 1; }
           echo "all ${n_got} required checks green (app-pinned, scope-aware)"
 
-      - name: an approved requirements baseline must exist for this version (structural check)
+      - name: set up Go for the baseline consistency check
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+
+      - name: an APPROVED, consistent requirements baseline must exist for this version
         run: |
           set -euo pipefail
           f="requirements/releases/${GITHUB_REF_NAME}.yaml"
           git show "${GITHUB_SHA}:${f}" > /tmp/release-baseline.yaml \
             || { echo "::error::${f} does not exist at the tagged commit — freeze the release baseline first" >&2; exit 1; }
+          # R07: consistency (exact requirements hash + complete blocking
+          # set) is proven by the requirements tool at the tagged commit -
+          # the same check PR CI runs - so a stale or hand-edited freeze
+          # cannot silently change what is enforced. Admission additionally
+          # requires the baseline to be APPROVED (verify-freeze is
+          # approval-agnostic).
+          GOTOOLCHAIN=local go -C tools/requirements run . verify-freeze "${GITHUB_REF_NAME}"
           TAG="${GITHUB_REF_NAME}" python3 - <<'PY'
           import datetime, os, sys, yaml
           d = yaml.safe_load(open('/tmp/release-baseline.yaml'))
@@ -243,14 +256,15 @@ jobs:
                   errs.append(f"approved is {d.get('approved')!r}, not boolean true")
               try:
                   datetime.date.fromisoformat(str(d.get('approved_on')))
-              except ValueError:
+              except (ValueError, TypeError):
                   errs.append(f"approved_on {d.get('approved_on')!r} is not a real date")
-              if not d.get('requirements_sha256'):
-                  errs.append('requirements_sha256 missing - the baseline must pin the requirements it froze')
+              acs = d.get('release_blocking_acs')
+              if not isinstance(acs, list) or len(acs) == 0:
+                  errs.append('release_blocking_acs is empty - an empty required set is not a release baseline')
           if errs:
               print('::error::release baseline invalid: ' + '; '.join(errs), file=sys.stderr)
               sys.exit(1)
-          print(f"baseline {tag}: approved {d['approved_on']}, requirements {d['requirements_sha256'][:12]}")
+          print(f"baseline {tag}: approved {d['approved_on']}, requirements {d['requirements_sha256'][:12]}, {len(d['release_blocking_acs'])} blocking ACs")
           PY
 
       - name: write canonical admission.json
