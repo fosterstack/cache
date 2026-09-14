@@ -22,8 +22,13 @@ name: 'Stage: no-outbound acceptance'
 #    from pinned source and mounted in; the entrypoint is overridden to that
 #    strace, which then execs the real /usr/local/bin/fscache. This is
 #    race-free (the tracer is PID 1; the cache cannot run untraced) and needs
-#    no change to the candidate image. A connect()/sendto()/sendmsg() to any
-#    AF_INET/AF_INET6 destination that is not loopback or the netns's own
+#    no change to the candidate image. A connect/sendto/sendmsg/sendmmsg
+#    (every message destination) to any AF_INET/AF_INET6 destination that
+#    is not loopback or the netns's own address is a violation, regardless
+#    of the syscall's return status; an unusable trace fails closed. The
+#    analyzer is the committed, regression-tested bin/analyze-egress-trace.py.
+#    (was: connect/sendto/sendmsg to any AF_INET/AF_INET6 destination that
+#    is not loopback or the netns's own
 #    address - INCLUDING a call that returned an error - is a VIOLATION (the
 #    AC forbids the ATTEMPT, not merely a completed connection), as is ANY
 #    name resolution (any datagram/connect to port 53). Process attribution is
@@ -106,6 +111,8 @@ jobs:
     outputs:
       results: ${{ steps.results.outputs.results }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: pull the production candidate by digest
         env:
           DIGESTS: ${{ inputs.digests }}
@@ -201,32 +208,31 @@ jobs:
           # ------------------------------------------------------------------
           analyze_strace() {
             local sfile="$1" label="$2" own="$3" own6="$4"
-            local allowed
-            allowed="127.0.0.1 ::1 ${own}"
-            [ -n "$own6" ] && [ "$own6" != "invalid IP" ] && allowed="${allowed} ${own6}"
-            [ -s "$sfile" ] || { echo "::error::${label}: candidate syscall trace ${sfile} missing or empty (tracer failure)" >&2; return 1; }
-            awk -v allowed="$allowed" '
-              BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
-              /connect\(|sendto\(|sendmsg\(/ {
-                if ($0 !~ /sa_family=AF_INET6?[,)]/) next   # only IPv4/IPv6 attempts
-                call = "connect"
-                if ($0 ~ /sendto\(/)  call = "sendto"
-                if ($0 ~ /sendmsg\(/) call = "sendmsg"
-                dst = ""
-                if (match($0, /inet_addr\("[0-9.]+"\)/)) {
-                  dst = substr($0, RSTART, RLENGTH); gsub(/inet_addr\("|"\)/, "", dst)
-                } else if (match($0, /inet_pton\(AF_INET6, "[0-9A-Fa-f:.]+"/)) {
-                  dst = substr($0, RSTART, RLENGTH); sub(/inet_pton\(AF_INET6, "/, "", dst); sub(/"$/, "", dst)
-                }
-                if (dst == "") next        # AF_INET(6) with no parseable literal
-                port = ""
-                if (match($0, /htons\([0-9]+\)/)) { port = substr($0, RSTART, RLENGTH); gsub(/htons\(|\)/, "", port) }
-                if (port == "53") { print "DNS " call " " dst ":" port; next }
-                if (dst in ok) next        # loopback / self - the only allowed path
-                print "OUT " call " " dst ":" port
-              }' "$sfile" > "/tmp/${label}.sys.ext" || { echo "::error::${label}: candidate trace parse failed" >&2; return 1; }
-            grep -c '^DNS ' "/tmp/${label}.sys.ext" | tr -d ' ' > "/tmp/${label}.sys.dnscount" || true
-            grep -c '^OUT ' "/tmp/${label}.sys.ext" | tr -d ' ' > "/tmp/${label}.sys.extcount" || true
+            local args=()
+            [ -n "$own" ] && args+=("$own")
+            [ -n "$own6" ] && [ "$own6" != "invalid IP" ] && args+=("$own6")
+            # The analyzer (bin/analyze-egress-trace.py) is committed and
+            # regression-tested (bin/analyze-egress-trace-test.sh). It covers
+            # connect/sendto/sendmsg/sendmmsg (every message destination),
+            # ignores return status (a denied attempt is a violation), and
+            # FAILS CLOSED on an empty/garbage/unparseable trace. It prints
+            # DNS/OUT violations to stdout and exits non-zero on any
+            # violation OR unusable trace.
+            set +e
+            python3 "${GITHUB_WORKSPACE}/bin/analyze-egress-trace.py" "$sfile" "${args[@]}" \
+              > "/tmp/${label}.sys.ext" 2> "/tmp/${label}.sys.err"
+            local rc=$?
+            set -e
+            grep -c '^DNS ' "/tmp/${label}.sys.ext" 2>/dev/null | tr -d ' ' > "/tmp/${label}.sys.dnscount" || echo 0 > "/tmp/${label}.sys.dnscount"
+            grep -c '^OUT ' "/tmp/${label}.sys.ext" 2>/dev/null | tr -d ' ' > "/tmp/${label}.sys.extcount" || echo 0 > "/tmp/${label}.sys.extcount"
+            # A non-zero exit with NO DNS/OUT lines means the trace was
+            # unusable (empty/garbage/unparseable) - fail closed, do not
+            # treat it as "no attempts".
+            if [ "$rc" -ne 0 ] && [ "$(cat "/tmp/${label}.sys.dnscount")" = "0" ] && [ "$(cat "/tmp/${label}.sys.extcount")" = "0" ]; then
+              echo "unusable" > "/tmp/${label}.sys.usable"
+            else
+              echo "ok" > "/tmp/${label}.sys.usable"
+            fi
           }
 
           # ------------------------------------------------------------------
@@ -432,6 +438,12 @@ jobs:
             ext=$(cat "/tmp/${label}.extcount")
             sdns=$(cat "/tmp/${label}.sys.dnscount")
             sext=$(cat "/tmp/${label}.sys.extcount")
+            if [ "$(cat "/tmp/${label}.sys.usable")" != "ok" ]; then
+              echo "::error::${label}: candidate syscall trace was unusable (empty/garbage/unparseable) - failing closed, not counting it as clean" >&2
+              cat "/tmp/${label}.sys.err" >&2 || true
+              teardown "$label"
+              return 1
+            fi
             echo "${label}: allowed_exact={127.0.0.1, ::1, ${OWN_IP} (self)${OWN_IP6:+, ${OWN_IP6} (self6)}} packet[dns=${dns} non_allowed_outbound=${ext}] syscall[dns=${sdns} non_allowed_attempts=${sext}]"
             teardown "$label"
             # Both observers must be clean. Packet capture proves nothing was
@@ -533,36 +545,15 @@ jobs:
             grep -E 'connect\(.*203\.0\.113\.7' /tmp/ctldenied.strace | head -n 2 || true
             teardown ctldenied
 
-            echo "-- control C: candidate-trace analyzer self-test (clean passes, canary fails) --"
-            # Drive the SAME analyze_strace() that judges the real candidate
-            # against two crafted traces. This proves - without building the
-            # canary image in the workflow - that the audited packetless connect
-            # is caught by the candidate-trace path, while the clean cache's
-            # loopback/self/bind syscalls pass.
-            #
-            # Clean fixture: a connect to the server's own loopback listener, an
-            # inbound accept, and a bind to the wildcard address - all allowed;
-            # zero violations expected.
-            cat > /tmp/selfclean.strace <<'CLEAN'
-          connect(5<TCP:[127.0.0.1:0]>, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
-          accept4(7, {sa_family=AF_INET, sin_port=htons(40000), sin_addr=inet_addr("127.0.0.1")}, [16], SOCK_CLOEXEC) = 9
-          bind(4, {sa_family=AF_INET6, sin6_port=htons(8080), inet_pton(AF_INET6, "::", &sin6_addr), sin6_scope_id=0}, 28) = 0
-          CLEAN
-            analyze_strace /tmp/selfclean.strace selfclean 127.0.0.1 ::1
-            [ "$(cat /tmp/selfclean.sys.dnscount)" = 0 ] && [ "$(cat /tmp/selfclean.sys.extcount)" = 0 ] \
-              || fail "control C: analyzer flagged a CLEAN loopback/self/bind trace - the clean cache would false-fail"
-            # Canary fixture: the EXACT packetless attempt the audit used - a
-            # failed connect() to the IPv6 documentation address, returning
-            # ENETUNREACH. It must be flagged despite the error return and
-            # despite no packet ever leaving.
-            cat > /tmp/selfcanary.strace <<'CANARY'
-          connect(3, {sa_family=AF_INET6, sin6_port=htons(80), inet_pton(AF_INET6, "2001:db8::7", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network unreachable)
-          CANARY
-            analyze_strace /tmp/selfcanary.strace selfcanary 127.0.0.1 ::1
-            grep -q '^OUT connect 2001:db8::7:80$' /tmp/selfcanary.sys.ext \
-              || fail "control C: candidate-trace analyzer FAILED to flag the packetless canary connect([2001:db8::7]:80) - the audited false pass is not closed"
-            echo "control C: clean=0 violations; canary flagged: $(cat /tmp/selfcanary.sys.ext)"
-          }
+            echo "-- control C: candidate-trace analyzer regression suite --"
+            # The analyzer that judges the real candidate is the committed,
+            # regression-tested bin/analyze-egress-trace.py. Run its suite
+            # here so the release gate itself proves the analyzer catches
+            # the connect AND sendmmsg packetless canaries and fails closed
+            # on unusable traces - not a single ad-hoc example.
+            bash "${GITHUB_WORKSPACE}/bin/analyze-egress-trace-test.sh" \
+              || fail "control C: the candidate-trace analyzer regression suite failed"
+                    }
 
           docker network create fscache-open >/dev/null 2>&1 || true
           docker network create --internal fscache-denied >/dev/null 2>&1 || true

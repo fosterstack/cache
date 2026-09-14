@@ -30,6 +30,9 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 bin/check-workflow-permissions.py
 
+      - name: privacy candidate-trace analyzer regressions (B03)
+        run: bash bin/analyze-egress-trace-test.sh
+
       # VEX tripwire (punch list #4b). A dependency we answered with a VEX
       # statement is answered on the facts as they were: golang-jwt is not
       # in the build at all, which is why CVE-2024-51744 does not apply to

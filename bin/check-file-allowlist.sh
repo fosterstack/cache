@@ -74,6 +74,8 @@ ALLOW_PATTERNS=(
   '^bin/check-workflow-permissions\.py$'
   '^bin/authorize-acceptance-check\.py$'
   '^bin/authorize-acceptance-check-test\.sh$'
+  '^bin/analyze-egress-trace\.py$'
+  '^bin/analyze-egress-trace-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
