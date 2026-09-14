@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 47 |
 | Acceptance criteria | 67 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 58 |
-| Release-blocking ACs with mapped evidence | 39 |
+| ACs with mapped evidence | 63 |
+| Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
 | Confidence: implementation-only | 4 |
@@ -296,8 +296,8 @@ A PUT whose entry is larger than the configured cache cap (FSCACHE_MAX_BYTES, wh
 |---|---|---|---|---|---|
 | REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | 2 item(s) |
 | REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | 1 item(s) |
-| REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | none mapped |
-| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | none mapped |
+| REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | 1 item(s) |
 
 ## Observability
 
@@ -372,7 +372,7 @@ The server shall make no outbound network connections — no telemetry, no updat
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PRIV-001-AC1 | Given a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods; when the run completes and the egress record is examined; then the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative | acceptance-container | yes | approved | none mapped |
+| REQ-PRIV-001-AC1 | Given a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods; when the run completes and the egress record is examined; then the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative | acceptance-container | yes | approved | 1 item(s) |
 
 ## Platforms and artifacts
 
@@ -394,7 +394,7 @@ Every release shall ship three image variants — production, -debug, -fips — 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-002-AC1 | Given a release's three image manifests; when each is inspected and run on both architectures; then both platform entries exist and the container serves cache traffic on each | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-PLAT-002-AC1 | Given a release's three image manifests; when each is inspected and run on both architectures; then both platform entries exist and the container serves cache traffic on each | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-003 — Shell-lessness per variant
 
@@ -471,7 +471,7 @@ The startup log and /statusz shall report the actual FIPS operating mode and the
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | 2 item(s) |
 
 ### REQ-FIPS-003 — Approved-only crypto enforcement in CI
 

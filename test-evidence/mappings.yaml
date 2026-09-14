@@ -193,6 +193,12 @@ mappings:
   - ac: REQ-EVICT-002-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestBodyLimitRejectionCarriesNoRejectHeader" }
+  - ac: REQ-EVICT-002-AC3
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
+  - ac: REQ-EVICT-002-AC4
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
   - ac: REQ-AUTH-004-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestCredentialsIgnoredByNoAuthServer" }
@@ -214,6 +220,16 @@ mappings:
   - ac: REQ-PLAT-003-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: no shell in production/fips, /busybox/sh runs and /bin/sh absent in debug - against images assembled from the exact attested binaries" }
+  - ac: REQ-PLAT-002-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: production/debug/fips serve cache traffic on linux/amd64 AND linux/arm64 (QEMU, fips authenticated); the REQ-PLAT-002 result is derived from a served-matrix file so a missing variant/arch fails; darwin is the documented equivalent" }
+  - ac: REQ-FIPS-002-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: three runtime postures asserted exactly - the validated-module fips build names the certificate, standard is off, and the forced-standard build reports mode-forced and NEVER claims the certificate (the over-claim the reviews flagged)" }
+      - { type: go-test, ref: "internal/buildinfo:TestFIPSNoteIsTruthfulPerModeAndModule" }
+  - ac: REQ-PRIV-001-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-egress.yml: tcpdump on the candidate netns from before startup through load/idle, in an ordinary and an --internal egress-denied network, asserting no DNS and no connection to any non-allowed address (loopback + the specific bridge gateway only), identical status/bytes across both policies, with negative controls that a real DNS/outbound attempt is observed" }
   - ac: REQ-FIPS-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: GOFIPS140=v1.0.0 read from the artifact's embedded build info, plus active runtime posture" }
