@@ -59,8 +59,20 @@ jobs:
           # Manifest-bearing releases: enumerate ASSETS first, so we can
           # tell an intentional legacy absence (no manifest asset) from a
           # FAILED read of a manifest that is present (F13).
-          for tag in $(gh release list --limit 100 --json tagName,isDraft \
-                        --jq '.[] | select(.isDraft | not) | .tagName'); do
+          #
+          # R12: capture the release list with an EXPLICIT exit check. A
+          # `for tag in $(gh release list ...)` swallows the command
+          # substitution's failure (set -e does not catch it there), so an
+          # API outage would drop every manifest-bearing release while the
+          # legacy inventory kept the job green. Fail loudly instead; an
+          # empty-but-successful list (no releases yet) is fine.
+          if ! gh release list --limit 100 --json tagName,isDraft > /tmp/releases.json; then
+            echo "::error::could not enumerate releases (gh release list failed) - refusing to rescan a partial inventory" >&2
+            exit 1
+          fi
+          jq -e 'type == "array"' /tmp/releases.json >/dev/null \
+            || { echo "::error::gh release list did not return a JSON array" >&2; exit 1; }
+          for tag in $(jq -r '.[] | select(.isDraft | not) | .tagName' /tmp/releases.json); do
             case " $legacy_versions " in *" $tag "*) continue ;; esac
             has_manifest=$(gh release view "$tag" --json assets \
               --jq '[.assets[] | select(.name == "release-manifest.json")] | length')
@@ -114,6 +126,31 @@ jobs:
         with:
           persist-credentials: false
 
+      # Enumerate the platform CHILDREN of the index so both
+      # architectures are scanned, not just the runner's default
+      # (completion note: the ongoing rescan must cover each child, like
+      # the release scanner). platforms.txt: one "os/arch<TAB>childref"
+      # per line, always including the index itself as a fallback.
+      - name: enumerate platform children
+        if: matrix.target.scanner == 'trivy' || matrix.target.scanner == 'grype'
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          ref="ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
+          : > /tmp/children.txt
+          if docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/dev/null \
+             && jq -e '.manifests' /tmp/index.json >/dev/null 2>&1; then
+            jq -r --arg repo "ghcr.io/${{ github.repository_owner }}/cache" \
+              '.manifests[] | select(.platform.os != "unknown")
+               | "\(.platform.os)/\(.platform.architecture)\t\($repo)@\(.digest)"' \
+              /tmp/index.json >> /tmp/children.txt
+          fi
+          # Fallback: a single-arch image (no children) is scanned as itself.
+          if [ ! -s /tmp/children.txt ]; then
+            printf 'index\t%s\n' "$ref" >> /tmp/children.txt
+          fi
+          echo "children to scan:"; cat /tmp/children.txt
+
       # ---- trivy (CLI: reliable version/db, by digest) -------------------
       - name: Trivy rescan (by digest, JSON findings)
         if: matrix.target.scanner == 'trivy'
@@ -124,12 +161,24 @@ jobs:
         run: |
           set -euo pipefail
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
-          trivy image --quiet --exit-code 1 \
-            --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-            --vex "${TRIVY_VEX}" \
-            --format json --output /tmp/findings-raw.json \
-            "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
+          echo '[]' > /tmp/findings-raw.json
+          : > /tmp/scanned-platforms.txt
+          rc=0
+          while IFS=$'\t' read -r platform ref; do
+            echo "trivy: ${platform} ${ref}"
+            trivy image --quiet --exit-code 1 \
+              --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+              --vex "${TRIVY_VEX}" \
+              --format json --output "/tmp/findings-${platform//\//-}.json" \
+              "${ref}"; code=$?
+            [ "$code" -gt "$rc" ] && rc=$code
+            echo "${platform}" >> /tmp/scanned-platforms.txt
+          done < /tmp/children.txt
+          echo "$rc" > /tmp/scanner-rc
+          # merge per-child reports for the statement
+          jq -s 'add // []' /tmp/findings-*.json > /tmp/findings-raw.json 2>/dev/null || true
+          jq -s '{Results: (map(.Results // []) | add)}' /tmp/findings-*.json > /tmp/findings-merged.json 2>/dev/null && mv /tmp/findings-merged.json /tmp/findings-raw.json || true
+          exit $rc
 
       # ---- grype (CLI: reliable version/db, by digest) -------------------
       - name: Grype rescan (by digest, JSON findings)
@@ -139,11 +188,23 @@ jobs:
         run: |
           set -euo pipefail
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
-          grype "registry:ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
-            --fail-on negligible \
-            --vex .vex/fosterstack-cache.openvex.json \
-            -o json --file /tmp/findings-raw.json
+          : > /tmp/scanned-platforms.txt
+          rc=0
+          while IFS=$'\t' read -r platform ref; do
+            echo "grype: ${platform} ${ref}"
+            plat_arg=""
+            case "$platform" in */*) plat_arg="--platform ${platform}";; esac
+            # shellcheck disable=SC2086
+            grype "registry:${ref}" $plat_arg \
+              --fail-on negligible \
+              --vex .vex/fosterstack-cache.openvex.json \
+              -o json --file "/tmp/grype-${platform//\//-}.json"; code=$?
+            [ "$code" -gt "$rc" ] && rc=$code
+            echo "${platform}" >> /tmp/scanned-platforms.txt
+          done < /tmp/children.txt
+          echo "$rc" > /tmp/scanner-rc
+          jq -s '{matches: (map(.matches // []) | add)}' /tmp/grype-*.json > /tmp/findings-raw.json 2>/dev/null || echo '{"matches":[]}' > /tmp/findings-raw.json
+          exit $rc
 
       # ---- snyk ----------------------------------------------------------
       - name: install the Snyk CLI (pinned)
@@ -162,7 +223,8 @@ jobs:
           [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a rescan that silently skips a scanner is not a rescan" >&2; exit 1; }
           snyk container test \
             "ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}" \
-            --org=fosterstack-admin --json-file-output=/tmp/findings-raw.json
+            --org=fosterstack-admin --json-file-output=/tmp/findings-raw.json; echo "$?" > /tmp/scanner-rc
+          printf 'index (snyk scans the index arch)\n' > /tmp/scanned-platforms.txt
 
       # ---- scanner identity (F14) ----------------------------------------
       - name: record scanner version and database state
@@ -187,16 +249,13 @@ jobs:
         id: statement
         run: |
           set -euo pipefail
-          outcome='clean'
-          case '${{ matrix.target.scanner }}' in
-            trivy) [ '${{ steps.trivy.outcome }}' = 'success' ] || outcome='findings' ;;
-            grype) [ '${{ steps.grype.outcome }}' = 'success' ] || outcome='findings' ;;
-            snyk)  [ '${{ steps.snyk.outcome }}'  = 'success' ] || outcome='findings' ;;
-          esac
-          python3 - "$outcome" <<'PY'
+          python3 <<'PY'
           import json, sys, hashlib, datetime, os
-          outcome = sys.argv[1]
           scanner = '${{ matrix.target.scanner }}'
+          try:
+              rc = int(open('/tmp/scanner-rc').read().strip() or '0')
+          except (FileNotFoundError, ValueError):
+              rc = 1
           meta = {}
           try:
               for line in open('/tmp/scanner-meta'):
@@ -206,6 +265,7 @@ jobs:
           except FileNotFoundError:
               pass
           findings = []
+          report_ok = True
           try:
               raw = json.load(open('/tmp/findings-raw.json'))
               if scanner == 'trivy':
@@ -227,8 +287,26 @@ jobs:
                                        'severity': (v.get('severity') or '').lower(),
                                        'package': v.get('packageName'),
                                        'fixed_in': v.get('nearestFixedInVersion') or None})
+          except (FileNotFoundError, json.JSONDecodeError):
+              report_ok = False
+          # Distinguish a COMPLETED scan (clean or with findings) from an
+          # operational FAILURE (tool crashed / produced no valid report):
+          # never label an operational failure as clean CVE evidence
+          # (completion note). findings count is authoritative for
+          # clean-vs-findings; a nonzero rc with no parsed findings is an
+          # error, and an unparseable report is an error.
+          if not report_ok:
+              outcome = 'error'
+          elif len(findings) > 0:
+              outcome = 'findings'
+          elif rc != 0:
+              outcome = 'error'
+          else:
+              outcome = 'clean'
+          try:
+              scanned_platforms = [p for p in open('/tmp/scanned-platforms.txt').read().splitlines() if p]
           except FileNotFoundError:
-              pass
+              scanned_platforms = []
           vex_doc = '.vex/fosterstack-cache.openvex.json'
           vex = json.load(open(vex_doc))
           statement = {
@@ -241,6 +319,7 @@ jobs:
               'scanner': scanner,
               'scanner_version': meta.get('version', 'unknown'),
               'scanner_database': meta.get('db', 'unknown'),
+              'scanned_platforms': scanned_platforms,
               'policy': 'block at any severity; the published VEX document is the only exception',
               'verdict': outcome,
               'findings': findings,
@@ -262,9 +341,10 @@ jobs:
               },
           }
           json.dump(statement, open('/tmp/rescan-statement.json', 'w'), indent=1)
-          print(json.dumps({'verdict': outcome, 'count': len(findings)}))
+          print(json.dumps({'verdict': outcome, 'count': len(findings), 'platforms': scanned_platforms}))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as gh:
+              gh.write(f'outcome={outcome}\n')
           PY
-          echo "outcome=${outcome}" >> "$GITHUB_OUTPUT"
 
       - name: stage the raw report beside the statement
         run: |
@@ -304,4 +384,13 @@ jobs:
         if: steps.statement.outputs.outcome == 'findings'
         run: |
           echo "::error::rescan found findings for ${{ matrix.target.release }} ${{ matrix.target.variant }} (${{ matrix.target.scanner }}) — see the tracking issue" >&2
+          exit 1
+
+      # An operational failure is NOT clean CVE evidence: fail the run with
+      # a distinct signal so a scanner that could not run is never recorded
+      # as a passing rescan (completion note).
+      - name: an operational error fails the run distinctly
+        if: steps.statement.outputs.outcome == 'error'
+        run: |
+          echo "::error::rescan scanner ${{ matrix.target.scanner }} failed to complete for ${{ matrix.target.release }} ${{ matrix.target.variant }} — this is an operational failure, not a clean result" >&2
           exit 1
