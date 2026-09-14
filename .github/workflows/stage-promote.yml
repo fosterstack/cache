@@ -181,6 +181,8 @@ jobs:
             --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
             --arg workflow "${GITHUB_WORKFLOW_REF}" \
             --arg ghcr "$ghcr" --arg hub "$hub" \
+            --arg repofull "${GITHUB_REPOSITORY}" \
+            --arg ref "${GITHUB_REF}" \
             --arg baseline "requirements/releases/${ver}.yaml" \
             --arg baseline_sha "$(sha256sum "requirements/releases/${ver}.yaml" | cut -d' ' -f1)" \
             --arg evidence_sha "$(sha256sum test-evidence/mappings.yaml | cut -d' ' -f1)" \
@@ -199,10 +201,14 @@ jobs:
               verified_statements: $statements[0],
               ac_results: $acs[0],
               publication_evidence: {
-                note: "Publication-phase ACs (REQ-REL-001-AC1, REQ-REL-002-AC1) are recorded in a SEPARATE signed publication attestation over these same image digests, produced after the anonymous customer-verification and every-tag anonymous-pull checks pass. This manifest is assembled and signed BEFORE those checks, so its ac_results shows them deferred; the durable pass record is the publication attestation. It is not mutated after signing.",
+                note: "Publication-phase ACs (REQ-REL-001-AC1, REQ-REL-002-AC1) are recorded in a SEPARATE signed publication attestation (predicate_type below) over these same image digests, tag, and commit, produced after the anonymous customer-verification and every-tag anonymous-pull checks pass. This manifest is assembled and signed BEFORE those checks, so its ac_results shows them deferred; the durable pass record is the publication attestation. This manifest is not mutated after signing.",
                 predicate_type: "https://fosterstack.com/attestations/publication/v1",
-                signer_workflow: (($workflow | split("@")[0]) | sub("^[^/]+/[^/]+/"; "") | sub("stage-promote.yml.*"; "stage-promote.yml")),
-                verify: "gh attestation verify oci://<image>@<digest> --repo \($workflow | split("/")[0:2] | join("/")) --predicate-type https://fosterstack.com/attestations/publication/v1 --signer-workflow \($workflow | split("/")[0:2] | join("/"))/.github/workflows/stage-promote.yml"
+                repo: $repofull,
+                tag: $version,
+                commit: $sha,
+                signer_workflow: ".github/workflows/stage-promote.yml",
+                signer_ref: $ref,
+                verify: ("gh attestation verify oci://<image>@<digest> --repo " + $repofull + " --predicate-type https://fosterstack.com/attestations/publication/v1 --signer-workflow " + $repofull + "/.github/workflows/stage-promote.yml --source-digest " + $sha + " --source-ref " + $ref)
               }
             }' > /tmp/release-manifest.json
           jq . /tmp/release-manifest.json >/dev/null
@@ -289,7 +295,12 @@ jobs:
           # cosign-signs the public digests (stage-promote.yml), not "any
           # workflow in this repo". The SAN is
           # https://github.com/<repo>/.github/workflows/stage-promote.yml@<ref>.
-          signer="^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-promote\.yml@"
+          # Pin the exact promotion workflow AND the release ref (this tag),
+          # anchored end-to-end so stage-promote.yml @ another ref is rejected.
+          # A tag ref (refs/tags/vX.Y.Z) contains only dots as regex
+          # metacharacters; escape those so the identity regexp is literal.
+          refescaped=$(printf '%s' "${GITHUB_REF}" | sed 's/\./\\./g')
+          signer="^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-promote\.yml@${refescaped}$"
           idflags=( --certificate-identity-regexp "$signer"
                     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
           ghcr="ghcr.io/${{ github.repository_owner }}/cache"
@@ -315,6 +326,14 @@ jobs:
                --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-image\.yml@" \
                --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
             echo "::error::cosign verify accepted a same-repo WRONG workflow identity (stage-image.yml) - the signer pin is too loose" >&2; exit 1
+          fi
+          # NEGATIVE CONTROL 3: the right workflow at a WRONG REF must be
+          # rejected - the signature identifies the release tag, not the
+          # workflow file at any branch/ref.
+          if cosign verify "${ghcr}@${d0}" \
+               --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/stage-promote\.yml@refs/heads/" \
+               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
+            echo "::error::cosign verify accepted stage-promote.yml at a branch ref - the release-ref pin is too loose" >&2; exit 1
           fi
           # Checksums bundle, verified anonymously (cosign verify-blob).
           cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" \

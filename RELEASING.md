@@ -137,9 +137,12 @@ That uses only `curl` and `sed` — no `jq`, no GNU-only flags, and no
 authentication, so it works on a stock macOS or a minimal container.
 
 ```sh
-# Image signature + provenance (cosign)
+# Image SIGNATURE (cosign) — who signed these exact bytes. This is the
+# image signature only; the build provenance is verified via the
+# gh attestation route below. The signer is the promotion workflow at
+# this release tag.
 cosign verify "ghcr.io/fosterstack/cache:${VER}" \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 
 # GitHub's own attestation store — confirms which workflow run built it.

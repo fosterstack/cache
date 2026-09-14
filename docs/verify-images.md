@@ -23,10 +23,17 @@ workflow sign these exact bytes? It vouches for identity and integrity of
 the artifact, nothing more.
 
 ```sh
+# The public image signature is made by the promotion workflow; pin it
+# and the release tag rather than "any workflow in this repo".
 cosign verify ghcr.io/fosterstack/cache:${VER} \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
+
+The signing workflow is **version-scoped**: the current chain signs the
+public image in `stage-promote.yml` (pinned above); the earliest release
+was signed by the old `release.yml`, so for it use
+`--certificate-identity-regexp='^https://github.com/fosterstack/cache/.github/workflows/release.yml@'` instead. <!-- pinned: historical -->
 
 There is no signing key to leak, steal, or rotate — the certificate is
 short-lived, minted by Sigstore's Fulcio from a GitHub Actions OIDC token
@@ -43,7 +50,13 @@ with no attestation tells you who signed, but nothing about how the thing
 was built.
 
 ```sh
-gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack
+# Needs a token (GH_TOKEN / gh auth login). Pin the producing stage - it
+# is version-scoped: the current chain builds with stage-image.yml, the
+# earliest release with release.yml (swap --signer-workflow accordingly).
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
+  --repo fosterstack/cache \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-image.yml \
+  --source-ref "refs/tags/v${VER}"
 ```
 
 This names the exact workflow run that produced the image you pulled.
@@ -107,6 +120,26 @@ The individual statements, all verifiable with the same command shape
 | `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
 | `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
+| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
+
+**Resolving the deferred release ACs.** The `release-manifest.json` on the
+release page is signed and attached BEFORE publication, so its `ac_results`
+shows the two publication ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
+`deferred-to-publication`, and its `publication_evidence` field points
+here. Their **pass** outcome lives in the separate publication attestation
+above — verify it (needs a token), pinned to the promotion workflow and
+this release ref:
+
+```sh
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
+  --repo fosterstack/cache \
+  --predicate-type https://fosterstack.com/attestations/publication/v1 \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-promote.yml \
+  --source-ref "refs/tags/v${VER}"
+```
+
+Its predicate's `publication_ac_results` records both ACs as `pass`; a
+signature alone is not the outcome — read those fields.
 
 The scanner list lives in
 [`.github/policy/scanners.json`](../.github/policy/scanners.json) — the
@@ -226,7 +259,7 @@ bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
