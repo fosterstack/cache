@@ -176,6 +176,23 @@ mappings:
   - ac: REQ-PROTO-002-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestNestedKeyRoundTripOverHTTP" }
+  - ac: REQ-PROTO-003-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMalformedPathsRejectedNoRedirect" }
+      - { type: go-test, ref: "internal/server:TestRawPathIsMalformed" }
+      - { type: manual, ref: "before-state independently reproduced by the external audit at head 20e65c9 (audits/2026-09-14/evidence/http-results.json): raw /x/../alias, /x//alias, /x/./alias answered 307 to the normalized path; the front controller now answers 400 with no redirect" }
+  - ac: REQ-PROTO-007-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestReservedPathsRefuseWritesAndStoreNothing" }
+      - { type: go-test, ref: "internal/server:TestReservedPathsRefuseWritesUnderAuth" }
+      - { type: manual, ref: "before-state independently reproduced by the external audit at head 20e65c9 (audits/2026-09-14/evidence/http-results.json): PUT /healthz,/metrics,/statusz returned 201 and created blobs/he/healthz etc.; DELETE returned Allow: GET, PUT, HEAD. Now 405 with Allow: GET, HEAD and nothing stored" }
+  - ac: REQ-EVICT-002-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestOversizedEntryRejectedNotChurned" }
+      - { type: go-test, ref: "internal/server:TestOversizedChunkedEntryRejected" }
+  - ac: REQ-EVICT-002-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestBodyLimitRejectionCarriesNoRejectHeader" }
   - ac: REQ-AUTH-004-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestCredentialsIgnoredByNoAuthServer" }

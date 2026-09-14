@@ -109,11 +109,13 @@ requirements:
       helper-level test cannot stand in for this HTTP contract, and a
       redirect-following client may resubmit to the normalized key.
       DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP
-      400 through the real router — never normalized, no redirects. The
-      current implementation does not satisfy this for router-normalized
-      forms; the server change ships in v0.2.0 and this AC is its
-      acceptance contract. A weaker check must not certify the stronger
-      promise.
+      400 through the real router — never normalized, no redirects.
+      IMPLEMENTED (v0.2.0): a front controller ahead of ServeMux
+      (internal/server.go newFrontController/rawPathIsMalformed) rejects a
+      raw path with an empty, ".", or ".." segment (literal or
+      percent-encoded) with 400 before ServeMux can redirect; verified by
+      TestMalformedPathsRejectedNoRedirect with redirect-following
+      disabled. A weaker check must not certify the stronger promise.
     acceptance_criteria:
       - id: REQ-PROTO-003-AC1
         given: a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects

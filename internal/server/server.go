@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -119,7 +120,75 @@ func New(cfg Config) http.Handler {
 	cacheHandler := withAuth(cfg.Auth, cfg.ROAuth, withMetrics(cfg.Metrics, withUploadBound(cfg, cacheEndpoint(cfg))))
 	mux.Handle("/", cacheHandler)
 
-	return mux
+	// The mux alone is not enough for two contracts (REQ-PROTO-003,
+	// REQ-PROTO-007): http.ServeMux 307-redirects a path that needs
+	// cleaning (dot-segments, doubled slashes) BEFORE any handler runs,
+	// and its method-specific GET routes let a PUT/DELETE fall through to
+	// the cache handler — which would store a blob under "healthz". The
+	// front controller rejects malformed raw paths with 400 (no redirect)
+	// and reserves the application endpoints across every method, so the
+	// cache handler never sees them.
+	return newFrontController(mux)
+}
+
+// reservedPaths are the application endpoints: read-only (GET/HEAD), and a
+// write to any of them is a client error, never a cache entry.
+var reservedPaths = map[string]bool{
+	"/": true, "/healthz": true, "/metrics": true, "/statusz": true,
+}
+
+// newFrontController wraps the mux with raw-path validation and reserved-
+// path method enforcement that must happen before ServeMux normalizes or
+// routes.
+func newFrontController(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Reserved endpoints: GET/HEAD reach the mux; any other method is
+		// 405 with the read-only Allow set and stores nothing.
+		if reservedPaths[r.URL.Path] {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			mux.ServeHTTP(w, r)
+			return
+		}
+		// Cache paths: reject a raw path that ServeMux would otherwise
+		// redirect (a segment that is empty, ".", or ".." either literally
+		// or percent-encoded), with 400 and no redirect. EscapedPath
+		// preserves the on-the-wire segments so an encoded "%2e%2e" is
+		// judged on the same footing as a literal "..".
+		if rawPathIsMalformed(r.URL.EscapedPath()) {
+			http.Error(w, "invalid key", http.StatusBadRequest)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// rawPathIsMalformed reports whether any segment of the raw request path
+// is empty (a doubled or trailing slash), or is "." / ".." either
+// literally or percent-encoded. A malformed cache path is a 400, never a
+// redirect (REQ-PROTO-003-AC1); the blobstore's ValidateKey is the second
+// line of defence on the decoded key.
+func rawPathIsMalformed(escaped string) bool {
+	trimmed := strings.TrimPrefix(escaped, "/")
+	if trimmed == "" {
+		return false // the bare root is handled as a reserved path
+	}
+	for _, seg := range strings.Split(trimmed, "/") {
+		if seg == "" {
+			return true // empty segment: doubled or trailing slash
+		}
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			return true // an undecodable segment is not a valid key
+		}
+		if dec == "." || dec == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {

@@ -180,9 +180,16 @@ func TestRootLandingDoesNotShadowCacheKeys(t *testing.T) {
 		t.Errorf("GET /realkey returned %q, want the stored bytes", got)
 	}
 
-	// A PUT to the root is still an invalid (empty) key, not a landing page.
-	if resp := doReq(t, mustReq(t, "PUT", srv.URL+"/", "x")); resp.StatusCode != 400 {
-		t.Errorf("PUT /: status = %d, want 400 (empty key)", resp.StatusCode)
+	// A PUT to the root is a write to a reserved endpoint: 405 with the
+	// read-only Allow set, not a landing page and not a cache entry
+	// (REQ-PROTO-007-AC1). The reserved-path contract is exercised in
+	// full by TestReservedPathsRefuseWritesAndStoreNothing.
+	resp = doReq(t, mustReq(t, "PUT", srv.URL+"/", "x"))
+	if resp.StatusCode != 405 {
+		t.Errorf("PUT /: status = %d, want 405 (reserved endpoint)", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Allow"); got != "GET, HEAD" {
+		t.Errorf("PUT /: Allow = %q, want \"GET, HEAD\"", got)
 	}
 }
 

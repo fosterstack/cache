@@ -19,8 +19,8 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 47 |
 | Acceptance criteria | 67 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 54 |
-| Release-blocking ACs with mapped evidence | 35 |
+| ACs with mapped evidence | 58 |
+| Release-blocking ACs with mapped evidence | 39 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
 | Confidence: implementation-only | 4 |
@@ -56,11 +56,11 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/docker-deploy.md "Verify it is working"; internal/blobstore/blobstore.go ValidateKey*
 
-> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. The current implementation does not satisfy this for router-normalized forms; the server change ships in v0.2.0 and this AC is its acceptance contract. A weaker check must not certify the stronger promise.
+> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. IMPLEMENTED (v0.2.0): a front controller ahead of ServeMux (internal/server.go newFrontController/rawPathIsMalformed) rejects a raw path with an empty, ".", or ".." segment (literal or percent-encoded) with 400 before ServeMux can redirect; verified by TestMalformedPathsRejectedNoRedirect with redirect-following disabled. A weaker check must not certify the stronger promise.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | none mapped |
+| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | 3 item(s) |
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 
 ### REQ-PROTO-004 — Method surface
@@ -101,7 +101,7 @@ PUT and DELETE to the reserved application paths ("/", /healthz, /metrics, /stat
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-007-AC1 | Given a running server; when a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz; then every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before | http-integration | yes | approved | none mapped |
+| REQ-PROTO-007-AC1 | Given a running server; when a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz; then every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before | http-integration | yes | approved | 3 item(s) |
 
 ## Configuration
 
@@ -294,8 +294,8 @@ A PUT whose entry is larger than the configured cache cap (FSCACHE_MAX_BYTES, wh
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | none mapped |
-| REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | none mapped |
+| REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | 2 item(s) |
+| REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | 1 item(s) |
 | REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | none mapped |
 | REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | none mapped |
 
