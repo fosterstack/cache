@@ -243,7 +243,13 @@ jobs:
             echo "::error::no SBOM files in dist — the build stage should have produced them" >&2; exit 1
           fi
 
-      - name: customer-facing verification against the PUBLIC digests
+      # R09: the GH-attestation chain check (needs a token) is retained
+      # as an internal gate, but the CUSTOMER-facing evidence must be the
+      # ACTUAL documented ANONYMOUS commands - cosign image verification
+      # and the checksums-bundle blob verification - run with NO GitHub or
+      # registry credentials, plus wrong-signer/corrupt-bundle negative
+      # controls that MUST fail.
+      - name: internal chain check (authenticated) against the public digests
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -255,17 +261,56 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --predicate-type https://fosterstack.com/attestations/release-authorization/v1 \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml" >/dev/null
-            echo "public ${v}@${d}: chain verifiable by a customer"
           done
 
-      - name: anonymous-pull check, both registries
+      - name: documented ANONYMOUS customer verification (cosign, no credentials)
+        env:
+          # Strip every credential a customer would not have: no GH token,
+          # empty docker config. cosign keyless verification uses Fulcio/
+          # Rekor public infrastructure, not the registry credential.
+          GH_TOKEN: ""
+          COSIGN_EXPERIMENTAL: "0"
+        run: |
+          set -euo pipefail
+          DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG   # anonymous registry access
+          idflags=( --certificate-identity-regexp '^https://github\.com/fosterstack/cache/'
+                    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
+          ghcr="ghcr.io/${{ github.repository_owner }}/cache"
+          hub="docker.io/fosterstack/cache"
+          for reg in "$ghcr" "$hub"; do
+            for v in production debug fips; do
+              d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+              cosign verify "${reg}@${d}" "${idflags[@]}" >/dev/null \
+                || { echo "::error::anonymous cosign verify failed for ${reg}@${d}" >&2; exit 1; }
+            done
+          done
+          # NEGATIVE CONTROL: a wrong signer identity MUST be rejected.
+          if cosign verify "${ghcr}@$(jq -r '.production' <<<'${{ inputs.digests }}')" \
+               --certificate-identity-regexp '^https://github\.com/attacker/' \
+               --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then
+            echo "::error::cosign verify accepted a WRONG signer identity - the customer check is not sound" >&2; exit 1
+          fi
+          # Checksums bundle, verified anonymously (cosign verify-blob).
+          cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" \
+            || { echo "::error::anonymous checksums-bundle verification failed" >&2; exit 1; }
+          # NEGATIVE CONTROL: a corrupted checksums file MUST fail the bundle.
+          cp dist/checksums.txt /tmp/checksums.corrupt && printf 'tamper\n' >> /tmp/checksums.corrupt
+          if cosign verify-blob /tmp/checksums.corrupt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" >/dev/null 2>&1; then
+            echo "::error::verify-blob accepted a TAMPERED checksums file - the bundle check is not sound" >&2; exit 1
+          fi
+          echo "anonymous cosign image + checksums verification passed; negative controls rejected"
+
+      - name: anonymous-pull check, EVERY promised tag, both registries
         run: |
           set -euo pipefail
           DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG
           ghcr="ghcr.io/${{ github.repository_owner }}/cache"
           hub="docker.io/fosterstack/cache"
           ver="${GITHUB_REF_NAME#v}"
-          for pair in "production:${ver}" "debug:${ver}-debug" "fips:${ver}-fips"; do
+          # versioned AND floating tags - the floating ones are what most
+          # consumers pull, so they must resolve to the promoted digests too.
+          for pair in "production:${ver}" "debug:${ver}-debug" "fips:${ver}-fips" \
+                      "production:latest" "debug:debug" "fips:fips"; do
             v="${pair%%:*}"; t="${pair#*:}"
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             for reg in "$ghcr" "$hub"; do
@@ -273,7 +318,52 @@ jobs:
               [ "$got" = "$d" ] || { echo "::error::anonymous pull of ${reg}:${t} resolves ${got}, want ${d}" >&2; exit 1; }
             done
           done
-          echo "anonymous pulls resolve the promoted digests at both registries"
+          echo "anonymous pulls resolve the promoted digests for every versioned and floating tag at both registries"
+
+      # R09: close the publication-phase ACs in the FINAL signed evidence.
+      # The manifest was assembled before these checks; now that the
+      # anonymous customer verification and the every-tag anonymous pull
+      # have passed, record REL-001/REL-002 as passed and sign a
+      # publication predicate over the public digests so the deferral is
+      # resolved in the durable record, not left dangling at undraft.
+      - name: sign the publication-outcomes predicate (closes REL-001/REL-002)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg sha "${GITHUB_SHA}" \
+            --argjson digests '${{ inputs.digests }}' \
+            '{
+              tag: $tag, sha: $sha, index_digests: $digests,
+              publication_ac_results: [
+                {ac: "REQ-REL-001-AC1", result: "pass", evidence: "anonymous cosign image verification + checksums-bundle verify-blob, wrong-signer and corrupt-bundle negatives rejected"},
+                {ac: "REQ-REL-002-AC1", result: "pass", evidence: "anonymous crane digest of every versioned and floating tag at ghcr.io and docker.io resolves the promoted digest"}
+              ]
+            }' > /tmp/publication-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-${v}"
+          done > /tmp/publication-subjects.txt
+          cat /tmp/publication-predicate.json
+
+      - name: attest the publication-outcomes predicate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/publication-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/publication/v1
+          predicate-path: /tmp/publication-predicate.json
+
+      - name: fold the publication outcomes into the release manifest and re-upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          jq '.publication_ac_results = (input | .publication_ac_results)' \
+            /tmp/release-manifest.json /tmp/publication-predicate.json > /tmp/release-manifest.final.json
+          mv /tmp/release-manifest.final.json /tmp/release-manifest.json
+          gh release upload "${GITHUB_REF_NAME}" /tmp/release-manifest.json --clobber
 
       - name: undraft — the release is public
         env:

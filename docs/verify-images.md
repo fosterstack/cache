@@ -4,8 +4,11 @@ Every FosterStack Cache release is signed and provenance-attested by
 GitHub's own CI — not by us claiming it, by a chain you can check yourself
 in under a minute, with nothing installed but `cosign` and `gh`.
 
-Every command below runs with no GitHub credentials configured. Resolve the
-current release once and the rest parameterize themselves:
+The pull and the cosign commands below are fully anonymous. The
+`gh attestation verify` commands are not — they read GitHub's attestation
+API and need a token even for a public repo (see the note under "Verify
+the whole chain"). Resolve the current release once and the rest
+parameterize themselves:
 
 ```sh
 VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \

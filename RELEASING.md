@@ -120,8 +120,12 @@ now do. Do not revisit without a reason that outweighs that.
 
 ## Verifying a release
 
-Every command below runs with no GitHub credentials, as an anonymous pull.
-Resolve the current release first and the rest parameterize themselves:
+The **pull** and the **cosign** verifications below are fully anonymous —
+no GitHub or registry credentials. The `gh attestation verify` command is
+different: it reads GitHub's attestation API and needs a token in the
+environment (`GH_TOKEN` or `gh auth login`) even for a public repo. Where
+"no credentials" is the requirement, use the cosign route. Resolve the
+current release first and the rest parameterize themselves:
 
 ```sh
 VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
@@ -138,13 +142,18 @@ cosign verify "ghcr.io/fosterstack/cache:${VER}" \
   --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 
-# GitHub's own attestation store — confirms which workflow run built it
-gh attestation verify "oci://ghcr.io/fosterstack/cache:${VER}" --owner fosterstack
+# GitHub's own attestation store — confirms which workflow run built it.
+# Needs a token (GH_TOKEN / gh auth login); pin the producing stage.
+gh attestation verify "oci://ghcr.io/fosterstack/cache:${VER}" \
+  --repo fosterstack/cache \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-image.yml
 ```
 
 The `gh attestation verify` output includes a `Build workflow:` line naming
-`.github/workflows/release.yml` at the tag being verified. That line is
-cryptographic proof the bytes you pulled came from this repo's CI.
+the image-assembly stage (`.github/workflows/stage-image.yml`) at the tag
+being verified. That line is cryptographic proof the bytes you pulled came
+from this repo's CI. The whole release chain is additionally verifiable —
+see [docs/verify-images.md](docs/verify-images.md#2b-verify-the-whole-chain).
 
 The same two commands verify the other variants — use `${VER}-debug` or
 `${VER}-fips` in place of `${VER}`.
