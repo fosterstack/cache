@@ -25,6 +25,20 @@ on:
       expected-checksums:
         required: true
         type: string
+      mode:
+        description: "'archives' (assemble locally, PR chain) or 'candidates' (exercise the pushed digests)"
+        required: false
+        type: string
+        default: 'archives'
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests (candidates mode)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      results:
+        description: 'JSON list of the AC IDs this stage asserted, with results'
+        value: ${{ jobs.artifacts.outputs.results }}
 
 permissions:
   contents: read
@@ -33,6 +47,11 @@ jobs:
   artifacts:
     name: artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read      # candidates mode: pull the private digests
+    outputs:
+      results: ${{ steps.results.outputs.results }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -103,18 +122,28 @@ jobs:
           echo "fips build:      ${p_fips}"
           echo "standard:        ${p_std}"
           echo "forced standard: ${p_forced}"
-          grep -q '^active' <<<"${p_fips}" || { echo "::error::fips build does not report active" >&2; exit 1; }
-          [ "${p_std}" = "off" ] || { echo "::error::standard build reports ${p_std}, want off" >&2; exit 1; }
-          # KNOWN DISCREPANCY (backlog: buildinfo FIPS label): the forced
-          # standard build currently over-claims the certificate. The
-          # adversarial MODULE check above is what actually distinguishes
-          # the builds; this step records the runtime report for all three
-          # configurations and fails only if the fips build itself lies.
+          # REQ-FIPS-002-AC1: every posture must be truthful, including
+          # the adversarial forced-standard case. The validated build
+          # names the module and certificate; the standard build is off;
+          # the forced-standard build reports mode-forced and must NEVER
+          # claim the validated module or certificate (the exact
+          # over-claim the Sep 10/12 reviews flagged, now fixed).
+          [ "${p_fips}" = "active (Go validated module v1.0.0, CMVP cert #5247)" ] \
+            || { echo "::error::fips build posture is ${p_fips}, want the validated-module line" >&2; exit 1; }
+          [ "${p_std}" = "off" ] \
+            || { echo "::error::standard build reports ${p_std}, want off" >&2; exit 1; }
+          [ "${p_forced}" = "active (fips140 mode forced at runtime; not the validated-module build)" ] \
+            || { echo "::error::forced-standard posture is ${p_forced} - it must not claim the validated module or certificate" >&2; exit 1; }
+          case "${p_forced}" in
+            *"cert #5247"*|*"validated module"*)
+              echo "::error::forced-standard build claims the certificate or validated module - REQ-FIPS-002 violation" >&2; exit 1 ;;
+          esac
 
       # REQ-PLAT-002 (index halves) + REQ-PLAT-003 + REQ-PLAT-004 + serve
       # traffic: assemble the production and debug images from these exact
       # binaries and exercise them.
-      - name: assemble and exercise the images built from these binaries
+      - name: assemble the images from these binaries (archives mode)
+        if: inputs.mode != 'candidates'
         run: |
           set -euo pipefail
           mkdir -p /tmp/ctx/binaries/amd64 /tmp/ctx/binaries/arm64
@@ -128,6 +157,22 @@ jobs:
             docker build -q -f Dockerfile.$v -t "fa-$v" . >/dev/null
           done
 
+      - name: pull the exact candidates by digest (candidates mode)
+        if: inputs.mode == 'candidates'
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::candidates mode with no digest for ${v}" >&2; exit 1; }
+            docker pull -q "${repo}@${d}"
+            docker tag "${repo}@${d}" "fa-${v}"
+          done
+
+      - name: exercise the images
+        run: |
+          set -euo pipefail
           # production serves cache traffic, as nonroot, data under /home/nonroot
           docker run -d --name fa-prod -p 127.0.0.1:19010:8080 fa-production
           for _ in $(seq 1 20); do curl -sf localhost:19010/healthz >/dev/null && break; sleep 0.5; done
@@ -150,11 +195,93 @@ jobs:
           if docker run --rm --entrypoint /bin/sh fa-debug -c true 2>/dev/null; then
             echo "::error::debug image has /bin/sh, which the docs say it does not" >&2; exit 1; fi
 
+          # debug image serves cache traffic too (not only a shell check)
+          docker run -d --name fa-debugrun -p 127.0.0.1:19012:8080 fa-debug
+          for _ in $(seq 1 20); do curl -sf localhost:19012/healthz >/dev/null && break; sleep 0.5; done
+          curl -s -X PUT --data-binary 'debug-bytes' localhost:19012/dk -o /dev/null
+          [ "$(curl -s localhost:19012/dk)" = "debug-bytes" ] || { echo "::error::debug image round trip failed" >&2; exit 1; }
+
           # fips image serves authenticated traffic (REQ-FIPS runtime half)
           docker run -d --name fa-fipsrun -p 127.0.0.1:19011:8080 \
             -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw fa-fips
           for _ in $(seq 1 20); do curl -sf localhost:19011/healthz >/dev/null && break; sleep 0.5; done
           curl -s -u acc:accpw -X PUT --data-binary 'fips-bytes' localhost:19011/fk -o /dev/null
           [ "$(curl -s -u acc:accpw localhost:19011/fk)" = "fips-bytes" ] || { echo "::error::fips image round trip failed" >&2; exit 1; }
-          docker rm -f fa-prod fa-fipsrun >/dev/null
-          echo "all image scenarios passed"
+          docker rm -f fa-prod fa-debugrun fa-fipsrun >/dev/null
+          # Record the served matrix so the results are DERIVED, not asserted.
+          : > /tmp/served-matrix.txt
+          printf 'linux/amd64 production\nlinux/amd64 debug\nlinux/amd64 fips\n' >> /tmp/served-matrix.txt
+          echo "all amd64 image scenarios passed (production, debug, fips served)"
+
+      # The arm64 leg, candidates mode only: boot the arm64 child of the
+      # production index under QEMU and require a healthy answer. Slow
+      # but real — the evidence-depth table's "documented equivalent".
+      - name: arm64 production candidate boots and serves (QEMU)
+        if: inputs.mode == 'candidates'
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+      - name: run every variant on arm64 under QEMU (R11)
+        if: inputs.mode == 'candidates'
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          port=19021
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            docker pull -q --platform linux/arm64 "${repo}@${d}"
+            authargs=""
+            creds=""
+            if [ "$v" = fips ]; then
+              authargs="-e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw"
+              creds="-u acc:accpw"
+            fi
+            # shellcheck disable=SC2086
+            docker run -d --name "fa-arm64-$v" --platform linux/arm64 $authargs -p "127.0.0.1:${port}:8080" "${repo}@${d}"
+            ok=0
+            # shellcheck disable=SC2086
+            for _ in $(seq 1 90); do curl -sf ${creds} "localhost:${port}/healthz" >/dev/null && { ok=1; break; }; sleep 1; done
+            [ "$ok" = 1 ] || { echo "::error::arm64 ${v} never became healthy under QEMU" >&2; docker logs "fa-arm64-$v" >&2 || true; exit 1; }
+            # shellcheck disable=SC2086
+            curl -s ${creds} -X PUT --data-binary "arm-${v}" "localhost:${port}/armkey" -o /dev/null
+            # shellcheck disable=SC2086
+            [ "$(curl -s ${creds} "localhost:${port}/armkey")" = "arm-${v}" ] || { echo "::error::arm64 ${v} round trip failed" >&2; exit 1; }
+            docker rm -f "fa-arm64-$v" >/dev/null
+            printf 'linux/arm64 %s\n' "$v" >> /tmp/served-matrix.txt
+            echo "arm64 ${v} served cache traffic under QEMU"
+            port=$((port+1))
+          done
+
+      # Reached only when every assertion above passed.
+      - name: report the ACs this stage asserted (derived from the served matrix)
+        id: results
+        run: |
+          set -euo pipefail
+          # PLAT-002 (containers serve traffic) is DERIVED: in candidates
+          # mode every variant must have served on BOTH linux arches; the
+          # served-matrix file is written only by the steps that actually
+          # ran, so a nonfunctional arm64 debug/fips server leaves an entry
+          # missing and fails here (R11).
+          plat2_note="linux/amd64 only (PR snapshot mode; no candidate arches)"
+          if [ '${{ inputs.mode }}' = 'candidates' ]; then
+            need="linux/amd64 production
+          linux/amd64 debug
+          linux/amd64 fips
+          linux/arm64 production
+          linux/arm64 debug
+          linux/arm64 fips"
+            missing=0
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              grep -qxF "$line" /tmp/served-matrix.txt || { echo "::error::variant/arch did not serve: ${line}" >&2; missing=1; }
+            done <<< "$need"
+            [ "$missing" -eq 0 ] || { echo "::error::the platform matrix is incomplete - refusing to mark REQ-PLAT-002 pass" >&2; exit 1; }
+            plat2_note="linux/amd64 + linux/arm64 (QEMU), all three variants served; darwin archives are the documented equivalent (reproducible, checksum-verified, not executed on a Linux runner)"
+          fi
+          jq -c -n --arg p2 "$plat2_note" '[
+            {ac: "REQ-PLAT-001-AC1", result: "pass", note: "six-archive set present; linux/amd64+arm64 binaries execute; darwin is the documented equivalent (reproducible + checksum-verified, not executed here)"},
+            {ac: "REQ-PLAT-002-AC1", result: "pass", note: $p2},
+            {ac: "REQ-PLAT-003-AC1", result: "pass"},
+            {ac: "REQ-PLAT-004-AC1", result: "pass"},
+            {ac: "REQ-FIPS-001-AC1", result: "pass"},
+            {ac: "REQ-FIPS-001-AC2", result: "pass"},
+            {ac: "REQ-FIPS-002-AC1", result: "pass"}
+          ]' | sed 's/^/results=/' >> "$GITHUB_OUTPUT"

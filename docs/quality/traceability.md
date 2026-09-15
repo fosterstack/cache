@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 46 |
-| Acceptance criteria | 63 |
-| Release-blocking ACs | 41 |
-| ACs with mapped evidence | 50 |
-| Release-blocking ACs with mapped evidence | 32 |
+| Active requirements | 47 |
+| Acceptance criteria | 67 |
+| Release-blocking ACs | 44 |
+| ACs with mapped evidence | 63 |
+| Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 41 |
+| Confidence: documented | 42 |
 | Confidence: implementation-only | 4 |
 
 ## Cache protocol
@@ -56,11 +56,11 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/docker-deploy.md "Verify it is working"; internal/blobstore/blobstore.go ValidateKey*
 
-> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. The current implementation does not satisfy this for router-normalized forms; the server change ships in v0.2.0 and this AC is its acceptance contract. A weaker check must not certify the stronger promise.
+> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. IMPLEMENTED (v0.2.0): a front controller ahead of ServeMux (internal/server.go newFrontController/rawPathIsMalformed) rejects a raw path with an empty, ".", or ".." segment (literal or percent-encoded) with 400 before ServeMux can redirect; verified by TestMalformedPathsRejectedNoRedirect with redirect-following disabled. A weaker check must not certify the stronger promise.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | none mapped |
+| REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | 3 item(s) |
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 
 ### REQ-PROTO-004 — Method surface
@@ -101,7 +101,7 @@ PUT and DELETE to the reserved application paths ("/", /healthz, /metrics, /stat
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PROTO-007-AC1 | Given a running server; when a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz; then every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before | http-integration | yes | approved | none mapped |
+| REQ-PROTO-007-AC1 | Given a running server; when a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz; then every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before | http-integration | yes | approved | 3 item(s) |
 
 ## Configuration
 
@@ -180,6 +180,19 @@ A server with authentication disabled shall accept requests that carry an Author
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-AUTH-004-AC1 | Given a server with no credentials configured; when a client PUTs and GETs with a Basic Auth header present; then the round trip succeeds exactly as without the header | http-integration |  | approved | 1 item(s) |
+
+### REQ-AUTH-005 — Read-only credentials
+
+In addition to the read-write credential pair, the server shall support an optional read-only credential pair (FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD, default unset). Read-only credentials authenticate exactly like read-write credentials for GET and HEAD on every authenticated surface, and receive HTTP 403 with nothing stored for PUT and DELETE: developer laptops read, only the identities holding the read-write pair write. Configuration is fail-closed: the pair is both-or-neither, requires the read-write pair to be configured, and its username must differ from the read-write username.
+
+*Introduced v0.2.0 · tier community · confidence documented · source: github issue 8 "read-only client mode"; competitive-2026-09*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-AUTH-005-AC1 | Given a server with both credential pairs configured and a stored key; when GET, HEAD, PUT, and DELETE arrive with read-only credentials, and the same requests arrive with read-write credentials; then with read-only credentials GET and HEAD succeed identically to read-write, PUT and DELETE return 403 and store nothing; with read-write credentials all behave as without the read-only pair | http-integration | yes | approved | 2 item(s) |
+| REQ-AUTH-005-AC2 | Given a server with both credential pairs configured; when requests arrive with wrong credentials and with valid read-only credentials; then wrong credentials receive 401 with WWW-Authenticate; valid read-only credentials never receive 401, and their 403 carries no WWW-Authenticate - the identity was accepted, the verb was refused | http-integration | yes | approved | 2 item(s) |
+| REQ-AUTH-005-AC3 | Given environments with an incomplete read-only pair, a read-only pair without the read-write pair, and a read-only username equal to the read-write username; when the server starts; then each start fails non-zero with a message naming the offending variables; a complete, distinct configuration starts | unit | yes | approved | 2 item(s) |
+| REQ-AUTH-005-AC4 | Given the auth implementation with two credential pairs; when it is inspected; then every credential comparison uses crypto/subtle.ConstantTimeCompare and all comparisons are evaluated with no short-circuit that leaks which pair matched | inspection |  | approved | 1 item(s) |
 
 ## HTTP
 
@@ -281,10 +294,10 @@ A PUT whose entry is larger than the configured cache cap (FSCACHE_MAX_BYTES, wh
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | none mapped |
-| REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | none mapped |
-| REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | none mapped |
-| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | none mapped |
+| REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | 2 item(s) |
+| REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | 1 item(s) |
+| REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | 1 item(s) |
+| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | 1 item(s) |
 
 ## Observability
 
@@ -359,7 +372,7 @@ The server shall make no outbound network connections — no telemetry, no updat
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PRIV-001-AC1 | Given a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods; when the run completes and the egress record is examined; then the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative | acceptance-container | yes | approved | none mapped |
+| REQ-PRIV-001-AC1 | Given a server run in an environment where egress is denied and attempted outbound traffic or name resolution is detectable, through representative startup, load, and idle periods; when the run completes and the egress record is examined; then the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative | acceptance-container | yes | approved | 1 item(s) |
 
 ## Platforms and artifacts
 
@@ -381,7 +394,7 @@ Every release shall ship three image variants — production, -debug, -fips — 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-002-AC1 | Given a release's three image manifests; when each is inspected and run on both architectures; then both platform entries exist and the container serves cache traffic on each | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-PLAT-002-AC1 | Given a release's three image manifests; when each is inspected and run on both architectures; then both platform entries exist and the container serves cache traffic on each | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-003 — Shell-lessness per variant
 
@@ -458,7 +471,7 @@ The startup log and /statusz shall report the actual FIPS operating mode and the
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | none mapped |
+| REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | 2 item(s) |
 
 ### REQ-FIPS-003 — Approved-only crypto enforcement in CI
 

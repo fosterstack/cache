@@ -14,6 +14,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -82,9 +83,31 @@ type Mappings struct {
 	} `yaml:"mappings"`
 }
 
+// exit is os.Exit behind a seam so tests can call main() in-process and
+// observe the status instead of the test binary terminating. Behavior is
+// unchanged: main still exits with exactly the code runCLI returns.
+var exit = os.Exit
+
 func main() {
-	if len(os.Args) != 2 {
-		fatal("usage: requirements validate|generate|check")
+	exit(runCLI(os.Args))
+}
+
+// runCLI is the command dispatch, split out of main as a testability
+// seam: it returns the process exit code instead of calling os.Exit, and
+// takes argv explicitly. fatal (and mustBeValid) abandon the command by
+// panicking with an exitCode, which is recovered here — so the stderr
+// output and exit status of every failure path are byte-for-byte what
+// they were when fatal called os.Exit directly.
+func runCLI(args []string) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Anything other than an exitCode is a programming error; the
+			// type assertion re-panics on it.
+			code = int(r.(exitCode))
+		}
+	}()
+	if len(args) < 2 {
+		fatal("usage: requirements validate|generate|check|freeze <version>|verify-freeze <version>")
 	}
 	// Run from the repo root regardless of invocation directory.
 	if _, err := os.Stat(reqFile); err != nil {
@@ -92,7 +115,7 @@ func main() {
 			fatal("chdir repo root: %v", err)
 		}
 	}
-	switch os.Args[1] {
+	switch args[1] {
 	case "validate":
 		f, m := mustLoad()
 		mustBeValid(f, m)
@@ -104,6 +127,18 @@ func main() {
 			fatal("write %s: %v", outFile, err)
 		}
 		fmt.Println("wrote", outFile)
+	case "freeze":
+		freeze(args)
+		return 0
+	case "verify-freeze":
+		if len(args) != 3 {
+			fatal("usage: requirements verify-freeze <version>")
+		}
+		if reason := verifyFreeze(args[2]); reason != "" {
+			fatal("frozen baseline inconsistent: %s", reason)
+		}
+		fmt.Printf("frozen baseline %s is consistent with requirements.yaml\n", args[2])
+		return 0
 	case "check":
 		f, m := mustLoad()
 		mustBeValid(f, m)
@@ -117,8 +152,167 @@ func main() {
 		}
 		fmt.Println("requirements: valid; matrix fresh")
 	default:
-		fatal("unknown command %q", os.Args[1])
+		fatal("unknown command %q", args[1])
 	}
+	return 0
+}
+
+// frozenAC is one release-blocking acceptance criterion in a frozen
+// baseline, with the phase that decides where it is enforced.
+type frozenAC struct {
+	ID     string `yaml:"id"`
+	Method string `yaml:"method"`
+	Phase  string `yaml:"phase"`
+}
+
+// publicationACs can only be checked against the published release
+// (signature/attestation verification, anonymous pull); everything else
+// is a candidate-phase check.
+var publicationACs = map[string]bool{
+	"REQ-REL-001-AC1": true,
+	"REQ-REL-002-AC1": true,
+}
+
+// blockingSet derives the complete, sorted release-blocking AC set from
+// the requirements. It is the single source of truth shared by freeze
+// (which records it) and verify-freeze (which re-derives and compares).
+func blockingSet(f File) []frozenAC {
+	var blocking []frozenAC
+	for _, r := range f.Requirements {
+		if r.Deprecated {
+			continue
+		}
+		for _, ac := range r.ACs {
+			if !ac.Verification.ReleaseBlocking {
+				continue
+			}
+			phase := "candidate"
+			if publicationACs[ac.ID] {
+				phase = "publication"
+			}
+			blocking = append(blocking, frozenAC{ID: ac.ID, Method: ac.Verification.Method, Phase: phase})
+		}
+	}
+	sort.Slice(blocking, func(i, j int) bool { return blocking[i].ID < blocking[j].ID })
+	return blocking
+}
+
+// frozenBaseline is the on-disk shape of requirements/releases/<v>.yaml.
+type frozenBaseline struct {
+	Version         string     `yaml:"version"`
+	Approved        bool       `yaml:"approved"`
+	ApprovedOn      string     `yaml:"approved_on"`
+	RequirementsSHA string     `yaml:"requirements_sha256"`
+	FrozenFrom      string     `yaml:"frozen_from"`
+	BlockingACs     []frozenAC `yaml:"release_blocking_acs"`
+	Note            string     `yaml:"note"`
+}
+
+// verifyFreeze re-derives the hash and blocking set from requirements.yaml
+// and asserts the frozen baseline for the version matches EXACTLY - stale
+// hash, dropped/added/re-phased/wrong-method entry, or an empty set all
+// fail. Approval is NOT checked here: this runs in PR CI where the
+// baseline is legitimately unapproved (R07). Returns the reason on
+// mismatch, empty string on success.
+func verifyFreeze(version string) string {
+	raw, err := os.ReadFile(reqFile)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v", reqFile, err)
+	}
+	sum := fmt.Sprintf("%x", sha256.Sum256(raw))
+	var f File
+	if err := yaml.Unmarshal(raw, &f); err != nil {
+		return fmt.Sprintf("parse %s: %v", reqFile, err)
+	}
+	path := "requirements/releases/" + version + ".yaml"
+	fraw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v", path, err)
+	}
+	var fb frozenBaseline
+	if err := yaml.Unmarshal(fraw, &fb); err != nil {
+		return fmt.Sprintf("parse %s: %v", path, err)
+	}
+	if fb.Version != version {
+		return fmt.Sprintf("%s: version is %q, want %q", path, fb.Version, version)
+	}
+	if fb.RequirementsSHA != sum {
+		return fmt.Sprintf("%s: requirements_sha256 %s does not match the current requirements.yaml (%s) - re-freeze after the change", path, fb.RequirementsSHA, sum)
+	}
+	want := blockingSet(f)
+	if len(want) == 0 {
+		return "requirements.yaml declares no release-blocking ACs - refusing an empty required set"
+	}
+	if len(fb.BlockingACs) != len(want) {
+		return fmt.Sprintf("%s: release_blocking_acs has %d entries, the requirements derive %d", path, len(fb.BlockingACs), len(want))
+	}
+	for i, w := range want {
+		g := fb.BlockingACs[i]
+		if g.ID != w.ID || g.Method != w.Method || g.Phase != w.Phase {
+			return fmt.Sprintf("%s: release_blocking_acs[%d] is {%s %s %s}, the requirements derive {%s %s %s}", path, i, g.ID, g.Method, g.Phase, w.ID, w.Method, w.Phase)
+		}
+	}
+	return ""
+}
+
+// yamlMarshal is yaml.Marshal behind a seam: marshaling freeze's fixed
+// struct of strings/bools/slices cannot fail in practice, so the error
+// branch below is only reachable by substituting this in a test. The
+// production value is exactly yaml.Marshal; behavior is unchanged.
+var yamlMarshal = yaml.Marshal
+
+// freeze writes requirements/releases/<version>.yaml: the immutable
+// release baseline the source-admission stage and the acceptance
+// aggregator read. It records the version, the sha256 of the exact
+// requirements.yaml it froze, and the full set of release-blocking AC
+// IDs (with phase: candidate for pre-promotion checks, publication for
+// checks that can only run against the published release). It is written
+// UNAPPROVED - the owner reviews and flips approved:true; nothing here
+// approves a release on the owner's behalf.
+func freeze(args []string) {
+	if len(args) != 3 {
+		fatal("usage: requirements freeze <version>  (e.g. v0.2.0)")
+	}
+	version := args[2]
+	if _, err := os.Stat(reqFile); err != nil {
+		if err := os.Chdir(repoRoot()); err != nil {
+			fatal("chdir repo root: %v", err)
+		}
+	}
+	raw, err := os.ReadFile(reqFile)
+	if err != nil {
+		fatal("read %s: %v", reqFile, err)
+	}
+	sum := sha256.Sum256(raw)
+	var f File
+	if err := yaml.Unmarshal(raw, &f); err != nil {
+		fatal("parse %s: %v", reqFile, err)
+	}
+	blocking := blockingSet(f)
+	out := frozenBaseline{
+		Version:         version,
+		Approved:        false,
+		ApprovedOn:      "",
+		RequirementsSHA: fmt.Sprintf("%x", sum),
+		FrozenFrom:      reqFile,
+		BlockingACs:     blocking,
+		Note:            "Frozen release baseline. Owner reviews and sets approved: true with approved_on. Admission verifies this file structurally; the acceptance aggregator derives the required candidate-phase AC set from release_blocking_acs where phase == candidate.",
+	}
+	body, err := yamlMarshal(out)
+	if err != nil {
+		fatal("marshal frozen baseline: %v", err)
+	}
+	dir := "requirements/releases"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fatal("mkdir %s: %v", dir, err)
+	}
+	path := dir + "/" + version + ".yaml"
+	header := "# GENERATED by `go -C tools/requirements run . freeze " + version + "`.\n" +
+		"# Do not hand-edit except to set approved/approved_on after owner review.\n"
+	if err := os.WriteFile(path, []byte(header+string(body)), 0o644); err != nil {
+		fatal("write %s: %v", path, err)
+	}
+	fmt.Printf("wrote %s (%d release-blocking ACs, UNAPPROVED)\n", path, len(blocking))
 }
 
 // goTestExists reports whether a Go test function with the given name is
@@ -166,7 +360,7 @@ func mustBeValid(f File, m Mappings) {
 		for _, e := range errs {
 			fmt.Fprintln(os.Stderr, "requirements:", e)
 		}
-		os.Exit(1)
+		panic(exitCode(1))
 	}
 }
 
@@ -203,6 +397,14 @@ func unmarshalStrict(path string, v any) error {
 	return nil
 }
 
+// newCompiler constructs the JSON-Schema compiler used by validate. It
+// is a seam variable because AddResource cannot fail when handed a fresh
+// compiler and the constant schemaFile URL; a test substitutes a
+// constructor whose compiler already holds that URL, making AddResource
+// return the library's real ResourceExistsError. The production value is
+// exactly jsonschema.NewCompiler; behavior is unchanged.
+var newCompiler = jsonschema.NewCompiler
+
 func validate(f File, m Mappings) []string {
 	var errs []string
 	fail := func(format string, a ...any) { errs = append(errs, fmt.Sprintf(format, a...)) }
@@ -218,7 +420,7 @@ func validate(f File, m Mappings) []string {
 	if err != nil {
 		fatal("parse %s: %v", schemaFile, err)
 	}
-	c := jsonschema.NewCompiler()
+	c := newCompiler()
 	// Format assertions are opt-in in this schema dialect; without this the
 	// declared `format: date` is decorative and "definitely-not-a-date"
 	// passes. The explicit calendar checks below are kept as well, so an
@@ -514,7 +716,14 @@ func sortedKeys(m map[string]int) []string {
 	return ks
 }
 
+// exitCode is the panic payload fatal and mustBeValid use to abandon the
+// current command; runCLI recovers it and returns it as the process exit
+// status. This replaces direct os.Exit calls so tests can exercise every
+// failure path in-process — the printed output and final status are
+// identical to the previous behavior.
+type exitCode int
+
 func fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "requirements: "+format+"\n", a...)
-	os.Exit(1)
+	panic(exitCode(1))
 }

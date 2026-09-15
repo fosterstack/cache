@@ -1,0 +1,90 @@
+name: Mutation testing (advisory)
+
+# test-strategy.md §6: coverage says the tests ran the code; the mutation
+# score says the tests would NOTICE the code being wrong. gremlins mutates
+# the product and re-runs the suite per mutant; a mutant the suite still
+# passes ("lived") is a gap in assertion strength. This is ADVISORY - the
+# score is published, never gated, until the owner sets a baseline in
+# .gremlins.yaml. Runs weekly and on demand, not on every PR (a full
+# mutation run is far heavier than the test suite).
+
+on:
+  schedule:
+    - cron: '23 6 * * 1' # Mondays, offset from the hour
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: mutation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+      - name: install gremlins (pinned)
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      # gremlins takes a DIRECTORY, not a Go package pattern: `./...`
+      # produced "No results to report" and no JSON while exiting 0 (R10).
+      # Each MODULE is scanned separately with its directory argument; the
+      # root scan excludes the nested tools/requirements module (its own
+      # go.mod, covered by its own suite). The mutation SCORE stays
+      # advisory, but an absent/empty report or a tool failure is a
+      # failure - a green run with no mutations is not a baseline.
+      - name: unleash gremlins per module
+        id: run
+        run: |
+          set -uo pipefail
+          gremlins="$(go env GOPATH)/bin/gremlins"
+          fail=0
+          run_module() { # label, out.json, log, workdir, extra-args...
+            local label="$1" out="$2" log="$3" wd="$4"; shift 4
+            echo "== gremlins: ${label} =="
+            ( cd "$wd" && "$gremlins" unleash --output "$out" "$@" . ) 2>&1 | tee "$log"
+            local rc="${PIPESTATUS[0]}"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::gremlins failed for ${label} (exit ${rc})" >&2; fail=1; return
+            fi
+            if [ ! -s "$out" ] || ! jq -e '.mutants_total > 0' "$out" >/dev/null 2>&1; then
+              echo "::error::gremlins produced no mutations for ${label} - not a valid baseline" >&2; fail=1; return
+            fi
+          }
+          run_module "root product module" /tmp/mutation-root.json /tmp/mutation-root.log "$GITHUB_WORKSPACE" -E 'tools/requirements/.*'
+          run_module "tools/requirements module" /tmp/mutation-req.json /tmp/mutation-req.log "$GITHUB_WORKSPACE/tools/requirements"
+          {
+            echo "## Mutation testing (advisory)"
+            echo
+            echo "Tool: gremlins v0.6.0. The score is advisory (test-strategy §6); an absent or empty report fails the run, a low efficacy does not."
+            for m in root req; do
+              f="/tmp/mutation-${m}.json"
+              if [ -s "$f" ]; then
+                echo
+                echo "### ${m} module"
+                # gremlins' top-level mutants_total EXCLUDES timed-out and
+                # not-covered mutants, so report ALL per-mutant statuses
+                # from the file - a timeout is not a proven kill.
+                jq -r '
+                  ([.files[].mutations[].status] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $st
+                  | "- statuses: killed \($st.KILLED // 0), lived \($st.LIVED // 0), timed-out \($st["TIMED OUT"] // 0), not-covered \($st["NOT COVERED"] // 0), not-viable \($st["NOT VIABLE"] // 0)"
+                  + "\n- total mutants generated: \([.files[].mutations[]] | length)  (gremlins mutants_total, which excludes timeouts/not-covered: \(.mutants_total))"
+                  + "\n- test efficacy (advisory): \(.test_efficacy)%  mutant coverage: \(.mutations_coverage)%"
+                  + "\n- NOTE: timed-out mutants are NOT counted as proven kills; the score is advisory."' "$f"
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$fail" -eq 0 ] || exit 1
+      - name: upload the mutation reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-report
+          path: |
+            /tmp/mutation-root.json
+            /tmp/mutation-root.log
+            /tmp/mutation-req.json
+            /tmp/mutation-req.log
+          retention-days: 90

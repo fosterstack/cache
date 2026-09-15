@@ -1,0 +1,249 @@
+name: 'Stage: release authorization'
+
+# Release-chain authorization stage (release-chain-design.md §2 Stage 6):
+# the only stage that can authorize promotion. It verifies the ENTIRE
+# graph for the candidate digests D — source admission, build (and
+# build provenance), image-build, reproducibility, one scan predicate
+# per scanner in the policy list, and acceptance — each signed by the
+# expected stage workflow and naming D or the admitted commit. Any
+# missing or failing predicate fails closed. It then signs a
+# release-authorization predicate, subject D: "D is approved for this
+# version", listing the Rekor log index of every statement it verified.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+      admission-artifact:
+        description: 'artifact carrying the signed admission.json'
+        required: true
+        type: string
+      dist-artifact:
+        description: 'the dist artifact (archives verified against the build predicate)'
+        required: true
+        type: string
+      expected-checksums:
+        description: 'checksums.txt content from the build stage'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: release-authorization
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read      # read attestations against the private candidates
+      id-token: write     # sign the release-authorization predicate
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: log in to GHCR (private candidates package)
+        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.admission-artifact }}
+          path: /tmp/admission
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: dist/
+
+      - name: verify the full graph for D — fail closed on anything missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ inputs.expected-checksums }}
+        run: |
+          set -euo pipefail
+          : > /tmp/verified-statements.jsonl
+
+          # F10: the durable log index lives in the verified BUNDLE, not
+          # at .verificationResult.tlogEntries. Extract it from the real
+          # shape and fail if a mandatory statement has none.
+          record() { # label, verify-output-json
+            li=$(jq -r '.[0].attestation.bundle.verificationMaterial.tlogEntries[0].logIndex // .[0].verificationResult.signature.certificate.transparencyLogEntries[0].logIndex // empty' <<<"$2")
+            if [ -z "$li" ]; then
+              echo "::error::verified statement '$1' has no transparency-log index — refusing to record an unverifiable reference" >&2
+              exit 1
+            fi
+            jq -c --arg label "$1" --arg li "$li" \
+              '.[0] | {label: $label,
+                       predicate_type: .verificationResult.statement.predicateType,
+                       log_index: $li}' \
+              <<<"$2" >> /tmp/verified-statements.jsonl
+          }
+
+          # F08: every verified statement must NAME the admitted commit
+          # (its predicate .sha, when present, must equal GITHUB_SHA) and,
+          # for digest-subject predicates, the digest being authorized.
+          # vrf enforces the sha binding; enforce_verdict/enforce_digest
+          # add typed-content policy on top.
+          # $5 = binding mode: "strict" (a custom predicate MUST carry
+          # .predicate.sha == GITHUB_SHA, present) or "slsa" (SLSA
+          # provenance, bound by --signer-workflow to the producing stage
+          # at this ref; it has no .predicate.sha field). "when present"
+          # is not enough - the build predicate's source lives under
+          # .materials.commit and a foreign one would otherwise slip past
+          # a missing top-level field (R08).
+          vrf() { # subject, predicate-type, signer-workflow-file, label, mode
+            out=$(gh attestation verify "$1" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type "$2" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/$3" \
+              --source-digest "${GITHUB_SHA}" \
+              --source-ref "${GITHUB_REF}" \
+              --format json) \
+              || { echo "::error::graph verification failed: $4 ($2 by $3 on $1) - certificate source/signer must bind ${GITHUB_SHA} @ ${GITHUB_REF}" >&2; exit 1; }
+            if [ "${5:-strict}" = "strict" ]; then
+              psha=$(jq -r '.[0].verificationResult.statement.predicate.sha // empty' <<<"$out")
+              [ -n "$psha" ] || { echo "::error::$4 predicate carries no source sha - refusing to bind it to the release" >&2; exit 1; }
+              [ "$psha" = "${GITHUB_SHA}" ] || { echo "::error::$4 predicate names source ${psha}, not the admitted ${GITHUB_SHA}" >&2; exit 1; }
+              # the build predicate additionally records source under
+              # .materials.commit; when present it must agree too.
+              mcommit=$(jq -r '.[0].verificationResult.statement.predicate.materials.commit // empty' <<<"$out")
+              if [ -n "$mcommit" ] && [ "$mcommit" != "${GITHUB_SHA}" ]; then
+                echo "::error::$4 predicate materials.commit is ${mcommit}, not the admitted ${GITHUB_SHA}" >&2; exit 1
+              fi
+            else
+              # R08: "slsa" mode is NOT exempt from source binding. The
+              # --signer-workflow pin (kept) only constrains the PRODUCING
+              # workflow file; it does not bind the source revision. SLSA v1
+              # provenance carries the source under
+              # .predicate.buildDefinition.resolvedDependencies[] as a
+              # git+https://github.com/<repo> URI with .digest.gitCommit
+              # (GitHub also mirrors it at
+              # .buildDefinition.internalParameters.github.sha). Extract that
+              # commit and require it == the admitted GITHUB_SHA. If the
+              # structure genuinely yields no commit, fail closed rather than
+              # skip.
+              # Collect ALL source commits the provenance names for this
+              # repository. Reject if none, or if ANY differs from the
+              # admitted SHA - do NOT sort and pick one (a provenance
+              # naming both the admitted and a foreign commit must fail).
+              scommits=$(jq -r --arg repo "${GITHUB_REPOSITORY}" '
+                ( [ .[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[]?
+                    | select((.uri // "") | test("git\\+https://github\\.com/" + $repo + "(\\.git)?(@|$|#)"))
+                    | .digest.gitCommit // empty ]
+                  + [ .[0].verificationResult.statement.predicate.buildDefinition.internalParameters.github.sha // empty ] )
+                | map(select(. != "")) | unique | .[]' <<<"$out")
+              [ -n "$scommits" ] || { echo "::error::$4 SLSA provenance yields no source commit for ${GITHUB_REPOSITORY} - refusing to bind it to the release" >&2; exit 1; }
+              while IFS= read -r sc; do
+                [ "$sc" = "${GITHUB_SHA}" ] || { echo "::error::$4 SLSA provenance names source ${sc}, not the admitted ${GITHUB_SHA} (inconsistent or foreign source rejected)" >&2; exit 1; }
+              done <<< "$scommits"
+            fi
+            record "$4" "$out"
+            printf '%s' "$out"
+          }
+
+          # 1. source admission — and it must admit THIS commit and tag
+          out=$(gh attestation verify /tmp/admission/admission.json \
+            --repo "${GITHUB_REPOSITORY}" \
+            --predicate-type https://fosterstack.com/attestations/source-admission/v1 \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml" \
+            --source-digest "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
+            --format json)
+          adm_sha=$(jq -r '.[0].verificationResult.statement.predicate.sha' <<<"$out")
+          adm_tag=$(jq -r '.[0].verificationResult.statement.predicate.tag' <<<"$out")
+          [ "$adm_sha" = "${GITHUB_SHA}" ] || { echo "::error::admission is for ${adm_sha}, chain runs at ${GITHUB_SHA}" >&2; exit 1; }
+          [ "$adm_tag" = "${GITHUB_REF_NAME}" ] || { echo "::error::admission is for ${adm_tag}, chain runs for ${GITHUB_REF_NAME}" >&2; exit 1; }
+          record "source-admission" "$out"
+
+          # 2. build predicate + build provenance over EVERY archive.
+          # R08: validate all archives, not just the first, and do it through
+          # vrf so each archive's build predicate is source-bound (strict:
+          # .sha and .materials.commit == GITHUB_SHA) and its SLSA provenance
+          # source is bound to the admitted commit. A foreign source hiding in
+          # a later archive is otherwise admitted. Iterate without a pipe so a
+          # vrf failure exits the step directly instead of only a subshell.
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+          # Read archive names into an array via process substitution (not a
+          # pipe) so the loop runs in THIS shell and a vrf failure inside it
+          # exits the step, and without mapfile so it stays portable.
+          archives=()
+          while read -r f; do archives+=("$f"); done < <(grep -oE '[^ ]+$' /tmp/expected-checksums.txt)
+          [ "${#archives[@]}" -ge 1 ] || { echo "::error::no archives listed in the expected checksums" >&2; exit 1; }
+          for f in "${archives[@]}"; do
+            vrf "dist/$f" \
+              https://fosterstack.com/attestations/build/v1 stage-build.yml "build:$f" strict >/dev/null
+            vrf "dist/$f" \
+              https://slsa.dev/provenance/v1 stage-build.yml "build-provenance:$f" slsa >/dev/null
+          done
+
+          # 3. per-digest: image-build, reproducibility, every scanner, acceptance
+          scanners=$(jq -r '.scanners[]' .github/policy/scanners.json)
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
+            ib=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/image-build/v1 stage-image.yml "image-build:${v}" strict)
+            # the image-build predicate must name THIS digest as the variant's index
+            got=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$ib")
+            [ "$got" = "$d" ] || { echo "::error::image-build:${v} predicate names ${got}, authorizing ${d}" >&2; exit 1; }
+            vrf "oci://${repo}@${d}" https://slsa.dev/provenance/v1 stage-image.yml "image-provenance:${v}" slsa >/dev/null
+            repro=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/reproducibility/v1 stage-reproducibility.yml "reproducibility:${v}" strict)
+            rgot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$repro")
+            [ "$rgot" = "$d" ] || { echo "::error::reproducibility:${v} predicate names ${rgot}, authorizing ${d}" >&2; exit 1; }
+            for s in $scanners; do
+              sc=$(vrf "oci://${repo}@${d}" "https://fosterstack.com/attestations/scan-${s}/v1" stage-verify.yml "scan-${s}:${v}" strict)
+              verdict=$(jq -r '.[0].verificationResult.statement.predicate.verdict // "missing"' <<<"$sc")
+              [ "$verdict" = "pass" ] || { echo "::error::scan-${s}:${v} verdict is ${verdict}, not pass" >&2; exit 1; }
+              sgot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$sc")
+              [ "$sgot" = "$d" ] || { echo "::error::scan-${s}:${v} predicate names ${sgot}, authorizing ${d}" >&2; exit 1; }
+            done
+            acc=$(vrf "oci://${repo}@${d}" https://fosterstack.com/attestations/acceptance/v1 stage-acceptance-predicate.yml "acceptance:${v}" strict)
+            agot=$(jq -r --arg v "$v" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<"$acc")
+            [ "$agot" = "$d" ] || { echo "::error::acceptance:${v} predicate names ${agot}, authorizing ${d}" >&2; exit 1; }
+            # B02b: validate EVERY variant's acceptance CONTENT against
+            # the frozen baseline - not production only. A separately signed
+            # but empty/failed acceptance predicate attached to the debug or
+            # fips digest must be rejected too. The signature/digest bind
+            # above proves it is the right freshly signed statement; this
+            # proves it attests a COMPLETE pass.
+            jq '.[0].verificationResult.statement.predicate.ac_results // empty' <<<"$acc" \
+              > "/tmp/authorize-ac-${v}.json"
+            python3 bin/authorize-acceptance-check.py "${GITHUB_REF_NAME}" "/tmp/authorize-ac-${v}.json" "$v" \
+              || { echo "::error::acceptance content invalid for variant ${v}" >&2; exit 1; }
+          done
+
+          echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
+
+      - name: write and sign the release-authorization predicate
+        id: predicate
+        run: |
+          set -euo pipefail
+          jq -s -n \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg sha "${GITHUB_SHA}" \
+            --argjson digests '${{ inputs.digests }}' \
+            --slurpfile statements /tmp/verified-statements.jsonl \
+            '{
+              statement: ("digests approved for " + $tag),
+              tag: $tag, sha: $sha, index_digests: $digests,
+              verified_statements: $statements
+            }' > /tmp/authorization-predicate.json
+          nstmt=$(jq '.verified_statements | length' /tmp/authorization-predicate.json)
+          echo "authorization records ${nstmt} verified statements"
+          [ "$nstmt" -ge 10 ] || { echo "::error::only ${nstmt} statements in the authorization inventory — the graph is incomplete" >&2; exit 1; }
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/authorization-subjects.txt
+          cat /tmp/authorization-predicate.json
+
+      - name: sign it
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/authorization-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/release-authorization/v1
+          predicate-path: /tmp/authorization-predicate.json

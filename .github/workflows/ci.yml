@@ -30,6 +30,58 @@ jobs:
       - name: static build (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
 
+  # test-strategy.md §6: the coverage RATCHET. Fails when total statement
+  # coverage of non-excluded Go code drops below the committed floor
+  # (.github/policy/coverage.json). Coverage says the tests ran the
+  # code, not that they would notice it being wrong — the mutation-score
+  # companion is tracked separately; this gate is the floor, not the claim.
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+      # Two Go modules, each measured and reported separately (an honest
+      # denominator - a root `go test ./...` does not include the nested
+      # tools/requirements module). -coverpkg=./... on the root credits a
+      # statement executed as a dependency of another package's test.
+      - name: measure root product module
+        run: go test -race -covermode=atomic -coverpkg=./... -coverprofile=/tmp/root.out ./...
+      - name: measure tools/requirements module
+        run: go -C tools/requirements test -covermode=atomic -coverprofile=/tmp/req.out ./...
+      # Enforce ZERO uncovered eligible statements per module (not a
+      # rounded 100.0% display). Exclusions live in the committed policy
+      # file and there are none.
+      - name: enforce the coverage floor
+        run: |
+          set -euo pipefail
+          max=$(jq -r '.max_uncovered' .github/policy/coverage.json)
+          fail=0
+          {
+            echo "## Statement coverage (zero-uncovered gate, max_uncovered=${max})"
+            echo
+            echo '```'
+            bash bin/coverage-gate.sh /tmp/root.out "root module" || fail=1
+            bash bin/coverage-gate.sh /tmp/req.out  "tools/requirements module" || fail=1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash bin/coverage-gate.sh /tmp/root.out "root module"
+          bash bin/coverage-gate.sh /tmp/req.out  "tools/requirements module"
+          [ "$fail" -eq 0 ] || exit 1
+      - name: publish both profiles as evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-profiles
+          path: |
+            /tmp/root.out
+            /tmp/req.out
+          retention-days: 90
+
   lint:
     name: lint
     runs-on: ubuntu-latest

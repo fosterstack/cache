@@ -16,6 +16,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release-chain mode (design §2 Stage 5): the chain calls this suite
+  # with the candidate image digest; the server under test is then the
+  # exact candidate, not a from-source build. The suite itself is
+  # identical either way — same sample build, same per-task cache-key
+  # assertions.
+  workflow_call:
+    inputs:
+      image-ref:
+        description: 'candidate image reference (@sha256) to run the server from; empty = build from source'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      results:
+        description: 'JSON list of the AC IDs this suite asserted, with results'
+        value: ${{ jobs.acceptance-gradle.outputs.results }}
 
 permissions:
   contents: read
@@ -24,6 +40,15 @@ jobs:
   acceptance-gradle:
     name: acceptance-gradle
     runs-on: ubuntu-latest
+    # F05: release mode pulls the deliberately private candidates package;
+    # a called workflow's unspecified permissions become NONE regardless
+    # of the caller's ceiling, so the job must ask for packages: read
+    # itself. Harmless in PR mode (unused; downgraded on forks).
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      results: ${{ steps.results.outputs.results }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -38,9 +63,11 @@ jobs:
           java-version: '21'
 
       - name: build fscache from source
+        if: inputs.image-ref == ''
         run: CGO_ENABLED=0 go build -o /tmp/fscache-bench ./cmd/fscache
 
       - name: start fscache
+        if: inputs.image-ref == ''
         run: |
           FSCACHE_ADDR=:18095 FSCACHE_DATA_DIR=/tmp/fscache-bench-data /tmp/fscache-bench &
           echo $! > /tmp/fscache-bench.pid
@@ -49,6 +76,22 @@ jobs:
             sleep 0.5
           done
           echo "fscache never became healthy" >&2
+          exit 1
+
+      - name: start the exact candidate image (release-chain mode)
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+          docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 "${IMAGE_REF}"
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18095/healthz && exit 0
+            sleep 0.5
+          done
+          echo "candidate image never became healthy" >&2
+          docker logs fscache-acc >&2 || true
           exit 1
 
       # --info so Gradle logs each task's cache key: the assertions below
@@ -162,6 +205,205 @@ jobs:
             exit 1
           fi
           echo "no ignored remote-cache errors in the warm build log"
+
+      # ── REQ-EVICT-002-AC3 ────────────────────────────────────────────
+      # A build with one cacheable output larger than the configured cap
+      # must complete normally, twice: the oversized entry is 413'd with
+      # the documented header and simply never cached; other outputs
+      # still round-trip. The cap (48 KiB) sits between the compiled-class
+      # entries (KBs) and the 64 KiB resource injected below.
+      - name: start a capped server (source mode)
+        if: inputs.image-ref == ''
+        run: |
+          set -euo pipefail
+          FSCACHE_ADDR=:18096 FSCACHE_DATA_DIR=/tmp/fscache-capped-data \
+            FSCACHE_MAX_BYTES=49152 /tmp/fscache-bench & echo $! > /tmp/fscache-capped.pid
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18096/healthz && exit 0; sleep 0.5
+          done
+          echo "capped server never became healthy" >&2; exit 1
+
+      - name: start a capped candidate (release-chain mode)
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          docker run -d --name fscache-capped -e FSCACHE_MAX_BYTES=49152 \
+            -p 127.0.0.1:18096:8080 "${IMAGE_REF}"
+          for _ in $(seq 1 20); do
+            curl -sf http://localhost:18096/healthz && exit 0; sleep 0.5
+          done
+          echo "capped candidate never became healthy" >&2
+          docker logs fscache-capped >&2 || true
+          exit 1
+
+      # R03: this scenario proves the REAL post-413 behavior of Gradle
+      # 9.7.1 against a capped server — not merely that some PUT was 413'd.
+      # The oversized output is in module-a (after :core, before module-b/c),
+      # so the ordering exercises a small task BEFORE the error and small
+      # tasks AFTER it. Cold build: :core:compileJava uploads, then
+      # module-a's oversized entry is 413'd and Gradle DISABLES remote
+      # caching for the rest of the build, so module-b/c never upload. Warm
+      # build: only :core:compileJava restores; module-a 413s again and runs
+      # locally. A later small-only build must still reuse the remote cache.
+      - name: REQ-EVICT-002-AC3 — capped cold build (413 disables remote caching mid-build)
+        run: |
+          set -euo pipefail
+          gen_big_java() { # target-file, package
+            mkdir -p "$(dirname "$1")"
+            {
+              echo "package $2;"
+              echo "// Generated by the acceptance workflow: ~96KB of high-entropy"
+              echo "// string constants so the compiled-class cache entry exceeds the"
+              echo "// 48 KiB cap even after the cache's tar+gzip (compressible content"
+              echo "// would shrink under the cap and never exercise the rejection)."
+              echo "public final class BenchBlob {"
+              echo "  private BenchBlob() {}"
+              for i in 1 2 3 4; do
+                printf '  public static final String D%d = "%s";\n' "$i" \
+                  "$(head -c 18000 /dev/urandom | base64 | tr -d '\n' | head -c 24000)"
+              done
+              echo "}"
+            } > "$1"
+          }
+          bigsrc=$(mktemp -d)/BenchBlob.java
+          gen_big_java "$bigsrc" com.fosterstack.bench.a
+          # a = cold, b = warm — both carry the oversized module-a output.
+          for copy in a b; do
+            cp -r bench/gradle-sample "/tmp/gradle-capped-${copy}"
+            find "/tmp/gradle-capped-${copy}" -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +
+            cp "$bigsrc" "/tmp/gradle-capped-${copy}/module-a/src/main/java/com/fosterstack/bench/a/BenchBlob.java"
+          done
+          # A pristine copy (no oversized file) for the later recovery build.
+          cp -r bench/gradle-sample /tmp/gradle-recovery
+          find /tmp/gradle-recovery -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +
+          # --info so every cacheable task logs "Build cache key for task ...":
+          # the assertions below verify EXACT keys on the server, not a raw
+          # PUT count (same environment-independent pattern used above).
+          (cd /tmp/gradle-capped-a && ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1 | tee /tmp/capped-cold.log) \
+            || { echo "::error::first (cold) build against the capped server failed - a 413 must be a cache miss, never a build failure" >&2; exit 1; }
+
+      - name: REQ-EVICT-002-AC3 — small task stored, oversized key and post-413 tasks absent
+        run: |
+          set -euo pipefail
+          key_of() { grep -oE "Build cache key for task '$1' is [0-9a-f]+" /tmp/capped-cold.log | awk '{print $NF}' | head -1; }
+          head_code() { curl -s -o /dev/null -w '%{http_code}' -I "localhost:18096/$1"; }
+
+          # (2) A small task that finished BEFORE the 413 uploaded and IS on
+          # the server.
+          core_key=$(key_of ':core:compileJava')
+          [ -n "${core_key}" ] || { echo "::error::no cache key logged for :core:compileJava in the cold build" >&2; exit 1; }
+          code=$(head_code "${core_key}")
+          [ "${code}" = "200" ] || { echo "::error:::core:compileJava (key ${core_key}), uploaded before the 413, must be on the server: HEAD=${code}" >&2; exit 1; }
+          echo "before 413, stored: :core:compileJava -> ${core_key} (HEAD 200)"
+
+          # (3) The oversized task's OWN cache key was rejected 413 and must
+          # NOT be stored. Cross-check the logged task key against the key in
+          # the "Could not store entry ..." 413 line so we assert the real one.
+          a_key=$(key_of ':module-a:compileJava')
+          [ -n "${a_key}" ] || { echo "::error::no cache key logged for the oversized task :module-a:compileJava" >&2; exit 1; }
+          rej_key=$(grep -oE "Could not store entry [0-9a-f]+" /tmp/capped-cold.log | awk '{print $NF}' | head -1)
+          [ "${rej_key}" = "${a_key}" ] || { echo "::error::the 413'd entry (${rej_key:-none}) is not :module-a:compileJava's key (${a_key})" >&2; exit 1; }
+          code=$(head_code "${a_key}")
+          [ "${code}" = "404" ] || { echo "::error::the oversized :module-a:compileJava key ${a_key} must be absent (rejected, not stored): HEAD=${code}" >&2; exit 1; }
+          echo "rejected, absent: :module-a:compileJava -> ${a_key} (413, HEAD 404)"
+
+          # (4) Remote caching was disabled after the 413, so a cacheable task
+          # reached AFTER the oversized one did not upload either.
+          post_found=0
+          for t in ':module-b:compileJava' ':module-c:compileJava'; do
+            k=$(key_of "${t}")
+            [ -n "${k}" ] || continue
+            post_found=1
+            code=$(head_code "${k}")
+            [ "${code}" = "404" ] || { echo "::error::${t} (key ${k}) ran after the 413 but is on the server (HEAD=${code}) - remote caching should have been disabled" >&2; exit 1; }
+            echo "after 413, absent: ${t} -> ${k} (HEAD 404)"
+          done
+          [ "${post_found}" -eq 1 ] || { echo "::error::no post-413 cacheable task key found in the cold log to verify" >&2; exit 1; }
+
+          # The cap really fired, a small entry really stored, and Gradle
+          # really disabled the remote cache after the error.
+          curl -s localhost:18096/metrics > /tmp/capped-metrics.txt
+          put201=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/capped-metrics.txt)
+          put413=$(awk '/^fscache_http_requests_total\{method="PUT",status="413"\}/ {print $2}' /tmp/capped-metrics.txt)
+          echo "capped server (after cold build): 201s=${put201:-0} 413s=${put413:-0}"
+          [ "${put413:-0}" -ge 1 ] || { echo "::error::no PUT was rejected 413 - the oversized output did not exercise the cap" >&2; exit 1; }
+          [ "${put201:-0}" -ge 1 ] || { echo "::error::no PUT was stored - a small output before the 413 must still cache" >&2; exit 1; }
+          grep -q 'remote build cache was disabled' /tmp/capped-cold.log \
+            || { echo "::error::expected Gradle to disable the remote cache for the rest of the build after the 413" >&2; exit 1; }
+
+      - name: REQ-EVICT-002-AC3 — capped warm build restores only the pre-stored small task
+        run: |
+          set -euo pipefail
+          (cd /tmp/gradle-capped-b && ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1 | tee /tmp/capped-warm.log) \
+            || { echo "::error::second (warm) build against the capped server failed" >&2; exit 1; }
+          # (5) The restore set is EXACTLY the small task stored before the
+          # 413 (:core:compileJava). module-a must NOT be restored — it
+          # re-executes and 413s again — and the summary must read 1 from cache.
+          { grep -E '> Task .* FROM-CACHE' /tmp/capped-warm.log || true; } \
+            | sed 's/^> Task //; s/ FROM-CACHE.*//' | sort > /tmp/capped-warm-from-cache.txt
+          printf ':core:compileJava\n' > /tmp/capped-warm-expected.txt
+          echo "restored FROM-CACHE:"; cat /tmp/capped-warm-from-cache.txt
+          if ! diff -u /tmp/capped-warm-expected.txt /tmp/capped-warm-from-cache.txt; then
+            echo "::error::warm restore set is not exactly the pre-stored small task (:core:compileJava)" >&2
+            exit 1
+          fi
+          if grep -qE '^> Task :module-a:compileJava FROM-CACHE' /tmp/capped-warm.log; then
+            echo "::error::the oversized :module-a:compileJava was restored FROM-CACHE - it must execute, not restore" >&2
+            exit 1
+          fi
+          grep -qE '^> Task :module-a:compileJava' /tmp/capped-warm.log \
+            || { echo "::error:::module-a:compileJava did not execute in the warm build" >&2; exit 1; }
+          grep -qE '[0-9]+ actionable tasks: [0-9]+ executed, 1 from cache' /tmp/capped-warm.log \
+            || { echo "::error::warm build summary is not '... 1 from cache' (expected exactly one restore)" >&2; exit 1; }
+          echo "warm build: only :core:compileJava restored; :module-a executed locally"
+
+      - name: REQ-EVICT-002-AC3 — a later small-only build reuses the remote cache (recovery)
+        run: |
+          set -euo pipefail
+          # (6) A third build in a fresh workspace of the ORIGINAL sample (no
+          # oversized file) against the SAME capped server must still get a
+          # remote hit — the earlier 413 must not poison later builds.
+          (cd /tmp/gradle-recovery && ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1 | tee /tmp/capped-recovery.log) \
+            || { echo "::error::the recovery build (original sample, no oversized file) failed" >&2; exit 1; }
+          if ! grep -qE '^> Task :core:compileJava FROM-CACHE' /tmp/capped-recovery.log; then
+            echo "::error::a subsequent small-only build did NOT get a remote cache hit - the cap poisoned later builds" >&2
+            exit 1
+          fi
+          if grep -q 'remote build cache was disabled' /tmp/capped-recovery.log; then
+            echo "::error::the recovery build disabled the remote cache - a small-only build must not 413" >&2
+            exit 1
+          fi
+          echo "recovery: the original sample got :core:compileJava FROM-CACHE against the same capped server"
+
+      - name: REQ-EVICT-002-AC3 — direct 413 rejection probe (mechanism check)
+        run: |
+          set -euo pipefail
+          # (7) The rejection mechanism, probed directly: 413 AND the header
+          # AND the entry is not retrievable. A mechanism check only — NOT a
+          # substitute for the real build evidence asserted above.
+          head -c 65536 /dev/zero | tr '\0' 'y' > /tmp/oversized-probe.bin
+          hdr=$(curl -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin http://localhost:18096/oversizedprobe)
+          grep -q '^HTTP/[0-9.]* 413' <<<"$hdr" || { echo "::error::oversized probe was not 413" >&2; exit 1; }
+          grep -qi '^X-FSCache-Reject: entry-exceeds-cache-cap' <<<"$hdr" \
+            || { echo "::error::413 lacks the X-FSCache-Reject: entry-exceeds-cache-cap header" >&2; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:18096/oversizedprobe)
+          [ "$code" = "404" ] || { echo "::error::rejected entry is retrievable (${code}) - it was stored" >&2; exit 1; }
+          echo "REQ-EVICT-002-AC3: both builds succeeded; oversized 413'd and absent; recovery confirmed"
+
+      - name: stop the capped server
+        if: always()
+        run: |
+          kill "$(cat /tmp/fscache-capped.pid)" 2>/dev/null || true
+          docker rm -f fscache-capped 2>/dev/null || true
+
+      # Reached only when every assertion above passed; the aggregation
+      # stage merges this into the acceptance predicate (chain mode).
+      - name: report the ACs this suite asserted
+        id: results
+        run: |
+          echo 'results=[{"ac":"REQ-GRADLE-001-AC1","result":"pass"},{"ac":"REQ-GRADLE-001-AC2","result":"pass"},{"ac":"REQ-GRADLE-001-AC3","result":"pass"},{"ac":"REQ-GRADLE-001-AC4","result":"pass"},{"ac":"REQ-EVICT-002-AC3","result":"pass"}]' >> "$GITHUB_OUTPUT"
 
       - name: stop fscache
         if: always()

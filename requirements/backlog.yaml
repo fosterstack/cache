@@ -25,12 +25,14 @@ backlog:
     note: Issue #10; before beta.
   - title: Paid tiers (SSO, HA/replication, contractual CVE SLA)
     note: Described publicly as direction, not sold as available.
-  - title: buildinfo FIPS label overstates what it knows
+  - title: buildinfo FIPS label overstates what it knows (RESOLVED 2026-09-13)
     note: >
-      internal/buildinfo hardcodes "CMVP cert #5247" behind a mode check, so
-      a STANDARD build running with GODEBUG=fips140=on reports the validated
-      module's certificate without containing the frozen module (reproduced
-      in the Sep 10 PR #43 review). The report must be derived from the
-      module identity actually selected into the binary, never from mode
-      alone. Product fix, requirements-first, governed by revised
-      REQ-FIPS-002; origin audit-2026-09-10 (PR #43 review, finding 1).
+      Resolved in the v0.2.0 integrated PR: Info.FIPSModule now carries the
+      GOFIPS140 build setting and FIPSNote derives the report from mode AND
+      module - the forced-standard case reports "active (fips140 mode
+      forced at runtime; not the validated-module build)" and never claims
+      the certificate. Failing-first evidence in
+      internal/buildinfo TestFIPSNoteIsTruthfulPerModeAndModule; the
+      release-artifact acceptance asserts all three runtime postures.
+      Origin audit-2026-09-10 (PR #43 review, finding 1); re-raised as
+      Sep 12 review F06.

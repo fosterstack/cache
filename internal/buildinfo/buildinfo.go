@@ -13,6 +13,7 @@ package buildinfo
 import (
 	"crypto/fips140"
 	"runtime/debug"
+	"strings"
 )
 
 // Info describes the running binary.
@@ -24,14 +25,28 @@ type Info struct {
 	Revision string
 	// Modified reports whether the working tree was dirty at build time.
 	Modified bool
-	// FIPS140 reports whether the validated cryptographic module is active.
+	// FIPS140 reports whether fips140 mode is enabled at runtime. Mode
+	// alone does not establish the validated module: GODEBUG=fips140=on
+	// forces the mode in ANY build. FIPSModule is the other half.
 	FIPS140 bool
+	// FIPSModule is the Go Cryptographic Module version selected into
+	// this binary at build time (the GOFIPS140 build setting), empty for
+	// a standard build. Only a binary built with the validated module
+	// version may claim the certificate.
+	FIPSModule string
 }
+
+// readBuildInfo is a testability seam over debug.ReadBuildInfo. Under
+// `go test` the runtime always returns ok=true with a populated Main, so
+// the not-ok and empty-version paths below are unreachable without
+// overriding this variable. Production behavior is unchanged: nothing
+// outside the package's own tests reassigns it.
+var readBuildInfo = debug.ReadBuildInfo
 
 // Read returns the running binary's build information.
 func Read() Info {
 	info := Info{Version: "unknown", FIPS140: fips140.Enabled()}
-	bi, ok := debug.ReadBuildInfo()
+	bi, ok := readBuildInfo()
 	if !ok {
 		return info
 	}
@@ -44,6 +59,8 @@ func Read() Info {
 			info.Revision = s.Value
 		case "vcs.modified":
 			info.Modified = s.Value == "true"
+		case "GOFIPS140":
+			info.FIPSModule = s.Value
 		}
 	}
 	return info
@@ -55,9 +72,27 @@ func Read() Info {
 // startup line announced addr, data_dir, max_bytes and auth, and said
 // nothing about the one thing they paid attention for. This is the line an
 // assessor screenshots.
+// The note distinguishes runtime MODE from build-time MODULE selection
+// (REQ-FIPS-002): GODEBUG=fips140=on forces the mode in any build, so
+// mode alone must never claim the certificate. Only the validated
+// module version does. The Go toolchain records the module setting as
+// "v1.0.0" optionally suffixed with a build hash ("v1.0.0-c2097c7c"),
+// so the certificate is claimed on the version prefix, not exact bytes.
+func (i Info) validatedModule() bool {
+	return i.FIPSModule == "v1.0.0" || strings.HasPrefix(i.FIPSModule, "v1.0.0-")
+}
+
 func (i Info) FIPSNote() string {
-	if i.FIPS140 {
-		return "active (Go validated module, CMVP cert #5247)"
+	switch {
+	case i.FIPS140 && i.validatedModule():
+		return "active (Go validated module v1.0.0, CMVP cert #5247)"
+	case i.FIPS140 && i.FIPSModule == "":
+		return "active (fips140 mode forced at runtime; not the validated-module build)"
+	case i.FIPS140:
+		return "active (Go module " + i.FIPSModule + "; certificate status not asserted)"
+	case i.validatedModule():
+		return "off (validated module v1.0.0 linked, mode disabled at runtime)"
+	default:
+		return "off"
 	}
-	return "off"
 }

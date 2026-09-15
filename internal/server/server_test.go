@@ -299,3 +299,218 @@ func TestMetricsReportsStoreBytesAndEntries(t *testing.T) {
 		t.Fatalf("expected fscache_store_entries 2, got:\n%s", body)
 	}
 }
+
+func newTestHandlerWithRO(t *testing.T, auth, ro Credentials) http.Handler {
+	t.Helper()
+	blobs, err := blobstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobstore.New: %v", err)
+	}
+	meta, err := metadata.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("metadata.Open: %v", err)
+	}
+	c := cache.New(blobs, meta)
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	return New(Config{Cache: c, Metrics: m, Registry: reg, Auth: auth, ROAuth: ro, MaxBodyBytes: 1 << 20})
+}
+
+// REQ-AUTH-005-AC1: read-only credentials read exactly like read-write
+// ones and can never change the store.
+func TestReadOnlyCredentialsReadButNeverWrite(t *testing.T) {
+	rw := Credentials{Username: "ci", Password: "writer-pw"}
+	ro := Credentials{Username: "dev", Password: "reader-pw"}
+	h := newTestHandlerWithRO(t, rw, ro)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// Seed a key with the read-write pair.
+	req := mustReq(t, http.MethodPut, srv.URL+"/k", "v")
+	req.SetBasicAuth(rw.Username, rw.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("read-write PUT status = %d, want 201", resp.StatusCode)
+	}
+
+	// Read-only GET and HEAD succeed identically to read-write.
+	req = mustReq(t, http.MethodGet, srv.URL+"/k", "")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusOK {
+		t.Fatalf("read-only GET status = %d, want 200", resp.StatusCode)
+	}
+	req = mustReq(t, http.MethodHead, srv.URL+"/k", "")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusOK {
+		t.Fatalf("read-only HEAD status = %d, want 200", resp.StatusCode)
+	}
+
+	// Read-only PUT is 403 and stores nothing.
+	req = mustReq(t, http.MethodPut, srv.URL+"/k2", "poison")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-only PUT status = %d, want 403", resp.StatusCode)
+	}
+	req = mustReq(t, http.MethodGet, srv.URL+"/k2", "")
+	req.SetBasicAuth(rw.Username, rw.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET of read-only-attempted key = %d, want 404 (nothing stored)", resp.StatusCode)
+	}
+
+	// Read-only DELETE is 403 and the key survives.
+	req = mustReq(t, http.MethodDelete, srv.URL+"/k", "")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-only DELETE status = %d, want 403", resp.StatusCode)
+	}
+	req = mustReq(t, http.MethodGet, srv.URL+"/k", "")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET after refused DELETE = %d, want 200", resp.StatusCode)
+	}
+
+	// The read-write pair still writes.
+	req = mustReq(t, http.MethodPut, srv.URL+"/k3", "v3")
+	req.SetBasicAuth(rw.Username, rw.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("read-write PUT after RO traffic = %d, want 201", resp.StatusCode)
+	}
+}
+
+// REQ-AUTH-005-AC2: wrong credentials are 401 (identity refused); valid
+// read-only credentials are never 401, and their 403 carries no
+// WWW-Authenticate - the identity was accepted, the verb was refused.
+func TestReadOnlyCredentialsAuthSemantics(t *testing.T) {
+	rw := Credentials{Username: "ci", Password: "writer-pw"}
+	ro := Credentials{Username: "dev", Password: "reader-pw"}
+	h := newTestHandlerWithRO(t, rw, ro)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// Wrong password on the read-only username: 401 with WWW-Authenticate.
+	req := mustReq(t, http.MethodGet, srv.URL+"/k", "")
+	req.SetBasicAuth(ro.Username, "wrong")
+	resp := doReq(t, req)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong-password status = %d, want 401", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") == "" {
+		t.Fatal("401 without WWW-Authenticate")
+	}
+
+	// Valid read-only GET of a missing key: 404, never 401.
+	req = mustReq(t, http.MethodGet, srv.URL+"/missing", "")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	if resp := doReq(t, req); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("read-only GET missing = %d, want 404", resp.StatusCode)
+	}
+
+	// The 403 is an authorization answer, not an authentication challenge.
+	req = mustReq(t, http.MethodPut, srv.URL+"/k", "v")
+	req.SetBasicAuth(ro.Username, ro.Password)
+	resp = doReq(t, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-only PUT status = %d, want 403", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") != "" {
+		t.Fatal("403 carries WWW-Authenticate - retrying with the same valid credentials cannot help")
+	}
+}
+
+func newTestHandlerWithCap(t *testing.T, capBytes, maxBody int64) http.Handler {
+	t.Helper()
+	blobs, err := blobstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobstore.New: %v", err)
+	}
+	meta, err := metadata.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("metadata.Open: %v", err)
+	}
+	c := cache.New(blobs, meta, cache.WithMaxBytes(capBytes))
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	return New(Config{Cache: c, Metrics: m, Registry: reg, MaxBytes: capBytes, MaxBodyBytes: maxBody})
+}
+
+// REQ-EVICT-002-AC1: an entry larger than the whole cache cap is 413
+// with the documented reject header, stores nothing, and evicts nothing.
+func TestOversizedEntryRejectedNotChurned(t *testing.T) {
+	h := newTestHandlerWithCap(t, 1024, 1<<20)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp := doReq(t, mustReq(t, http.MethodPut, srv.URL+"/small", strings.Repeat("a", 100)))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("small PUT status = %d, want 201", resp.StatusCode)
+	}
+
+	resp = doReq(t, mustReq(t, http.MethodPut, srv.URL+"/big", strings.Repeat("b", 2000)))
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized PUT status = %d, want 413", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FSCache-Reject"); got != "entry-exceeds-cache-cap" {
+		t.Fatalf("X-FSCache-Reject = %q, want entry-exceeds-cache-cap", got)
+	}
+
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/big", ""))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET of rejected key = %d, want 404 (nothing stored)", resp.StatusCode)
+	}
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/small", ""))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET of pre-existing key = %d, want 200 (nothing evicted)", resp.StatusCode)
+	}
+}
+
+// REQ-EVICT-002-AC1, streaming half: a chunked upload with no declared
+// length must be rejected the moment it exceeds the cap, with the same
+// header - a lying or absent Content-Length cannot smuggle an oversized
+// entry into the store.
+func TestOversizedChunkedEntryRejected(t *testing.T) {
+	h := newTestHandlerWithCap(t, 1024, 1<<20)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/chunky", strings.NewReader(strings.Repeat("c", 4096)))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.ContentLength = -1 // force chunked transfer encoding
+	resp := doReq(t, req)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked oversized PUT status = %d, want 413", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FSCache-Reject"); got != "entry-exceeds-cache-cap" {
+		t.Fatalf("X-FSCache-Reject = %q, want entry-exceeds-cache-cap", got)
+	}
+	resp = doReq(t, mustReq(t, http.MethodGet, srv.URL+"/chunky", ""))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET of rejected chunked key = %d, want 404", resp.StatusCode)
+	}
+}
+
+// REQ-EVICT-002-AC2: the body-limit 413 and the cache-cap 413 stay
+// distinguishable - only the latter carries the reject header.
+func TestBodyLimitRejectionCarriesNoRejectHeader(t *testing.T) {
+	h := newTestHandlerWithCap(t, 1<<20, 512)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp := doReq(t, mustReq(t, http.MethodPut, srv.URL+"/toobig", strings.Repeat("d", 600)))
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("over-body-limit PUT status = %d, want 413", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-FSCache-Reject"); got != "" {
+		t.Fatalf("body-limit 413 carries X-FSCache-Reject %q; the two rejections must stay distinguishable", got)
+	}
+}

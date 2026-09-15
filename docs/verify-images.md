@@ -4,8 +4,11 @@ Every FosterStack Cache release is signed and provenance-attested by
 GitHub's own CI — not by us claiming it, by a chain you can check yourself
 in under a minute, with nothing installed but `cosign` and `gh`.
 
-Every command below runs with no GitHub credentials configured. Resolve the
-current release once and the rest parameterize themselves:
+The pull and the cosign commands below are fully anonymous. The
+`gh attestation verify` commands are not — they read GitHub's attestation
+API and need a token even for a public repo (see the note under "Verify
+the whole chain"). Resolve the current release once and the rest
+parameterize themselves:
 
 ```sh
 VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
@@ -20,10 +23,17 @@ workflow sign these exact bytes? It vouches for identity and integrity of
 the artifact, nothing more.
 
 ```sh
+# The public image signature is made by the promotion workflow; pin it
+# and the release tag rather than "any workflow in this repo".
 cosign verify ghcr.io/fosterstack/cache:${VER} \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
+
+The signing workflow is **version-scoped**: the current chain signs the
+public image in `stage-promote.yml` (pinned above); the earliest release
+was signed by the old `release.yml`, so for it use
+`--certificate-identity-regexp='^https://github.com/fosterstack/cache/.github/workflows/release.yml@'` instead. <!-- pinned: historical -->
 
 There is no signing key to leak, steal, or rotate — the certificate is
 short-lived, minted by Sigstore's Fulcio from a GitHub Actions OIDC token
@@ -40,31 +50,125 @@ with no attestation tells you who signed, but nothing about how the thing
 was built.
 
 ```sh
-gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} --owner fosterstack
+# Needs a token (GH_TOKEN / gh auth login). Pin the producing stage - it
+# is version-scoped: the current chain builds with stage-image.yml, the
+# earliest release with release.yml (swap --signer-workflow accordingly).
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
+  --repo fosterstack/cache \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-image.yml \
+  --source-ref "refs/tags/v${VER}"
 ```
 
-This names the exact workflow run that produced the image you pulled
-(equivalently: `cosign verify-attestation --type slsaprovenance` with the
-same identity flags, if you prefer to stay in cosign).
+This names the exact workflow run that produced the image you pulled.
+The SLSA provenance is stored in GitHub's attestation store (queried by
+the command above), not pushed as a registry attestation, so verify it
+through `gh attestation verify` rather than `cosign verify-attestation`.
 
 What neither step tells you, stated so nobody over-reads them: whether the
-artifact was scanned or tested. Those are separate evidence classes;
-[SECURITY.md](../SECURITY.md) says exactly what attaches to a release
-today.
+artifact was scanned or tested. Those are separate statements — and they
+are also attached to the digest, verifiable the same way. See
+"Verify the whole chain" below.
 
 ```
 ✓ Verification succeeded!
 - Build repo:..... fosterstack/cache
-- Build workflow:. .github/workflows/release.yml@refs/tags/v${VER}
+- Build workflow:. .github/workflows/stage-image.yml@refs/tags/v${VER}
 - Signer repo:.... fosterstack/cache
-- Signer workflow: .github/workflows/release.yml@refs/tags/v${VER}
+- Signer workflow: .github/workflows/stage-image.yml@refs/tags/v${VER}
 ```
 
 `Build workflow` is cryptographic confirmation that the bytes you pulled
-came out of this repository's public CI pipeline —
-[`.github/workflows/release.yml`](../.github/workflows/release.yml),
+came out of this repository's public CI pipeline — the image-assembly
+stage of [`.github/workflows/release.yml`](../.github/workflows/release.yml),
 readable in full — and not from a developer machine (see
 [`RELEASING.md`](../RELEASING.md)'s "releases build only in CI" rule).
+
+## 2b. Verify the whole chain
+
+Every stage of the release chain signs its own statement about the exact
+digest you pulled, and each is independently verifiable. The one that
+implies all the others:
+
+```sh
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
+  --repo fosterstack/cache \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-authorize.yml \
+  --predicate-type https://fosterstack.com/attestations/release-authorization/v1
+```
+
+That statement exists only if the authorization stage verified the full
+graph for this digest — admission, build, image assembly,
+reproducibility, one scan verdict per scanner, acceptance — and its
+predicate body lists the Rekor log index of everything it checked.
+Pinning `--signer-workflow` is what makes this "signed by the
+authorization stage" rather than merely "signed by something in this
+repo." **These chain predicates exist for releases built by the new chain (v0.2.0 and later); the previous release carries only the image signature and SLSA provenance shown above.** <!-- pinned: historical -->
+
+`gh attestation verify` reads GitHub's attestation API and therefore
+needs a token in the environment (`GH_TOKEN` or `gh auth login`) even
+for a public repo — it authenticates you to the API, not to the image.
+The image pull and the **cosign** verification below are the fully
+anonymous routes; use those where "no credentials" is the requirement.
+
+The individual statements, all verifiable with the same command shape
+(`--predicate-type <type>`):
+
+| Predicate type | Signed by | Says |
+|---|---|---|
+| `https://fosterstack.com/attestations/image-build/v1` | the image-assembly stage | how this digest was assembled: base digest, binary hashes, Dockerfile hash |
+| `https://fosterstack.com/attestations/reproducibility/v1` | the reproducibility stage | an independent rebuild produced this exact digest |
+| `https://fosterstack.com/attestations/scan-trivy/v1` (also `-grype`, `-snyk`) | the verification stage | this digest was scanned clean by that scanner, with its version and database state |
+| `https://fosterstack.com/attestations/acceptance/v1` | the acceptance stage | the per-AC acceptance results for this digest |
+| `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
+| `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
+
+**Resolving the deferred release ACs.** The `release-manifest.json` on the
+release page is signed and attached BEFORE publication, so its `ac_results`
+shows the two publication ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
+`deferred-to-publication`, and its `publication_evidence` field points
+here. Their **pass** outcome lives in the separate publication attestation
+above — verify it (needs a token), pinned to the promotion workflow and
+this release ref:
+
+```sh
+# Verify the attestation AND extract its predicate as JSON, then assert
+# the two release ACs are pass and bound to this tag/digest - a signature
+# alone is not the outcome.
+gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
+  --repo fosterstack/cache \
+  --predicate-type https://fosterstack.com/attestations/publication/v1 \
+  --signer-workflow fosterstack/cache/.github/workflows/stage-promote.yml \
+  --source-ref "refs/tags/v${VER}" \
+  --format json \
+  --jq '.[0].verificationResult.statement.predicate' > /tmp/pub.json
+
+# tag binding, then both ACs pass:
+jq -e --arg t "v${VER}" '.tag == $t' /tmp/pub.json >/dev/null \
+  && jq -e '[.publication_ac_results[] | select(.ac=="REQ-REL-001-AC1" or .ac=="REQ-REL-002-AC1") | .result] | (length==2 and all(.=="pass"))' /tmp/pub.json >/dev/null \
+  && echo "publication outcomes: REQ-REL-001-AC1 and REQ-REL-002-AC1 both pass for v${VER}"
+```
+
+The `--jq`/`jq` extraction reads the predicate's `publication_ac_results`
+directly, so the customer checks the outcome fields, not merely that a
+signature exists.
+
+The scanner list lives in
+[`.github/policy/scanners.json`](../.github/policy/scanners.json) — the
+per-scanner types track that list, not this table.
+
+`release-manifest.json` on the release page carries the same evidence in
+one file: every digest, both registry references, per-AC results, and
+the Rekor log indexes.
+
+### The Docker Hub mirror
+
+The same images, same digests, are mirrored at
+`docker.io/fosterstack/cache` for tooling that defaults to Docker Hub.
+GHCR is canonical. Everything on this page verifies identically against
+either registry, because verification is keyed to the digest, not the
+registry. One practical note: Docker Hub rate-limits anonymous pulls by
+the **puller's** IP and login (not by anything we control) — if you hit
+a limit, authenticate with any free Docker account or pull from GHCR.
 
 ## 3. Which tags to verify
 
@@ -166,7 +270,7 @@ bundle over that file:
 # Download checksums.txt and checksums.txt.bundle from the release page, then:
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 

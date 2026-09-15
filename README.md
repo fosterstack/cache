@@ -118,7 +118,10 @@ curl localhost:8080/healthz   # -> ok
 
 Pin a specific version for anything beyond a first look — the badge above
 shows the current one, and [`docs/docker-deploy.md`](docs/docker-deploy.md)
-covers pinning by digest.
+covers pinning by digest. The same images, same digests, are mirrored at
+`docker.io/fosterstack/cache` for tooling that defaults to Docker Hub;
+GHCR is canonical, and if Docker Hub's anonymous pull limits bite (they
+key on the puller, not on us), authenticate or pull from GHCR.
 
 That's the whole install. No registration, no license key for the
 Community tier — pull, run, point your build tool at it (below).
@@ -177,6 +180,7 @@ Configuration is via environment variables (flags are not yet wired):
 | `FSCACHE_DATA_DIR` | `./data` | Where blobs and the metadata index live |
 | `FSCACHE_MAX_BYTES` | `0` (unbounded) | Size cap; oldest-unused entries evicted first |
 | `FSCACHE_USERNAME` / `FSCACHE_PASSWORD` | unset (auth disabled) | HTTP Basic Auth, required together |
+| `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD` | unset | Optional read-only pair: `GET`/`HEAD` only, writes get 403. Requires the read-write pair; usernames must differ |
 | `FSCACHE_MAX_BODY_BYTES` | `1073741824` (1 GiB) | Max accepted blob size per `PUT` |
 
 ## Gradle setup

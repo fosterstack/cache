@@ -1,0 +1,8 @@
+# Coverage exclusions (test-strategy.md §6): one exclusion per line —
+# a file-path prefix, whitespace, then the reason. Reviewed like ACs.
+# No inline ignore pragmas anywhere in the code.
+#
+# (none yet — main() wiring and defensive branches stay IN the metric
+# until the config tests from Phase 1 §2.1 cover them or an owner-
+# reviewed line lands here; the floor was set to the measured total
+# with zero exclusions, so nothing hides in the difference)

@@ -1,0 +1,186 @@
+name: 'Stage: acceptance predicate'
+
+# Release-chain verification stage, acceptance half's aggregation
+# (release-chain-design.md §2 Stage 5). The three release-mode acceptance
+# suites — release-artifact, Gradle, Maven — each assert their ACs
+# against the exact candidate digests and report the AC IDs they
+# asserted. This stage enumerates EVERY acceptance-method AC from
+# requirements.yaml at the tagged commit, merges the suites' reported
+# results, marks anything not reported as not-run (preserved, never
+# hidden), and signs the acceptance predicate naming the digests and the
+# per-AC results. The authorization stage requires this predicate.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+      artifacts-results:
+        description: 'JSON AC results from the release-artifact suite'
+        required: true
+        type: string
+      gradle-results:
+        description: 'JSON AC results from the Gradle suite'
+        required: true
+        type: string
+      maven-results:
+        description: 'JSON AC results from the Maven suite'
+        required: true
+        type: string
+      egress-results:
+        description: 'JSON AC results from the no-outbound stage'
+        required: true
+        type: string
+      k8s-results:
+        description: 'JSON AC results from the Kubernetes stage'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  predicate:
+    name: acceptance-predicate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: enforce blocking outcomes from the frozen baseline and merge
+        env:
+          ARTIFACTS: ${{ inputs.artifacts-results }}
+          GRADLE: ${{ inputs.gradle-results }}
+          MAVEN: ${{ inputs.maven-results }}
+          EGRESS: ${{ inputs.egress-results }}
+          K8S: ${{ inputs.k8s-results }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}" python3 - <<'PY'
+          import json, os, sys, yaml
+
+          tag = os.environ["TAG"]
+          # The FROZEN, owner-approved baseline is the authority for the
+          # required set - not the working requirements.yaml (F07).
+          frozen_path = f"requirements/releases/{tag}.yaml"
+          try:
+              frozen = yaml.safe_load(open(frozen_path))
+          except FileNotFoundError:
+              print(f"::error::frozen baseline {frozen_path} missing - freeze it before release", file=sys.stderr)
+              sys.exit(1)
+          if frozen.get("approved") is not True:
+              print(f"::error::frozen baseline {tag} is not approved", file=sys.stderr)
+              sys.exit(1)
+
+          blocking = frozen.get("release_blocking_acs") or []
+          # Only acceptance-METHOD ACs are asserted by these suites;
+          # http-integration/unit/inspection blocking ACs are verified by
+          # the test/requirements checks the admission stage already
+          # gated on, so they are not this aggregator's responsibility.
+          candidate_required = {
+              b["id"] for b in blocking
+              if b.get("phase") == "candidate" and str(b.get("method", "")).startswith("acceptance")
+          }
+          publication_acs = {b["id"] for b in blocking if b.get("phase") == "publication"}
+
+          # Also carry the full acceptance-method AC set for completeness
+          # reporting (non-blocking ones are informational).
+          reqs = yaml.safe_load(open("requirements/requirements.yaml"))
+          acceptance = {}
+          for r in reqs.get("requirements", []):
+              if r.get("deprecated"):
+                  continue
+              for ac in r.get("acceptance_criteria", []):
+                  m = (ac.get("verification") or {}).get("method", "")
+                  if m.startswith("acceptance"):
+                      acceptance[ac["id"]] = {"method": m, "result": "not-run"}
+
+          # Collect suite reports, rejecting duplicate/conflicting entries.
+          reported = {}
+          valid_results = {"pass", "fail", "skip", "not-run"}
+          for var in ("ARTIFACTS", "GRADLE", "MAVEN", "EGRESS", "K8S"):
+              raw = os.environ[var] or "[]"
+              try:
+                  items = json.loads(raw)
+              except json.JSONDecodeError as e:
+                  print(f"::error::{var} results are not valid JSON: {e}", file=sys.stderr)
+                  sys.exit(1)
+              if not isinstance(items, list):
+                  print(f"::error::{var} results are not a list", file=sys.stderr)
+                  sys.exit(1)
+              for rec in items:
+                  ac_id = rec.get("ac")
+                  res = rec.get("result")
+                  if ac_id is None or res not in valid_results:
+                      print(f"::error::{var} has an invalid result entry: {rec}", file=sys.stderr)
+                      sys.exit(1)
+                  if ac_id in reported and reported[ac_id]["result"] != res:
+                      print(f"::error::conflicting results for {ac_id}: {reported[ac_id]['result']} vs {res}", file=sys.stderr)
+                      sys.exit(1)
+                  reported[ac_id] = rec
+
+          unknown = sorted(set(reported) - set(acceptance))
+          if unknown:
+              print(f"::error::suites reported ACs not in requirements.yaml: {unknown}", file=sys.stderr)
+              sys.exit(1)
+
+          for ac_id, rec in reported.items():
+              acceptance[ac_id]["result"] = rec["result"]
+              if "note" in rec:
+                  acceptance[ac_id]["note"] = rec["note"]
+
+          # Mark publication-phase ACs explicitly - promotion fills them.
+          for ac_id in publication_acs:
+              acceptance.setdefault(ac_id, {"method": "acceptance-release-artifact"})
+              acceptance[ac_id]["phase"] = "publication"
+              if acceptance[ac_id].get("result", "not-run") == "not-run":
+                  acceptance[ac_id]["result"] = "deferred-to-publication"
+
+          # ENFORCE: every candidate-phase blocking AC must be present and
+          # pass. not-run, fail, skip, or absence all fail the release.
+          if not candidate_required:
+              print("::error::no candidate-phase acceptance-method blocking ACs derived from the baseline - the gate would enforce nothing", file=sys.stderr)
+              sys.exit(1)
+          failures = []
+          for ac_id in sorted(candidate_required):
+              got = acceptance.get(ac_id, {}).get("result", "not-run")
+              if got != "pass":
+                  failures.append(f"{ac_id}={got}")
+          if failures:
+              print("::error::release-blocking candidate ACs not passing: " + ", ".join(failures), file=sys.stderr)
+              sys.exit(1)
+
+          out = [{"ac": k, **v} for k, v in sorted(acceptance.items())]
+          json.dump(out, open("/tmp/ac-results.json", "w"), indent=1)
+          print(f"candidate-phase blocking ACs: {len(candidate_required)} required, all pass")
+          print(f"publication-phase ACs deferred to promotion: {sorted(publication_acs)}")
+          for r in out:
+              print(f"  {r['ac']}: {r['result']}" + (f" [{r['phase']}]" if r.get("phase") else ""))
+          PY
+
+      - name: write the acceptance predicate
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg sha "${GITHUB_SHA}" \
+            --argjson digests '${{ inputs.digests }}' \
+            --slurpfile results /tmp/ac-results.json \
+            '{sha: $sha, index_digests: $digests, ac_results: $results[0]}' \
+            > /tmp/acceptance-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/acceptance-subjects.txt
+          cat /tmp/acceptance-predicate.json
+
+      - name: sign the acceptance predicate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/acceptance-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/acceptance/v1
+          predicate-path: /tmp/acceptance-predicate.json

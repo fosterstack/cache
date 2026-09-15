@@ -1,0 +1,250 @@
+name: 'Stage: verification (scans)'
+
+# Release-chain verification stage, scan half (release-chain-design.md §2
+# Stage 5). One matrix leg per scanner in .github/policy/scanners.json —
+# the list is read at run time, never hard-coded, so removing Trivy on
+# the standing trigger is a list edit. Each leg runs on a fresh runner,
+# verifies the image-build and reproducibility predicates on entry,
+# scans the EXACT candidate digests (referenced @sha256: only, pre-pulled
+# from the private candidates package) plus the module manifests, applies
+# the same block-at-any-severity policy as today with the published VEX
+# document as the only exception mechanism, and signs a per-scanner scan
+# predicate naming the digests, the scanner version, and the database
+# state — durable evidence, not step-summary text.
+#
+# The acceptance half of Stage 5 is the release-mode acceptance suites
+# plus stage-acceptance-predicate.yml; the authorization stage requires
+# one scan predicate per listed scanner AND the acceptance predicate.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {production, debug, fips} candidate index digests'
+        required: true
+        type: string
+      dist-artifact:
+        description: 'dist archives to scan alongside the images (Darwin binaries included)'
+        required: true
+        type: string
+      expected-checksums:
+        description: 'checksums.txt content from the build stage'
+        required: true
+        type: string
+    secrets:
+      SNYK_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  scanners:
+    name: read the scanner list
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: read
+        run: echo "list=$(jq -c '.scanners' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: scan (${{ matrix.scanner }})
+    needs: scanners
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read      # pull the private candidates by digest
+      id-token: write     # sign this scanner's scan predicate
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: log in to GHCR (private candidates package)
+        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: verify the image-build and reproducibility predicates on entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::no digest for ${v}" >&2; exit 1; }
+            for ptype in image-build reproducibility; do
+              gh attestation verify "oci://${repo}@${d}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --predicate-type "https://fosterstack.com/attestations/${ptype}/v1" \
+                --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-$([ "$ptype" = image-build ] && echo image || echo reproducibility).yml" >/dev/null
+            done
+            echo "entry predicates verified for ${v} at ${d}"
+          done
+
+      - name: pull the exact candidates by digest
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          # F09: enumerate the platform CHILDREN of each variant index and
+          # record them; scanning the index alone defaults to one arch.
+          : > /tmp/scan-targets.txt   # lines: variant<TAB>platform<TAB>childref
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            docker buildx imagetools inspect --raw "${repo}@${d}" \
+              | jq -r --arg v "$v" --arg repo "$repo" \
+                '.manifests[] | select(.platform.os != "unknown") | "\($v)\t\(.platform.os)/\(.platform.architecture)\t\($repo)@\(.digest)"' \
+              >> /tmp/scan-targets.txt
+          done
+          echo "platform children to scan:"; cat /tmp/scan-targets.txt
+          while IFS=$'\t' read -r _ _ ref; do docker pull -q "$ref" >/dev/null; done < /tmp/scan-targets.txt
+
+      - name: install scanner CLIs (per-child scanning needs explicit targets)
+        if: matrix.scanner == 'trivy' || matrix.scanner == 'grype'
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.scanner }}' = 'trivy' ]; then
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
+            echo "version=$(trivy --version | awk 'NR==1{print $2}')" >> /tmp/scanner-meta
+            trivy image --download-db-only >/dev/null 2>&1 || true
+            echo "db=$(trivy version --format json 2>/dev/null | jq -r '.VulnerabilityDB.UpdatedAt // "unknown"')" >> /tmp/scanner-meta
+          else
+            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
+            echo "version=$(grype version | awk '/^Version:/{print $2}')" >> /tmp/scanner-meta
+            grype db update >/dev/null 2>&1 || true
+            echo "db=$(grype db status 2>/dev/null | awk '/Built|built/{print $NF; exit}')" >> /tmp/scanner-meta
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: matrix.scanner == 'trivy' || matrix.scanner == 'grype'
+        with:
+          name: ${{ inputs.dist-artifact }}
+          path: dist/
+
+      - name: verify archives before scanning them
+        if: matrix.scanner == 'trivy' || matrix.scanner == 'grype'
+        env:
+          EXPECTED: ${{ inputs.expected-checksums }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+
+      # ---- trivy (every platform child + every archive) -----------------
+      - name: Trivy scan each platform child and every archive
+        if: matrix.scanner == 'trivy'
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        run: |
+          set -euo pipefail
+          : > /tmp/scanned-subjects.txt
+          while IFS=$'\t' read -r v platform ref; do
+            echo "trivy: ${v} ${platform} ${ref}"
+            trivy image --quiet --exit-code 1 \
+              --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+              --vex "${TRIVY_VEX}" \
+              --image-src remote \
+              "${ref}"
+            printf '%s\t%s\t%s\n' "${v}" "${platform}" "${ref}" >> /tmp/scanned-subjects.txt
+          done < /tmp/scan-targets.txt
+          for a in dist/*.tar.gz; do
+            echo "trivy rootfs archive: $a"
+            tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
+            trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp"
+            printf 'archive\t-\t%s\n' "$(basename "$a")" >> /tmp/scanned-subjects.txt
+            rm -rf "$tmp"
+          done
+
+      # ---- grype (every platform child + every archive) -----------------
+      - name: Grype scan each platform child and every archive
+        if: matrix.scanner == 'grype'
+        run: |
+          set -euo pipefail
+          : > /tmp/scanned-subjects.txt
+          while IFS=$'\t' read -r v platform ref; do
+            echo "grype: ${v} ${platform} ${ref}"
+            grype "registry:${ref}" --platform "${platform}" \
+              --fail-on negligible \
+              --vex .vex/fosterstack-cache.openvex.json -q
+            printf '%s\t%s\t%s\n' "${v}" "${platform}" "${ref}" >> /tmp/scanned-subjects.txt
+          done < /tmp/scan-targets.txt
+          for a in dist/*.tar.gz; do
+            echo "grype archive: $a"
+            grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json -q
+            printf 'archive\t-\t%s\n' "$(basename "$a")" >> /tmp/scanned-subjects.txt
+          done
+
+      # ---- snyk (source + each variant index by digest) -----------------
+      - name: install the Snyk CLI (pinned)
+        if: matrix.scanner == 'snyk'
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
+        with:
+          snyk-version: v1.1307.0
+      - name: Snyk token must be present (a gate that silently skips is worse than none)
+        if: matrix.scanner == 'snyk'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — refusing to authorize behind a scanner that did not run" >&2; exit 1; }
+      - name: Snyk Open Source (go.mod) and container scans, by digest
+        if: matrix.scanner == 'snyk'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          failed=0
+          : > /tmp/scanned-subjects.txt
+          snyk test --org=fosterstack-admin --all-projects || failed=1
+          printf 'source\t-\tgo.mod\n' >> /tmp/scanned-subjects.txt
+          # Snyk container resolves the index and scans the runner's arch;
+          # recorded honestly as index-level (its scope, stated).
+          while IFS=$'\t' read -r v platform ref; do
+            snyk container test "${ref}" --org=fosterstack-admin || failed=1
+            printf '%s\t%s\t%s\n' "${v}" "${platform}" "${ref}" >> /tmp/scanned-subjects.txt
+          done < /tmp/scan-targets.txt
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::Snyk reported findings (or failed to run). Nothing is authorized. Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
+            exit 1
+          fi
+          echo "version=snyk $(snyk version 2>/dev/null | head -1)" >> /tmp/scanner-meta
+          echo "db=service-side (Snyk SaaS)" >> /tmp/scanner-meta
+
+      # ---- predicate -----------------------------------------------------
+      - name: write and sign this scanner's scan predicate
+        id: predicate
+        run: |
+          set -euo pipefail
+          ver=$(awk -F= '/^version=/ {print $2; exit}' /tmp/scanner-meta)
+          db=$(awk -F= '/^db=/ {print $2; exit}' /tmp/scanner-meta)
+          jq -n \
+            --arg scanner '${{ matrix.scanner }}' \
+            --arg version "$ver" \
+            --arg db "$db" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg vex "$(sha256sum .vex/fosterstack-cache.openvex.json | cut -d' ' -f1)" \
+            --argjson digests '${{ inputs.digests }}' \
+            --rawfile scanned /tmp/scanned-subjects.txt \
+            '{
+              scanner: $scanner, version: $version, database: $db,
+              sha: $sha, index_digests: $digests,
+              scanned_targets: ($scanned | split("\n") | map(select(length>0) | split("\t") | {variant: .[0], platform: .[1], ref: .[2]})),
+              policy: "block at any severity; the published VEX document is the only exception",
+              vex_document_sha256: $vex,
+              verdict: "pass"
+            }' > /tmp/scan-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/scan-subjects.txt
+          cat /tmp/scan-predicate.json
+
+      - name: sign the scan predicate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/scan-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/scan-${{ matrix.scanner }}/v1
+          predicate-path: /tmp/scan-predicate.json

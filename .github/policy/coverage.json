@@ -1,0 +1,18 @@
+{
+  "comment": [
+    "The coverage gate (test-strategy.md §6). The v0.2.0 release target",
+    "is 100% statement coverage of non-generated Go, enforced as ZERO",
+    "uncovered eligible statements - not a rounded 100.0% display - across",
+    "BOTH Go modules, each measured and reported separately:",
+    "  - the root product module (measured with -coverpkg=./... so a",
+    "    statement executed as a dependency of another package's test is",
+    "    credited honestly), and",
+    "  - the nested tools/requirements module (its own go.mod; a root",
+    "    'go test ./...' does not include it).",
+    "max_uncovered is the ceiling on eligible uncovered statement blocks",
+    "per module; 0 is the release requirement. exclusions live in",
+    "coverage-exclusions.txt, one path prefix per line with a reason,",
+    "reviewed like ACs - there are none."
+  ],
+  "max_uncovered": 0
+}

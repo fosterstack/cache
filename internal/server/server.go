@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,9 @@ type Config struct {
 	Registry prometheus.Gatherer
 	Log      *slog.Logger
 	Auth     Credentials
+	// ROAuth is the optional read-only credential pair (REQ-AUTH-005):
+	// valid for GET and HEAD, refused with 403 for writes.
+	ROAuth Credentials
 	// MaxBodyBytes caps request body size for PUT (0 = unlimited). Protects
 	// against unbounded client uploads exhausting disk.
 	MaxBodyBytes int64
@@ -106,17 +110,85 @@ func New(cfg Config) http.Handler {
 	// the client credential — which already lives in every CI runner — is
 	// a fine gate for looking. /healthz and /metrics stay open, matching
 	// what liveness probes and Prometheus scrapers expect.
-	mux.Handle("GET /statusz", withAuth(cfg.Auth, http.HandlerFunc(status.handleStatus)))
+	mux.Handle("GET /statusz", withAuth(cfg.Auth, cfg.ROAuth, http.HandlerFunc(status.handleStatus)))
 
 	// Exact-match "/{$}" so ONLY the bare root reaches the landing page.
 	// Go's ServeMux gives the longest pattern precedence, so every real
 	// cache key still routes to the cache handler below.
-	mux.Handle("GET /{$}", withAuth(cfg.Auth, withMetrics(cfg.Metrics, http.HandlerFunc(status.handleRoot))))
+	mux.Handle("GET /{$}", withAuth(cfg.Auth, cfg.ROAuth, withMetrics(cfg.Metrics, http.HandlerFunc(status.handleRoot))))
 
-	cacheHandler := withAuth(cfg.Auth, withMetrics(cfg.Metrics, withUploadBound(cfg, cacheEndpoint(cfg))))
+	cacheHandler := withAuth(cfg.Auth, cfg.ROAuth, withMetrics(cfg.Metrics, withUploadBound(cfg, cacheEndpoint(cfg))))
 	mux.Handle("/", cacheHandler)
 
-	return mux
+	// The mux alone is not enough for two contracts (REQ-PROTO-003,
+	// REQ-PROTO-007): http.ServeMux 307-redirects a path that needs
+	// cleaning (dot-segments, doubled slashes) BEFORE any handler runs,
+	// and its method-specific GET routes let a PUT/DELETE fall through to
+	// the cache handler — which would store a blob under "healthz". The
+	// front controller rejects malformed raw paths with 400 (no redirect)
+	// and reserves the application endpoints across every method, so the
+	// cache handler never sees them.
+	return newFrontController(mux)
+}
+
+// reservedPaths are the application endpoints: read-only (GET/HEAD), and a
+// write to any of them is a client error, never a cache entry.
+var reservedPaths = map[string]bool{
+	"/": true, "/healthz": true, "/metrics": true, "/statusz": true,
+}
+
+// newFrontController wraps the mux with raw-path validation and reserved-
+// path method enforcement that must happen before ServeMux normalizes or
+// routes.
+func newFrontController(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Reserved endpoints: GET/HEAD reach the mux; any other method is
+		// 405 with the read-only Allow set and stores nothing.
+		if reservedPaths[r.URL.Path] {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			mux.ServeHTTP(w, r)
+			return
+		}
+		// Cache paths: reject a raw path that ServeMux would otherwise
+		// redirect (a segment that is empty, ".", or ".." either literally
+		// or percent-encoded), with 400 and no redirect. EscapedPath
+		// preserves the on-the-wire segments so an encoded "%2e%2e" is
+		// judged on the same footing as a literal "..".
+		if rawPathIsMalformed(r.URL.EscapedPath()) {
+			http.Error(w, "invalid key", http.StatusBadRequest)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// rawPathIsMalformed reports whether any segment of the raw request path
+// is empty (a doubled or trailing slash), or is "." / ".." either
+// literally or percent-encoded. A malformed cache path is a 400, never a
+// redirect (REQ-PROTO-003-AC1); the blobstore's ValidateKey is the second
+// line of defence on the decoded key.
+func rawPathIsMalformed(escaped string) bool {
+	trimmed := strings.TrimPrefix(escaped, "/")
+	if trimmed == "" {
+		return false // the bare root is handled as a reserved path
+	}
+	for _, seg := range strings.Split(trimmed, "/") {
+		if seg == "" {
+			return true // empty segment: doubled or trailing slash
+		}
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			return true // an undecodable segment is not a valid key
+		}
+		if dec == "." || dec == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -129,17 +201,32 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 // timing (COMMIT-REQ style hygiene: this is exactly the kind of small
 // correctness detail the addendum's algorithm-discipline section expects
 // applied to all code, not just the crypto module choice).
-func withAuth(creds Credentials, next http.Handler) http.Handler {
+//
+// Two pairs (REQ-AUTH-005): the read-write pair passes everything
+// through; the read-only pair passes GET and HEAD and answers writes
+// with 403 and no WWW-Authenticate - the identity was accepted, the
+// verb was refused, so re-presenting the same credentials cannot help.
+// All four comparisons are evaluated on every request; nothing
+// short-circuits on which pair matched.
+func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	if !creds.enabled() {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
-		passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
-		if !ok || !userOK || !passOK {
+		rwUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
+		rwPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
+		roUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(ro.Username)) == 1
+		roPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(ro.Password)) == 1
+		isRW := rwUserOK && rwPassOK
+		isRO := ro.enabled() && roUserOK && roPassOK
+		if !ok || (!isRW && !isRO) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="fosterstack-cache"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isRW && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "read-only credentials", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -247,6 +334,14 @@ func handleHead(w http.ResponseWriter, cfg Config, key string) {
 }
 
 func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
+	// REQ-EVICT-002 fast path: an entry that declares itself larger than
+	// the whole cache cap is refused before a byte is read. The cache
+	// layer's capped reader is the backstop for chunked or mis-declared
+	// bodies.
+	if cfg.MaxBytes > 0 && r.ContentLength > cfg.MaxBytes {
+		writeStoreError(w, cfg, cache.ErrEntryTooLarge, "PUT", key)
+		return
+	}
 	body := r.Body
 	if cfg.MaxBodyBytes > 0 {
 		body = http.MaxBytesReader(w, r.Body, cfg.MaxBodyBytes)
@@ -291,6 +386,12 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, blobstore.ErrInvalidKey):
 		http.Error(w, "invalid key", http.StatusBadRequest)
+	case errors.Is(err, cache.ErrEntryTooLarge):
+		// Distinct from the body-limit 413 below: this entry can never
+		// live in the cache at any transfer size, and the header says so
+		// (REQ-EVICT-002-AC2 keeps the two rejections distinguishable).
+		w.Header().Set("X-FSCache-Reject", "entry-exceeds-cache-cap")
+		http.Error(w, "entry exceeds the configured cache cap", http.StatusRequestEntityTooLarge)
 	default:
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {

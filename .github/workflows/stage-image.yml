@@ -8,9 +8,13 @@ name: 'Stage: image assembly'
 # stage's digest-equality check meaningful rather than hopeful.
 #
 # PR mode builds to a local OCI archive and emits the digest; nothing is
-# pushed anywhere. Release mode (the tag chain, later phase items) pushes
-# by digest to the private candidates package and signs the image-build
-# predicate with buildkit's version recorded as a material.
+# pushed anywhere. Release mode verifies every archive against the SIGNED
+# build predicate (not merely the workflow-output checksums), pushes each
+# variant by digest only — no tag — to the private candidates package,
+# and signs the image-build predicate: subjects are the index digests
+# exactly as buildx's metadata emitted them (never a registry lookup),
+# with per-platform manifest digests, the base-image digests, the binary
+# sha256s, the Dockerfile hashes, and the buildx version as materials.
 
 on:
   workflow_call:
@@ -39,6 +43,11 @@ jobs:
   assemble:
     name: assemble
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write     # release mode: push candidates by digest
+      id-token: write     # release mode: sign the image-build predicate
+      attestations: write
     outputs:
       digests: ${{ steps.build.outputs.digests }}
     steps:
@@ -65,6 +74,24 @@ jobs:
         env:
           EXPECTED: ${{ inputs.expected-checksums }}
 
+      # Release mode: the workflow-output comparison above is necessary
+      # but not sufficient — the archives must ALSO verify against the
+      # build predicate signed by the build stage, so a compromised
+      # intermediary cannot substitute bytes between stages.
+      - name: verify each archive against the signed build predicate
+        if: inputs.mode == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          grep -oE '[^ ]+$' /tmp/expected-checksums.txt | while read -r f; do
+            gh attestation verify "dist/$f" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type https://fosterstack.com/attestations/build/v1 \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml" >/dev/null
+            echo "verified against build predicate: $f"
+          done
+
       - name: extract the exact binaries into the build context
         run: |
           set -euo pipefail
@@ -77,6 +104,10 @@ jobs:
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
+      - name: log in to GHCR (release mode — candidates push)
+        if: inputs.mode == 'release'
+        run: echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
       - name: assemble all variants (deterministic; provenance/SBOM exporters off)
         id: build
         run: |
@@ -84,14 +115,20 @@ jobs:
           SDE=$(git log -1 --format=%ct)
           echo "SOURCE_DATE_EPOCH=${SDE} (commit timestamp)"
           echo "buildkit/buildx material: $(docker buildx version)"
+          if [ '${{ inputs.mode }}' = 'release' ]; then
+            out='type=image,name=ghcr.io/${{ github.repository_owner }}/cache-candidates,push-by-digest=true,push=true,rewrite-timestamp=true'
+          fi
           cd /tmp/imgctx
           declare -A digest
           for v in production debug fips; do
+            if [ '${{ inputs.mode }}' != 'release' ]; then
+              out="type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true"
+            fi
             SOURCE_DATE_EPOCH="${SDE}" docker buildx build \
               --platform linux/amd64,linux/arm64 \
               -f "Dockerfile.${v}" \
               --provenance=false --sbom=false \
-              --output "type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true" \
+              --output "${out}" \
               --metadata-file "/tmp/${v}.json" . >/dev/null
             digest[$v]=$(jq -r '."containerimage.digest"' "/tmp/${v}.json")
             echo "${v}: ${digest[$v]}"
@@ -99,3 +136,68 @@ jobs:
           jq -n --arg p "${digest[production]}" --arg d "${digest[debug]}" --arg f "${digest[fips]}" \
             '{production:$p, debug:$d, fips:$f}' | tee /tmp/digests.json
           echo "digests=$(jq -c . /tmp/digests.json)" >> "$GITHUB_OUTPUT"
+
+      # The predicate's subjects are the digests buildx EMITTED. The
+      # imagetools inspect below reads the children of those verified
+      # indexes — content-addressed, so a child listed in a signed index
+      # is covered by the signature on the index digest.
+      - name: write the image-build predicate content (release mode)
+        if: inputs.mode == 'release'
+        id: predicate
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' /tmp/digests.json)
+            docker buildx imagetools inspect --raw "${repo}@${d}" \
+              | jq --arg v "$v" '{variant: $v, platforms: [.manifests[] | {platform: (.platform.os + "/" + .platform.architecture), digest}]}'
+          done | jq -s '.' > /tmp/platforms.json
+          for v in production debug fips; do
+            base=$(grep -oE 'sha256:[0-9a-f]{64}' "build/docker/Dockerfile.${v}" | head -1)
+            jq -n --arg v "$v" --arg base "$base" --arg hash "$(sha256sum build/docker/Dockerfile.${v} | cut -d' ' -f1)" \
+              '{variant: $v, base_digest: $base, dockerfile_sha256: $hash}'
+          done | jq -s '.' > /tmp/dockerfiles.json
+          (cd /tmp/imgctx/binaries && sha256sum -- */fscache*) | \
+            jq -R -s '[split("\n")[] | select(length > 0) | split("  ") | {path: .[1], sha256: .[0]}]' > /tmp/binaries.json
+          jq -n \
+            --arg sha "${GITHUB_SHA}" \
+            --arg sde "$(git log -1 --format=%ct)" \
+            --arg buildx "$(docker buildx version)" \
+            --slurpfile digests /tmp/digests.json \
+            --slurpfile platforms /tmp/platforms.json \
+            --slurpfile dockerfiles /tmp/dockerfiles.json \
+            --slurpfile binaries /tmp/binaries.json \
+            '{
+              sha: $sha,
+              index_digests: $digests[0],
+              platform_manifests: $platforms[0],
+              materials: {
+                dockerfiles: $dockerfiles[0],
+                binaries: $binaries[0],
+                source_date_epoch: ($sde|tonumber),
+                buildx: $buildx
+              }
+            }' > /tmp/image-build-predicate.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' /tmp/digests.json)
+            echo "${d#sha256:}  cache-candidates-${v}"
+          done > /tmp/image-subjects.txt
+          cat /tmp/image-build-predicate.json
+
+      - name: sign the image-build predicate (subjects = the emitted index digests)
+        if: inputs.mode == 'release'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: /tmp/image-subjects.txt
+          predicate-type: https://fosterstack.com/attestations/image-build/v1
+          predicate-path: /tmp/image-build-predicate.json
+
+      # SLSA build provenance for the images themselves: this is the
+      # statement `gh attestation verify oci://…` checks by default, i.e.
+      # the command the public docs give customers. Verified by the
+      # authorization stage and by customers; consumed, therefore created.
+      - name: attest build provenance for the images
+        if: inputs.mode == 'release'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: /tmp/image-subjects.txt

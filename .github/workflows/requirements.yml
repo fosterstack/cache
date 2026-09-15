@@ -39,3 +39,28 @@ jobs:
         run: go -C tools/requirements test -race -shuffle=on ./...
       - name: validate requirements and matrix freshness
         run: go -C tools/requirements run . check
+      # R07: the frozen release baseline must stay consistent with
+      # requirements.yaml (exact hash + complete blocking set) even while
+      # it is unapproved - a stale or hand-edited freeze that silently
+      # changes what admission enforces is caught here, in PR CI, not at
+      # release time. Approval is checked only at release admission.
+      - name: frozen baseline consistency (approval-agnostic)
+        run: go -C tools/requirements run . verify-freeze v0.2.0
+      # Repeatable semantic regressions for the authorization stage's
+      # acceptance-content policy (audit B02b): the extracted validator is
+      # exercised here against the frozen baseline with valid/empty/
+      # missing/skip/invalid/fail/duplicate/unknown fixtures, so a
+      # weakening of the policy is caught in PR CI, not only by an
+      # external probe.
+      - name: authorization acceptance-content policy regressions
+        run: bash bin/authorize-acceptance-check-test.sh
+      # Repeatable regressions for the daily image rescan's merge,
+      # classification and platform-enumeration logic (audit B04d/B04e/B04f):
+      # the extracted bin/rescan-statement.py is exercised against real
+      # CLI-shaped fixtures (Snyk OS/application/mixed, Trivy/Grype
+      # clean/finding/error/malformed, finding+operational-exit, and the
+      # multi-arch/null-platform/empty-arch/unknown/single-image enumeration
+      # cases), so a scanner-evidence regression is caught in PR CI. Pure
+      # python3 + jq — no network, gh or scanners.
+      - name: daily-rescan merge/classification/enumeration regressions
+        run: bash bin/rescan-statement-test.sh

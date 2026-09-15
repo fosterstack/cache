@@ -11,17 +11,82 @@
     "Editing this list does not change the ruleset; only the owner can do",
     "that, in the GitHub UI. Edit here first, then the owner updates the",
     "ruleset to match - the guard stays red in between, which is the",
-    "correct failure mode."
+    "correct failure mode.",
+    "scope: 'push' means the check runs on main commits and release",
+    "admission requires it green on the exact tagged SHA; 'pull_request'",
+    "means it only ever runs on PRs, so admission requires it green on",
+    "the head of the merged PR that produced the tagged commit (F02)."
   ],
   "required_checks": [
-    { "context": "test", "integration_id": 15368 },
-    { "context": "lint", "integration_id": 15368 },
-    { "context": "gosec", "integration_id": 15368 },
-    { "context": "govulncheck", "integration_id": 15368 },
-    { "context": "analyze (go)", "integration_id": 15368 },
-    { "context": "allowlist", "integration_id": 15368 },
-    { "context": "dependency-review", "integration_id": 15368 },
-    { "context": "fips140-only", "integration_id": 15368 },
-    { "context": "acceptance-gradle", "integration_id": 15368 }
+    {
+      "context": "test",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "lint",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "gosec",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "govulncheck",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "analyze (go)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "allowlist",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "dependency-review",
+      "integration_id": 15368,
+      "scope": "pull_request"
+    },
+    {
+      "context": "fips140-only",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "acceptance-gradle",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "acceptance-maven (1.2.0)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "acceptance-maven (1.2.3)",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "requirements",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "reproducibility",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "coverage",
+      "integration_id": 15368,
+      "scope": "push"
+    }
   ]
 }

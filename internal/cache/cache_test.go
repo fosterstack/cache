@@ -234,7 +234,11 @@ func TestEvictionGivesUpAfterRepeatedFailures(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: directory permissions don't block root, so this reproduction doesn't apply")
 	}
-	c := newTestCache(t, WithMaxBytes(5)) // cap smaller than one entry
+	// Cap holds one 10-byte entry but not two: the second Put fits
+	// individually (REQ-EVICT-002 rejects only entries larger than the
+	// whole cap) but pushes the total over, forcing eviction of the
+	// first entry - which the locked directories below make fail.
+	c := newTestCache(t, WithMaxBytes(15))
 	ctx := context.Background()
 
 	if _, err := c.Put(ctx, "onlykey", strings.NewReader("0123456789")); err != nil {

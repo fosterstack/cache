@@ -31,6 +31,8 @@ type config struct {
 	maxBytes             int64
 	username             string
 	password             string
+	roUsername           string
+	roPassword           string
 	maxBodyBytes         int64
 	maxConcurrentUploads int64
 }
@@ -54,11 +56,24 @@ func loadConfig() (config, error) {
 		maxBytes:             maxBytes,
 		username:             os.Getenv("FSCACHE_USERNAME"),
 		password:             os.Getenv("FSCACHE_PASSWORD"),
+		roUsername:           os.Getenv("FSCACHE_RO_USERNAME"),
+		roPassword:           os.Getenv("FSCACHE_RO_PASSWORD"),
 		maxBodyBytes:         maxBodyBytes,
 		maxConcurrentUploads: maxUploads,
 	}
 	if (cfg.username == "") != (cfg.password == "") {
 		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
+	}
+	if (cfg.roUsername == "") != (cfg.roPassword == "") {
+		return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD must both be set or both be empty")
+	}
+	if cfg.roUsername != "" {
+		if cfg.username == "" {
+			return cfg, errors.New("FSCACHE_RO_USERNAME and FSCACHE_RO_PASSWORD require FSCACHE_USERNAME and FSCACHE_PASSWORD: a read-only pair with no read-write pair would leave nothing able to write")
+		}
+		if cfg.roUsername == cfg.username {
+			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: identical usernames make the credential tier ambiguous")
+		}
 	}
 	return cfg, nil
 }
@@ -123,15 +138,55 @@ func envSize(key string, def int64) (int64, error) {
 	return n, nil
 }
 
-func main() {
+// osExit is a seam so main's exit path is testable without ending the
+// test process.
+var osExit = os.Exit
+
+// Metrics registry seams. Production uses Prometheus's process-global
+// default (so the Go/process collectors it pre-registers appear on
+// /metrics); tests swap in a fresh registry per invocation because the
+// global cannot be registered against twice.
+var (
+	metricsRegisterer prometheus.Registerer = prometheus.DefaultRegisterer
+	metricsGatherer   prometheus.Gatherer   = prometheus.DefaultGatherer
+)
+
+// Seams for the two defensive branches that only fire when a
+// post-success operation fails (a store Close error, an HTTP Shutdown
+// timeout). Behavior-preserving: production keeps the real methods.
+var (
+	cacheClose     = (*cache.Cache).Close
+	cacheReconcile = (*cache.Cache).Reconcile
+	httpShutdown   = (*http.Server).Shutdown
+	clearMarkerFn  = clearMarker
+)
+
+func main() { osExit(runMain()) }
+
+// runMain builds the process logger, runs the server, and maps the
+// outcome to a process exit code. Split from main so both branches are
+// testable in-process (main itself is then a single delegating call).
+func runMain() int {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(log); err != nil {
 		log.Error("fscache: fatal", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
+// run installs the OS-signal shutdown context and serves under it.
 func run(log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serve(ctx, log, nil)
+}
+
+// serve is the full server lifecycle under an injectable shutdown
+// context. ready, when non-nil, is called once the HTTP server has been
+// handed off to its goroutine — tests use it to drive a deterministic
+// shutdown without racing on a real signal.
+func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -161,7 +216,7 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("open metadata store: %w", err)
 	}
 
-	m := metrics.New(prometheus.DefaultRegisterer)
+	m := metrics.New(metricsRegisterer)
 
 	c := cache.New(blobs, meta,
 		cache.WithMaxBytes(cfg.maxBytes),
@@ -171,18 +226,18 @@ func run(log *slog.Logger) error {
 		}),
 	)
 	defer func() {
-		if err := c.Close(); err != nil {
+		if err := cacheClose(c); err != nil {
 			log.Error("fscache: store close failed; unclean marker kept", "error", err)
 			return
 		}
-		if err := clearMarker(marker); err != nil {
+		if err := clearMarkerFn(marker); err != nil {
 			log.Error("fscache: shutdown marker not cleared; next start will reconcile", "error", err)
 		}
 	}()
 
 	if wasUnclean {
 		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
-		stats, err := c.Reconcile(context.Background())
+		stats, err := cacheReconcile(c, context.Background())
 		if err != nil {
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
@@ -195,9 +250,10 @@ func run(log *slog.Logger) error {
 	handler := server.New(server.Config{
 		Cache:                c,
 		Metrics:              m,
-		Registry:             prometheus.DefaultGatherer,
+		Registry:             metricsGatherer,
 		Log:                  log,
 		Auth:                 server.Credentials{Username: cfg.username, Password: cfg.password},
+		ROAuth:               server.Credentials{Username: cfg.roUsername, Password: cfg.roPassword},
 		MaxBodyBytes:         cfg.maxBodyBytes,
 		MaxBytes:             cfg.maxBytes,
 		MaxConcurrentUploads: int(cfg.maxConcurrentUploads),
@@ -232,8 +288,9 @@ func run(log *slog.Logger) error {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if ready != nil {
+		ready()
+	}
 
 	select {
 	case err := <-errCh:
@@ -242,7 +299,7 @@ func run(log *slog.Logger) error {
 		log.Info("fscache: shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		if err := httpShutdown(httpServer, shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown: %w", err)
 		}
 		return nil
