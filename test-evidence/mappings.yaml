@@ -247,4 +247,4 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/main-candidate-rescan.yml: scheduled daily; builds main's latest candidate through stage-build/stage-image and runs the full scanner set, opening a labeled tracking issue on any finding" }
   - ac: REQ-REL-004-AC4
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the latest patch of the current minor line and opens the go.mod bump PR (both modules) when a newer patch exists" }
+      - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }

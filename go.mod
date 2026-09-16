@@ -1,6 +1,6 @@
 module github.com/fosterstack/cache
 
-go 1.25.14
+go 1.26.6
 
 require (
 	github.com/prometheus/client_golang v1.24.1

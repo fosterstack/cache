@@ -560,7 +560,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC1 | Given any pull request, push to main, or tag; when the required scan check runs; then every scanner in .github/policy/scanners.json scans all three OCI variants (both platform children) and every release archive, blocking at any severity with the published VEX document as the only exception, and a red result blocks the merge | ci-workflow |  | proposed | 1 item(s) |
 | REQ-REL-004-AC2 | Given the scanner installer; when it installs any scanner; then the download is pinned to a specific version and verified against a repo-pinned sha256, and a scanner that cannot be installed or verified exits as a labeled pipeline failure rather than a finding or a silent clean pass | ci-workflow |  | proposed | 1 item(s) |
 | REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set, and any finding opens a tracking issue within 24 hours | ci-workflow |  | proposed | 1 item(s) |
-| REQ-REL-004-AC4 | Given a newer patch of the current Go minor line is released; when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that patch | ci-workflow |  | proposed | 1 item(s) |
+| REQ-REL-004-AC4 | Given a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor); when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that release | ci-workflow |  | proposed | 1 item(s) |
 
 ## Licensing
 

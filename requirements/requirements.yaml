@@ -1167,9 +1167,9 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: proposed
       - id: REQ-REL-004-AC4
-        given: a newer patch of the current Go minor line is released
+        given: a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor)
         when: the scheduled toolchain-freshness job runs
-        then: it opens a pull request bumping the go directive in both modules to that patch
+        then: it opens a pull request bumping the go directive in both modules to that release
         verification: { method: ci-workflow, release_blocking: false }
         status: proposed
 
