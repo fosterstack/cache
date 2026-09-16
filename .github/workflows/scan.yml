@@ -141,15 +141,6 @@ jobs:
         run: |
           set -euo pipefail
           grype db update >/dev/null 2>&1 || true
-          # DIAG (temporary): print grype's actual busybox purl + whether the
-          # VEX ignored it, so the VEX subcomponent identifier can be matched
-          # exactly. Removed once the identifier is confirmed.
-          echo "=== DIAG busybox purl (debug image) ==="
-          grype "docker:ghcr.io/fosterstack/cache:cand-debug-amd64" -o json --vex .vex/fosterstack-cache.openvex.json 2>/dev/null > /tmp/g.json || true
-          echo "matches busybox purls:"; jq -r '.matches[]?|select(.artifact.name=="busybox")|.artifact.purl' /tmp/g.json | sort -u
-          echo "ignored busybox purls:"; jq -r '.ignoredMatches[]?|select(.artifact.name=="busybox")|.artifact.purl' /tmp/g.json | sort -u
-          echo "source identifiers:"; jq -r '.source.metadata.tags[]?, .source.metadata.repoDigests[]?' /tmp/g.json 2>/dev/null | sort -u
-          echo "=== END DIAG ==="
           while read -r ref; do
             echo "grype: ${ref}"
             grype "docker:${ref}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
