@@ -49,10 +49,10 @@ import sys
 #     https://docs.snyk.io/developer-tools/snyk-cli/commands/container-test
 #   trivy image --exit-code 1 : 0 clean, 1 findings, other nonzero = error.
 #   grype --fail-on negligible : 0 clean, 2 findings, 1 (and other
-#     nonzero) = operational error. Grype v0.98.0 returns 2 for a
+#     nonzero) = operational error. Grype returns 2 for a
 #     vulnerability-match failure and 1 for a runtime error - the
 #     opposite of the misleading --help text; confirmed against
-#     cmd/grype/cli/cli.go at v0.98.0.
+#     cmd/grype/cli/cli.go, verified unchanged at the pinned v0.118.0.
 CONTRACTS = {
     "snyk": {"clean": {0}, "finding": {1}},
     "trivy": {"clean": {0}, "finding": {1}},

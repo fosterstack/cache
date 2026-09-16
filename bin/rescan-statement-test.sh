@@ -60,7 +60,7 @@ assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
 TRIVY_CLEAN='{"SchemaVersion":2,"ArtifactName":"x","Results":[]}'
 TRIVY_FIND='{"SchemaVersion":2,"Results":[{"Target":"x (debian 12)","Class":"os-pkgs","Vulnerabilities":[{"VulnerabilityID":"CVE-2024-0001","PkgName":"openssl","Severity":"HIGH","FixedVersion":"3.0.14"}]}]}'
 TRIVY_ERROBJ='{"error":"failed to analyze layer"}'
-GRYPE_CLEAN='{"matches":[],"descriptor":{"name":"grype","version":"0.98.0"}}'
+GRYPE_CLEAN='{"matches":[],"descriptor":{"name":"grype","version":"0.118.0"}}'
 GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2024-0002","severity":"High","fix":{"versions":["1.2.3"]}},"artifact":{"name":"libfoo"}}],"descriptor":{"name":"grype"}}'
 GRYPE_ERROBJ='{"errors":["db load failed"]}'
 # Snyk: OS findings at top-level .vulnerabilities; application-dependency
@@ -153,7 +153,8 @@ child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
 assert_stmt "grype clean" grype "$mf" clean false 0
 
-# Grype v0.98.0: exit 2 = findings, 1 = operational error (B04g).
+# Grype: exit 2 = findings, 1 = operational error (B04g); contract
+# verified unchanged from v0.98.0 through the pinned v0.118.0.
 mf=$D/m; : >"$mf"
 child "$mf" 1 linux/amd64 2 "$GRYPE_FIND"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
