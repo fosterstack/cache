@@ -174,7 +174,7 @@ jobs:
           TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
         run: |
           set -euo pipefail
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
+          ./bin/install-scanner.sh trivy
           rc=0
           child_no=0
           : > /tmp/children-scanned.jsonl
@@ -210,14 +210,14 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
+          ./bin/install-scanner.sh grype
           rc=0
           child_no=0
           : > /tmp/children-scanned.jsonl
           # B04: `--fail-on negligible` makes grype exit nonzero on a
-          # FINDING. Grype v0.98.0 returns 2 for a vulnerability match and
+          # FINDING. Grype returns 2 for a vulnerability match and
           # 1 for an operational error (the reverse of its --help text;
-          # see cmd/grype/cli/cli.go at v0.98.0) - the exit-code contract
+          # see cmd/grype/cli/cli.go, unchanged at the pinned v0.118.0) - the exit-code contract
           # is in bin/rescan-statement.py. Capture it with `|| code=$?` so
           # errexit does not abort the loop; the per-child exit code +
           # report path are recorded and the merge/classification happens
@@ -242,11 +242,9 @@ jobs:
           exit $rc
 
       # ---- snyk ----------------------------------------------------------
-      - name: install the Snyk CLI (pinned)
+      - name: install the Snyk CLI (pinned by checksum; can't-run is a pipeline failure, not a finding)
         if: matrix.target.scanner == 'snyk'
-        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
-        with:
-          snyk-version: v1.1307.0
+        run: ./bin/install-scanner.sh snyk
       - name: Snyk rescan (by digest, JSON findings)
         if: matrix.target.scanner == 'snyk'
         id: snyk

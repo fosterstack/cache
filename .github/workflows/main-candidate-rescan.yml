@@ -1,0 +1,174 @@
+name: Daily main-candidate rescan
+
+# The main-candidate half of the daily rescan (companion to
+# daily-rescan.yml, which rescans every PUBLISHED release's digests).
+# daily-rescan.yml cannot cover main: main's candidate is never pushed to
+# a package, it is built from source. So this job builds main's latest
+# candidate through the SAME build + image-assembly stages the release
+# chain uses (mode snapshot/pr), runs every scanner in
+# .github/policy/scanners.json against all three OCI variants (both
+# platform children) and every dist archive at the identical
+# block-at-any-severity / VEX-only policy, and OPENS A TRACKING ISSUE on
+# any finding. That closes the window the audit called out: a CVE
+# disclosed against code already on main, with no PR open, otherwise would
+# not surface until the next release ran the scan gate. Here it surfaces
+# within 24h. A scanner that cannot install/run is a pipeline failure
+# (red), never a silent clean pass (bin/install-scanner.sh).
+
+on:
+  schedule:
+    - cron: '41 7 * * *' # 30m after daily-rescan, same offset-from-hour habit
+  workflow_dispatch: {}
+
+# Top level stays read-only; the two reusable-stage caller jobs carry
+# their own grants (which the callee ceilings require), and the scan job
+# adds issues:write for the tracking issue. Keeping the default narrow
+# means the scan job never holds packages/id-token/attestations.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/stage-build.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      mode: snapshot
+
+  assemble:
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/stage-image.yml
+    with:
+      mode: pr
+      dist-artifact: dist-snapshot
+      expected-checksums: ${{ needs.build.outputs.checksums }}
+      upload-oci: true
+
+  scanners:
+    name: read the scanner list
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: read
+        run: echo "list=$(jq -c '.scanners' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
+
+  scan-main:
+    name: main candidate scan (${{ matrix.scanner }})
+    needs: [build, assemble, scanners]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-candidate
+          path: /tmp/oci/
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-snapshot
+          path: dist/
+
+      - name: verify archives before scanning them
+        env:
+          EXPECTED: ${{ needs.build.outputs.checksums }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+
+      - name: install ${{ matrix.scanner }} (pinned by checksum; can't-run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
+
+      - name: scan every variant (both platforms) and every archive
+        id: scan
+        continue-on-error: true
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          s='${{ matrix.scanner }}'
+          # Load each (variant, platform) child into the docker daemon;
+          # buildx writes an OCI-layout tar that trivy/grype do not read
+          # directly, so every scanner reads the loaded image by ref.
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || exit 1
+          : > /tmp/refs.txt
+          for v in production debug fips; do
+            for arch in amd64 arm64; do
+              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || exit 1
+              echo "${ref}" >> /tmp/refs.txt
+            done
+          done
+          if [ "$s" = trivy ]; then
+            trivy image --download-db-only >/dev/null 2>&1 || true
+            while read -r ref; do
+              echo "trivy: ${ref}"
+              trivy image --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "${ref}" || exit 1
+            done < /tmp/refs.txt
+            for a in dist/*.tar.gz; do
+              tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
+              trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp" || { rm -rf "$tmp"; exit 1; }
+              rm -rf "$tmp"
+            done
+          elif [ "$s" = grype ]; then
+            grype db update >/dev/null 2>&1 || true
+            while read -r ref; do
+              echo "grype: ${ref}"
+              grype "docker:${ref}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json || exit 1
+            done < /tmp/refs.txt
+            for a in dist/*.tar.gz; do
+              grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json || exit 1
+            done
+          else
+            [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
+            snyk test --org=fosterstack-admin --all-projects || exit 1
+            while read -r ref; do
+              echo "snyk: ${ref}"
+              snyk container test "${ref}" --org=fosterstack-admin || exit 1
+            done < /tmp/refs.txt
+          fi
+
+      - name: file/update a tracking issue when the main candidate is not clean
+        if: steps.scan.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const scanner = '${{ matrix.scanner }}';
+            const title = `Daily main-candidate rescan: ${scanner} is not clean on main`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The daily main-candidate rescan found that \`${scanner}\` did not pass against main's latest candidate (commit \`${context.sha}\`).\n\nThis is code already on \`main\` with no PR open, so the PR-time \`scan\` gate did not catch it — most likely a newly-disclosed CVE against unchanged bytes (the 24h-response case).\n\n- scanner: \`${scanner}\`\n- commit: \`${context.sha}\`\n- run: ${runUrl}\n\nPer policy: if an upstream fix exists, open the version-bump PR (a finding blocks the next release's \`scan\` gate regardless); if not, publish a VEX statement in \`.vex/\` (and a \`.snyk\` entry citing it) and a mitigation. If the scanner could not run at all, that is a pipeline failure to fix, not a finding.`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+            }
+
+      - name: fail the run if this scanner was not clean (visible red, same bar as the gate)
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "::error::main-candidate rescan: ${{ matrix.scanner }} is not clean on main — see the tracking issue" >&2
+          exit 1

@@ -103,17 +103,16 @@ jobs:
           echo "platform children to scan:"; cat /tmp/scan-targets.txt
           while IFS=$'\t' read -r _ _ ref; do docker pull -q "$ref" >/dev/null; done < /tmp/scan-targets.txt
 
-      - name: install scanner CLIs (per-child scanning needs explicit targets)
+      - name: install scanner CLIs (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
         if: matrix.scanner == 'trivy' || matrix.scanner == 'grype'
         run: |
           set -euo pipefail
+          ./bin/install-scanner.sh '${{ matrix.scanner }}'
           if [ '${{ matrix.scanner }}' = 'trivy' ]; then
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.66.0
             echo "version=$(trivy --version | awk 'NR==1{print $2}')" >> /tmp/scanner-meta
             trivy image --download-db-only >/dev/null 2>&1 || true
             echo "db=$(trivy version --format json 2>/dev/null | jq -r '.VulnerabilityDB.UpdatedAt // "unknown"')" >> /tmp/scanner-meta
           else
-            curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin v0.98.0
             echo "version=$(grype version | awk '/^Version:/{print $2}')" >> /tmp/scanner-meta
             grype db update >/dev/null 2>&1 || true
             echo "db=$(grype db status 2>/dev/null | awk '/Built|built/{print $NF; exit}')" >> /tmp/scanner-meta
@@ -179,11 +178,9 @@ jobs:
           done
 
       # ---- snyk (source + each variant index by digest) -----------------
-      - name: install the Snyk CLI (pinned)
+      - name: install the Snyk CLI (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
         if: matrix.scanner == 'snyk'
-        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
-        with:
-          snyk-version: v1.1307.0
+        run: ./bin/install-scanner.sh snyk
       - name: Snyk token must be present (a gate that silently skips is worse than none)
         if: matrix.scanner == 'snyk'
         env:

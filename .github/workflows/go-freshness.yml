@@ -1,0 +1,105 @@
+name: Go toolchain freshness
+
+# Scheduled Go-toolchain freshness check (audit follow-up). The v0.2.0
+# scan failure was a Go stdlib CVE treadmill: the shipped binary was built
+# with a go1.25.x that had since accumulated disclosed stdlib CVEs — and
+# staying inside the 1.25 line could not clear CVE-2026-46600, whose only
+# fix was in 1.26.6/1.27. So the rule is "newest patch of a SUPPORTED
+# minor", not "newest patch of the current minor": the job may propose a
+# minor bump (e.g. 1.26 -> 1.27) when a newer supported line exists, so a
+# fix that lands only in a newer minor is not out of reach. go.dev's
+# default release list (mode=json, without include=all) is exactly the
+# set of currently supported minors and their latest patches; the newest
+# of those is the target. The PR still goes through the required `scan`
+# gate and human review before merge, so a minor jump is proposed, never
+# auto-applied.
+#
+# NOTE: PRs opened with the built-in GITHUB_TOKEN do not themselves
+# trigger other workflows, so the required `scan` check may need a manual
+# nudge (an empty commit, or close/reopen) until a bot PAT is configured.
+# The job says so in the PR body.
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: open the go.mod bump PR when a newer patch exists
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push the bump branch
+      pull-requests: write   # open the PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: compare go.mod against the newest patch of a supported minor
+        id: cmp
+        run: |
+          set -euo pipefail
+          current=$(awk '/^go /{print $2; exit}' go.mod)
+          echo "current go directive: ${current}"
+          # mode=json (WITHOUT include=all) lists only the currently
+          # SUPPORTED releases — the two newest minors and their latest
+          # patches. The max of those is the newest patch of a supported
+          # minor; it is stable by construction (no rc/beta).
+          latest=$(curl -fsSL 'https://go.dev/dl/?mode=json' \
+            | jq -r '.[] | select(.stable==true) | .version' \
+            | sed 's/^go//' | sort -V | tail -1)
+          [ -n "$latest" ] || { echo "::error::could not determine the newest supported Go release from go.dev" >&2; exit 1; }
+          echo "newest supported Go release: ${latest}"
+          newest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)
+          if [ "$current" = "$latest" ] || [ "$newest" != "$latest" ]; then
+            echo "go.mod is already at or ahead of the newest supported release — nothing to do"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "bump=true"
+              echo "current=$current"
+              echo "latest=$latest"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: open (or update) the bump PR
+        if: steps.cmp.outputs.bump == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.cmp.outputs.current }}
+          LATEST: ${{ steps.cmp.outputs.latest }}
+        run: |
+          set -euo pipefail
+          branch="chore/go-${LATEST}"
+          # Idempotent: if the branch already exists on the remote, an open
+          # PR is already tracking this bump — do not open a duplicate.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "branch ${branch} already exists — a bump PR is already open; nothing to do"
+            exit 0
+          fi
+          # Bump the go directive in BOTH modules (root + tools/requirements).
+          for f in go.mod tools/requirements/go.mod; do
+            sed -i -E "s/^go ${CURRENT//./\\.}$/go ${LATEST}/" "$f"
+            grep -q "^go ${LATEST}$" "$f" || { echo "::error::failed to bump go directive in $f" >&2; exit 1; }
+          done
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+          git add go.mod tools/requirements/go.mod
+          git commit -q -m "chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
+          git push -u origin "$branch"
+          body=$(cat <<EOF
+          Automated Go-toolchain freshness bump: \`go ${CURRENT}\` -> \`go ${LATEST}\` in both modules (root and \`tools/requirements\`).
+
+          This tracks the newest patch of a supported Go minor, so it may be a patch bump within the current line or a move to a newer supported minor (the case that let CVE-2026-46600 be fixed — no 1.25.x carried the fix). Merging keeps the shipped binary off disclosed stdlib CVEs — the failure mode that broke the v0.2.0 release scan.
+
+          A minor bump can change toolchain behavior (and the FIPS validated-module snapshot); review the \`scan\` and \`fips140-only\` results before merging, and bump golangci-lint / gremlins if the new toolchain needs it.
+
+          The required \`scan\` gate must pass on this PR before merge. Because this PR was opened with the built-in token, the \`scan\` check may need a manual nudge to start (push an empty commit, or close and reopen the PR) until a bot PAT is configured.
+          EOF
+          )
+          gh pr create --base main --head "$branch" \
+            --title "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
+            --body "$body" --label dependencies

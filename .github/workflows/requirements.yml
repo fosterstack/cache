@@ -45,7 +45,7 @@ jobs:
       # changes what admission enforces is caught here, in PR CI, not at
       # release time. Approval is checked only at release admission.
       - name: frozen baseline consistency (approval-agnostic)
-        run: go -C tools/requirements run . verify-freeze v0.2.0
+        run: go -C tools/requirements run . verify-freeze v0.2.1
       # Repeatable semantic regressions for the authorization stage's
       # acceptance-content policy (audit B02b): the extracted validator is
       # exercised here against the frozen baseline with valid/empty/
