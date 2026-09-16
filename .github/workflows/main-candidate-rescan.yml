@@ -107,15 +107,24 @@ jobs:
         run: |
           set -uo pipefail
           s='${{ matrix.scanner }}'
+          # Load each (variant, platform) child into the docker daemon;
+          # buildx writes an OCI-layout tar that trivy/grype do not read
+          # directly, so every scanner reads the loaded image by ref.
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || exit 1
+          : > /tmp/refs.txt
+          for v in production debug fips; do
+            for arch in amd64 arm64; do
+              ref="cand-${v}-${arch}:scan"
+              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || exit 1
+              echo "${ref}" >> /tmp/refs.txt
+            done
+          done
           if [ "$s" = trivy ]; then
             trivy image --download-db-only >/dev/null 2>&1 || true
-            for v in production debug fips; do
-              for plat in linux/amd64 linux/arm64; do
-                echo "trivy: ${v} ${plat}"
-                trivy image --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-                  --vex "${TRIVY_VEX}" --platform "${plat}" --input "/tmp/oci/${v}.oci" || exit 1
-              done
-            done
+            while read -r ref; do
+              echo "trivy: ${ref}"
+              trivy image --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "${ref}" || exit 1
+            done < /tmp/refs.txt
             for a in dist/*.tar.gz; do
               tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
               trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp" || { rm -rf "$tmp"; exit 1; }
@@ -123,27 +132,20 @@ jobs:
             done
           elif [ "$s" = grype ]; then
             grype db update >/dev/null 2>&1 || true
-            for v in production debug fips; do
-              for plat in linux/amd64 linux/arm64; do
-                echo "grype: ${v} ${plat}"
-                grype "oci-archive:/tmp/oci/${v}.oci" --platform "${plat}" --fail-on negligible \
-                  --vex .vex/fosterstack-cache.openvex.json -q || exit 1
-              done
-            done
+            while read -r ref; do
+              echo "grype: ${ref}"
+              grype "docker:${ref}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json || exit 1
+            done < /tmp/refs.txt
             for a in dist/*.tar.gz; do
-              grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json -q || exit 1
+              grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json || exit 1
             done
           else
             [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
-            sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
             snyk test --org=fosterstack-admin --all-projects || exit 1
-            for v in production debug fips; do
-              for arch in amd64 arm64; do
-                ref="scan-${v}-${arch}:latest"
-                skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || exit 1
-                snyk container test "${ref}" --org=fosterstack-admin --platform="linux/${arch}" || exit 1
-              done
-            done
+            while read -r ref; do
+              echo "snyk: ${ref}"
+              snyk container test "${ref}" --org=fosterstack-admin || exit 1
+            done < /tmp/refs.txt
           fi
 
       - name: file/update a tracking issue when the main candidate is not clean

@@ -95,24 +95,40 @@ jobs:
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
         run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
 
-      # ---- trivy: every variant OCI (both platform children) + every archive
-      - name: Trivy scan every variant (both platforms) and every archive
+      # Load every (variant, platform) child of each OCI archive into the
+      # docker daemon with skopeo. buildx writes an OCI-LAYOUT tar, which
+      # trivy --input / grype oci-archive: do not read (trivy: "manifest.json
+      # not found"; grype: operational exit 1). Loading each single-arch
+      # child into the daemon is the format every scanner reads by ref -
+      # the path the snyk leg already used.
+      - name: load every variant/platform child into the docker daemon
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          : > /tmp/refs.txt
+          for v in production debug fips; do
+            for arch in amd64 arm64; do
+              ref="cand-${v}-${arch}:scan"
+              skopeo copy --override-arch "${arch}" --override-os linux \
+                "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}"
+              echo "${ref}" >> /tmp/refs.txt
+            done
+          done
+          echo "loaded images to scan:"; cat /tmp/refs.txt
+
+      - name: Trivy scan every loaded image and every archive
         if: matrix.scanner == 'trivy'
         env:
           TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
         run: |
           set -euo pipefail
           trivy image --download-db-only >/dev/null 2>&1 || true
-          for v in production debug fips; do
-            for plat in linux/amd64 linux/arm64; do
-              echo "trivy: ${v} ${plat}"
-              trivy image --quiet --exit-code 1 \
-                --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-                --vex "${TRIVY_VEX}" \
-                --platform "${plat}" \
-                --input "/tmp/oci/${v}.oci"
-            done
-          done
+          while read -r ref; do
+            echo "trivy: ${ref}"
+            trivy image --quiet --exit-code 1 \
+              --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+              --vex "${TRIVY_VEX}" "${ref}"
+          done < /tmp/refs.txt
           for a in dist/*.tar.gz; do
             echo "trivy rootfs archive: $a"
             tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
@@ -120,36 +136,27 @@ jobs:
             rm -rf "$tmp"
           done
 
-      # ---- grype: every variant OCI (both platform children) + every archive
-      - name: Grype scan every variant (both platforms) and every archive
+      - name: Grype scan every loaded image and every archive
         if: matrix.scanner == 'grype'
         run: |
           set -euo pipefail
           grype db update >/dev/null 2>&1 || true
-          for v in production debug fips; do
-            for plat in linux/amd64 linux/arm64; do
-              echo "grype: ${v} ${plat}"
-              grype "oci-archive:/tmp/oci/${v}.oci" --platform "${plat}" \
-                --fail-on negligible \
-                --vex .vex/fosterstack-cache.openvex.json -q
-            done
-          done
+          while read -r ref; do
+            echo "grype: ${ref}"
+            grype "docker:${ref}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
+          done < /tmp/refs.txt
           for a in dist/*.tar.gz; do
             echo "grype archive: $a"
-            grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json -q
+            grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
           done
 
-      # ---- snyk: go.mod source deps + every variant image (both platforms)
       - name: Snyk token must be present (a gate that silently skips is worse than none)
         if: matrix.scanner == 'snyk'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
-      - name: install skopeo (load OCI archives into the daemon for snyk container test)
-        if: matrix.scanner == 'snyk'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-      - name: Snyk Open Source (go.mod) and container scans (both platforms per variant)
+      - name: Snyk Open Source (go.mod) and container scans (every loaded image)
         if: matrix.scanner == 'snyk'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -157,14 +164,10 @@ jobs:
           set -uo pipefail
           failed=0
           snyk test --org=fosterstack-admin --all-projects || failed=1
-          for v in production debug fips; do
-            for arch in amd64 arm64; do
-              ref="scan-${v}-${arch}:latest"
-              skopeo copy --override-arch "${arch}" --override-os linux \
-                "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || { echo "::error::skopeo load failed for ${v} ${arch}" >&2; failed=1; continue; }
-              snyk container test "${ref}" --org=fosterstack-admin --platform="linux/${arch}" || failed=1
-            done
-          done
+          while read -r ref; do
+            echo "snyk: ${ref}"
+            snyk container test "${ref}" --org=fosterstack-admin || failed=1
+          done < /tmp/refs.txt
           if [ "${failed}" -ne 0 ]; then
             echo "::error::Snyk reported findings (or failed to run). Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
             exit 1
