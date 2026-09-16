@@ -114,7 +114,7 @@ jobs:
           : > /tmp/refs.txt
           for v in production debug fips; do
             for arch in amd64 arm64; do
-              ref="cand-${v}-${arch}:scan"
+              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
               skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || exit 1
               echo "${ref}" >> /tmp/refs.txt
             done
