@@ -78,6 +78,7 @@ ALLOW_PATTERNS=(
   '^bin/rescan-statement-test\.sh$'
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
+  '^bin/install-scanner\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
