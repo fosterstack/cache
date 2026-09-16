@@ -1,0 +1,183 @@
+name: scan
+
+# The single required "scan" status check (audit follow-up). It exists so
+# a disclosed vulnerability is caught at PR time and on every push to main
+# and every tag — the same policy the release chain's stage-verify applies
+# at tag time, brought forward so tag day is not the first time the whole
+# scanner set runs. It builds the candidate through the EXACT same build +
+# image-assembly stages the release chain uses (mode: snapshot/pr), so the
+# bytes scanned here are the bytes the chain would ship, then runs every
+# scanner in .github/policy/scanners.json against all three OCI variants
+# (both platform children) and every dist archive. Policy is identical to
+# stage-verify: block at ANY severity; the published VEX document is the
+# only exception mechanism; red blocks the merge. A scanner that cannot be
+# installed or run is a PIPELINE failure (red), never a silent clean pass
+# (see bin/install-scanner.sh).
+#
+# The aggregation job at the bottom is named `scan`; that is the one
+# context to add to the main-protection ruleset as a required check.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+# The caller's grant must COVER what the reusable stages REQUEST, or the
+# run is a startup_failure with zero jobs (release-chain-pr.yml learned
+# this the hard way). id-token/attestations/packages are unused in
+# snapshot/pr mode but must be grantable for the shared stage files. Fork
+# and Dependabot events have write scopes silently downgraded to read by
+# GitHub; the snapshot/pr path needs none of them, so those events still
+# build and scan.
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  packages: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/stage-build.yml
+    with:
+      mode: snapshot
+
+  assemble:
+    needs: build
+    uses: ./.github/workflows/stage-image.yml
+    with:
+      mode: pr
+      dist-artifact: dist-snapshot
+      expected-checksums: ${{ needs.build.outputs.checksums }}
+      upload-oci: true
+
+  scanners:
+    name: read the scanner list
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: read
+        run: echo "list=$(jq -c '.scanners' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
+
+  scanner:
+    name: scan (${{ matrix.scanner }})
+    needs: [build, assemble, scanners]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-candidate
+          path: /tmp/oci/
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-snapshot
+          path: dist/
+
+      - name: verify archives before scanning them
+        env:
+          EXPECTED: ${{ needs.build.outputs.checksums }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+
+      - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
+
+      # ---- trivy: every variant OCI (both platform children) + every archive
+      - name: Trivy scan every variant (both platforms) and every archive
+        if: matrix.scanner == 'trivy'
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        run: |
+          set -euo pipefail
+          trivy image --download-db-only >/dev/null 2>&1 || true
+          for v in production debug fips; do
+            for plat in linux/amd64 linux/arm64; do
+              echo "trivy: ${v} ${plat}"
+              trivy image --quiet --exit-code 1 \
+                --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+                --vex "${TRIVY_VEX}" \
+                --platform "${plat}" \
+                --input "/tmp/oci/${v}.oci"
+            done
+          done
+          for a in dist/*.tar.gz; do
+            echo "trivy rootfs archive: $a"
+            tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
+            trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp"
+            rm -rf "$tmp"
+          done
+
+      # ---- grype: every variant OCI (both platform children) + every archive
+      - name: Grype scan every variant (both platforms) and every archive
+        if: matrix.scanner == 'grype'
+        run: |
+          set -euo pipefail
+          grype db update >/dev/null 2>&1 || true
+          for v in production debug fips; do
+            for plat in linux/amd64 linux/arm64; do
+              echo "grype: ${v} ${plat}"
+              grype "oci-archive:/tmp/oci/${v}.oci" --platform "${plat}" \
+                --fail-on negligible \
+                --vex .vex/fosterstack-cache.openvex.json -q
+            done
+          done
+          for a in dist/*.tar.gz; do
+            echo "grype archive: $a"
+            grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json -q
+          done
+
+      # ---- snyk: go.mod source deps + every variant image (both platforms)
+      - name: Snyk token must be present (a gate that silently skips is worse than none)
+        if: matrix.scanner == 'snyk'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
+      - name: install skopeo (load OCI archives into the daemon for snyk container test)
+        if: matrix.scanner == 'snyk'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+      - name: Snyk Open Source (go.mod) and container scans (both platforms per variant)
+        if: matrix.scanner == 'snyk'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          failed=0
+          snyk test --org=fosterstack-admin --all-projects || failed=1
+          for v in production debug fips; do
+            for arch in amd64 arm64; do
+              ref="scan-${v}-${arch}:latest"
+              skopeo copy --override-arch "${arch}" --override-os linux \
+                "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || { echo "::error::skopeo load failed for ${v} ${arch}" >&2; failed=1; continue; }
+              snyk container test "${ref}" --org=fosterstack-admin --platform="linux/${arch}" || failed=1
+            done
+          done
+          if [ "${failed}" -ne 0 ]; then
+            echo "::error::Snyk reported findings (or failed to run). Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
+            exit 1
+          fi
+
+  scan:
+    name: scan
+    needs: scanner
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: every scanner must have run and passed
+        run: |
+          r='${{ needs.scanner.result }}'
+          echo "aggregate scanner result: ${r}"
+          [ "${r}" = "success" ] || { echo "::error::one or more scanners failed, were cancelled, or were skipped (result=${r}). Per policy nothing is clean unless every scanner in scanners.json runs and passes." >&2; exit 1; }

@@ -87,6 +87,11 @@
       "context": "coverage",
       "integration_id": 15368,
       "scope": "push"
+    },
+    {
+      "context": "scan",
+      "integration_id": 15368,
+      "scope": "push"
     }
   ]
 }

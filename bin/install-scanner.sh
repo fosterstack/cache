@@ -22,7 +22,9 @@ SNYK_VER=1.1307.0
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-arch=$(uname -m)
+case "$TOOL" in trivy|grype|snyk) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk)" ;; esac
+
+arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
   x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux ;;
   aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64 ;;
@@ -39,6 +41,10 @@ case "${TOOL}:${arch}" in
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
+TRIVY_BASE="${TRIVY_BASE_URL:-https://github.com/aquasecurity/trivy/releases/download}"
+GRYPE_BASE="${GRYPE_BASE_URL:-https://github.com/anchore/grype/releases/download}"
+SNYK_BASE="${SNYK_BASE_URL:-https://github.com/snyk/cli/releases/download}"
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -50,7 +56,7 @@ verify() { # file
 
 case "$TOOL" in
   trivy)
-    url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VER}/trivy_${TRIVY_VER}_${A_TRIVY}.tar.gz"
+    url="${TRIVY_BASE}/v${TRIVY_VER}/trivy_${TRIVY_VER}_${A_TRIVY}.tar.gz"
     curl -fsSL -o "$tmp/t.tgz" "$url" || pipeline_fail "download failed: $url"
     verify "$tmp/t.tgz"
     tar -xzf "$tmp/t.tgz" -C "$tmp" trivy || pipeline_fail "extract failed for trivy"
@@ -58,7 +64,7 @@ case "$TOOL" in
     "${DEST}/trivy" --version >/dev/null || pipeline_fail "trivy does not run after install"
     ;;
   grype)
-    url="https://github.com/anchore/grype/releases/download/v${GRYPE_VER}/grype_${GRYPE_VER}_${A_GRYPE}.tar.gz"
+    url="${GRYPE_BASE}/v${GRYPE_VER}/grype_${GRYPE_VER}_${A_GRYPE}.tar.gz"
     curl -fsSL -o "$tmp/g.tgz" "$url" || pipeline_fail "download failed: $url"
     verify "$tmp/g.tgz"
     tar -xzf "$tmp/g.tgz" -C "$tmp" grype || pipeline_fail "extract failed for grype"
@@ -66,7 +72,7 @@ case "$TOOL" in
     "${DEST}/grype" version >/dev/null || pipeline_fail "grype does not run after install"
     ;;
   snyk)
-    url="https://github.com/snyk/cli/releases/download/v${SNYK_VER}/${A_SNYK}"
+    url="${SNYK_BASE}/v${SNYK_VER}/${A_SNYK}"
     curl -fsSL -o "$tmp/snyk" "$url" || pipeline_fail "download failed: $url"
     verify "$tmp/snyk"
     install -m 0755 "$tmp/snyk" "${DEST}/snyk" || pipeline_fail "install failed for snyk"
