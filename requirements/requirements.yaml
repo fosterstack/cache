@@ -24,7 +24,8 @@
 baseline:
   extracted_from: acd8bac2f9427dee63c71384dcbfecdb5c7ccf1b
   extracted_on: 2026-09-08
-  approved: false
+  approved: true
+  approved_on: 2026-09-21
   note: >
     Extraction sources: README.md, SECURITY.md, RELEASING.md, CONTRIBUTING.md,
     docs/*.md (nine files), cmd/fscache, internal/{server,cache,blobstore,
@@ -54,13 +55,13 @@ requirements:
         when: a client PUTs a body to /some-key and then GETs /some-key
         then: the PUT returns 201, the GET returns 200 with byte-identical content and a correct Content-Length
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-PROTO-001-AC2
         given: a stored key
         when: a client sends HEAD for that key and GET for an absent key
         then: HEAD returns 200 with the stored size and no body; the GET of the absent key returns 404
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-PROTO-002
     title: Request path is the cache key
@@ -88,7 +89,7 @@ requirements:
         when: a client PUTs to an ordinary, non-reserved cache path such as /a/nested/key and GETs the same path
         then: the round trip succeeds, the same bytes are not visible under any other path, and the reserved endpoints continue to answer as endpoints
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-PROTO-003
     title: Key validation
@@ -121,13 +122,13 @@ requirements:
         when: the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form
         then: every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-PROTO-003-AC2
         given: the bare root path (empty key) via PUT
         when: a client PUTs to /
         then: the server returns 400
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-PROTO-004
     title: Method surface
@@ -145,7 +146,7 @@ requirements:
         when: a client sends DELETE to a cache path
         then: 'the response is 405 with "Allow: GET, PUT, HEAD"'
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-PROTO-005
     title: Body-size cap
@@ -163,7 +164,7 @@ requirements:
         when: a client PUTs a body larger than the cap
         then: the response is 413 and a subsequent GET of that key returns 404
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-PROTO-006
     title: Browser landing page
@@ -181,7 +182,7 @@ requirements:
         when: a client GETs / and then GETs the stored key
         then: the root returns 200 HTML linking /statusz, and the stored key still returns its bytes
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-PROTO-007
     title: Reserved paths refuse writes
@@ -201,7 +202,7 @@ requirements:
         when: a client sends PUT and DELETE to each of "/", /healthz, /metrics, and /statusz
         then: 'every response is 405 with "Allow: GET, HEAD", nothing is stored under any key, and the four endpoints continue to answer GET as before'
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
   # ── Configuration ─────────────────────────────────────────────────────
 
   - id: REQ-CFG-001
@@ -227,13 +228,13 @@ requirements:
         when: it starts
         then: it listens on :8080, stores under ./data, applies no size cap, caps bodies at 1 GiB, and disables auth
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CFG-001-AC2
         given: a server started with every variable set to a custom valid value
         when: it starts
         then: each value is honored, observably (listen address, data location, cap behavior, auth behavior)
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-CFG-002
     title: Credentials are both-or-neither
@@ -250,7 +251,7 @@ requirements:
         when: the server starts
         then: it exits non-zero with a message naming both variables, and the same holds for password-only
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-CFG-003
     title: Invalid configuration fails startup
@@ -272,7 +273,7 @@ requirements:
         when: the server starts
         then: startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
 
   # ── Authentication ────────────────────────────────────────────────────
 
@@ -293,13 +294,13 @@ requirements:
         when: requests arrive with no credentials, wrong credentials, and correct credentials
         then: the first two receive 401 with WWW-Authenticate and cause no store change; the third succeeds
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-AUTH-001-AC2
         given: a server with credentials configured
         when: /statusz and the root landing page are requested without credentials
         then: both return 401; with credentials both return 200
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-AUTH-002
     title: Constant-time credential comparison
@@ -316,7 +317,7 @@ requirements:
         when: it is inspected
         then: comparison uses crypto/subtle.ConstantTimeCompare for both fields with no short-circuit between them
         verification: { method: inspection, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-AUTH-003
     title: Probes and scrapers stay open
@@ -333,7 +334,7 @@ requirements:
         when: /healthz and /metrics are requested without credentials
         then: both return 200
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-AUTH-004
     title: Credentials tolerated by a no-auth server
@@ -351,7 +352,7 @@ requirements:
         when: a client PUTs and GETs with a Basic Auth header present
         then: the round trip succeeds exactly as without the header
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-AUTH-005
     title: Read-only credentials
@@ -377,25 +378,25 @@ requirements:
         when: GET, HEAD, PUT, and DELETE arrive with read-only credentials, and the same requests arrive with read-write credentials
         then: with read-only credentials GET and HEAD succeed identically to read-write, PUT and DELETE return 403 and store nothing; with read-write credentials all behave as without the read-only pair
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-AUTH-005-AC2
         given: a server with both credential pairs configured
         when: requests arrive with wrong credentials and with valid read-only credentials
         then: 'wrong credentials receive 401 with WWW-Authenticate; valid read-only credentials never receive 401, and their 403 carries no WWW-Authenticate - the identity was accepted, the verb was refused'
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-AUTH-005-AC3
         given: environments with an incomplete read-only pair, a read-only pair without the read-write pair, and a read-only username equal to the read-write username
         when: the server starts
         then: each start fails non-zero with a message naming the offending variables; a complete, distinct configuration starts
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-AUTH-005-AC4
         given: the auth implementation with two credential pairs
         when: it is inspected
         then: every credential comparison uses crypto/subtle.ConstantTimeCompare and all comparisons are evaluated with no short-circuit that leaks which pair matched
         verification: { method: inspection, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-HTTP-001
     title: Server timeouts
@@ -419,7 +420,7 @@ requirements:
         when: its timeout configuration is examined
         then: ReadHeaderTimeout is 10s, IdleTimeout is 120s, and ReadTimeout and WriteTimeout are 20 minutes - none unset
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-HTTP-002
     title: Bounded concurrent uploads
@@ -442,13 +443,13 @@ requirements:
         when: a second PUT arrives
         then: it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-HTTP-002-AC2
         given: an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value
         when: the server starts
         then: startup fails per REQ-CFG-003's fail-closed rule
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
 
   # ── Storage ───────────────────────────────────────────────────────────
 
@@ -468,7 +469,7 @@ requirements:
         when: a new process starts on the same data directory and the key is requested
         then: the identical bytes return, and store totals reflect the entry
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-STORE-002
     title: Atomic writes
@@ -486,7 +487,7 @@ requirements:
         when: the same key is subsequently requested
         then: either 404 (never stored) or the previous complete value; never truncated bytes
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-STORE-003
     title: Tight on-disk permissions
@@ -503,7 +504,7 @@ requirements:
         when: the on-disk tree is examined
         then: every directory is 0750 and every blob file 0600
         verification: { method: component, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-STORE-004
     title: A stored reply means a stored entry
@@ -523,7 +524,7 @@ requirements:
         when: a client PUTs an entry
         then: the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-STORE-005
     title: Startup reconciliation after unclean shutdown
@@ -547,19 +548,19 @@ requirements:
         when: reconciliation runs
         then: the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-STORE-005-AC2
         given: a metadata record whose blob is missing
         when: reconciliation runs
         then: the record is dropped and totals no longer include it
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-STORE-005-AC3
         given: a data directory with an unclean-shutdown marker and one of each inconsistency
         when: the server starts
         then: reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk
         verification: { method: component, release_blocking: false }
-        status: proposed
+        status: approved
 
   # ── Eviction ──────────────────────────────────────────────────────────
 
@@ -596,13 +597,13 @@ requirements:
         when: a new entry no larger than the cap is stored
         then: least-recently-used entries are removed until the new entry fits, the new entry is retrievable afterward, and the committed live-cache blob bytes, measured after the operation completes, do not exceed the cap
         verification: { method: component, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-EVICT-001-AC2
         given: a capped store where an old key is re-read
         when: eviction next runs
         then: the re-read key is treated as recently used and outlives never-read older entries
         verification: { method: component, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-EVICT-002
     title: Oversized entries are rejected, not churned
@@ -628,25 +629,25 @@ requirements:
         when: a client PUTs an entry larger than the whole cap
         then: 'the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit'
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-EVICT-002-AC2
         given: the same server
         when: a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap
         then: the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-EVICT-002-AC3
         given: a real Gradle build producing one cacheable output larger than the configured cap
         when: the build runs against the server twice
         then: both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip
         verification: { method: acceptance-gradle, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-EVICT-002-AC4
         given: a real Maven build producing one cacheable output larger than the configured cap
         when: the build runs against the server twice
         then: both builds complete successfully with the oversized output uncached and other outputs still cached
         verification: { method: acceptance-maven, release_blocking: true }
-        status: proposed
+        status: approved
 
   # ── Observability ─────────────────────────────────────────────────────
 
@@ -663,7 +664,7 @@ requirements:
         when: GET /healthz
         then: 200 with body "ok"
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-OBS-002
     title: Prometheus metrics
@@ -685,7 +686,7 @@ requirements:
         when: /metrics is scraped
         then: every named metric is present and hits/misses read 1 and 1
         verification: { method: http-integration, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-OBS-003
     title: Read-only status page
@@ -705,13 +706,13 @@ requirements:
         when: /statusz is fetched as JSON and /metrics is scraped
         then: hits, misses, entries, and store bytes agree exactly between the two
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-OBS-003-AC2
         given: a request with an HTML Accept header
         when: /statusz is fetched
         then: the response is HTML containing no form, button, or state-changing control
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-OBS-004
     title: Startup announcement
@@ -728,7 +729,7 @@ requirements:
         when: the first log line is emitted
         then: it contains version, addr, data_dir, max_bytes, auth, and fips140 fields
         verification: { method: component, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-OBS-005
     title: No mutable admin surface
@@ -746,7 +747,7 @@ requirements:
         when: it is enumerated
         then: only cache GET/PUT/HEAD, /healthz, /metrics, /statusz, and the root landing page exist, none accepting state-changing verbs beyond cache PUT
         verification: { method: http-integration, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-OBS-006
     title: Failure-only request logging, no sensitive fields
@@ -764,7 +765,7 @@ requirements:
         when: they are inspected
         then: per-request logging exists only on failure paths and logs only method, key, and error
         verification: { method: inspection, release_blocking: false }
-        status: proposed
+        status: approved
 
   # ── Privacy ───────────────────────────────────────────────────────────
 
@@ -785,7 +786,7 @@ requirements:
         when: the run completes and the egress record is examined
         then: the server behaved identically to an unrestricted run and the record shows no attempted outbound connection and no attempted name resolution; a brief open-socket observation alone does not satisfy this criterion, because it cannot establish the universal negative
         verification: { method: acceptance-container, release_blocking: true }
-        status: proposed
+        status: approved
 
   # ── Platforms and artifacts ───────────────────────────────────────────
 
@@ -805,7 +806,7 @@ requirements:
         when: it is enumerated
         then: exactly the six archives exist and each binary executes on its platform (or a documented equivalent)
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-PLAT-002
     title: Image variants and multi-arch
@@ -822,7 +823,7 @@ requirements:
         when: each is inspected and run on both architectures
         then: both platform entries exist and the container serves cache traffic on each
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-PLAT-003
     title: Shell-lessness per variant
@@ -840,7 +841,7 @@ requirements:
         when: shell presence is probed in each
         then: production and -fips run no shell at any path; -debug runs /busybox/sh and has no /bin/sh
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-PLAT-004
     title: Nonroot container execution
@@ -857,7 +858,7 @@ requirements:
         when: its process identity and data path are observed
         then: the process runs as uid 65532 and data lands under /home/nonroot
         verification: { method: acceptance-container, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-DEPLOY-001
     title: Graceful shutdown
@@ -874,7 +875,7 @@ requirements:
         when: SIGTERM is delivered
         then: the process logs shutdown and exits zero within the drain window
         verification: { method: component, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-DEPLOY-002
     title: Single-writer store
@@ -892,7 +893,7 @@ requirements:
         when: a second server process starts on the same directory
         then: the second process does not serve traffic against the same store, and the first is unaffected
         verification: { method: component, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-DEPLOY-003
     title: Documented Kubernetes deployment works as written
@@ -916,7 +917,7 @@ requirements:
         when: the documented manifests are applied verbatim and the documented smoke commands run through a port-forward
         then: the pod becomes Ready; healthz and metrics answer without credentials; the authenticated PUT/GET round-trips; the unauthenticated cache request returns 401; and a pod using the documented runner env block sees FSCACHE_USERNAME and FSCACHE_PASSWORD populated
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   # ── FIPS ──────────────────────────────────────────────────────────────
 
@@ -939,13 +940,13 @@ requirements:
         when: its FIPS operating mode and the exact Go Cryptographic Module version selected into the artifact are both examined
         then: the mode is active AND the module version is the specific frozen version that maps, by a documented mapping, to the certificate this requirement names; reporting enabled mode without establishing that module version does not satisfy this criterion
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-FIPS-001-AC2
         given: a binary built WITHOUT the validated module selected, running with FIPS mode enabled at runtime (GODEBUG=fips140=on)
         when: the same evidence check runs against it
         then: it does NOT pass — the check distinguishes the validated-module build from a merely mode-enabled build
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-FIPS-002
     title: FIPS posture observable and truthful at runtime
@@ -975,7 +976,7 @@ requirements:
         when: each starts and /statusz is read
         then: the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-FIPS-003
     title: Approved-only crypto enforcement in CI
@@ -994,7 +995,7 @@ requirements:
         when: a commit lands
         then: the fips140-only job runs the full race-enabled suite under the validated module in only-mode
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
 
   # ── Build tools ───────────────────────────────────────────────────────
 
@@ -1014,25 +1015,25 @@ requirements:
         when: a cold build then a from-scratch second build run against the server
         then: the second build restores EXACTLY the expected task set FROM-CACHE - an unexpected miss fails, and an unlisted restored task fails too
         verification: { method: acceptance-gradle, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-GRADLE-001-AC2
         given: the same two builds
         when: the server's /metrics are read after each
         then: the cold build shows one upload per expected task and zero hits; the warm build shows one server-side hit per expected task and no further uploads
         verification: { method: acceptance-gradle, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-GRADLE-001-AC3
         given: the compiled outputs of the cold build, checksummed
         when: the warm build restores from the cache
         then: every restored output is byte-identical to the cold build's
         verification: { method: acceptance-gradle, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-GRADLE-001-AC4
         given: the warm build's log
         when: it is scanned for remote-cache errors Gradle treats as non-fatal
         then: none are present - a silently degraded remote is a failure of this workflow, not a pass
         verification: { method: acceptance-gradle, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-MAVEN-001
     title: Maven Build Cache Extension interoperability
@@ -1061,13 +1062,13 @@ requirements:
         when: a cold build then a clean second build run against the server
         then: the second build restores from the remote cache with byte-correct artifacts, and server metrics show HEAD/GET/PUT traffic
         verification: { method: acceptance-maven, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-MAVEN-001-AC2
         given: the same project with wrong and then missing credentials against an auth-enabled server
         when: builds run
         then: both complete (remote-cache failures are non-fatal by design), both log the extension's download/upload errors, the server answers 401, and nothing is stored - the documented failure mode, asserted exactly
         verification: { method: acceptance-maven, release_blocking: false }
-        status: proposed
+        status: approved
 
   # ── Release evidence and licensing ────────────────────────────────────
 
@@ -1088,7 +1089,7 @@ requirements:
         when: the documented cosign and gh attestation commands run anonymously against each image digest and the checksums bundle
         then: every verification succeeds and names this repository's release workflow
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-REL-002
     title: Anonymous availability
@@ -1106,7 +1107,7 @@ requirements:
         when: every published tag is pulled with no registry credential
         then: every manifest fetch returns 200
         verification: { method: acceptance-release-artifact, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-REL-003
     title: VEX-only scan exceptions
@@ -1130,7 +1131,7 @@ requirements:
         when: they are compared
         then: every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document
         verification: { method: inspection, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-REL-004
     title: Continuous scan gate and toolchain freshness
@@ -1153,25 +1154,25 @@ requirements:
         when: the required scan check runs
         then: the scan check runs the two configured scanners (grype and osv-scanner — different vulnerability databases built on overlapping upstream advisory sources, not different sources) against the release candidate — grype (Anchore's database) scans all three OCI variants (both platform children) AND every release archive (Linux and Darwin binaries); osv-scanner (OSV.dev) scans the three variants on both architectures (the six image children) AND the Go modules — both blocking at any severity with the published VEX document as grype's only exception, and a red result blocks the merge
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-004-AC2
         given: the scanner installer
         when: it installs any scanner
         then: the download is pinned to a specific version and verified against a repo-pinned sha256, and a scanner that cannot be installed or verified exits as a labeled pipeline failure rather than a finding or a silent clean pass
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-004-AC3
         given: code already on main with no pull request open
         when: the daily main-candidate rescan runs
         then: main's latest candidate is built and scanned by the full scanner set, and any finding opens a tracking issue within 24 hours
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REL-004-AC4
         given: a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor)
         when: the scheduled toolchain-freshness job runs
         then: it opens a pull request bumping the go directive in both modules to that release
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-LIC-001
     title: MIT core, nothing withheld
@@ -1190,4 +1191,4 @@ requirements:
         when: the license and artifact set are examined
         then: the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists
         verification: { method: manual, release_blocking: false }
-        status: proposed
+        status: approved
