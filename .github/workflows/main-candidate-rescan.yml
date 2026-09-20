@@ -142,10 +142,13 @@ jobs:
           else
             [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
             snyk test --org=fosterstack-admin --all-projects || exit 1
+            # One child per variant (arch-invariant for snyk; trivy/grype above
+            # already cover both children) — the minimum, to spare snyk quota.
+            grep -E -- '-amd64$' /tmp/refs.txt > /tmp/snyk-refs.txt || true
             while read -r ref; do
               echo "snyk: ${ref}"
               snyk container test "${ref}" --org=fosterstack-admin || exit 1
-            done < /tmp/refs.txt
+            done < /tmp/snyk-refs.txt
           fi
 
       - name: file/update a tracking issue when the main candidate is not clean

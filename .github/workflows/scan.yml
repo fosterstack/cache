@@ -7,12 +7,14 @@ name: scan
 # scanner set runs. It builds the candidate through the EXACT same build +
 # image-assembly stages the release chain uses (mode: snapshot/pr), so the
 # bytes scanned here are the bytes the chain would ship, then runs every
-# scanner in .github/policy/scanners.json against all three OCI variants
-# (both platform children) and every dist archive. Policy is identical to
-# stage-verify: block at ANY severity; the published VEX document is the
-# only exception mechanism; red blocks the merge. A scanner that cannot be
-# installed or run is a PIPELINE failure (red), never a silent clean pass
-# (see bin/install-scanner.sh).
+# scanner in .github/policy/scanners.json against all three OCI variants and
+# every dist archive: trivy and grype scan BOTH platform children of every
+# variant; snyk (its container findings arch-invariant for these images, and
+# quota-limited) scans one child per variant plus the go.mod SCA. Policy is
+# identical to stage-verify: block at ANY severity; the published VEX
+# document is the only exception mechanism; red blocks the merge. A scanner
+# that cannot be installed or run is a PIPELINE failure (red), never a
+# silent clean pass (see bin/install-scanner.sh).
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
@@ -156,18 +158,27 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
-      - name: Snyk Open Source (go.mod) and container scans (every loaded image)
+      - name: Snyk Open Source (go.mod) + container (one child per variant; trivy/grype cover both)
         if: matrix.scanner == 'snyk'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
           failed=0
+          # Snyk Open Source over the Go modules (snyk's distinctive SCA view).
           snyk test --org=fosterstack-admin --all-projects || failed=1
+          # Container: the minimum this gate needs from snyk. trivy and grype
+          # already scan BOTH platform children of every variant on their own
+          # legs; snyk's container findings for these images are arch-invariant
+          # (same base + same-toolchain Go binary), so snyk tests ONE child per
+          # variant — every variant still goes through snyk's DB, at half the
+          # container tests (3, not 6), which is the free-plan quota that bites.
+          # Filtered into a file (not a pipe) so `failed` stays in this shell.
+          grep -E -- '-amd64$' /tmp/refs.txt > /tmp/snyk-refs.txt || true
           while read -r ref; do
             echo "snyk: ${ref}"
             snyk container test "${ref}" --org=fosterstack-admin || failed=1
-          done < /tmp/refs.txt
+          done < /tmp/snyk-refs.txt
           if [ "${failed}" -ne 0 ]; then
             echo "::error::Snyk reported findings (or failed to run). Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
             exit 1
