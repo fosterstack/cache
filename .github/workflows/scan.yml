@@ -164,23 +164,42 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
-          failed=0
+          failed=0; cantrun=0
+          # A scanner that cannot RUN is a pipeline failure, never a clean pass.
+          # Snyk exits 0 when it is out of monthly test quota (or unauthorized)
+          # and just prints the limit message — so `|| failed=1` alone would let
+          # the gate go GREEN having tested nothing. Detect that in the output
+          # and force red as could-not-run, kept distinct from a finding.
+          snyk_run() {
+            local out rc
+            out="$("$@" 2>&1)"; rc=$?
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -qiE 'reached your monthly limit|increase your tests limit|not authori[sz]ed|authentication error|re-?authenticate'; then
+              cantrun=1
+            elif [ "$rc" -ne 0 ]; then
+              failed=1
+            fi
+          }
           # Snyk Open Source over the Go modules (snyk's distinctive SCA view).
-          snyk test --org=fosterstack-admin --all-projects || failed=1
+          snyk_run snyk test --org=fosterstack-admin --all-projects
           # Container: the minimum this gate needs from snyk. trivy and grype
           # already scan BOTH platform children of every variant on their own
           # legs; snyk's container findings for these images are arch-invariant
           # (same base + same-toolchain Go binary), so snyk tests ONE child per
           # variant — every variant still goes through snyk's DB, at half the
           # container tests (3, not 6), which is the free-plan quota that bites.
-          # Filtered into a file (not a pipe) so `failed` stays in this shell.
+          # Filtered into a file (not a pipe) so the flags stay in this shell.
           grep -E -- '-amd64$' /tmp/refs.txt > /tmp/snyk-refs.txt || true
           while read -r ref; do
             echo "snyk: ${ref}"
-            snyk container test "${ref}" --org=fosterstack-admin || failed=1
+            snyk_run snyk container test "${ref}" --org=fosterstack-admin
           done < /tmp/snyk-refs.txt
+          if [ "${cantrun}" -ne 0 ]; then
+            echo "::error::Snyk could not run (monthly test quota exhausted or unauthorized). Per agent-remediation-rules this is a scanner-could-not-run PIPELINE failure, not a finding and not a clean pass — restore Snyk quota/auth (see the Snyk plan)." >&2
+            exit 1
+          fi
           if [ "${failed}" -ne 0 ]; then
-            echo "::error::Snyk reported findings (or failed to run). Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
+            echo "::error::Snyk reported findings. Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
             exit 1
           fi
 

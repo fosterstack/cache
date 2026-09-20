@@ -141,13 +141,26 @@ jobs:
             done
           else
             [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
-            snyk test --org=fosterstack-admin --all-projects || exit 1
+            # Snyk exits 0 when out of monthly quota (or unauthorized), so detect
+            # that in the output and fail — a scanner that could not run must be
+            # red (this step is continue-on-error, so the failure files the issue).
+            snyk_run() {
+              local out rc
+              out="$("$@" 2>&1)"; rc=$?
+              printf '%s\n' "$out"
+              if printf '%s' "$out" | grep -qiE 'reached your monthly limit|increase your tests limit|not authori[sz]ed|authentication error|re-?authenticate'; then
+                echo "::error::Snyk could not run (quota exhausted or unauthorized) — scanner-could-not-run, not clean" >&2
+                exit 1
+              fi
+              return $rc
+            }
+            snyk_run snyk test --org=fosterstack-admin --all-projects || exit 1
             # One child per variant (arch-invariant for snyk; trivy/grype above
             # already cover both children) — the minimum, to spare snyk quota.
             grep -E -- '-amd64$' /tmp/refs.txt > /tmp/snyk-refs.txt || true
             while read -r ref; do
               echo "snyk: ${ref}"
-              snyk container test "${ref}" --org=fosterstack-admin || exit 1
+              snyk_run snyk container test "${ref}" --org=fosterstack-admin || exit 1
             done < /tmp/snyk-refs.txt
           fi
 
