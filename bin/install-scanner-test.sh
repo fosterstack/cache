@@ -42,6 +42,16 @@ check "trivy checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure"
 check "grype download failure rejected" 1 "download failed.*PIPELINE failure" \
   env INSTALL_SCANNER_ARCH=x86_64 GRYPE_BASE_URL="file://$work/does-not-exist" bash "$sut" grype "$work/bin"
 
+# 4b. osv-scanner checksum mismatch is a labeled pipeline failure.
+mkdir -p "$work/rel/v2.6.0"
+echo "not the real osv-scanner binary" > "$work/rel/v2.6.0/osv-scanner_linux_amd64"
+check "osv-scanner checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=x86_64 OSV_BASE_URL="file://$work/rel" bash "$sut" osv-scanner "$work/bin"
+
+# 4c. osv-scanner download failure is a labeled pipeline failure.
+check "osv-scanner download failure rejected" 1 "download failed.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=x86_64 OSV_BASE_URL="file://$work/nope" bash "$sut" osv-scanner "$work/bin"
+
 # 5. No arg is a labeled pipeline failure (empty tool).
 check "missing scanner arg rejected" 1 "unknown scanner.*PIPELINE failure" \
   bash "$sut"

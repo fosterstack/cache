@@ -71,6 +71,10 @@ SNYK_OS='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE
 SNYK_APP='{"vulnerabilities":[],"applications":[{"packageManager":"npm","targetFile":"/srv/app/package.json","vulnerabilities":[{"id":"npm:connect:20120107","identifiers":{"ALTERNATIVE":["SNYK-JS-CONNECT-10382"],"CVE":[],"CWE":["CWE-400"]},"severity":"medium","packageName":"connect"}]}]}'
 SNYK_MIXED='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE":["CVE-2024-0003"]},"severity":"high","packageName":"openssl"}],"applications":[{"packageManager":"npm","targetFile":"/srv/app/package.json","vulnerabilities":[{"id":"npm:connect:20120107","identifiers":{"CVE":[]},"severity":"medium","packageName":"connect"}]}]}'
 SNYK_ERROBJ='{"ok":false,"error":"authentication failed","path":"x"}'
+# OSV-Scanner JSON: results[] -> source.path, packages[] -> {package, vulnerabilities[]}.
+OSV_CLEAN='{"results":[]}'
+OSV_FIND='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0","ecosystem":"Go"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"],"database_specific":{"severity":"HIGH"}}]}]}]}'
+OSV_ERROBJ='{"error":"could not resolve deps.dev"}'
 
 # ---- Snyk cases ----------------------------------------------------------
 mf=$D/m; : >"$mf"
@@ -191,6 +195,28 @@ assert_stmt "grype malformed report (exit 1)" grype "$mf" error false 0
 # ==========================================================================
 # B04f — platform-child enumeration validation.
 # ==========================================================================
+# ---- osv-scanner cases ---------------------------------------------------
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 0 "$OSV_CLEAN"
+assert_stmt "osv-scanner clean" osv-scanner "$mf" clean false 0
+
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 1 "$OSV_FIND"
+assert_stmt "osv-scanner finding (exit 1)" osv-scanner "$mf" findings true 1
+# the normalized finding keeps the CVE alias, package and source path.
+python3 "$SCRIPT" statement --scanner osv-scanner --children "$mf" \
+  --raw-out "$D/raw.json" --out "$D/stmt.json" --digest "$AMD" >/dev/null
+if [ "$(jq -r '.findings[0].id' "$D/stmt.json")" = "CVE-2024-9999" ] \
+   && [ "$(jq -r '.findings[0].package' "$D/stmt.json")" = "golang.org/x/net" ] \
+   && [ "$(jq -r '.findings[0].target' "$D/stmt.json")" = "go.mod" ]; then ok; else
+  bad "osv-scanner finding did not retain id/package/target"; fi
+
+# operational error: nonzero exit that is not the finding code -> error,
+# never clean, even with valid-shaped JSON.
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 127 "$OSV_CLEAN"
+assert_stmt "osv-scanner operational error (exit 127)" osv-scanner "$mf" error false 0
+
 assert_enum() { # desc index-json want_exit [want-children-count]
   local desc="$1" idx="$2" we="$3" wc="${4:-}" got n
   printf '%s' "$idx" > "$D/index.json"

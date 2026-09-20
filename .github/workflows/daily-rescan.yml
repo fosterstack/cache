@@ -241,49 +241,30 @@ jobs:
           done < /tmp/children.txt
           exit $rc
 
-      # ---- snyk ----------------------------------------------------------
-      - name: install the Snyk CLI (pinned by checksum; can't-run is a pipeline failure, not a finding)
-        if: matrix.target.scanner == 'snyk'
-        run: ./bin/install-scanner.sh snyk
-      - name: Snyk rescan (by digest, JSON findings)
-        if: matrix.target.scanner == 'snyk'
-        id: snyk
+      # ---- osv-scanner (OSV.dev database, by digest) -------------------
+      - name: OSV-Scanner rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'osv-scanner'
+        id: osv
         continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -euo pipefail
-          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a rescan that silently skips a scanner is not a rescan" >&2; exit 1; }
-          index_ref="ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
+          ./bin/install-scanner.sh osv-scanner
           rc=0
           child_no=0
           : > /tmp/children-scanned.jsonl
-          # B04a: Snyk container supports multi-platform scanning, so cover
-          # every required CHILD, not just the index's default arch. Reuse the
-          # same child inventory Trivy/Grype enumerate and run Snyk per child
-          # with explicit platform selection (`snyk container test <ref>
-          # --platform=linux/amd64`). Record one result per required child.
-          # B04b: snyk exits nonzero (1) on a FINDING; capture it with
-          # `|| code=$?` so errexit does not abort the loop before the next
-          # child is scanned or its exit code is recorded.
-          # B04d: the child report carries OS findings at top-level
-          # .vulnerabilities AND application findings under
-          # .applications[].vulnerabilities — bin/rescan-statement.py
-          # normalizes BOTH, so an arm64 application-only finding still
-          # reaches the statement AND the notification.
-          while IFS=$'\t' read -r platform _; do
+          # osv-scanner exit codes: 0 clean, 1 findings, other nonzero =
+          # operational failure (contract in bin/rescan-statement.py). Captured
+          # per child with `|| code=$?` so errexit does not abort the loop; the
+          # merge/classification happens once, downstream.
+          while IFS=$'\t' read -r platform ref; do
             [ -n "$platform" ] || continue
             child_no=$((child_no + 1))
-            out="/tmp/snyk-child-${child_no}.json"
-            plat_arg=""
-            case "$platform" in */*) plat_arg="--platform=${platform}";; esac
-            echo "snyk: ${platform} ${index_ref} ${plat_arg}"
+            out="/tmp/osv-child-${child_no}.json"
+            echo "osv-scanner: ${platform} ${ref}"
             code=0
-            # shellcheck disable=SC2086
-            snyk container test "${index_ref}" $plat_arg \
-              --org=fosterstack-admin --json-file-output="$out" || code=$?
+            osv-scanner scan image --format json --output "$out" "${ref}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            jq -nc --arg p "$platform" --arg r "$index_ref" --argjson e "$code" --arg f "$out" \
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
               '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
           done < /tmp/children.txt
           exit $rc
@@ -300,9 +281,9 @@ jobs:
             grype)
               echo "version=$(grype version 2>/dev/null | awk '/^Version:/{print $2}')" >> /tmp/scanner-meta
               echo "db=$(grype db status 2>/dev/null | awk '/Built|built/{print $NF; exit}')" >> /tmp/scanner-meta ;;
-            snyk)
-              echo "version=$(snyk version 2>/dev/null | head -1)" >> /tmp/scanner-meta
-              echo "db=service-side (Snyk SaaS; no local database timestamp)" >> /tmp/scanner-meta ;;
+            osv-scanner)
+              echo "version=$(osv-scanner --version 2>/dev/null | awk 'NR==1{print $NF}')" >> /tmp/scanner-meta
+              echo "db=OSV.dev (osv-scalibr; deps.dev)" >> /tmp/scanner-meta ;;
           esac
           cat /tmp/scanner-meta
 

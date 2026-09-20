@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           want=$(jq -r '.scanners | sort | join(",")' .github/policy/scanners.json)
-          have="grype,snyk,trivy"
+          have="grype,osv-scanner,trivy"
           if [ "${want}" != "${have}" ]; then
             echo "::error::scanners.json lists [${want}] but this workflow runs [${have}] — update the workflow to match the list." >&2
             exit 1
@@ -102,36 +102,33 @@ jobs:
           severity-cutoff: negligible
           vex: .vex/fosterstack-cache.openvex.json
 
-      - name: install the Snyk CLI
+      - name: install osv-scanner (pinned by checksum; can't-run is a pipeline failure, not a finding)
         if: always()
-        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
-        with:
-          snyk-version: v1.1307.0
-      - name: Snyk container test (all three digests, no severity threshold)
+        run: ./bin/install-scanner.sh osv-scanner
+      - name: OSV-Scanner (all three v0.1.0 digests; OSV.dev database)
         if: always()
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
-          if [ -z "${SNYK_TOKEN:-}" ]; then
-            echo "::error::SNYK_TOKEN unavailable — the Snyk leg did not run. This is a scanner-operational failure, not a clean verdict." >&2
-            exit 1
-          fi
           failed=0
           {
-            echo "## Snyk verdicts — published v0.1.0 digests"
+            echo "## OSV-Scanner verdicts — published v0.1.0 digests"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           for pair in "prod ${DIGEST_PROD}" "debug ${DIGEST_DEBUG}" "fips ${DIGEST_FIPS}"; do
             name="${pair%% *}"; digest="${pair#* }"
             out=$(mktemp)
-            if snyk container test "${IMAGE}@${digest}" --org=fosterstack-admin > "$out" 2>&1; then
+            code=0
+            osv-scanner scan image "${IMAGE}@${digest}" > "$out" 2>&1 || code=$?
+            if [ "$code" -eq 0 ]; then
               echo "### ${name} (@${digest}) — clean" >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$code" -eq 1 ]; then
+              failed=1
+              echo "### ${name} (@${digest}) — FINDINGS (OSV.dev); adjudicate via the audit-lane VEX review" >> "$GITHUB_STEP_SUMMARY"
             else
               failed=1
-              echo "### ${name} (@${digest}) — FINDINGS OR FAILURE" >> "$GITHUB_STEP_SUMMARY"
+              echo "### ${name} (@${digest}) — SCANNER COULD NOT RUN (exit ${code})" >> "$GITHUB_STEP_SUMMARY"
             fi
             { echo '```'; tail -n 40 "$out"; echo '```'; echo; } >> "$GITHUB_STEP_SUMMARY"
             cat "$out"; rm -f "$out"
           done
-          exit "${failed}"
+          [ "$failed" -eq 0 ] || { echo "::error::OSV-Scanner is not clean on v0.1.0 — a finding goes to the audit-lane VEX review; a could-not-run is a pipeline failure, not a clean verdict." >&2; exit 1; }

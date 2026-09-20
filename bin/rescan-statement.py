@@ -57,6 +57,10 @@ CONTRACTS = {
     "snyk": {"clean": {0}, "finding": {1}},
     "trivy": {"clean": {0}, "finding": {1}},
     "grype": {"clean": {0}, "finding": {2}},
+    # osv-scanner scan image/source : 0 clean, 1 findings, 127/128 (and any
+    #   other nonzero) = operational failure (no packages / general error).
+    #   https://google.github.io/osv-scanner/output/#return-codes
+    "osv-scanner": {"clean": {0}, "finding": {1}},
 }
 
 
@@ -195,6 +199,8 @@ def _shape_ok(scanner, report):
             and report.get("descriptor") is not None
     if scanner == "snyk":
         return isinstance(report.get("vulnerabilities"), list)
+    if scanner == "osv-scanner":
+        return isinstance(report.get("results"), list)
     return False
 
 
@@ -239,7 +245,37 @@ def _normalize(scanner, report, platform):
             pkg_mgr = app.get("packageManager")
             for v in app.get("vulnerabilities") or []:
                 out.append(_snyk_finding(v, platform, target, pkg_mgr))
+    elif scanner == "osv-scanner":
+        # OSV.dev JSON: results[] -> source.path, packages[] ->
+        # {package:{name,...}, vulnerabilities:[{id, aliases, ...}]}.
+        for res in report.get("results") or []:
+            src = (res.get("source") or {}).get("path")
+            for pkg in res.get("packages") or []:
+                name = (pkg.get("package") or {}).get("name")
+                for v in pkg.get("vulnerabilities") or []:
+                    aliases = v.get("aliases") or []
+                    cve = next((a for a in aliases
+                                if isinstance(a, str) and a.startswith("CVE-")), None)
+                    out.append({
+                        "id": cve or v.get("id"),
+                        "severity": _osv_severity(v),
+                        "package": name,
+                        "fixed_in": None,
+                        "platform": platform,
+                        "target": src,
+                    })
     return out
+
+
+def _osv_severity(v):
+    """OSV records severity inconsistently; prefer a database_specific label,
+    fall back to a CVSS vector's presence, else unknown."""
+    ds = v.get("database_specific") or {}
+    if isinstance(ds, dict) and isinstance(ds.get("severity"), str) and ds.get("severity").strip():
+        return ds["severity"].lower()
+    if v.get("severity"):
+        return "unknown"
+    return "unknown"
 
 
 def _snyk_finding(v, platform, target, pkg_mgr):

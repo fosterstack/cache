@@ -87,6 +87,7 @@ jobs:
           done
 
       - name: pull the exact candidates by digest
+        if: matrix.scanner == 'trivy' || matrix.scanner == 'grype'
         run: |
           set -euo pipefail
           repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
@@ -177,38 +178,26 @@ jobs:
             printf 'archive\t-\t%s\n' "$(basename "$a")" >> /tmp/scanned-subjects.txt
           done
 
-      # ---- snyk (source + each variant index by digest) -----------------
-      - name: install the Snyk CLI (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
-        if: matrix.scanner == 'snyk'
-        run: ./bin/install-scanner.sh snyk
-      - name: Snyk token must be present (a gate that silently skips is worse than none)
-        if: matrix.scanner == 'snyk'
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — refusing to authorize behind a scanner that did not run" >&2; exit 1; }
-      - name: Snyk Open Source (go.mod) and container scans, by digest
-        if: matrix.scanner == 'snyk'
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      # ---- osv-scanner (Go-module dependency SCA — OSV.dev database) -----
+      - name: install osv-scanner (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
+        if: matrix.scanner == 'osv-scanner'
+        run: ./bin/install-scanner.sh osv-scanner
+      - name: OSV-Scanner over the Go modules (source SCA; third, independent database)
+        if: matrix.scanner == 'osv-scanner'
         run: |
           set -uo pipefail
-          failed=0
           : > /tmp/scanned-subjects.txt
-          snyk test --org=fosterstack-admin --all-projects || failed=1
+          rc=0
+          osv-scanner scan source go.mod tools/requirements/go.mod || rc=$?
           printf 'source\t-\tgo.mod\n' >> /tmp/scanned-subjects.txt
-          # Snyk container resolves the index and scans the runner's arch;
-          # recorded honestly as index-level (its scope, stated).
-          while IFS=$'\t' read -r v platform ref; do
-            snyk container test "${ref}" --org=fosterstack-admin || failed=1
-            printf '%s\t%s\t%s\n' "${v}" "${platform}" "${ref}" >> /tmp/scanned-subjects.txt
-          done < /tmp/scan-targets.txt
-          if [ "${failed}" -ne 0 ]; then
-            echo "::error::Snyk reported findings (or failed to run). Nothing is authorized. Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
-            exit 1
+          printf 'source\t-\ttools/requirements/go.mod\n' >> /tmp/scanned-subjects.txt
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::OSV-Scanner found vulnerabilities in the Go modules. Nothing is authorized. Fix the dependency, or adjudicate via the audit-lane VEX review." >&2; exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error::OSV-Scanner could not run (exit ${rc}) — nothing is authorized behind a scanner that did not run." >&2; exit 1
           fi
-          echo "version=snyk $(snyk version 2>/dev/null | head -1)" >> /tmp/scanner-meta
-          echo "db=service-side (Snyk SaaS)" >> /tmp/scanner-meta
+          echo "version=$(osv-scanner --version 2>/dev/null | awk 'NR==1{print $NF}')" >> /tmp/scanner-meta
+          echo "db=OSV.dev (osv-scalibr; deps.dev)" >> /tmp/scanner-meta
 
       # ---- predicate -----------------------------------------------------
       - name: write and sign this scanner's scan predicate

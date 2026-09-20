@@ -5,15 +5,16 @@ name: Daily main-candidate rescan
 # daily-rescan.yml cannot cover main: main's candidate is never pushed to
 # a package, it is built from source. So this job builds main's latest
 # candidate through the SAME build + image-assembly stages the release
-# chain uses (mode snapshot/pr), runs every scanner in
-# .github/policy/scanners.json against all three OCI variants (both
-# platform children) and every dist archive at the identical
-# block-at-any-severity / VEX-only policy, and OPENS A TRACKING ISSUE on
-# any finding. That closes the window the audit called out: a CVE
-# disclosed against code already on main, with no PR open, otherwise would
-# not surface until the next release ran the scan gate. Here it surfaces
-# within 24h. A scanner that cannot install/run is a pipeline failure
-# (red), never a silent clean pass (bin/install-scanner.sh).
+# chain uses (mode snapshot/pr) and rescans it daily. The gate scanners
+# from .github/policy/scanners.json run in the scan-main matrix: trivy and
+# grype over all three OCI variants (both platform children) and every dist
+# archive, osv-scanner over the Go modules. Snyk left the CI gate (register
+# row 44) and lives HERE, in a dedicated daily job, one container test per
+# variant (3/day) inside the Snyk Free plan's container quota. Any finding
+# OPENS A TRACKING ISSUE, closing the window the audit called out: a CVE
+# disclosed against code already on main, with no PR open, surfaces within
+# 24h instead of at the next release. A scanner that cannot install/run is a
+# pipeline failure (red), never a silent clean pass (bin/install-scanner.sh).
 
 on:
   schedule:
@@ -78,16 +79,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: matrix.scanner != 'osv-scanner'
         with:
           name: oci-candidate
           path: /tmp/oci/
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: matrix.scanner != 'osv-scanner'
         with:
           name: dist-snapshot
           path: dist/
 
       - name: verify archives before scanning them
+        if: matrix.scanner != 'osv-scanner'
         env:
           EXPECTED: ${{ needs.build.outputs.checksums }}
         run: |
@@ -103,13 +107,18 @@ jobs:
         continue-on-error: true
         env:
           TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
           s='${{ matrix.scanner }}'
-          # Load each (variant, platform) child into the docker daemon;
-          # buildx writes an OCI-layout tar that trivy/grype do not read
-          # directly, so every scanner reads the loaded image by ref.
+          if [ "$s" = osv-scanner ]; then
+            # OSV.dev source SCA over the Go modules — no images needed.
+            rc=0
+            osv-scanner scan source go.mod tools/requirements/go.mod || rc=$?
+            [ "$rc" -eq 0 ] && exit 0
+            [ "$rc" -eq 1 ] && { echo "::error::osv-scanner found vulnerabilities in the Go modules" >&2; exit 1; }
+            echo "::error::osv-scanner could not run (exit ${rc})" >&2; exit 1
+          fi
+          # trivy/grype scan the images (both children) + archives.
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || exit 1
           : > /tmp/refs.txt
           for v in production debug fips; do
@@ -130,7 +139,7 @@ jobs:
               trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp" || { rm -rf "$tmp"; exit 1; }
               rm -rf "$tmp"
             done
-          elif [ "$s" = grype ]; then
+          else
             grype db update >/dev/null 2>&1 || true
             while read -r ref; do
               echo "grype: ${ref}"
@@ -139,29 +148,6 @@ jobs:
             for a in dist/*.tar.gz; do
               grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json || exit 1
             done
-          else
-            [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
-            # Snyk exits 0 when out of monthly quota (or unauthorized), so detect
-            # that in the output and fail — a scanner that could not run must be
-            # red (this step is continue-on-error, so the failure files the issue).
-            snyk_run() {
-              local out rc
-              out="$("$@" 2>&1)"; rc=$?
-              printf '%s\n' "$out"
-              if printf '%s' "$out" | grep -qiE 'reached your monthly limit|increase your tests limit|not authori[sz]ed|authentication error|re-?authenticate'; then
-                echo "::error::Snyk could not run (quota exhausted or unauthorized) — scanner-could-not-run, not clean" >&2
-                exit 1
-              fi
-              return $rc
-            }
-            snyk_run snyk test --org=fosterstack-admin --all-projects || exit 1
-            # One child per variant (arch-invariant for snyk; trivy/grype above
-            # already cover both children) — the minimum, to spare snyk quota.
-            grep -E -- '-amd64$' /tmp/refs.txt > /tmp/snyk-refs.txt || true
-            while read -r ref; do
-              echo "snyk: ${ref}"
-              snyk_run snyk container test "${ref}" --org=fosterstack-admin || exit 1
-            done < /tmp/snyk-refs.txt
           fi
 
       - name: file/update a tracking issue when the main candidate is not clean
@@ -187,4 +173,73 @@ jobs:
         if: steps.scan.outcome == 'failure'
         run: |
           echo "::error::main-candidate rescan: ${{ matrix.scanner }} is not clean on main — see the tracking issue" >&2
+          exit 1
+
+  # Snyk's daily home (decision register row 44): it left the CI gate and now
+  # runs here only, one container test per variant per day (3 tests/day),
+  # inside the Snyk Free plan's container-test quota. It gates nothing; a
+  # finding (or a could-not-run) opens the tracking issue like the others.
+  snyk-main:
+    name: main candidate snyk (daily, one per variant)
+    needs: [build, assemble]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-candidate
+          path: /tmp/oci/
+      - name: install snyk (pinned by checksum; can't-run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh snyk
+      - name: Snyk container test — one child per variant (row 44; Free-plan container quota)
+        id: snyk
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || exit 1
+          # Snyk exits 0 when out of monthly quota (or unauthorized); detect it
+          # in the output and fail (could-not-run), never a silent clean pass.
+          snyk_run() {
+            local out rc
+            out="$("$@" 2>&1)"; rc=$?
+            printf '%s\n' "$out"
+            if printf '%s' "$out" | grep -qiE 'reached your monthly limit|increase your tests limit|not authori[sz]ed|authentication error|re-?authenticate'; then
+              echo "::error::Snyk could not run (quota exhausted or unauthorized) — scanner-could-not-run, not clean" >&2
+              exit 1
+            fi
+            return $rc
+          }
+          for v in production debug fips; do
+            ref="ghcr.io/fosterstack/cache:snyk-${v}"
+            skopeo copy --override-arch amd64 --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || exit 1
+            echo "snyk: ${ref}"
+            snyk_run snyk container test "${ref}" --org=fosterstack-admin || exit 1
+          done
+      - name: file/update a tracking issue when snyk is not clean
+        if: steps.snyk.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = "Daily main-candidate rescan: snyk is not clean on main";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `Snyk's daily container test (one per variant) did not pass against main's latest candidate (commit \`${context.sha}\`).\n\n- run: ${runUrl}\n\nIf it is a finding, adjudicate it via the audit-lane VEX review; if snyk could not run (quota/auth), that is a pipeline failure to fix, not a finding. Snyk is not a CI gate (row 44), so this does not block merges — it is the daily signal.`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+            }
+      - name: fail the run if snyk was not clean
+        if: steps.snyk.outcome == 'failure'
+        run: |
+          echo "::error::main-candidate snyk is not clean on main — see the tracking issue" >&2
           exit 1

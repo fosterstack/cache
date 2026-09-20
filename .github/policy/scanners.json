@@ -1,11 +1,21 @@
 {
   "comment": [
-    "The single source of truth for the vulnerability-scanner set. A",
-    "release is clean when every scanner in this list says so; policy and",
-    "docs read this list and never hard-code a scanner count or name.",
-    "Removing Trivy on the standing trigger (first tagged release with a",
-    "green Snyk gate) is an edit to this list plus the workflow steps,",
-    "nothing else."
+    "The single source of truth for the CI-gate vulnerability-scanner set.",
+    "A candidate is clean when every scanner in this list says so; policy",
+    "and docs read this list and never hard-code a scanner count or name.",
+    "Three independent scanners with DELIBERATELY DIFFERENT database",
+    "lineages, so a miss in one is caught by another:",
+    "  - grype        : Anchore vulnerability DB (GitHub Security Advisories,",
+    "                   NVD, and distro advisories).",
+    "  - trivy        : Aqua trivy-db (aggregated distro + language advisories).",
+    "  - osv-scanner  : the OSV.dev database (osv-scalibr; deps.dev), for the",
+    "                   Go-module dependency SCA.",
+    "Decision register row 44 (Sep 21): Snyk left the CI gate and OSV-Scanner",
+    "took its slot; the retired 'Trivy leaves on the first green-Snyk gate'",
+    "trigger (register row 18) no longer applies. Snyk is not deleted - it",
+    "runs once per variant per day in the daily main-candidate rescan",
+    "(main-candidate-rescan.yml), inside the Snyk Free plan's container",
+    "quota, and is NOT part of this gate list."
   ],
-  "scanners": [ "trivy", "grype", "snyk" ]
+  "scanners": [ "grype", "trivy", "osv-scanner" ]
 }

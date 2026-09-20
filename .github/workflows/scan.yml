@@ -7,14 +7,15 @@ name: scan
 # scanner set runs. It builds the candidate through the EXACT same build +
 # image-assembly stages the release chain uses (mode: snapshot/pr), so the
 # bytes scanned here are the bytes the chain would ship, then runs every
-# scanner in .github/policy/scanners.json against all three OCI variants and
-# every dist archive: trivy and grype scan BOTH platform children of every
-# variant; snyk (its container findings arch-invariant for these images, and
-# quota-limited) scans one child per variant plus the go.mod SCA. Policy is
-# identical to stage-verify: block at ANY severity; the published VEX
-# document is the only exception mechanism; red blocks the merge. A scanner
-# that cannot be installed or run is a PIPELINE failure (red), never a
-# silent clean pass (see bin/install-scanner.sh).
+# scanner in .github/policy/scanners.json — three independent scanners with
+# deliberately different vulnerability databases: trivy (Aqua trivy-db) and
+# grype (Anchore DB) scan BOTH platform children of every OCI variant AND
+# every dist archive; osv-scanner (OSV.dev via osv-scalibr) scans the Go
+# modules, the dependency layer. Image findings block at ANY severity with
+# the published VEX document as the only exception; a scanner that cannot be
+# installed or run is a PIPELINE failure (red), never a silent clean pass
+# (see bin/install-scanner.sh). Snyk left this gate (register row 44) and now
+# runs only in the daily main-candidate rescan.
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
@@ -76,17 +77,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # osv-scanner does source SCA over the Go modules from the checkout; it
+      # needs neither the OCI images nor the archives, so those steps are
+      # gated to the image scanners.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: matrix.scanner != 'osv-scanner'
         with:
           name: oci-candidate
           path: /tmp/oci/
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: matrix.scanner != 'osv-scanner'
         with:
           name: dist-snapshot
           path: dist/
 
       - name: verify archives before scanning them
+        if: matrix.scanner != 'osv-scanner'
         env:
           EXPECTED: ${{ needs.build.outputs.checksums }}
         run: |
@@ -104,6 +111,7 @@ jobs:
       # child into the daemon is the format every scanner reads by ref -
       # the path the snyk leg already used.
       - name: load every variant/platform child into the docker daemon
+        if: matrix.scanner != 'osv-scanner'
         run: |
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
@@ -152,54 +160,27 @@ jobs:
             grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
           done
 
-      - name: Snyk token must be present (a gate that silently skips is worse than none)
-        if: matrix.scanner == 'snyk'
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          [ -n "${SNYK_TOKEN:-}" ] || { echo "::error::SNYK_TOKEN unavailable — a scanner that cannot run is a pipeline failure (red), not a clean pass" >&2; exit 1; }
-      - name: Snyk Open Source (go.mod) + container (one child per variant; trivy/grype cover both)
-        if: matrix.scanner == 'snyk'
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: OSV-Scanner (Go-module dependency SCA — OSV.dev database)
+        if: matrix.scanner == 'osv-scanner'
         run: |
           set -uo pipefail
-          failed=0; cantrun=0
-          # A scanner that cannot RUN is a pipeline failure, never a clean pass.
-          # Snyk exits 0 when it is out of monthly test quota (or unauthorized)
-          # and just prints the limit message — so `|| failed=1` alone would let
-          # the gate go GREEN having tested nothing. Detect that in the output
-          # and force red as could-not-run, kept distinct from a finding.
-          snyk_run() {
-            local out rc
-            out="$("$@" 2>&1)"; rc=$?
-            printf '%s\n' "$out"
-            if printf '%s' "$out" | grep -qiE 'reached your monthly limit|increase your tests limit|not authori[sz]ed|authentication error|re-?authenticate'; then
-              cantrun=1
-            elif [ "$rc" -ne 0 ]; then
-              failed=1
-            fi
-          }
-          # Snyk Open Source over the Go modules (snyk's distinctive SCA view).
-          snyk_run snyk test --org=fosterstack-admin --all-projects
-          # Container: the minimum this gate needs from snyk. trivy and grype
-          # already scan BOTH platform children of every variant on their own
-          # legs; snyk's container findings for these images are arch-invariant
-          # (same base + same-toolchain Go binary), so snyk tests ONE child per
-          # variant — every variant still goes through snyk's DB, at half the
-          # container tests (3, not 6), which is the free-plan quota that bites.
-          # Filtered into a file (not a pipe) so the flags stay in this shell.
-          grep -E -- '-amd64$' /tmp/refs.txt > /tmp/snyk-refs.txt || true
-          while read -r ref; do
-            echo "snyk: ${ref}"
-            snyk_run snyk container test "${ref}" --org=fosterstack-admin
-          done < /tmp/snyk-refs.txt
-          if [ "${cantrun}" -ne 0 ]; then
-            echo "::error::Snyk could not run (monthly test quota exhausted or unauthorized). Per agent-remediation-rules this is a scanner-could-not-run PIPELINE failure, not a finding and not a clean pass — restore Snyk quota/auth (see the Snyk plan)." >&2
+          # osv-scanner brings a THIRD, deliberately different vulnerability
+          # database (OSV.dev via osv-scalibr/deps.dev) to the gate — grype
+          # uses the Anchore DB, trivy the Aqua trivy-db. It scans the Go
+          # modules (the dependency layer); trivy and grype cover the images
+          # and archives. Exit 0 = clean, 1 = vulnerabilities found (block), and
+          # anything else = the scanner could not run (also red, never a clean
+          # pass). A finding grype/trivy did not also raise goes to the audit
+          # lane's VEX review, like any exception.
+          rc=0
+          osv-scanner scan source go.mod tools/requirements/go.mod || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "osv-scanner: no known vulnerabilities in the Go modules"
+          elif [ "$rc" -eq 1 ]; then
+            echo "::error::OSV-Scanner found vulnerabilities in the Go modules. Fix the dependency, or (for a finding grype/trivy did not raise) publish a VEX statement via the audit-lane review." >&2
             exit 1
-          fi
-          if [ "${failed}" -ne 0 ]; then
-            echo "::error::Snyk reported findings. Fix the finding, or publish a VEX statement in .vex/ and a .snyk entry citing it." >&2
+          else
+            echo "::error::OSV-Scanner could not run (exit ${rc}) — scanner-could-not-run is a pipeline failure, not a finding and not a clean pass." >&2
             exit 1
           fi
 
