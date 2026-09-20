@@ -82,6 +82,8 @@ ALLOW_PATTERNS=(
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
   '^bin/vex-scope-test\.sh$'
+  '^bin/go-bump-open-pr\.sh$'
+  '^bin/go-bump-open-pr-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

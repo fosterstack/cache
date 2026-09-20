@@ -64,42 +64,13 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: open (or update) the bump PR
+      - name: open (or recover) the bump PR
         if: steps.cmp.outputs.bump == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT: ${{ steps.cmp.outputs.current }}
           LATEST: ${{ steps.cmp.outputs.latest }}
-        run: |
-          set -euo pipefail
-          branch="chore/go-${LATEST}"
-          # Idempotent: if the branch already exists on the remote, an open
-          # PR is already tracking this bump — do not open a duplicate.
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            echo "branch ${branch} already exists — a bump PR is already open; nothing to do"
-            exit 0
-          fi
-          # Bump the go directive in BOTH modules (root + tools/requirements).
-          for f in go.mod tools/requirements/go.mod; do
-            sed -i -E "s/^go ${CURRENT//./\\.}$/go ${LATEST}/" "$f"
-            grep -q "^go ${LATEST}$" "$f" || { echo "::error::failed to bump go directive in $f" >&2; exit 1; }
-          done
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git checkout -b "$branch"
-          git add go.mod tools/requirements/go.mod
-          git commit -q -m "chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
-          git push -u origin "$branch"
-          body=$(cat <<EOF
-          Automated Go-toolchain freshness bump: \`go ${CURRENT}\` -> \`go ${LATEST}\` in both modules (root and \`tools/requirements\`).
-
-          This tracks the newest patch of a supported Go minor, so it may be a patch bump within the current line or a move to a newer supported minor (the case that let CVE-2026-46600 be fixed — no 1.25.x carried the fix). Merging keeps the shipped binary off disclosed stdlib CVEs — the failure mode that broke the v0.2.0 release scan.
-
-          A minor bump can change toolchain behavior (and the FIPS validated-module snapshot); review the \`scan\` and \`fips140-only\` results before merging, and bump golangci-lint / gremlins if the new toolchain needs it.
-
-          The required \`scan\` gate must pass on this PR before merge. Because this PR was opened with the built-in token, the \`scan\` check may need a manual nudge to start (push an empty commit, or close and reopen the PR) until a bot PAT is configured.
-          EOF
-          )
-          gh pr create --base main --head "$branch" \
-            --title "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
-            --body "$body" --label dependencies
+        # Recovery logic (orphaned-branch, closed/merged handling) lives in the
+        # unit-tested bin/go-bump-open-pr.sh, exercised by
+        # bin/go-bump-open-pr-test.sh in hygiene CI (audit R03).
+        run: ./bin/go-bump-open-pr.sh "$CURRENT" "$LATEST"

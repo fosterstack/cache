@@ -41,6 +41,9 @@ jobs:
           ./bin/install-scanner.sh grype
           bash bin/vex-scope-test.sh
 
+      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
+        run: bash bin/go-bump-open-pr-test.sh
+
       # VEX tripwire (punch list #4b). A dependency we answered with a VEX
       # statement is answered on the facts as they were: golang-jwt is not
       # in the build at all, which is why CVE-2024-51744 does not apply to
