@@ -1151,7 +1151,7 @@ requirements:
       - id: REQ-REL-004-AC1
         given: any pull request, push to main, or tag
         when: the required scan check runs
-        then: every scanner in .github/policy/scanners.json scans all three OCI variants and every release archive — trivy and grype cover both platform children of each variant, and snyk covers each variant (one child, its container findings arch-invariant for these images) plus the Go-module SCA — blocking at any severity with the published VEX document as the only exception, and a red result blocks the merge
+        then: the scan check runs the configured scanners against the release candidate with a scanner-by-artifact scope — trivy and grype each scan all three OCI variants (both platform children) AND every release archive (Linux and Darwin binaries); snyk scans the Go modules (source SCA via snyk test) and each of the three OCI variant images (one platform child, its container findings arch-invariant for these images), which is snyk's supported surface — snyk does not binary-scan the archives, whose dependency contents trivy and grype already cover — all blocking at any severity with the published VEX document as the only exception, and a red result blocks the merge
         verification: { method: ci-workflow, release_blocking: false }
         status: proposed
       - id: REQ-REL-004-AC2

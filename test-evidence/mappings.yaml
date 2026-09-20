@@ -238,7 +238,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the standard binary embeds NO GOFIPS140 selection - the module check distinguishes a mode-enabled impostor from the validated-module build" }
   - ac: REQ-REL-004-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/scan.yml: the aggregation job 'scan' requires every scanner leg (one per entry in .github/policy/scanners.json) to have run and passed against all three OCI variants and every dist archive (trivy/grype cover both platform children per variant; snyk covers each variant + the Go-module SCA), block-at-any-severity with the published VEX as the only exception, on pull_request, push to main, and tags; listed in .github/policy/required-checks.json" }
+      - { type: workflow-job, ref: ".github/workflows/scan.yml: the aggregation job 'scan' requires every scanner leg (one per entry in .github/policy/scanners.json) to have run and passed with a scanner-by-artifact scope (trivy and grype: all three variants, both platform children, AND every dist archive incl. Darwin; snyk: Go source SCA + each variant image — snyk does not binary-scan archives, which trivy/grype cover), block-at-any-severity with the published VEX as the only exception, on pull_request, push to main, and tags; listed in .github/policy/required-checks.json" }
   - ac: REQ-REL-004-AC2
     evidence:
       - { type: workflow-job, ref: ".github/workflows/hygiene.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
