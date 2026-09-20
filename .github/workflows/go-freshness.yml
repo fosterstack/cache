@@ -1,0 +1,76 @@
+name: Go toolchain freshness
+
+# Scheduled Go-toolchain freshness check (audit follow-up). The v0.2.0
+# scan failure was a Go stdlib CVE treadmill: the shipped binary was built
+# with a go1.25.x that had since accumulated disclosed stdlib CVEs — and
+# staying inside the 1.25 line could not clear CVE-2026-46600, whose only
+# fix was in 1.26.6/1.27. So the rule is "newest patch of a SUPPORTED
+# minor", not "newest patch of the current minor": the job may propose a
+# minor bump (e.g. 1.26 -> 1.27) when a newer supported line exists, so a
+# fix that lands only in a newer minor is not out of reach. go.dev's
+# default release list (mode=json, without include=all) is exactly the
+# set of currently supported minors and their latest patches; the newest
+# of those is the target. The PR still goes through the required `scan`
+# gate and human review before merge, so a minor jump is proposed, never
+# auto-applied.
+#
+# NOTE: PRs opened with the built-in GITHUB_TOKEN do not themselves
+# trigger other workflows, so the required `scan` check may need a manual
+# nudge (an empty commit, or close/reopen) until a bot PAT is configured.
+# The job says so in the PR body.
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: open the go.mod bump PR when a newer patch exists
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push the bump branch
+      pull-requests: write   # open the PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: compare go.mod against the newest patch of a supported minor
+        id: cmp
+        run: |
+          set -euo pipefail
+          current=$(awk '/^go /{print $2; exit}' go.mod)
+          echo "current go directive: ${current}"
+          # mode=json (WITHOUT include=all) lists only the currently
+          # SUPPORTED releases — the two newest minors and their latest
+          # patches. The max of those is the newest patch of a supported
+          # minor; it is stable by construction (no rc/beta).
+          latest=$(curl -fsSL 'https://go.dev/dl/?mode=json' \
+            | jq -r '.[] | select(.stable==true) | .version' \
+            | sed 's/^go//' | sort -V | tail -1)
+          [ -n "$latest" ] || { echo "::error::could not determine the newest supported Go release from go.dev" >&2; exit 1; }
+          echo "newest supported Go release: ${latest}"
+          newest=$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)
+          if [ "$current" = "$latest" ] || [ "$newest" != "$latest" ]; then
+            echo "go.mod is already at or ahead of the newest supported release — nothing to do"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "bump=true"
+              echo "current=$current"
+              echo "latest=$latest"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: open (or recover) the bump PR
+        if: steps.cmp.outputs.bump == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.cmp.outputs.current }}
+          LATEST: ${{ steps.cmp.outputs.latest }}
+        # Recovery logic (orphaned-branch, closed/merged handling) lives in the
+        # unit-tested bin/go-bump-open-pr.sh, exercised by
+        # bin/go-bump-open-pr-test.sh in hygiene CI (audit R03).
+        run: ./bin/go-bump-open-pr.sh "$CURRENT" "$LATEST"

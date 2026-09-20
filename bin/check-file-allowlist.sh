@@ -61,6 +61,7 @@ ALLOW_PATTERNS=(
   '^requirements/[A-Za-z0-9._-]+\.(yaml|json)$'
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
+  '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
   '^tools/requirements/[A-Za-z0-9._-]+\.go$'
@@ -78,6 +79,11 @@ ALLOW_PATTERNS=(
   '^bin/rescan-statement-test\.sh$'
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
+  '^bin/install-scanner\.sh$'
+  '^bin/install-scanner-test\.sh$'
+  '^bin/vex-scope-test\.sh$'
+  '^bin/go-bump-open-pr\.sh$'
+  '^bin/go-bump-open-pr-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

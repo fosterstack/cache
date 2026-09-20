@@ -227,7 +227,16 @@ jobs:
           port=19021
           for v in production debug fips; do
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            docker pull -q --platform linux/arm64 "${repo}@${d}"
+            # Resolve the linux/arm64 CHILD manifest digest from the index.
+            # Pulling the INDEX digest with --platform fails "cannot
+            # overwrite digest" once the amd64 image sharing that index
+            # digest is already local; referencing the child digest is
+            # unambiguous and needs no --platform.
+            childd=$(docker buildx imagetools inspect --raw "${repo}@${d}" \
+              | jq -r '.manifests[] | select(.platform.os=="linux" and .platform.architecture=="arm64") | .digest')
+            [ -n "$childd" ] && [ "$childd" != "null" ] \
+              || { echo "::error::no linux/arm64 child manifest in index ${d} for ${v}" >&2; exit 1; }
+            docker pull -q "${repo}@${childd}"
             authargs=""
             creds=""
             if [ "$v" = fips ]; then
@@ -235,7 +244,7 @@ jobs:
               creds="-u acc:accpw"
             fi
             # shellcheck disable=SC2086
-            docker run -d --name "fa-arm64-$v" --platform linux/arm64 $authargs -p "127.0.0.1:${port}:8080" "${repo}@${d}"
+            docker run -d --name "fa-arm64-$v" --platform linux/arm64 $authargs -p "127.0.0.1:${port}:8080" "${repo}@${childd}"
             ok=0
             # shellcheck disable=SC2086
             for _ in $(seq 1 90); do curl -sf ${creds} "localhost:${port}/healthz" >/dev/null && { ok=1; break; }; sleep 1; done

@@ -1,11 +1,28 @@
 {
   "comment": [
-    "The single source of truth for the vulnerability-scanner set. A",
-    "release is clean when every scanner in this list says so; policy and",
-    "docs read this list and never hard-code a scanner count or name.",
-    "Removing Trivy on the standing trigger (first tagged release with a",
-    "green Snyk gate) is an edit to this list plus the workflow steps,",
-    "nothing else."
+    "The single source of truth for the CI-gate vulnerability-scanner set.",
+    "A candidate is clean when every scanner in this list says so; policy",
+    "and docs read this list and never hard-code a scanner count or name.",
+    "Decision register row 45 (Sep 21, owner's line in the sand, amending",
+    "row 44): the CI gate is TWO scanners, Grype + OSV-Scanner. Trivy left",
+    "the CI gate (three scanners is too much CI time for one developer) and",
+    "moved to the daily main-candidate rescan; Snyk runs there too.",
+    "  - grype        : Anchore's vulnerability database (its own aggregation",
+    "                   and matcher). Primary, on the owner's binary benchmark.",
+    "                   Scans the OCI images (both platform children) and every",
+    "                   release archive.",
+    "  - osv-scanner  : the OSV.dev database (osv-scalibr; deps.dev), a",
+    "                   different aggregation and implementation. Scans the",
+    "                   three OCI variants on both architectures (six children)",
+    "                   AND the Go modules.",
+    "These are two scanners with DIFFERENT DATABASES (different aggregations",
+    "and implementations) built on OVERLAPPING upstream advisory sources -",
+    "OSV imports the GitHub Advisory and Go Vulnerability databases, which",
+    "Grype also consumes - so this is 'different databases', NOT 'different",
+    "sources', and scanner disagreement is an investigation signal, never",
+    "proof of a false positive. The future daily auditor's four-tool set",
+    "(Grype, Trivy, OSV-Scanner, Snyk) is recorded, deferred, and NOT part of",
+    "this gate list."
   ],
-  "scanners": [ "trivy", "grype", "snyk" ]
+  "scanners": [ "grype", "osv-scanner" ]
 }

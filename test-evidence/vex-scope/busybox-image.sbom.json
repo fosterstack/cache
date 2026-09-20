@@ -1,0 +1,54 @@
+{
+  "artifacts": [
+    {
+      "id": "busybox-fixture",
+      "name": "busybox",
+      "version": "1.37.0",
+      "type": "binary",
+      "foundBy": "binary-classifier-cataloger",
+      "locations": [],
+      "licenses": [],
+      "language": "",
+      "cpes": [
+        {
+          "cpe": "cpe:2.3:a:busybox:busybox:1.37.0:*:*:*:*:*:*:*",
+          "source": "fosterstack-vex-scope-fixture"
+        }
+      ],
+      "purl": "pkg:generic/busybox@1.37.0"
+    }
+  ],
+  "artifactRelationships": [],
+  "files": [],
+  "source": {
+    "id": "vex-scope-fixture",
+    "name": "PLACEHOLDER",
+    "version": "1.0",
+    "type": "image",
+    "metadata": {
+      "userInput": "PLACEHOLDER:1.0",
+      "imageID": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "tags": [
+        "PLACEHOLDER:1.0"
+      ],
+      "repoDigests": [
+        "PLACEHOLDER@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "architecture": "amd64",
+      "os": "linux",
+      "layers": [],
+      "imageSize": 1
+    }
+  },
+  "distro": {},
+  "descriptor": {
+    "name": "fosterstack-vex-scope-fixture",
+    "version": "1"
+  },
+  "schema": {
+    "version": "16.1.10",
+    "url": "https://raw.githubusercontent.com/anchore/syft/main/schema/json/schema-16.1.10.json"
+  }
+}

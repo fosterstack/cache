@@ -60,7 +60,7 @@ assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
 TRIVY_CLEAN='{"SchemaVersion":2,"ArtifactName":"x","Results":[]}'
 TRIVY_FIND='{"SchemaVersion":2,"Results":[{"Target":"x (debian 12)","Class":"os-pkgs","Vulnerabilities":[{"VulnerabilityID":"CVE-2024-0001","PkgName":"openssl","Severity":"HIGH","FixedVersion":"3.0.14"}]}]}'
 TRIVY_ERROBJ='{"error":"failed to analyze layer"}'
-GRYPE_CLEAN='{"matches":[],"descriptor":{"name":"grype","version":"0.98.0"}}'
+GRYPE_CLEAN='{"matches":[],"descriptor":{"name":"grype","version":"0.118.0"}}'
 GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2024-0002","severity":"High","fix":{"versions":["1.2.3"]}},"artifact":{"name":"libfoo"}}],"descriptor":{"name":"grype"}}'
 GRYPE_ERROBJ='{"errors":["db load failed"]}'
 # Snyk: OS findings at top-level .vulnerabilities; application-dependency
@@ -71,6 +71,10 @@ SNYK_OS='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE
 SNYK_APP='{"vulnerabilities":[],"applications":[{"packageManager":"npm","targetFile":"/srv/app/package.json","vulnerabilities":[{"id":"npm:connect:20120107","identifiers":{"ALTERNATIVE":["SNYK-JS-CONNECT-10382"],"CVE":[],"CWE":["CWE-400"]},"severity":"medium","packageName":"connect"}]}]}'
 SNYK_MIXED='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE":["CVE-2024-0003"]},"severity":"high","packageName":"openssl"}],"applications":[{"packageManager":"npm","targetFile":"/srv/app/package.json","vulnerabilities":[{"id":"npm:connect:20120107","identifiers":{"CVE":[]},"severity":"medium","packageName":"connect"}]}]}'
 SNYK_ERROBJ='{"ok":false,"error":"authentication failed","path":"x"}'
+# OSV-Scanner JSON: results[] -> source.path, packages[] -> {package, vulnerabilities[]}.
+OSV_CLEAN='{"results":[]}'
+OSV_FIND='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0","ecosystem":"Go"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"],"database_specific":{"severity":"HIGH"}}]}]}]}'
+OSV_ERROBJ='{"error":"could not resolve deps.dev"}'
 
 # ---- Snyk cases ----------------------------------------------------------
 mf=$D/m; : >"$mf"
@@ -153,7 +157,8 @@ child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
 assert_stmt "grype clean" grype "$mf" clean false 0
 
-# Grype v0.98.0: exit 2 = findings, 1 = operational error (B04g).
+# Grype: exit 2 = findings, 1 = operational error (B04g); contract
+# verified unchanged from v0.98.0 through the pinned v0.118.0.
 mf=$D/m; : >"$mf"
 child "$mf" 1 linux/amd64 2 "$GRYPE_FIND"
 child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN"
@@ -190,6 +195,28 @@ assert_stmt "grype malformed report (exit 1)" grype "$mf" error false 0
 # ==========================================================================
 # B04f — platform-child enumeration validation.
 # ==========================================================================
+# ---- osv-scanner cases ---------------------------------------------------
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 0 "$OSV_CLEAN"
+assert_stmt "osv-scanner clean" osv-scanner "$mf" clean false 0
+
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 1 "$OSV_FIND"
+assert_stmt "osv-scanner finding (exit 1)" osv-scanner "$mf" findings true 1
+# the normalized finding keeps the CVE alias, package and source path.
+python3 "$SCRIPT" statement --scanner osv-scanner --children "$mf" \
+  --raw-out "$D/raw.json" --out "$D/stmt.json" --digest "$AMD" >/dev/null
+if [ "$(jq -r '.findings[0].id' "$D/stmt.json")" = "CVE-2024-9999" ] \
+   && [ "$(jq -r '.findings[0].package' "$D/stmt.json")" = "golang.org/x/net" ] \
+   && [ "$(jq -r '.findings[0].target' "$D/stmt.json")" = "go.mod" ]; then ok; else
+  bad "osv-scanner finding did not retain id/package/target"; fi
+
+# operational error: nonzero exit that is not the finding code -> error,
+# never clean, even with valid-shaped JSON.
+mf=$D/m; : >"$mf"
+child "$mf" 1 linux/amd64 127 "$OSV_CLEAN"
+assert_stmt "osv-scanner operational error (exit 127)" osv-scanner "$mf" error false 0
+
 assert_enum() { # desc index-json want_exit [want-children-count]
   local desc="$1" idx="$2" we="$3" wc="${4:-}" got n
   printf '%s' "$idx" > "$D/index.json"

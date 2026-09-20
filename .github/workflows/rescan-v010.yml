@@ -7,10 +7,8 @@ name: Rescan v0.1.0 (one-shot)
 # CRITICAL/HIGH. This workflow scans the exact PUBLISHED v0.1.0 digests —
 # resolved from the registry once, on Sep 8 2026, and hard-coded below so
 # this run cannot be redirected by a tag move — at every severity, with
-# every scanner in .github/policy/scanners.json, applying the published
-# VEX. Trivy and Grype verdicts were also recorded from a local run in the
-# Phase 0 PR; this run exists because SNYK_TOKEN is an Actions-only org
-# secret, so the Snyk leg can only execute here.
+# every scanner in the CI-gate list .github/policy/scanners.json (grype +
+# osv-scanner per decision row 45), applying the published VEX for grype.
 #
 # One-shot by design: dispatch it once, link the run from the Phase 0 PR
 # and the v0.1.0 release notes, then this file can be deleted when the
@@ -41,38 +39,11 @@ jobs:
         run: |
           set -euo pipefail
           want=$(jq -r '.scanners | sort | join(",")' .github/policy/scanners.json)
-          have="grype,snyk,trivy"
+          have="grype,osv-scanner"
           if [ "${want}" != "${have}" ]; then
             echo "::error::scanners.json lists [${want}] but this workflow runs [${have}] — update the workflow to match the list." >&2
             exit 1
           fi
-
-      - name: Trivy (all severities, VEX applied)
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_PROD }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
-      - name: Trivy (debug)
-        if: always()
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_DEBUG }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
-      - name: Trivy (fips)
-        if: always()
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_FIPS }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
 
       - name: Grype (cutoff negligible, VEX applied)
         if: always()
@@ -102,36 +73,33 @@ jobs:
           severity-cutoff: negligible
           vex: .vex/fosterstack-cache.openvex.json
 
-      - name: install the Snyk CLI
+      - name: install osv-scanner (pinned by checksum; can't-run is a pipeline failure, not a finding)
         if: always()
-        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
-        with:
-          snyk-version: v1.1307.0
-      - name: Snyk container test (all three digests, no severity threshold)
+        run: ./bin/install-scanner.sh osv-scanner
+      - name: OSV-Scanner (all three v0.1.0 digests; OSV.dev database)
         if: always()
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
-          if [ -z "${SNYK_TOKEN:-}" ]; then
-            echo "::error::SNYK_TOKEN unavailable — the Snyk leg did not run. This is a scanner-operational failure, not a clean verdict." >&2
-            exit 1
-          fi
           failed=0
           {
-            echo "## Snyk verdicts — published v0.1.0 digests"
+            echo "## OSV-Scanner verdicts — published v0.1.0 digests"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           for pair in "prod ${DIGEST_PROD}" "debug ${DIGEST_DEBUG}" "fips ${DIGEST_FIPS}"; do
             name="${pair%% *}"; digest="${pair#* }"
             out=$(mktemp)
-            if snyk container test "${IMAGE}@${digest}" --org=fosterstack-admin > "$out" 2>&1; then
+            code=0
+            osv-scanner scan image "${IMAGE}@${digest}" > "$out" 2>&1 || code=$?
+            if [ "$code" -eq 0 ]; then
               echo "### ${name} (@${digest}) — clean" >> "$GITHUB_STEP_SUMMARY"
+            elif [ "$code" -eq 1 ]; then
+              failed=1
+              echo "### ${name} (@${digest}) — FINDINGS (OSV.dev); adjudicate via the audit-lane VEX review" >> "$GITHUB_STEP_SUMMARY"
             else
               failed=1
-              echo "### ${name} (@${digest}) — FINDINGS OR FAILURE" >> "$GITHUB_STEP_SUMMARY"
+              echo "### ${name} (@${digest}) — SCANNER COULD NOT RUN (exit ${code})" >> "$GITHUB_STEP_SUMMARY"
             fi
             { echo '```'; tail -n 40 "$out"; echo '```'; echo; } >> "$GITHUB_STEP_SUMMARY"
             cat "$out"; rm -f "$out"
           done
-          exit "${failed}"
+          [ "$failed" -eq 0 ] || { echo "::error::OSV-Scanner is not clean on v0.1.0 — a finding goes to the audit-lane VEX review; a could-not-run is a pipeline failure, not a clean verdict." >&2; exit 1; }

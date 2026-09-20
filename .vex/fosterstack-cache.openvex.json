@@ -3,8 +3,8 @@
   "@id": "https://fosterstack.com/vex/cache/openvex",
   "author": "FosterStack LLC",
   "role": "vendor",
-  "timestamp": "2026-09-10T09:00:00-04:00",
-  "version": 3,
+  "timestamp": "2026-09-20T09:00:00-04:00",
+  "version": 6,
   "statements": [
     {
       "vulnerability": {
@@ -37,12 +37,12 @@
         "name": "CVE-2025-60876",
         "description": "BusyBox wget HTTP request-line splitting via crafted request targets."
       },
-      "timestamp": "2026-09-10T09:00:00-04:00",
+      "timestamp": "2026-09-20T09:00:00-04:00",
       "products": [
         {
-          "@id": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
           "identifiers": {
-            "purl": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d"
+            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
           },
           "subcomponents": [
             {
@@ -51,7 +51,10 @@
           ]
         },
         {
-          "@id": "ghcr.io/fosterstack/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates",
+          "identifiers": {
+            "purl": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+          },
           "subcomponents": [
             {
               "@id": "pkg:generic/busybox@1.37.0"
@@ -61,7 +64,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "This statement is bound to the published v0.1.0 :debug image digest. busybox is present only in the :debug image variant, included solely so an operator can exec an interactive shell (/busybox/sh) for troubleshooting; the production and -fips variants contain no busybox at all. Nothing in this product invokes any busybox applet: the server is a single Go binary that never shells out, so the vulnerable wget code path is never executed during operation. The vulnerability is reachable only by an operator who has already exec'd into the container and runs wget by hand against attacker-supplied input. This statement supersedes the pre-VEX-doctrine suppression that lived in .grype.yaml with the same analysis; the analysis is unchanged, now published in the policy-governed location.",
+      "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable wget code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs wget by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
       "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
     },
     {
@@ -70,12 +73,12 @@
         "name": "CVE-2025-46394",
         "description": "BusyBox tar: filenames can be hidden from a listing through terminal escape sequences in archive entries (CVSS 3.3, local, requires the victim to list a crafted archive)."
       },
-      "timestamp": "2026-09-10T09:00:00-04:00",
+      "timestamp": "2026-09-20T09:00:00-04:00",
       "products": [
         {
-          "@id": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
           "identifiers": {
-            "purl": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d"
+            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
           },
           "subcomponents": [
             {
@@ -84,7 +87,10 @@
           ]
         },
         {
-          "@id": "ghcr.io/fosterstack/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates",
+          "identifiers": {
+            "purl": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+          },
           "subcomponents": [
             {
               "@id": "pkg:generic/busybox@1.37.0"
@@ -94,7 +100,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "This statement is bound to the published v0.1.0 :debug image digest. busybox is present only in the :debug image variant, included solely so an operator can exec an interactive shell (/busybox/sh) for troubleshooting; the production and -fips variants contain no busybox at all. Nothing in this product invokes any busybox applet: the server is a single Go binary that never shells out, so the vulnerable tar code path is never executed during operation. The vulnerability is reachable only by an operator who has already exec'd into the container and runs tar by hand against attacker-supplied input.",
+      "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable tar code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs tar by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
       "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
     },
     {
@@ -103,12 +109,12 @@
         "name": "CVE-2024-58251",
         "description": "BusyBox netstat: a process argv[0] containing a terminal escape sequence can make the terminal unresponsive for a user running netstat (local DoS, requires user interaction)."
       },
-      "timestamp": "2026-09-10T09:00:00-04:00",
+      "timestamp": "2026-09-20T09:00:00-04:00",
       "products": [
         {
-          "@id": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
           "identifiers": {
-            "purl": "pkg:oci/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d"
+            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
           },
           "subcomponents": [
             {
@@ -117,7 +123,10 @@
           ]
         },
         {
-          "@id": "ghcr.io/fosterstack/cache@sha256:280059908c065382747228aec51ebbd04ddabb7a43a53e88b70307d0180bb00d",
+          "@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates",
+          "identifiers": {
+            "purl": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+          },
           "subcomponents": [
             {
               "@id": "pkg:generic/busybox@1.37.0"
@@ -127,7 +136,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "This statement is bound to the published v0.1.0 :debug image digest. busybox is present only in the :debug image variant, included solely so an operator can exec an interactive shell (/busybox/sh) for troubleshooting; the production and -fips variants contain no busybox at all. Nothing in this product invokes any busybox applet: the server is a single Go binary that never shells out, so the vulnerable netstat code path is never executed during operation. The vulnerability is reachable only by an operator who has already exec'd into the container and runs netstat by hand against attacker-supplied input.",
+      "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable netstat code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs netstat by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
       "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
     }
   ]

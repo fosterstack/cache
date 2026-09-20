@@ -96,7 +96,7 @@ jobs:
       - name: golangci-lint (staticcheck, gofmt, goimports, md5/sha1 import ban)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.13.1
+          version: v2.13.2
 
   gosec:
     name: gosec
@@ -106,10 +106,22 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: run gosec
-        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d # v2.29.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          args: '-fmt sarif -out gosec-results.sarif ./...'
+          go-version: '1.27'
+          check-latest: true
+      # gosec is pinned to v2.29.0 (the latest), but run via `go install`
+      # under the CI Go toolchain — NOT the securego/gosec Docker action,
+      # whose bundled Go cannot type-check a go.mod on the 1.26 line and
+      # fails at the import phase (it never reaches the checks). Same
+      # install pattern as gremlins in mutation.yml. gosec still exits
+      # non-zero on any finding, so the gate is unchanged.
+      - name: install gosec (pinned)
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+      - name: run gosec
+        run: |
+          gosec="$(go env GOPATH)/bin/gosec"
+          "$gosec" -fmt sarif -out gosec-results.sarif ./...
       # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
       # elevate, so security-events: write is not granted and this upload
       # cannot succeed. gosec is a REQUIRED status check: without this guard
