@@ -3,7 +3,7 @@
 version: v0.2.1
 approved: false
 approved_on: ""
-requirements_sha256: f86ca0a51d246b17c7b47617f78dffbdd9856218b3da83f351e84b6917ad3f47
+requirements_sha256: c52fc24dfcb04449b3b0f3069755834553a5451e2edd3ece0e15da3711440c81
 frozen_from: requirements/requirements.yaml
 release_blocking_acs:
     - id: REQ-AUTH-001-AC1

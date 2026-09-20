@@ -7,15 +7,16 @@ name: scan
 # scanner set runs. It builds the candidate through the EXACT same build +
 # image-assembly stages the release chain uses (mode: snapshot/pr), so the
 # bytes scanned here are the bytes the chain would ship, then runs every
-# scanner in .github/policy/scanners.json — three independent scanners with
-# deliberately different vulnerability databases: trivy (Aqua trivy-db) and
-# grype (Anchore DB) scan BOTH platform children of every OCI variant AND
-# every dist archive; osv-scanner (OSV.dev via osv-scalibr) scans the Go
-# modules, the dependency layer. Image findings block at ANY severity with
-# the published VEX document as the only exception; a scanner that cannot be
-# installed or run is a PIPELINE failure (red), never a silent clean pass
-# (see bin/install-scanner.sh). Snyk left this gate (register row 44) and now
-# runs only in the daily main-candidate rescan.
+# scanner in .github/policy/scanners.json. Decision row 45: the CI gate is
+# TWO scanners with DIFFERENT DATABASES (different aggregations, overlapping
+# upstream sources) — grype (Anchore's own DB) scans both platform children
+# of every OCI variant AND every dist archive; osv-scanner (OSV.dev via
+# osv-scalibr) scans the three variants on both architectures (six children)
+# AND the Go modules. Findings block at ANY severity with the published VEX
+# document as grype's only exception; a scanner that cannot be installed or
+# run is a PIPELINE failure (red), never a silent clean pass (see
+# bin/install-scanner.sh). Trivy left this gate (row 45) for the daily
+# main-candidate rescan; Snyk (row 44) runs there too.
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
@@ -77,23 +78,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # osv-scanner does source SCA over the Go modules from the checkout; it
-      # needs neither the OCI images nor the archives, so those steps are
-      # gated to the image scanners.
+      # Both gate scanners read the OCI images; only grype scans the
+      # release archives. osv-scanner also scans the Go modules from the
+      # checkout. So: the image download + daemon load run for both; the
+      # archive download + verify run for grype only.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: matrix.scanner != 'osv-scanner'
         with:
           name: oci-candidate
           path: /tmp/oci/
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: matrix.scanner != 'osv-scanner'
+        if: matrix.scanner == 'grype'
         with:
           name: dist-snapshot
           path: dist/
 
       - name: verify archives before scanning them
-        if: matrix.scanner != 'osv-scanner'
+        if: matrix.scanner == 'grype'
         env:
           EXPECTED: ${{ needs.build.outputs.checksums }}
         run: |
@@ -104,14 +105,11 @@ jobs:
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
         run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
 
-      # Load every (variant, platform) child of each OCI archive into the
-      # docker daemon with skopeo. buildx writes an OCI-LAYOUT tar, which
-      # trivy --input / grype oci-archive: do not read (trivy: "manifest.json
-      # not found"; grype: operational exit 1). Loading each single-arch
-      # child into the daemon is the format every scanner reads by ref -
-      # the path the snyk leg already used.
+      # Load every (variant, platform) child into the docker daemon. buildx
+      # writes an OCI-layout tar the scanners do not read directly, so each
+      # single-arch child is loaded by ref. Both gate scanners scan these six
+      # children (grype by ref; osv-scanner by `scan image`).
       - name: load every variant/platform child into the docker daemon
-        if: matrix.scanner != 'osv-scanner'
         run: |
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
@@ -125,26 +123,6 @@ jobs:
             done
           done
           echo "loaded images to scan:"; cat /tmp/refs.txt
-
-      - name: Trivy scan every loaded image and every archive
-        if: matrix.scanner == 'trivy'
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        run: |
-          set -euo pipefail
-          trivy image --download-db-only >/dev/null 2>&1 || true
-          while read -r ref; do
-            echo "trivy: ${ref}"
-            trivy image --quiet --exit-code 1 \
-              --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-              --vex "${TRIVY_VEX}" "${ref}"
-          done < /tmp/refs.txt
-          for a in dist/*.tar.gz; do
-            echo "trivy rootfs archive: $a"
-            tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
-            trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp"
-            rm -rf "$tmp"
-          done
 
       - name: Grype scan every loaded image and every archive
         if: matrix.scanner == 'grype'
@@ -160,24 +138,32 @@ jobs:
             grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
           done
 
-      - name: OSV-Scanner (Go-module dependency SCA — OSV.dev database)
+      - name: OSV-Scanner (all six image children + the Go modules — OSV.dev)
         if: matrix.scanner == 'osv-scanner'
         run: |
           set -uo pipefail
-          # osv-scanner brings a THIRD, deliberately different vulnerability
-          # database (OSV.dev via osv-scalibr/deps.dev) to the gate — grype
-          # uses the Anchore DB, trivy the Aqua trivy-db. It scans the Go
-          # modules (the dependency layer); trivy and grype cover the images
-          # and archives. Exit 0 = clean, 1 = vulnerabilities found (block), and
-          # anything else = the scanner could not run (also red, never a clean
-          # pass). A finding grype/trivy did not also raise goes to the audit
-          # lane's VEX review, like any exception.
+          # osv-scanner is the second vote, on a DIFFERENT database (OSV.dev
+          # via osv-scalibr/deps.dev; grype uses Anchore's own aggregation).
+          # Per decision row 45 it scans the three OCI variants on both
+          # architectures (the six loaded children) via `scan image` AND the Go
+          # modules via `scan source`; grype covers the release archives.
+          # Exit 0 = clean, 1 = vulnerabilities found (block), anything else =
+          # could-not-run (also red, never a clean pass). A finding grype did
+          # not also raise goes to the audit lane's VEX review. osv-scanner has
+          # no OpenVEX flag; it reports no VEX-adjudicated image package today
+          # (the distroless base carries none), and if it ever did, that would
+          # go to the audit lane too.
           rc=0
-          osv-scanner scan source go.mod tools/requirements/go.mod || rc=$?
+          while read -r ref; do
+            echo "osv-scanner image: ${ref}"
+            osv-scanner scan image "${ref}" || { c=$?; [ "$c" -gt "$rc" ] && rc=$c; }
+          done < /tmp/refs.txt
+          echo "osv-scanner source: go.mod tools/requirements/go.mod"
+          osv-scanner scan source go.mod tools/requirements/go.mod || { c=$?; [ "$c" -gt "$rc" ] && rc=$c; }
           if [ "$rc" -eq 0 ]; then
-            echo "osv-scanner: no known vulnerabilities in the Go modules"
+            echo "osv-scanner: no known vulnerabilities in the six image children or the Go modules"
           elif [ "$rc" -eq 1 ]; then
-            echo "::error::OSV-Scanner found vulnerabilities in the Go modules. Fix the dependency, or (for a finding grype/trivy did not raise) publish a VEX statement via the audit-lane review." >&2
+            echo "::error::OSV-Scanner found vulnerabilities. Fix the dependency, or (for a finding grype did not raise) publish a VEX statement via the audit-lane review." >&2
             exit 1
           else
             echo "::error::OSV-Scanner could not run (exit ${rc}) — scanner-could-not-run is a pipeline failure, not a finding and not a clean pass." >&2

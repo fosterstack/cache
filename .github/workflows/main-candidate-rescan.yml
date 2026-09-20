@@ -6,15 +6,16 @@ name: Daily main-candidate rescan
 # a package, it is built from source. So this job builds main's latest
 # candidate through the SAME build + image-assembly stages the release
 # chain uses (mode snapshot/pr) and rescans it daily. The gate scanners
-# from .github/policy/scanners.json run in the scan-main matrix: trivy and
-# grype over all three OCI variants (both platform children) and every dist
-# archive, osv-scanner over the Go modules. Snyk left the CI gate (register
-# row 44) and lives HERE, in a dedicated daily job, one container test per
-# variant (3/day) inside the Snyk Free plan's container quota. Any finding
-# OPENS A TRACKING ISSUE, closing the window the audit called out: a CVE
-# disclosed against code already on main, with no PR open, surfaces within
-# 24h instead of at the next release. A scanner that cannot install/run is a
-# pipeline failure (red), never a silent clean pass (bin/install-scanner.sh).
+# from .github/policy/scanners.json run in the scan-main matrix — grype over
+# the six OCI children + every archive, osv-scanner over the six children +
+# the Go modules. Trivy (register row 45) and Snyk (row 44) left the CI gate
+# and live HERE, each in its own daily job: trivy over the six children + the
+# archives, snyk one container test per variant (3/day) inside the Free-plan
+# quota. Any finding OPENS A TRACKING ISSUE, closing the window the audit
+# called out: a CVE disclosed against code already on main, with no PR open,
+# surfaces within 24h instead of at the next release. A scanner that cannot
+# install/run is a pipeline failure (red), never a silent clean pass
+# (bin/install-scanner.sh).
 
 on:
   schedule:
@@ -79,19 +80,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: matrix.scanner != 'osv-scanner'
         with:
           name: oci-candidate
           path: /tmp/oci/
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: matrix.scanner != 'osv-scanner'
+        if: matrix.scanner == 'grype'
         with:
           name: dist-snapshot
           path: dist/
 
       - name: verify archives before scanning them
-        if: matrix.scanner != 'osv-scanner'
+        if: matrix.scanner == 'grype'
         env:
           EXPECTED: ${{ needs.build.outputs.checksums }}
         run: |
@@ -105,20 +105,11 @@ jobs:
       - name: scan every variant (both platforms) and every archive
         id: scan
         continue-on-error: true
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
         run: |
           set -uo pipefail
           s='${{ matrix.scanner }}'
-          if [ "$s" = osv-scanner ]; then
-            # OSV.dev source SCA over the Go modules — no images needed.
-            rc=0
-            osv-scanner scan source go.mod tools/requirements/go.mod || rc=$?
-            [ "$rc" -eq 0 ] && exit 0
-            [ "$rc" -eq 1 ] && { echo "::error::osv-scanner found vulnerabilities in the Go modules" >&2; exit 1; }
-            echo "::error::osv-scanner could not run (exit ${rc})" >&2; exit 1
-          fi
-          # trivy/grype scan the images (both children) + archives.
+          # Both gate scanners scan the six loaded children; grype also scans
+          # the archives, osv-scanner also the Go modules.
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || exit 1
           : > /tmp/refs.txt
           for v in production debug fips; do
@@ -128,17 +119,16 @@ jobs:
               echo "${ref}" >> /tmp/refs.txt
             done
           done
-          if [ "$s" = trivy ]; then
-            trivy image --download-db-only >/dev/null 2>&1 || true
+          if [ "$s" = osv-scanner ]; then
+            rc=0
             while read -r ref; do
-              echo "trivy: ${ref}"
-              trivy image --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "${ref}" || exit 1
+              echo "osv-scanner image: ${ref}"
+              osv-scanner scan image "${ref}" || { c=$?; [ "$c" -gt "$rc" ] && rc=$c; }
             done < /tmp/refs.txt
-            for a in dist/*.tar.gz; do
-              tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
-              trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp" || { rm -rf "$tmp"; exit 1; }
-              rm -rf "$tmp"
-            done
+            osv-scanner scan source go.mod tools/requirements/go.mod || { c=$?; [ "$c" -gt "$rc" ] && rc=$c; }
+            [ "$rc" -eq 0 ] && exit 0
+            [ "$rc" -eq 1 ] && { echo "::error::osv-scanner found vulnerabilities (images or Go modules)" >&2; exit 1; }
+            echo "::error::osv-scanner could not run (exit ${rc})" >&2; exit 1
           else
             grype db update >/dev/null 2>&1 || true
             while read -r ref; do
@@ -242,4 +232,83 @@ jobs:
         if: steps.snyk.outcome == 'failure'
         run: |
           echo "::error::main-candidate snyk is not clean on main — see the tracking issue" >&2
+          exit 1
+
+  # Trivy's daily home (decision register row 45): it left the CI gate and
+  # runs here once a day over the same candidate — the six OCI children plus
+  # every dist archive — at the block-at-any-severity / VEX-only policy. It
+  # gates nothing; a finding (or could-not-run) opens the tracking issue.
+  trivy-main:
+    name: main candidate trivy (daily)
+    needs: [build, assemble]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-candidate
+          path: /tmp/oci/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist-snapshot
+          path: dist/
+      - name: verify archives before scanning them
+        env:
+          EXPECTED: ${{ needs.build.outputs.checksums }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${EXPECTED}" > /tmp/expected-checksums.txt
+          (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
+      - name: install trivy (pinned by checksum; can't-run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh trivy
+      - name: Trivy scan (six children + every archive)
+        id: trivy
+        continue-on-error: true
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || exit 1
+          : > /tmp/refs.txt
+          for v in production debug fips; do
+            for arch in amd64 arm64; do
+              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || exit 1
+              echo "${ref}" >> /tmp/refs.txt
+            done
+          done
+          trivy image --download-db-only >/dev/null 2>&1 || true
+          while read -r ref; do
+            echo "trivy: ${ref}"
+            trivy image --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "${ref}" || exit 1
+          done < /tmp/refs.txt
+          for a in dist/*.tar.gz; do
+            tmp=$(mktemp -d); tar xzf "$a" -C "$tmp"
+            trivy rootfs --quiet --exit-code 1 --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN --vex "${TRIVY_VEX}" "$tmp" || { rm -rf "$tmp"; exit 1; }
+            rm -rf "$tmp"
+          done
+      - name: file/update a tracking issue when trivy is not clean
+        if: steps.trivy.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = "Daily main-candidate rescan: trivy is not clean on main";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `Trivy's daily scan (six OCI children + every archive) did not pass against main's latest candidate (commit \`${context.sha}\`).\n\n- run: ${runUrl}\n\nIf it is a finding, adjudicate it via the audit-lane VEX review; if trivy could not run, that is a pipeline failure to fix, not a finding. Trivy is not a CI gate (row 45), so this does not block merges — it is the daily signal.`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+            }
+      - name: fail the run if trivy was not clean
+        if: steps.trivy.outcome == 'failure'
+        run: |
+          echo "::error::main-candidate trivy is not clean on main — see the tracking issue" >&2
           exit 1

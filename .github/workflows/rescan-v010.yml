@@ -7,10 +7,8 @@ name: Rescan v0.1.0 (one-shot)
 # CRITICAL/HIGH. This workflow scans the exact PUBLISHED v0.1.0 digests —
 # resolved from the registry once, on Sep 8 2026, and hard-coded below so
 # this run cannot be redirected by a tag move — at every severity, with
-# every scanner in .github/policy/scanners.json, applying the published
-# VEX. Trivy and Grype verdicts were also recorded from a local run in the
-# Phase 0 PR; this run exists because SNYK_TOKEN is an Actions-only org
-# secret, so the Snyk leg can only execute here.
+# every scanner in the CI-gate list .github/policy/scanners.json (grype +
+# osv-scanner per decision row 45), applying the published VEX for grype.
 #
 # One-shot by design: dispatch it once, link the run from the Phase 0 PR
 # and the v0.1.0 release notes, then this file can be deleted when the
@@ -41,38 +39,11 @@ jobs:
         run: |
           set -euo pipefail
           want=$(jq -r '.scanners | sort | join(",")' .github/policy/scanners.json)
-          have="grype,osv-scanner,trivy"
+          have="grype,osv-scanner"
           if [ "${want}" != "${have}" ]; then
             echo "::error::scanners.json lists [${want}] but this workflow runs [${have}] — update the workflow to match the list." >&2
             exit 1
           fi
-
-      - name: Trivy (all severities, VEX applied)
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_PROD }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
-      - name: Trivy (debug)
-        if: always()
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_DEBUG }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
-      - name: Trivy (fips)
-        if: always()
-        env:
-          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ghcr.io/fosterstack/cache@${{ env.DIGEST_FIPS }}
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN'
 
       - name: Grype (cutoff negligible, VEX applied)
         if: always()
