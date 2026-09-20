@@ -36,6 +36,11 @@ jobs:
       - name: scanner installer failure-path regressions (pinned-checksum contract)
         run: bash bin/install-scanner-test.sh
 
+      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
+        run: |
+          ./bin/install-scanner.sh grype
+          bash bin/vex-scope-test.sh
+
       # VEX tripwire (punch list #4b). A dependency we answered with a VEX
       # statement is answered on the facts as they were: golang-jwt is not
       # in the build at all, which is why CVE-2024-51744 does not apply to

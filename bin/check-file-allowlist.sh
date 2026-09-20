@@ -61,6 +61,7 @@ ALLOW_PATTERNS=(
   '^requirements/[A-Za-z0-9._-]+\.(yaml|json)$'
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
+  '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
   '^tools/requirements/[A-Za-z0-9._-]+\.go$'
@@ -80,6 +81,7 @@ ALLOW_PATTERNS=(
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
+  '^bin/vex-scope-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
