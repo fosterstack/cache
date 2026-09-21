@@ -159,6 +159,26 @@ All configuration is environment variables (see the main
 `/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
 `FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
 
+Three more:
+
+- **Read-only credentials** — `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`, an
+  optional second username/password pair that can read cache entries but not
+  write them. Point untrusted or CI-only consumers at the read-only pair; a
+  write from it gets `403`.
+- **Upload concurrency** — `FSCACHE_MAX_CONCURRENT_UPLOADS` bounds PUTs in
+  flight (default `32`; `0` disables the bound). The request past the limit
+  gets `429` with a `Retry-After` header and stores nothing. Build clients
+  treat any error as a cache miss, so a refused upload degrades caching, never
+  the build.
+- **Oversized entries are refused, not evicted around** — an entry larger than
+  the whole cache cap (`FSCACHE_MAX_BYTES`) gets `413` with
+  `X-FSCache-Reject: entry-exceeds-cache-cap`, and nothing is evicted to make
+  room. Gradle and Maven builds carry on; the oversized output simply isn't
+  cached.
+
+A bad numeric value in any of these stops the server at startup with a message
+naming the variable, rather than silently falling back to a default.
+
 Configuration is flags and environment only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always
 matches the deployment manifest in your git repository — diffable, reviewable,
