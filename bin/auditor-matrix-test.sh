@@ -72,6 +72,47 @@ for dp,_,fs in os.walk(root):
                     if (st.get("vulnerability") or {}).get("name")==cve: hit="yes"
             except Exception: pass
 print(hit)' "$1" "$2" 2>/dev/null || echo no; }
+# alias_set <finding-id>: every id the SCANNER REPORTS give for that finding (OSV
+# aliases, Grype relatedVulnerabilities), read from the manifest — never hand-typed.
+alias_set(){ "$PY" -c 'import json,sys,re
+fid=sys.argv[1]; m=json.load(open(sys.argv[2])); ids={fid}
+def add(x):
+    if x: ids.add(x)
+try:
+    for k in ("osv-scanner","osv-scanner-gomod"):
+        for r in json.load(open(m["scanner_reports"][k]))["results"]:
+            for p in r.get("packages",[]):
+                for v in p.get("vulnerabilities",[]):
+                    grp=set([v["id"]]+v.get("aliases",[]))
+                    if fid in grp:
+                        for a in grp: add(a)
+                for g in p.get("groups",[]):
+                    if fid in g.get("ids",[]):
+                        for a in g["ids"]: add(a)
+    g=json.load(open(m["scanner_reports"]["grype"]))
+    for mt in g["matches"]:
+        rel=[mt["vulnerability"]["id"]]+[r.get("id") for r in mt.get("relatedVulnerabilities",[])]
+        if fid in rel:
+            for a in rel: add(a)
+except Exception: pass
+print(" ".join(sorted(ids)))' "$1" "$F/run/manifest-01.json" 2>/dev/null; }
+# tree_vex_status_set <dir> <aliases...>: sorted set of statuses across ALL VEX files
+# for ANY of the aliases (empty if none).
+tree_vex_status_set(){ local dir="$1"; shift; "$PY" -c 'import json,os,sys
+dir=sys.argv[1]; al=set(sys.argv[2:]); st=set()
+for dp,_,fs in os.walk(dir):
+    for fn in fs:
+        if fn.endswith(".json"):
+            try:
+                d=json.load(open(os.path.join(dp,fn)))
+                for s in d.get("statements",[]):
+                    if (s.get("vulnerability") or {}).get("name") in al: st.add(s.get("status"))
+            except Exception: pass
+print(",".join(sorted(x for x in st if x)))' "$dir" "$@" 2>/dev/null; }
+# ignore_names_any <dir> <aliases...>: yes if any ignore file names any alias.
+ignore_names_any(){ local dir="$1"; shift; local a; for a in "$@"; do
+  if grep -rqF -- "$a" "$dir/ignores" "$dir/.snyk" "$dir/osv-scanner.toml" "$dir/.vex" 2>/dev/null; then echo yes; return; fi
+  done; echo no; }
 # sect_ids <reportfile> <n>: vuln ids under "## n" up to the next "##".
 sect_ids(){ "$PY" -c 'import re,sys
 try: t=open(sys.argv[1]).read()
@@ -155,7 +196,8 @@ run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adju
   igsz="$( [ -s "$CDIR/ignores/grype/CVE-2016-2781.json" ] && echo nonempty || echo empty )"
   igcite="$(pj "$CDIR/ignores/grype/CVE-2016-2781.json" 'd.get("vex")')"
   s5="$(sect_ids "$CDIR/report.md" 5)"; s3="$(sect_ids "$CDIR/report.md" 3)"
-  { eq "$st" "not_affected" && [ "$ju" != "$MISS" ] && printf '%s' "$prod" | grep -q 'repository_url=ghcr.io/fosterstack/cache' \
+  fpstat="$(tree_vex_status_set "$CDIR" $(alias_set CVE-2016-2781))"
+  { eq "$fpstat" "not_affected" && eq "$st" "not_affected" && [ "$ju" != "$MISS" ] && printf '%s' "$prod" | grep -q 'repository_url=ghcr.io/fosterstack/cache' \
     && eq "$igsz" "nonempty" && [ "$igcite" != "$MISS" ] \
     && printf '%s' "$s5" | grep -q 'CVE-2016-2781' && ! printf '%s' "$s3" | grep -q 'CVE-2016-2781'; } \
     && ok || no "not_affected+justification+scoped product, ignore cites VEX, section-5 placement" "status=$st just=$ju ignore=$igsz cite=$igcite sec5=[$s5] sec3=[$s3]"; }
@@ -200,16 +242,17 @@ run "$PY" "$BIN/auditor-classify.py" --finding GO-2020-0015 --manifest "$F/run/m
 begin "req2-ac4-neg-no-evidence-stays-open" "a real scanned finding (GO-2020-0015 in OSV) whose govulncheck messages are removed is NOT closed: no VEX statement anywhere names it, no ignore names it, it is recorded open; empty ledger"
 o="$WORK/ac4neg"; rm -rf "$o"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2020-0015 --manifest "$F/run/manifest-01.json" --govulncheck "$F/testlib/evidence-without-GO-2020-0015.json" --adjudicator "$NOCALL" --out "$o" && {
-  anyvex="$(tree_has_vex_for "$o" GO-2020-0015)"
+  al="$(alias_set GO-2020-0015)"
+  statuses="$(tree_vex_status_set "$o" $al)"
+  ig="$(ignore_names_any "$o" $al)"
   open_="$(pj "$o/status/GO-2020-0015.json" 'd.get("open")')"
-  ignamed="$(grep -rqF 'GO-2020-0015' "$o/ignores" 2>/dev/null && echo yes || echo no)"
-  { eq "$anyvex" "no" && eq "$open_" "true" && eq "$ignamed" "no" && ledger_empty; } \
-    && ok || no "no VEX/ignore for the id anywhere; recorded open; empty ledger" "vex=$anyvex open=$open_ ignore_named=$ignamed ledger=$(ledger_n)"; }
+  { [ -z "$statuses" ] && eq "$open_" "true" && eq "$ig" "no" && ledger_empty; } \
+    && ok || no "no VEX status nor ignore for ANY alias of the finding; recorded open; empty ledger" "aliases=[$al] statuses=[$statuses] open=$open_ ignore=$ig ledger=$(ledger_n)"; }
 
 begin "req2-ac5-belowthreshold-vex-merged-ci-green" "below threshold writes an AFFECTED VEX with an action_statement, CI stays green, section 2, no owner issue"
 o="$WORK/ac5"; rm -rf "$o"; ghs="$WORK/ac5-gh.json"; rm -f "$ghs"
 run "$PY" "$BIN/auditor-poam.py" --finding "$F/poam/poam-01.json" --kev "$F/kev/kev.json" --github "$GH" --state "$ghs" --adjudicator "$NOCALL" --out "$o" && {
-  st="$(vf "$o/vex/CVE-2011-3374.openvex.json" CVE-2011-3374 's["status"]')"
+  st="$(tree_vex_status_set "$o" $(alias_set CVE-2011-3374))"
   act="$(vf "$o/vex/CVE-2011-3374.openvex.json" CVE-2011-3374 'str(bool(s.get("action_statement")))')"
   green="$(pj "$o/decision.json" 'd.get("ci_stays_green")')"; sec="$(pj "$o/decision.json" 'd.get("report_section")')"
   iss="$( [ -f "$ghs" ] && pj "$ghs" 'len(d["issues"])' || echo 0 )"
@@ -236,9 +279,9 @@ begin "req2-ac5c-expiry-reopens-item" "expiry with no fix removes the ignore and
 o="$WORK/ac5c"; rm -rf "$o"
 run "$PY" "$BIN/auditor-poam.py" --recheck --package "$F/poam/poam-04.json" --out "$o" && {
   rem="$(pj "$o/recheck.json" 'd.get("ignore_removed")')"; sec="$(pj "$o/recheck.json" 'd.get("returned_to_section")')"; re="$(pj "$o/recheck.json" 'd.get("policy_reapplied")')"
-  still="$(have "$o/ignores/still-active.json" && echo present || echo gone)"
-  { eq "$rem" "true" && eq "$sec" "3" && eq "$re" "true" && eq "$still" "gone"; } \
-    && ok || no "ignore removed, section 3, reapplied, no still-active ignore" "removed=$rem section=$sec reapplied=$re still=$still"; }
+  anyign="$(ignore_names_any "$o" $(alias_set CVE-2011-3374))"
+  { eq "$rem" "true" && eq "$sec" "3" && eq "$re" "true" && eq "$anyign" "no"; } \
+    && ok || no "ignore removed, section 3, reapplied, no ignore names the finding under any alias" "removed=$rem section=$sec reapplied=$re any_ignore=$anyign"; }
 
 begin "req2-ac6-categories-disjoint" "classification.json finding-id set EQUALS the manifest's id set (never vacuous), each with one valid category"
 run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$CDIR" && {
@@ -332,16 +375,16 @@ run "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log5.json" \
   # CVE-2011-3374 key (not a key on some other row, nor a WRONG finding id).
   addedright="$("$PY" -c 'import json,sys
 try:
-    d=json.load(open(sys.argv[1])); ok=False
+    d=json.load(open(sys.argv[1])); ok=False; purl=sys.argv[2]
     for row in d["defects"]:
         ids={k["finding_id"] for k in row["keys"]}
-        if "CVE-2011-3374" in ids and any(k["scanner"]=="trivy" and k["finding_id"]=="CVE-2011-3374" for k in row["keys"]): ok=True
+        if "CVE-2011-3374" in ids and any(k["scanner"]=="trivy" and k["finding_id"]=="CVE-2011-3374" and k["purl"]==purl for k in row["keys"]): ok=True
     print("yes" if ok else "no")
-except Exception: print("no")' "$WORK/log5.json")"
+except Exception: print("no")' "$WORK/log5.json" 'pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0')"
   run "$PY" "$BIN/auditor-defectlog.py" probe --log "$WORK/log5.json" --hit trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0' --adjudicator "$NOCALL" --out "$o2" && {
-    hit="$(pj "$o2/probe.json" 'd.get("hit")')"
-    { eq "$used" "y" && eq "$addedright" "yes" && eq "$hit" "true" && ledger_empty; } \
-      && ok || no "trivy CVE-2011-3374 key added to the SAME row, later model-free hit" "judgment=$used added_to_right_row=$addedright hit=$hit ledger=$(ledger_n)"; }; }
+    hit="$(pj "$o2/probe.json" 'd.get("hit")')"; disp="$(pj "$o2/probe.json" 'd.get("hit_disposition")')"
+    { eq "$used" "y" && eq "$addedright" "yes" && eq "$hit" "true" && eq "$disp" "false_positive" && ledger_empty; } \
+      && ok || no "trivy CVE-2011-3374 key with the exact purl on the SAME row; later probe returns that row's disposition" "judgment=$used added_to_right_row_and_purl=$addedright hit=$hit disposition=$disp ledger=$(ledger_n)"; }; }
 
 ########################################################################
 echo "=== REQ-AUD-4 ==="
@@ -411,8 +454,8 @@ begin "req5-ac1-acts-only-via-pr" "the git/gh shim ledger shows a branch-PR crea
 o="$WORK/pr"; rm -rf "$o"; shim="$WORK/shim.log"; rm -f "$shim"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-open-pr.py" --change vex --out "$o" && {
   shimpresent="$(have "$shim" && echo yes || echo no)"
-  forbidden="$( [ -f "$shim" ] && grep -cE 'push .*(refs/heads/main|--tags|tag )' "$shim" || echo 1 )"
-  prcreate="$( [ -f "$shim" ] && grep -cE 'pr (create|--head)|create-pull-request' "$shim" || echo 0 )"
+  forbidden="$(grep -cE 'push .*(refs/heads/main|--tags|tag )' "$shim" 2>/dev/null)"; forbidden="${forbidden:-0}"
+  prcreate="$(grep -cE 'pr (create|--head)|create-pull-request' "$shim" 2>/dev/null)"; prcreate="${prcreate:-0}"
   lane="$(pj "$o/pr.json" 'd.get("lane")')"
   { eq "$shimpresent" "yes" && eq "$forbidden" "0" && [ "$prcreate" -ge 1 ] 2>/dev/null && eq "$lane" "audit"; } \
     && ok || no "shim ledger present, a branch PR create, no push/tag" "shim=$shimpresent forbidden=$forbidden pr_create=$prcreate lane=$lane"; }
@@ -474,7 +517,7 @@ begin "req6-ac4-no-key-leak" "a canary is never printed to stdout OR stderr, nor
 o="$WORK/leak"; rm -rf "$o"; canary="sk-ant-oat01-CANARY-$$"
 run env AUDITOR_TEST_CANARY="$canary" "$PY" "$BIN/auditor-no-key-leak.py" --scan .github/agent --out "$o" && {
   inout="$(printf '%s' "$OUT" | grep -cF "$canary")"
-  inerr="$(grep -cF "$canary" "$WORK/stderr" 2>/dev/null || echo 0)"
+  inerr="$(grep -cF "$canary" "$WORK/stderr" 2>/dev/null)"; inerr="${inerr:-0}"
   intree="$(grep -rlF "$canary" "$o" 2>/dev/null | wc -l | tr -d ' ')"
   reported="$(pj "$o/leak.json" 'len(d.get("leaks",[]))')"
   { eq "$inout" "0" && eq "$inerr" "0" && eq "$intree" "0" && eq "$reported" "0"; } \
@@ -599,9 +642,9 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-rule0-check.py" --requi
 
 # REQ-AUD-11 — acceptance found by owner login AND issue number; wrong-author (identical
 # comment, different author) is held; below-threshold promotes.
-for spec in "hold:iss-02" "promote:iss-01" "promote:iss-04" "hold:iss-03"; do
+for spec in "hold:iss-02" "promote:iss-01" "hold:iss-04" "hold:iss-03"; do
   want="${spec%%:*}"; iss="${spec##*:}"
-  case "$iss" in iss-01) nm="promote-accepted";; iss-02) nm="hold-unaccepted";; iss-03) nm="hold-wrong-author";; iss-04) nm="promote-review-only";; esac
+  case "$iss" in iss-01) nm="promote-accepted";; iss-02) nm="hold-unaccepted";; iss-03) nm="hold-wrong-author";; iss-04) nm="hold-review-only";; esac
   begin "req11-ac1-$nm" "release authorization decides $want for $iss by matching the owner login and issue number"
   o="$WORK/rz-$iss"; rm -rf "$o"
   run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-01.json" --issues "$F/release/$iss.json" --owner fosterstack-admin --out "$o/authz.json" && {
@@ -613,6 +656,5 @@ run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-02.json" 
   d="$(pj "$o/authz.json" 'd.get("decision")')"; eq "$d" "promote" && ok || no "decision promote" "decision=$d"; }
 
 echo "----"
-echo "auditor-matrix: ${pass} passed, ${fail} failed (RED is expected — the auditor does not"
-echo "                exist; each case fails at the command-absent gate or a missing/wrong effect)."
+echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

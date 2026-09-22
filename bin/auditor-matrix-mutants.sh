@@ -30,6 +30,12 @@ MUT="$repo/.github/agent/fixtures/mutants"
 EFFECT="$MUT/effect-standin.py"; INERT="$MUT/first-pass-inert.py"
 PY=python3
 fails=0
+# Static cases parse the workflow file and exported policy fixtures only — they call
+# no auditor command, so any command-mutant replacement passes them legitimately once
+# a valid workflow exists. Command mutants are graded on the cases they can affect.
+STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-variables"
+is_static(){ case " $STATIC " in *" $1 "*) return 0;; *) return 1;; esac; }
+MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
 cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/bin/auditor-matrix-test.sh" | sort -u; }
 passes_of() {   # passes_of <workdir>  -> prints the pass case names (one per line)
   ( cd "$1" && bash bin/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
@@ -45,15 +51,21 @@ run_mutant() {
   local c
   for c in $(cmds); do cp "$standin" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
   if [ -n "$wf" ]; then printf '%s' "$wf" > "$w/.github/workflows/auditor.yml"; fi
-  ( cd "$w" && AUDIT_MUTANT="$mode" bash bin/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
+  ( cd "$w" && AUDIT_MUTANT="$mode" AUDIT_MARKER="$MK/$label.marker" bash bin/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
 }
 
-assert_zero() {   # assert_zero <label> <passes...>
+marker_ok() {  # marker_ok <label> : the class must have reached a faulty branch
+  local label="$1"
+  if [ -s "$MK/$label.marker" ]; then echo "PASS  ${label}: reached its faulty branch ($(wc -l < "$MK/$label.marker" | tr -d ' ') marks)"; else
+    echo "FAIL  ${label}: no marker — the mutant crashed before its bug"; fails=$((fails+1)); fi
+}
+assert_zero() {   # assert_zero <label> <passes...> : zero NON-static passes
   local label="$1"; shift
-  local n=0; [ -n "${1:-}" ] && n="$(printf '%s\n' "$@" | grep -c .)"
-  if [ "$n" -eq 0 ]; then echo "PASS  ${label}: 0 suite-cases passed"; else
-    echo "FAIL  ${label}: ${n} suite-cases passed — ${*}"; fails=$((fails+1)); fi
+  local undue=""; local c
+  for c in "$@"; do is_static "$c" || undue="$undue $c"; done
+  if [ -z "$undue" ]; then echo "PASS  ${label}: 0 command-cases passed (static workflow/policy cases excluded)"; else
+    echo "FAIL  ${label}: command-cases passed —$undue"; fails=$((fails+1)); fi
 }
 assert_contains() {  # assert_contains <label> <needle> <haystack-lines...>
   local label="$1" needle="$2"; shift 2
@@ -70,13 +82,21 @@ echo "=== command / effect / echo classes (must buy zero passes) ==="
 for spec in \
   "original-inert:__INERT__" "stdout-echo:stdout-echo" "file-echo:file-echo" \
   "wrong-effects:wrong-effects" "wrong-status:wrong-status" "wrong-section:wrong-section" \
-  "extra-issue:extra-issue" "ledger-leak:ledger-leak" "secondary-failure:secondary-failure" \
-  "absence-as-unreachable:absence-as-unreachable" ; do
+  "extra-issue:extra-issue" "ledger-leak:ledger-leak" "secondary-failure:secondary-failure" ; do
   label="${spec%%:*}"; mode="${spec##*:}"
   if [ "$mode" = "__INERT__" ]; then standin="$INERT"; mode="baseline"; else standin="$EFFECT"; fi
   P="$(run_mutant "$label" "$mode" "$standin")"
   assert_zero "$label" $P
+  marker_ok "$label"
 done
+
+echo "=== absence-as-unreachable (graded by its bug, not a blanket zero) ==="
+# This mutant classifies CORRECTLY when govulncheck evidence is present (it legitimately
+# passes the reachability positives); its bug is treating ABSENT evidence as unreachable,
+# which req2-ac4-neg must catch.
+PA="$(run_mutant "absence-as-unreachable" "absence-as-unreachable" "$EFFECT")"
+marker_ok "absence-as-unreachable"
+assert_absent "absence-as-unreachable" "req2-ac4-neg-no-evidence-stays-open" $PA
 
 echo "=== workflow classes (graded by the class's specific deficiency) ==="
 INERT_WF='name: Auditor
@@ -108,11 +128,13 @@ PUSH_WF="${INERT_WF/  workflow_dispatch:/  push:
 QUOTED_WF="${INERT_WF/on:/\'on\':}"
 
 PC="$(run_mutant "workflow-comment-oidc" "wrong-effects" "$EFFECT" "$INERT_WF")"
+marker_ok "workflow-comment-oidc"
 assert_absent "workflow-comment-oidc" "req6-ac1-oidc-federation-no-api-key" $PC
 assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-variables" $PC
 assert_absent "workflow-comment-oidc" "req1-ac1-schedule-cron-offset" $PC
 
 PF="$(run_mutant "workflow-forbidden-push" "wrong-effects" "$EFFECT" "$PUSH_WF")"
+marker_ok "workflow-forbidden-push"
 assert_absent "workflow-forbidden-push" "req1-ac1-triggers-exactly-schedule-and-dispatch" $PF
 assert_absent "workflow-forbidden-push" "req1-ac1-no-push-pr-triggers" $PF
 

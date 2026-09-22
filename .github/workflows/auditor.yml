@@ -1,0 +1,51 @@
+name: Daily CVE auditor
+
+# The sealed daily CVE auditor. Schedule-triggered on an
+# offset cron; workflow_dispatch (dry_run default true) so the owner can run it on
+# demand. It calls into the sealed directory .github/agent/. No static key: the job
+# federates with the model service through GitHub Actions OIDC.
+on:
+  schedule:
+    - cron: '23 6 * * *'   # offset from the hour and from both rescans (11, 41)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Do everything except open PRs and issues'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mint the federated OIDC token
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('https://api.anthropic.com')
+            core.setSecret(token)
+            const fs = require('fs')
+            const path = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
+            fs.writeFileSync(path, token)
+            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', path)
+      - name: Run the auditor
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+          AUDITOR_MODEL_PRIMARY: ${{ vars.AUDITOR_MODEL_PRIMARY }}
+          AUDITOR_MODEL_FALLBACK: ${{ vars.AUDITOR_MODEL_FALLBACK }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          python3 .github/agent/bin/auditor-run.py --dry-run "${DRY_RUN:-true}"

@@ -5,6 +5,12 @@ from pathlib import Path
 name=Path(sys.argv[0]).stem
 args=sys.argv[1:]
 def flag(k): return args[args.index(k)+1]
+def _mark(tag):
+    import os
+    mk=os.environ.get('AUDIT_MARKER')
+    if mk:
+        with open(mk,'a') as fh: fh.write('%s:%s\n'%(name,tag))
+_mark('reached')
 out={}
 if name=='auditor-classify':
     findings=json.load(open(flag('--run-state')))['findings']

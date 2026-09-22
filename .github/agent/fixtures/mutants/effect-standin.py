@@ -10,6 +10,11 @@ mode = os.environ.get('AUDIT_MUTANT', 'wrong-effects')
 def arg(k, default=None):
     return args[args.index(k)+1] if k in args else default
 out = Path(arg('--out', '/tmp/unused-audit-effect'))
+def _mark(tag):
+    mk=os.environ.get('AUDIT_MARKER')
+    if mk:
+        with open(mk,'a') as fh: fh.write('%s:%s:%s\n'%(name,mode,tag))
+_mark('reached')
 F = Path('.github/agent/fixtures')
 def read(p): return json.loads(Path(p).read_text())
 def write(p, data):
@@ -64,6 +69,7 @@ elif name == 'auditor-classify':
                 for v in p['vulnerabilities']:
                     known.add(v['id']);known.update(v.get('aliases',[]))
                     for a in [v['id']]+v.get('aliases',[]): alias[a]=v['id']
+        _mark('absence-classified')
         if fid not in known:
             put('status/'+str(fid)+'.json',{'open':True})
         else:
