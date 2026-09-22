@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "CVE-2020-0001"
+reason = "not_affected; governed by stmt-cve-2020-0001"

@@ -1,0 +1,21 @@
+{
+ "ok": false,
+ "packageManager": "deb",
+ "dependencyCount": 95,
+ "vulnerabilities": [
+  {
+   "id": "SNYK-DEBIAN12-APT-1234567",
+   "identifiers": {
+    "CVE": [
+     "CVE-2011-3374"
+    ]
+   },
+   "title": "Improper Verification of Cryptographic Signature",
+   "packageName": "apt",
+   "version": "2.6.1",
+   "purl": "pkg:deb/debian/apt@2.6.1?distro=debian-12.0",
+   "severity": "low",
+   "nearestFixedInVersion": ""
+  }
+ ]
+}

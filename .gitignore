@@ -10,3 +10,4 @@ tools/requirements/requirements
 # Maven acceptance sample build outputs
 bench/maven-sample/**/target/
 bench/maven-sample/target/
+__pycache__/

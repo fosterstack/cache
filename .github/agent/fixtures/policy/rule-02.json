@@ -1,0 +1,31 @@
+{
+ "name": "main-protection",
+ "target": "branch",
+ "enforcement": "active",
+ "conditions": {
+  "ref_name": {
+   "include": [
+    "refs/heads/main"
+   ]
+  }
+ },
+ "bypass_actors": [
+  {
+   "actor_id": 12345,
+   "actor_type": "Integration",
+   "bypass_mode": "always"
+  }
+ ],
+ "rules": [
+  {
+   "type": "required_status_checks",
+   "parameters": {
+    "required_status_checks": [
+     {
+      "context": "scan"
+     }
+    ]
+   }
+  }
+ ]
+}

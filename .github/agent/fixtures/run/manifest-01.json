@@ -1,0 +1,13 @@
+{
+ "commit": "0bfc498ecfca3e38cb4a456acda44359a1620c5a",
+ "candidate_digests": { "production": "sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b" },
+ "base_os": "debian 12.0",
+ "scanner_reports": {
+  "grype": ".github/agent/fixtures/scanners/grype.json",
+  "trivy": ".github/agent/fixtures/scanners/trivy.json",
+  "osv-scanner": ".github/agent/fixtures/scanners/osv-image.json",
+  "snyk": ".github/agent/fixtures/scanners/snyk.json",
+  "osv-scanner-gomod": ".github/agent/fixtures/scanners/osv-gomod.json"
+ },
+ "govulncheck": ".github/agent/fixtures/govulncheck/gv-01.json"
+}

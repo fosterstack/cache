@@ -1,0 +1,13 @@
+{
+ "candidate_digests": {
+  "production": "sha256:8df991b5febdf5b4a177325b8af95b6bb6c321059e1715c06cb659c659f5a4f0"
+ },
+ "accepted_items": [
+  {
+   "cve": "CVE-2011-3374",
+   "severity": "Low",
+   "threshold": "below",
+   "owner_issue": 40
+  }
+ ]
+}

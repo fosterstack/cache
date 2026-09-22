@@ -84,6 +84,32 @@ ALLOW_PATTERNS=(
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
   '^bin/go-bump-open-pr-test\.sh$'
+  '^bin/auditor-matrix-test\.sh$'
+  '^bin/auditor-matrix-mutants\.sh$'
+
+  # Daily CVE auditor (register row 42) — matrix-first TEST FIXTURES ONLY,
+  # backing docs/quality/cve-auditor-matrix.md and bin/auditor-matrix-test.sh.
+  # Synthetic scanner-format samples + one real CLEAN rescan run-state + canned
+  # test doubles (no secrets, no findings, no private-side content). The
+  # auditor's workflow file (.github/agent/auditor.yml) and code (bin/auditor-*.py)
+  # are deliberately NOT allowlisted — they may not be added until the matrix is
+  # ratified.
+  '^\.github/agent/fixtures/README\.md$'
+  '^\.github/agent/fixtures/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.json$'
+  # Test doubles and the test-owned YAML reader (Python); the tiny Go modules that
+  # produced the real govulncheck fixtures. All test inputs, never auditor code.
+  '^\.github/agent/fixtures/adjudicator/[A-Za-z0-9._-]+\.py$'
+  '^\.github/agent/fixtures/testlib/[A-Za-z0-9._-]+\.py$'
+  # Vendored pure-Python PyYAML (with its LICENSE) — the test-owned YAML reader.
+  '^\.github/agent/fixtures/testlib/pyyaml/[A-Za-z0-9._-]+\.py$'
+  '^\.github/agent/fixtures/testlib/pyyaml/LICENSE$'
+  '^\.github/agent/fixtures/testlib/workflows/[A-Za-z0-9._-]+\.ya?ml$'
+  # The reviewers' adversarial stand-ins, checked in as mutation-harness inputs.
+  '^\.github/agent/fixtures/mutants/[A-Za-z0-9._-]+\.py$'
+  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\.go$'
+  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/go\.mod$'
+  '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
+  '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

@@ -1,0 +1,8 @@
+{
+ "cve": "CVE-2011-3374",
+ "package": "apt",
+ "vex_status": "affected",
+ "ignore_expiry": "2026-08-23",
+ "today": "2026-09-22",
+ "fix_available": false
+}

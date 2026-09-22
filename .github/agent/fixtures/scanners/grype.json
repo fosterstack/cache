@@ -1,0 +1,1675 @@
+{
+ "descriptor": {
+  "name": "grype",
+  "version": "0.118.0",
+  "configuration": {
+   "output": [
+    "json"
+   ],
+   "file": "",
+   "pretty": false,
+   "distro": "",
+   "add-cpes-if-none": false,
+   "output-template-file": "",
+   "check-for-app-update": true,
+   "only-fixed": false,
+   "only-notfixed": false,
+   "ignore-wontfix": "",
+   "platform": "",
+   "search": {
+    "scope": "squashed",
+    "unindexed-archives": false,
+    "indexed-archives": true
+   },
+   "ignore": [
+    {
+     "vulnerability": "",
+     "include-aliases": false,
+     "reason": "",
+     "namespace": "",
+     "fix-state": "",
+     "package": {
+      "name": "kernel-headers",
+      "version": "",
+      "language": "",
+      "type": "rpm",
+      "location": "",
+      "upstream-name": "kernel"
+     },
+     "vex-status": "",
+     "vex-justification": "",
+     "match-type": "exact-indirect-match"
+    },
+    {
+     "vulnerability": "",
+     "include-aliases": false,
+     "reason": "",
+     "namespace": "",
+     "fix-state": "",
+     "package": {
+      "name": "linux(-.*)?-headers-.*",
+      "version": "",
+      "language": "",
+      "type": "deb",
+      "location": "",
+      "upstream-name": "linux.*"
+     },
+     "vex-status": "",
+     "vex-justification": "",
+     "match-type": "exact-indirect-match"
+    },
+    {
+     "vulnerability": "",
+     "include-aliases": false,
+     "reason": "",
+     "namespace": "",
+     "fix-state": "",
+     "package": {
+      "name": "linux-libc-dev",
+      "version": "",
+      "language": "",
+      "type": "deb",
+      "location": "",
+      "upstream-name": "linux"
+     },
+     "vex-status": "",
+     "vex-justification": "",
+     "match-type": "exact-indirect-match"
+    },
+    {
+     "vulnerability": "",
+     "include-aliases": false,
+     "reason": "",
+     "namespace": "",
+     "fix-state": "",
+     "package": {
+      "name": "linux-kbuild-.*",
+      "version": "",
+      "language": "",
+      "type": "deb",
+      "location": "",
+      "upstream-name": "linux.*"
+     },
+     "vex-status": "",
+     "vex-justification": "",
+     "match-type": "exact-indirect-match"
+    }
+   ],
+   "exclude": [],
+   "externalSources": {
+    "enable": false,
+    "maven": {
+     "searchUpstreamBySha1": true,
+     "baseUrl": "https://search.maven.org/solrsearch/select",
+     "rateLimit": 300000000
+    }
+   },
+   "match": {
+    "java": {
+     "using-cpes": false
+    },
+    "jvm": {
+     "using-cpes": true
+    },
+    "dotnet": {
+     "using-cpes": false
+    },
+    "golang": {
+     "using-cpes": false,
+     "always-use-cpe-for-stdlib": false,
+     "allow-main-module-pseudo-version-comparison": false
+    },
+    "javascript": {
+     "using-cpes": false
+    },
+    "python": {
+     "using-cpes": false
+    },
+    "ruby": {
+     "using-cpes": false
+    },
+    "rust": {
+     "using-cpes": false
+    },
+    "hex": {
+     "using-cpes": false
+    },
+    "stock": {
+     "using-cpes": true
+    },
+    "dpkg": {
+     "using-cpes": false,
+     "missing-epoch-strategy": "zero",
+     "use-cpes-for-eol": false
+    },
+    "rpm": {
+     "using-cpes": false,
+     "missing-epoch-strategy": "auto",
+     "use-cpes-for-eol": false
+    }
+   },
+   "fail-on-severity": "",
+   "registry": {
+    "insecure-skip-tls-verify": false,
+    "insecure-use-http": false,
+    "ca-cert": ""
+   },
+   "show-suppressed": false,
+   "by-cve": false,
+   "SortBy": {
+    "sort-by": "risk"
+   },
+   "name": "",
+   "default-image-pull-source": "",
+   "from": null,
+   "vex-documents": [],
+   "vex-add": [],
+   "match-upstream-kernel-headers": false,
+   "fix-channel": {
+    "redhat-eus": {
+     "apply": "auto",
+     "versions": ">= 8.0"
+    },
+    "ubuntu-esm": {
+     "apply": "auto",
+     "versions": ""
+    }
+   },
+   "timestamp": true,
+   "alerts": {
+    "enable-eol-distro-warnings": true
+   },
+   "db": {
+    "cache-dir": "/.cache/grype/db",
+    "update-url": "https://grype.anchore.io/databases",
+    "ca-cert": "",
+    "auto-update": true,
+    "validate-by-hash-on-start": true,
+    "validate-age": true,
+    "max-allowed-built-age": 432000000000000,
+    "require-update-check": false,
+    "update-available-timeout": 30000000000,
+    "update-download-timeout": 300000000000,
+    "max-update-check-frequency": 7200000000000
+   },
+   "exp": {},
+   "dev": {
+    "db": {
+     "debug": false
+    }
+   }
+  },
+  "db": {
+   "status": {
+    "schemaVersion": "v6.1.9",
+    "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-09-22T00:33:02Z_1790058641.tar.zst?checksum=sha256%3A972de542534d3461cc3c3849a37a3f917b823de3b9c367e289db0d163519b42b",
+    "built": "2026-09-22T06:30:41Z",
+    "path": "/.cache/grype/db/6/vulnerability.db",
+    "valid": true
+   },
+   "providers": {
+    "alma": {
+     "captured": "2026-09-22T00:33:06Z",
+     "input": "xxh64:001c1fe29266134f"
+    },
+    "alpine": {
+     "captured": "2026-09-22T00:33:18Z",
+     "input": "xxh64:eb543bcfef7ab6d9"
+    },
+    "amazon": {
+     "captured": "2026-09-22T00:33:37Z",
+     "input": "xxh64:9f25cf6949a1c860"
+    },
+    "arch": {
+     "captured": "2026-09-22T00:34:00Z",
+     "input": "xxh64:1d0b991de2a994b6"
+    },
+    "bitnami": {
+     "captured": "2026-09-22T00:33:34Z",
+     "input": "xxh64:11fbdcf2fbabd173"
+    },
+    "chainguard": {
+     "captured": "2026-09-22T00:33:09Z",
+     "input": "xxh64:a9dbbe18df7249f5"
+    },
+    "chainguard-libraries": {
+     "captured": "2026-09-22T00:33:44Z",
+     "input": "xxh64:d2288ede1a93dfeb"
+    },
+    "debian": {
+     "captured": "2026-09-22T00:34:12Z",
+     "input": "xxh64:7f7b0681883420bb"
+    },
+    "echo": {
+     "captured": "2026-09-22T00:33:04Z",
+     "input": "xxh64:49e673c57c58f177"
+    },
+    "eol": {
+     "captured": "2026-09-22T00:33:34Z",
+     "input": "xxh64:4d010a2b3ee7404f"
+    },
+    "epss": {
+     "captured": "2026-09-22T00:33:48Z",
+     "input": "xxh64:a113f85db0c78431"
+    },
+    "fedora": {
+     "captured": "2026-09-22T00:33:34Z",
+     "input": "xxh64:8982e75c6e28a55a"
+    },
+    "github": {
+     "captured": "2026-09-22T00:34:11Z",
+     "input": "xxh64:aa377866de6c039a"
+    },
+    "govulndb": {
+     "captured": "2026-09-22T00:33:27Z",
+     "input": "xxh64:25178d08bafbdf6d"
+    },
+    "hummingbird": {
+     "captured": "2026-09-22T00:35:35Z",
+     "input": "xxh64:9aaf89f7b09ef191"
+    },
+    "kev": {
+     "captured": "2026-09-22T00:33:48Z",
+     "input": "xxh64:3d9b894d1e6bee8b"
+    },
+    "mariner": {
+     "captured": "2026-09-22T00:33:59Z",
+     "input": "xxh64:788e0188199799f0"
+    },
+    "minimos": {
+     "captured": "2026-09-22T00:33:34Z",
+     "input": "xxh64:f0660bacf2a9f949"
+    },
+    "nvd": {
+     "captured": "2026-09-22T00:34:04Z",
+     "input": "xxh64:913d13e45664e397"
+    },
+    "oracle": {
+     "captured": "2026-09-22T00:34:00Z",
+     "input": "xxh64:460dbb930ffe4576"
+    },
+    "photon": {
+     "captured": "2026-09-22T00:33:32Z",
+     "input": "xxh64:bcbc1eea75c6af97"
+    },
+    "rhel": {
+     "captured": "2026-09-22T00:34:26Z",
+     "input": "xxh64:f3cf7780101139c4"
+    },
+    "secureos": {
+     "captured": "2026-09-22T00:33:02Z",
+     "input": "xxh64:54e93774ae7f198a"
+    },
+    "sles": {
+     "captured": "2026-09-22T00:33:43Z",
+     "input": "xxh64:0239807a932661ba"
+    },
+    "ubuntu": {
+     "captured": "2026-09-22T00:35:24Z",
+     "input": "xxh64:4ad4d4ad6c7cc11c"
+    },
+    "wolfi": {
+     "captured": "2026-09-22T00:33:11Z",
+     "input": "xxh64:452b1f47c553e96b"
+    }
+   }
+  },
+  "timestamp": "2026-09-22T13:52:49.874461878Z"
+ },
+ "source": {
+  "type": "image",
+  "target": {
+   "userInput": "debian@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b",
+   "imageID": "sha256:886d61a022482574344910f88e436ce64e9218cc8d62bea0cac035c4519ff93e",
+   "manifestDigest": "sha256:345b9265e89c123f994b724b9a4761dbc91c5759c144d01292ca56a338170801",
+   "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+   "tags": [],
+   "imageSize": 138821168,
+   "layers": [
+    {
+     "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+     "digest": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+     "size": 138821168
+    }
+   ],
+   "manifest": "ewogICAic2NoZW1hVmVyc2lvbiI6IDIsCiAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLmRvY2tlci5kaXN0cmlidXRpb24ubWFuaWZlc3QudjIranNvbiIsCiAgICJjb25maWciOiB7CiAgICAgICJtZWRpYVR5cGUiOiAiYXBwbGljYXRpb24vdm5kLmRvY2tlci5jb250YWluZXIuaW1hZ2UudjEranNvbiIsCiAgICAgICJzaXplIjogMTQ3OCwKICAgICAgImRpZ2VzdCI6ICJzaGEyNTY6ODg2ZDYxYTAyMjQ4MjU3NDM0NDkxMGY4OGU0MzZjZTY0ZTkyMThjYzhkNjJiZWEwY2FjMDM1YzQ1MTlmZjkzZSIKICAgfSwKICAgImxheWVycyI6IFsKICAgICAgewogICAgICAgICAibWVkaWFUeXBlIjogImFwcGxpY2F0aW9uL3ZuZC5kb2NrZXIuaW1hZ2Uucm9vdGZzLmRpZmYudGFyLmd6aXAiLAogICAgICAgICAic2l6ZSI6IDQ5NTcyNzgxLAogICAgICAgICAiZGlnZXN0IjogInNoYTI1Njo0MmNiZWJmOGJjMTE2YmExYWVkNzg5N2UyZDA1NjZiZjQ5ZGE5ZDVjNzBiZTcxYjZhN2NiMDc4MDVkMmY1YjdhIgogICAgICB9CiAgIF0KfQ==",
+   "config": "eyJhcmNoaXRlY3R1cmUiOiJhcm02NCIsImNvbmZpZyI6eyJIb3N0bmFtZSI6IiIsIkRvbWFpbm5hbWUiOiIiLCJVc2VyIjoiIiwiQXR0YWNoU3RkaW4iOmZhbHNlLCJBdHRhY2hTdGRvdXQiOmZhbHNlLCJBdHRhY2hTdGRlcnIiOmZhbHNlLCJUdHkiOmZhbHNlLCJPcGVuU3RkaW4iOmZhbHNlLCJTdGRpbk9uY2UiOmZhbHNlLCJFbnYiOlsiUEFUSD0vdXNyL2xvY2FsL3NiaW46L3Vzci9sb2NhbC9iaW46L3Vzci9zYmluOi91c3IvYmluOi9zYmluOi9iaW4iXSwiQ21kIjpbImJhc2giXSwiSW1hZ2UiOiJzaGEyNTY6ODk5M2M2ZWFiZjI1NDk1MTk3NjdhZDQ5ZTk1Y2EyOGRiYWFhMzNkNmI5MmNmNGFhM2U3YmJiYmVjZDlhNDMyZCIsIlZvbHVtZXMiOm51bGwsIldvcmtpbmdEaXIiOiIiLCJFbnRyeXBvaW50IjpudWxsLCJPbkJ1aWxkIjpudWxsLCJMYWJlbHMiOm51bGx9LCJjb250YWluZXIiOiIxZjI0ZTQ2MGUzMDEyMjg4YWZlODUzNDg0MWY0MmI0OGYyNjllZDMzNmMwZDYzMTkxMGIyNmRjYjAxZTRmNmU1IiwiY29udGFpbmVyX2NvbmZpZyI6eyJIb3N0bmFtZSI6IjFmMjRlNDYwZTMwMSIsIkRvbWFpbm5hbWUiOiIiLCJVc2VyIjoiIiwiQXR0YWNoU3RkaW4iOmZhbHNlLCJBdHRhY2hTdGRvdXQiOmZhbHNlLCJBdHRhY2hTdGRlcnIiOmZhbHNlLCJUdHkiOmZhbHNlLCJPcGVuU3RkaW4iOmZhbHNlLCJTdGRpbk9uY2UiOmZhbHNlLCJFbnYiOlsiUEFUSD0vdXNyL2xvY2FsL3NiaW46L3Vzci9sb2NhbC9iaW46L3Vzci9zYmluOi91c3IvYmluOi9zYmluOi9iaW4iXSwiQ21kIjpbIi9iaW4vc2giLCItYyIsIiMobm9wKSAiLCJDTUQgW1wiYmFzaFwiXSJdLCJJbWFnZSI6InNoYTI1Njo4OTkzYzZlYWJmMjU0OTUxOTc2N2FkNDllOTVjYTI4ZGJhYWEzM2Q2YjkyY2Y0YWEzZTdiYmJiZWNkOWE0MzJkIiwiVm9sdW1lcyI6bnVsbCwiV29ya2luZ0RpciI6IiIsIkVudHJ5cG9pbnQiOm51bGwsIk9uQnVpbGQiOm51bGwsIkxhYmVscyI6e319LCJjcmVhdGVkIjoiMjAyMy0wNy0wNFQwMTo1NzoyNy41MDM4MzY2MjdaIiwiZG9ja2VyX3ZlcnNpb24iOiIyMC4xMC4yMyIsImhpc3RvcnkiOlt7ImNyZWF0ZWQiOiIyMDIzLTA3LTA0VDAxOjU3OjI2Ljc3MzIxNDYyN1oiLCJjcmVhdGVkX2J5IjoiL2Jpbi9zaCAtYyAjKG5vcCkgQUREIGZpbGU6YWIxNzYxZDg5OTc1MWM0ZDI0ZTE1MTc5ZmM5ZTdlN2FjM2ZiODM3OThlZTM3Y2ExM2Q2YTZhYzQ0ZmJlZGVkMyBpbiAvICJ9LHsiY3JlYXRlZCI6IjIwMjMtMDctMDRUMDE6NTc6MjcuNTAzODM2NjI3WiIsImNyZWF0ZWRfYnkiOiIvYmluL3NoIC1jICMobm9wKSAgQ01EIFtcImJhc2hcIl0iLCJlbXB0eV9sYXllciI6dHJ1ZX1dLCJvcyI6ImxpbnV4Iiwicm9vdGZzIjp7InR5cGUiOiJsYXllcnMiLCJkaWZmX2lkcyI6WyJzaGEyNTY6NDJmMjUzY2Q2OGI0NGJlZjY5N2UwOGMzNTEwODYwY2RhOThhMzBiMjQ3ZWZlNGE2MGU0MTM0ZjQ1Y2E0NGUxNCJdfSwidmFyaWFudCI6InY4In0=",
+   "repoDigests": [
+    "index.docker.io/library/debian@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b"
+   ],
+   "architecture": "arm64",
+   "os": "linux"
+  }
+ },
+ "matches": [
+  {
+   "vulnerability": {
+    "id": "CVE-2023-4911",
+    "dataSource": "https://security-tracker.debian.org/tracker/CVE-2023-4911",
+    "namespace": "debian:distro:debian:12",
+    "severity": "High",
+    "urls": [],
+    "description": "A buffer overflow was discovered in the GNU C Library's dynamic loader ld.so while processing the GLIBC_TUNABLES environment variable. This issue could allow a local attacker to use maliciously crafted GLIBC_TUNABLES environment variables when launching binaries with SUID permission to execute code with elevated privileges.",
+    "cvss": [
+     {
+      "source": "nvd@nist.gov",
+      "type": "Primary",
+      "version": "3.1",
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "metrics": {
+       "baseScore": 7.8,
+       "exploitabilityScore": 1.9,
+       "impactScore": 5.9
+      },
+      "vendorMetadata": {}
+     }
+    ],
+    "knownExploited": [
+     {
+      "cve": "CVE-2023-4911",
+      "vendorProject": "GNU",
+      "product": "GNU C Library",
+      "dateAdded": "2023-11-21",
+      "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2023-12-12",
+      "knownRansomwareCampaignUse": "unknown",
+      "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https://sourceware.org/git/?p=glibc.git; a=commitdiff; h=1056e5b4c3f2d90ed2b4a55f96add28da2f4c8fa, https://access.redhat.com/security/cve/cve-2023-4911, https://www.debian.org/security/2023/dsa-5514",
+      "urls": [
+       "https://nvd.nist.gov/vuln/detail/CVE-2023-4911"
+      ],
+      "cwes": [
+       "CWE-122"
+      ]
+     }
+    ],
+    "epss": [
+     {
+      "cve": "CVE-2023-4911",
+      "epss": 0.81422,
+      "percentile": 0.99632,
+      "date": "2026-09-21"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2023-4911",
+      "cwe": "CWE-122",
+      "source": "secalert@redhat.com",
+      "type": "Secondary"
+     },
+     {
+      "cve": "CVE-2023-4911",
+      "cwe": "CWE-787",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     }
+    ],
+    "fix": {
+     "versions": [
+      "2.36-9+deb12u3"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "2.36-9+deb12u3",
+       "date": "2023-10-03",
+       "kind": "advisory"
+      }
+     ]
+    },
+    "advisories": [
+     {
+      "id": "DSA-5514-1",
+      "link": "https://security-tracker.debian.org/tracker/DSA-5514-1"
+     }
+    ],
+    "risk": 80.325
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2023-4911",
+     "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2023-4911",
+     "namespace": "nvd:cpe",
+     "severity": "High",
+     "urls": [
+      "https://access.redhat.com/errata/RHSA-2023:5453",
+      "https://access.redhat.com/errata/RHSA-2023:5454",
+      "https://access.redhat.com/errata/RHSA-2023:5455",
+      "https://access.redhat.com/errata/RHSA-2023:5476",
+      "https://access.redhat.com/errata/RHSA-2024:0033",
+      "https://access.redhat.com/security/cve/CVE-2023-4911",
+      "https://bugzilla.redhat.com/show_bug.cgi?id=2238352",
+      "https://www.qualys.com/2023/10/03/cve-2023-4911/looney-tunables-local-privilege-escalation-glibc-ld-so.txt",
+      "https://www.qualys.com/cve-2023-4911/",
+      "http://packetstormsecurity.com/files/174986/glibc-ld.so-Local-Privilege-Escalation.html",
+      "http://packetstormsecurity.com/files/176288/Glibc-Tunables-Privilege-Escalation.html",
+      "http://seclists.org/fulldisclosure/2023/Oct/11",
+      "http://www.openwall.com/lists/oss-security/2023/10/03/2",
+      "http://www.openwall.com/lists/oss-security/2023/10/03/3",
+      "http://www.openwall.com/lists/oss-security/2023/10/05/1",
+      "http://www.openwall.com/lists/oss-security/2023/10/13/11",
+      "http://www.openwall.com/lists/oss-security/2023/10/14/3",
+      "http://www.openwall.com/lists/oss-security/2023/10/14/5",
+      "http://www.openwall.com/lists/oss-security/2023/10/14/6",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/4DBUQRRPB47TC3NJOUIBVWUGFHBJAFDL/",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/DFG4P76UHHZEWQ26FWBXG76N2QLKKPZA/",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/NDAQWHTSVOCOZ5K6KPIWKRT3JX4RTZUR/",
+      "https://security.gentoo.org/glsa/202310-03",
+      "https://security.netapp.com/advisory/ntap-20231013-0006/",
+      "https://www.debian.org/security/2023/dsa-5514",
+      "https://www.exploit-db.com/exploits/52479",
+      "https://cert-portal.siemens.com/productcert/html/ssa-082556.html",
+      "https://cert-portal.siemens.com/productcert/html/ssa-794697.html",
+      "https://cert-portal.siemens.com/productcert/html/ssa-831302.html",
+      "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2023-4911"
+     ],
+     "description": "A buffer overflow was discovered in the GNU C Library's dynamic loader ld.so while processing the GLIBC_TUNABLES environment variable. This issue could allow a local attacker to use maliciously crafted GLIBC_TUNABLES environment variables when launching binaries with SUID permission to execute code with elevated privileges.",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+       "metrics": {
+        "baseScore": 7.8,
+        "exploitabilityScore": 1.9,
+        "impactScore": 5.9
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "secalert@redhat.com",
+       "type": "Secondary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+       "metrics": {
+        "baseScore": 7.8,
+        "exploitabilityScore": 1.9,
+        "impactScore": 5.9
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "knownExploited": [
+      {
+       "cve": "CVE-2023-4911",
+       "vendorProject": "GNU",
+       "product": "GNU C Library",
+       "dateAdded": "2023-11-21",
+       "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+       "dueDate": "2023-12-12",
+       "knownRansomwareCampaignUse": "unknown",
+       "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https://sourceware.org/git/?p=glibc.git; a=commitdiff; h=1056e5b4c3f2d90ed2b4a55f96add28da2f4c8fa, https://access.redhat.com/security/cve/cve-2023-4911, https://www.debian.org/security/2023/dsa-5514",
+       "urls": [
+        "https://nvd.nist.gov/vuln/detail/CVE-2023-4911"
+       ],
+       "cwes": [
+        "CWE-122"
+       ]
+      }
+     ],
+     "epss": [
+      {
+       "cve": "CVE-2023-4911",
+       "epss": 0.81422,
+       "percentile": 0.99632,
+       "date": "2026-09-21"
+      }
+     ],
+     "cwes": [
+      {
+       "cve": "CVE-2023-4911",
+       "cwe": "CWE-122",
+       "source": "secalert@redhat.com",
+       "type": "Secondary"
+      },
+      {
+       "cve": "CVE-2023-4911",
+       "cwe": "CWE-787",
+       "source": "nvd@nist.gov",
+       "type": "Primary"
+      }
+     ]
+    }
+   ],
+   "matchDetails": [
+    {
+     "type": "exact-indirect-match",
+     "matcher": "dpkg-matcher",
+     "searchedBy": {
+      "distro": {
+       "type": "debian",
+       "version": "12.0"
+      },
+      "package": {
+       "name": "glibc",
+       "version": "2.36-9"
+      },
+      "namespace": "debian:distro:debian:12"
+     },
+     "found": {
+      "vulnerabilityID": "CVE-2023-4911",
+      "versionConstraint": "< 2.36-9+deb12u3 (deb)"
+     },
+     "fix": {
+      "suggestedVersion": "2.36-9+deb12u3"
+     }
+    }
+   ],
+   "artifact": {
+    "id": "a57f996c49060eba",
+    "name": "libc-bin",
+    "version": "2.36-9",
+    "type": "deb",
+    "locations": [
+     {
+      "path": "/var/lib/dpkg/status",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/status",
+      "annotations": {
+       "evidence": "primary"
+      }
+     },
+     {
+      "path": "/usr/share/doc/libc-bin/copyright",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/usr/share/doc/libc-bin/copyright",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc-bin.conffiles",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc-bin.conffiles",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc-bin.md5sums",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc-bin.md5sums",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc-bin.list",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc-bin.list"
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc-bin.postinst",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc-bin.postinst"
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc-bin.triggers",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc-bin.triggers"
+     }
+    ],
+    "language": "",
+    "licenses": [
+     "sha256:40c7e1f2118531f038ca22999bd976901254e1bc5cd1b0f0211bdd064c599987"
+    ],
+    "cpes": [
+     "cpe:2.3:a:libc-bin:libc-bin:2.36-9:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libc-bin:libc_bin:2.36-9:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libc_bin:libc-bin:2.36-9:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libc_bin:libc_bin:2.36-9:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libc:libc-bin:2.36-9:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libc:libc_bin:2.36-9:*:*:*:*:*:*:*"
+    ],
+    "purl": "pkg:deb/debian/libc-bin@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc",
+    "upstreams": [
+     {
+      "name": "glibc"
+     }
+    ]
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2023-4911",
+    "dataSource": "https://security-tracker.debian.org/tracker/CVE-2023-4911",
+    "namespace": "debian:distro:debian:12",
+    "severity": "High",
+    "urls": [],
+    "description": "A buffer overflow was discovered in the GNU C Library's dynamic loader ld.so while processing the GLIBC_TUNABLES environment variable. This issue could allow a local attacker to use maliciously crafted GLIBC_TUNABLES environment variables when launching binaries with SUID permission to execute code with elevated privileges.",
+    "cvss": [
+     {
+      "source": "nvd@nist.gov",
+      "type": "Primary",
+      "version": "3.1",
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "metrics": {
+       "baseScore": 7.8,
+       "exploitabilityScore": 1.9,
+       "impactScore": 5.9
+      },
+      "vendorMetadata": {}
+     }
+    ],
+    "knownExploited": [
+     {
+      "cve": "CVE-2023-4911",
+      "vendorProject": "GNU",
+      "product": "GNU C Library",
+      "dateAdded": "2023-11-21",
+      "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2023-12-12",
+      "knownRansomwareCampaignUse": "unknown",
+      "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https://sourceware.org/git/?p=glibc.git; a=commitdiff; h=1056e5b4c3f2d90ed2b4a55f96add28da2f4c8fa, https://access.redhat.com/security/cve/cve-2023-4911, https://www.debian.org/security/2023/dsa-5514",
+      "urls": [
+       "https://nvd.nist.gov/vuln/detail/CVE-2023-4911"
+      ],
+      "cwes": [
+       "CWE-122"
+      ]
+     }
+    ],
+    "epss": [
+     {
+      "cve": "CVE-2023-4911",
+      "epss": 0.81422,
+      "percentile": 0.99632,
+      "date": "2026-09-21"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2023-4911",
+      "cwe": "CWE-122",
+      "source": "secalert@redhat.com",
+      "type": "Secondary"
+     },
+     {
+      "cve": "CVE-2023-4911",
+      "cwe": "CWE-787",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     }
+    ],
+    "fix": {
+     "versions": [
+      "2.36-9+deb12u3"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "2.36-9+deb12u3",
+       "date": "2023-10-03",
+       "kind": "advisory"
+      }
+     ]
+    },
+    "advisories": [
+     {
+      "id": "DSA-5514-1",
+      "link": "https://security-tracker.debian.org/tracker/DSA-5514-1"
+     }
+    ],
+    "risk": 80.325
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2023-4911",
+     "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2023-4911",
+     "namespace": "nvd:cpe",
+     "severity": "High",
+     "urls": [
+      "https://access.redhat.com/errata/RHSA-2023:5453",
+      "https://access.redhat.com/errata/RHSA-2023:5454",
+      "https://access.redhat.com/errata/RHSA-2023:5455",
+      "https://access.redhat.com/errata/RHSA-2023:5476",
+      "https://access.redhat.com/errata/RHSA-2024:0033",
+      "https://access.redhat.com/security/cve/CVE-2023-4911",
+      "https://bugzilla.redhat.com/show_bug.cgi?id=2238352",
+      "https://www.qualys.com/2023/10/03/cve-2023-4911/looney-tunables-local-privilege-escalation-glibc-ld-so.txt",
+      "https://www.qualys.com/cve-2023-4911/",
+      "http://packetstormsecurity.com/files/174986/glibc-ld.so-Local-Privilege-Escalation.html",
+      "http://packetstormsecurity.com/files/176288/Glibc-Tunables-Privilege-Escalation.html",
+      "http://seclists.org/fulldisclosure/2023/Oct/11",
+      "http://www.openwall.com/lists/oss-security/2023/10/03/2",
+      "http://www.openwall.com/lists/oss-security/2023/10/03/3",
+      "http://www.openwall.com/lists/oss-security/2023/10/05/1",
+      "http://www.openwall.com/lists/oss-security/2023/10/13/11",
+      "http://www.openwall.com/lists/oss-security/2023/10/14/3",
+      "http://www.openwall.com/lists/oss-security/2023/10/14/5",
+      "http://www.openwall.com/lists/oss-security/2023/10/14/6",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/4DBUQRRPB47TC3NJOUIBVWUGFHBJAFDL/",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/DFG4P76UHHZEWQ26FWBXG76N2QLKKPZA/",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/NDAQWHTSVOCOZ5K6KPIWKRT3JX4RTZUR/",
+      "https://security.gentoo.org/glsa/202310-03",
+      "https://security.netapp.com/advisory/ntap-20231013-0006/",
+      "https://www.debian.org/security/2023/dsa-5514",
+      "https://www.exploit-db.com/exploits/52479",
+      "https://cert-portal.siemens.com/productcert/html/ssa-082556.html",
+      "https://cert-portal.siemens.com/productcert/html/ssa-794697.html",
+      "https://cert-portal.siemens.com/productcert/html/ssa-831302.html",
+      "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2023-4911"
+     ],
+     "description": "A buffer overflow was discovered in the GNU C Library's dynamic loader ld.so while processing the GLIBC_TUNABLES environment variable. This issue could allow a local attacker to use maliciously crafted GLIBC_TUNABLES environment variables when launching binaries with SUID permission to execute code with elevated privileges.",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+       "metrics": {
+        "baseScore": 7.8,
+        "exploitabilityScore": 1.9,
+        "impactScore": 5.9
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "secalert@redhat.com",
+       "type": "Secondary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+       "metrics": {
+        "baseScore": 7.8,
+        "exploitabilityScore": 1.9,
+        "impactScore": 5.9
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "knownExploited": [
+      {
+       "cve": "CVE-2023-4911",
+       "vendorProject": "GNU",
+       "product": "GNU C Library",
+       "dateAdded": "2023-11-21",
+       "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+       "dueDate": "2023-12-12",
+       "knownRansomwareCampaignUse": "unknown",
+       "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https://sourceware.org/git/?p=glibc.git; a=commitdiff; h=1056e5b4c3f2d90ed2b4a55f96add28da2f4c8fa, https://access.redhat.com/security/cve/cve-2023-4911, https://www.debian.org/security/2023/dsa-5514",
+       "urls": [
+        "https://nvd.nist.gov/vuln/detail/CVE-2023-4911"
+       ],
+       "cwes": [
+        "CWE-122"
+       ]
+      }
+     ],
+     "epss": [
+      {
+       "cve": "CVE-2023-4911",
+       "epss": 0.81422,
+       "percentile": 0.99632,
+       "date": "2026-09-21"
+      }
+     ],
+     "cwes": [
+      {
+       "cve": "CVE-2023-4911",
+       "cwe": "CWE-122",
+       "source": "secalert@redhat.com",
+       "type": "Secondary"
+      },
+      {
+       "cve": "CVE-2023-4911",
+       "cwe": "CWE-787",
+       "source": "nvd@nist.gov",
+       "type": "Primary"
+      }
+     ]
+    }
+   ],
+   "matchDetails": [
+    {
+     "type": "exact-indirect-match",
+     "matcher": "dpkg-matcher",
+     "searchedBy": {
+      "distro": {
+       "type": "debian",
+       "version": "12.0"
+      },
+      "package": {
+       "name": "glibc",
+       "version": "2.36-9"
+      },
+      "namespace": "debian:distro:debian:12"
+     },
+     "found": {
+      "vulnerabilityID": "CVE-2023-4911",
+      "versionConstraint": "< 2.36-9+deb12u3 (deb)"
+     },
+     "fix": {
+      "suggestedVersion": "2.36-9+deb12u3"
+     }
+    }
+   ],
+   "artifact": {
+    "id": "fa8981a46b997a4f",
+    "name": "libc6",
+    "version": "2.36-9",
+    "type": "deb",
+    "locations": [
+     {
+      "path": "/var/lib/dpkg/status",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/status",
+      "annotations": {
+       "evidence": "primary"
+      }
+     },
+     {
+      "path": "/usr/share/doc/libc6/copyright",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/usr/share/doc/libc6/copyright",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc6:arm64.conffiles",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc6:arm64.conffiles",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/libc6:arm64.md5sums",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libc6:arm64.md5sums",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     }
+    ],
+    "language": "",
+    "licenses": [
+     "sha256:40c7e1f2118531f038ca22999bd976901254e1bc5cd1b0f0211bdd064c599987"
+    ],
+    "cpes": [
+     "cpe:2.3:a:libc6:libc6:2.36-9:*:*:*:*:*:*:*"
+    ],
+    "purl": "pkg:deb/debian/libc6@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc",
+    "upstreams": [
+     {
+      "name": "glibc"
+     }
+    ]
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2022-48303",
+    "dataSource": "https://security-tracker.debian.org/tracker/CVE-2022-48303",
+    "namespace": "debian:distro:debian:12",
+    "severity": "Medium",
+    "urls": [],
+    "description": "GNU Tar through 1.34 has a one-byte out-of-bounds read that results in use of uninitialized memory for a conditional jump. Exploitation to change the flow of control has not been demonstrated. The issue occurs in from_header in list.c via a V7 archive in which mtime has approximately 11 whitespace characters.",
+    "cvss": [
+     {
+      "source": "nvd@nist.gov",
+      "type": "Primary",
+      "version": "3.1",
+      "vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+      "metrics": {
+       "baseScore": 5.5,
+       "exploitabilityScore": 1.9,
+       "impactScore": 3.6
+      },
+      "vendorMetadata": {}
+     }
+    ],
+    "epss": [
+     {
+      "cve": "CVE-2022-48303",
+      "epss": 0.01476,
+      "percentile": 0.72278,
+      "date": "2026-09-21"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2022-48303",
+      "cwe": "CWE-125",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     },
+     {
+      "cve": "CVE-2022-48303",
+      "cwe": "CWE-125",
+      "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+      "type": "Secondary"
+     }
+    ],
+    "fix": {
+     "versions": [
+      "1.34+dfsg-1.2+deb12u1"
+     ],
+     "state": "fixed",
+     "available": [
+      {
+       "version": "1.34+dfsg-1.2+deb12u1",
+       "date": "2026-02-27",
+       "kind": "first-observed"
+      }
+     ]
+    },
+    "advisories": [],
+    "risk": 0.7749
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2022-48303",
+     "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2022-48303",
+     "namespace": "nvd:cpe",
+     "severity": "Medium",
+     "urls": [
+      "https://lists.fedoraproject.org/archives/list/package-announce%40lists.fedoraproject.org/message/CRY7VEL4AIG3GLIEVCTOXRZNSVYDYYUD/",
+      "https://lists.fedoraproject.org/archives/list/package-announce%40lists.fedoraproject.org/message/X5VQYCO52Z7GAVCLRYUITN7KXHLRZQS4/",
+      "https://savannah.gnu.org/bugs/?62387",
+      "https://savannah.gnu.org/patch/?10307"
+     ],
+     "description": "GNU Tar through 1.34 has a one-byte out-of-bounds read that results in use of uninitialized memory for a conditional jump. Exploitation to change the flow of control has not been demonstrated. The issue occurs in from_header in list.c via a V7 archive in which mtime has approximately 11 whitespace characters.",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+       "metrics": {
+        "baseScore": 5.5,
+        "exploitabilityScore": 1.9,
+        "impactScore": 3.6
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+       "type": "Secondary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+       "metrics": {
+        "baseScore": 5.5,
+        "exploitabilityScore": 1.9,
+        "impactScore": 3.6
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "epss": [
+      {
+       "cve": "CVE-2022-48303",
+       "epss": 0.01476,
+       "percentile": 0.72278,
+       "date": "2026-09-21"
+      }
+     ],
+     "cwes": [
+      {
+       "cve": "CVE-2022-48303",
+       "cwe": "CWE-125",
+       "source": "nvd@nist.gov",
+       "type": "Primary"
+      },
+      {
+       "cve": "CVE-2022-48303",
+       "cwe": "CWE-125",
+       "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+       "type": "Secondary"
+      }
+     ]
+    }
+   ],
+   "matchDetails": [
+    {
+     "type": "exact-direct-match",
+     "matcher": "dpkg-matcher",
+     "searchedBy": {
+      "distro": {
+       "type": "debian",
+       "version": "12.0"
+      },
+      "package": {
+       "name": "tar",
+       "version": "1.34+dfsg-1.2"
+      },
+      "namespace": "debian:distro:debian:12"
+     },
+     "found": {
+      "vulnerabilityID": "CVE-2022-48303",
+      "versionConstraint": "< 1.34+dfsg-1.2+deb12u1 (deb)"
+     },
+     "fix": {
+      "suggestedVersion": "1.34+dfsg-1.2+deb12u1"
+     }
+    }
+   ],
+   "artifact": {
+    "id": "c8f0ac5841c37be9",
+    "name": "tar",
+    "version": "1.34+dfsg-1.2",
+    "type": "deb",
+    "locations": [
+     {
+      "path": "/var/lib/dpkg/status",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/status",
+      "annotations": {
+       "evidence": "primary"
+      }
+     },
+     {
+      "path": "/usr/share/doc/tar/copyright",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/usr/share/doc/tar/copyright",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/tar.md5sums",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/tar.md5sums",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/tar.list",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/tar.list"
+     },
+     {
+      "path": "/var/lib/dpkg/info/tar.postinst",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/tar.postinst"
+     },
+     {
+      "path": "/var/lib/dpkg/info/tar.prerm",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/tar.prerm"
+     }
+    ],
+    "language": "",
+    "licenses": [
+     "GPL-2",
+     "GPL-2+",
+     "GPL-3",
+     "GPL-3+",
+     "LGPL-3",
+     "LGPL-3+"
+    ],
+    "cpes": [
+     "cpe:2.3:a:tar:tar:1.34\\+dfsg-1.2:*:*:*:*:*:*:*"
+    ],
+    "purl": "pkg:deb/debian/tar@1.34%2Bdfsg-1.2?arch=arm64&distro=debian-12.0",
+    "upstreams": []
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2016-2781",
+    "dataSource": "https://security-tracker.debian.org/tracker/CVE-2016-2781",
+    "namespace": "debian:distro:debian:12",
+    "severity": "Low",
+    "urls": [],
+    "description": "chroot in GNU coreutils, when used with --userspec, allows local users to escape to the parent session via a crafted TIOCSTI ioctl call, which pushes characters to the terminal's input buffer.",
+    "cvss": [],
+    "epss": [
+     {
+      "cve": "CVE-2016-2781",
+      "epss": 0.00437,
+      "percentile": 0.37346,
+      "date": "2026-09-21"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2016-2781",
+      "cwe": "CWE-20",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     },
+     {
+      "cve": "CVE-2016-2781",
+      "cwe": "CWE-20",
+      "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+      "type": "Secondary"
+     }
+    ],
+    "fix": {
+     "versions": [],
+     "state": "wont-fix"
+    },
+    "advisories": [],
+    "risk": 0.1311
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2016-2781",
+     "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2016-2781",
+     "namespace": "nvd:cpe",
+     "severity": "Medium",
+     "urls": [
+      "http://www.openwall.com/lists/oss-security/2016/02/28/2",
+      "http://www.openwall.com/lists/oss-security/2016/02/28/3",
+      "https://lists.apache.org/thread.html/rf9fa47ab66495c78bb4120b0754dd9531ca2ff0430f6685ac9b07772%40%3Cdev.mina.apache.org%3E"
+     ],
+     "description": "chroot in GNU coreutils, when used with --userspec, allows local users to escape to the parent session via a crafted TIOCSTI ioctl call, which pushes characters to the terminal's input buffer.",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.0",
+       "vector": "CVSS:3.0/AV:L/AC:L/PR:L/UI:N/S:C/C:N/I:H/A:N",
+       "metrics": {
+        "baseScore": 6.5,
+        "exploitabilityScore": 2.1,
+        "impactScore": 4
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "2.0",
+       "vector": "AV:L/AC:L/Au:N/C:N/I:P/A:N",
+       "metrics": {
+        "baseScore": 2.1,
+        "exploitabilityScore": 4,
+        "impactScore": 2.9
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+       "type": "Secondary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N",
+       "metrics": {
+        "baseScore": 4.6,
+        "exploitabilityScore": 1.5,
+        "impactScore": 2.8
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "epss": [
+      {
+       "cve": "CVE-2016-2781",
+       "epss": 0.00437,
+       "percentile": 0.37346,
+       "date": "2026-09-21"
+      }
+     ],
+     "cwes": [
+      {
+       "cve": "CVE-2016-2781",
+       "cwe": "CWE-20",
+       "source": "nvd@nist.gov",
+       "type": "Primary"
+      },
+      {
+       "cve": "CVE-2016-2781",
+       "cwe": "CWE-20",
+       "source": "134c704f-9b21-4f2e-91b3-4a467353bcc0",
+       "type": "Secondary"
+      }
+     ]
+    }
+   ],
+   "matchDetails": [
+    {
+     "type": "exact-direct-match",
+     "matcher": "dpkg-matcher",
+     "searchedBy": {
+      "distro": {
+       "type": "debian",
+       "version": "12.0"
+      },
+      "package": {
+       "name": "coreutils",
+       "version": "9.1-1"
+      },
+      "namespace": "debian:distro:debian:12"
+     },
+     "found": {
+      "vulnerabilityID": "CVE-2016-2781",
+      "versionConstraint": "none (unknown)"
+     }
+    }
+   ],
+   "artifact": {
+    "id": "cb34fd2c7a5fbf72",
+    "name": "coreutils",
+    "version": "9.1-1",
+    "type": "deb",
+    "locations": [
+     {
+      "path": "/var/lib/dpkg/status",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/status",
+      "annotations": {
+       "evidence": "primary"
+      }
+     },
+     {
+      "path": "/usr/share/doc/coreutils/copyright",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/usr/share/doc/coreutils/copyright",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/coreutils.md5sums",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/coreutils.md5sums",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/coreutils.list",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/coreutils.list"
+     },
+     {
+      "path": "/var/lib/dpkg/info/coreutils.postinst",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/coreutils.postinst"
+     },
+     {
+      "path": "/var/lib/dpkg/info/coreutils.postrm",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/coreutils.postrm"
+     }
+    ],
+    "language": "",
+    "licenses": [
+     "BSD-4-clause-UC",
+     "FSFULLR",
+     "GFDL-1.3",
+     "GFDL-NIV-1.3",
+     "GPL-3",
+     "GPL-3+",
+     "ISC"
+    ],
+    "cpes": [
+     "cpe:2.3:a:coreutils:coreutils:9.1-1:*:*:*:*:*:*:*"
+    ],
+    "purl": "pkg:deb/debian/coreutils@9.1-1?arch=arm64&distro=debian-12.0",
+    "upstreams": []
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2011-3374",
+    "dataSource": "https://security-tracker.debian.org/tracker/CVE-2011-3374",
+    "namespace": "debian:distro:debian:12",
+    "severity": "Negligible",
+    "urls": [],
+    "description": "It was found that apt-key in apt, all versions, do not correctly validate gpg keys with the master keyring, leading to a potential man-in-the-middle attack.",
+    "cvss": [],
+    "epss": [
+     {
+      "cve": "CVE-2011-3374",
+      "epss": 0.01191,
+      "percentile": 0.66137,
+      "date": "2026-09-21"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2011-3374",
+      "cwe": "CWE-347",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     }
+    ],
+    "fix": {
+     "versions": [],
+     "state": "not-fixed"
+    },
+    "advisories": [],
+    "risk": 0.05955000000000001
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2011-3374",
+     "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2011-3374",
+     "namespace": "nvd:cpe",
+     "severity": "Low",
+     "urls": [
+      "https://access.redhat.com/security/cve/cve-2011-3374",
+      "https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=642480",
+      "https://people.canonical.com/~ubuntu-security/cve/2011/CVE-2011-3374.html",
+      "https://seclists.org/fulldisclosure/2011/Sep/221",
+      "https://security-tracker.debian.org/tracker/CVE-2011-3374",
+      "https://snyk.io/vuln/SNYK-LINUX-APT-116518",
+      "https://ubuntu.com/security/CVE-2011-3374"
+     ],
+     "description": "It was found that apt-key in apt, all versions, do not correctly validate gpg keys with the master keyring, leading to a potential man-in-the-middle attack.",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N",
+       "metrics": {
+        "baseScore": 3.7,
+        "exploitabilityScore": 2.3,
+        "impactScore": 1.5
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "2.0",
+       "vector": "AV:N/AC:M/Au:N/C:N/I:P/A:N",
+       "metrics": {
+        "baseScore": 4.3,
+        "exploitabilityScore": 8.6,
+        "impactScore": 2.9
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "epss": [
+      {
+       "cve": "CVE-2011-3374",
+       "epss": 0.01191,
+       "percentile": 0.66137,
+       "date": "2026-09-21"
+      }
+     ],
+     "cwes": [
+      {
+       "cve": "CVE-2011-3374",
+       "cwe": "CWE-347",
+       "source": "nvd@nist.gov",
+       "type": "Primary"
+      }
+     ]
+    }
+   ],
+   "matchDetails": [
+    {
+     "type": "exact-direct-match",
+     "matcher": "dpkg-matcher",
+     "searchedBy": {
+      "distro": {
+       "type": "debian",
+       "version": "12.0"
+      },
+      "package": {
+       "name": "apt",
+       "version": "2.6.1"
+      },
+      "namespace": "debian:distro:debian:12"
+     },
+     "found": {
+      "vulnerabilityID": "CVE-2011-3374",
+      "versionConstraint": "none (unknown)"
+     }
+    }
+   ],
+   "artifact": {
+    "id": "001f65ccfdc16db7",
+    "name": "apt",
+    "version": "2.6.1",
+    "type": "deb",
+    "locations": [
+     {
+      "path": "/var/lib/dpkg/status",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/status",
+      "annotations": {
+       "evidence": "primary"
+      }
+     },
+     {
+      "path": "/usr/share/doc/apt/copyright",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/usr/share/doc/apt/copyright",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.conffiles",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.conffiles",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.md5sums",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.md5sums",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.list",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.list"
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.postinst",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.postinst"
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.postrm",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.postrm"
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.preinst",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.preinst"
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.prerm",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.prerm"
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.shlibs",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.shlibs"
+     },
+     {
+      "path": "/var/lib/dpkg/info/apt.triggers",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/apt.triggers"
+     }
+    ],
+    "language": "",
+    "licenses": [
+     "BSD-3-clause",
+     "Expat",
+     "GPL-2",
+     "GPL-2+"
+    ],
+    "cpes": [
+     "cpe:2.3:a:apt:apt:2.6.1:*:*:*:*:*:*:*"
+    ],
+    "purl": "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0",
+    "upstreams": []
+   }
+  },
+  {
+   "vulnerability": {
+    "id": "CVE-2011-3374",
+    "dataSource": "https://security-tracker.debian.org/tracker/CVE-2011-3374",
+    "namespace": "debian:distro:debian:12",
+    "severity": "Negligible",
+    "urls": [],
+    "description": "It was found that apt-key in apt, all versions, do not correctly validate gpg keys with the master keyring, leading to a potential man-in-the-middle attack.",
+    "cvss": [],
+    "epss": [
+     {
+      "cve": "CVE-2011-3374",
+      "epss": 0.01191,
+      "percentile": 0.66137,
+      "date": "2026-09-21"
+     }
+    ],
+    "cwes": [
+     {
+      "cve": "CVE-2011-3374",
+      "cwe": "CWE-347",
+      "source": "nvd@nist.gov",
+      "type": "Primary"
+     }
+    ],
+    "fix": {
+     "versions": [],
+     "state": "not-fixed"
+    },
+    "advisories": [],
+    "risk": 0.05955000000000001
+   },
+   "relatedVulnerabilities": [
+    {
+     "id": "CVE-2011-3374",
+     "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2011-3374",
+     "namespace": "nvd:cpe",
+     "severity": "Low",
+     "urls": [
+      "https://access.redhat.com/security/cve/cve-2011-3374",
+      "https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=642480",
+      "https://people.canonical.com/~ubuntu-security/cve/2011/CVE-2011-3374.html",
+      "https://seclists.org/fulldisclosure/2011/Sep/221",
+      "https://security-tracker.debian.org/tracker/CVE-2011-3374",
+      "https://snyk.io/vuln/SNYK-LINUX-APT-116518",
+      "https://ubuntu.com/security/CVE-2011-3374"
+     ],
+     "description": "It was found that apt-key in apt, all versions, do not correctly validate gpg keys with the master keyring, leading to a potential man-in-the-middle attack.",
+     "cvss": [
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "3.1",
+       "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N",
+       "metrics": {
+        "baseScore": 3.7,
+        "exploitabilityScore": 2.3,
+        "impactScore": 1.5
+       },
+       "vendorMetadata": {}
+      },
+      {
+       "source": "nvd@nist.gov",
+       "type": "Primary",
+       "version": "2.0",
+       "vector": "AV:N/AC:M/Au:N/C:N/I:P/A:N",
+       "metrics": {
+        "baseScore": 4.3,
+        "exploitabilityScore": 8.6,
+        "impactScore": 2.9
+       },
+       "vendorMetadata": {}
+      }
+     ],
+     "epss": [
+      {
+       "cve": "CVE-2011-3374",
+       "epss": 0.01191,
+       "percentile": 0.66137,
+       "date": "2026-09-21"
+      }
+     ],
+     "cwes": [
+      {
+       "cve": "CVE-2011-3374",
+       "cwe": "CWE-347",
+       "source": "nvd@nist.gov",
+       "type": "Primary"
+      }
+     ]
+    }
+   ],
+   "matchDetails": [
+    {
+     "type": "exact-indirect-match",
+     "matcher": "dpkg-matcher",
+     "searchedBy": {
+      "distro": {
+       "type": "debian",
+       "version": "12.0"
+      },
+      "package": {
+       "name": "apt",
+       "version": "2.6.1"
+      },
+      "namespace": "debian:distro:debian:12"
+     },
+     "found": {
+      "vulnerabilityID": "CVE-2011-3374",
+      "versionConstraint": "none (unknown)"
+     }
+    }
+   ],
+   "artifact": {
+    "id": "cd126724974d25d1",
+    "name": "libapt-pkg6.0",
+    "version": "2.6.1",
+    "type": "deb",
+    "locations": [
+     {
+      "path": "/var/lib/dpkg/status",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/status",
+      "annotations": {
+       "evidence": "primary"
+      }
+     },
+     {
+      "path": "/usr/share/doc/libapt-pkg6.0/copyright",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/usr/share/doc/libapt-pkg6.0/copyright",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     },
+     {
+      "path": "/var/lib/dpkg/info/libapt-pkg6.0:arm64.md5sums",
+      "layerID": "sha256:42f253cd68b44bef697e08c3510860cda98a30b247efe4a60e4134f45ca44e14",
+      "accessPath": "/var/lib/dpkg/info/libapt-pkg6.0:arm64.md5sums",
+      "annotations": {
+       "evidence": "supporting"
+      }
+     }
+    ],
+    "language": "",
+    "licenses": [
+     "BSD-3-clause",
+     "Expat",
+     "GPL-2",
+     "GPL-2+"
+    ],
+    "cpes": [
+     "cpe:2.3:a:libapt-pkg6.0:libapt-pkg6.0:2.6.1:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libapt-pkg6.0:libapt_pkg6.0:2.6.1:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libapt_pkg6.0:libapt-pkg6.0:2.6.1:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libapt_pkg6.0:libapt_pkg6.0:2.6.1:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libapt:libapt-pkg6.0:2.6.1:*:*:*:*:*:*:*",
+     "cpe:2.3:a:libapt:libapt_pkg6.0:2.6.1:*:*:*:*:*:*:*"
+    ],
+    "purl": "pkg:deb/debian/libapt-pkg6.0@2.6.1?arch=arm64&distro=debian-12.0&upstream=apt",
+    "upstreams": [
+     {
+      "name": "apt"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,39 @@
+{
+ "defects": [
+  {
+   "keys": [
+    {
+     "scanner": "grype",
+     "finding_id": "CVE-2016-2781",
+     "purl": "pkg:deb/debian/coreutils@9.1-1?arch=arm64&distro=debian-12.0"
+    }
+   ],
+   "package": "coreutils",
+   "affected_version_range": "evidence only: Debian marks CVE-2016-2781 <no-dsa> (minor issue, will-not-fix); not exploitable in this image",
+   "disposition": "false_positive",
+   "vex_id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2016-2781",
+   "evidence": "coreutils chroot behaviour; Debian security tracker: no-DSA, minor.",
+   "date": "2026-09-14"
+  },
+  {
+   "keys": [
+    {
+     "scanner": "grype",
+     "finding_id": "CVE-2011-3374",
+     "purl": "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0"
+    },
+    {
+     "scanner": "trivy",
+     "finding_id": "CVE-2011-3374",
+     "purl": "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0"
+    }
+   ],
+   "package": "apt",
+   "affected_version_range": "evidence only: Debian no-DSA (minor)",
+   "disposition": "false_positive",
+   "vex_id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374",
+   "evidence": "apt signature-check hardening; not a practical exposure in this image.",
+   "date": "2026-09-15"
+  }
+ ]
+}

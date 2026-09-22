@@ -1,0 +1,15 @@
+name: quoted-on preflight sample
+"on":
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        default: true
+permissions:
+  contents: read
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
