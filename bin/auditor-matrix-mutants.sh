@@ -33,7 +33,7 @@ fails=0
 # Static cases parse the workflow file and exported policy fixtures only — they call
 # no auditor command, so any command-mutant replacement passes them legitimately once
 # a valid workflow exists. Command mutants are graded on the cases they can affect.
-STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-variables req12-ac3-workflow-invokes-the-entrypoint-with-dryrun"
+STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun"
 is_static(){ case " $STATIC " in *" $1 "*) return 0;; *) return 1;; esac; }
 MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
 cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/bin/auditor-matrix-test.sh" | sort -u; }
@@ -139,7 +139,7 @@ QUOTED_WF="${INERT_WF/on:/\'on\':}"
 PC="$(run_mutant "workflow-comment-oidc" "wrong-effects" "$EFFECT" "$INERT_WF")"
 marker_ok "workflow-comment-oidc"
 assert_absent "workflow-comment-oidc" "req6-ac1-oidc-federation-no-api-key" $PC
-assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-variables req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" $PC
+assert_absent "workflow-comment-oidc" "req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" $PC
 assert_absent "workflow-comment-oidc" "req1-ac1-schedule-cron-offset" $PC
 
 PF="$(run_mutant "workflow-forbidden-push" "wrong-effects" "$EFFECT" "$PUSH_WF")"

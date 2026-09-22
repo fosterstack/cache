@@ -18,6 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
 from auditorlib import parsers as P
+from auditorlib import vex
 
 # load auditor-classify.py (hyphenated) as a module for its verified writers
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
@@ -41,9 +42,10 @@ def log_index(logpath):
 
 def run(manifest_path, dry, out, today):
     m, groups = C.manifest_findings(manifest_path)
-    gvc = m.get("govulncheck"); logpath = m.get("known_defect_log")
+    gvc = m.get("govulncheck"); logpath = m.get("known_defect_log"); module = m.get("module")
+    ts = today + "T00:00:00Z"
     idx = log_index(logpath)
-    adjudicator = cli.opt("--adjudicator", os.path.join(HERE, "..", "fixtures", "adjudicator", "stub-adjudicator.py"))
+    adjudicator = cli.opt("--adjudicator", os.path.join(HERE, "auditor-adjudicator-client.py"))
     sections = {}; classification = []; accepted = []
     for c, grp in groups.items():
         ids = sorted(grp["aliases"]); ids.append(grp["id"])
@@ -55,27 +57,26 @@ def run(manifest_path, dry, out, today):
                 break
         if hit:
             cat = hit["disposition"]
-            if cat == "false_positive":
-                C.cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                             C.vex_doc(c, "not_affected", "vulnerable_code_not_present",
-                                       evidence={"source": "known-defect-log", "row_id": c}))
+            if cat == "false_positive":                       # trusted log row only (never 'proposed')
+                ev = {"check": "known-defect-log", "source_file": logpath, "detail": "exact key hit for %s" % c}
+                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev)
                 C.cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
-                             {"vex": policy.stmt_id(c), "id": c, "evidence": {"source": "known-defect-log"}})
+                             {"vex": policy.stmt_id(c), "id": c, "evidence": ev})
+            else:
+                cat = "under_investigation"
         else:
             # 2) model PROPOSES; code VERIFIES before any VEX.
             cat = cli.ask_model(adjudicator, c).get("category")
             if cat == "not_affected_unreachable":
-                verdict, ev = C.gvc_verdict(gvc, ids)
+                verdict, ev = C.gvc_verdict(gvc, ids, module)
                 if verdict == "unreachable":
-                    C.cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                                 C.vex_doc(c, "not_affected", "vulnerable_code_not_in_execute_path", evidence=ev))
+                    vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
                 else:
                     cat = "under_investigation"
             elif cat == "false_positive":
                 ev = C.fp_verified(ids, logpath, grp["findings"])
                 if ev:
-                    C.cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                                 C.vex_doc(c, "not_affected", "vulnerable_code_not_present", evidence=ev))
+                    vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev)
                     C.cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
                                  {"vex": policy.stmt_id(c), "id": c, "evidence": ev})
                 else:

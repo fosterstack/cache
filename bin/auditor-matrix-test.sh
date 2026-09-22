@@ -135,6 +135,11 @@ rs01digest="sha256:8df991b5febdf5b4a177325b8af95b6bb6c321059e1715c06cb659c659f5a
 
 # preflight: the PyYAML-based reader must parse two real workflows and a quoted-`on`
 # variant identically; else the workflow cases are meaningless. Not a scored case.
+# R4: every workflow file must parse as valid YAML (this class can never land).
+for w in .github/workflows/*.yml .github/workflows/*.yaml; do
+  [ -e "$w" ] || continue
+  $YAML load "$w" >/dev/null 2>"$WORK/yerr" || { echo "PREFLIGHT: invalid workflow YAML in $w — $(tail -1 "$WORK/yerr")" >&2; exit 2; }
+done
 for w in .github/workflows/main-candidate-rescan.yml .github/workflows/daily-rescan.yml "$F/testlib/workflows/quoted-on.yml"; do
   t="$($YAML shape "$w" 2>/dev/null | "$PY" -c 'import json,sys;print(",".join(sorted(json.load(sys.stdin)["triggers"])))' 2>/dev/null)"
   [ "$t" = "schedule,workflow_dispatch" ] || { echo "PREFLIGHT: PyYAML reader mis-parsed $w ($t)" >&2; exit 2; }
@@ -195,7 +200,7 @@ run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adju
   prod="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 'json.dumps(s.get("products"))')"
   igsz="$( [ -s "$CDIR/ignores/grype/CVE-2016-2781.json" ] && echo nonempty || echo empty )"
   igcite="$(pj "$CDIR/ignores/grype/CVE-2016-2781.json" 'd.get("vex")')"
-  fpev="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 'str(bool(s.get("_evidence")))')"
+  fpev="$(pj "$CDIR/evidence/CVE-2016-2781.evidence.json" 'str(bool(d.get("evidence")))')"
   s5="$(sect_ids "$CDIR/report.md" 5)"; s3="$(sect_ids "$CDIR/report.md" 3)"
   fpstat="$(tree_vex_status_set "$CDIR" $(alias_set CVE-2016-2781))"
   { eq "$fpstat" "not_affected" && eq "$st" "not_affected" && eq "$fpev" "True" && [ "$ju" != "$MISS" ] && printf '%s' "$prod" | grep -q 'repository_url=ghcr.io/fosterstack/cache' \
@@ -208,7 +213,7 @@ o="$WORK/ac2a"; rm -rf "$o"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2020-0015 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o" && {
   st="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's["status"]')"
   ju="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's.get("justification")')"
-  ev="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 '(s.get("_evidence") or {}).get("source")')"
+  ev="$(pj "$o/evidence/GO-2020-0015.evidence.json" '(d.get("evidence") or {}).get("source")')"
   o2="$WORK/ac2a-b"; rm -rf "$o2"; : > "$LEDGER"
   run "$PY" "$BIN/auditor-classify.py" --finding GO-2021-0113 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o2"
   reachvex="$(tree_has_vex_for "$o2" GO-2021-0113)"
@@ -235,7 +240,7 @@ o="$WORK/ac4"; rm -rf "$o"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2020-0015 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o" && {
   st="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's["status"]')"
   ju="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's.get("justification")')"
-  ev="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 '(s.get("_evidence") or {}).get("source")')"
+  ev="$(pj "$o/evidence/GO-2020-0015.evidence.json" '(d.get("evidence") or {}).get("source")')"
   o2="$WORK/ac4b"; rm -rf "$o2"; : > "$LEDGER"
   run "$PY" "$BIN/auditor-classify.py" --finding GO-2021-0113 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o2"
   reach="$(tree_has_vex_for "$o2" GO-2021-0113)"
@@ -437,6 +442,20 @@ try:
 except Exception: print("no")' "$o/authored.openvex.json")"
   eq "$scoped" "yes" && ok || no "authored products repository_url-scoped" "scoped=$scoped"; }
 
+begin "req4-ac1b-vex-openvex-conformant" "every VEX a real run produces validates against the vendored OpenVEX schema (evidence lives in a sidecar, not as a custom statement key)"
+o="$WORK/conf"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$o" && {
+  conf="$("$PY" -c 'import json,sys,glob
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex
+bad=[]
+for f in glob.glob(sys.argv[1]+"/vex/*.openvex.json")+glob.glob(sys.argv[1]+"/.vex/*.json"):
+    try: vex.validate(json.load(open(f)))
+    except Exception as e: bad.append(f+": "+str(e))
+print("ok" if not bad else "BAD:"+";".join(bad))' "$o")"
+  ins="$( { grep -rl "_evidence\|_target_date" "$o"/vex 2>/dev/null || true; } | wc -l | tr -d ' ')"
+  { eq "$conf" "ok" && eq "$ins" "0"; } && ok || no "all produced VEX OpenVEX-conformant; no _evidence/_target_date in statements" "conformance=$conf inline_custom_keys=$ins"; }
+
 begin "req4-ac3-votes-by-lineage" "a four-scanner CVE counts 3 lineages; a grype-only CVE counts 1 (a constant fails one); empty ledger"
 o="$WORK/v1"; o2="$WORK/v2"; rm -rf "$o" "$o2"
 run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$o" && {
@@ -477,14 +496,14 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-open-pr.py" --change ve
   { eq "$shimpresent" "yes" && eq "$forbidden" "0" && [ "$prcreate" -ge 1 ] 2>/dev/null && eq "$lane" "audit"; } \
     && ok || no "shim ledger present, a branch PR create, no push/tag" "shim=$shimpresent forbidden=$forbidden pr_create=$prcreate lane=$lane"; }
 
-begin "req5-ac2-token-scope" "GITHUB_TOKEN grants pull-requests but NOT actions:write; the main ruleset has zero bypass actors"
+begin "req5-ac2-token-scope" "GITHUB_TOKEN grants pull-requests, no actions:write (read for artifact download is fine); the main ruleset has zero bypass actors"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   pr="$(pj "$WORK/sh.json" 'd.get("permissions",{}).get("pull-requests")')"
   actions="$(pj "$WORK/sh.json" 'd.get("permissions",{}).get("actions")')"
   bypass="$(pj "$F/policy/rule-01.json" 'len(d.get("bypass_actors",[]))')"
-  { printf '%s' "$pr" | grep -qE 'write|read' && [ "$actions" = "$MISS" ] && eq "$bypass" "0"; } \
-    && ok || no "pull-requests present, no actions perm, no bypass actors" "pull_requests=$pr actions=$actions bypass=$bypass"; fi
+  { printf '%s' "$pr" | grep -qE 'write|read' && [ "$actions" != "write" ] && eq "$bypass" "0"; } \
+    && ok || no "pull-requests present, no actions:write (read for artifact download is fine), no bypass actors" "pull_requests=$pr actions=$actions bypass=$bypass"; fi
 
 ########################################################################
 echo "=== REQ-AUD-6 ==="
@@ -510,14 +529,14 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   { eq "$idt" "write" && eq "$cont" "read" && eq "$aud" "https://api.anthropic.com" && eq "$ghs" "true" && eq "$tf" "true" && eq "$apik" "false"; } \
     && ok || no "OIDC wired via github-script, no API key" "id-token=$idt contents=$cont audience=$aud github-script=$ghs token-file=$tf api-key=$apik"; fi
 
-begin "req6-ac1-identifiers-are-env-variables" "the six identifiers come from vars.*; NO step env value references vars.* (never logged); the github-script step masks at least six values"
+begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers come from secrets.* (GitHub masks them); NO vars.* reference anywhere in the workflow"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY"]'
-  fromvars="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))=='"$want"')')"
-  envrefs="$(pj "$WORK/sh.json" 'd.get("env_refs_vars")')"; masks="$(pj "$WORK/sh.json" 'd.get("script_mask_count")')"
-  { eq "$fromvars" "True" && eq "$envrefs" "false" && [ "$masks" != "$MISS" ] && [ "$masks" -ge 6 ] 2>/dev/null; } \
-    && ok || no "six ids via vars.*, no env value references vars.*, script masks >= 6" "fromvars=$fromvars env_refs_vars=$envrefs masks=$masks"; fi
+  fromsecrets="$(pj "$WORK/sh.json" 'str(sorted(d.get("secret_refs",[]))=='"$want"')')"
+  novars="$(pj "$WORK/sh.json" 'd.get("references_vars")')"
+  { eq "$fromsecrets" "True" && eq "$novars" "false"; } \
+    && ok || no "six ids via secrets.*, no vars.* anywhere" "from_secrets=$fromsecrets references_vars=$novars secrets=$(pj "$WORK/sh.json" 'd.get("secret_refs")')"; fi
 
 begin "req6-ac2-token-budget-in-workflow" "driving usage to the budget stops the run with tokens_used>0 up to the cap"
 o="$WORK/budget"; rm -rf "$o"
@@ -680,7 +699,7 @@ begin "req12-ac1-dryrun-produces-report-vex-accepteditems-misses-only-no-shim" "
 o="$WORK/run1"; shim="$WORK/run1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$o" && {
   s5="$(sect_ids "$o/report.md" 5)"; s2="$(sect_ids "$o/report.md" 2)"; s3="$(sect_ids "$o/report.md" 3)"
-  vexev="$(pj "$o/vex/CVE-2016-2781.openvex.json" 'bool(d["statements"][0].get("_evidence"))')"
+  vexev="$(pj "$o/evidence/CVE-2016-2781.evidence.json" 'str(bool(d.get("evidence")))')"
   ig="$(have "$o/ignores/grype/CVE-2016-2781.json" && echo yes || echo no)"
   unrv="$(pj "$o/vex/CVE-2020-14040.openvex.json" 'd["statements"][0].get("justification")')"
   acc="$(have "$o/.auditor/accepted-items.json" && echo yes || echo no)"
@@ -688,7 +707,7 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run true 
   missinledger="$(grep -c '^CVE-2020-14040|' "$LEDGER" 2>/dev/null)"; missinledger="${missinledger:-0}"
   shimcreates="$(grep -cE 'pr create|issue create|gh .*create' "$shim" 2>/dev/null)"; shimcreates="${shimcreates:-0}"
   { printf '%s' "$s5" | grep -q CVE-2016-2781 && printf '%s' "$s2" | grep -q CVE-2020-14040 && printf '%s' "$s3" | grep -q CVE-2023-4911 \
-    && eq "$vexev" "true" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
+    && eq "$vexev" "True" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
     && eq "$hitinledger" "0" && [ "$missinledger" -ge 1 ] 2>/dev/null && eq "$shimcreates" "0"; } \
     && ok || no "populated report, evidence VEX+ignore, accepted-items, ledger misses-only, no shim creates" "s5=[$s5] s2=[$s2] s3=[$s3] vex_evidence=$vexev ignore=$ig unreach_just=$unrv accepted=$acc hit_in_ledger=$hitinledger miss_in_ledger=$missinledger shim_creates=$shimcreates"; }
 

@@ -17,6 +17,7 @@ import os, sys, re, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
 from auditorlib import parsers as P
+from auditorlib import vex
 
 SECT = {"false_positive": [5], "not_affected_unreachable": [2],
         "real_fixable": [3], "risk_acceptance": [2, 3], "under_investigation": [4]}
@@ -44,8 +45,11 @@ def vex_doc(fid, status, justification=None, action=None, evidence=None):
             "statements": [st]}
 
 
-def gvc_verdict(gvc_path, ids):
-    """Return ('unreachable'|'reachable'|'no-evidence', evidence-dict)."""
+def gvc_verdict(gvc_path, ids, expected_module=None):
+    """Return ('unreachable'|'reachable'|'no-evidence', evidence). Unreachable requires a
+    SYMBOL-level stream whose scanned module equals the repository's, an imported-but-not-
+    called finding for one of the ids (a non-empty trace with no function frame — an EMPTY
+    trace proves nothing), and no reachable message for any id."""
     if not gvc_path or not os.path.exists(gvc_path):
         return "no-evidence", {"reason": "no govulncheck stream"}
     try:
@@ -57,22 +61,28 @@ def gvc_verdict(gvc_path, ids):
         return "no-evidence", {"reason": "no finding message for any id"}
     if g["scan_level"] != "symbol":
         return "no-evidence", {"reason": "scan_level=%s (symbol required)" % g["scan_level"]}
+    if expected_module and g["module"] != expected_module:
+        return "no-evidence", {"reason": "scanned module %r != %r" % (g["module"], expected_module)}
     if any(g["by_osv"][i]["reachable"] for i in present):
-        return "reachable", {"scan_level": "symbol", "reachable": True}
-    return "unreachable", {"source": "govulncheck", "scan_level": "symbol",
-                           "reachable": False, "ids": present}
+        return "reachable", {"scan_level": "symbol", "module": g["module"], "reachable": True}
+    if any(g["by_osv"][i]["imported_only"] for i in present):
+        return "unreachable", {"source": "govulncheck", "scan_level": "symbol",
+                               "module": g["module"], "imported_only": True, "ids": present}
+    return "no-evidence", {"reason": "only empty traces; not proof of unreachability"}
 
 
 def fp_verified(ids, logpath, findings):
+    """Verify a false positive only on the FULL exact key (scanner, finding_id, purl) of one
+    of the group's findings against a trusted (not model-proposed) log row."""
     if logpath and os.path.exists(logpath):
         log = json.load(open(logpath))
-        for row in log.get("defects", []):
-            for k in row.get("keys", []):
-                if k["finding_id"] in ids and row.get("disposition") == "false_positive":
-                    return {"source": "known-defect-log", "row_id": k["finding_id"]}
-    # version-range exclusion in the scanner's own data: a fixed version <= installed.
-    for f in findings:
-        return None  # (conservative: no generic exclusion implemented here)
+        keys = {(k["scanner"], k["finding_id"], k["purl"]): row
+                for row in log.get("defects", []) for k in row.get("keys", [])}
+        for f in findings:
+            row = keys.get((f["scanner"], f["finding_id"], f["purl"]))
+            if row and row.get("disposition") == "false_positive":
+                return {"check": "known-defect-log", "source_file": logpath,
+                        "detail": "exact key %s/%s/%s" % (f["scanner"], f["finding_id"], f["purl"])}
     return None
 
 
@@ -90,34 +100,30 @@ def manifest_findings(manifest):
     return m, groups
 
 
-def do_manifest(manifest, adjudicator, out):
+def do_manifest(manifest, adjudicator, out, ts=TS):
     m, groups = manifest_findings(manifest)
-    gvc = m.get("govulncheck"); logpath = m.get("known_defect_log")
+    gvc = m.get("govulncheck"); logpath = m.get("known_defect_log"); module = m.get("module")
     classification = []; report_sections = {}
     for c, grp in groups.items():
         ids = sorted(grp["aliases"])
         proposal = cli.ask_model(adjudicator, c).get("category")   # PROPOSAL only
         cat = proposal
         if proposal == "not_affected_unreachable":
-            verdict, ev = gvc_verdict(gvc, ids)
+            verdict, ev = gvc_verdict(gvc, ids, module)
             if verdict == "unreachable":
-                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                           vex_doc(c, "not_affected", "vulnerable_code_not_in_execute_path", evidence=ev))
+                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
             else:
                 cat = "under_investigation"
-                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                           vex_doc(c, "under_investigation", evidence={"reason": ev.get("reason", verdict)}))
+                vex.write(out, c, "under_investigation", ts, evidence={"reason": ev.get("reason", verdict)})
         elif proposal == "false_positive":
             ev = fp_verified(ids, logpath, grp["findings"])
             if ev:
-                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                           vex_doc(c, "not_affected", "vulnerable_code_not_present", evidence=ev))
+                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev)
                 cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
                            {"vex": policy.stmt_id(c), "id": c, "evidence": ev})
             else:
                 cat = "under_investigation"
-                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                           vex_doc(c, "under_investigation", evidence={"reason": "no false-positive evidence"}))
+                vex.write(out, c, "under_investigation", ts, evidence={"reason": "no false-positive evidence"})
         classification.append({"id": c, "category": cat})
         for s in SECT.get(cat, []):
             report_sections.setdefault(s, []).append(c)
@@ -141,14 +147,17 @@ def _render_report(out, sections):
 
 
 def do_single(finding, manifest, gvc, out):
-    verdict, ev = gvc_verdict(gvc, [finding])
+    module = None
+    if manifest and os.path.exists(manifest):
+        module = json.load(open(manifest)).get("module")
+    verdict, ev = gvc_verdict(gvc, [finding], module)
     if verdict == "no-evidence":
         cli.writej(os.path.join(out, "status", finding + ".json"),
                    {"open": True, "reason": ev.get("reason", "no evidence")})
         return
     if verdict == "unreachable":
-        cli.writej(os.path.join(out, "vex", finding + ".openvex.json"),
-                   vex_doc(finding, "not_affected", "vulnerable_code_not_in_execute_path", evidence=ev))
+        vex.write(out, finding, "not_affected", cli.opt("--today", TS) + "T00:00:00Z" if len(cli.opt("--today", TS)) == 10 else TS,
+                  justification="vulnerable_code_not_in_execute_path", evidence=ev)
         return
     # reachable -> real-fixable bump
     m = json.load(open(manifest)); fixed = installed = None
@@ -163,10 +172,11 @@ def do_single(finding, manifest, gvc, out):
 def main():
     out = cli.opt("--out"); adjudicator = cli.opt("--adjudicator")
     finding = cli.opt("--finding"); manifest = cli.opt("--manifest"); gvc = cli.opt("--govulncheck")
+    today = cli.opt("--today"); ts = (today + "T00:00:00Z") if today else TS
     if finding and gvc:
         do_single(finding, manifest, gvc, out)
     elif manifest:
-        do_manifest(manifest, adjudicator, out)
+        do_manifest(manifest, adjudicator, out, ts)
     else:
         sys.exit("classify: need --manifest or --finding+--govulncheck")
 

@@ -156,6 +156,7 @@ def parse_govulncheck(path):
         raise ParseError("govulncheck: cannot read %s: %s" % (path, e))
     by_osv = {}
     scan_level = None
+    module = None
     saw_any = False
     for obj in _stream(text):
         if not isinstance(obj, dict):
@@ -163,21 +164,27 @@ def parse_govulncheck(path):
         saw_any = True
         if "config" in obj:
             scan_level = (obj["config"] or {}).get("scan_level")
+        if "SBOM" in obj:
+            roots = (obj["SBOM"] or {}).get("roots") or []
+            if roots:
+                module = roots[0]
         f = obj.get("finding")
         if not f:
             continue
         osv = f.get("osv")
         if not osv:
             raise ParseError("govulncheck: finding with no osv id")
-        # A function-bearing frame is a real call path. An empty trace is NOT
-        # evidence of unreachability. Reachable is ORed across messages for the
-        # same exact GO id so a later uncalled trace never overwrites a called one.
-        called = any(fr.get("function") for fr in f.get("trace", []) if isinstance(fr, dict))
-        prev = by_osv.get(osv, {}).get("reachable", False)
-        by_osv[osv] = {"reachable": prev or called}
+        trace = [fr for fr in f.get("trace", []) if isinstance(fr, dict)]
+        # A function-bearing frame is a real call path. A non-empty trace WITHOUT a
+        # function frame is imported-but-not-called. An EMPTY trace proves nothing.
+        called = any(fr.get("function") for fr in trace)
+        imported_only = bool(trace) and not called
+        cur = by_osv.get(osv, {"reachable": False, "imported_only": False})
+        by_osv[osv] = {"reachable": cur["reachable"] or called,
+                       "imported_only": cur["imported_only"] or imported_only}
     if not saw_any:
         raise ParseError("govulncheck: empty stream")
-    return {"scan_level": scan_level, "by_osv": by_osv}
+    return {"scan_level": scan_level, "module": module, "by_osv": by_osv}
 
 
 def parse_kev(path):

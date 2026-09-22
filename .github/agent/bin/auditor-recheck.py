@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Every-run re-check (REQ-AUD-2 AC7): when the upstream fix becomes pullable, the
-temporary/reachability VEX statement and every ignore under every alias are DELETED
-(a real change), the bump PR is opened through the shim, and the finding moves to
-report section 1. The prior state is not merely flagged removed."""
+"""Every-run re-check (REQ-AUD-2 AC7). now-pullable SURGICALLY removes only the finding's
+statements (matched by vulnerability.name or vulnerability.aliases) and ignore entries,
+never whole shared files, opens the bump PR through the shim, and moves the finding to
+report section 1."""
 import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+
+# reuse the surgical remover from poam
+import importlib.util
+_spec = importlib.util.spec_from_file_location("auditor_poam", os.path.join(os.path.dirname(os.path.abspath(__file__)), "auditor-poam.py"))
+POAM = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(POAM)
 
 
 def _shim(line):
@@ -14,22 +19,12 @@ def _shim(line):
         open(log, "a").write(line + "\n")
 
 
-def _delete_named(root, aliases):
-    removed = []
-    for dp, _, fs in os.walk(root):
-        for fn in fs:
-            p = os.path.join(dp, fn)
-            if any(a in open(p, errors="ignore").read() for a in aliases):
-                os.remove(p); removed.append(p)
-    return removed
-
-
 def main():
     out = cli.opt("--out"); disp = json.load(open(cli.opt("--vex")))
     suppdir = cli.opt("--suppression-dir"); cve = disp.get("cve")
     aliases = {cve} | set(disp.get("aliases", []))
     if cli.flag("--now-pullable"):
-        removed = _delete_named(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
+        removed = POAM._remove_ignores(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
         _shim("git checkout -b auditor/bump-%s" % cve)
         _shim("gh pr create --head auditor/bump-%s --base main --label auto-merge-lane" % cve)
         cli.writej(os.path.join(out, "recheck.json"),

@@ -59,8 +59,10 @@ class Govulncheck(unittest.TestCase):
     def test_real(self):
         g = P.parse_govulncheck(F + "/govulncheck/gv-01.json")
         self.assertEqual(g["scan_level"], "symbol")
+        self.assertEqual(g["module"], "example.com/reach")
         self.assertTrue(g["by_osv"]["GO-2021-0113"]["reachable"])
         self.assertFalse(g["by_osv"]["GO-2020-0015"]["reachable"])
+        self.assertTrue(g["by_osv"]["GO-2020-0015"]["imported_only"])   # module-level, non-empty
         self.assertNotIn("CVE-2099-0", g["by_osv"])  # absent -> absent, not reachable=False
     def test_malformed(self):
         self.assertRaises(P.ParseError, P.parse_govulncheck, w(""))

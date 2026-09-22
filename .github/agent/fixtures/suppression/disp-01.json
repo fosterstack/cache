@@ -20,7 +20,8 @@
   "osv-scanner": "pkg:deb/debian/apt@2.6.1"
  },
  "evidence": {
-  "source": "known-defect-log",
-  "row_id": "CVE-2011-3374"
+  "check": "known-defect-log",
+  "source_file": ".github/agent/fixtures/dl/log.json",
+  "detail": "exact key grype/CVE-2011-3374/pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0"
  }
 }

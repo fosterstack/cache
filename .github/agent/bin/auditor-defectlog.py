@@ -63,7 +63,7 @@ def do_run(out):
                                                   "finding_id": f["finding_id"], "purl": f["purl"]}],
                                        "package": f.get("finding_id"),
                                        "affected_version_range": "evidence only",
-                                       "disposition": ans.get("category") or "under_investigation",
+                                       "disposition": "proposed", "model_suggestion": ans.get("category"),
                                        "vex_id": None, "evidence": "adjudicated on miss",
                                        "date": "2026-09-22"})
     if append:

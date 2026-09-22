@@ -68,8 +68,10 @@ def shape(text):
     api_key = any("ANTHROPIC_API_KEY" in s for s in all_scalars) or \
               any("ANTHROPIC_API_KEY" in (st.get("env") or {}) for st in steps if isinstance(st, dict))
     vars_refs = set()
+    secret_refs = set()
     for s in all_scalars:
         vars_refs.update(re.findall(r"vars\.([A-Z0-9_]+)", s))
+        secret_refs.update(re.findall(r"secrets\.([A-Z0-9_]+)", s))
     # any step env VALUE referencing vars.* (forbidden — logged by the runner)
     env_refs_vars = False
     script_mask_count = 0
@@ -97,6 +99,8 @@ def shape(text):
         "sets_identity_token_file": token_file,
         "references_anthropic_api_key": api_key,
         "identifier_env_vars": sorted(vars_refs),
+        "secret_refs": sorted(secret_refs),
+        "references_vars": bool(vars_refs),
         "env_refs_vars": env_refs_vars,
         "script_mask_count": script_mask_count,
         "runs_auditor_run": runs_auditor_run,

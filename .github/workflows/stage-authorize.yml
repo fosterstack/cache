@@ -230,30 +230,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cand=.auditor/accepted-items.json
-          if [ ! -f "$cand" ]; then
-            if ls .vex/*.json >/dev/null 2>&1 && python3 -c '
-import glob,json,sys
-for f in glob.glob(".vex/*.json"):
-    try:
-        for s in json.load(open(f)).get("statements",[]):
-            if s.get("status")=="affected": sys.exit(0)
-    except Exception: pass
-sys.exit(1)'; then
-              echo "::error::held: candidate carries an affected VEX but no accepted-items inventory (fail closed)" >&2; exit 1
-            fi
-            echo "no accepted risk items and no affected VEX — promote"
-            exit 0
-          fi
           gh issue list --label owner-decision --state all --limit 500 --json number,comments \
             --jq '{issues: [.[] | {number, comments: [.comments[] | {author: .author.login, body}]}]}' \
-            > /tmp/auditor-issues.json
+            > "${RUNNER_TEMP}/auditor-issues.json" || echo '{"issues":[]}' > "${RUNNER_TEMP}/auditor-issues.json"
           python3 .github/agent/bin/auditor-release-authz.py \
-            --candidate "$cand" --issues /tmp/auditor-issues.json \
-            --today "$(date -u +%F)" --out /tmp/auditor-authz/authz.json
-          decision=$(python3 -c 'import json;print(json.load(open("/tmp/auditor-authz/authz.json"))["decision"])')
+            --candidate .auditor/accepted-items.json --vex-dir .vex \
+            --issues "${RUNNER_TEMP}/auditor-issues.json" --today "$(date -u +%F)" \
+            --out "${RUNNER_TEMP}/authz.json"
+          decision=$(python3 -c 'import json;print(json.load(open("'"${RUNNER_TEMP}"'/authz.json"))["decision"])')
           echo "auditor release authorization: ${decision}"
-          [ "$decision" = "promote" ] || { echo "::error::held: an at-or-above-threshold accepted item lacks recorded owner acceptance on its owner-decision issue" >&2; exit 1; }
+          [ "$decision" = "promote" ] || { echo "::error::held: a carried affected item lacks a complete inventory with recorded owner acceptance" >&2; exit 1; }
 
       - name: write and sign the release-authorization predicate
         id: predicate

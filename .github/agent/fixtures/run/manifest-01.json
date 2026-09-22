@@ -12,5 +12,6 @@
   "osv-scanner-gomod": ".github/agent/fixtures/scanners/osv-gomod.json"
  },
  "govulncheck": ".github/agent/fixtures/govulncheck/gv-01.json",
- "known_defect_log": ".github/agent/fixtures/dl/log.json"
+ "known_defect_log": ".github/agent/fixtures/dl/log.json",
+ "module": "example.com/reach"
 }

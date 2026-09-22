@@ -4,5 +4,9 @@
  "vex_status": "affected",
  "ignore_expiry": "2026-08-23",
  "today": "2026-09-22",
- "fix_available": false
+ "fix_available": false,
+ "aliases": [
+  "CVE-2011-3374",
+  "DEBIAN-CVE-2011-3374"
+ ]
 }

@@ -1,11 +1,10 @@
 name: Daily CVE auditor
 
-# The sealed daily CVE auditor. Schedule-triggered on an offset cron;
-# workflow_dispatch (dry_run default true) so the owner can run it on demand. It
-# calls into the sealed directory .github/agent/. No static key: the job federates
-# with the model service through GitHub Actions OIDC. No configured identifier is ever
-# a step `env:` value — they are read inside the github-script step, masked with
-# core.setSecret, then exported, so the runner never prints them.
+# The sealed daily CVE auditor. It consumes the day's main-candidate-rescan artifacts,
+# runs the pinned scanners over the candidate image, and audits the findings with the
+# federated model client. Schedule runs are NOT dry; workflow_dispatch offers a dry_run
+# (default true) for on-demand debugging. Configured identifiers are GitHub environment
+# SECRETS (GitHub masks them in logs); no vars.* and no plaintext identifier anywhere.
 on:
   schedule:
     - cron: '23 6 * * *'   # offset from the hour and from both rescans (11, 41)
@@ -29,38 +28,56 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      actions: read        # to download the rescan run's artifacts
     steps:
       - uses: actions/checkout@v4
-      - name: Mint the federated OIDC token and export the masked identifiers
+      - name: Mint the federated OIDC identity token
         uses: actions/github-script@v7
         with:
           script: |
             const token = await core.getIDToken('https://api.anthropic.com')
             core.setSecret(token)
             const fs = require('fs')
-            const tokenPath = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
-            fs.writeFileSync(tokenPath, token)
-            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', tokenPath)
-            // Read each configured identifier here, mask it, then export it for the
-            // run step — it is never a plaintext step env value in this workflow.
-            const ids = {
-              ANTHROPIC_FEDERATION_RULE_ID: `${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}`,
-              ANTHROPIC_ORGANIZATION_ID: `${{ vars.ANTHROPIC_ORGANIZATION_ID }}`,
-              ANTHROPIC_SERVICE_ACCOUNT_ID: `${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}`,
-              ANTHROPIC_WORKSPACE_ID: `${{ vars.ANTHROPIC_WORKSPACE_ID }}`,
-              AUDITOR_MODEL_PRIMARY: `${{ vars.AUDITOR_MODEL_PRIMARY }}`,
-              AUDITOR_MODEL_FALLBACK: `${{ vars.AUDITOR_MODEL_FALLBACK }}`,
-            }
-            core.setSecret(ids.ANTHROPIC_FEDERATION_RULE_ID)
-            core.setSecret(ids.ANTHROPIC_ORGANIZATION_ID)
-            core.setSecret(ids.ANTHROPIC_SERVICE_ACCOUNT_ID)
-            core.setSecret(ids.ANTHROPIC_WORKSPACE_ID)
-            core.setSecret(ids.AUDITOR_MODEL_PRIMARY)
-            core.setSecret(ids.AUDITOR_MODEL_FALLBACK)
-            for (const [k, v] of Object.entries(ids)) core.exportVariable(k, v)
-      - name: Run the auditor
+            const p = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
+            fs.writeFileSync(p, token)
+            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', p)
+      - name: Download the day's main-candidate-rescan artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          rid=$(gh run list --workflow main-candidate-rescan.yml --status success \
+                  --limit 1 --json databaseId --jq '.[0].databaseId')
+          [ -n "$rid" ] || { echo "::error::no green main-candidate-rescan run to consume" >&2; exit 1; }
+          mkdir -p "${RUNNER_TEMP}/rescan"
+          gh run download "$rid" --dir "${RUNNER_TEMP}/rescan"
+      - name: Scan the candidate and build the run manifest
+        run: |
+          set -euo pipefail
+          for s in grype trivy osv-scanner; do ./bin/install-scanner.sh "$s"; done
+          python3 .github/agent/bin/auditor-manifest.py \
+            --rescan-dir "${RUNNER_TEMP}/rescan" --out "${RUNNER_TEMP}/manifest.json" \
+            --reports "${RUNNER_TEMP}/reports"
+      - name: Run the auditor
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
+          AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
+          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
+        run: |
+          set -euo pipefail
+          curl -fsS https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json -o "${AUDITOR_KEV_CATALOG}"
+          dry='${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}'
           python3 .github/agent/bin/auditor-run.py \
-            --dry-run "${{ inputs.dry_run }}" \
-            --manifest .github/agent/fixtures/run/manifest-01.json \
+            --manifest "${RUNNER_TEMP}/manifest.json" \
+            --dry-run "${dry}" --today "$(date -u +%F)" \
             --out "${RUNNER_TEMP}/auditor-out"
+          cat "${RUNNER_TEMP}/auditor-out/report.md" >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload the audit report and artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: auditor-run
+          path: ${{ runner.temp }}/auditor-out
