@@ -70,6 +70,21 @@ def shape(text):
     vars_refs = set()
     for s in all_scalars:
         vars_refs.update(re.findall(r"vars\.([A-Z0-9_]+)", s))
+    # any step env VALUE referencing vars.* (forbidden — logged by the runner)
+    env_refs_vars = False
+    script_mask_count = 0
+    runs_auditor_run = False
+    for st in steps:
+        if not isinstance(st, dict):
+            continue
+        for v in (st.get("env") or {}).values():
+            if isinstance(v, str) and "vars." in v:
+                env_refs_vars = True
+        script = ((st.get("with") or {}).get("script") or "")
+        script_mask_count += len(re.findall(r"setSecret\(", script))
+        runv = st.get("run") or ""
+        if "auditor-run.py" in runv and "inputs.dry_run" in runv:
+            runs_auditor_run = True
     return {
         "triggers": triggers,
         "cron": cron,
@@ -82,6 +97,9 @@ def shape(text):
         "sets_identity_token_file": token_file,
         "references_anthropic_api_key": api_key,
         "identifier_env_vars": sorted(vars_refs),
+        "env_refs_vars": env_refs_vars,
+        "script_mask_count": script_mask_count,
+        "runs_auditor_run": runs_auditor_run,
     }
 
 if __name__ == "__main__":

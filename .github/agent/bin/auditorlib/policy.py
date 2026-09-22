@@ -27,6 +27,7 @@ NOTIFY_TRIGGERS = [
 ]
 NOTIFY_CHANNEL = "owner-decision-issue"
 OWNER_LABEL = "owner-decision"
+OWNER_LOGIN = "fosterstack-admin"
 
 # Run bounds.
 MAX_ITERATIONS = 5

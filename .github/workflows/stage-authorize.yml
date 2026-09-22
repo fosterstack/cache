@@ -219,11 +219,12 @@ jobs:
 
           echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
 
-      # REQ-AUD-11: the daily auditor, when it accepts a reachable-no-fix risk item,
-      # writes .auditor/accepted-items.json into the tree. Release authorization holds
-      # a tag whose candidate carries an at-or-above-threshold accepted item unless the
-      # owner's acceptance is recorded on the owner-decision issue. No accepted-items
-      # file (the normal case) is a no-op promote — this never gates a clean release.
+      # REQ-AUD-11: the daily auditor writes .auditor/accepted-items.json (every
+      # at-or-above-threshold accepted item, its issue number, expiry) on every run and
+      # commits it through the PR lane with the VEX. This gate FAILS CLOSED: a MISSING
+      # inventory is a hold whenever the candidate carries any `affected` VEX statement
+      # (a real accepted risk with no recorded inventory); it promotes only when the
+      # inventory exists and every listed item has the owner's recorded acceptance.
       - name: auditor risk-acceptance gate (REQ-AUD-11)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -231,18 +232,25 @@ jobs:
           set -euo pipefail
           cand=.auditor/accepted-items.json
           if [ ! -f "$cand" ]; then
-            echo "no auditor-accepted risk items to authorize — promote"
+            if ls .vex/*.json >/dev/null 2>&1 && python3 -c '
+import glob,json,sys
+for f in glob.glob(".vex/*.json"):
+    try:
+        for s in json.load(open(f)).get("statements",[]):
+            if s.get("status")=="affected": sys.exit(0)
+    except Exception: pass
+sys.exit(1)'; then
+              echo "::error::held: candidate carries an affected VEX but no accepted-items inventory (fail closed)" >&2; exit 1
+            fi
+            echo "no accepted risk items and no affected VEX — promote"
             exit 0
           fi
-          # gather the owner-decision issues' state (comments) for the gate to read.
-          owner="${{ github.repository_owner }}"
-          gh issue list --label owner-decision --state all --json number,comments \
-            --jq '{owner_login: "'"$owner"'", issues: [.[] | {number, comments: [.comments[] | {author: .author.login, body}]}]}' \
+          gh issue list --label owner-decision --state all --limit 500 --json number,comments \
+            --jq '{issues: [.[] | {number, comments: [.comments[] | {author: .author.login, body}]}]}' \
             > /tmp/auditor-issues.json
-          out=/tmp/auditor-authz
           python3 .github/agent/bin/auditor-release-authz.py \
-            --candidate "$cand" --issues /tmp/auditor-issues.json --owner "$owner" \
-            --out "$out/authz.json"
+            --candidate "$cand" --issues /tmp/auditor-issues.json \
+            --today "$(date -u +%F)" --out /tmp/auditor-authz/authz.json
           decision=$(python3 -c 'import json;print(json.load(open("/tmp/auditor-authz/authz.json"))["decision"])')
           echo "auditor release authorization: ${decision}"
           [ "$decision" = "promote" ] || { echo "::error::held: an at-or-above-threshold accepted item lacks recorded owner acceptance on its owner-decision issue" >&2; exit 1; }

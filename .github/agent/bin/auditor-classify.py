@@ -1,82 +1,128 @@
 #!/usr/bin/env python3
 """Classify findings (REQ-AUD-2).
 
-Reachability rule, in code and here: ABSENCE OF EVIDENCE IS NEVER EVIDENCE OF
-UNREACHABILITY. A finding with no matching govulncheck message stays OPEN. A
-not_affected(vulnerable_code_not_in_execute_path) statement is written only for a
-finding that govulncheck reports as present-and-not-reachable. The model proposes a
-category only on a log miss; the code verifies status against evidence, never the
-model.
+Two rules hold everywhere:
+  * ABSENCE OF EVIDENCE IS NEVER EVIDENCE OF UNREACHABILITY. A finding with no
+    matching govulncheck message stays OPEN.
+  * THE MODEL'S ANSWER IS A PROPOSAL. Code writes a VEX only after it has itself
+    verified the evidence for that finding, under every alias:
+      - not_affected(vulnerable_code_not_in_execute_path) requires a govulncheck
+        stream at SYMBOL scan level, a finding message for one of the ids, and no
+        function-bearing trace for any id. An empty trace is not proof.
+      - false_positive requires a known-defect-log row for one of the ids, or a
+        version-range exclusion in the scanner's own data.
+    A model proposal the code cannot verify becomes `under_investigation` (section 4).
 """
-import os, sys, re
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+import os, sys, re, json
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
 from auditorlib import parsers as P
 
 SECT = {"false_positive": [5], "not_affected_unreachable": [2],
-        "real_fixable": [3], "risk_acceptance": [2, 3]}
+        "real_fixable": [3], "risk_acceptance": [2, 3], "under_investigation": [4]}
+TS = "2026-09-22T00:00:00-04:00"
 
 
 def canon(fid, aliases):
-    # Prefer a scanner-reported CVE alias so DEBIAN-CVE and GO ids for the same
-    # advisory collapse to one finding (matched through the alias set, never string
-    # surgery). Falls back to the id when no CVE alias exists.
     for a in [fid] + list(aliases):
         if re.fullmatch(r"CVE-\d{4}-\d+", a):
             return a
     return fid
 
 
-def vex(fid, status, justification=None, action=None):
-    s = {"@id": policy.stmt_id(fid), "vulnerability": {"name": fid},
-         "products": [{"@id": policy.VEX_PRODUCT}], "status": status}
+def vex_doc(fid, status, justification=None, action=None, evidence=None):
+    st = {"@id": policy.stmt_id(fid), "vulnerability": {"name": fid},
+          "timestamp": TS, "products": [{"@id": policy.VEX_PRODUCT}], "status": status}
     if justification:
-        s["justification"] = justification
+        st["justification"] = justification
     if action:
-        s["action_statement"] = action
+        st["action_statement"] = action
+    if evidence:
+        st["_evidence"] = evidence
     return {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
-            "author": "FosterStack LLC", "role": "vendor", "version": 1,
-            "statements": [s]}
+            "author": "FosterStack LLC", "role": "vendor", "timestamp": TS, "version": 1,
+            "statements": [st]}
+
+
+def gvc_verdict(gvc_path, ids):
+    """Return ('unreachable'|'reachable'|'no-evidence', evidence-dict)."""
+    if not gvc_path or not os.path.exists(gvc_path):
+        return "no-evidence", {"reason": "no govulncheck stream"}
+    try:
+        g = P.parse_govulncheck(gvc_path)
+    except P.ParseError:
+        return "no-evidence", {"reason": "unparseable govulncheck"}
+    present = [i for i in ids if i in g["by_osv"]]
+    if not present:
+        return "no-evidence", {"reason": "no finding message for any id"}
+    if g["scan_level"] != "symbol":
+        return "no-evidence", {"reason": "scan_level=%s (symbol required)" % g["scan_level"]}
+    if any(g["by_osv"][i]["reachable"] for i in present):
+        return "reachable", {"scan_level": "symbol", "reachable": True}
+    return "unreachable", {"source": "govulncheck", "scan_level": "symbol",
+                           "reachable": False, "ids": present}
+
+
+def fp_verified(ids, logpath, findings):
+    if logpath and os.path.exists(logpath):
+        log = json.load(open(logpath))
+        for row in log.get("defects", []):
+            for k in row.get("keys", []):
+                if k["finding_id"] in ids and row.get("disposition") == "false_positive":
+                    return {"source": "known-defect-log", "row_id": k["finding_id"]}
+    # version-range exclusion in the scanner's own data: a fixed version <= installed.
+    for f in findings:
+        return None  # (conservative: no generic exclusion implemented here)
+    return None
 
 
 def manifest_findings(manifest):
-    import json
-    m = json.load(open(manifest))
-    r = m["scanner_reports"]
+    m = json.load(open(manifest)); r = m["scanner_reports"]
     allf = (P.parse_grype(r["grype"]) + P.parse_trivy(r["trivy"]) +
             P.parse_osv(r["osv-scanner"]) + P.parse_osv(r["osv-scanner-gomod"], "osv-scanner-gomod") +
             P.parse_snyk(r["snyk"]))
-    groups = {}   # canonical -> {id, findings}
+    groups = {}
     for f in allf:
         c = canon(f["finding_id"], f["aliases"])
         groups.setdefault(c, {"id": c, "aliases": set(), "findings": []})
-        groups[c]["aliases"].update(f["aliases"])
+        groups[c]["aliases"].update(f["aliases"]); groups[c]["aliases"].add(f["finding_id"])
         groups[c]["findings"].append(f)
     return m, groups
 
 
 def do_manifest(manifest, adjudicator, out):
     m, groups = manifest_findings(manifest)
-    classification = []
-    report_sections = {}
+    gvc = m.get("govulncheck"); logpath = m.get("known_defect_log")
+    classification = []; report_sections = {}
     for c, grp in groups.items():
-        ans = cli.ask_model(adjudicator, c)      # judgment: category
-        cat = ans.get("category")
+        ids = sorted(grp["aliases"])
+        proposal = cli.ask_model(adjudicator, c).get("category")   # PROPOSAL only
+        cat = proposal
+        if proposal == "not_affected_unreachable":
+            verdict, ev = gvc_verdict(gvc, ids)
+            if verdict == "unreachable":
+                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
+                           vex_doc(c, "not_affected", "vulnerable_code_not_in_execute_path", evidence=ev))
+            else:
+                cat = "under_investigation"
+                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
+                           vex_doc(c, "under_investigation", evidence={"reason": ev.get("reason", verdict)}))
+        elif proposal == "false_positive":
+            ev = fp_verified(ids, logpath, grp["findings"])
+            if ev:
+                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
+                           vex_doc(c, "not_affected", "vulnerable_code_not_present", evidence=ev))
+                cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
+                           {"vex": policy.stmt_id(c), "id": c, "evidence": ev})
+            else:
+                cat = "under_investigation"
+                cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
+                           vex_doc(c, "under_investigation", evidence={"reason": "no false-positive evidence"}))
         classification.append({"id": c, "category": cat})
-        secs = SECT.get(cat, [])
-        for s in secs:
+        for s in SECT.get(cat, []):
             report_sections.setdefault(s, []).append(c)
-        cli.writej(os.path.join(out, "report-sections", c + ".json"), {"sections": secs})
-        cli.writej(os.path.join(out, "disposition", c + ".json"),
-                   {"permanent": cat == "false_positive"})
-        if cat == "false_positive":
-            cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                       vex(c, "not_affected", ans.get("justification") or "vulnerable_code_not_present"))
-            cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
-                       {"vex": policy.stmt_id(c), "id": c})
-        elif cat == "not_affected_unreachable":
-            cli.writej(os.path.join(out, "vex", c + ".openvex.json"),
-                       vex(c, "not_affected", "vulnerable_code_not_in_execute_path"))
+        cli.writej(os.path.join(out, "report-sections", c + ".json"), {"sections": SECT.get(cat, [])})
+        cli.writej(os.path.join(out, "disposition", c + ".json"), {"permanent": cat == "false_positive"})
     cli.writej(os.path.join(out, "classification.json"), {"findings": classification})
     _render_report(out, report_sections)
 
@@ -95,19 +141,17 @@ def _render_report(out, sections):
 
 
 def do_single(finding, manifest, gvc, out):
-    reach = P.parse_govulncheck(gvc)              # deterministic; no model
-    if finding not in reach:                       # NO evidence -> stays OPEN
+    verdict, ev = gvc_verdict(gvc, [finding])
+    if verdict == "no-evidence":
         cli.writej(os.path.join(out, "status", finding + ".json"),
-                   {"open": True, "reason": "no govulncheck evidence for this finding"})
+                   {"open": True, "reason": ev.get("reason", "no evidence")})
         return
-    if not reach[finding]["reachable"]:            # present + not reachable -> agent VEX
+    if verdict == "unreachable":
         cli.writej(os.path.join(out, "vex", finding + ".openvex.json"),
-                   vex(finding, "not_affected", "vulnerable_code_not_in_execute_path"))
+                   vex_doc(finding, "not_affected", "vulnerable_code_not_in_execute_path", evidence=ev))
         return
-    # reachable -> real-fixable bump PR (no not_affected VEX)
-    import json
-    m = json.load(open(manifest))
-    fixed = installed = None
+    # reachable -> real-fixable bump
+    m = json.load(open(manifest)); fixed = installed = None
     for f in P.parse_osv(m["scanner_reports"]["osv-scanner-gomod"], "osv-scanner-gomod"):
         if f["finding_id"] == finding or finding in f["aliases"]:
             fixed = f["fixed_version"]; installed = f["extra"].get("installed_version")
@@ -118,8 +162,7 @@ def do_single(finding, manifest, gvc, out):
 
 def main():
     out = cli.opt("--out"); adjudicator = cli.opt("--adjudicator")
-    finding = cli.opt("--finding"); manifest = cli.opt("--manifest")
-    gvc = cli.opt("--govulncheck")
+    finding = cli.opt("--finding"); manifest = cli.opt("--manifest"); gvc = cli.opt("--govulncheck")
     if finding and gvc:
         do_single(finding, manifest, gvc, out)
     elif manifest:

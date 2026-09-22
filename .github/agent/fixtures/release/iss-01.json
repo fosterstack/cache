@@ -11,7 +11,7 @@
    "comments": [
     {
      "author": "fosterstack-admin",
-     "body": "ACCEPT CVE-2023-4911 risk for 30d (Looney Tunables; mitigations noted)"
+     "body": "ACCEPT CVE-2023-4911 until 2026-10-22\nLooney Tunables; mitigations noted."
     }
    ],
    "reviews": []

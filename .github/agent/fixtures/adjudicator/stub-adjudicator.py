@@ -29,7 +29,7 @@ FIX = {"refused": False, "category": "real_fixable", "justification": "a pullabl
 CANNED = {
     # real finding ids from run/manifest-multi.json (native scanner reports)
     ("CVE-2016-2781", "primary"): FP,     # grype-only OS finding -> false positive
-    ("CVE-2011-3374", "primary"): NRU,    # shared 4-scanner OS finding -> not reachable
+    ("CVE-2011-3374", "primary"): dict(FP, same_defect=True),  # log-verified FP; reconcile: same defect
     ("CVE-2022-48303", "primary"): FIX,   # OS finding with a fixed version
     ("CVE-2023-4911", "primary"): FIX,    # glibc, fixed version available in this image
     ("GO-2020-0015", "primary"): NRU,     # x/text, imported but not called

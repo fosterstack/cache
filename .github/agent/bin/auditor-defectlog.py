@@ -9,6 +9,7 @@ any filename.
 import os, sys, json, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+from auditorlib import parsers as P
 
 
 def index(log):
@@ -62,7 +63,7 @@ def do_run(out):
                                                   "finding_id": f["finding_id"], "purl": f["purl"]}],
                                        "package": f.get("finding_id"),
                                        "affected_version_range": "evidence only",
-                                       "disposition": ans.get("category", "false_positive"),
+                                       "disposition": ans.get("category") or "under_investigation",
                                        "vex_id": None, "evidence": "adjudicated on miss",
                                        "date": "2026-09-22"})
     if append:
@@ -75,13 +76,34 @@ def do_run(out):
 def do_reconcile(out):
     logpath = cli.opt("--log"); log = load(logpath)
     a = cli.ARGS; sc, fid, purl = a[a.index("--finding") + 1:a.index("--finding") + 4]
-    adjudicator = cli.opt("--adjudicator")
-    # judgment: the model concludes this is the same defect as an existing row.
-    cli.ask_model(adjudicator, fid)
+    adjudicator = cli.opt("--adjudicator"); manifest = cli.opt("--manifest")
+    ans = cli.ask_model(adjudicator, fid)                    # PROPOSAL: same defect?
+    if not ans.get("same_defect"):
+        cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "model: not the same defect"})
+        return
+    # the scanner must actually report this exact (id/alias, purl).
+    reported = False
+    if manifest:
+        m = json.load(open(manifest))
+        reps = {"grype": P.parse_grype, "trivy": P.parse_trivy, "snyk": P.parse_snyk,
+                "osv-scanner": P.parse_osv}
+        fn = reps.get(sc)
+        rpt = m["scanner_reports"].get(sc)
+        if fn and rpt:
+            for f in fn(rpt):
+                if (fid == f["finding_id"] or fid in f["aliases"]) and f["purl"] == purl:
+                    reported = True
+    if not reported:
+        cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "scanner does not report this purl"})
+        return
+    target = None
     for row in log["defects"]:
-        if any(k["finding_id"] == fid for k in row["keys"]):
-            row["keys"].append({"scanner": sc, "finding_id": fid, "purl": purl})
-            break
+        if any(k["finding_id"] == fid or fid in [x for k2 in row["keys"] for x in (k2["finding_id"],)] for k in row["keys"]):
+            target = row; break
+    if target is None:
+        cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "no row names this finding"})
+        return
+    target["keys"].append({"scanner": sc, "finding_id": fid, "purl": purl})
     json.dump(log, open(logpath, "w"), indent=1)
     cli.writej(os.path.join(out, "reconcile.json"), {"added": {"scanner": sc, "finding_id": fid, "purl": purl}})
 

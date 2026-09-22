@@ -18,5 +18,9 @@
   "trivy": "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0",
   "snyk": "pkg:deb/debian/apt@2.6.1?distro=debian-12.0",
   "osv-scanner": "pkg:deb/debian/apt@2.6.1"
+ },
+ "evidence": {
+  "source": "known-defect-log",
+  "row_id": "CVE-2011-3374"
  }
 }

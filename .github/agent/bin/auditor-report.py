@@ -31,7 +31,9 @@ def main():
     for s in scanners:
         if s.get("ran", True):
             lines.append("scanner: %s %s (db %s)" % (s["name"], s.get("version"), s.get("db_date")))
-    lines.append("model: %s   token cost: %s" % (rs.get("model", "primary"), rs.get("token_cost", 0)))
+    role = rs.get("model", "primary")
+    role = role if role in ("primary", "fallback") else "primary"
+    lines.append("model: %s   token cost: %s" % (role, rs.get("token_cost", 0)))
     sec = {}
     for f in rs.get("findings", []):
         n = SECT.get(f.get("disposition"))

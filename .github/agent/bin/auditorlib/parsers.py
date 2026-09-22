@@ -116,14 +116,19 @@ def parse_osv(path, scanner="osv-scanner"):
 
 def parse_snyk(path):
     d = _load(path)
-    if "vulnerabilities" not in d:
-        raise ParseError("snyk: no vulnerabilities")
+    if "vulnerabilities" not in d and "applications" not in d:
+        raise ParseError("snyk: no vulnerabilities or applications")
     out = []
-    for v in d.get("vulnerabilities") or []:
+    def emit(v):
         cves = (v.get("identifiers") or {}).get("CVE") or []
         out.append(_finding("snyk", v.get("id"), v.get("purl"), cves,
                             v.get("packageName"), v.get("nearestFixedInVersion") or None,
                             v.get("severity")))
+    for v in d.get("vulnerabilities") or []:
+        emit(v)
+    for app in d.get("applications") or []:
+        for v in app.get("vulnerabilities") or []:
+            emit(v)
     return out
 
 
@@ -149,23 +154,30 @@ def parse_govulncheck(path):
         text = open(path).read()
     except Exception as e:
         raise ParseError("govulncheck: cannot read %s: %s" % (path, e))
-    res = {}
+    by_osv = {}
+    scan_level = None
     saw_any = False
     for obj in _stream(text):
         if not isinstance(obj, dict):
             raise ParseError("govulncheck: non-object in stream")
         saw_any = True
+        if "config" in obj:
+            scan_level = (obj["config"] or {}).get("scan_level")
         f = obj.get("finding")
         if not f:
             continue
         osv = f.get("osv")
         if not osv:
             raise ParseError("govulncheck: finding with no osv id")
+        # A function-bearing frame is a real call path. An empty trace is NOT
+        # evidence of unreachability. Reachable is ORed across messages for the
+        # same exact GO id so a later uncalled trace never overwrites a called one.
         called = any(fr.get("function") for fr in f.get("trace", []) if isinstance(fr, dict))
-        res[osv] = {"reachable": res.get(osv, {}).get("reachable", False) or called}
+        prev = by_osv.get(osv, {}).get("reachable", False)
+        by_osv[osv] = {"reachable": prev or called}
     if not saw_any:
         raise ParseError("govulncheck: empty stream")
-    return res
+    return {"scan_level": scan_level, "by_osv": by_osv}
 
 
 def parse_kev(path):

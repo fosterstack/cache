@@ -9,6 +9,9 @@ from auditorlib import cli
 def main():
     rs = json.load(open(cli.opt("--run-state"))); out = cli.opt("--out")
     dg = rs["run"]["candidate_digests"]["production"]
+    import re as _re
+    if not _re.fullmatch(r"sha256:[0-9a-f]{64}", dg):
+        raise SystemExit("consume-rescan: refusing to reuse a malformed candidate digest %r" % dg)
     cli.writej(os.path.join(out, "scanner-calls.json"), {"count": 0})
     cli.writej(os.path.join(out, "consumed.json"),
                {"reused": True, "digest": dg, "artifacts": ["daily-rescan"]})

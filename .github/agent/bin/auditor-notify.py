@@ -6,13 +6,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
 from auditorlib import parsers as P
 
-DEFAULT_KEV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "kev", "kev.json")
-
-
 def is_trigger(f, kevpath):
     if not (f.get("reachable") and not f.get("fix_pullable")):
         return False
     if (f.get("severity") or "").lower() == "critical":
+        return True
+    if f.get("known_exploited"):
         return True
     try:
         return f["cve"] in P.parse_kev(kevpath)
@@ -28,7 +27,7 @@ def main():
         return
     f = json.load(open(cli.opt("--finding"))); cve = f["cve"]
     github = cli.opt("--github"); state = cli.opt("--state"); artifact = cli.opt("--artifact", "")
-    kev = cli.opt("--kev", DEFAULT_KEV)
+    kev = cli.opt("--kev", os.environ.get("AUDITOR_KEV_CATALOG"))
     if not is_trigger(f, kev):
         cli.writej(os.path.join(out, "notify.json"), {"notified": False, "cve": cve})
         return

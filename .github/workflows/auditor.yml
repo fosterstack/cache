@@ -1,9 +1,11 @@
 name: Daily CVE auditor
 
-# The sealed daily CVE auditor. Schedule-triggered on an
-# offset cron; workflow_dispatch (dry_run default true) so the owner can run it on
-# demand. It calls into the sealed directory .github/agent/. No static key: the job
-# federates with the model service through GitHub Actions OIDC.
+# The sealed daily CVE auditor. Schedule-triggered on an offset cron;
+# workflow_dispatch (dry_run default true) so the owner can run it on demand. It
+# calls into the sealed directory .github/agent/. No static key: the job federates
+# with the model service through GitHub Actions OIDC. No configured identifier is ever
+# a step `env:` value — they are read inside the github-script step, masked with
+# core.setSecret, then exported, so the runner never prints them.
 on:
   schedule:
     - cron: '23 6 * * *'   # offset from the hour and from both rescans (11, 41)
@@ -26,26 +28,39 @@ jobs:
       id-token: write
       contents: read
       pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
-      - name: Mint the federated OIDC token
+      - name: Mint the federated OIDC token and export the masked identifiers
         uses: actions/github-script@v7
         with:
           script: |
             const token = await core.getIDToken('https://api.anthropic.com')
             core.setSecret(token)
             const fs = require('fs')
-            const path = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
-            fs.writeFileSync(path, token)
-            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', path)
+            const tokenPath = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
+            fs.writeFileSync(tokenPath, token)
+            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', tokenPath)
+            // Read each configured identifier here, mask it, then export it for the
+            // run step — it is never a plaintext step env value in this workflow.
+            const ids = {
+              ANTHROPIC_FEDERATION_RULE_ID: `${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}`,
+              ANTHROPIC_ORGANIZATION_ID: `${{ vars.ANTHROPIC_ORGANIZATION_ID }}`,
+              ANTHROPIC_SERVICE_ACCOUNT_ID: `${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}`,
+              ANTHROPIC_WORKSPACE_ID: `${{ vars.ANTHROPIC_WORKSPACE_ID }}`,
+              AUDITOR_MODEL_PRIMARY: `${{ vars.AUDITOR_MODEL_PRIMARY }}`,
+              AUDITOR_MODEL_FALLBACK: `${{ vars.AUDITOR_MODEL_FALLBACK }}`,
+            }
+            core.setSecret(ids.ANTHROPIC_FEDERATION_RULE_ID)
+            core.setSecret(ids.ANTHROPIC_ORGANIZATION_ID)
+            core.setSecret(ids.ANTHROPIC_SERVICE_ACCOUNT_ID)
+            core.setSecret(ids.ANTHROPIC_WORKSPACE_ID)
+            core.setSecret(ids.AUDITOR_MODEL_PRIMARY)
+            core.setSecret(ids.AUDITOR_MODEL_FALLBACK)
+            for (const [k, v] of Object.entries(ids)) core.exportVariable(k, v)
       - name: Run the auditor
-        env:
-          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
-          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
-          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
-          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          AUDITOR_MODEL_PRIMARY: ${{ vars.AUDITOR_MODEL_PRIMARY }}
-          AUDITOR_MODEL_FALLBACK: ${{ vars.AUDITOR_MODEL_FALLBACK }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          python3 .github/agent/bin/auditor-run.py --dry-run "${DRY_RUN:-true}"
+          python3 .github/agent/bin/auditor-run.py \
+            --dry-run "${{ inputs.dry_run }}" \
+            --manifest .github/agent/fixtures/run/manifest-01.json \
+            --out "${RUNNER_TEMP}/auditor-out"

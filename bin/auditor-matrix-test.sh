@@ -195,9 +195,10 @@ run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adju
   prod="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 'json.dumps(s.get("products"))')"
   igsz="$( [ -s "$CDIR/ignores/grype/CVE-2016-2781.json" ] && echo nonempty || echo empty )"
   igcite="$(pj "$CDIR/ignores/grype/CVE-2016-2781.json" 'd.get("vex")')"
+  fpev="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 'str(bool(s.get("_evidence")))')"
   s5="$(sect_ids "$CDIR/report.md" 5)"; s3="$(sect_ids "$CDIR/report.md" 3)"
   fpstat="$(tree_vex_status_set "$CDIR" $(alias_set CVE-2016-2781))"
-  { eq "$fpstat" "not_affected" && eq "$st" "not_affected" && [ "$ju" != "$MISS" ] && printf '%s' "$prod" | grep -q 'repository_url=ghcr.io/fosterstack/cache' \
+  { eq "$fpstat" "not_affected" && eq "$st" "not_affected" && eq "$fpev" "True" && [ "$ju" != "$MISS" ] && printf '%s' "$prod" | grep -q 'repository_url=ghcr.io/fosterstack/cache' \
     && eq "$igsz" "nonempty" && [ "$igcite" != "$MISS" ] \
     && printf '%s' "$s5" | grep -q 'CVE-2016-2781' && ! printf '%s' "$s3" | grep -q 'CVE-2016-2781'; } \
     && ok || no "not_affected+justification+scoped product, ignore cites VEX, section-5 placement" "status=$st just=$ju ignore=$igsz cite=$igcite sec5=[$s5] sec3=[$s3]"; }
@@ -207,11 +208,12 @@ o="$WORK/ac2a"; rm -rf "$o"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2020-0015 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o" && {
   st="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's["status"]')"
   ju="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's.get("justification")')"
+  ev="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 '(s.get("_evidence") or {}).get("source")')"
   o2="$WORK/ac2a-b"; rm -rf "$o2"; : > "$LEDGER"
   run "$PY" "$BIN/auditor-classify.py" --finding GO-2021-0113 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o2"
   reachvex="$(tree_has_vex_for "$o2" GO-2021-0113)"
-  { eq "$st" "not_affected" && eq "$ju" "vulnerable_code_not_in_execute_path" && eq "$reachvex" "no" && ledger_empty; } \
-    && ok || no "not_affected only for the unreachable one, empty ledger" "status=$st just=$ju reachable_got_vex=$reachvex ledger=$(ledger_n)"; }
+  { eq "$st" "not_affected" && eq "$ju" "vulnerable_code_not_in_execute_path" && eq "$ev" "govulncheck" && eq "$reachvex" "no" && ledger_empty; } \
+    && ok || no "not_affected only for the unreachable one, carrying govulncheck evidence, empty ledger" "status=$st just=$ju evidence=$ev reachable_got_vex=$reachvex ledger=$(ledger_n)"; }
 
 begin "req2-ac2b-notpullable-and-reachable" "the reachable not-pullable branch opens an owner decision and a dated ignore with an expiry; below-threshold does not open one"
 o="$WORK/ac2b"; rm -rf "$o"; ghs="$WORK/ac2b-gh.json"; rm -f "$ghs"
@@ -233,11 +235,12 @@ o="$WORK/ac4"; rm -rf "$o"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2020-0015 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o" && {
   st="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's["status"]')"
   ju="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 's.get("justification")')"
+  ev="$(vf "$o/vex/GO-2020-0015.openvex.json" GO-2020-0015 '(s.get("_evidence") or {}).get("source")')"
   o2="$WORK/ac4b"; rm -rf "$o2"; : > "$LEDGER"
   run "$PY" "$BIN/auditor-classify.py" --finding GO-2021-0113 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o2"
   reach="$(tree_has_vex_for "$o2" GO-2021-0113)"
-  { eq "$st" "not_affected" && eq "$ju" "vulnerable_code_not_in_execute_path" && eq "$reach" "no" && ledger_empty; } \
-    && ok || no "not_affected only for unreachable, empty ledger" "status=$st just=$ju reachable_vex=$reach ledger=$(ledger_n)"; }
+  { eq "$st" "not_affected" && eq "$ju" "vulnerable_code_not_in_execute_path" && eq "$ev" "govulncheck" && eq "$reach" "no" && ledger_empty; } \
+    && ok || no "not_affected only for unreachable, govulncheck evidence, empty ledger" "status=$st just=$ju evidence=$ev reachable_vex=$reach ledger=$(ledger_n)"; }
 
 begin "req2-ac4-neg-no-evidence-stays-open" "a real scanned finding (GO-2020-0015 in OSV) whose govulncheck messages are removed is NOT closed: no VEX statement anywhere names it, no ignore names it, it is recorded open; empty ledger"
 o="$WORK/ac4neg"; rm -rf "$o"
@@ -275,13 +278,24 @@ run "$PY" "$BIN/auditor-poam.py" --finding "$F/poam/poam-03.json" --kev "$F/kev/
   { eq "$st" "affected" && eq "$why" "critical-severity" && eq "$iss" "1" && ledger_empty; } \
     && ok || no "affected, critical-severity, one issue, empty ledger" "status=$st reason=$why issues=$iss ledger=$(ledger_n)"; }
 
-begin "req2-ac5c-expiry-reopens-item" "expiry with no fix removes the ignore and returns the finding to section 3; a not-yet-expired ignore is NOT removed"
-o="$WORK/ac5c"; rm -rf "$o"
-run "$PY" "$BIN/auditor-poam.py" --recheck --package "$F/poam/poam-04.json" --out "$o" && {
-  rem="$(pj "$o/recheck.json" 'd.get("ignore_removed")')"; sec="$(pj "$o/recheck.json" 'd.get("returned_to_section")')"; re="$(pj "$o/recheck.json" 'd.get("policy_reapplied")')"
-  anyign="$(ignore_names_any "$o" $(alias_set CVE-2011-3374))"
-  { eq "$rem" "true" && eq "$sec" "3" && eq "$re" "true" && eq "$anyign" "no"; } \
-    && ok || no "ignore removed, section 3, reapplied, no ignore names the finding under any alias" "removed=$rem section=$sec reapplied=$re any_ignore=$anyign"; }
+begin "req2-ac5b-known-exploited-alone" "known-exploited (from scanner data), not Critical, not in KEV: at_or_above via known-exploited, one issue, empty ledger"
+o="$WORK/ac5bk"; rm -rf "$o"; ghs="$WORK/ac5bk-gh.json"; rm -f "$ghs"
+run "$PY" "$BIN/auditor-poam.py" --finding "$F/poam/poam-05.json" --kev "$F/kev/kev.json" --github "$GH" --state "$ghs" --adjudicator "$NOCALL" --out "$o" && {
+  th="$(pj "$o/decision.json" 'd.get("threshold")')"; why="$(pj "$o/decision.json" 'd.get("threshold_reason")')"
+  iss="$( [ -f "$ghs" ] && pj "$ghs" 'len(d["issues"])' || echo 0 )"
+  { eq "$th" "at_or_above" && eq "$why" "known-exploited" && eq "$iss" "1" && ledger_empty; } \
+    && ok || no "at_or_above via known-exploited, one issue, empty ledger" "threshold=$th reason=$why issues=$iss ledger=$(ledger_n)"; }
+
+begin "req2-ac5c-expiry-reopens-item" "expiry with no fix DELETES the seeded ignore and VEX under every alias (world check) and returns the finding to section 3"
+o="$WORK/ac5c"; supp="$WORK/ac5c-supp"; rm -rf "$o" "$supp"
+mkdir -p "$supp/ignores/grype" "$supp/.vex"
+echo '{"id":"CVE-2011-3374","vex":"stmt","expiry":"2026-08-23"}' > "$supp/ignores/grype/CVE-2011-3374.json"
+printf '{"statements":[{"vulnerability":{"name":"CVE-2011-3374"},"status":"affected"}]}' > "$supp/.vex/fosterstack-cache.openvex.json"
+run "$PY" "$BIN/auditor-poam.py" --recheck --package "$F/poam/poam-04.json" --suppression-dir "$supp" --today 2026-09-22 --out "$o" && {
+  rem="$(pj "$o/recheck.json" 'd.get("ignore_removed")')"; sec="$(pj "$o/recheck.json" 'd.get("returned_to_section")')"
+  anyign="$(ignore_names_any "$supp" $(alias_set CVE-2011-3374))"; anyvex="$(tree_has_vex_for "$supp" CVE-2011-3374)"
+  { eq "$rem" "true" && eq "$sec" "3" && eq "$anyign" "no" && eq "$anyvex" "no"; } \
+    && ok || no "seeded ignore AND VEX deleted from the state under every alias; section 3" "removed=$rem section=$sec any_ignore=$anyign any_vex=$anyvex"; }
 
 begin "req2-ac6-categories-disjoint" "classification.json finding-id set EQUALS the manifest's id set (never vacuous), each with one valid category"
 run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$CDIR" && {
@@ -311,13 +325,16 @@ try:
 except Exception: print("ERR")' "$CDIR/classification.json" "$F/run/manifest-01.json")"
   eq "$chk" "True" && ok || no "id set equals manifest ids, one valid category each, nonempty" "$chk"; }
 
-begin "req2-ac7-every-run-recheck" "when the upstream fix becomes pullable the VEX is removed (not retained) and a bump PR opens the same run, section 1"
-o="$WORK/ac7"; rm -rf "$o"
-run "$PY" "$BIN/auditor-recheck.py" --vex "$F/suppression/disp-01.json" --upstream "$WORK/nope" --now-pullable --out "$o" && {
-  rem="$(pj "$o/recheck.json" 'd.get("vex_removed")')"; bump="$(pj "$o/recheck.json" 'd.get("bump_pr_opened")')"; sec="$(pj "$o/recheck.json" 'd.get("report_section")')"
-  still="$(have "$o/vex/still-present.json" && echo present || echo gone)"
-  { eq "$rem" "true" && eq "$bump" "true" && eq "$sec" "1" && eq "$still" "gone"; } \
-    && ok || no "vex removed (none retained), bump opened, section 1" "removed=$rem bump=$bump section=$sec retained=$still"; }
+begin "req2-ac7-every-run-recheck" "now-pullable DELETES the seeded VEX from the state (world check) and records a bump PR in the shim ledger, section 1"
+o="$WORK/ac7"; supp="$WORK/ac7-supp"; shim="$WORK/ac7.shim"; rm -rf "$o" "$supp"; rm -f "$shim"
+mkdir -p "$supp/.vex"
+printf '{"statements":[{"vulnerability":{"name":"CVE-2011-3374"},"status":"not_affected"}]}' > "$supp/.vex/fosterstack-cache.openvex.json"
+run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-recheck.py" --vex "$F/suppression/disp-01.json" --suppression-dir "$supp" --now-pullable --out "$o" && {
+  rem="$(pj "$o/recheck.json" 'd.get("vex_removed")')"; sec="$(pj "$o/recheck.json" 'd.get("report_section")')"
+  anyvex="$(tree_has_vex_for "$supp" CVE-2011-3374)"
+  bumped="$(grep -cE 'pr create .*auditor/bump' "$shim" 2>/dev/null)"; bumped="${bumped:-0}"
+  { eq "$rem" "true" && eq "$sec" "1" && eq "$anyvex" "no" && [ "$bumped" -ge 1 ] 2>/dev/null; } \
+    && ok || no "seeded VEX deleted from state; bump PR recorded in shim; section 1" "removed=$rem section=$sec any_vex=$anyvex bump_in_shim=$bumped"; }
 
 ########################################################################
 echo "=== REQ-AUD-3 ==="
@@ -368,7 +385,7 @@ o1="$WORK/dl5a"; o2="$WORK/dl5b"; rm -rf "$o1" "$o2"
 "$PY" -c 'import json;d=json.load(open(".github/agent/fixtures/dl/log.json"));d["defects"][1]["keys"]=[k for k in d["defects"][1]["keys"] if k["scanner"]!="trivy"];json.dump(d,open("'"$WORK"'/log5.json","w"))'
 rowbefore="$(pj "$WORK/log5.json" 'max(len(x["keys"]) for x in d["defects"])')"
 run "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log5.json" \
-  --finding trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0' \
+  --finding trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$F/run/manifest-01.json" \
   --adjudicator "$STUB" --out "$o1" && {
   used="$( [ -s "$LEDGER" ] && echo y || echo n )"; : > "$LEDGER"
   # the SAME row that already holds a CVE-2011-3374 key must now hold a trivy
@@ -380,8 +397,8 @@ try:
         ids={k["finding_id"] for k in row["keys"]}
         if "CVE-2011-3374" in ids and any(k["scanner"]=="trivy" and k["finding_id"]=="CVE-2011-3374" and k["purl"]==purl for k in row["keys"]): ok=True
     print("yes" if ok else "no")
-except Exception: print("no")' "$WORK/log5.json" 'pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0')"
-  run "$PY" "$BIN/auditor-defectlog.py" probe --log "$WORK/log5.json" --hit trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0' --adjudicator "$NOCALL" --out "$o2" && {
+except Exception: print("no")' "$WORK/log5.json" 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0')"
+  run "$PY" "$BIN/auditor-defectlog.py" probe --log "$WORK/log5.json" --hit trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --adjudicator "$NOCALL" --out "$o2" && {
     hit="$(pj "$o2/probe.json" 'd.get("hit")')"; disp="$(pj "$o2/probe.json" 'd.get("hit_disposition")')"
     { eq "$used" "y" && eq "$addedright" "yes" && eq "$hit" "true" && eq "$disp" "false_positive" && ledger_empty; } \
       && ok || no "trivy CVE-2011-3374 key with the exact purl on the SAME row; later probe returns that row's disposition" "judgment=$used added_to_right_row_and_purl=$addedright hit=$hit disposition=$disp ledger=$(ledger_n)"; }; }
@@ -493,12 +510,14 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   { eq "$idt" "write" && eq "$cont" "read" && eq "$aud" "https://api.anthropic.com" && eq "$ghs" "true" && eq "$tf" "true" && eq "$apik" "false"; } \
     && ok || no "OIDC wired via github-script, no API key" "id-token=$idt contents=$cont audience=$aud github-script=$ghs token-file=$tf api-key=$apik"; fi
 
-begin "req6-ac1-identifiers-are-env-variables" "the six identifiers are referenced as vars.* from step env/with (parsed values), literally in no file"
+begin "req6-ac1-identifiers-are-env-variables" "the six identifiers come from vars.*; NO step env value references vars.* (never logged); the github-script step masks at least six values"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY"]'
   fromvars="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))=='"$want"')')"
-  eq "$fromvars" "True" && ok || no "all six identifiers via vars.*" "got=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
+  envrefs="$(pj "$WORK/sh.json" 'd.get("env_refs_vars")')"; masks="$(pj "$WORK/sh.json" 'd.get("script_mask_count")')"
+  { eq "$fromvars" "True" && eq "$envrefs" "false" && [ "$masks" != "$MISS" ] && [ "$masks" -ge 6 ] 2>/dev/null; } \
+    && ok || no "six ids via vars.*, no env value references vars.*, script masks >= 6" "fromvars=$fromvars env_refs_vars=$envrefs masks=$masks"; fi
 
 begin "req6-ac2-token-budget-in-workflow" "driving usage to the budget stops the run with tokens_used>0 up to the cap"
 o="$WORK/budget"; rm -rf "$o"
@@ -599,7 +618,7 @@ run "$PY" "$BIN/auditor-adjudicate.py" --scenario "$F/adjudicator/scenario-01.js
 echo "=== REQ-AUD-9 ==="
 begin "req9-ac1-one-owner-issue-assigned-yesno-evidence" "exactly one issue (no label filter), owner-decision label, owner assignee, and the evidence id + artifact in the issue body/comments"
 ghs="$WORK/n1.json"; rm -f "$ghs"; o="$WORK/n1"; rm -rf "$o"
-run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/poam/poam-02.json" --artifact "PR#52" --out "$o" && {
+run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/poam/poam-02.json" --kev "$F/kev/kev.json" --artifact "PR#52" --out "$o" && {
   n="$(pj "$ghs" 'len(d["issues"])')"; lab="$(pj "$ghs" 'd["issues"][0]["label"]')"; asg="$(pj "$ghs" 'd["issues"][0]["assignee"]')"
   bodyok="$("$PY" -c 'import json,sys
 try:
@@ -612,9 +631,9 @@ except Exception: print("no")' "$ghs")"
 
 begin "req9-ac2-next-run-updates-not-duplicates" "the second run exits 0 and the comment count goes from exactly 1 to exactly 2 on the same single issue"
 ghs="$WORK/n2.json"; rm -f "$ghs"
-run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/poam/poam-02.json" --out "$WORK/n2a" && {
+run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/poam/poam-02.json" --kev "$F/kev/kev.json" --out "$WORK/n2a" && {
   c1="$(pj "$ghs" 'len(d["issues"][0].get("comments",[]))')"
-  run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/poam/poam-02.json" --out "$WORK/n2b" && {
+  run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/poam/poam-02.json" --kev "$F/kev/kev.json" --out "$WORK/n2b" && {
     n="$(pj "$ghs" 'len(d["issues"])')"; c2="$(pj "$ghs" 'len(d["issues"][0].get("comments",[]))')"
     { eq "$n" "1" && eq "$c1" "1" && eq "$c2" "2"; } \
       && ok || no "one issue, comments exactly 1 then 2" "issues=$n comments_run1=$c1 comments_run2=$c2"; }; }
@@ -626,7 +645,7 @@ run "$PY" "$BIN/auditor-notify.py" --list-triggers --out "$o" && {
   sup="$(grep -qF 'support@' "$o/triggers.json" && echo yes || echo no)"
   # "nothing else notifies": a below-threshold (non-trigger) finding opens NO issue.
   ghn="$WORK/n3.json"; rm -f "$ghn"
-  run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghn" --finding "$F/poam/poam-01.json" --out "$WORK/n3" && {
+  run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghn" --finding "$F/poam/poam-01.json" --kev "$F/kev/kev.json" --out "$WORK/n3" && {
     nonneg="$( [ -f "$ghn" ] && pj "$ghn" 'len(d.get("issues",[]))' || echo 0 )"
     { eq "$five" "reachable-nofix-critical-kev-or-exploited,unassessed-after-fallback,five-iteration-stop,fips-module-selection-failure,behaviour-change-under-bump" && eq "$chan" "owner-decision-issue" && eq "$sup" "no" && eq "$nonneg" "0"; } \
       && ok || no "five named triggers, issue-only channel, no support@, non-trigger opens no issue" "triggers=$five channel=$chan support@=$sup nontrigger_issues=$nonneg"; }; }
@@ -654,6 +673,36 @@ begin "req11-ac1-promote-below-threshold" "a below-threshold candidate promotes 
 o="$WORK/rz-below"; rm -rf "$o"
 run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-02.json" --issues "$F/release/iss-02.json" --owner fosterstack-admin --out "$o/authz.json" && {
   d="$(pj "$o/authz.json" 'd.get("decision")')"; eq "$d" "promote" && ok || no "decision promote" "decision=$d"; }
+
+########################################################################
+echo "=== REQ-AUD-12 — end-to-end dry-run / real-run integration (pending owner ratification) ==="
+begin "req12-ac1-dryrun-produces-report-vex-accepteditems-misses-only-no-shim" "a dry-run of auditor-run over the manifest: ids in their report sections, an evidence-backed VEX+ignore per disposition, accepted-items.json, model ledger only for log misses (log hits absent), zero shim creates"
+o="$WORK/run1"; shim="$WORK/run1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$o" && {
+  s5="$(sect_ids "$o/report.md" 5)"; s2="$(sect_ids "$o/report.md" 2)"; s3="$(sect_ids "$o/report.md" 3)"
+  vexev="$(pj "$o/vex/CVE-2016-2781.openvex.json" 'bool(d["statements"][0].get("_evidence"))')"
+  ig="$(have "$o/ignores/grype/CVE-2016-2781.json" && echo yes || echo no)"
+  unrv="$(pj "$o/vex/CVE-2020-14040.openvex.json" 'd["statements"][0].get("justification")')"
+  acc="$(have "$o/.auditor/accepted-items.json" && echo yes || echo no)"
+  hitinledger="$(grep -c '^CVE-2016-2781|' "$LEDGER" 2>/dev/null)"; hitinledger="${hitinledger:-0}"
+  missinledger="$(grep -c '^CVE-2020-14040|' "$LEDGER" 2>/dev/null)"; missinledger="${missinledger:-0}"
+  shimcreates="$(grep -cE 'pr create|issue create|gh .*create' "$shim" 2>/dev/null)"; shimcreates="${shimcreates:-0}"
+  { printf '%s' "$s5" | grep -q CVE-2016-2781 && printf '%s' "$s2" | grep -q CVE-2020-14040 && printf '%s' "$s3" | grep -q CVE-2023-4911 \
+    && eq "$vexev" "true" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
+    && eq "$hitinledger" "0" && [ "$missinledger" -ge 1 ] 2>/dev/null && eq "$shimcreates" "0"; } \
+    && ok || no "populated report, evidence VEX+ignore, accepted-items, ledger misses-only, no shim creates" "s5=[$s5] s2=[$s2] s3=[$s3] vex_evidence=$vexev ignore=$ig unreach_just=$unrv accepted=$acc hit_in_ledger=$hitinledger miss_in_ledger=$missinledger shim_creates=$shimcreates"; }
+
+begin "req12-ac2-realrun-opens-the-prs-through-the-shim" "the same run with dry_run=false records the PR creates the report lists in the shim ledger"
+o="$WORK/run2"; shim="$WORK/run2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$o" && {
+  prs="$(grep -cE 'pr create .*auditor/vex' "$shim" 2>/dev/null)"; prs="${prs:-0}"
+  { [ "$prs" -ge 1 ] 2>/dev/null; } && ok || no "PR creates recorded in the shim ledger for the VEX findings" "pr_creates=$prs"; }
+
+begin "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" "the workflow's run step invokes auditor-run.py with the dispatch dry_run input"
+if ! have "$WF"; then no "$WF present" "absent"; else
+  $YAML shape "$WF" > "$WORK/sh.json"
+  runs="$(pj "$WORK/sh.json" 'd.get("runs_auditor_run")')"
+  eq "$runs" "true" && ok || no "run step invokes auditor-run.py with inputs.dry_run" "runs_auditor_run=$runs"; fi
 
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"

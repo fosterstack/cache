@@ -46,6 +46,11 @@ class Osv(unittest.TestCase):
 class Snyk(unittest.TestCase):
     def test_real(self):
         self.assertIn("CVE-2011-3374", P.parse_snyk(F + "/scanners/snyk.json")[0]["aliases"])
+    def test_applications_branch(self):
+        p = w({"applications": [{"vulnerabilities": [{"id": "S1", "identifiers": {"CVE": ["CVE-2024-1"]}, "purl": "pkg:x/y@1"}]}]})
+        fs = P.parse_snyk(p)
+        self.assertEqual(fs[0]["finding_id"], "S1")
+        self.assertIn("CVE-2024-1", fs[0]["aliases"])
     def test_malformed(self):
         self.assertRaises(P.ParseError, P.parse_snyk, w({"x": 1}))
 
@@ -53,9 +58,10 @@ class Snyk(unittest.TestCase):
 class Govulncheck(unittest.TestCase):
     def test_real(self):
         g = P.parse_govulncheck(F + "/govulncheck/gv-01.json")
-        self.assertTrue(g["GO-2021-0113"]["reachable"])
-        self.assertFalse(g["GO-2020-0015"]["reachable"])
-        self.assertNotIn("CVE-2099-0", g)  # absent id -> absent, never 'reachable=False by default'
+        self.assertEqual(g["scan_level"], "symbol")
+        self.assertTrue(g["by_osv"]["GO-2021-0113"]["reachable"])
+        self.assertFalse(g["by_osv"]["GO-2020-0015"]["reachable"])
+        self.assertNotIn("CVE-2099-0", g["by_osv"])  # absent -> absent, not reachable=False
     def test_malformed(self):
         self.assertRaises(P.ParseError, P.parse_govulncheck, w(""))
         self.assertRaises(P.ParseError, P.parse_govulncheck, w('{"finding": {"trace": []}}'))
