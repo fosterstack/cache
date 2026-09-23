@@ -65,7 +65,9 @@ def write(out_dir, fid, status, timestamp, justification=None, action=None,
         side["evidence"] = evidence
     if target_date is not None:
         side["target_date"] = target_date
-    spath = os.path.join(out_dir, "evidence", fid + ".evidence.json")
+    # key the sidecar by the VEX name so a CVE with two dispositions (not_affected for one
+    # package, affected for a sibling) does not overwrite its own evidence.
+    spath = os.path.join(out_dir, "evidence", (vex_name or fid) + ".evidence.json")
     os.makedirs(os.path.dirname(spath), exist_ok=True)
     json.dump(side, open(spath, "w"), indent=1)
     return vpath

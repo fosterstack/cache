@@ -716,13 +716,17 @@ for l in t:
     if m: cur=m.group(1); continue
     if cur=="3" and re.match(r"^(CVE|GO)-",l) and "action:" not in l: bad+=1
 print(bad)' "$o/report.md")"
-  ledgern="$(grep -c . "$LEDGER" 2>/dev/null)"; ledgern="${ledgern:-0}"
+  # the DETERMINISTIC paths make NO model call: a log FP hit (CVE-2016-2781) and the
+  # unreachable Go finding (CVE-2020-14040) must be absent from the ledger. (A unique-lineage
+  # sibling may legitimately draw a single FP-suspicion call — that is the ONLY model use.)
+  det2781="$(grep -c '^CVE-2016-2781|' "$LEDGER" 2>/dev/null)"; det2781="${det2781:-0}"
+  det14040="$(grep -c '^CVE-2020-14040|' "$LEDGER" 2>/dev/null)"; det14040="${det14040:-0}"
   shimcreates="$(grep -cE 'pr create|issue create|gh .*create' "$shim" 2>/dev/null)"; shimcreates="${shimcreates:-0}"
   { printf '%s' "$s5" | grep -q CVE-2016-2781 && printf '%s' "$s5" | grep -q CVE-2020-14040 && printf '%s' "$s3" | grep -q CVE-2023-4911 \
     && eq "$vexev" "True" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
     && eq "$s3noaction" "0" && printf '%s' "$s6" | grep -q CVE-2023-4911 && [ "$status" -ge 1 ] 2>/dev/null \
-    && eq "$ledgern" "0" && eq "$shimcreates" "0"; } \
-    && ok || no "deterministic §5/§3, every §3 row has an action, §6 would-open, AUDIT COMPLETE, empty ledger, no shim" "s5=[$s5] s3=[$s3] s6=[$s6] vexev=$vexev ig=$ig unreach=$unrv acc=$acc s3_no_action=$s3noaction status=$status ledger=$ledgern shim=$shimcreates"; }
+    && eq "$det2781" "0" && eq "$det14040" "0" && eq "$shimcreates" "0"; } \
+    && ok || no "deterministic §5/§3, every §3 row actioned, §6 would-open, AUDIT COMPLETE, deterministic paths made no model call, no shim" "s5=[$s5] s3=[$s3] s6=[$s6] vexev=$vexev ig=$ig unreach=$unrv acc=$acc s3_no_action=$s3noaction status=$status det2781=$det2781 det14040=$det14040 shim=$shimcreates"; }
 
 begin "req12-ac2-realrun-opens-the-prs-through-the-shim" "the same run with dry_run=false records the bump/base-rebuild PR creates in the shim ledger"
 o="$WORK/run2"; shim="$WORK/run2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
@@ -811,6 +815,15 @@ leaked="$(grep -c 'claude-secret-codename-zzz' "$o/report.md" 2>/dev/null)"; lea
 withheld="$(grep -qi 'conclusion withheld' "$o/report.md" && echo yes || echo no)"
 { eq "$leaked" "0" && eq "$withheld" "yes"; } \
   && ok || no "no model id in report.md; conclusion withheld generically" "leaked=$leaked withheld=$withheld"
+
+begin "il4-split-cve-distinct-vex-no-clobber" "a CVE that is not_affected for one package and carried for a sibling writes TWO distinct VEX files; the not_affected document is NOT overwritten by the affected one"
+o="$WORK/il4"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  main_status="$(pj "$o/vex/CVE-2011-3374.openvex.json" 'd["statements"][0].get("status")')"
+  sib="$(have "$o/vex/CVE-2011-3374-sibling.openvex.json" && echo yes || echo no)"
+  sib_status="$(pj "$o/vex/CVE-2011-3374-sibling.openvex.json" 'd["statements"][0].get("status")')"
+  { eq "$main_status" "not_affected" && eq "$sib" "yes" && eq "$sib_status" "affected"; } \
+    && ok || no "not_affected VEX preserved + distinct affected sibling VEX" "main=$main_status sibling_file=$sib sibling=$sib_status"; }
 
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"

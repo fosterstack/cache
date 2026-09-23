@@ -144,12 +144,14 @@ def _row_line(r):
     return line
 
 
-def _dispose(c, findings, aliases, env, would):
+def _dispose(c, findings, aliases, env, would, name=None):
     """Route one finding subset deterministically (steps 2-4). Returns (row, m_calls_inc).
     The model is consulted ONLY for false-positive suspicion (unique lineage, no fix); a
     FP it cannot verify FALLS THROUGH to deterministic fix/POA&M routing (so a real finding
     is never left in §4 for a mere unverified suspicion); only a fallback-exhausted refusal
-    lands in §4."""
+    lands in §4. `name` is the VEX/ignore file basename (defaults to the CVE id); a distinct
+    name keeps a split CVE's second disposition from overwriting the first's files."""
+    vn = name or c
     gf = _group_facts(c, {"findings": findings, "aliases": aliases})
     ids = sorted(aliases) + [c]
     row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
@@ -161,7 +163,7 @@ def _dispose(c, findings, aliases, env, would):
         verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
         row["reachability"] = "govulncheck: %s" % verdict
         if verdict == "unreachable":
-            vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
+            vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev, vex_name=vn)
             row.update(section=5, disposition="not_affected (unreachable)", action="closed",
                        reason="govulncheck: imported, not called", vex_id=policy.stmt_id(c),
                        ignore_files=["vex", "evidence"])
@@ -177,7 +179,7 @@ def _dispose(c, findings, aliases, env, would):
         if cat == "false_positive":
             fev = C.fp_verified(ids, env["logpath"], findings)
             if fev:
-                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev)
+                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev, vex_name=vn)
                 row.update(section=5, disposition="not_affected (false positive)", action="closed",
                            reason="model FP, evidence-verified", vex_id=policy.stmt_id(c),
                            ignore_files=["vex", "evidence"])
@@ -213,9 +215,9 @@ def _dispose(c, findings, aliases, env, would):
     at = reason != "below"
     vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
-              target_date=exp)
+              target_date=exp, vex_name=vn)
     for sc in sorted({f["scanner"] for f in findings}):
-        cli.writej(os.path.join(out, "ignores", sc, c + ".json"),
+        cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                    {"id": c, "vex": policy.stmt_id(c), "expiry": exp, "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % exp
     if at:
@@ -248,30 +250,36 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production")}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
-        # 1) trusted log FP -> closed (§5), scoped to the packages the log names. A sibling
-        #    package's finding for the SAME CVE, NOT named by the log, is NOT closed with it
-        #    (R1 round-1): it is routed on its own so it never vanishes without an action.
-        covered = [f for f in grp["findings"]
-                   if (idx.get((f["scanner"], f["finding_id"], f["purl"])) or {}).get("disposition") == "false_positive"]
-        cov_keys = {(f["scanner"], f["finding_id"], f["purl"]) for f in covered}
+        # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
+        #    finding for one of those packages, across scanners/arches, not just the exact
+        #    key. A sibling PACKAGE's finding for the same CVE is NOT closed with it (R1
+        #    round-1) and is routed on its own; because that second disposition is a
+        #    DIFFERENT package it writes to a DISTINCT VEX/ignore name, so it cannot
+        #    overwrite the not_affected one (R1 round-2).
+        fp_pkgs = set()
+        for f in grp["findings"]:
+            r = idx.get((f["scanner"], f["finding_id"], f["purl"]))
+            if r and r.get("disposition") == "false_positive":
+                fp_pkgs.add(r.get("package") or f.get("package"))
+        covered = [f for f in grp["findings"] if f.get("package") in fp_pkgs]
         if covered:
             subs = sorted({f["purl"] for f in covered if f["purl"]})
             ev = {"check": "known-defect-log", "source_file": logpath,
-                  "detail": "trusted false_positive rows; scoped to %s" % subs}
+                  "detail": "trusted false_positive for package(s) %s" % sorted(fp_pkgs)}
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev, subcomponents=subs or None)
             igf = os.path.join("ignores", "grype", c + ".json")
             cli.writej(os.path.join(out, igf), {"vex": policy.stmt_id(c), "id": c, "evidence": ev, "scoped_purls": subs})
-            cov_pkg = sorted({f.get("package") for f in covered if f.get("package")})
-            rows.append({"id": c, "package": ",".join(cov_pkg) or "?",
+            rows.append({"id": c, "package": ",".join(sorted(fp_pkgs)) or "?",
                          "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
                          "fixed": None, "severity": _max_sev(covered), "section": 5,
                          "disposition": "not_affected (false positive)", "action": "closed",
-                         "reachability": "n/a (OS package)", "reason": "known-defect-log exact-key hit (scoped to %s)" % (",".join(cov_pkg) or subs),
+                         "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(sorted(fp_pkgs))),
                          "vex_id": policy.stmt_id(c), "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"]})
             h_count += 1
-            uncovered = [f for f in grp["findings"] if (f["scanner"], f["finding_id"], f["purl"]) not in cov_keys]
+            uncovered = [f for f in grp["findings"] if f.get("package") not in fp_pkgs]
             if uncovered:
-                row2, mi = _dispose(c, uncovered, sorted(grp["aliases"]), env, would)
+                # distinct VEX/ignore name so the sibling's disposition never clobbers the FP one
+                row2, mi = _dispose(c, uncovered, sorted(grp["aliases"]), env, would, name=c + "-sibling")
                 rows.append(row2); m_count += mi
             continue
         row, mi = _dispose(c, grp["findings"], sorted(grp["aliases"]), env, would)
