@@ -57,21 +57,22 @@ def _reach_summary(gvc, ids, module, usable):
 
 
 def adjudicate(adjudicator, ctx, state):
-    """primary -> rephrase -> fallback, bounded by the token budget and the five-iteration
-    stop. A refusal or error advances the attempt; exhaustion returns under_investigation."""
+    """primary -> rephrase -> fallback for ONE finding, bounded PER FINDING by the
+    five-iteration stop, and globally by the token budget (which spans the whole run). A
+    refusal or error advances the attempt; exhaustion returns under_investigation."""
+    iters = 0                                   # per-finding (the run-wide cap is the budget)
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
-        if state["tokens"] >= policy.TOKEN_BUDGET or state["iters"] >= policy.MAX_ITERATIONS:
+        if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
+            state["stops"] = state.get("stops", 0) + 1
             return "under_investigation"
+        iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused:
-            state["iters"] += 1
             continue
         except Exception as e:
-            state["iters"] += 1
             print("adjudicator error for %s (%s): %s" % (ctx["finding_id"], attempt, e))
             continue
-        state["iters"] += 1
         state["tokens"] += int(ans.get("token_usage") or 0)
         cat = ans.get("category")
         return cat if cat in C.VALID_CATS else "under_investigation"
@@ -309,7 +310,7 @@ def _header(m, down, accepted, suppression_inventory, consistency, fs_hash, adju
     lines.append("**Reachability (govulncheck):** " + gvc_line)
     role = "primary" if "adjudicator-client" in (adjudicator or "") else "stub"
     lines.append("**Model role:** %s; adjudicator calls: %d; token cost: %d/%d" %
-                 (role, state["iters"], state["tokens"], policy.TOKEN_BUDGET))
+                 (role, state.get("calls", 0), state["tokens"], policy.TOKEN_BUDGET))
     lines.append("**Suppression inventory (this run):** %d — %s" %
                  (len(suppression_inventory),
                   ", ".join("%s=%s" % (i["cve"], i["source"]) for i in suppression_inventory) or "none"))

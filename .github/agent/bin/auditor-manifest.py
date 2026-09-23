@@ -55,14 +55,22 @@ def _module(source_dir):
 # ---- per-scanner inventory readers: (total_packages, os_packages, db_date) ----
 
 def _inv_grype(path):
+    # grype 0.118.0 `-o json` emits `matches`, not a full package catalogue, so the package
+    # inventory is the distinct set of matched artifacts (the vulnerable packages). A distro
+    # image with zero matched packages is treated as "did not inventory" (the distroless
+    # status.d case), which is exactly the silent-empty scan Round 12 is guarding against.
     d = json.load(open(path))
-    arts = d.get("artifacts") or []
-    total = len(arts)
-    osp = sum(1 for a in arts if (a.get("type") == "deb" or str(a.get("purl", "")).startswith("pkg:deb")))
+    matches = d.get("matches") or []
+    seen = set(); osseen = set()
+    for mt in matches:
+        a = mt.get("artifact") or {}
+        key = (a.get("name"), a.get("version"), a.get("type"))
+        seen.add(key)
+        if a.get("type") == "deb" or str(a.get("purl", "")).startswith("pkg:deb"):
+            osseen.add(key)
     dbfrom = ((d.get("descriptor") or {}).get("db") or {}).get("status", {}).get("from", "") or ""
     m = DATE_RE.search(dbfrom)
-    findings = len(d.get("matches") or [])
-    return total, osp, (m.group(1) if m else None), findings
+    return len(seen), len(osseen), (m.group(1) if m else None), len(matches)
 
 
 def _inv_trivy(path):
