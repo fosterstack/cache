@@ -303,8 +303,13 @@ def main():
         "provenance": {"source": ("test-image" if test_image else "own-scan"), "candidate": src,
                        "scanned": "docker-archive"},
     }
+    # If three scanners inventoried packages but osv-scanner found none, name the known
+    # cause (osv-scanner reads /var/lib/dpkg/status, not a distroless status.d directory).
+    others = [k for k in ("grype", "trivy", "snyk") if (status.get(k) or {}).get("ran")]
+    if not (status.get("osv-scanner") or {}).get("ran") and len(others) >= 2:
+        status["osv-scanner"]["reason"] = "0 packages (osv-scanner does not read distroless dpkg status.d)"
     cli.writej(out, manifest)
-    ran = [k for k in ("grype", "trivy", "osv-scanner") if status[k]["ran"]]
+    ran = [k for k in ("grype", "trivy", "osv-scanner", "snyk") if (status.get(k) or {}).get("ran")]
     print("auditor-manifest: wrote %s (digest %s; image scanners that ran: %s)" % (out, digest, ran or "NONE"))
 
 

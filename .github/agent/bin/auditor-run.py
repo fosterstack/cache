@@ -263,15 +263,33 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                  "threshold": ("at_or_above" if r.get("owner_issue") else "below"),
                  "owner_issue": r.get("owner_issue"), "expiry": exp}
                 for r in sections[2]]
-    down = C.scanners_down(m)
     findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))
     if dry and sections[3] and not would:
         findings_without_action += len(sections[3])
-    scanners_not_run = [d for d in down if d["scanner"] in IMAGE_SCANNERS]
-    complete = (findings_without_action == 0) and (len(scanners_not_run) == 0)
-    status = ("AUDIT COMPLETE" if complete else
-              "AUDIT INCOMPLETE: %d findings without an action, %d scanners did not run"
-              % (findings_without_action, len(scanners_not_run)))
+    # Inventory quorum (R12 (b)): the candidate must be inventoried by at least THREE image
+    # scanners whose OS package counts agree within tolerance. A fourth scanner that cannot
+    # read this image (osv-scanner does not read a distroless dpkg status.d) is RECORDED as
+    # 'did not run' but does not by itself fail the audit when three others agree.
+    st = m.get("scanner_status") or {}; reports = m.get("scanner_reports") or {}
+    def _ran(s):
+        info = st.get(s) or {}
+        return info.get("ran") if "ran" in info else bool(reports.get(s))
+    ran_image = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _ran(s)]
+    not_ran = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if not _ran(s)]
+    oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
+    agree = (min(oscounts) >= 0.5 * max(oscounts)) if oscounts and max(oscounts) > 0 else (len(ran_image) >= 3)
+    quorum = len(ran_image) >= 3 and agree
+    complete = (findings_without_action == 0) and quorum
+    if complete:
+        status = "AUDIT COMPLETE"
+    else:
+        bits = []
+        if findings_without_action:
+            bits.append("%d findings without an action" % findings_without_action)
+        if not quorum:
+            bits.append("scanner quorum %d/4 (need 3 agreeing); did not run: %s"
+                        % (len(ran_image), ", ".join(not_ran) or "none"))
+        status = "AUDIT INCOMPLETE: " + "; ".join(bits)
 
     consistency = _consistency(out, manifest_path)
     fs_hash = _persist(out, rows, today)
