@@ -24,6 +24,20 @@ def main():
         sys.stderr.write("adjudicator-client: anthropic SDK not installed in this runner\n")
         sys.exit(4)
     client = anthropic.Anthropic()  # SDK reads ANTHROPIC_IDENTITY_TOKEN_FILE + workspace env
+    if req.get("mode") == "narrative":
+        # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
+        prompt = ("Write the audit Conclusion for our own container image from ONLY the "
+                  "structured results below: what was examined (image digest, per-scanner "
+                  "package counts, scanners that did not run), what was found, what was decided "
+                  "and on what evidence, and what needs the owner. Three to six sentences; on a "
+                  "clean day, one sentence with the numbers. Name only CVE/GO ids present in the "
+                  "sections; do not contradict a section. Do not produce exploit code.\n\n%s"
+                  % json.dumps(req.get("structured"), indent=1))
+        msg = client.messages.create(model=model, max_tokens=512,
+                                     messages=[{"role": "user", "content": prompt}])
+        text = "".join(getattr(b, "text", "") for b in msg.content)
+        json.dump({"refused": False, "narrative": text}, sys.stdout)
+        return
     # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
     # version, scanner set, and reachability summary. Its answer is still only a proposal our
     # code re-verifies against evidence before any VEX is written.

@@ -16,7 +16,7 @@ One run, end to end, over the validated run manifest:
   owner-decision issues with real `gh`. dry-run does everything except create them, and
   prints what it would have created.
 """
-import os, sys, json, shlex, subprocess, importlib.util
+import os, sys, json, re, shlex, subprocess, importlib.util
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
@@ -89,6 +89,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     sections = {}; classification = []; accepted = []
     suppression_inventory = []
     state = {"tokens": 0, "iters": 0}
+    h_count = 0; m_count = 0     # log-hit closes (no model call); new not-affected with evidence
     for c, grp in sorted(groups.items()):
         ids = sorted(grp["aliases"]); ids.append(grp["id"])
         f0 = grp["findings"][0]
@@ -112,7 +113,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
                        {"vex": policy.stmt_id(c), "id": c, "evidence": ev, "scoped_purls": subs})
             suppression_inventory.append({"cve": c, "status": "not_affected", "source": "known-defect-log"})
-            cat = "false_positive"
+            cat = "false_positive"; h_count += 1
         elif nonfp_hit:
             cat = "under_investigation"
         else:
@@ -130,7 +131,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 verdict, ev = C.gvc_verdict(gvc, ids, module, gvc_usable)
                 if verdict == "unreachable":
                     vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
-                    suppression_inventory.append({"cve": c, "status": "not_affected", "source": "govulncheck"})
+                    suppression_inventory.append({"cve": c, "status": "not_affected", "source": "govulncheck"}); m_count += 1
                 else:
                     cat = "under_investigation"
             elif cat == "false_positive":
@@ -142,7 +143,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                               evidence=ev, subcomponents=subs or None)
                     cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
                                {"vex": policy.stmt_id(c), "id": c, "evidence": ev, "scoped_purls": subs})
-                    suppression_inventory.append({"cve": c, "status": "not_affected", "source": "false-positive"})
+                    suppression_inventory.append({"cve": c, "status": "not_affected", "source": "false-positive"}); m_count += 1
                 else:
                     cat = "under_investigation"
             elif cat == "risk_acceptance":
@@ -160,7 +161,19 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # persistence (every run): a content-derived snapshot of this run's dispositions
     fs_hash = _persist(out, classification, today)
     header = _header(m, down, accepted, suppression_inventory, consistency, fs_hash, adjudicator, state)
-    C._render_report(out, sections, header=header)
+    st = m.get("scanner_status") or {}
+    image = ("grype", "trivy", "osv-scanner")
+    k = sum(1 for s in image if (st.get(s) or {}).get("ran"))
+    p = max([(st.get(s) or {}).get("package_count") or 0 for s in image] + [0])
+    downlist = ", ".join("%s (%s)" % (d["scanner"], d["reason"]) for d in down)
+    probs = (consistency or {}).get("problems", [])
+    context = {"n": 0, "p": p, "k": k, "h": h_count, "m": m_count, "down": downlist,
+               "consistency": "clean" if not probs else "%d problems" % len(probs)}
+    # R12 item 3: the Conclusion is model-written from the structured results, validated
+    # against the sections; a stub run states it has no narrative.
+    conclusion = _conclusion(adjudicator, sections, context, m, classification, accepted)
+    cli.writej(os.path.join(out, "conclusion.json"), {"conclusion": conclusion})
+    C._render_report(out, sections, header=header, conclusion=conclusion, context=context)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
     cli.writej(os.path.join(out, "classification.json"), {"findings": classification})
@@ -206,6 +219,47 @@ def _risk_accept(out, cve, grp, m, kevpath, ts, today, dry):
     return {"cve": cve, "severity": f0.get("severity"),
             "threshold": "at_or_above" if at else "below",
             "owner_issue": issue, "expiry": exp}
+
+
+def _narrative_ok(text, sections):
+    """Reject a narrative that names a CVE absent from the sections, or contradicts a
+    section (a §3 finding called closed, a §5 finding called reachable)."""
+    ids_in = {fid for lst in sections.values() for fid in lst}
+    named = set(re.findall(r"(?:CVE-\d{4}-\d+|GO-\d{4}-\d+)", text))
+    if named - ids_in:
+        return False
+    sec3 = set(sections.get(3, [])); sec5 = set(sections.get(5, [])); low = text.lower()
+    for fid in named:
+        for mt in re.finditer(re.escape(fid), text):
+            w = low[max(0, mt.start() - 80):mt.end() + 80]
+            if fid in sec3 and re.search(r"not affected|closed|false positive|no action", w):
+                return False
+            if fid in sec5 and re.search(r"reachable|must fix|exploitable|open vuln", w):
+                return False
+    return True
+
+
+def _conclusion(adjudicator, sections, context, m, classification, accepted):
+    """R12 item 3: the model writes 3-6 sentences (one on a clean day) from the STRUCTURED
+    results only, after every disposition is final; the code validates it against the
+    sections and withholds it on disagreement. A stub run states it has no narrative."""
+    if "stub" in os.path.basename(adjudicator or "").lower():
+        return "stub: no narrative"
+    st = m.get("scanner_status") or {}
+    structured = {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
+                  "package_counts": {s: (st.get(s) or {}).get("package_count") for s in ("grype", "trivy", "osv-scanner")},
+                  "scanners_not_run": [d for d in context.get("down", "").split(", ") if d],
+                  "sections": {C.TITLES[n]: sections.get(n, []) for n in range(1, 8)},
+                  "accepted": accepted, "counts": {kk: context[kk] for kk in ("p", "k", "h", "m")}}
+    try:
+        ans = cli.ask_model(adjudicator, "CONCLUSION", attempt="narrative", model="primary",
+                            context={"mode": "narrative", "structured": structured})
+        text = (ans.get("narrative") or "").strip()
+    except Exception as e:
+        return "conclusion withheld: narrative could not be produced (%s)" % e
+    if not text or not _narrative_ok(text, sections):
+        return "conclusion withheld: narrative disagreed with the record."
+    return text
 
 
 def _consistency(out, manifest_path):

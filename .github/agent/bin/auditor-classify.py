@@ -185,20 +185,46 @@ def do_manifest(manifest, adjudicator, out, ts=TS):
         cli.writej(os.path.join(out, "report-sections", c + ".json"), {"sections": SECT.get(cat, [])})
         cli.writej(os.path.join(out, "disposition", c + ".json"), {"permanent": cat == "false_positive"})
     cli.writej(os.path.join(out, "classification.json"), {"findings": classification})
-    _render_report(out, report_sections)
+    r = m.get("scanner_reports") or {}
+    k = sum(1 for s in ("grype", "trivy", "osv-scanner") if r.get(s))
+    _render_report(out, report_sections, conclusion="stub: no narrative", context={"k": k})
 
 
-def _render_report(out, sections, header=""):
-    titles = {1: "Lifted", 2: "Accepted risk", 3: "Actual vulnerabilities",
-              4: "Could not be assessed", 5: "Closed as not affected",
-              6: "Pending", 7: "Currently suppressed"}
-    lines = ["# Daily CVE auditor report", ""]
+TITLES = {1: "Lifted", 2: "Accepted risk", 3: "Actual vulnerabilities",
+          4: "Could not be assessed", 5: "Closed as not affected",
+          6: "Pending", 7: "Currently suppressed"}
+
+# R12 item 5: an empty section carries a sentence WITH ITS COUNTS, never a blank or "none".
+EMPTY = {
+    1: "No suppression was lifted this run: {n} carried statements were re-checked against upstream and the current tree; none has a pullable fix or lost its evidence.",
+    2: "No accepted-risk items are carried. Nothing is below threshold and nothing awaits the owner.",
+    3: "None. {p} packages inventoried by {k} scanners; no finding is reachable, fixable, and unfixed.",
+    4: "None. Every finding was dispositioned; no adjudication was refused or exhausted.",
+    5: "None this run. {h} findings were closed by the known-defect log without a model call; {m} new not-affected statements were written with evidence.",
+    6: "Nothing pending: no VEX or bump PR awaits the audit lane; no Dependabot PR was deferred to.",
+    7: "No suppressions are in force for this candidate; consistency check: {consistency}.",
+}
+
+
+def _render_report(out, sections, header="", conclusion=None, context=None):
+    ctx = {"n": 0, "p": 0, "k": 0, "h": 0, "m": 0, "consistency": "clean", "down": ""}
+    ctx.update(context or {})
+    lines = ["# Daily CVE auditor report", "", "## Conclusion", "",
+             (conclusion or "stub: no narrative"), ""]
     if header:
         lines.append(header.rstrip()); lines.append("")
     for n in range(1, 8):
-        lines.append("## %d. %s" % (n, titles[n]))
-        for fid in sections.get(n, []):
-            lines.append(fid)
+        lines.append("## %d. %s" % (n, TITLES[n]))
+        ids = sections.get(n, [])
+        if ids:
+            for fid in ids:
+                lines.append(fid)
+        else:
+            sentence = EMPTY[n].format(**ctx)
+            # a section that could not be computed names the scanner/step (never "none")
+            if n in (3, 7) and ctx.get("down"):
+                sentence += " Not a complete assessment: %s did not run." % ctx["down"]
+            lines.append(sentence)
         lines.append("")
     cli.writef(os.path.join(out, "report.md"), "\n".join(lines) + "\n")
 

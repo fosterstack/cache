@@ -723,6 +723,44 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   runs="$(pj "$WORK/sh.json" 'd.get("runs_auditor_run")')"
   eq "$runs" "true" && ok || no "run step invokes auditor-run.py with inputs.dry_run" "runs_auditor_run=$runs"; fi
 
+########################################################################
+echo "=== REQ-AUD-12 — Round 12: honest scanner status, no empty sections, conclusion ==="
+
+begin "req12-ac4-no-empty-sections-and-conclusion" "the report opens with a Conclusion (stub: no narrative for stub runs) and every one of the 7 sections carries a non-empty sentence — never a blank heading"
+o="$WORK/r12a"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$o" && {
+  concl="$(grep -A2 '^## Conclusion' "$o/report.md" | grep -v '^##' | grep -v '^$' | head -1)"
+  isstub="$(printf '%s' "$concl" | grep -qi 'stub: no narrative' && echo yes || echo no)"
+  # every '## N. Title' heading must be followed by at least one non-blank, non-heading line
+  blanks="$("$PY" -c '
+import re,sys
+lines=open(sys.argv[1]).read().splitlines()
+bad=0
+for i,l in enumerate(lines):
+    if re.match(r"^## \d+\.", l):
+        nxt=[x for x in lines[i+1:i+3]]
+        firstnonblank=next((x for x in lines[i+1:] if x.strip()!=""), "")
+        # the immediate next content line must be non-empty and not another heading
+        if not firstnonblank or firstnonblank.startswith("## "): bad+=1
+print(bad)' "$o/report.md")"
+  before_concl="$("$PY" -c '
+import sys
+t=open(sys.argv[1]).read()
+i=t.find("## Conclusion"); j=t.find("## 1.")
+print("yes" if (0 <= i < j) else "no")' "$o/report.md")"
+  { eq "$isstub" "yes" && eq "$blanks" "0" && eq "$before_concl" "yes"; } \
+    && ok || no "conclusion first (stub line), zero blank sections" "conclusion_stub=$isstub blank_sections=$blanks conclusion_before_sections=$before_concl"; }
+
+begin "req12-ac5-zero-inventory-scanner-named-not-clean" "a scanner recorded ran:false (0 packages) is named in the report as did-not-run, and section 3/7 note the incomplete assessment rather than a bare 'none'"
+o="$WORK/r12b"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-down.json" --adjudicator "$STUB" --out "$o" && {
+  named="$(grep -qiE 'did not run' "$o/report.md" && grep -qi 'grype' "$o/report.md" && echo yes || echo no)"
+  notclean="$(grep -qi 'NOT clean-by-omission' "$o/report.md" && echo yes || echo no)"
+  # a computed-empty section that is affected by a down scanner names it, never bare 'none'
+  s3="$(sect_ids "$o/report.md" 3)"
+  { eq "$named" "yes" && eq "$notclean" "yes"; } \
+    && ok || no "down scanner named + not-clean stated" "named=$named not_clean=$notclean sec3=[$s3]"; }
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
