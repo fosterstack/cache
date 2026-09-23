@@ -31,12 +31,17 @@ class Refused(Exception):
     pass
 
 
-def ask_model(adjudicator, finding_id, attempt="primary", model="primary"):
+def ask_model(adjudicator, finding_id, attempt="primary", model="primary", context=None):
     """Invoke the adjudicator (the model, in production; a stub/spy in tests). The
-    caller uses this ONLY on a log miss. Returns the answer dict; raises Refused on
-    a refusal and CalledProcessError-equivalent on a nonzero exit."""
+    caller uses this ONLY on a log miss. `context` carries the full finding evidence
+    (ids, aliases, package, purl, versions, scanners, reachability, digest) so the model
+    reasons about THIS finding, not a bare id; the stub ignores the extra fields. Returns
+    the answer dict; raises Refused on a refusal and RuntimeError on a nonzero exit."""
+    req = {"finding_id": finding_id, "attempt": attempt, "model": model}
+    if context:
+        req.update(context)
     p = subprocess.run([sys.executable, adjudicator],
-                       input=json.dumps({"finding_id": finding_id, "attempt": attempt, "model": model}),
+                       input=json.dumps(req),
                        text=True, capture_output=True)
     if p.returncode != 0:
         raise RuntimeError("adjudicator exit %d: %s" % (p.returncode, p.stderr.strip()))

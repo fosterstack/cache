@@ -174,9 +174,12 @@ def parse_govulncheck(path):
         osv = f.get("osv")
         if not osv:
             raise ParseError("govulncheck: finding with no osv id")
-        trace = [fr for fr in f.get("trace", []) if isinstance(fr, dict)]
-        # A function-bearing frame is a real call path. A non-empty trace WITHOUT a
-        # function frame is imported-but-not-called. An EMPTY trace proves nothing.
+        # A REAL frame names a module, package, or function; a bare {} is not a frame
+        # (R11 rank 2: `[{}]` is not a trace). A function-bearing frame is a real call
+        # path; a non-empty trace of real frames WITHOUT a function is imported-but-not-
+        # called; an empty (or all-bare) trace proves nothing.
+        trace = [fr for fr in f.get("trace", [])
+                 if isinstance(fr, dict) and (fr.get("module") or fr.get("package") or fr.get("function"))]
         called = any(fr.get("function") for fr in trace)
         imported_only = bool(trace) and not called
         cur = by_osv.get(osv, {"reachable": False, "imported_only": False})

@@ -20,9 +20,15 @@ def _load_schema():
     return _ALLOWED, _TOP
 
 
-def doc(fid, status, timestamp, justification=None, action=None):
+def doc(fid, status, timestamp, justification=None, action=None, subcomponents=None):
+    product = {"@id": policy.VEX_PRODUCT}
+    if subcomponents:
+        # scope the statement to the exact package purls it is backed for (R11 rank 1:
+        # a not_affected clears only the package(s) its evidence names, never a sibling
+        # package flagged for the same CVE).
+        product["subcomponents"] = [{"@id": p} for p in subcomponents]
     st = {"@id": policy.stmt_id(fid), "vulnerability": {"name": fid}, "timestamp": timestamp,
-          "products": [{"@id": policy.VEX_PRODUCT}], "status": status}
+          "products": [product], "status": status}
     if justification:
         st["justification"] = justification
     if action:
@@ -47,9 +53,9 @@ def validate(document):
 
 
 def write(out_dir, fid, status, timestamp, justification=None, action=None,
-          evidence=None, target_date=None, vex_name=None):
+          evidence=None, target_date=None, vex_name=None, subcomponents=None):
     """Write a conformant VEX and its evidence sidecar. Returns the VEX path."""
-    document = doc(fid, status, timestamp, justification, action)
+    document = doc(fid, status, timestamp, justification, action, subcomponents)
     validate(document)
     vpath = os.path.join(out_dir, "vex", (vex_name or fid) + ".openvex.json")
     os.makedirs(os.path.dirname(vpath), exist_ok=True)

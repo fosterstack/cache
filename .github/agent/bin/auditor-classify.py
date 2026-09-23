@@ -45,11 +45,15 @@ def vex_doc(fid, status, justification=None, action=None, evidence=None):
             "statements": [st]}
 
 
-def gvc_verdict(gvc_path, ids, expected_module=None):
+def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
     """Return ('unreachable'|'reachable'|'no-evidence', evidence). Unreachable requires a
-    SYMBOL-level stream whose scanned module equals the repository's, an imported-but-not-
-    called finding for one of the ids (a non-empty trace with no function frame — an EMPTY
-    trace proves nothing), and no reachable message for any id."""
+    USABLE govulncheck stream (R11 rank 5: complete AND bound to the candidate commit — the
+    caller passes usable=False for an incomplete or stale/unbound stream), at SYMBOL scan
+    level, whose scanned module equals the repository's, with an imported-but-not-called
+    finding for one of the ids (a non-empty trace of real frames with no function frame — an
+    EMPTY or all-bare trace proves nothing), and no reachable message for any id."""
+    if not usable:
+        return "no-evidence", {"reason": "govulncheck stream not usable (incomplete or not bound to this candidate)"}
     if not gvc_path or not os.path.exists(gvc_path):
         return "no-evidence", {"reason": "no govulncheck stream"}
     try:
@@ -86,11 +90,62 @@ def fp_verified(ids, logpath, findings):
     return None
 
 
+VALID_CATS = ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance")
+
+
+def validate_manifest(m):
+    """R11 rank 3: the driver validates the manifest on load. Every scanner the driver reads
+    must be present as a path or an explicit null (with a reason in scanner_status); a
+    missing key is a manifest error, never a KeyError mid-run."""
+    r = m.get("scanner_reports")
+    if not isinstance(r, dict):
+        raise ValueError("manifest: scanner_reports object is missing")
+    status = m.get("scanner_status") or {}
+    for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk"):
+        if k not in r:
+            raise ValueError("manifest: scanner_reports missing key %r (use null for 'did not run')" % k)
+        if r[k] is None and status and k in status and status[k].get("reason") is None:
+            raise ValueError("manifest: %s is null with no scanner_status reason" % k)
+    return m
+
+
+def scanners_down(m):
+    """Names of scanners the manifest records as 'did not run' (path null)."""
+    r = m.get("scanner_reports") or {}
+    status = m.get("scanner_status") or {}
+    down = []
+    for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk"):
+        if r.get(k) is None:
+            reason = (status.get(k) or {}).get("reason", "no report")
+            down.append({"scanner": k, "reason": reason})
+    return down
+
+
+def manifest_gvc(m):
+    """Resolve the govulncheck stream and whether it is USABLE (R11 rank 5). A dict form
+    carries path/module/commit/complete; it is usable only if complete AND its recorded
+    commit equals the manifest commit (bound to this candidate). A bare-path form (test
+    harness / older manifest) is treated as usable with no commit binding available."""
+    g = m.get("govulncheck")
+    if isinstance(g, dict):
+        module = g.get("module") or m.get("module")
+        commit, top = g.get("commit"), m.get("commit")
+        bound = commit is not None and top is not None and commit == top
+        return g.get("path"), module, bool(g.get("complete", False)) and bound
+    return g, m.get("module"), True
+
+
 def manifest_findings(manifest):
-    m = json.load(open(manifest)); r = m["scanner_reports"]
-    allf = (P.parse_grype(r["grype"]) + P.parse_trivy(r["trivy"]) +
-            P.parse_osv(r["osv-scanner"]) + P.parse_osv(r["osv-scanner-gomod"], "osv-scanner-gomod") +
-            P.parse_snyk(r["snyk"]))
+    m = json.load(open(manifest)); validate_manifest(m); r = m.get("scanner_reports") or {}
+    PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
+               ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")),
+               ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod")),
+               ("snyk", P.parse_snyk)]
+    allf = []
+    for name, fn in PARSERS:
+        path = r.get(name)
+        if path:                                    # a null scanner is skipped, not fatal
+            allf += fn(path)
     groups = {}
     for f in allf:
         c = canon(f["finding_id"], f["aliases"])
@@ -102,14 +157,14 @@ def manifest_findings(manifest):
 
 def do_manifest(manifest, adjudicator, out, ts=TS):
     m, groups = manifest_findings(manifest)
-    gvc = m.get("govulncheck"); logpath = m.get("known_defect_log"); module = m.get("module")
+    gvc, module, gvc_usable = manifest_gvc(m); logpath = m.get("known_defect_log")
     classification = []; report_sections = {}
     for c, grp in groups.items():
         ids = sorted(grp["aliases"])
         proposal = cli.ask_model(adjudicator, c).get("category")   # PROPOSAL only
-        cat = proposal
+        cat = proposal if proposal in VALID_CATS else "under_investigation"
         if proposal == "not_affected_unreachable":
-            verdict, ev = gvc_verdict(gvc, ids, module)
+            verdict, ev = gvc_verdict(gvc, ids, module, gvc_usable)
             if verdict == "unreachable":
                 vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
             else:
@@ -133,11 +188,13 @@ def do_manifest(manifest, adjudicator, out, ts=TS):
     _render_report(out, report_sections)
 
 
-def _render_report(out, sections):
+def _render_report(out, sections, header=""):
     titles = {1: "Lifted", 2: "Accepted risk", 3: "Actual vulnerabilities",
               4: "Could not be assessed", 5: "Closed as not affected",
               6: "Pending", 7: "Currently suppressed"}
     lines = ["# Daily CVE auditor report", ""]
+    if header:
+        lines.append(header.rstrip()); lines.append("")
     for n in range(1, 8):
         lines.append("## %d. %s" % (n, titles[n]))
         for fid in sections.get(n, []):

@@ -24,11 +24,20 @@ def main():
         sys.stderr.write("adjudicator-client: anthropic SDK not installed in this runner\n")
         sys.exit(4)
     client = anthropic.Anthropic()  # SDK reads ANTHROPIC_IDENTITY_TOKEN_FILE + workspace env
-    prompt = ("Propose a disposition (false_positive | not_affected_unreachable | "
-              "real_fixable | risk_acceptance) for %s in our own image. Reason only about "
-              "whether our code reaches the vulnerable path; do not produce exploit code. "
-              "Your answer is a proposal our code re-verifies against scanner evidence."
-              % req.get("finding_id"))
+    # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
+    # version, scanner set, and reachability summary. Its answer is still only a proposal our
+    # code re-verifies against evidence before any VEX is written.
+    ctx = "\n".join("- %s: %s" % (k, req.get(k)) for k in
+                    ("finding_id", "aliases", "package", "purl", "installed_version",
+                     "fixed_version", "scanners", "severity", "reachability", "candidate_digest")
+                    if req.get(k) is not None)
+    ask = ("rephrase the question plainly and answer" if req.get("attempt") == "rephrase"
+           else "answer")
+    prompt = ("You are the vulnerability adjudicator for our own container image. Given this "
+              "finding, %s with a disposition (false_positive | not_affected_unreachable | "
+              "real_fixable | risk_acceptance). Reason ONLY about whether our code reaches the "
+              "vulnerable path; do NOT produce exploit code. Your answer is a proposal our code "
+              "re-verifies against scanner evidence.\n\n%s" % (ask, ctx))
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)

@@ -45,7 +45,9 @@ def acceptance_verdict(issues, owner, number, cve, today):
 
 
 def affected_cves(vex_dir):
-    cves = set()
+    """Return (affected_cve_set, malformed_files). A malformed VEX is NOT silently ignored
+    (R11 rank 7): it is a named hold reason."""
+    cves = set(); malformed = []
     if vex_dir and os.path.isdir(vex_dir):
         for f in glob.glob(os.path.join(vex_dir, "*.json")):
             try:
@@ -54,17 +56,19 @@ def affected_cves(vex_dir):
                         n = (s.get("vulnerability") or {}).get("name")
                         if n:
                             cves.add(n)
-            except Exception:
-                pass
-    return cves
+            except Exception as e:
+                malformed.append("%s (%s)" % (os.path.basename(f), e))
+    return cves, malformed
 
 
 def main():
     out = cli.opt("--out"); today = cli.opt("--today", "2026-09-22")
     owner = cli.opt("--owner", policy.OWNER_LOGIN)
     vex_dir = cli.opt("--vex-dir")
-    aff = affected_cves(vex_dir)
+    aff, malformed = affected_cves(vex_dir)
     candpath = cli.opt("--candidate")
+    if malformed:
+        cli.writej(out, {"decision": "hold", "reasons": ["malformed candidate VEX: " + "; ".join(malformed)]}); return
     if not candpath or not os.path.exists(candpath):
         decision = "hold" if aff else "promote"
         cli.writej(out, {"decision": decision,
@@ -77,11 +81,15 @@ def main():
     if items is None:
         cli.writej(out, {"decision": "hold", "reasons": ["no accepted_items field (fail closed)"]}); return
     by_cve = {it.get("cve"): it for it in items}
-    # completeness: every affected CVE must be a listed at-or-above item with an issue.
+    # completeness (R11 rank 7): every affected CVE must appear in the inventory. An
+    # at-or-above item additionally needs an owner issue + recorded acceptance (below); a
+    # below-threshold item is exempt from acceptance and does NOT hold the release.
     for cve in sorted(aff):
         it = by_cve.get(cve)
-        if not it or it.get("threshold") != "at_or_above" or not it.get("owner_issue"):
-            decision = "hold"; reasons.append("affected %s not covered by a complete inventory item" % cve)
+        if not it:
+            decision = "hold"; reasons.append("affected %s not in the candidate inventory" % cve)
+        elif it.get("threshold") == "at_or_above" and not it.get("owner_issue"):
+            decision = "hold"; reasons.append("affected at-or-above %s has no owner-decision issue" % cve)
     for it in items:
         if "cve" not in it or "threshold" not in it:
             decision = "hold"; reasons.append("item missing cve/threshold (fail closed)"); continue

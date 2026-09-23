@@ -39,6 +39,26 @@ def _remove_from_vex(path, aliases):
     return True
 
 
+def _edit_snyk(path, aliases):
+    """Structurally remove ONLY the ignore entries whose top-level key is EXACTLY one of the
+    aliases (R11 rank 8). Keyed on the exact 2-space-indented `<id>:` line — a prefix
+    collision (CVE-...-33740 vs ...-3374) and unrelated entries survive; no regex substring
+    matching. The auditor authors this file, so its shape (ignore: {<id>: [ {'*': {...}} ]})
+    is known and parsed by indentation."""
+    import re as _re
+    text = open(path).read(); lines = text.splitlines(); out = []; i = 0; n = len(lines)
+    while i < n:
+        m = _re.match(r"^  ([^\s].*?):\s*$", lines[i])         # a top-level ignore key
+        if m and m.group(1).strip().strip("'\"") in aliases:
+            i += 1
+            while i < n and (lines[i].strip() == "" or _re.match(r"^   ", lines[i])):
+                i += 1                                          # drop its indented children
+            continue
+        out.append(lines[i]); i += 1
+    new = "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    open(path, "w").write(new)
+
+
 def _remove_ignores(root, aliases):
     removed = []
     for dp, _, fs in os.walk(root):
@@ -55,12 +75,7 @@ def _remove_ignores(root, aliases):
                 if d.get("id") in aliases:          # a per-finding ignore for this id
                     os.remove(p); removed.append(p)
             elif fn == ".snyk":
-                import re
-                txt = open(p).read()
-                # drop only the ignore blocks keyed to a matching id
-                for a in aliases:
-                    txt = re.sub(r"(?ms)^  [^\n:]*%s[^\n:]*:\n(?:    .*\n| *\n)*" % re.escape(a), "", txt)
-                open(p, "w").write(txt); 
+                _edit_snyk(p, aliases)
             elif fn == "osv-scanner.toml":
                 import re
                 blocks = open(p).read().split("[[IgnoredVulns]]")
@@ -72,7 +87,7 @@ def _remove_ignores(root, aliases):
 def recheck(pkgfile, suppdir, today, out):
     p = json.load(open(pkgfile)); cve = p["cve"]
     aliases = {cve} | set(p.get("aliases", []))
-    expired = p.get("ignore_expiry", "") < today
+    expired = p.get("ignore_expiry", "") <= today          # R11 rank 8: expiry date itself expires
     if expired and not p.get("fix_available"):
         removed = _remove_ignores(suppdir, aliases) if suppdir and os.path.isdir(suppdir) else []
         cli.writej(os.path.join(out, "recheck.json"),
