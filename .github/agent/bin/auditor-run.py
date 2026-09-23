@@ -72,8 +72,9 @@ def adjudicate(adjudicator, ctx, state):
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused:
             continue
-        except Exception as e:
-            print("adjudicator error for %s (%s): %s" % (ctx["finding_id"], attempt, e))
+        except Exception:
+            # never echo the exception text: an adjudicator's stderr can name the model id.
+            print("adjudicator error for %s (%s): call failed" % (ctx["finding_id"], attempt))
             continue
         state["tokens"] += int(ans.get("token_usage") or 0)
         return ans.get("category") or "unknown"
@@ -143,6 +144,90 @@ def _row_line(r):
     return line
 
 
+def _dispose(c, findings, aliases, env, would):
+    """Route one finding subset deterministically (steps 2-4). Returns (row, m_calls_inc).
+    The model is consulted ONLY for false-positive suspicion (unique lineage, no fix); a
+    FP it cannot verify FALLS THROUGH to deterministic fix/POA&M routing (so a real finding
+    is never left in §4 for a mere unverified suspicion); only a fallback-exhausted refusal
+    lands in §4."""
+    gf = _group_facts(c, {"findings": findings, "aliases": aliases})
+    ids = sorted(aliases) + [c]
+    row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
+           "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
+           "disposition": None, "action": None, "reason": None}
+    out = env["out"]; ts = env["ts"]; exp = env["exp"]; dry = env["dry"]
+    # 2) reachability for Go modules — deterministic govulncheck.
+    if gf["is_go"]:
+        verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
+        row["reachability"] = "govulncheck: %s" % verdict
+        if verdict == "unreachable":
+            vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
+            row.update(section=5, disposition="not_affected (unreachable)", action="closed",
+                       reason="govulncheck: imported, not called", vex_id=policy.stmt_id(c),
+                       ignore_files=["vex", "evidence"])
+            return row, 1
+    m_inc = 0
+    # 3) false-positive suspicion — ONLY for a unique-lineage, no-fix finding.
+    if len(gf["lineages"]) == 1 and not gf["fixed"]:
+        ctx = {"finding_id": c, "aliases": aliases, "package": gf["package"],
+               "purl": findings[0].get("purl"), "installed_version": gf["installed"],
+               "fixed_version": gf["fixed"], "scanners": sorted({f["scanner"] for f in findings}),
+               "severity": gf["severity"], "reachability": row["reachability"], "candidate_digest": env["digest"]}
+        cat = adjudicate(env["adjudicator"], ctx, env["state"]); m_inc = 1
+        if cat == "false_positive":
+            fev = C.fp_verified(ids, env["logpath"], findings)
+            if fev:
+                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev)
+                row.update(section=5, disposition="not_affected (false positive)", action="closed",
+                           reason="model FP, evidence-verified", vex_id=policy.stmt_id(c),
+                           ignore_files=["vex", "evidence"])
+                return row, m_inc
+            # a FP the code cannot verify is NOT a disposition — fall through and route it.
+        elif cat == "refused":
+            row.update(section=4, disposition="under investigation", action="none",
+                       reason="adjudication exhausted",
+                       cause=("stub: no canned answer" if "stub" in os.path.basename(env["adjudicator"]).lower()
+                              else "model refused after fallback"))
+            return row, m_inc
+    # 4) deterministic fix routing.
+    if gf["fixed"]:
+        if gf["is_go"]:
+            title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
+            _emit_create("gh pr create --head auditor/bump-%s --base main --label auto-merge-lane --title %s"
+                         % (c, shlex.quote(title)), dry, would)
+            act = ("dry run: would open PR '%s'" % title) if dry else "opened bump PR (auto-merge lane)"
+            row.update(section=3, disposition="real, fixable (we build it)", action=act,
+                       fixed=gf["fixed"], reason="pullable fix in a module we build")
+        else:
+            title = "auditor/base-rebuild-%s: base image -> %s (%s)" % (c, gf["fixed"], gf["package"])
+            _emit_create("gh pr create --head auditor/base-rebuild-%s --base main --label base-bump --title %s"
+                         % (c, shlex.quote(title)), dry, would)
+            act = ("dry run: would open PR '%s'" % title) if dry else "opened base-rebuild PR"
+            row.update(section=3, disposition="real, fixable (base rebuild)", action=act,
+                       fixed="base-image %s" % gf["fixed"], reachability="n/a (OS package)",
+                       reason="awaiting base rebuild %s" % gf["fixed"])
+        return row, m_inc
+    # no upstream fix -> POA&M (§2), at/above threshold -> owner issue.
+    in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
+    reason = policy.threshold_reason(gf["severity"], in_kev, gf["known_exploited"])
+    at = reason != "below"
+    vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
+              evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
+              target_date=exp)
+    for sc in sorted({f["scanner"] for f in findings}):
+        cli.writej(os.path.join(out, "ignores", sc, c + ".json"),
+                   {"id": c, "vex": policy.stmt_id(c), "expiry": exp, "reason": "accepted risk; re-checked daily"})
+    action = "POA&M: affected VEX + ignores, expiry %s" % exp
+    if at:
+        it = policy.owner_issue_title(c, gf["package"], reason)
+        _emit_create("gh issue create --title %s --label %s --assignee %s"
+                     % (shlex.quote(it), policy.OWNER_LABEL, policy.OWNER_LOGIN), dry, would)
+        action += ("; dry run: would open issue '%s'" % it) if dry else "; opened owner-decision issue"
+    row.update(section=2, disposition="carried (POA&M)", action=action,
+               reason="%s; %s" % (gf["nofix_reason"], reason), owner_issue=(reason if at else None))
+    return row, m_inc
+
+
 def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     m, groups = C.manifest_findings(manifest_path)
     gvc, module, gvc_usable = C.manifest_gvc(m)
@@ -158,16 +243,17 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             kev_ids = set()
     exp = _expiry(today)
     state = {"tokens": 0, "iters": 0}
+    env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
+           "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "exp": exp, "out": out,
+           "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production")}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
-        ids = sorted(grp["aliases"]); ids.append(grp["id"])
-        gf = _group_facts(c, grp)
-        row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
-               "severity": gf["severity"], "reachability": None, "disposition": None,
-               "action": None, "reason": None, "section": None, "needs_action": True}
-        # 1) trusted log FP -> closed (§5), no model call.
+        # 1) trusted log FP -> closed (§5), scoped to the packages the log names. A sibling
+        #    package's finding for the SAME CVE, NOT named by the log, is NOT closed with it
+        #    (R1 round-1): it is routed on its own so it never vanishes without an action.
         covered = [f for f in grp["findings"]
                    if (idx.get((f["scanner"], f["finding_id"], f["purl"])) or {}).get("disposition") == "false_positive"]
+        cov_keys = {(f["scanner"], f["finding_id"], f["purl"]) for f in covered}
         if covered:
             subs = sorted({f["purl"] for f in covered if f["purl"]})
             ev = {"check": "known-defect-log", "source_file": logpath,
@@ -175,85 +261,21 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev, subcomponents=subs or None)
             igf = os.path.join("ignores", "grype", c + ".json")
             cli.writej(os.path.join(out, igf), {"vex": policy.stmt_id(c), "id": c, "evidence": ev, "scoped_purls": subs})
-            row.update(section=5, disposition="not_affected (false positive)", action="closed", needs_action=False,
-                       reachability="n/a (OS package)", reason="known-defect-log exact-key hit",
-                       vex_id=policy.stmt_id(c), ignore_files=[igf, ".snyk", "osv-scanner.toml", "vex"])
-            rows.append(row); h_count += 1; continue
-        # 2) reachability for Go modules — deterministic govulncheck (no model call).
-        if gf["is_go"]:
-            verdict, ev = C.gvc_verdict(gvc, ids, module, gvc_usable)
-            row["reachability"] = ("govulncheck: %s" % verdict)
-            if verdict == "unreachable":
-                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev)
-                row.update(section=5, disposition="not_affected (unreachable)", action="closed", needs_action=False,
-                           reason="govulncheck: imported, not called", vex_id=policy.stmt_id(c),
-                           ignore_files=["vex", "evidence"])
-                rows.append(row); m_count += 1; continue
-        else:
-            row["reachability"] = "n/a (OS package)"
-        # 3) false-positive suspicion — ONLY for a finding unique to one scanner lineage.
-        if len(gf["lineages"]) == 1 and not gf["fixed"]:
-            ctx = {"finding_id": c, "aliases": sorted(grp["aliases"]), "package": gf["package"],
-                   "purl": grp["findings"][0].get("purl"), "installed_version": gf["installed"],
-                   "fixed_version": gf["fixed"], "scanners": sorted({f["scanner"] for f in grp["findings"]}),
-                   "severity": gf["severity"], "reachability": row["reachability"],
-                   "candidate_digest": (m.get("candidate_digests") or {}).get("production")}
-            cat = adjudicate(adjudicator, ctx, state)
-            if cat == "false_positive":
-                fev = C.fp_verified(ids, logpath, grp["findings"])
-                if fev:
-                    vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev)
-                    row.update(section=5, disposition="not_affected (false positive)", action="closed", needs_action=False,
-                               reason="model FP, evidence-verified", vex_id=policy.stmt_id(c),
-                               ignore_files=["vex", "evidence"])
-                    rows.append(row); m_count += 1; continue
-                row.update(section=4, disposition="under investigation", action="none", needs_action=False,
-                           reason="model FP without evidence", cause="evidence conflict: no FP evidence")
-                rows.append(row); continue
-            if cat in ("refused", "unknown"):
-                row.update(section=4, disposition="under investigation", action="none", needs_action=False,
-                           reason="unique finding, not adjudicated",
-                           cause=("stub: no canned answer" if "stub" in os.path.basename(adjudicator).lower()
-                                  else "model refused after fallback"))
-                rows.append(row); continue
-        # 4) deterministic fix routing.
-        if gf["fixed"]:
-            if gf["is_go"]:
-                title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
-                _emit_create("gh pr create --head auditor/bump-%s --base main --label auto-merge-lane --title %s"
-                             % (c, shlex.quote(title)), dry, would)
-                act = ("dry run: would open PR '%s'" % title) if dry else "opened bump PR (auto-merge lane)"
-                row.update(section=3, disposition="real, fixable (we build it)", action=act,
-                           fixed=gf["fixed"], reason="pullable fix in a module we build")
-            else:
-                title = "auditor/base-rebuild-%s: base image -> %s (%s)" % (c, gf["fixed"], gf["package"])
-                _emit_create("gh pr create --head auditor/base-rebuild-%s --base main --label base-bump --title %s"
-                             % (c, shlex.quote(title)), dry, would)
-                act = ("dry run: would open PR '%s'" % title) if dry else "opened base-rebuild PR"
-                row.update(section=3, disposition="real, fixable (base rebuild)",
-                           action=act, fixed="base-image %s" % gf["fixed"],
-                           reachability="n/a (OS package)", reason="awaiting base rebuild %s" % gf["fixed"])
-            rows.append(row); continue
-        # no upstream fix -> POA&M (§2), at/above threshold -> owner issue.
-        in_kev = c in kev_ids or bool(set(grp["aliases"]) & kev_ids)
-        reason = policy.threshold_reason(gf["severity"], in_kev, gf["known_exploited"])
-        at = reason != "below"
-        vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
-                  evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
-                  target_date=exp)
-        for sc in sorted({f["scanner"] for f in grp["findings"]}):
-            cli.writej(os.path.join(out, "ignores", sc, c + ".json"),
-                       {"id": c, "vex": policy.stmt_id(c), "expiry": exp, "reason": "accepted risk; re-checked daily"})
-        action = "POA&M: affected VEX + ignores, expiry %s" % exp
-        if at:
-            it = policy.owner_issue_title(c, gf["package"], reason)
-            _emit_create("gh issue create --title %s --label %s --assignee %s"
-                         % (shlex.quote(it), policy.OWNER_LABEL, policy.OWNER_LOGIN), dry, would)
-            action += ("; dry run: would open issue '%s'" % it) if dry else "; opened owner-decision issue"
-        row.update(section=2, disposition="carried (POA&M)", action=action,
-                   reason=("%s; %s" % (gf["nofix_reason"], reason)),
-                   owner_issue=(reason if at else None))
-        rows.append(row)
+            cov_pkg = sorted({f.get("package") for f in covered if f.get("package")})
+            rows.append({"id": c, "package": ",".join(cov_pkg) or "?",
+                         "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
+                         "fixed": None, "severity": _max_sev(covered), "section": 5,
+                         "disposition": "not_affected (false positive)", "action": "closed",
+                         "reachability": "n/a (OS package)", "reason": "known-defect-log exact-key hit (scoped to %s)" % (",".join(cov_pkg) or subs),
+                         "vex_id": policy.stmt_id(c), "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"]})
+            h_count += 1
+            uncovered = [f for f in grp["findings"] if (f["scanner"], f["finding_id"], f["purl"]) not in cov_keys]
+            if uncovered:
+                row2, mi = _dispose(c, uncovered, sorted(grp["aliases"]), env, would)
+                rows.append(row2); m_count += mi
+            continue
+        row, mi = _dispose(c, grp["findings"], sorted(grp["aliases"]), env, would)
+        rows.append(row); m_count += mi
 
     # sections + status
     sections = {n: [] for n in range(1, 8)}
@@ -270,14 +292,17 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # scanners whose OS package counts agree within tolerance. A fourth scanner that cannot
     # read this image (osv-scanner does not read a distroless dpkg status.d) is RECORDED as
     # 'did not run' but does not by itself fail the audit when three others agree.
-    st = m.get("scanner_status") or {}; reports = m.get("scanner_reports") or {}
+    st = m.get("scanner_status") or {}
     def _ran(s):
+        # A scanner counts as run ONLY if the manifest records it ran AND it inventoried
+        # packages. Path-presence is NOT enough (R1 round-1): a manifest without a
+        # scanner_status block, or one reporting zero packages, fails the quorum closed.
         info = st.get(s) or {}
-        return info.get("ran") if "ran" in info else bool(reports.get(s))
+        return bool(info.get("ran")) and (info.get("package_count") or 0) > 0
     ran_image = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _ran(s)]
     not_ran = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if not _ran(s)]
     oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
-    agree = (min(oscounts) >= 0.5 * max(oscounts)) if oscounts and max(oscounts) > 0 else (len(ran_image) >= 3)
+    agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
     quorum = len(ran_image) >= 3 and agree
     complete = (findings_without_action == 0) and quorum
     if complete:
@@ -360,8 +385,10 @@ def _conclusion(adjudicator, sections, m):
         ans = cli.ask_model(adjudicator, "CONCLUSION", attempt="narrative", model="primary",
                             context={"mode": "narrative", "structured": structured})
         text = (ans.get("narrative") or "").strip()
-    except Exception as e:
-        return "conclusion withheld: narrative could not be produced (%s)" % e
+    except Exception:
+        # Never echo the exception text into the report: it can carry the model id from an
+        # SDK error. A generic withheld line only.
+        return "conclusion withheld: the narrative could not be produced this run."
     if not text or not _narrative_ok(text, sections):
         return "conclusion withheld: narrative disagreed with the record."
     return text
@@ -380,7 +407,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     for s in IMAGE_SCANNERS + ("osv-scanner-gomod",):
         info = st.get(s) or {}
         pc = info.get("package_count"); fn = info.get("findings")
-        ran = info.get("ran") if "ran" in info else bool(reports.get(s))
+        ran = bool(info.get("ran")) and (info.get("package_count") or 0) > 0
         if reports.get(s) and ran:
             ran_lines.append("%s %s db=%s packages=%s findings=%s"
                              % (s, info.get("version") or "-", info.get("db_date") or "-", pc, fn))

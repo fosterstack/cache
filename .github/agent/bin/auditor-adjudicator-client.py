@@ -33,8 +33,13 @@ def main():
                   "clean day, one sentence with the numbers. Name only CVE/GO ids present in the "
                   "sections; do not contradict a section. Do not produce exploit code.\n\n%s"
                   % json.dumps(req.get("structured"), indent=1))
-        msg = client.messages.create(model=model, max_tokens=512,
-                                     messages=[{"role": "user", "content": prompt}])
+        try:
+            msg = client.messages.create(model=model, max_tokens=512,
+                                         messages=[{"role": "user", "content": prompt}])
+        except Exception:
+            # NEVER surface the SDK error text: it can name the configured model id, and
+            # this stderr is captured and written into the uploaded report.
+            sys.stderr.write("adjudicator-client: model call failed\n"); sys.exit(5)
         text = "".join(getattr(b, "text", "") for b in msg.content)
         json.dump({"refused": False, "narrative": text}, sys.stdout)
         return
@@ -52,8 +57,11 @@ def main():
               "real_fixable | risk_acceptance). Reason ONLY about whether our code reaches the "
               "vulnerable path; do NOT produce exploit code. Your answer is a proposal our code "
               "re-verifies against scanner evidence.\n\n%s" % (ask, ctx))
-    msg = client.messages.create(model=model, max_tokens=512,
-                                 messages=[{"role": "user", "content": prompt}])
+    try:
+        msg = client.messages.create(model=model, max_tokens=512,
+                                     messages=[{"role": "user", "content": prompt}])
+    except Exception:
+        sys.stderr.write("adjudicator-client: model call failed\n"); sys.exit(5)
     text = "".join(getattr(b, "text", "") for b in msg.content)
     cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
                             "risk_acceptance") if c in text), "under_investigation")

@@ -772,6 +772,46 @@ incomplete="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)
 { eq "$named" "yes" && eq "$incomplete" "yes" && [ "$rcx" -ne 0 ] 2>/dev/null; } \
   && ok || no "grype named did-not-run, AUDIT INCOMPLETE, non-zero exit" "named=$named incomplete=$incomplete exit=$rcx"
 
+########################################################################
+echo "=== inner-loop regressions (round 1) ==="
+
+begin "il1-sibling-not-dropped" "a CVE partly covered by a log FP does NOT close the whole group: the uncovered sibling is routed to its own row with an action, never silently dropped"
+o="$WORK/il1"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  # CVE-2011-3374 must appear in §5 (log-FP, apt) AND in §2 (uncovered subset carried),
+  # and every §2/§3 row it produces must carry an action.
+  rows="$("$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))["findings"]
+r=[x for x in d if x["id"]=="CVE-2011-3374"]
+secs=sorted(x["section"] for x in r)
+noact=[x for x in r if x["section"] in (2,3) and (not x.get("action") or x["action"]=="none")]
+print("secs=%s rows=%d noaction=%d" % (secs, len(r), len(noact)))' "$o/classification.json")"
+  s5="$(sect_ids "$o/report.md" 5)"; s2="$(sect_ids "$o/report.md" 2)"
+  { printf '%s' "$rows" | grep -q 'secs=\[2, 5\]' && printf '%s' "$rows" | grep -q 'noaction=0' \
+    && printf '%s' "$s5" | grep -q CVE-2011-3374 && printf '%s' "$s2" | grep -q CVE-2011-3374; } \
+    && ok || no "sibling routed (§5 + §2), each actioned" "$rows s5=[$s5] s2=[$s2]"; }
+
+begin "il2-zero-package-scanner-not-quorum" "image scanners recorded ran:true but package_count 0 do NOT count toward quorum: the run is AUDIT INCOMPLETE and exits non-zero"
+o="$WORK/il2"; rm -rf "$o"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-zeropkg.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; rcz=$?
+inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
+quorum="$(grep -qi 'quorum 0/4' "$o/report.md" && echo yes || echo no)"
+{ eq "$inc" "yes" && eq "$quorum" "yes" && [ "$rcz" -ne 0 ] 2>/dev/null; } \
+  && ok || no "AUDIT INCOMPLETE, quorum 0/4, non-zero exit" "incomplete=$inc quorum=$quorum exit=$rcz"
+
+begin "il3-model-id-never-in-report" "when the adjudicator errors, the Conclusion is a generic withheld line — the model id / SDK error text never reaches report.md"
+o="$WORK/il3"; rm -rf "$o"; fa="$WORK/il3-fail.py"
+cat > "$fa" <<'PYEOF'
+import sys
+sys.stderr.write("Error code: 404 model: claude-secret-codename-zzz not found\n")
+sys.exit(5)
+PYEOF
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
+leaked="$(grep -c 'claude-secret-codename-zzz' "$o/report.md" 2>/dev/null)"; leaked="${leaked:-0}"
+withheld="$(grep -qi 'conclusion withheld' "$o/report.md" && echo yes || echo no)"
+{ eq "$leaked" "0" && eq "$withheld" "yes"; } \
+  && ok || no "no model id in report.md; conclusion withheld generically" "leaked=$leaked withheld=$withheld"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
