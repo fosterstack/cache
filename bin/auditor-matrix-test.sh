@@ -911,6 +911,34 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
   { printf '%s' "$s7" | grep -q CVE-2011-3374 && printf '%s' "$s7" | grep -q CVE-2020-14040 && eq "$blanket" "no"; } \
     && ok || no "§7 lists in-force suppressions, not the empty sentence" "sec7=[$s7] blanket_empty=$blanket"; }
 
+########################################################################
+echo "=== inner-loop regressions (round 5) ==="
+
+begin "il13-pr-action-text-honest-proposed" "a real run's §3 rows say 'proposed ... PR', never a false 'opened' — the driver does not deliver PRs itself"
+o="$WORK/il13"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  lied="$(grep -cE 'action: opened (bump|base-rebuild) PR' "$o/report.md" 2>/dev/null)"; lied="${lied:-0}"
+  proposed="$(grep -cE 'action: proposed (bump|base-rebuild) PR' "$o/report.md" 2>/dev/null)"; proposed="${proposed:-0}"
+  { eq "$lied" "0" && [ "$proposed" -ge 1 ] 2>/dev/null; } \
+    && ok || no "no false 'opened', at least one honest 'proposed'" "opened=$lied proposed=$proposed"; }
+
+begin "il14-consolidated-ignore-cites-all-statement-ids" "a split CVE's consolidated ignore cites BOTH statement ids (the sibling id is not orphaned)"
+o="$WORK/il14"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  both="$(grep -A2 'CVE-2011-3374:' "$o/suppressions/.snyk" | grep -c 'stmt-cve-2011-3374-sibling')"; both="${both:-0}"
+  base="$(grep -A2 'CVE-2011-3374:' "$o/suppressions/.snyk" | grep -c 'stmt-cve-2011-3374 ')"; base="${base:-0}"
+  { [ "$both" -ge 1 ] 2>/dev/null; } \
+    && ok || no "both statement ids cited in the consolidated ignore" "sibling_id_cited=$both"; }
+
+begin "il15-section7-poam-row-names-real-vex-id" "a §7 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
+o="$WORK/il15"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  poam7="$(sed -n '/## 7\./,/^$/p' "$o/report.md" | grep 'carried (POA&M)')"
+  realid="$(printf '%s' "$poam7" | grep -c 'suppression in force (http')"; realid="${realid:-0}"
+  placeholder="$(printf '%s' "$poam7" | grep -c 'suppression in force (VEX)')"; placeholder="${placeholder:-0}"
+  { [ "$realid" -ge 1 ] 2>/dev/null && eq "$placeholder" "0"; } \
+    && ok || no "§7 POA&M row names a real vex id, no '(VEX)' placeholder" "real_id_rows=$realid placeholder_rows=$placeholder"; }
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

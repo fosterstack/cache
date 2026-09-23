@@ -83,11 +83,14 @@ def _open_pr(branch, title, lane, dry, would, commit_msg):
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         open(log, "a").write("\n".join(seq) + "\n")
-    elif not _real_gh_allowed():
-        print("would open PR (real gh disabled): " + seq[-1])
-    else:
-        for cmd in seq:
-            subprocess.run(shlex.split(cmd), check=False)
+        return
+    # The driver does NOT shell out to git/gh to open a PR. It cannot: the job holds
+    # contents:read, so a push fails; and a driver that ran real git is what oscillated
+    # across rounds 3-5 (silent push failure + a lying "opened" line, files written outside
+    # the checkout so the commit was empty, branches stacking). Instead it RECORDS the
+    # proposal (the branch, the commit, the exact PR) into out/pr-proposals.jsonl; an
+    # authorized delivery step (owner decision: a contents:write job or a PAT) opens it.
+    print("PR proposed (driver does not deliver; needs an authorized step): %s" % seq[-1])
 
 
 def _emit_owner_issue(title, dry, would):
@@ -149,14 +152,17 @@ def _consolidate(out, ts):
     by_cve = {}
     for s in statements:
         cve = (s.get("vulnerability") or {}).get("name")
-        by_cve.setdefault(cve, {"statuses": set(), "vid": None})
+        by_cve.setdefault(cve, {"statuses": set(), "vids": []})
         by_cve[cve]["statuses"].add(s.get("status"))
-        by_cve[cve]["vid"] = by_cve[cve]["vid"] or policy.stmt_id(cve)
+        sid = s.get("@id")
+        if sid and sid not in by_cve[cve]["vids"]:
+            by_cve[cve]["vids"].append(sid)    # every statement id for this CVE (no orphan)
     snyk = ["version: v1.5.0", "ignore:"]; toml = []
     for cve in sorted(by_cve):
-        info = by_cve[cve]; vid = info["vid"]; st = "+".join(sorted(info["statuses"]))
-        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, vid), "        vex: '%s'" % vid]
-        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s; governed by %s"' % (st, vid)]
+        info = by_cve[cve]; vids = info["vids"] or [policy.stmt_id(cve)]; st = "+".join(sorted(info["statuses"]))
+        allids = " ".join(vids)
+        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, allids), "        vex: '%s'" % vids[0]]
+        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s; governed by %s"' % (st, allids)]
     cli.writef(os.path.join(supp, ".snyk"), "\n".join(snyk) + "\n")
     cli.writef(os.path.join(supp, "osv-scanner.toml"), "\n".join(toml) + "\n")
     return supp, len(statements)
@@ -300,13 +306,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
         if gf["is_go"]:
             title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
             _open_pr("auditor/bump-%s" % c, title, "auto-merge-lane", dry, would, "auditor: bump %s" % c)
-            act = ("dry run: would open PR '%s'" % title) if dry else "opened bump PR (auto-merge lane)"
+            act = ("dry run: would open PR '%s'" % title) if dry else "proposed bump PR (auto-merge lane; delivery pending)"
             row.update(section=3, disposition="real, fixable (we build it)", action=act,
                        fixed=gf["fixed"], reason="pullable fix in a module we build")
         else:
             title = "auditor/base-rebuild-%s: base image -> %s (%s)" % (c, gf["fixed"], gf["package"])
             _open_pr("auditor/base-rebuild-%s" % c, title, "base-bump", dry, would, "auditor: base rebuild %s" % c)
-            act = ("dry run: would open PR '%s'" % title) if dry else "opened base-rebuild PR"
+            act = ("dry run: would open PR '%s'" % title) if dry else "proposed base-rebuild PR (delivery pending)"
             row.update(section=3, disposition="real, fixable (base rebuild)", action=act,
                        fixed="base-image %s" % gf["fixed"], reachability="n/a (OS package)",
                        reason="awaiting base rebuild %s" % gf["fixed"])
@@ -325,8 +331,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
     if at:
         it = policy.owner_issue_title(c, gf["package"], reason)
         _emit_owner_issue(it, dry, would)          # find-or-update, never a duplicate (R1 round-3)
-        action += ("; dry run: would open/update issue '%s'" % it) if dry else "; opened/updated owner-decision issue"
-    row.update(section=2, disposition="carried (POA&M)", action=action,
+        action += ("; dry run: would open/update issue '%s'" % it) if dry else "; owner-decision issue opened/updated (issues:write)"
+    row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=policy.stmt_id(vn),
                reason="%s; %s" % (gf["nofix_reason"], reason), owner_issue=(reason if at else None))
     return row, m_inc
 
