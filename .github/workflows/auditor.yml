@@ -1,0 +1,30 @@
+name: Daily CVE auditor
+
+# BOOTSTRAP ONLY. GitHub's workflow_dispatch will not dispatch a workflow that has never
+# existed on the default branch. This minimal file registers the workflow so the real
+# implementation on PR #94 (matrix/cve-auditor) can be dispatched on its own branch. It
+# carries the same dispatch inputs so a branch dispatch validates, has default permissions,
+# no environment, and no schedule, and its only job echoes that it is a placeholder.
+# PR #94 replaces this file wholesale.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Do everything except open PRs and issues'
+        type: boolean
+        default: true
+      adjudicator:
+        description: 'Model client: real (federated SDK) or stub (checked-in test double)'
+        type: choice
+        options: [real, stub]
+        default: real
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    name: bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "bootstrap — replaced by PR #94."
