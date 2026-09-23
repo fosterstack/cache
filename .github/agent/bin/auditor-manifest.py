@@ -90,22 +90,54 @@ def _inv_osv(path):
 INV = {"grype": _inv_grype, "trivy": _inv_trivy, "osv-scanner": _inv_osv, "osv-scanner-gomod": _inv_osv}
 
 
-def _load_to_tar(rescan_dir, test_image, tar):
-    """Produce a docker-save tar of the candidate (no daemon). Returns (source_desc, err)."""
+def _skopeo(src, dst):
+    """skopeo copy, host arch, printing stderr on failure."""
+    r = subprocess.run(["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", src, dst],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        print("skopeo %s -> %s FAILED (rc %d): %s" % (src, dst, r.returncode, (r.stderr or "").strip()[:400]))
+    return r.returncode == 0
+
+
+def _norm_ref(ref):
+    """debian:12.0@sha256:X -> debian@sha256:X (the digest is authoritative; the tag+digest
+    form is not universally accepted, and the digest is a multi-arch index)."""
+    if "@sha256:" in ref:
+        name, digest = ref.split("@", 1)
+        name = name.split(":", 1)[0]
+        return "%s@%s" % (name, digest)
+    return ref
+
+
+def _archives(rescan_dir, test_image, oci, tar):
+    """Produce BOTH an oci-archive and a docker-save tar (no daemon). grype reads the
+    oci-archive directly (R12 item 2); trivy/osv read the docker-save tar. Returns
+    (source_desc, err)."""
     if test_image:
-        rc, err = _run(["skopeo", "copy", "docker://%s" % test_image, "docker-archive:%s:%s" % (tar, TAG)])
-        return ("test_image=%s" % test_image, None) if rc == 0 else (None, "skopeo pull %s: %s" % (test_image, err))
+        ref = "docker://" + _norm_ref(test_image)
+        ok1 = _skopeo(ref, "oci-archive:%s:%s" % (oci, TAG))
+        ok2 = _skopeo(ref, "docker-archive:%s:%s" % (tar, TAG))
+        return (("test_image=%s" % test_image, None) if (ok1 or ok2) else (None, "skopeo could not pull %s" % ref))
     named = glob.glob(os.path.join(rescan_dir, "**", "production.oci"), recursive=True)
     if not named:
         return None, "no production.oci in the rescan artifacts"
-    rc, err = _run(["skopeo", "copy", "oci-archive:%s" % named[0], "docker-archive:%s:%s" % (tar, TAG)])
-    return (os.path.basename(named[0]), None) if rc == 0 else (None, "skopeo convert %s: %s" % (named[0], err))
+    # production.oci is a multi-arch index; select amd64 into a single-arch OCI archive that
+    # grype can catalogue, and a docker-save tar for trivy/osv.
+    src = "oci-archive:%s" % named[0]
+    ok1 = _skopeo(src, "oci-archive:%s:%s" % (oci, TAG))
+    ok2 = _skopeo(src, "docker-archive:%s:%s" % (tar, TAG))
+    return (os.path.basename(named[0]), None) if (ok1 or ok2) else (None, "skopeo convert failed")
 
 
 def _scan(name, cmd, reports, ok=(0, 1)):
     path = os.path.join(reports, name + ".json")
-    rc, _ = _run(cmd, out_path=path)
-    return path, rc
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    open(path, "w").write(r.stdout or "")
+    if r.returncode not in ok:
+        print("%s scan rc=%d stderr: %s" % (name, r.returncode, (r.stderr or "").strip().splitlines()[-3:] if r.stderr else ""))
+    elif r.stderr and r.stderr.strip():
+        print("%s stderr: %s" % (name, " | ".join((r.stderr or "").strip().splitlines()[-2:])))
+    return path, r.returncode
 
 
 def main():
@@ -117,14 +149,19 @@ def main():
     tol = float(cli.opt("--os-inventory-tolerance", "0.5"))
     os.makedirs(reports, exist_ok=True)
 
-    tar = os.path.join(reports, "candidate.tar")
-    src, err = _load_to_tar(rescan, test_image, tar)
+    tar = os.path.join(reports, "candidate.tar"); oci = os.path.join(reports, "candidate.oci")
+    src, err = _archives(rescan, test_image, oci, tar)
     if not src:
         sys.exit("auditor-manifest: cannot ingest the candidate — %s" % err)
+    have_oci = os.path.exists(oci) and os.path.getsize(oci) > 0
+    have_tar = os.path.exists(tar) and os.path.getsize(tar) > 0
+    print("archives: oci=%s tar=%s" % (have_oci, have_tar))
 
-    # scan the ARCHIVE (no daemon, no registry pull)
+    # scan the ARCHIVE (no daemon, no registry pull). grype reads the OCI archive directly
+    # (the review's simplest path); trivy/osv read the docker-save tar.
+    grype_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
     plans = {
-        "grype": ["grype", "docker-archive:" + tar, "-o", "json"],
+        "grype": ["grype", grype_src, "-o", "json"],
         "trivy": ["trivy", "image", "--input", tar, "--quiet", "--format", "json"],
         "osv-scanner": ["osv-scanner", "scan", "image", "--archive", tar, "--format", "json"],
     }
@@ -181,8 +218,14 @@ def main():
         gvc = {"path": gvc_path, "module": module, "commit": commit, "complete": True, "scan_level": "symbol"}
 
     digest = ""
-    rc, out_i = _run(["skopeo", "inspect", "--format", "{{.Digest}}", "docker-archive:" + tar])
-    digest = out_i.strip() if (rc == 0 and out_i.strip()) else (test_image.split("@")[-1] if "@" in test_image else "sha256:unknown")
+    for transport in (("docker-archive:" + tar) if have_tar else None, ("oci-archive:" + oci) if have_oci else None):
+        if not transport:
+            continue
+        rc, out_i = _run(["skopeo", "inspect", "--format", "{{.Digest}}", transport])
+        if rc == 0 and out_i.strip():
+            digest = out_i.strip(); break
+    if not digest:
+        digest = test_image.split("@")[-1] if "@" in test_image else "sha256:unknown"
 
     manifest = {
         "commit": commit, "module": module, "base_os": "debian",
