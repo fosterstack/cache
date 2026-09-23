@@ -164,6 +164,7 @@ jobs:
           AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
           AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
           GH_TOKEN: ${{ github.token }}
+          AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
         run: |
           set -uo pipefail
           curl -fsS https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json \

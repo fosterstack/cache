@@ -19,7 +19,9 @@ def live_cves(manifest):
         if not path:                                # a null scanner (did not run) is skipped
             continue
         for f in fn(path):
-            cves.update(a for a in f["aliases"] if a.startswith("CVE-"))
+            # every id the finding carries is 'live' — CVE, GO-, GHSA-, DEBIAN-CVE-, TEMP-*,
+            # DLA-* — so a carried VEX for a non-CVE id is NOT false-flagged stale (R1 round-4).
+            cves.update(f["aliases"]); cves.add(f["finding_id"])
     return cves
 
 

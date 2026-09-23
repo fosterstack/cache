@@ -862,6 +862,55 @@ run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$supp" --live-finding
   { printf '%s' "$stale" | grep -q 'stale_vex'; } \
     && ok || no "stale_vex flagged (not blind)" "problems=$stale"; }
 
+########################################################################
+echo "=== inner-loop regressions (round 4) ==="
+
+begin "il9-pr-branch-created-before-pr-create" "a real run creates the branch (git checkout -b) BEFORE gh pr create for every PR — the PR never targets a branch that was never made"
+o="$WORK/il9"; shim="$WORK/il9.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+ordered="$("$PY" -c '
+import sys
+lines=open(sys.argv[1]).read().splitlines()
+ok=True
+for i,l in enumerate(lines):
+    if l.startswith("gh pr create --head "):
+        br=l.split("--head ",1)[1].split()[0]
+        made=any(x=="git checkout -b "+br for x in lines[:i])
+        if not made: ok=False
+print("yes" if ok else "no")' "$shim")"
+prs="$(grep -c 'gh pr create --head' "$shim" 2>/dev/null)"; prs="${prs:-0}"
+{ eq "$ordered" "yes" && [ "$prs" -ge 1 ] 2>/dev/null; } \
+  && ok || no "every pr-create is preceded by its branch checkout" "ordered=$ordered pr_count=$prs"
+
+begin "il10-consolidated-suppression-files-dedup-by-cve" "consolidated .snyk / osv-scanner.toml carry exactly ONE entry per CVE even when a CVE is split across two dispositions (no duplicate keys/blocks)"
+o="$WORK/il10"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  snykn="$(grep -c 'CVE-2011-3374:' "$o/suppressions/.snyk" 2>/dev/null)"; snykn="${snykn:-0}"
+  tomln="$(grep -c 'id = "CVE-2011-3374"' "$o/suppressions/osv-scanner.toml" 2>/dev/null)"; tomln="${tomln:-0}"
+  yamlok="$("$PY" -c 'import sys
+sys.path.insert(0,".github/agent/fixtures/testlib")
+try: import yaml
+except Exception: import pyyaml as yaml
+d=yaml.safe_load(open(sys.argv[1]).read()) or {}
+print("yes" if len(d.get("ignore",{}))>=1 else "no")' "$o/suppressions/.snyk")"
+  { eq "$snykn" "1" && eq "$tomln" "1" && eq "$yamlok" "yes"; } \
+    && ok || no "one .snyk key + one toml block per CVE" "snyk_keys=$snykn toml_blocks=$tomln yaml_parses=$yamlok"; }
+
+begin "il11-consistency-not-false-stale-on-non-cve-id" "a carried VEX for a LIVE non-CVE id (DEBIAN-CVE-*) is not false-flagged stale"
+o="$WORK/il11"; supp="$WORK/il11-supp"; rm -rf "$o" "$supp"; mkdir -p "$supp"
+printf '{"statements":[{"vulnerability":{"name":"DEBIAN-CVE-2011-3374"},"status":"affected"}]}' > "$supp/fosterstack-cache.openvex.json"
+run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$supp" --live-findings "$F/run/manifest-01.json" --out "$o/c.json" && {
+  probs="$(pj "$o/c.json" 'len(d["problems"])')"
+  { eq "$probs" "0"; } && ok || no "no false stale_vex for a live non-CVE id" "problems=$probs"; }
+
+begin "il12-section7-lists-suppressions-in-force" "§7 lists the suppressions actually in force this run, not a blanket 'no suppressions'"
+o="$WORK/il12"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  s7="$(sect_ids "$o/report.md" 7)"
+  blanket="$(sed -n '/## 7\./,/^$/p' "$o/report.md" | grep -qi 'No suppressions are in force' && echo yes || echo no)"
+  { printf '%s' "$s7" | grep -q CVE-2011-3374 && printf '%s' "$s7" | grep -q CVE-2020-14040 && eq "$blanket" "no"; } \
+    && ok || no "§7 lists in-force suppressions, not the empty sentence" "sec7=[$s7] blanket_empty=$blanket"; }
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

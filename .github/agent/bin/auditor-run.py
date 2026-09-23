@@ -31,6 +31,14 @@ C = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(C)
 IMAGE_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")
 
 
+def _real_gh_allowed():
+    """Real git/gh side effects run ONLY when the workflow explicitly opts in
+    (AUDITOR_ALLOW_REAL_GH=1). Otherwise a non-dry run outside the test shim prints what it
+    would do and executes nothing — so running the driver locally (a probe, a manual test)
+    can never create branches, commits, PRs, or issues by accident."""
+    return os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
+
+
 def _emit_create(cmd, dry, would):
     """A create action. dry-run records it in the §6 would-open list and PRINTS it; a real
     run writes to the test-only shim ledger when AUDITOR_GIT_SHIM_LOG is set (the suite),
@@ -42,6 +50,8 @@ def _emit_create(cmd, dry, would):
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         open(log, "a").write(cmd + "\n")
+    elif not _real_gh_allowed():
+        print("would (real gh disabled): " + cmd)
     else:
         try:
             subprocess.run(shlex.split(cmd), check=False)
@@ -56,6 +66,28 @@ def log_index(logpath):
             for k in row.get("keys", []):
                 idx[(k["scanner"], k["finding_id"], k["purl"])] = row
     return idx
+
+
+def _open_pr(branch, title, lane, dry, would, commit_msg):
+    """Open a branch PR the RIGHT way: create the branch, commit, push, THEN gh pr create —
+    so the PR never targets a branch that was never made (R1 round-4). dry records only the
+    pr-create in the §6 would-open list; a real run (or the test shim) records/executes the
+    full git sequence. NOTE: a real push needs contents:write on the job — see the report
+    header when that is absent."""
+    seq = ["git checkout -b %s" % branch, "git add -A",
+           "git commit --allow-empty -m %s" % shlex.quote(commit_msg),
+           "git push -u origin %s" % branch,
+           "gh pr create --head %s --base main --label %s --title %s" % (branch, lane, shlex.quote(title))]
+    if dry:
+        would.append(seq[-1]); print("dry-run would open PR on %s: %s" % (branch, title)); return
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    if log:
+        open(log, "a").write("\n".join(seq) + "\n")
+    elif not _real_gh_allowed():
+        print("would open PR (real gh disabled): " + seq[-1])
+    else:
+        for cmd in seq:
+            subprocess.run(shlex.split(cmd), check=False)
 
 
 def _emit_owner_issue(title, dry, would):
@@ -75,6 +107,8 @@ def _emit_owner_issue(title, dry, would):
         else:
             open(log, "a").write(cmd + "\n")
         return
+    if not _real_gh_allowed():
+        print("would open/update owner issue (real gh disabled): " + title); return
     try:
         r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
                            capture_output=True, text=True)
@@ -108,11 +142,21 @@ def _consolidate(out, ts):
                 "statements": statements}
     vex.validate(document)
     cli.writej(os.path.join(supp, "fosterstack-cache.openvex.json"), document)
-    snyk = ["version: v1.5.0", "ignore:"]; toml = []
+    # ONE ignore entry per CVE (R1 round-4): a split CVE has two statements but the scanner
+    # ignore is CVE-keyed, so collapse by CVE — no duplicate YAML keys / TOML blocks — and
+    # cite the governing VEX statement-id base. A CVE with any affected statement is recorded
+    # as governed-by-VEX (the VEX's subcomponents carry the per-package truth).
+    by_cve = {}
     for s in statements:
-        cve = (s.get("vulnerability") or {}).get("name"); vid = s.get("@id")
-        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; %s'" % (s.get("status"), vid), "        vex: '%s'" % vid]
-        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s; governed by %s"' % (s.get("status"), vid)]
+        cve = (s.get("vulnerability") or {}).get("name")
+        by_cve.setdefault(cve, {"statuses": set(), "vid": None})
+        by_cve[cve]["statuses"].add(s.get("status"))
+        by_cve[cve]["vid"] = by_cve[cve]["vid"] or policy.stmt_id(cve)
+    snyk = ["version: v1.5.0", "ignore:"]; toml = []
+    for cve in sorted(by_cve):
+        info = by_cve[cve]; vid = info["vid"]; st = "+".join(sorted(info["statuses"]))
+        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, vid), "        vex: '%s'" % vid]
+        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s; governed by %s"' % (st, vid)]
     cli.writef(os.path.join(supp, ".snyk"), "\n".join(snyk) + "\n")
     cli.writef(os.path.join(supp, "osv-scanner.toml"), "\n".join(toml) + "\n")
     return supp, len(statements)
@@ -255,15 +299,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
     if gf["fixed"]:
         if gf["is_go"]:
             title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
-            _emit_create("gh pr create --head auditor/bump-%s --base main --label auto-merge-lane --title %s"
-                         % (c, shlex.quote(title)), dry, would)
+            _open_pr("auditor/bump-%s" % c, title, "auto-merge-lane", dry, would, "auditor: bump %s" % c)
             act = ("dry run: would open PR '%s'" % title) if dry else "opened bump PR (auto-merge lane)"
             row.update(section=3, disposition="real, fixable (we build it)", action=act,
                        fixed=gf["fixed"], reason="pullable fix in a module we build")
         else:
             title = "auditor/base-rebuild-%s: base image -> %s (%s)" % (c, gf["fixed"], gf["package"])
-            _emit_create("gh pr create --head auditor/base-rebuild-%s --base main --label base-bump --title %s"
-                         % (c, shlex.quote(title)), dry, would)
+            _open_pr("auditor/base-rebuild-%s" % c, title, "base-bump", dry, would, "auditor: base rebuild %s" % c)
             act = ("dry run: would open PR '%s'" % title) if dry else "opened base-rebuild PR"
             row.update(section=3, disposition="real, fixable (base rebuild)", action=act,
                        fixed="base-image %s" % gf["fixed"], reachability="n/a (OS package)",
@@ -348,6 +390,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     sections = {n: [] for n in range(1, 8)}
     for r in rows:
         sections[r["section"]].append(r)
+    # §7 "Currently suppressed": the VEX statements in force this run (every not_affected/
+    # affected disposition), so the section reflects real state instead of always claiming
+    # none (R1 round-4). A cross-cutting view — the same rows also appear in §5/§2.
+    for r in rows:
+        if r["section"] in (2, 5):
+            sections[7].append(dict(r, action="suppression in force (%s)" % (r.get("vex_id") or "VEX")))
     accepted = [{"cve": r["id"], "severity": r["severity"], "package": r["package"],
                  "threshold": ("at_or_above" if r.get("owner_issue") else "below"),
                  "owner_issue": r.get("owner_issue"), "expiry": exp}
@@ -389,8 +437,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     supp, nstmt = _consolidate(out, ts)
     consistency = _consistency(out, supp, manifest_path)
     if nstmt:
-        _emit_create("gh pr create --head auditor/vex-update --base main --label audit-lane --title %s"
-                     % shlex.quote("auditor: update .vex suppressions (%d statements)" % nstmt), dry, would)
+        _open_pr("auditor/vex-update", "auditor: update .vex suppressions (%d statements)" % nstmt,
+                 "audit-lane", dry, would, "auditor: update .vex suppressions")
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m)
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion)
