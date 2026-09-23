@@ -101,13 +101,17 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           TEST_IMAGE: ${{ inputs.test_image }}
           KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
           command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true
-          for s in grype trivy osv-scanner; do ./bin/install-scanner.sh "$s" || echo "::warning::${s} install failed; it will be recorded 'did not run'"; done
-          # govulncheck pinned by version (best-effort; a missing Go toolchain -> null in the manifest)
+          for s in grype trivy osv-scanner snyk; do ./bin/install-scanner.sh "$s" || echo "::warning::${s} install failed; it will be recorded 'did not run'"; done
+          # govulncheck + syft pinned by version (best-effort; syft is grype's cataloguer and
+          # reads distroless status.d, so grype's package inventory is real even on distroless)
           GOBIN="${RUNNER_TEMP}/gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 \
             || echo "::warning::could not install govulncheck; reachability will be recorded 'did not run'"
+          GOBIN="${RUNNER_TEMP}/gobin" go install github.com/anchore/syft/cmd/syft@v1.52.0 \
+            || echo "::warning::could not install syft; grype inventory falls back to matched packages"
           export PATH="${RUNNER_TEMP}/gobin:${PATH}"
           # Scan a CONTAINER ARCHIVE, never a daemon ref (R12 item 2). one line per scanner
           # is printed here (grype 0.118.0 db=… packages=… findings=…); a scanner that

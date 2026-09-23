@@ -123,7 +123,8 @@ def accept(finding_file, kevfile, github, state, today, out):
                 "threshold": "at_or_above" if at else "below", "threshold_reason": reason})
     issue_number = None
     if at and github and state:
-        issue_number = int(cli.gh(github, "create", state, "owner-decision: accept risk %s" % cve,
+        issue_number = int(cli.gh(github, "create", state,
+                                  policy.owner_issue_title(cve, f.get("package"), reason),
                                   policy.OWNER_LABEL, policy.OWNER_LOGIN))
     if at:
         cli.writej(os.path.join(out, "accepted-item.json"),

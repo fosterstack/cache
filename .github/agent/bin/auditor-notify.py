@@ -31,7 +31,12 @@ def main():
     if not is_trigger(f, kev):
         cli.writej(os.path.join(out, "notify.json"), {"notified": False, "cve": cve})
         return
-    title = "owner-decision: risk acceptance %s" % cve
+    try:
+        in_kev = cve in P.parse_kev(kev)
+    except Exception:
+        in_kev = False
+    reason = policy.threshold_reason(f.get("severity"), in_kev, f.get("known_exploited"))
+    title = policy.owner_issue_title(cve, f.get("package"), reason)
     existing = cli.gh(github, "find", state, title)
     if existing:
         cli.gh(github, "comment", state, existing, "re-check: %s still open %s" % (cve, artifact))

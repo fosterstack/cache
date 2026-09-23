@@ -43,5 +43,21 @@ def stmt_id(finding_id):
     return "%s#stmt-%s" % (VEX_BASE, finding_id.lower())
 
 
+def threshold_reason(severity=None, kev=False, known_exploited=False):
+    """The at-or-above threshold reason (owner policy), or 'below'."""
+    if (severity or "").lower() in THRESHOLD_SEVERITIES:
+        return "critical-severity"
+    if kev:
+        return "kev"
+    if known_exploited:
+        return "known-exploited"
+    return "below"
+
+
+def owner_issue_title(finding_id, package, reason):
+    """The owner's mail filter keys on this exact prefix/shape (R14)."""
+    return "owner-decision: %s — %s — %s" % (finding_id, package or "unknown-package", reason)
+
+
 def lineage_of(scanner):
     return LINEAGE.get(scanner, scanner)

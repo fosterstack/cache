@@ -95,6 +95,24 @@ def _inv_osv(path):
     return total, osp, None, findings
 
 
+def _inv_syft(path):
+    """syft is grype's own cataloguer; unlike grype's match-JSON it emits the FULL package
+    inventory, including a distroless image's /var/lib/dpkg/status.d packages (R12 (b))."""
+    d = json.load(open(path)); arts = d.get("artifacts") or []
+    total = len(arts); osp = sum(1 for a in arts if a.get("type") == "deb")
+    return total, osp
+
+
+def _inv_snyk(path):
+    d = json.load(open(path))
+    docs = d if isinstance(d, list) else [d]
+    total = 0; findings = 0
+    for doc in docs:
+        total = max(total, int(doc.get("dependencyCount") or 0))
+        findings += len(doc.get("vulnerabilities") or [])
+    return total, total, None, findings
+
+
 INV = {"grype": _inv_grype, "trivy": _inv_trivy, "osv-scanner": _inv_osv, "osv-scanner-gomod": _inv_osv}
 
 
@@ -193,7 +211,51 @@ def main():
         print("%s %s db=%s packages=%s os_packages=%s findings=%s ran=%s"
               % (name, ver or "-", db or "-", total, osp, findings, ran))
 
-    # OS package inventory AGREEMENT across the three image scanners (±Go modules): the
+    # grype's match-JSON has no full catalogue, so take grype's package inventory from syft
+    # (its own cataloguer), which reads distroless status.d. grype still supplies the matches.
+    syft_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
+    syft_path = os.path.join(reports, "syft.json")
+    rc, _ = _run(["syft", syft_src, "-o", "syft-json"], out_path=syft_path)
+    if rc == 0 and os.path.exists(syft_path) and os.path.getsize(syft_path) > 0:
+        try:
+            stot, sos = _inv_syft(syft_path)
+            gfind = status["grype"]["findings"]
+            status["grype"].update(ran=stot > 0, package_count=stot, os_package_count=sos,
+                                   reason="ok" if stot > 0 else "0 packages inventoried")
+            scanner_reports["grype"] = os.path.join(reports, "grype.json") if stot > 0 else None
+            counts["grype"] = sos if stot > 0 else None
+            print("grype(syft) packages=%s os_packages=%s findings=%s ran=%s" % (stot, sos, gfind, stot > 0))
+        except Exception as e:
+            print("syft inventory parse failed: %s" % e)
+    else:
+        print("syft did not run (rc %d); grype inventory falls back to matched packages" % rc)
+
+    # Snyk container test (SNYK_TOKEN is an agent secret; GitHub masks it — never printed).
+    if os.environ.get("SNYK_TOKEN"):
+        snyk_path = os.path.join(reports, "snyk.json")
+        r = subprocess.run(["snyk", "container", "test", "docker-archive:" + tar,
+                            "--json", "--org=fosterstack-admin"], capture_output=True, text=True)
+        open(snyk_path, "w").write(r.stdout or "")
+        blob = (r.stdout or "") + (r.stderr or "")
+        quota = re.search(r"reached your monthly limit|not authori|authentication error", blob, re.I)
+        stot = sos = sfind = 0
+        try:
+            stot, sos, _, sfind = _inv_snyk(snyk_path)
+        except Exception:
+            pass
+        sran = (r.returncode in (0, 1)) and not quota and stot > 0
+        scanner_reports["snyk"] = snyk_path if sran else None
+        status["snyk"] = {"ran": sran, "version": _version("snyk"),
+                          "reason": "ok" if sran else ("quota/auth: could not run" if quota else "0 packages inventoried"),
+                          "package_count": stot, "os_package_count": sos, "db_date": None, "findings": sfind}
+        counts["snyk"] = sos if sran else None
+        print("snyk %s packages=%s findings=%s ran=%s" % (_version("snyk") or "-", stot, sfind, sran))
+    else:
+        scanner_reports["snyk"] = None
+        status["snyk"] = {"ran": False, "version": None, "reason": "no SNYK_TOKEN available; Snyk did not run",
+                          "package_count": None, "db_date": None}
+
+    # OS package inventory AGREEMENT across the image scanners (±Go modules): the
     # outliers below tolerance*max are recorded "did not run (inventory disagreement)".
     live = {k: v for k, v in counts.items() if v is not None and v > 0}
     if len(live) >= 2:
@@ -213,9 +275,6 @@ def main():
     status["osv-scanner-gomod"] = {"ran": gomod_ok, "version": _version("osv-scanner"),
                                    "reason": "ok" if gomod_ok else "did not run (rc %d)" % rc,
                                    "package_count": None, "db_date": None}
-    scanner_reports["snyk"] = None
-    status["snyk"] = {"ran": False, "version": None, "reason": "no SNYK_TOKEN in this workflow; Snyk stays null",
-                      "package_count": None, "db_date": None}
 
     # govulncheck -json over the checked-out tree, bound to module + commit.
     module = _module(source); gvc = None
