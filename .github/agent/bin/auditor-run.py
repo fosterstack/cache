@@ -58,6 +58,66 @@ def log_index(logpath):
     return idx
 
 
+def _emit_owner_issue(title, dry, would):
+    """Open OR update the single owner-decision issue for a finding (REQ-AUD-9 AC2, R1
+    round-3). dry/shim record the intent; a real run finds an existing open issue with the
+    same title and comments on it instead of opening a duplicate."""
+    cmd = "gh issue create --title %s --label %s --assignee %s" % (shlex.quote(title), policy.OWNER_LABEL, policy.OWNER_LOGIN)
+    if dry:
+        would.append(cmd); print("dry-run would create: " + cmd); return
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    if log:
+        # the shim log models the issue store across runs: if this exact issue was already
+        # created, record a comment instead of a duplicate create (REQ-AUD-9 AC2).
+        prior = open(log).read() if os.path.exists(log) else ""
+        if ("issue create --title %s" % shlex.quote(title)) in prior:
+            open(log, "a").write("gh issue comment --title %s --body re-check-still-open\n" % shlex.quote(title))
+        else:
+            open(log, "a").write(cmd + "\n")
+        return
+    try:
+        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
+                           capture_output=True, text=True)
+        found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
+        if found:
+            subprocess.run(["gh", "issue", "comment", str(found[0]["number"]),
+                            "--body", "re-check: still open (no pullable fix); owner decision still needed."], check=False)
+        else:
+            subprocess.run(["gh", "issue", "create", "--title", title, "--label", policy.OWNER_LABEL,
+                            "--assignee", policy.OWNER_LOGIN], check=False)
+    except Exception as e:
+        print("owner-issue open/update failed: %s" % e)
+
+
+def _consolidate(out, ts):
+    """Merge every per-CVE VEX this run wrote into ONE canonical
+    suppressions/fosterstack-cache.openvex.json (the file scan/rescan/release-authz read),
+    plus .snyk and osv-scanner.toml that CITE each statement's VEX id. Returns
+    (suppression_dir, statement_count). (R1 round-3: the auditor's VEX must reach the
+    canonical file, and the consistency check must read the layout the run actually writes.)"""
+    import glob
+    statements = []
+    for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
+        try:
+            statements.extend(json.load(open(vf)).get("statements", []))
+        except Exception:
+            pass
+    supp = os.path.join(out, "suppressions")
+    document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
+                "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
+                "statements": statements}
+    vex.validate(document)
+    cli.writej(os.path.join(supp, "fosterstack-cache.openvex.json"), document)
+    snyk = ["version: v1.5.0", "ignore:"]; toml = []
+    for s in statements:
+        cve = (s.get("vulnerability") or {}).get("name"); vid = s.get("@id")
+        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; %s'" % (s.get("status"), vid), "        vex: '%s'" % vid]
+        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s; governed by %s"' % (s.get("status"), vid)]
+    cli.writef(os.path.join(supp, ".snyk"), "\n".join(snyk) + "\n")
+    cli.writef(os.path.join(supp, "osv-scanner.toml"), "\n".join(toml) + "\n")
+    return supp, len(statements)
+
+
 def adjudicate(adjudicator, ctx, state):
     """primary -> rephrase -> fallback for ONE finding, bounded PER FINDING by the
     five-iteration stop and globally by the token budget. Returns the category (or
@@ -222,9 +282,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
     action = "POA&M: affected VEX + ignores, expiry %s" % exp
     if at:
         it = policy.owner_issue_title(c, gf["package"], reason)
-        _emit_create("gh issue create --title %s --label %s --assignee %s"
-                     % (shlex.quote(it), policy.OWNER_LABEL, policy.OWNER_LOGIN), dry, would)
-        action += ("; dry run: would open issue '%s'" % it) if dry else "; opened owner-decision issue"
+        _emit_owner_issue(it, dry, would)          # find-or-update, never a duplicate (R1 round-3)
+        action += ("; dry run: would open/update issue '%s'" % it) if dry else "; opened/updated owner-decision issue"
     row.update(section=2, disposition="carried (POA&M)", action=action,
                reason="%s; %s" % (gf["nofix_reason"], reason), owner_issue=(reason if at else None))
     return row, m_inc
@@ -324,7 +383,14 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                         % (len(ran_image), ", ".join(not_ran) or "none"))
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
 
-    consistency = _consistency(out, manifest_path)
+    # consolidate every per-CVE VEX into the canonical suppression files, then run the
+    # consistency check over THAT layout (not a layout the run never writes), and propose
+    # the .vex change through the audit lane (R1 round-3).
+    supp, nstmt = _consolidate(out, ts)
+    consistency = _consistency(out, supp, manifest_path)
+    if nstmt:
+        _emit_create("gh pr create --head auditor/vex-update --base main --label audit-lane --title %s"
+                     % shlex.quote("auditor: update .vex suppressions (%d statements)" % nstmt), dry, would)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m)
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion)
@@ -344,10 +410,10 @@ def _expiry(today):
     return (datetime.datetime.strptime(today, "%Y-%m-%d") + datetime.timedelta(days=policy.IGNORE_EXPIRY_DAYS)).strftime("%Y-%m-%d")
 
 
-def _consistency(out, manifest_path):
+def _consistency(out, supp, manifest_path):
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "auditor-consistency.py"),
-                            "--suppression-dir", out, "--live-findings", manifest_path,
+                            "--suppression-dir", supp, "--live-findings", manifest_path,
                             "--out", os.path.join(out, "consistency.json")], capture_output=True, text=True)
         if r.returncode == 0 and os.path.exists(os.path.join(out, "consistency.json")):
             return json.load(open(os.path.join(out, "consistency.json")))

@@ -10,12 +10,15 @@ from auditorlib import parsers as P
 
 
 def live_cves(manifest):
-    m = json.load(open(manifest)); r = m["scanner_reports"]
+    m = json.load(open(manifest)); r = m.get("scanner_reports") or {}
     cves = set()
     for name, fn in (("grype", P.parse_grype), ("trivy", P.parse_trivy),
                      ("osv-scanner", P.parse_osv), ("snyk", P.parse_snyk),
                      ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod"))):
-        for f in fn(r[name]):
+        path = r.get(name)
+        if not path:                                # a null scanner (did not run) is skipped
+            continue
+        for f in fn(path):
             cves.update(a for a in f["aliases"] if a.startswith("CVE-"))
     return cves
 

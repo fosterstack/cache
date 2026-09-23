@@ -825,6 +825,43 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
   { eq "$main_status" "not_affected" && eq "$sib" "yes" && eq "$sib_status" "affected"; } \
     && ok || no "not_affected VEX preserved + distinct affected sibling VEX" "main=$main_status sibling_file=$sib sibling=$sib_status"; }
 
+########################################################################
+echo "=== inner-loop regressions (round 3) ==="
+
+begin "il5-owner-issue-deduped-across-runs" "two runs of the same at-threshold no-fix finding open ONE owner-decision issue then a comment, not two creates (REQ-AUD-9 AC2 on the live path)"
+o="$WORK/il5"; shim="$WORK/il5.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$WORK/il5b" >/dev/null 2>&1
+creates="$(grep -c 'issue create .*CVE-2099-9001' "$shim" 2>/dev/null)"; creates="${creates:-0}"
+comments="$(grep -c 'issue comment .*CVE-2099-9001' "$shim" 2>/dev/null)"; comments="${comments:-0}"
+{ eq "$creates" "1" && [ "$comments" -ge 1 ] 2>/dev/null; } \
+  && ok || no "one issue create + a comment across two runs" "creates=$creates comments=$comments"
+
+begin "il6-vex-proposed-via-audit-lane-pr-and-consolidated" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and proposes it through an audit-lane branch PR (never a direct .vex edit)"
+o="$WORK/il6"; shim="$WORK/il6.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+consolidated="$(have "$o/suppressions/fosterstack-cache.openvex.json" && echo yes || echo no)"
+nstmt="$(pj "$o/suppressions/fosterstack-cache.openvex.json" 'len(d.get("statements",[]))')"
+prlane="$(grep -c 'pr create .*auditor/vex-update .*audit-lane' "$shim" 2>/dev/null)"; prlane="${prlane:-0}"
+{ eq "$consolidated" "yes" && [ "$nstmt" -ge 1 ] 2>/dev/null && [ "$prlane" -ge 1 ] 2>/dev/null; } \
+  && ok || no "consolidated VEX + audit-lane PR" "consolidated=$consolidated statements=$nstmt audit_lane_pr=$prlane"
+
+begin "il7-split-cve-distinct-statement-ids" "the not_affected and affected VEX documents for a split CVE carry DISTINCT statement @ids"
+o="$WORK/il7"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  a="$(pj "$o/vex/CVE-2011-3374.openvex.json" 'd["statements"][0]["@id"]')"
+  b="$(pj "$o/vex/CVE-2011-3374-sibling.openvex.json" 'd["statements"][0]["@id"]')"
+  { [ "$a" != "$MISS" ] && [ "$b" != "$MISS" ] && [ "$a" != "$b" ]; } \
+    && ok || no "distinct statement @ids" "main=$a sibling=$b"; }
+
+begin "il8-consistency-not-blind-flags-stale-vex" "the consistency check reads the run's real consolidated suppressions and flags a stale VEX (a statement answering no live finding), so it is no longer structurally blind"
+o="$WORK/il8"; supp="$WORK/il8-supp"; rm -rf "$o" "$supp"; mkdir -p "$supp"
+printf '{"statements":[{"vulnerability":{"name":"CVE-1999-0001"},"status":"not_affected"}]}' > "$supp/fosterstack-cache.openvex.json"
+run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$supp" --live-findings "$F/run/manifest-01.json" --out "$o/consistency.json" && {
+  stale="$(pj "$o/consistency.json" '",".join(sorted({p["type"] for p in d["problems"]}))')"
+  { printf '%s' "$stale" | grep -q 'stale_vex'; } \
+    && ok || no "stale_vex flagged (not blind)" "problems=$stale"; }
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

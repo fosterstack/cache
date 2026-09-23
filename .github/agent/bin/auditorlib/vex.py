@@ -20,14 +20,17 @@ def _load_schema():
     return _ALLOWED, _TOP
 
 
-def doc(fid, status, timestamp, justification=None, action=None, subcomponents=None):
+def doc(fid, status, timestamp, justification=None, action=None, subcomponents=None, stmt_base=None):
     product = {"@id": policy.VEX_PRODUCT}
     if subcomponents:
         # scope the statement to the exact package purls it is backed for (R11 rank 1:
         # a not_affected clears only the package(s) its evidence names, never a sibling
         # package flagged for the same CVE).
         product["subcomponents"] = [{"@id": p} for p in subcomponents]
-    st = {"@id": policy.stmt_id(fid), "vulnerability": {"name": fid}, "timestamp": timestamp,
+    # the statement @id is derived from stmt_base (the VEX name) so a CVE split into two
+    # dispositions (not_affected for one package, affected for a sibling) gets two DISTINCT
+    # statement @ids, never a duplicate identity with conflicting status (R1 round-3).
+    st = {"@id": policy.stmt_id(stmt_base or fid), "vulnerability": {"name": fid}, "timestamp": timestamp,
           "products": [product], "status": status}
     if justification:
         st["justification"] = justification
@@ -55,12 +58,12 @@ def validate(document):
 def write(out_dir, fid, status, timestamp, justification=None, action=None,
           evidence=None, target_date=None, vex_name=None, subcomponents=None):
     """Write a conformant VEX and its evidence sidecar. Returns the VEX path."""
-    document = doc(fid, status, timestamp, justification, action, subcomponents)
+    document = doc(fid, status, timestamp, justification, action, subcomponents, stmt_base=vex_name)
     validate(document)
     vpath = os.path.join(out_dir, "vex", (vex_name or fid) + ".openvex.json")
     os.makedirs(os.path.dirname(vpath), exist_ok=True)
     json.dump(document, open(vpath, "w"), indent=1)
-    side = {"statement_id": policy.stmt_id(fid), "vulnerability": fid}
+    side = {"statement_id": policy.stmt_id(vex_name or fid), "vulnerability": fid}
     if evidence is not None:
         side["evidence"] = evidence
     if target_date is not None:
