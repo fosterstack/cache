@@ -255,13 +255,38 @@ def _merge_suppressions(ws, supp):
                             for p in s.get("products", []) for sc in (p.get("subcomponents") or [])))
         return (s.get("@id"), prods, subs)
     by_id = {}
+    new_objs = set()
     for s in existing.get("statements", []):
         if s.get("@id"):
             by_id[_skey(s)] = s
     for s in newdoc.get("statements", []):
         by_id[_skey(s)] = s                       # this run replaces same-scope / adds new
+        new_objs.add(id(by_id[_skey(s)]))
+    survivors = list(by_id.values())
+    # Every surviving statement must be SEPARATELY ADDRESSABLE (R1 outer round-6 #3): scope-
+    # keyed retention can leave two statements (a retained debug-variant scope and this run's
+    # production scope) sharing one CVE-derived @id, so a .snyk/osv-scanner.toml `vex:` citation
+    # cannot say which statement governs. On such a collision, give the RETAINED statement a
+    # deterministic scope-suffixed @id (the run's new statement keeps the base @id its freshly
+    # generated citation already points at), so no two statements share an @id.
+    import hashlib
+    from collections import defaultdict as _dd
+
+    def _scope_disc(s):
+        prods = sorted((p.get("@id") or "") for p in s.get("products", []))
+        subs = sorted((sc.get("@id") or "")
+                      for p in s.get("products", []) for sc in (p.get("subcomponents") or []))
+        return hashlib.sha1(("|".join(prods) + "#" + "|".join(subs)).encode()).hexdigest()[:8]
+    _byid = _dd(list)
+    for s in survivors:
+        _byid[s.get("@id")].append(s)
+    for _sid, grp in _byid.items():
+        if len(grp) > 1:
+            for s in grp:
+                if id(s) not in new_objs:
+                    s["@id"] = "%s~%s" % (_sid, _scope_disc(s))
     merged = dict(existing) if existing else dict(newdoc)
-    merged["statements"] = list(by_id.values())
+    merged["statements"] = survivors
     merged["version"] = int(existing.get("version", 0)) + 1 if existing else newdoc.get("version", 1)
     for k in ("@context", "@id", "author", "role"):
         merged.setdefault(k, newdoc.get(k))
@@ -284,15 +309,23 @@ def _merge_suppressions(ws, supp):
     if new_ai is not None or old_ai is not None:
         def _cve(it):
             return (it or {}).get("cve") or (it or {}).get("id")
+        # Key items by (cve, package, threshold), NOT by cve alone (R1 outer round-6 #1): one
+        # CVE can have SEVERAL scopes (e.g. a Critical at-or-above package and a below-threshold
+        # sibling); keying on cve collapses them so the last write erases another scope's owner
+        # obligation and lets release-authz promote without the required acceptance. Each scope
+        # is preserved independently; this run replaces only the SAME (cve, package, threshold).
+        def _ikey(it):
+            it = it or {}
+            return (_cve(it), it.get("package"), it.get("threshold"))
         affected = {s.get("vulnerability", {}).get("name")
                     for s in merged.get("statements", []) if s.get("status") == "affected"}
         final = {}
         for it in ((old_ai or {}).get("accepted_items") or []):
             if _cve(it) in affected:
-                final[_cve(it)] = it               # retained affected item keeps its acceptance
+                final[_ikey(it)] = it              # retained affected scope keeps its acceptance
         for it in ((new_ai or {}).get("accepted_items") or []):
             if _cve(it):
-                final[_cve(it)] = it               # this run wins
+                final[_ikey(it)] = it              # this run wins on the same scope
         out_ai = dict(new_ai or old_ai or {})
         out_ai["accepted_items"] = list(final.values())
         os.makedirs(os.path.dirname(aip), exist_ok=True)

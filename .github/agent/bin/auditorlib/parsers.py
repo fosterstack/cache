@@ -106,24 +106,26 @@ def parse_osv(path, scanner="osv-scanner"):
             purl = _osv_purl(pkg)
             for v in p.get("vulnerabilities") or []:
                 fid = v.get("id")
-                # TRUE identity only. OSV's own `aliases` are cross-namespace refs to the SAME
-                # vulnerability; `upstream` maps a distro id (DEBIAN-CVE-…) to its one upstream
-                # CVE. We deliberately IGNORE `groups` here: a group is a co-report/shared-fix
-                # bundle (e.g. a Debian Security Advisory) that can list SEVERAL distinct CVEs,
-                # so folding it makes one CVE's decision dispose of another (R1 outer round-5 #1).
-                pool = set(v.get("aliases") or []) | set(v.get("upstream") or [])
-                cves = _cves(pool | {fid})
+                # TRUE identity vs BUNDLE membership. OSV's own `aliases` ALWAYS assert the
+                # SAME vulnerability (cross-namespace equivalence) — they are identity, never a
+                # bundle signal, even when they list two CVE ids (R1 outer round-6 #2). Only
+                # `upstream` under a NON-CVE record signals a distro advisory that maps to
+                # SEVERAL distinct upstream CVEs; that is a co-report bundle, not one identity
+                # (R1 outer round-5 #1). We deliberately IGNORE `groups` (also a shared-fix
+                # bundle). Bundle detection therefore keys on `upstream` alone.
+                aliases = set(v.get("aliases") or [])
+                upstream = set(v.get("upstream") or [])
+                up_cves = _cves(upstream | {fid})
                 extra = {"ecosystem": pkg.get("ecosystem"),
                          "installed_version": pkg.get("version")}
-                if len(cves) >= 2 and fid not in cves:
-                    # An advisory record naming multiple distinct CVEs is a BUNDLE, not a
-                    # vulnerability identity. Keep no CVE aliases (so union-find never bridges
-                    # the distinct CVEs through it); carry the members so the grouper can attach
-                    # this finding to each CVE's group as lineage, without merging them.
-                    al = {a for a in pool if a not in cves}
-                    extra["bundle_cves"] = sorted(cves)
+                if len(up_cves) >= 2 and fid not in up_cves:
+                    # advisory bundle: keep the record's true aliases and any non-CVE upstream
+                    # ids as identity, but do NOT let its distinct upstream CVEs bridge; carry
+                    # them so the grouper attaches this finding to each CVE's group as lineage.
+                    al = aliases | {a for a in upstream if a not in up_cves}
+                    extra["bundle_cves"] = sorted(up_cves)
                 else:
-                    al = pool
+                    al = aliases | upstream
                 fixed = None
                 for aff in v.get("affected") or []:
                     for rng in aff.get("ranges") or []:

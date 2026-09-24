@@ -1,0 +1,10 @@
+{
+ "results": [
+  {"packages": [
+   {"package": {"name": "example.org/lib", "version": "v1.0.0", "ecosystem": "Go"},
+    "vulnerabilities": [
+     {"id": "GO-2099-9603", "aliases": ["CVE-2099-9603", "CVE-2099-9604"]}
+    ]}
+  ]}
+ ]
+}
