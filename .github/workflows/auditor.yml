@@ -37,6 +37,10 @@ on:
         description: 'Known-defect log path (proving runs may point at a fixture log)'
         type: string
         default: .github/agent/known-defect-log.json
+      proof_pr:
+        description: 'One-off: allow a test_image draft PR (title prefixed "proof — do not merge")'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -177,12 +181,15 @@ jobs:
           AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
           AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
           AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
-          # the App installation token (delivery) for THIS step only; falls back to the
-          # read-only job token on a dry run where no delivery happens. Owner-decision issues
-          # continue to use the job token's issues:write, unaffected.
+          # the App installation token (delivery) for THIS step only — git push + gh pr create;
+          # falls back to the read-only job token on a dry run where no delivery happens.
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # the App has Contents + Pull requests only (no Issues), so owner-decision issues
+          # MUST use the job token's issues:write, passed separately.
+          AUDITOR_ISSUES_TOKEN: ${{ github.token }}
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
+          AUDITOR_PROOF_PR: ${{ inputs.proof_pr }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail

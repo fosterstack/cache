@@ -112,31 +112,48 @@ def _emit_owner_issue(title, dry, would):
         return
     if not _real_gh_allowed():
         print("would open/update owner issue (real gh disabled): " + title); return
+    # gh issue calls use the JOB token (issues:write), NOT the App delivery token (which has
+    # Contents + Pull requests only and would 403 on Issues). Pass it as GH_TOKEN for the
+    # issue subprocesses only; git push + gh pr create keep the App token.
+    ienv = dict(os.environ)
+    ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
         r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, env=ienv)
         found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
         if found:
             subprocess.run(["gh", "issue", "comment", str(found[0]["number"]),
-                            "--body", "re-check: still open (no pullable fix); owner decision still needed."], check=False)
+                            "--body", "re-check: still open (no pullable fix); owner decision still needed."], check=False, env=ienv)
         else:
             subprocess.run(["gh", "issue", "create", "--title", title, "--label", policy.OWNER_LABEL,
-                            "--assignee", policy.OWNER_LOGIN], check=False)
+                            "--assignee", policy.OWNER_LOGIN], check=False, env=ienv)
     except Exception as e:
         print("owner-issue open/update failed: %s" % e)
 
 
-def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would):
+def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json + .snyk + osv-scanner.toml in a single commit
     by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
     failure returns (None, stderr) so the caller marks the run AUDIT INCOMPLETE — never a
-    false 'opened'. No vendor/model name appears in the branch, commit, or PR text."""
+    false 'opened'. No vendor/model name appears in the branch, commit, or PR text.
+
+    A TEST-IMAGE run opens NO PR (a VEX for an image we do not ship is not a proposal),
+    EXCEPT the one-off proof (AUDITOR_PROOF_PR=1), whose PR title is prefixed
+    'proof — do not merge'."""
     if nstmt == 0:
+        return None, None
+    proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
+    if is_test and not proof:
+        would.append("test-image run: no PR (not a shipped image)")
+        print("test-image run: no suppression PR (not a shipped image)")
         return None, None
     short = (commit or "unknown")[:12]
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = "auditor: update suppressions (%d statements)" % nstmt
+    if is_test and proof:
+        branch = "auditor/proof-%s-%s" % (today, short)
+        title = "proof — do not merge: " + title
     body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
     if dry:
         would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
@@ -493,7 +510,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
     supp, nstmt = _consolidate(out, ts)
     consistency = _consistency(out, supp, manifest_path)
-    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would)
+    is_test = (m.get("provenance") or {}).get("source") == "test-image"
+    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
     complete = (findings_without_action == 0) and quorum and (pr_err is None)
     if complete:
         status = "AUDIT COMPLETE"

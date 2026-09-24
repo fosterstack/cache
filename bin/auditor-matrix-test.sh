@@ -975,6 +975,49 @@ rptnames="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -ciE 'anthropic|claude
 { eq "$names" "0" && eq "$rptnames" "0"; } \
   && ok || no "no vendor/model name in branch/commit/PR or §6" "in_shim=$names in_section6=$rptnames"
 
+########################################################################
+echo "=== Round 16 corrections — issues token, test-image PR gating ==="
+
+begin "r16-issues-use-job-token-pr-uses-app-token" "gh issue calls carry the JOB (issues) token; git push / gh pr create carry the App token — verified via fake gh/git on PATH"
+o="$WORK/r16t"; rm -rf "$o"; fb="$WORK/r16t-bin"; rm -rf "$fb"; mkdir -p "$fb"; glog="$WORK/r16t-gh.log"; rm -f "$glog"
+cat > "$fb/gh" <<EOF
+#!/usr/bin/env bash
+echo "GH_TOKEN=\${GH_TOKEN} ARGS=\$*" >> "$glog"
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "[]"; fi
+if [ "\$1" = "pr" ] && [ "\$2" = "create" ]; then echo "https://github.com/OWNER/REPO/pull/1"; fi
+exit 0
+EOF
+cat > "$fb/git" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fb/gh" "$fb/git"
+env PATH="$fb:$PATH" AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
+  "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+issuejob="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=JOB_TOKEN_456')"; issuejob="${issuejob:-0}"
+issueapp="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; issueapp="${issueapp:-0}"
+prapp="$(grep 'ARGS=pr create' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; prapp="${prapp:-0}"
+{ [ "$issuejob" -ge 1 ] 2>/dev/null && eq "$issueapp" "0" && [ "$prapp" -ge 1 ] 2>/dev/null; } \
+  && ok || no "issue calls use job token, pr create uses app token" "issue_job=$issuejob issue_app=$issueapp pr_app=$prapp"
+
+begin "r16-exactly-one-gh-token-key-in-driver-env" "the driver step's env block declares GH_TOKEN exactly once"
+n="$(awk '/name: Run the auditor/{f=1} f&&/^        run:/{f=0} f&&/GH_TOKEN:/{c++} END{print c+0}' "$WF")"
+eq "$n" "1" && ok || no "exactly one GH_TOKEN key in the driver env" "count=$n"
+
+begin "r16-no-test-image-pr-in-production" "a test-image run without the proof flag opens NO PR (a VEX for an image we do not ship is not a proposal)"
+o="$WORK/r16ti"; shim="$WORK/r16ti.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rc=$?
+draftpr="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draftpr="${draftpr:-0}"
+noted="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -qi 'test-image run: no PR' && echo yes || echo no)"
+{ eq "$draftpr" "0" && eq "$noted" "yes" && [ "$rc" -eq 0 ] 2>/dev/null; } \
+  && ok || no "no suppression draft PR for a test-image production run; noted; run not failed" "draft_prs=$draftpr noted=$noted exit=$rc"
+
+begin "r16-proof-flag-allows-prefixed-test-image-pr" "with AUDITOR_PROOF_PR=1 a test-image run opens one draft PR whose title is prefixed 'proof — do not merge'"
+o="$WORK/r16pf"; shim="$WORK/r16pf.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+prefixed="$(grep -c "gh pr create --draft --base main --head auditor/proof-.* --title 'proof — do not merge:" "$shim" 2>/dev/null)"; prefixed="${prefixed:-0}"
+{ [ "$prefixed" -ge 1 ] 2>/dev/null; } && ok || no "proof draft PR with the 'proof — do not merge' prefix" "prefixed_pr=$prefixed"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
