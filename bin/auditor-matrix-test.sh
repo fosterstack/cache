@@ -967,13 +967,14 @@ env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --m
 url="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -c '/pull/')"; url="${url:-0}"
 { [ "$url" -ge 1 ] 2>/dev/null; } && ok || no "PR URL present in §6" "pull_url_lines=$url"
 
-begin "r16-no-vendor-or-model-name-in-delivery" "no vendor/model name appears in the delivery branch, commit, or PR text"
+begin "r16-no-vendor-or-model-name-in-delivery" "the delivery ACTUALLY happens (draft PR + branch in the ledger) AND no vendor/model name appears in its branch, commit, or PR text"
 o="$WORK/r16n"; shim="$WORK/r16n.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+delivered="$(grep -cE 'gh pr create --draft --base main --head auditor/2026-09-24-' "$shim" 2>/dev/null)"; delivered="${delivered:-0}"
 names="$(grep -iE 'git checkout -B auditor/|git commit -m|gh pr create' "$shim" | grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt')"; names="${names:-0}"
 rptnames="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt')"; rptnames="${rptnames:-0}"
-{ eq "$names" "0" && eq "$rptnames" "0"; } \
-  && ok || no "no vendor/model name in branch/commit/PR or §6" "in_shim=$names in_section6=$rptnames"
+{ [ "$delivered" -ge 1 ] 2>/dev/null && eq "$names" "0" && eq "$rptnames" "0"; } \
+  && ok || no "delivery occurred with no vendor/model name in branch/commit/PR or §6" "delivered=$delivered in_shim=$names in_section6=$rptnames"
 
 ########################################################################
 echo "=== Round 16 corrections — issues token, test-image PR gating ==="
@@ -1017,6 +1018,64 @@ o="$WORK/r16pf"; shim="$WORK/r16pf.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDG
 env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 prefixed="$(grep -c "gh pr create --draft --base main --head auditor/proof-.* --title 'proof — do not merge:" "$shim" 2>/dev/null)"; prefixed="${prefixed:-0}"
 { [ "$prefixed" -ge 1 ] 2>/dev/null; } && ok || no "proof draft PR with the 'proof — do not merge' prefix" "prefixed_pr=$prefixed"
+
+########################################################################
+echo "=== outer-loop regressions (round 1) ==="
+
+begin "ol1-log-fp-scoped-by-package-and-version" "a log FP for libfoo@1 closes ONLY @1 (all arches); libfoo@2 is NOT closed by the name match and is routed on its own"
+o="$WORK/ol1"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-verscope.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  v1sub="$("$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1])); subs=[x["@id"] for s in d["statements"] for p in s["products"] for x in p.get("subcomponents",[])]
+print("has1" if any("libfoo@1" in a for a in subs) else "no1", "has2" if any("libfoo@2" in a for a in subs) else "no2")' "$o/vex/CVE-2099-9001.openvex.json" 2>/dev/null)"
+  secs="$("$PY" -c 'import json,sys
+r=[x["section"] for x in json.load(open(sys.argv[1]))["findings"] if x["id"]=="CVE-2099-9001"]
+print("sec5" if 5 in r else "-", "sec2" if 2 in r else "-")' "$o/classification.json")"
+  { printf '%s' "$v1sub" | grep -q 'has1 no2' && printf '%s' "$secs" | grep -q 'sec5' && printf '%s' "$secs" | grep -q 'sec2'; } \
+    && ok || no "not_affected scoped to @1 only; @2 routed separately" "subcomponents=$v1sub sections=$secs"; }
+
+begin "ol4-refusal-after-fallback-escalates-to-owner-issue" "a finding refused through the fallback chain (real adjudicator) opens an owner-decision issue, not a silent §4"
+o="$WORK/ol4"; shim="$WORK/ol4.shim"; rm -rf "$o"; rm -f "$shim"; fa="$WORK/ol4-refuse.py"
+printf '#!/usr/bin/env python3\nimport json,sys\njson.dump({"refused":True},sys.stdout)\n' > "$fa"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+sec4esc="$("$PY" -c 'import json,sys
+r=[x for x in json.load(open(sys.argv[1]))["findings"] if x["section"]==4]
+print("escalated" if r and all("escalat" in (x.get("action") or "") for x in r) else "no")' "$o/classification.json" 2>/dev/null)"
+issued="$(grep -c 'issue create .*unassessed-after-fallback' "$shim" 2>/dev/null)"; issued="${issued:-0}"
+{ eq "$sec4esc" "escalated" && [ "$issued" -ge 1 ] 2>/dev/null; } \
+  && ok || no "§4 refusal escalates to an owner-decision issue" "sec4=$sec4esc issue=$issued"
+
+begin "ol5-owner-issue-failure-is-incomplete" "a failed owner-decision issue create makes the run AUDIT INCOMPLETE (no false 'opened')"
+o="$WORK/ol5"; shim="$WORK/ol5.shim"; rm -rf "$o"; rm -f "$shim"
+env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_SHIM_ISSUE_FAIL=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rc5=$?
+inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && grep -qi 'issue(s) failed to open' "$o/report.md" && echo yes || echo no)"
+{ eq "$inc" "yes" && [ "$rc5" -ne 0 ] 2>/dev/null; } && ok || no "issue failure -> INCOMPLETE + nonzero exit" "incomplete=$inc exit=$rc5"
+
+begin "ol6-consolidated-snyk-carries-expiry" "the consolidated .snyk for a carried (affected) CVE includes an expires field (time box survives consolidation)"
+o="$WORK/ol6"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" && {
+  exp="$(grep -c 'expires:' "$o/suppressions/.snyk" 2>/dev/null)"; exp="${exp:-0}"
+  { [ "$exp" -ge 1 ] 2>/dev/null; } && ok || no ".snyk carries expires for the carried CVE" "expires_lines=$exp"; }
+
+begin "ol7-delivery-carries-accepted-items" "the suppression delivery commits .auditor/accepted-items.json (the release gate's inventory)"
+o="$WORK/ol7"; shim="$WORK/ol7.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+ai="$(grep -c 'git add .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
+{ [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery git-adds .auditor/accepted-items.json" "add_lines=$ai"
+
+begin "ol9-narrative-model-name-withheld" "a narrative containing a vendor/model name is rejected; the report shows 'conclusion withheld', no name persisted"
+o="$WORK/ol9"; rm -rf "$o"
+na="$WORK/ol9-narr.py"
+cat > "$na" <<'PYEOF'
+import json,sys
+req=json.load(sys.stdin)
+if req.get("mode")=="narrative": json.dump({"refused":False,"narrative":"Audit by Anthropic using claude-secret-x.","token_usage":10},sys.stdout)
+else: json.dump({"refused":False,"category":"real_fixable","token_usage":10},sys.stdout)
+PYEOF
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$na" --out "$o" >/dev/null 2>&1
+leaked="$(grep -ciE 'anthropic|claude-secret' "$o/report.md" 2>/dev/null)"; leaked="${leaked:-0}"
+withheld="$(grep -qi 'conclusion withheld' "$o/report.md" && echo yes || echo no)"
+{ eq "$leaked" "0" && eq "$withheld" "yes"; } && ok || no "model name withheld from the report" "leaked=$leaked withheld=$withheld"
 
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"

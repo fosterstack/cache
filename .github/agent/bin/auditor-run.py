@@ -93,28 +93,25 @@ def _open_pr(branch, title, lane, dry, would, commit_msg):
     print("PR proposed (driver does not deliver; needs an authorized step): %s" % seq[-1])
 
 
-def _emit_owner_issue(title, dry, would):
-    """Open OR update the single owner-decision issue for a finding (REQ-AUD-9 AC2, R1
-    round-3). dry/shim record the intent; a real run finds an existing open issue with the
-    same title and comments on it instead of opening a duplicate."""
+def _emit_owner_issue(title, body, dry, would):
+    """Open OR update the single owner-decision issue (REQ-AUD-9). Returns (ok, ref): ok is
+    False on a create/update FAILURE so the caller marks the run INCOMPLETE — never a false
+    'opened' (R1 outer round-1 #5); ref is the issue number/url when known (R1 outer round-1
+    #7). The body carries the evidence, the artifact, and the yes/no question (AC1). Uses the
+    JOB token (issues:write), never the App delivery token (Contents + PRs only)."""
     cmd = "gh issue create --title %s --label %s --assignee %s" % (shlex.quote(title), policy.OWNER_LABEL, policy.OWNER_LOGIN)
     if dry:
-        would.append(cmd); print("dry-run would create: " + cmd); return
+        would.append(cmd); print("dry-run would create: " + cmd); return True, "dry"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
-        # the shim log models the issue store across runs: if this exact issue was already
-        # created, record a comment instead of a duplicate create (REQ-AUD-9 AC2).
         prior = open(log).read() if os.path.exists(log) else ""
         if ("issue create --title %s" % shlex.quote(title)) in prior:
-            open(log, "a").write("gh issue comment --title %s --body re-check-still-open\n" % shlex.quote(title))
-        else:
-            open(log, "a").write(cmd + "\n")
-        return
+            open(log, "a").write("gh issue comment --title %s --body %s\n" % (shlex.quote(title), shlex.quote(body)))
+            return True, "shim-updated"
+        open(log, "a").write(cmd + " --body " + shlex.quote(body) + "\n")
+        return (not os.environ.get("AUDITOR_SHIM_ISSUE_FAIL")), ("shim-created" if not os.environ.get("AUDITOR_SHIM_ISSUE_FAIL") else None)
     if not _real_gh_allowed():
-        print("would open/update owner issue (real gh disabled): " + title); return
-    # gh issue calls use the JOB token (issues:write), NOT the App delivery token (which has
-    # Contents + Pull requests only and would 403 on Issues). Pass it as GH_TOKEN for the
-    # issue subprocesses only; git push + gh pr create keep the App token.
+        print("would open/update owner issue (real gh disabled): " + title); return True, "skipped"
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
     try:
@@ -122,13 +119,18 @@ def _emit_owner_issue(title, dry, would):
                            capture_output=True, text=True, env=ienv)
         found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
         if found:
-            subprocess.run(["gh", "issue", "comment", str(found[0]["number"]),
-                            "--body", "re-check: still open (no pullable fix); owner decision still needed."], check=False, env=ienv)
-        else:
-            subprocess.run(["gh", "issue", "create", "--title", title, "--label", policy.OWNER_LABEL,
-                            "--assignee", policy.OWNER_LOGIN], check=False, env=ienv)
+            num = found[0]["number"]
+            c = subprocess.run(["gh", "issue", "comment", str(num), "--body", body], capture_output=True, text=True, env=ienv)
+            return (c.returncode == 0), num
+        c = subprocess.run(["gh", "issue", "create", "--title", title, "--label", policy.OWNER_LABEL,
+                            "--assignee", policy.OWNER_LOGIN, "--body", body], capture_output=True, text=True, env=ienv)
+        if c.returncode != 0:
+            print("owner-issue create FAILED: %s" % (c.stderr or "").strip()); return False, None
+        url = (c.stdout or "").strip().splitlines()[-1] if c.stdout else ""
+        num = url.rstrip("/").split("/")[-1] if url else None
+        return True, (int(num) if (num or "").isdigit() else url)
     except Exception as e:
-        print("owner-issue open/update failed: %s" % e)
+        print("owner-issue open/update failed: %s" % e); return False, None
 
 
 def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
@@ -162,7 +164,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         seq = ["git checkout -B %s origin/main" % branch,
-               "git add .vex/fosterstack-cache.openvex.json .snyk osv-scanner.toml",
+               "git add .vex/fosterstack-cache.openvex.json .snyk osv-scanner.toml .auditor/accepted-items.json",
                "git commit -m %s" % shlex.quote(title),
                "git push -u origin %s" % branch,
                "gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title))]
@@ -190,9 +192,13 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         shutil.copyfile(os.path.join(supp, "fosterstack-cache.openvex.json"), os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"))
         shutil.copyfile(os.path.join(supp, ".snyk"), os.path.join(ws, ".snyk"))
         shutil.copyfile(os.path.join(supp, "osv-scanner.toml"), os.path.join(ws, "osv-scanner.toml"))
+        ai = os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json")   # out/.auditor/...
+        if os.path.exists(ai):
+            os.makedirs(os.path.join(ws, ".auditor"), exist_ok=True)
+            shutil.copyfile(ai, os.path.join(ws, ".auditor", "accepted-items.json"))
     except Exception as e:
         return None, "stage files: %s" % e
-    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml")
+    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml", ".auditor/accepted-items.json")
     r = _git("commit", "-m", title)
     if r.returncode != 0:
         return None, ("git commit: " + (r.stderr or "").strip())
@@ -229,6 +235,25 @@ def _consolidate(out, ts):
     # ignore is CVE-keyed, so collapse by CVE — no duplicate YAML keys / TOML blocks — and
     # cite the governing VEX statement-id base. A CVE with any affected statement is recorded
     # as governed-by-VEX (the VEX's subcomponents carry the per-package truth).
+    # the time box must survive consolidation (R1 outer round-1 #6): carry each affected CVE's
+    # expiry from its per-scanner ignore JSON (or evidence sidecar target_date) into .snyk's
+    # `expires` and osv-scanner.toml, so the delivered package is time-bounded and the next run
+    # can enforce it.
+    expiry_map = {}
+    for jf in glob.glob(os.path.join(out, "ignores", "*", "*.json")):
+        try:
+            d = json.load(open(jf))
+            if d.get("id") and d.get("expiry"):
+                expiry_map[d["id"]] = d["expiry"]
+        except Exception:
+            pass
+    for ef in glob.glob(os.path.join(out, "evidence", "*.evidence.json")):
+        try:
+            d = json.load(open(ef))
+            if d.get("vulnerability") and d.get("target_date"):
+                expiry_map.setdefault(d["vulnerability"], d["target_date"])
+        except Exception:
+            pass
     by_cve = {}
     for s in statements:
         cve = (s.get("vulnerability") or {}).get("name")
@@ -240,9 +265,15 @@ def _consolidate(out, ts):
     snyk = ["version: v1.5.0", "ignore:"]; toml = []
     for cve in sorted(by_cve):
         info = by_cve[cve]; vids = info["vids"] or [policy.stmt_id(cve)]; st = "+".join(sorted(info["statuses"]))
-        allids = " ".join(vids)
-        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, allids), "        vex: '%s'" % vids[0]]
-        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s; governed by %s"' % (st, allids)]
+        allids = " ".join(vids); exp = expiry_map.get(cve)
+        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, allids)]
+        if exp:
+            snyk += ["        expires: %sT00:00:00.000Z" % exp]     # time box preserved for Snyk
+        snyk += ["        vex: '%s'" % vids[0]]
+        rsn = "%s; governed by %s%s" % (st, allids, ("; expires %s" % exp if exp else ""))
+        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s"' % rsn]
+        if exp:
+            toml += ['expires = "%sT00:00:00Z"' % exp]
     cli.writef(os.path.join(supp, ".snyk"), "\n".join(snyk) + "\n")
     cli.writef(os.path.join(supp, "osv-scanner.toml"), "\n".join(toml) + "\n")
     return supp, len(statements)
@@ -376,10 +407,24 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 return row, m_inc
             # a FP the code cannot verify is NOT a disposition — fall through and route it.
         elif cat == "refused":
-            row.update(section=4, disposition="under investigation", action="none",
-                       reason="adjudication exhausted",
-                       cause=("stub: no canned answer" if "stub" in os.path.basename(env["adjudicator"]).lower()
-                              else "model refused after fallback"))
+            # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
+            # not a silent §4 (R1 outer round-1 #4). A stub run cannot escalate; say so.
+            is_stub = "stub" in os.path.basename(env["adjudicator"]).lower()
+            cause = "stub: no canned answer" if is_stub else "model refused after fallback"
+            if is_stub:
+                row.update(section=4, disposition="under investigation", action="none (stub: no owner escalation)",
+                           reason="adjudication exhausted", cause=cause)
+                return row, m_inc
+            it = policy.owner_issue_title(c, gf["package"], "unassessed-after-fallback")
+            body = ("Finding %s (%s@%s, severity %s) could not be assessed after the "
+                    "primary/rephrase/fallback chain. Owner decision needed. Evidence: adjudication "
+                    "exhausted; reachability %s. Accept, reject, or provide guidance."
+                    % (c, gf["package"], gf["installed"], gf["severity"], row["reachability"]))
+            ok, ref = _emit_owner_issue(it, body, dry, would)
+            row.update(section=4, disposition="under investigation",
+                       action=("escalated to owner-decision issue" if ok else "OWNER ESCALATION FAILED"),
+                       reason="unassessed after fallback", cause=cause,
+                       owner_issue=(ref if ok else None), issue_failed=(not ok))
             return row, m_inc
     # 4) deterministic fix routing.
     if gf["fixed"]:
@@ -408,12 +453,23 @@ def _dispose(c, findings, aliases, env, would, name=None):
         cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                    {"id": c, "vex": policy.stmt_id(c), "expiry": exp, "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % exp
+    owner_issue = None; issue_failed = False
     if at:
         it = policy.owner_issue_title(c, gf["package"], reason)
-        _emit_owner_issue(it, dry, would)          # find-or-update, never a duplicate (R1 round-3)
-        action += ("; dry run: would open/update issue '%s'" % it) if dry else "; owner-decision issue opened/updated (issues:write)"
+        body = ("Accept risk for %s (%s@%s, severity %s, threshold %s)? No pullable upstream fix "
+                "(%s); an affected VEX + %d-day ignores are carried in this run's suppression "
+                "package (the artifact/PR). Reply on this issue: `ACCEPT %s until YYYY-MM-DD` or "
+                "`REJECT %s`."
+                % (c, gf["package"], gf["installed"], gf["severity"], reason, gf["nofix_reason"],
+                   policy.IGNORE_EXPIRY_DAYS, c, c))
+        ok, ref = _emit_owner_issue(it, body, dry, would)   # find-or-update, never a duplicate; failure propagates
+        if ok:
+            action += "; owner-decision issue opened/updated (issues:write)"; owner_issue = ref
+        else:
+            action += "; OWNER ISSUE FAILED"; issue_failed = True
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=policy.stmt_id(vn),
-               reason="%s; %s" % (gf["nofix_reason"], reason), owner_issue=(reason if at else None))
+               reason="%s; %s" % (gf["nofix_reason"], reason), owner_issue=owner_issue,
+               threshold=("at_or_above" if at else "below"), expiry=exp, issue_failed=issue_failed)
     return row, m_inc
 
 
@@ -443,27 +499,33 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         #    round-1) and is routed on its own; because that second disposition is a
         #    DIFFERENT package it writes to a DISTINCT VEX/ignore name, so it cannot
         #    overwrite the not_affected one (R1 round-2).
-        fp_pkgs = set()
+        # coverage is scoped to package AND version (R1 outer round-1 #1): a log FP for
+        # libfoo@1 covers every arch/scanner of libfoo@1 (the round-2 same-package fix) but
+        # NOT libfoo@2 — a name match cannot establish version applicability without evidence.
+        fp_keys = set()   # (package, version)
         for f in grp["findings"]:
             r = idx.get((f["scanner"], f["finding_id"], f["purl"]))
             if r and r.get("disposition") == "false_positive":
-                fp_pkgs.add(r.get("package") or f.get("package"))
-        covered = [f for f in grp["findings"] if f.get("package") in fp_pkgs]
+                fp_keys.add(((r.get("package") or f.get("package")), _ver_from_purl(f["purl"])))
+        def _cov(f):
+            return (f.get("package"), _ver_from_purl(f["purl"])) in fp_keys
+        covered = [f for f in grp["findings"] if _cov(f)]
         if covered:
             subs = sorted({f["purl"] for f in covered if f["purl"]})
+            covpkgs = sorted({"%s@%s" % (p, v or "?") for (p, v) in fp_keys})
             ev = {"check": "known-defect-log", "source_file": logpath,
-                  "detail": "trusted false_positive for package(s) %s" % sorted(fp_pkgs)}
+                  "detail": "trusted false_positive for %s" % covpkgs}
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev, subcomponents=subs or None)
             igf = os.path.join("ignores", "grype", c + ".json")
             cli.writej(os.path.join(out, igf), {"vex": policy.stmt_id(c), "id": c, "evidence": ev, "scoped_purls": subs})
-            rows.append({"id": c, "package": ",".join(sorted(fp_pkgs)) or "?",
+            rows.append({"id": c, "package": ",".join(covpkgs) or "?",
                          "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
                          "fixed": None, "severity": _max_sev(covered), "section": 5,
                          "disposition": "not_affected (false positive)", "action": "closed",
-                         "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(sorted(fp_pkgs))),
+                         "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(covpkgs)),
                          "vex_id": policy.stmt_id(c), "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"]})
             h_count += 1
-            uncovered = [f for f in grp["findings"] if f.get("package") not in fp_pkgs]
+            uncovered = [f for f in grp["findings"] if not _cov(f)]
             if uncovered:
                 # distinct VEX/ignore name so the sibling's disposition never clobbers the FP one
                 row2, mi = _dispose(c, uncovered, sorted(grp["aliases"]), env, would, name=c + "-sibling")
@@ -483,12 +545,19 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         if r["section"] in (2, 5):
             sections[7].append(dict(r, action="suppression in force (%s)" % (r.get("vex_id") or "VEX")))
     accepted = [{"cve": r["id"], "severity": r["severity"], "package": r["package"],
-                 "threshold": ("at_or_above" if r.get("owner_issue") else "below"),
-                 "owner_issue": r.get("owner_issue"), "expiry": exp}
+                 "threshold": r.get("threshold", "at_or_above" if r.get("owner_issue") else "below"),
+                 "owner_issue": r.get("owner_issue"), "expiry": r.get("expiry", exp)}
                 for r in sections[2]]
     findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))
     if dry and sections[3] and not would:
         findings_without_action += len(sections[3])
+    # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
+    # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
+    issue_failures = sum(1 for r in rows if r.get("issue_failed"))
+    # write the acceptance inventory BEFORE delivery so the suppression PR can carry it — the
+    # release gate reads .auditor/accepted-items.json from the checkout (R1 outer round-1 #7).
+    cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
+               {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
     # Inventory quorum (R12 (b)): the candidate must be inventoried by at least THREE image
     # scanners whose OS package counts agree within tolerance. A fourth scanner that cannot
     # read this image (osv-scanner does not read a distroless dpkg status.d) is RECORDED as
@@ -499,7 +568,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # packages. Path-presence is NOT enough (R1 round-1): a manifest without a
         # scanner_status block, or one reporting zero packages, fails the quorum closed.
         info = st.get(s) or {}
-        return bool(info.get("ran")) and (info.get("package_count") or 0) > 0
+        # counts for QUORUM only if it ran, inventoried packages, and was not excluded as an
+        # inventory outlier (whose findings are still parsed and dispositioned).
+        return bool(info.get("ran")) and (info.get("package_count") or 0) > 0 and info.get("quorum_ok", True)
     ran_image = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _ran(s)]
     not_ran = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if not _ran(s)]
     oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
@@ -512,7 +583,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     consistency = _consistency(out, supp, manifest_path)
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
-    complete = (findings_without_action == 0) and quorum and (pr_err is None)
+    complete = (findings_without_action == 0) and quorum and (pr_err is None) and (issue_failures == 0)
     if complete:
         status = "AUDIT COMPLETE"
     else:
@@ -524,9 +595,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                         % (len(ran_image), ", ".join(not_ran) or "none"))
         if pr_err:
             bits.append("suppression PR delivery failed: %s" % pr_err)
+        if issue_failures:
+            bits.append("%d owner-decision issue(s) failed to open" % issue_failures)
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
-    conclusion = _conclusion(adjudicator, sections, m)
+    conclusion = _conclusion(adjudicator, sections, m, state)
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
@@ -566,7 +639,15 @@ def _persist(out, rows, today):
     return h
 
 
+# forbidden vendor/model identifiers that must never reach the persisted report (R1 outer
+# round-1 #9). The federation audience/import elsewhere is separately acknowledged; a model
+# narrative must not name a provider or model.
+FORBIDDEN_NAMES = re.compile(r"anthropic|claude|openai|chatgpt|gpt-|codex|sonnet|opus|gemini|llama|private-model|canary", re.I)
+
+
 def _narrative_ok(text, sections):
+    if FORBIDDEN_NAMES.search(text):     # no vendor/model attribution in the report
+        return False
     ids_in = {r["id"] for lst in sections.values() for r in lst}
     named = set(re.findall(r"(?:CVE-\d{4}-\d+|GO-\d{4}-\d+)", text))
     if named - ids_in:
@@ -582,9 +663,11 @@ def _narrative_ok(text, sections):
     return True
 
 
-def _conclusion(adjudicator, sections, m):
+def _conclusion(adjudicator, sections, m, state=None):
     if "stub" in os.path.basename(adjudicator or "").lower():
         return "stub: no narrative — §4 reflects the stub, not the model. The real picture needs the real adjudicator on main."
+    if state and state.get("tokens", 0) >= policy.TOKEN_BUDGET:
+        return "conclusion withheld: token budget reached before the narrative."
     st = m.get("scanner_status") or {}
     structured = {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
                   "package_counts": {s: (st.get(s) or {}).get("package_count") for s in IMAGE_SCANNERS},
@@ -593,6 +676,8 @@ def _conclusion(adjudicator, sections, m):
         ans = cli.ask_model(adjudicator, "CONCLUSION", attempt="narrative", model="primary",
                             context={"mode": "narrative", "structured": structured})
         text = (ans.get("narrative") or "").strip()
+        if state is not None:
+            state["tokens"] += int(ans.get("token_usage") or 0)   # narrative counts against the budget too
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
         # SDK error. A generic withheld line only.

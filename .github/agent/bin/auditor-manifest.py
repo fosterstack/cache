@@ -200,11 +200,12 @@ def main():
             total, osp, db, findings = INV[name](path)
         except Exception as e:
             rc = rc if rc not in (0, 1) else 255
-        ran = (rc in (0, 1)) and total > 0
+        scan_ok = rc in (0, 1)
+        ran = scan_ok and total > 0
         reason = "ok" if ran else ("0 packages inventoried (scanner produced no package inventory)"
-                                   if rc in (0, 1) else "scan failed (rc %d)" % rc)
+                                   if scan_ok else "scan failed (rc %d)" % rc)
         scanner_reports[name] = path if ran else None
-        status[name] = {"ran": ran, "version": ver, "reason": reason,
+        status[name] = {"ran": ran, "scan_ok": scan_ok, "quorum_ok": ran, "version": ver, "reason": reason,
                         "package_count": total, "os_package_count": osp,
                         "db_date": db, "findings": findings}
         counts[name] = osp if ran else None
@@ -220,11 +221,17 @@ def main():
         try:
             stot, sos = _inv_syft(syft_path)
             gfind = status["grype"]["findings"]
-            status["grype"].update(ran=stot > 0, package_count=stot, os_package_count=sos,
-                                   reason="ok" if stot > 0 else "0 packages inventoried")
-            scanner_reports["grype"] = os.path.join(reports, "grype.json") if stot > 0 else None
-            counts["grype"] = sos if stot > 0 else None
-            print("grype(syft) packages=%s os_packages=%s findings=%s ran=%s" % (stot, sos, gfind, stot > 0))
+            # syft supplies grype's package INVENTORY, but grype still counts as run only if
+            # grype's OWN vulnerability scan completed (scan_ok) — syft cannot vouch for grype
+            # (R1 outer round-1 #3). A failed grype scan stays not-run even if syft inventoried.
+            gran = bool(status["grype"].get("scan_ok")) and stot > 0
+            status["grype"].update(ran=gran, quorum_ok=gran, package_count=stot, os_package_count=sos,
+                                   reason=("ok" if gran else (status["grype"]["reason"] if not status["grype"].get("scan_ok")
+                                           else "0 packages inventoried")))
+            scanner_reports["grype"] = os.path.join(reports, "grype.json") if gran else None
+            counts["grype"] = sos if gran else None
+            print("grype(syft) packages=%s os_packages=%s findings=%s scan_ok=%s ran=%s"
+                  % (stot, sos, gfind, status["grype"].get("scan_ok"), gran))
         except Exception as e:
             print("syft inventory parse failed: %s" % e)
     else:
@@ -255,17 +262,18 @@ def main():
         status["snyk"] = {"ran": False, "version": None, "reason": "no SNYK_TOKEN available; Snyk did not run",
                           "package_count": None, "db_date": None}
 
-    # OS package inventory AGREEMENT across the image scanners (±Go modules): the
-    # outliers below tolerance*max are recorded "did not run (inventory disagreement)".
+    # OS package inventory AGREEMENT across the image scanners (±Go modules): an outlier
+    # below tolerance*max is excluded from the QUORUM (quorum_ok=False) — but its report is
+    # KEPT so its actual findings are still parsed and dispositioned (R1 outer round-1 #2:
+    # three inventories agreeing does not disprove the fourth scanner's real finding).
     live = {k: v for k, v in counts.items() if v is not None and v > 0}
     if len(live) >= 2:
         mx = max(live.values())
         for k, v in list(live.items()):
             if v < tol * mx:
-                status[k]["ran"] = False
-                status[k]["reason"] = "inventory disagreement (os_packages=%d vs max %d)" % (v, mx)
-                scanner_reports[k] = None
-                print("%s DEMOTED: os_packages=%d < %.2f*%d" % (k, v, tol, mx))
+                status[k]["quorum_ok"] = False
+                status[k]["reason"] = "excluded from quorum: inventory disagreement (os_packages=%d vs max %d); findings still assessed" % (v, mx)
+                print("%s QUORUM-EXCLUDED (findings kept): os_packages=%d < %.2f*%d" % (k, v, tol, mx))
 
     # OSV Go-module source scan of the checked-out tree.
     gomod = os.path.join(reports, "osv-gomod.json")

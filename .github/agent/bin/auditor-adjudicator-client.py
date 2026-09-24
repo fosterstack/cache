@@ -41,7 +41,7 @@ def main():
             # this stderr is captured and written into the uploaded report.
             sys.stderr.write("adjudicator-client: model call failed\n"); sys.exit(5)
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        json.dump({"refused": False, "narrative": text}, sys.stdout)
+        json.dump({"refused": False, "narrative": text, "token_usage": _usage(msg)}, sys.stdout)
         return
     # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
     # version, scanner set, and reachability summary. Its answer is still only a proposal our
@@ -66,7 +66,16 @@ def main():
     cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
                             "risk_acceptance") if c in text), "under_investigation")
     json.dump({"refused": "cannot" in text.lower() and cat == "under_investigation",
-               "category": cat, "proposed": True}, sys.stdout)
+               "category": cat, "proposed": True, "token_usage": _usage(msg)}, sys.stdout)
+
+
+def _usage(msg):
+    """Real token cost from the SDK response so the driver's budget actually advances
+    (R1 outer round-1 #8)."""
+    u = getattr(msg, "usage", None)
+    if not u:
+        return 0
+    return int(getattr(u, "input_tokens", 0) or 0) + int(getattr(u, "output_tokens", 0) or 0)
 
 
 if __name__ == "__main__":
