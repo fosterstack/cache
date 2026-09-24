@@ -219,9 +219,13 @@ def parse_govulncheck(path):
                  if isinstance(fr, dict) and (fr.get("module") or fr.get("package") or fr.get("function"))]
         called = any(fr.get("function") for fr in trace)
         imported_only = bool(trace) and not called
-        cur = by_osv.get(osv, {"reachable": False, "imported_only": False})
+        # the (module, version) the trace actually names — a closure may only be scoped to
+        # these, never to a sibling version the evidence does not cover (REQ-AUD-13 AC5).
+        modvers = {(fr.get("module"), fr.get("version")) for fr in trace if fr.get("module")}
+        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set()})
         by_osv[osv] = {"reachable": cur["reachable"] or called,
-                       "imported_only": cur["imported_only"] or imported_only}
+                       "imported_only": cur["imported_only"] or imported_only,
+                       "modules": cur.get("modules", set()) | modvers}
     if not saw_any:
         raise ParseError("govulncheck: empty stream")
     return {"scan_level": scan_level, "module": module, "by_osv": by_osv}

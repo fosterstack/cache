@@ -43,6 +43,27 @@ def stmt_id(finding_id):
     return "%s#stmt-%s" % (VEX_BASE, finding_id.lower())
 
 
+def scope_key(product_id, subcomponents):
+    """The canonical SCOPE of a disposition (REQ-AUD-13 AC1): the product @id paired with the
+    sorted set of its subcomponent package-URLs. Two dispositions are the same scope iff both
+    members are equal; order of subcomponents does not matter."""
+    return ((product_id or VEX_PRODUCT), tuple(sorted(set(subcomponents or ()))))
+
+
+def scope_id(vulnerability, product_id=None, subcomponents=None):
+    """The statement @id: a DETERMINISTIC function of (vulnerability, scope) (REQ-AUD-13 AC2).
+    The default scope (the plain product with no subcomponents) keeps the bare `#stmt-<cve>`
+    id; any other scope appends a stable 8-hex hash of its scope key. The same scope yields the
+    same @id on every run and two distinct scopes never collide."""
+    import hashlib
+    prod, subs = scope_key(product_id, subcomponents)
+    base = "%s#stmt-%s" % (VEX_BASE, vulnerability.lower())
+    if prod == VEX_PRODUCT and not subs:
+        return base
+    h = hashlib.sha1((prod + "\n" + "\n".join(subs)).encode()).hexdigest()[:8]
+    return "%s~%s" % (base, h)
+
+
 def threshold_reason(severity=None, kev=False, known_exploited=False):
     """The at-or-above threshold reason (owner policy), or 'below'."""
     if (severity or "").lower() in THRESHOLD_SEVERITIES:

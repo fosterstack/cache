@@ -70,8 +70,17 @@ def gvc_verdict(gvc_path, ids, expected_module=None, usable=True):
     if any(g["by_osv"][i]["reachable"] for i in present):
         return "reachable", {"scan_level": "symbol", "module": g["module"], "reachable": True}
     if any(g["by_osv"][i]["imported_only"] for i in present):
+        mods = set()
+        for i in present:
+            if g["by_osv"][i]["imported_only"]:
+                mods |= g["by_osv"][i].get("modules", set())
+        # normalize the leading `v` off the version so it matches a purl that omits it
+        def _mv(m, v):
+            v = (v or "")
+            return "%s@%s" % (m, v[1:] if v.startswith("v") else v)
         return "unreachable", {"source": "govulncheck", "scan_level": "symbol",
-                               "module": g["module"], "imported_only": True, "ids": present}
+                               "module": g["module"], "imported_only": True, "ids": present,
+                               "trace_modules": sorted(_mv(m, v) for (m, v) in mods if m)}
     return "no-evidence", {"reason": "only empty traces; not proof of unreachability"}
 
 

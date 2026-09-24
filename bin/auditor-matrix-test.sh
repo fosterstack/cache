@@ -926,10 +926,11 @@ run "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.j
 begin "il14-consolidated-ignore-cites-all-statement-ids" "a split CVE's consolidated ignore cites BOTH statement ids (the sibling id is not orphaned)"
 o="$WORK/il14"; rm -rf "$o"; : > "$LEDGER"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  both="$(grep -A2 'CVE-2011-3374:' "$o/suppressions/.snyk" | grep -c 'stmt-cve-2011-3374-sibling')"; both="${both:-0}"
-  base="$(grep -A2 'CVE-2011-3374:' "$o/suppressions/.snyk" | grep -c 'stmt-cve-2011-3374 ')"; base="${base:-0}"
-  { [ "$both" -ge 1 ] 2>/dev/null; } \
-    && ok || no "both statement ids cited in the consolidated ignore" "sibling_id_cited=$both"; }
+  # the split CVE's two dispositions each get a distinct scope-derived @id (REQ-AUD-13 AC2);
+  # the consolidated ignore must cite BOTH (neither orphaned)
+  both="$(grep -A2 'CVE-2011-3374:' "$o/suppressions/.snyk" | grep -oE 'stmt-cve-2011-3374~[a-f0-9]+' | sort -u | wc -l | tr -d ' ')"; both="${both:-0}"
+  { [ "$both" -ge 2 ] 2>/dev/null; } \
+    && ok || no "both statement ids cited in the consolidated ignore" "distinct_ids_cited=$both"; }
 
 begin "il15-section7-poam-row-names-real-vex-id" "a §7 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
 o="$WORK/il15"; rm -rf "$o"; : > "$LEDGER"
@@ -1316,9 +1317,11 @@ sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
 R._merge_suppressions(ws, os.path.join(tmp,"supp"))
 stmts=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
-ids=[s["@id"] for s in stmts]; base=policy.stmt_id("CVE-2099-9602")
-uniq=len(ids)==len(set(ids)); base_once=ids.count(base)==1; two=len(stmts)==2
-print("OK" if uniq and base_once and two else "BAD:%s"%ids)' "$sco" 2>/dev/null)"
+ids=[s["@id"] for s in stmts]
+prods={s["products"][0]["@id"] for s in stmts}
+# REQ-AUD-13 AC2: distinct scopes carry DISTINCT, unique @ids (generated from the scope)
+uniq=len(ids)==len(set(ids)); two=len(stmts)==2; distinct_scopes=len(prods)==2
+print("OK" if uniq and two and distinct_scopes else "BAD:%s prods=%s"%(ids,prods))' "$sco" 2>/dev/null)"
 { eq "$scres" "OK"; } && ok || no "colliding-scope statements get distinct @ids" "$scres"
 
 echo "=== outer-loop round 7 (Codex second-vendor) regressions ==="
@@ -1492,10 +1495,12 @@ import json,os,sys
 sys.path.insert(0,".github/agent/bin")
 from auditorlib import vex, policy
 tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); c="CVE-2099-9200"
-# a carried, already-EXPIRED (2026-08-23) affected acceptance sits in the checkout
-old=vex.doc(c,"affected","2026-08-24T00:00:00Z",action="tracked")
+# a carried, already-EXPIRED (2026-08-23) affected acceptance sits in the checkout, scoped to
+# the finding's own package purl (the scope the next run will re-derive)
+purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+old=vex.doc(c,"affected","2026-08-24T00:00:00Z",action="tracked",subcomponents=[purl])
 json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
-json.dump({"accepted_items":[{"cve":c,"severity":"Medium","package":"libos","threshold":"below","owner_issue":None,"vex_id":old["statements"][0]["@id"],"expiry":"2026-08-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","threshold":"below","owner_issue":None,"vex_id":old["statements"][0]["@id"],"expiry":"2026-08-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
 PP
 ex8r="$("$PY" -c '
 import json,os,sys,io,contextlib,subprocess,importlib.util
@@ -1522,6 +1527,142 @@ inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted
 stmts=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
 print("OK" if sec==3 and inv==[] and stmts==[] else "BAD sec=%s inv=%s stmts=%d"%(sec,len(inv),len(stmts)))' "$ex8" "$F/run/manifest-mediumnofix.json" 2>/dev/null)"
 { eq "$ex8r" "OK"; } && ok || no "expired acceptance reopens to §3 and removes the ignore/VEX" "$ex8r"
+
+echo "=== REQ-AUD-13 scope identity and evidence boundaries ==="
+
+begin "req13-ac1-scope-key-definition" "a disposition's scope key is (product @id, sorted subcomponent purls); equal members => same scope (order-insensitive), any difference => distinct"
+a1="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+s1={"products":[{"@id":"P","subcomponents":[{"@id":"pkg:a@1"},{"@id":"pkg:b@1"}]}]}
+s2={"products":[{"@id":"P","subcomponents":[{"@id":"pkg:b@1"},{"@id":"pkg:a@1"}]}]}
+s3={"products":[{"@id":"P","subcomponents":[{"@id":"pkg:a@1"}]}]}
+s4={"products":[{"@id":"Q","subcomponents":[{"@id":"pkg:a@1"},{"@id":"pkg:b@1"}]}]}
+ok=R._scope_key(s1)==R._scope_key(s2) and R._scope_key(s1)!=R._scope_key(s3) and R._scope_key(s1)!=R._scope_key(s4)
+print("OK" if ok else "BAD")' 2>/dev/null)"
+{ eq "$a1" "OK"; } && ok || no "scope key = (product, sorted subcomponents)" "$a1"
+
+begin "req13-ac2-stable-unique-ids" "statement @id is a deterministic function of (vulnerability, scope): stable across calls, distinct scopes never collide, default scope keeps the bare stmt id"
+a2="$("$PY" -c '
+import sys;sys.path.insert(0,".github/agent/bin")
+from auditorlib import policy
+base=policy.scope_id("CVE-2099-0001")
+same=policy.scope_id("CVE-2099-0001")
+sc1=policy.scope_id("CVE-2099-0001",policy.VEX_PRODUCT,["pkg:deb/debian/x@1"])
+sc2=policy.scope_id("CVE-2099-0001",policy.VEX_PRODUCT,["pkg:deb/debian/x@2"])
+scv=policy.scope_id("CVE-2099-0001",policy.VEX_PRODUCT+"&variant=debug",["pkg:deb/debian/x@1"])
+ok = base==same and base==policy.VEX_BASE+"#stmt-cve-2099-0001" and len({base,sc1,sc2,scv})==4
+print("OK" if ok else "BAD:%s"%[base,sc1,sc2,scv])' 2>/dev/null)"
+{ eq "$a2" "OK"; } && ok || no "scope_id deterministic + unique per scope" "$a2"
+
+begin "req13-ac3-one-key-threaded" "two distinct scopes whose statements shared a pre-merge CVE-derived id keep DISTINCT inventory obligations after the merge; a rejected scope is never overwritten (round-9 #1)"
+t3="$WORK/req13-3"; rm -rf "$t3"; mkdir -p "$t3/ws/.vex" "$t3/ws/.auditor" "$t3/supp" "$t3/.auditor"
+"$PY" - "$t3" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp"); c="CVE-2099-0003"
+# retained Critical debug scope (rejected owner issue 101)
+old=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="Critical debug carry",subcomponents=["pkg:deb/debian/libfoo@1"])
+old["statements"][0]["products"][0]["@id"]=policy.VEX_PRODUCT+"&variant=debug"; old["version"]=6
+vidD=old["statements"][0]["@id"]
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"package":"libfoo","threshold":"at_or_above","owner_issue":101,"vex_id":vidD,"expiry":"2026-10-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+# new below-threshold production scope (different version)
+new=vex.doc(c,"affected","2026-09-24T00:00:00Z",action="prod carry",subcomponents=["pkg:deb/debian/libfoo@2"])
+vidP=new["statements"][0]["@id"]
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+json.dump({"accepted_items":[{"cve":c,"package":"libfoo","threshold":"below","owner_issue":None,"vex_id":vidP,"expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+PP
+r3="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+stmts=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+ids=[s["@id"] for s in stmts]
+issues=sorted(str(i.get("owner_issue")) for i in inv)
+# both scopes retained, distinct ids, both obligations kept incl the rejected 101, every inv vex_id resolves
+ok = len(stmts)==2 and len(set(ids))==2 and issues==["101","None"] and all(i["vex_id"] in ids for i in inv)
+print("OK" if ok else "BAD ids=%s issues=%s resolve=%s"%(ids,issues,[i["vex_id"] in ids for i in inv]))' "$t3" 2>/dev/null)"
+{ eq "$r3" "OK"; } && ok || no "distinct scopes keep distinct obligations; pointers resolve to final ids" "$r3"
+
+begin "req13-ac4-lineage-not-evidence" "a lineage-only bundle record never supplies fix availability/package/version/severity for another CVE's group (round-9 #3), but still counts as a lineage vote"
+a4="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+real={"scanner":"grype","finding_id":"CVE-2099-0004","purl":"pkg:deb/debian/other@8.0.0","aliases":["CVE-2099-0004"],"package":"other","fixed_version":None,"severity":"Critical","extra":{}}
+lineage={"scanner":"osv-scanner","finding_id":"GO-2099-0004","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["CVE-2099-0004"],"package":"example.org/lib","fixed_version":"1.0.1","severity":"Low","extra":{},"_lineage_only":True}
+gf=R._group_facts("CVE-2099-0004",{"findings":[real,lineage],"aliases":["CVE-2099-0004"]})
+# fix/package/installed/severity come from the REAL finding only; lineage still contributes a lineage vote
+ok = gf["fixed"] is None and gf["package"]=="other" and gf["severity"]=="Critical" and len(gf["lineages"])>=1
+print("OK" if ok else "BAD:%s"%gf)' 2>/dev/null)"
+{ eq "$a4" "OK"; } && ok || no "lineage-only excluded from fix/package/severity evidence" "$a4"
+
+begin "req13-ac5-go-closure-scoped-to-trace" "a Go imported-not-called closure is scoped to the trace's module+version only; a group whose only records are lineage yields NO closure (never product-wide)"
+t5="$WORK/req13-5"; rm -rf "$t5"; mkdir -p "$t5"
+gv5="$t5/gvc.json"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib","version":"v1.0.0"}]}}' '{"finding":{"osv":"GO-2099-0005","trace":[{"module":"example.org/lib","version":"v1.0.0","package":"example.org/lib/x"}]}}' > "$gv5"
+a5="$("$PY" -c '
+import json,sys,glob,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+gv,out=sys.argv[1],sys.argv[2]
+env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
+# two Go findings share the CVE: v1.0.0 (has the trace) and v2.0.0 (no trace)
+f1={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-0005","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["GO-2099-0005","CVE-2099-0005"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
+f2={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-0005","purl":"pkg:golang/example.org/lib@v2.0.0","aliases":["GO-2099-0005","CVE-2099-0005"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
+row,_=R._dispose("CVE-2099-0005",[f1,f2],["CVE-2099-0005","GO-2099-0005"],env,[])
+doc=json.load(open(glob.glob(out+"/vex/*.json")[0])) if glob.glob(out+"/vex/*.json") else {"statements":[]}
+subs=[sc["@id"] for s in doc["statements"] if s["status"]=="not_affected" for sc in s["products"][0].get("subcomponents",[])]
+scoped = row["section"]==5 and subs==["pkg:golang/example.org/lib@v1.0.0"]
+# lineage-only-only group: no closure at all
+lo={"scanner":"osv-scanner","finding_id":"DSA-1","purl":"pkg:deb/debian/lib@1","aliases":["CVE-2099-0005"],"package":"lib","fixed_version":None,"severity":"High","extra":{},"_lineage_only":True}
+row2,_=R._dispose("CVE-2099-0005",[lo],["CVE-2099-0005"],dict(env,out=out+"2"),[])
+import os
+no_closure = row2["section"]!=5
+print("OK" if scoped and no_closure else "BAD scoped_subs=%s sec2=%s"%(subs,row2["section"]))' "$gv5" "$t5/out" 2>/dev/null | tail -1)"
+{ eq "$a5" "OK"; } && ok || no "Go closure scoped to trace module+version; lineage-only => no closure" "$a5"
+
+begin "req13-ac6-expiry-original-date-per-scope" "an unchanged-scope run preserves the ORIGINAL time box (never renews it), and an expired scope removes ONLY its own statement/inventory, retaining sibling and permanent statements (round-9 #4/#5)"
+a6="$("$PY" -c '
+import json,os,sys,io,contextlib,subprocess,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+from unittest.mock import patch
+import tempfile
+tmp=tempfile.mkdtemp(); ws=os.path.join(tmp,"ws"); os.makedirs(os.path.join(ws,".vex"))
+c="CVE-2099-9200"   # the finding in manifest-mediumnofix
+mp=".github/agent/fixtures/run/manifest-mediumnofix.json"
+def fake(cmd,*a,**kw):
+    if cmd and cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
+    if cmd and cmd[0]=="gh": raise AssertionError(cmd)
+    return subprocess.run(cmd,*a,**kw)
+def go(day):
+    with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp,False,os.path.join(tmp,"o"+day),day,adjudicator="offline-probe")
+    return json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+i1=go("2026-08-24")                       # first: original expiry
+exp1=i1[0]["expiry"] if i1 else None
+i2=go("2026-09-10")                       # ordinary intervening run BEFORE expiry: must NOT renew
+exp2=i2[0]["expiry"] if i2 else None
+no_renew = exp1 is not None and exp1==exp2
+# per-scope removal: add a sibling live scope + a permanent statement, expire ONLY the first scope
+sib=vex.doc(c,"affected","2026-09-10T00:00:00Z",action="sibling live",subcomponents=["pkg:deb/debian/other@9"])
+sib["statements"][0]["products"][0]["@id"]=policy.VEX_PRODUCT+"&variant=debug"
+cur=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))
+cur["statements"].append(sib["statements"][0])
+perm=vex.doc("CVE-2099-7777","not_affected","2026-01-01T00:00:00Z",justification="vulnerable_code_not_present")
+cur["statements"].append(perm["statements"][0]); json.dump(cur,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+i3=go("2099-01-01")                        # far future: the original scope expiry has passed
+final=[s["vulnerability"]["name"] for s in json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]]
+kept_perm = "CVE-2099-7777" in final
+print("OK" if no_renew and kept_perm else "BAD exp1=%s exp2=%s final=%s"%(exp1,exp2,final))' 2>/dev/null)"
+{ eq "$a6" "OK"; } && ok || no "expiry original-date, no daily renewal, per-scope removal" "$a6"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

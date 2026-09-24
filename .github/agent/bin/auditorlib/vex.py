@@ -27,11 +27,12 @@ def doc(fid, status, timestamp, justification=None, action=None, subcomponents=N
         # a not_affected clears only the package(s) its evidence names, never a sibling
         # package flagged for the same CVE).
         product["subcomponents"] = [{"@id": p} for p in subcomponents]
-    # the statement @id is derived from stmt_base (the VEX name) so a CVE split into two
-    # dispositions (not_affected for one package, affected for a sibling) gets two DISTINCT
-    # statement @ids, never a duplicate identity with conflicting status (R1 round-3).
-    st = {"@id": policy.stmt_id(stmt_base or fid), "vulnerability": {"name": fid}, "timestamp": timestamp,
-          "products": [product], "status": status}
+    # the statement @id is a deterministic function of (vulnerability, scope) (REQ-AUD-13 AC2):
+    # the plain product with no subcomponents keeps `#stmt-<cve>`; any other scope (a variant
+    # product, or a subcomponent-scoped closure) gets a stable scope-hashed id, so two distinct
+    # scopes of one CVE never collide and the same scope is stable across runs.
+    st = {"@id": policy.scope_id(fid, product["@id"], subcomponents), "vulnerability": {"name": fid},
+          "timestamp": timestamp, "products": [product], "status": status}
     if justification:
         st["justification"] = justification
     if action:
@@ -63,7 +64,8 @@ def write(out_dir, fid, status, timestamp, justification=None, action=None,
     vpath = os.path.join(out_dir, "vex", (vex_name or fid) + ".openvex.json")
     os.makedirs(os.path.dirname(vpath), exist_ok=True)
     json.dump(document, open(vpath, "w"), indent=1)
-    side = {"statement_id": policy.stmt_id(vex_name or fid), "vulnerability": fid}
+    # the sidecar cites the statement's ACTUAL scope-derived @id (REQ-AUD-13 AC2)
+    side = {"statement_id": document["statements"][0]["@id"], "vulnerability": fid}
     if evidence is not None:
         side["evidence"] = evidence
     if target_date is not None:
