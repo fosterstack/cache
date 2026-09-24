@@ -1,0 +1,71 @@
+{
+ "commit": "ab",
+ "module": "x",
+ "base_os": "debian",
+ "candidate_variant": "production",
+ "candidate_digests": {
+  "production": "sha256:ab"
+ },
+ "scanner_reports": {
+  "grype": null,
+  "trivy": null,
+  "osv-scanner": ".github/agent/fixtures/scanners/osv-advisory-bundle.json",
+  "osv-scanner-gomod": null,
+  "snyk": null
+ },
+ "scanner_status": {
+  "grype": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 4
+  },
+  "trivy": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 4
+  },
+  "osv-scanner": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 4
+  },
+  "snyk": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 4
+  },
+  "osv-scanner-gomod": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": null
+  }
+ },
+ "govulncheck": null,
+ "known_defect_log": null,
+ "kev_catalog": null
+}

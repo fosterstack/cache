@@ -195,11 +195,10 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         # MERGE into the existing reviewed suppressions, do NOT overwrite them (R1 outer
         # round-4 #3): a statement this run does not touch (e.g. a debug-variant suppression
         # absent from a production scan) must survive, and the document version continues.
+        # _merge_suppressions merges the VEX, the .snyk/osv-scanner.toml ignores AND the
+        # coupled .auditor/accepted-items.json (retained affected statements keep their
+        # inventory entry, R1 outer round-5 #2) — no wholesale copy of the run's inventory.
         _merge_suppressions(ws, supp)
-        ai = os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json")   # out/.auditor/...
-        if os.path.exists(ai):
-            os.makedirs(os.path.join(ws, ".auditor"), exist_ok=True)
-            shutil.copyfile(ai, os.path.join(ws, ".auditor", "accepted-items.json"))
     except Exception as e:
         return None, "stage files: %s" % e
     _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml", ".auditor/accepted-items.json")
@@ -245,12 +244,22 @@ def _merge_suppressions(ws, supp):
             existing = json.load(open(vp))
         except Exception:
             existing = {}
+    # Merge statements by (@id, product scope, subcomponent scope), NOT by @id alone (R1
+    # outer round-5 #3). Auditor @ids are CVE-derived, so a debug-variant statement and a
+    # production statement for the same CVE share an @id but address DIFFERENT scopes; keying
+    # on @id alone would silently drop the unassessed scope. This run replaces a statement
+    # only when the scope matches; disjoint scopes are preserved.
+    def _skey(s):
+        prods = tuple(sorted((p.get("@id") or "") for p in s.get("products", [])))
+        subs = tuple(sorted((sc.get("@id") or "")
+                            for p in s.get("products", []) for sc in (p.get("subcomponents") or [])))
+        return (s.get("@id"), prods, subs)
     by_id = {}
     for s in existing.get("statements", []):
         if s.get("@id"):
-            by_id[s["@id"]] = s
+            by_id[_skey(s)] = s
     for s in newdoc.get("statements", []):
-        by_id[s["@id"]] = s                       # this run replaces/adds
+        by_id[_skey(s)] = s                       # this run replaces same-scope / adds new
     merged = dict(existing) if existing else dict(newdoc)
     merged["statements"] = list(by_id.values())
     merged["version"] = int(existing.get("version", 0)) + 1 if existing else newdoc.get("version", 1)
@@ -258,6 +267,36 @@ def _merge_suppressions(ws, supp):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
     cli.writej(vp, merged)
+
+    # accepted-items.json is COUPLED to the VEX: an affected statement that survives the VEX
+    # merge but this run did not re-assess must keep its inventory entry, or release-authz
+    # rejects the package as inconsistent (R1 outer round-5 #2). Merge like the VEX — this
+    # run's items win; carry an old item forward for any affected CVE still in the merged
+    # document; drop acceptances whose statement is no longer affected.
+    def _loadj(p):
+        try:
+            return json.load(open(p))
+        except Exception:
+            return None
+    aip = os.path.join(ws, ".auditor", "accepted-items.json")
+    new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
+    old_ai = _loadj(aip)
+    if new_ai is not None or old_ai is not None:
+        def _cve(it):
+            return (it or {}).get("cve") or (it or {}).get("id")
+        affected = {s.get("vulnerability", {}).get("name")
+                    for s in merged.get("statements", []) if s.get("status") == "affected"}
+        final = {}
+        for it in ((old_ai or {}).get("accepted_items") or []):
+            if _cve(it) in affected:
+                final[_cve(it)] = it               # retained affected item keeps its acceptance
+        for it in ((new_ai or {}).get("accepted_items") or []):
+            if _cve(it):
+                final[_cve(it)] = it               # this run wins
+        out_ai = dict(new_ai or old_ai or {})
+        out_ai["accepted_items"] = list(final.values())
+        os.makedirs(os.path.dirname(aip), exist_ok=True)
+        cli.writej(aip, out_ai)
 
     def _union_blocks(existing_text, new_text, split_key, key_re):
         # union blocks keyed by CVE; new wins; keep existing blocks for untouched CVEs

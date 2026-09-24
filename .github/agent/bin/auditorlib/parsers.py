@@ -84,6 +84,17 @@ def _osv_purl(pkg):
     return base + ("@%s" % ver if ver else "")
 
 
+_CVE_RE = None
+
+
+def _cves(ids):
+    global _CVE_RE
+    if _CVE_RE is None:
+        import re
+        _CVE_RE = re.compile(r"CVE-\d{4}-\d+")
+    return {a for a in ids if _CVE_RE.fullmatch(a or "")}
+
+
 def parse_osv(path, scanner="osv-scanner"):
     d = _load(path)
     if "results" not in d:
@@ -93,14 +104,26 @@ def parse_osv(path, scanner="osv-scanner"):
         for p in r.get("packages") or []:
             pkg = p.get("package") or {}
             purl = _osv_purl(pkg)
-            groups = p.get("groups") or []
             for v in p.get("vulnerabilities") or []:
                 fid = v.get("id")
-                al = set(v.get("aliases") or [])
-                for g in groups:
-                    if fid in (g.get("ids") or []):
-                        al.update(g.get("aliases") or [])
-                        al.update(g.get("ids") or [])
+                # TRUE identity only. OSV's own `aliases` are cross-namespace refs to the SAME
+                # vulnerability; `upstream` maps a distro id (DEBIAN-CVE-…) to its one upstream
+                # CVE. We deliberately IGNORE `groups` here: a group is a co-report/shared-fix
+                # bundle (e.g. a Debian Security Advisory) that can list SEVERAL distinct CVEs,
+                # so folding it makes one CVE's decision dispose of another (R1 outer round-5 #1).
+                pool = set(v.get("aliases") or []) | set(v.get("upstream") or [])
+                cves = _cves(pool | {fid})
+                extra = {"ecosystem": pkg.get("ecosystem"),
+                         "installed_version": pkg.get("version")}
+                if len(cves) >= 2 and fid not in cves:
+                    # An advisory record naming multiple distinct CVEs is a BUNDLE, not a
+                    # vulnerability identity. Keep no CVE aliases (so union-find never bridges
+                    # the distinct CVEs through it); carry the members so the grouper can attach
+                    # this finding to each CVE's group as lineage, without merging them.
+                    al = {a for a in pool if a not in cves}
+                    extra["bundle_cves"] = sorted(cves)
+                else:
+                    al = pool
                 fixed = None
                 for aff in v.get("affected") or []:
                     for rng in aff.get("ranges") or []:
@@ -108,9 +131,7 @@ def parse_osv(path, scanner="osv-scanner"):
                             if ev.get("fixed"):
                                 fixed = ev["fixed"]
                 out.append(_finding(scanner, fid, purl, al, pkg.get("name"),
-                                    fixed, None,
-                                    {"ecosystem": pkg.get("ecosystem"),
-                                     "installed_version": pkg.get("version")}))
+                                    fixed, None, extra))
     return out
 
 

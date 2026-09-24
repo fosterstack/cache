@@ -163,19 +163,37 @@ def manifest_findings(manifest):
     def _union(a, b):
         parent[_find(a)] = _find(b)
 
+    # A finding carrying `bundle_cves` (a distro advisory that co-reports several DISTINCT
+    # CVEs) is NOT a vulnerability identity: it must not bridge those CVEs (R1 outer round-5
+    # #1). It creates no union edges; instead it is attached to EACH member CVE's group as
+    # lineage after the identity groups are built.
+    bundles, singles = [], []
     for f in allf:
+        (bundles if f.get("extra", {}).get("bundle_cves") else singles).append(f)
+    for f in singles:
         ids = [f["finding_id"]] + list(f["aliases"])
         for i in ids[1:]:
             _union(ids[0], i)
     comps = {}
-    for f in allf:
+    for f in singles:
         root = _find(f["finding_id"])
         g = comps.setdefault(root, {"aliases": set(), "findings": []})
         g["aliases"].update(f["aliases"]); g["aliases"].add(f["finding_id"]); g["findings"].append(f)
     groups = {}
+    cid_by_member = {}
     for g in comps.values():
         cid = canon(sorted(g["aliases"])[0], g["aliases"])   # a CVE from the connected union
         groups[cid] = {"id": cid, "aliases": g["aliases"], "findings": g["findings"]}
+        for a in g["aliases"]:
+            cid_by_member[a] = cid
+    # distribute each advisory bundle to its member CVEs' groups (creating a group for any
+    # CVE seen ONLY in the advisory), so every distinct CVE keeps its own disposition
+    for f in bundles:
+        for cve in f["extra"]["bundle_cves"]:
+            cid = cid_by_member.get(cve, cve)
+            grp = groups.setdefault(cid, {"id": cid, "aliases": {cid}, "findings": []})
+            grp["aliases"].add(cve); grp["findings"].append(f)
+            cid_by_member.setdefault(cve, cid)
     return m, groups
 
 

@@ -1188,6 +1188,72 @@ snyk=open(os.path.join(ws,".snyk")).read()
 ok = names==["CVE-2024-1","CVE-2024-2","CVE-2099-9"] and m["version"]==7 and "CVE-2024-1" in snyk and "CVE-2099-9" in snyk
 print("OK" if ok else "BAD:%s v%s"%(names,m["version"]))' "$mo" 2>/dev/null)"
 { eq "$mres" "OK"; } && ok || no "merge preserves prior statements + bumps version" "$mres"
+
+echo "=== outer-loop round 5 (Codex second-vendor) regressions ==="
+
+begin "olr5-1-advisory-bundle-does-not-merge-distinct-cves" "an OSV distro advisory (DSA) that co-reports THREE distinct CVEs yields three separate groups (the bundle is lineage, never identity), so one CVE's decision cannot dispose of another"
+ng="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-advisory-bundle.json")
+ok = len(groups)==3 and set(groups)=={"CVE-2099-7001","CVE-2099-7002","CVE-2099-7003"} and all(any(f["finding_id"]=="DSA-9999-1" for f in g["findings"]) for g in groups.values())
+print("OK" if ok else "BAD:%s"%sorted(groups))' 2>/dev/null)"
+{ eq "$ng" "OK"; } && ok || no "advisory bundle splits into distinct CVE groups" "$ng"
+
+begin "olr5-2-accepted-items-merged-with-vex" "a retained affected statement (survives the VEX merge, not re-assessed this run) keeps its accepted-items.json inventory entry, so release-authz is not left inconsistent"
+io="$WORK/olr5-inv"; rm -rf "$io"; mkdir -p "$io/ws/.vex" "$io/ws/.auditor" "$io/supp" "$io/.auditor"
+"$PY" - "$io" <<'PP'
+import json,os,sys
+from importlib.util import spec_from_file_location, module_from_spec
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp")
+old=vex.doc("CVE-2099-9503","affected","2026-09-23T00:00:00Z",action="accepted below threshold"); old["version"]=6
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[{"cve":"CVE-2099-9503","threshold":"below","expiry":"2026-10-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+new=vex.doc("CVE-2099-9504","affected","2026-09-24T00:00:00Z",action="accepted below threshold")
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore:\n  CVE-2099-9504:\n    - '*':\n        reason: 'x'\n")
+open(os.path.join(supp,"osv-scanner.toml"),"w").write('[[IgnoredVulns]]\nid = "CVE-2099-9504"\nreason = "x"\n')
+json.dump({"accepted_items":[{"cve":"CVE-2099-9504","threshold":"below","expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+PP
+ires="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))
+cves=sorted(i["cve"] for i in inv["accepted_items"])
+print("OK" if cves==["CVE-2099-9503","CVE-2099-9504"] else "BAD:%s"%cves)' "$io" 2>/dev/null)"
+{ eq "$ires" "OK"; } && ok || no "retained affected statement keeps its inventory entry" "$ires"
+
+begin "olr5-3-vex-merge-keys-on-scope-not-just-id" "two statements sharing a CVE-derived @id but addressing DIFFERENT product/subcomponent scopes both survive the merge (a same-@id update never silently drops an unassessed scope)"
+so="$WORK/olr5-scope"; rm -rf "$so"; mkdir -p "$so/ws/.vex" "$so/supp"
+"$PY" - "$so" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp")
+old=vex.doc("CVE-2099-9502","not_affected","2026-09-23T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=["pkg:deb/debian/libdebug@1"])
+old["version"]=6; old["statements"][0]["products"][0]["@id"]=policy.VEX_PRODUCT+"&variant=debug"
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+new=vex.doc("CVE-2099-9502","affected","2026-09-24T00:00:00Z",action="tracked",subcomponents=["pkg:deb/debian/libprod@1"])
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n")
+open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+PP
+sres="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+m=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))
+stmts=m["statements"]
+debug=any("variant=debug" in p["@id"] for s in stmts for p in s["products"])
+prod=any(s["status"]=="affected" for s in stmts)
+print("OK" if len(stmts)==2 and debug and prod and m["version"]==7 else "BAD:n=%d debug=%s prod=%s"%(len(stmts),debug,prod))' "$so" 2>/dev/null)"
+{ eq "$sres" "OK"; } && ok || no "disjoint-scope statements both survive the merge" "$sres"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
