@@ -147,7 +147,14 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     A TEST-IMAGE run opens NO PR (a VEX for an image we do not ship is not a proposal),
     EXCEPT the one-off proof (AUDITOR_PROOF_PR=1), whose PR title is prefixed
     'proof — do not merge'."""
-    if nstmt == 0:
+    # nstmt==0 with NO removals means nothing to deliver. But an expiry reopen (AC5c) produces
+    # zero NEW statements yet must still REMOVE a carried statement/ignore — deliver that.
+    has_removals = False
+    try:
+        has_removals = bool(json.load(open(os.path.join(out, ".auditor", "reopened-expired.json"))).get("reopened"))
+    except Exception:
+        has_removals = False
+    if nstmt == 0 and not has_removals:
         return None, None
     proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
     if is_test and not proof:
@@ -228,6 +235,40 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     return r.stdout.strip(), None
 
 
+def _ignores_from_statements(statements, expiry_map):
+    """Build (.snyk text, osv-scanner.toml text) from a set of VEX statements: ONE ignore per
+    CVE, citing EVERY one of that CVE's statement ids (base id first, so `vex:` anchors on the
+    primary scope), with the carried time box. Deriving the ignores from the final statements
+    keeps every citation resolvable to a real merged id (R1 outer round-8 #6)."""
+    by_cve = {}
+    for s in statements:
+        cve = (s.get("vulnerability") or {}).get("name")
+        if not cve:
+            continue
+        info = by_cve.setdefault(cve, {"statuses": set(), "vids": []})
+        info["statuses"].add(s.get("status"))
+        sid = s.get("@id")
+        if sid and sid not in info["vids"]:
+            info["vids"].append(sid)
+    snyk = ["version: v1.5.0", "ignore:"]
+    toml = []
+    for cve in sorted(by_cve):
+        info = by_cve[cve]
+        vids = sorted(info["vids"], key=lambda x: ("~" in x, x)) or [policy.stmt_id(cve)]
+        st = "+".join(sorted(x for x in info["statuses"] if x))
+        allids = " ".join(vids)
+        exp = expiry_map.get(cve)
+        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, allids)]
+        if exp:
+            snyk += ["        expires: %sT00:00:00.000Z" % exp]
+        snyk += ["        vex: '%s'" % vids[0]]
+        rsn = "%s; governed by %s%s" % (st, allids, ("; expires %s" % exp if exp else ""))
+        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s"' % rsn]
+        if exp:
+            toml += ['expires = "%sT00:00:00Z"' % exp]
+    return "\n".join(snyk) + "\n", "\n".join(toml) + "\n"
+
+
 def _merge_suppressions(ws, supp):
     """Merge this run's consolidated suppressions INTO the existing reviewed files in the
     checkout, preserving statements/entries this run does not touch and continuing the VEX
@@ -254,7 +295,13 @@ def _merge_suppressions(ws, supp):
     from collections import defaultdict as _dd
 
     def _base_id(s):
-        return _re.sub(r"~[0-9a-f]{8}0*$", "", s.get("@id") or "")
+        # Only strip a suffix WE generated — an @id under our VEX base. A foreign statement
+        # id (e.g. a reviewer's `…#review~deadbeef`) is left intact: its `~` is part of its
+        # real identity, not our scope suffix (R1 outer round-8 #6).
+        sid = s.get("@id") or ""
+        if sid.startswith(policy.VEX_BASE):
+            return _re.sub(r"~[0-9a-f]{8}0*$", "", sid)
+        return sid
 
     def _scope(s):
         prods = tuple(sorted((p.get("@id") or "") for p in s.get("products", [])))
@@ -274,6 +321,18 @@ def _merge_suppressions(ws, supp):
     for s in newdoc.get("statements", []):
         by_id[_skey(s)] = s                       # this run replaces same-scope / adds new
     survivors = list(by_id.values())
+    # Drop the carried statements of any CVE reopened this run because its time box expired
+    # (AC5c; R1 outer round-8 #4): the ignore is removed, not renewed. The regenerated
+    # .snyk/osv-scanner.toml below therefore omit it, and the finding stands live in §3.
+    reopened = set()
+    try:
+        reopened = set(json.load(open(os.path.join(os.path.dirname(supp), ".auditor",
+                                                   "reopened-expired.json"))).get("reopened", []))
+    except Exception:
+        reopened = set()
+    if reopened:
+        survivors = [s for s in survivors
+                     if (s.get("vulnerability") or {}).get("name") not in reopened]
     # Canonicalize @ids so each scope is STABLE and uniquely addressable across runs (R1 outer
     # round-5/6/7 #3): reduce every @id to its base, then where one base @id covers several
     # scopes, the PRIMARY (plain-product) scope keeps the base id — so the run's freshly
@@ -334,8 +393,15 @@ def _merge_suppressions(ws, supp):
         # run replaces only the SAME scope.
         def _ikey(it):
             it = it or {}
-            return (_cve(it), it.get("package"), it.get("threshold"),
-                    it.get("owner_issue"), it.get("vex_id"))
+            vid = it.get("vex_id")
+            if vid:
+                # the governing VEX statement id IS the scope: a same-scope reassessment (even
+                # one that changes owner_issue or threshold) replaces the prior obligation
+                # instead of accumulating a stale one (R1 outer round-8 #5).
+                return (_cve(it), vid)
+            # legacy items with no statement id fall back to the coarse scope, still keeping two
+            # genuinely distinct owner obligations apart (R1 outer round-7 #1).
+            return (_cve(it), it.get("package"), it.get("threshold"), it.get("owner_issue"))
         affected = {s.get("vulnerability", {}).get("name")
                     for s in merged.get("statements", []) if s.get("status") == "affected"}
         final = {}
@@ -350,47 +416,28 @@ def _merge_suppressions(ws, supp):
         os.makedirs(os.path.dirname(aip), exist_ok=True)
         cli.writej(aip, out_ai)
 
-    def _union_blocks(existing_text, new_text, split_key, key_re):
-        # union blocks keyed by CVE; new wins; keep existing blocks for untouched CVEs
-        def blocks(t):
-            out = {}
-            for b in t.split(split_key)[1:]:
-                mid = re.search(key_re, b)
-                if mid:
-                    out[mid.group(1)] = b
-            return out
-        old = blocks(existing_text) if existing_text else {}
-        new = blocks(new_text)
-        old.update(new)
-        return old
-
-    # osv-scanner.toml union
+    # Regenerate .snyk and osv-scanner.toml FROM the merged VEX (not a text union of the two
+    # files) so every ignore cites a real merged statement id — canonicalized and foreign ids
+    # alike — and no stale pre-merge citation survives (R1 outer round-8 #6). Time boxes are
+    # carried from the union of the old and new ignore files (this run wins).
+    def _expiry_from_toml(text):
+        out = {}
+        for blk in (text or "").split("[[IgnoredVulns]]")[1:]:
+            mid = re.search(r'id\s*=\s*"([^"]+)"', blk)
+            me = re.search(r'expires\s*=\s*"(\d{4}-\d{2}-\d{2})', blk)
+            if mid and me:
+                out[mid.group(1)] = me.group(1)
+        return out
     otoml = os.path.join(ws, "osv-scanner.toml")
-    old_t = open(otoml).read() if os.path.exists(otoml) else ""
-    new_t = open(os.path.join(supp, "osv-scanner.toml")).read()
-    blk = _union_blocks(old_t, new_t, "[[IgnoredVulns]]", r'id\s*=\s*"([^"]+)"')
-    open(otoml, "w").write("".join("[[IgnoredVulns]]" + b for b in blk.values()) if blk else new_t)
-
-    # .snyk: keep existing ignore keys not in the new set, then append the new file's ignores.
-    # (Simple, safe union: prefer the new file wholesale but re-add untouched old CVE keys.)
     sp = os.path.join(ws, ".snyk")
-    if os.path.exists(sp):
-        old_s = open(sp).read(); new_s = open(os.path.join(supp, ".snyk")).read()
-        new_cves = set(re.findall(r"^  (\S+):\s*$", new_s, re.M))
-        kept = []
-        i, lines = 0, old_s.splitlines()
-        while i < len(lines):
-            m = re.match(r"^  (\S+):\s*$", lines[i])
-            if m and m.group(1) not in new_cves:
-                kept.append(lines[i]); i += 1
-                while i < len(lines) and (lines[i].strip() == "" or re.match(r"^   ", lines[i])):
-                    kept.append(lines[i]); i += 1
-                continue
-            i += 1
-        merged_snyk = new_s.rstrip("\n") + ("\n" + "\n".join(kept) if kept else "") + "\n"
-        open(sp, "w").write(merged_snyk)
-    else:
-        shutil.copyfile(os.path.join(supp, ".snyk"), sp)
+    supp_toml = os.path.join(supp, "osv-scanner.toml")
+    old_toml = open(otoml).read() if os.path.exists(otoml) else ""
+    new_toml = open(supp_toml).read() if os.path.exists(supp_toml) else ""
+    expiry = _expiry_from_toml(old_toml)
+    expiry.update(_expiry_from_toml(new_toml))            # this run wins on a shared CVE
+    snyk_text, toml_text = _ignores_from_statements(merged.get("statements", []), expiry)
+    open(sp, "w").write(snyk_text)
+    open(otoml, "w").write(toml_text)
 
 
 def _consolidate(out, ts):
@@ -574,6 +621,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vn = name or c
     gf = _group_facts(c, {"findings": findings, "aliases": aliases})
     ids = sorted(aliases) + [c]
+    # A not_affected closure clears ONLY the packages its evidence names (R11 rank 1); scope
+    # every closure to this subset's exact PURLs so a Go unreachability never suppresses a
+    # sibling OS package product-wide (R1 outer round-8 #2 — the -go name alone did not scope).
+    subs = sorted({f["purl"] for f in findings if f.get("purl") and not f.get("_lineage_only")}) or None
     row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
            "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
            "disposition": None, "action": None, "reason": None}
@@ -583,7 +634,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
         row["reachability"] = "govulncheck: %s" % verdict
         if verdict == "unreachable":
-            vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev, vex_name=vn)
+            vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_in_execute_path", evidence=ev, vex_name=vn, subcomponents=subs)
             row.update(section=5, disposition="not_affected (unreachable)", action="closed",
                        reason="govulncheck: imported, not called", vex_id=policy.stmt_id(c),
                        ignore_files=["vex", "evidence"])
@@ -599,7 +650,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         if cat == "false_positive":
             fev = C.fp_verified(ids, env["logpath"], findings)
             if fev:
-                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev, vex_name=vn)
+                vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=fev, vex_name=vn, subcomponents=subs)
                 row.update(section=5, disposition="not_affected (false positive)", action="closed",
                            reason="model FP, evidence-verified", vex_id=policy.stmt_id(c),
                            ignore_files=["vex", "evidence"])
@@ -640,6 +691,19 @@ def _dispose(c, findings, aliases, env, would, name=None):
             row.update(section=3, disposition="real, fixable (base rebuild)", action=act,
                        fixed="base-image %s" % gf["fixed"], reachability="n/a (OS package)",
                        reason="awaiting base rebuild %s" % gf["fixed"])
+        return row, m_inc
+    # AC5c: a carried acceptance whose 30-day time box has PASSED reopens the finding into §3
+    # this run — the ignore is removed (delivery drops the carried statement), not silently
+    # renewed; policy re-applies from scratch next cycle (R1 outer round-8 #4).
+    cexp = env.get("carried_expiry", {}).get(c)
+    if not cexp:
+        for a in aliases:
+            if a in env.get("carried_expiry", {}):
+                cexp = env["carried_expiry"][a]; break
+    if cexp and cexp < env.get("today", ts[:10]):
+        row.update(section=3, disposition="reopened: prior acceptance expired",
+                   action="time box lapsed %s — ignore removed; policy re-applied from scratch" % cexp,
+                   reason="acceptance expired %s (no upstream fix)" % cexp, reopened_expired=cexp)
         return row, m_inc
     # no upstream fix -> POA&M (§2), at/above threshold -> owner issue.
     in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
@@ -697,9 +761,24 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             kev_ok = False
     exp = _expiry(today)
     state = {"tokens": 0, "iters": 0}
+    # Carried acceptances from the checkout: when a time box has passed, the finding must
+    # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
+    # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
+    carried_expiry = {}
+    ws0 = os.environ.get("GITHUB_WORKSPACE")
+    if ws0:
+        try:
+            prev = json.load(open(os.path.join(ws0, ".auditor", "accepted-items.json")))
+            for it in prev.get("accepted_items", []):
+                cve = it.get("cve") or it.get("id")
+                if cve and it.get("expiry"):
+                    carried_expiry[cve] = min(it["expiry"], carried_expiry.get(cve, it["expiry"]))
+        except Exception:
+            carried_expiry = {}
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
-           "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production")}
+           "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
+           "carried_expiry": carried_expiry, "today": today}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
         # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
@@ -713,11 +792,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # NOT libfoo@2 — a name match cannot establish version applicability without evidence.
         fp_keys = set()   # (package, version)
         for f in grp["findings"]:
+            if f.get("_lineage_only"):     # an advisory's defect-log FP is about ITS OWN
+                continue                   # vulnerability, not a different bundled CVE (round-8 #1)
             r = idx.get((f["scanner"], f["finding_id"], f["purl"]))
             if r and r.get("disposition") == "false_positive":
                 fp_keys.add(((r.get("package") or f.get("package")), _ver_from_purl(f["purl"])))
         def _cov(f):
-            return (f.get("package"), _ver_from_purl(f["purl"])) in fp_keys
+            return not f.get("_lineage_only") and (f.get("package"), _ver_from_purl(f["purl"])) in fp_keys
         covered = [f for f in grp["findings"] if _cov(f)]
         if covered:
             subs = sorted({f["purl"] for f in covered if f["purl"]})
@@ -761,6 +842,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))
     if dry and sections[3] and not would:
         findings_without_action += len(sections[3])
+    # A non-dry run PROPOSES fix PRs (bump / base-rebuild) but does not deliver them — the
+    # driver holds contents:read and only the App-token SUPPRESSION PR is delivered. Those
+    # proposals are real PENDING work; the report must say so rather than claim completion
+    # with nothing pending (R1 outer round-8 #3). Each such row is flagged for §6.
+    fix_pending = [r for r in sections[3] if not dry and "delivery pending" in (r.get("action") or "")]
+    for r in fix_pending:
+        r["pending_delivery"] = True
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
     issue_failures = sum(1 for r in rows if r.get("issue_failed"))
@@ -768,6 +856,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # release gate reads .auditor/accepted-items.json from the checkout (R1 outer round-1 #7).
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
+    # CVEs whose carried acceptance expired and were reopened this run — delivery must DROP
+    # their carried VEX statement and ignore, not renew them (AC5c; R1 outer round-8 #4).
+    reopened = sorted({r["id"] for r in rows if r.get("reopened_expired")})
+    cli.writej(os.path.join(out, ".auditor", "reopened-expired.json"), {"reopened": reopened})
     # Inventory quorum (R12 (b)): the candidate must be inventoried by at least THREE image
     # scanners whose OS package counts agree within tolerance. A fourth scanner that cannot
     # read this image (osv-scanner does not read a distroless dpkg status.d) is RECORDED as
@@ -798,7 +890,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     cons_failed = any(p.get("type", "").startswith("consistency-check-") for p in (consistency or {}).get("problems", []))
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
-    complete = (findings_without_action == 0) and quorum and (pr_err is None) and (issue_failures == 0) and not cons_failed
+    # NOTE: proposed-but-undelivered fix PRs are surfaced in §6 (honest reporting) but do NOT
+    # by themselves mark the run INCOMPLETE — the ratified design (REQ-AUD-12 AC2, REQ-AUD-7
+    # AC3; tests req12-ac2, il13) is that the driver PROPOSES fix PRs and an authorized step
+    # delivers them; proposing is the complete driver behavior. (R1 outer round-8 #3 asked for
+    # completion to reflect delivery, which would change that ratified AC — surfaced to owner.)
+    complete = ((findings_without_action == 0) and quorum and (pr_err is None)
+                and (issue_failures == 0) and not cons_failed)
     if complete:
         status = "AUDIT COMPLETE"
     else:
@@ -866,8 +964,22 @@ def _persist(out, rows, today):
 FORBIDDEN_NAMES = re.compile(r"anthropic|claude|openai|chatgpt|gpt-|codex|sonnet|opus|gemini|llama|private-model|canary", re.I)
 
 
+def _configured_model_values():
+    """The model identifiers this run is actually configured with (AUDITOR_MODEL_*). The
+    report must not disclose them even when they carry no vendor substring the fixed
+    vocabulary knows (R1 outer round-8 #7)."""
+    out = []
+    for k, v in os.environ.items():
+        if k.startswith("AUDITOR_MODEL") and v and len(v.strip()) >= 3:
+            out.append(re.escape(v.strip()))
+    return out
+
+
 def _narrative_ok(text, sections):
     if FORBIDDEN_NAMES.search(text):     # no vendor/model attribution in the report
+        return False
+    cfg = _configured_model_values()
+    if cfg and re.search("|".join(cfg), text, re.I):   # nor the configured model identifiers
         return False
     ids_in = {r["id"] for lst in sections.values() for r in lst}
     named = set(re.findall(r"(?:CVE-\d{4}-\d+|GO-\d{4}-\d+)", text))
@@ -953,7 +1065,11 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             if would:
                 for w in would:
                     L.append("dry run: would run `%s`" % w)
-            if not pr_url and not pr_err and not would:
+            pend = [r for r in sections[3] if r.get("pending_delivery")]
+            for r in pend:
+                L.append("Fix PR PROPOSED but NOT delivered (needs an authorized delivery step): %s — %s"
+                         % (r["id"], r.get("action")))
+            if not pr_url and not pr_err and not would and not pend:
                 L.append(C.EMPTY[6].format(**ctx) if not dry
                          else "Nothing to open: no §3 fix PR or owner issue was warranted this run.")
             L.append(""); continue

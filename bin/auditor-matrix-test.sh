@@ -1388,6 +1388,140 @@ print("OK" if len(s)==2 and len(ids)==len(set(ids)) else "BAD:%d %s"%(len(s),ids
 PP
 )"
 { eq "$rr" "OK"; } && ok || no "reassessment stays stable (2 statements, unique ids)" "$rr"
+
+echo "=== outer-loop round 8 (Codex second-vendor) regressions ==="
+
+begin "olr8-1-bundle-lineage-not-fp-evidence" "a bundle finding distributed to another CVE's group is marked lineage-only, so an advisory's own defect-log FP cannot close a DIFFERENT bundled CVE"
+b8="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-mixed-alias-upstream.json")
+own=groups.get("CVE-2099-9703",{}).get("findings",[]); ext=groups.get("CVE-2099-9704",{}).get("findings",[])
+own_ok = own and not any(f.get("_lineage_only") for f in own)
+ext_ok = ext and all(f.get("_lineage_only") for f in ext)
+print("OK" if own_ok and ext_ok else "BAD own=%s ext=%s"%([f.get("_lineage_only") for f in own],[f.get("_lineage_only") for f in ext]))' 2>/dev/null)"
+{ eq "$b8" "OK"; } && ok || no "distributed bundle finding is lineage-only" "$b8"
+
+begin "olr8-2-go-unreachable-closure-is-scoped" "a Go imported-not-called closure writes not_affected SCOPED to the Go package's subcomponents, never product-wide (so it cannot suppress a sibling OS scope)"
+g8="$WORK/olr8-go"; rm -rf "$g8"
+gv="$g8/gvc.json"; mkdir -p "$g8"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib"}]}}' '{"finding":{"osv":"GO-2099-8802","trace":[{"module":"example.org/lib","package":"example.org/lib/unused"}]}}' > "$gv"
+sc8="$("$PY" -c '
+import json,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=sys.argv[2]
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
+f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-8802","purl":"pkg:golang/example.org/lib@v1.0.0","aliases":["GO-2099-8802","CVE-2099-8802"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
+row,_=R._dispose("CVE-2099-8802",[f],["CVE-2099-8802","GO-2099-8802"],env,[])
+import glob
+doc=json.load(open(glob.glob(out+"/vex/*.json")[0]))
+subs=doc["statements"][0]["products"][0].get("subcomponents")
+print("OK" if row["section"]==5 and subs and subs[0]["@id"]=="pkg:golang/example.org/lib@v1.0.0" else "BAD:%s subs=%s"%(row["section"],subs))' "$gv" "$g8/out" 2>/dev/null)"
+{ eq "$sc8" "OK"; } && ok || no "Go closure scoped to its subcomponents" "$sc8"
+
+begin "olr8-5-inventory-same-scope-reassessment-replaces" "a same-scope (same vex_id) reassessment REPLACES the prior obligation (changed owner_issue) instead of accumulating a stale rejected one"
+i8="$WORK/olr8-inv"; rm -rf "$i8"; mkdir -p "$i8/ws/.vex" "$i8/ws/.auditor" "$i8/supp" "$i8/.auditor"
+"$PY" - "$i8" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp"); c="CVE-2099-9803"
+old=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="x",subcomponents=["pkg:deb/debian/libfoo@1"]); old["version"]=6
+vid=old["statements"][0]["@id"]
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"package":"libfoo","threshold":"at_or_above","owner_issue":101,"vex_id":vid,"expiry":"2026-10-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+new=vex.doc(c,"affected","2026-09-24T00:00:00Z",action="x",subcomponents=["pkg:deb/debian/libfoo@1"])
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+json.dump({"accepted_items":[{"cve":c,"package":"libfoo","threshold":"at_or_above","owner_issue":102,"vex_id":vid,"expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+PP
+iv8="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+print("OK" if len(inv)==1 and inv[0]["owner_issue"]==102 else "BAD:%s"%[i.get("owner_issue") for i in inv])' "$i8" 2>/dev/null)"
+{ eq "$iv8" "OK"; } && ok || no "same-scope reassessment replaces the obligation" "$iv8"
+
+begin "olr8-6-foreign-id-preserved-and-citation-resolves" "the merge does NOT strip a foreign statement id's legitimate '~' suffix, and the regenerated .snyk cites a real merged statement id"
+c8="$WORK/olr8-cite"; rm -rf "$c8"; mkdir -p "$c8/ws/.vex" "$c8/supp"
+"$PY" - "$c8" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp")
+old=vex.doc("CVE-2099-9805","not_affected","2026-09-23T00:00:00Z",justification="vulnerable_code_not_present")
+old["statements"][0]["@id"]="https://example.org/vex#review~deadbeef"; old["version"]=6
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(ws,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(ws,"osv-scanner.toml"),"w").write("")
+new=vex.doc("CVE-2099-9806","not_affected","2026-09-24T00:00:00Z",justification="vulnerable_code_not_present")
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+PP
+ci8="$("$PY" -c '
+import json,os,sys,re,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+doc=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))
+ids={s["@id"] for s in doc["statements"]}
+foreign_kept="https://example.org/vex#review~deadbeef" in ids
+snyk=open(os.path.join(ws,".snyk")).read()
+cited=set(re.findall(r"vex: \x27([^\x27]+)\x27",snyk))
+resolve=cited and cited <= ids
+print("OK" if foreign_kept and resolve else "BAD kept=%s cited=%s"%(foreign_kept,cited))' "$c8" 2>/dev/null)"
+{ eq "$ci8" "OK"; } && ok || no "foreign id preserved + citations resolve to merged ids" "$ci8"
+
+begin "olr8-7-configured-model-name-filtered" "the narrative filter rejects the CONFIGURED model identifier (AUDITOR_MODEL_*), not only the fixed vendor vocabulary"
+nm8="$(AUDITOR_MODEL_PRIMARY=review-engine-2099 "$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sec={n:[] for n in range(1,8)}
+bad = R._narrative_ok("Audit prepared using review-engine-2099.", sec)
+good = R._narrative_ok("Audit prepared deterministically.", sec)
+print("OK" if (not bad) and good else "BAD bad=%s good=%s"%(bad,good))' 2>/dev/null)"
+{ eq "$nm8" "OK"; } && ok || no "configured model identifier is filtered from the narrative" "$nm8"
+
+begin "olr8-4-expired-carried-acceptance-reopens-and-removes-ignore" "a carried acceptance whose time box has passed reopens the finding to §3 on the next run and REMOVES its ignore/VEX (AC5c through the daily entrypoint), never silently renewing it"
+ex8="$WORK/olr8-exp"; rm -rf "$ex8"; mkdir -p "$ex8/ws/.vex" "$ex8/ws/.auditor"
+"$PY" - "$ex8" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); c="CVE-2099-9200"
+# a carried, already-EXPIRED (2026-08-23) affected acceptance sits in the checkout
+old=vex.doc(c,"affected","2026-08-24T00:00:00Z",action="tracked")
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"severity":"Medium","package":"libos","threshold":"below","owner_issue":None,"vex_id":old["statements"][0]["@id"],"expiry":"2026-08-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+PP
+ex8r="$("$PY" -c '
+import json,os,sys,io,contextlib,subprocess,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin")
+from unittest.mock import patch
+tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
+def fake(cmd,*a,**kw):
+    if cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
+    if cmd[0]=="gh": raise AssertionError(cmd)
+    return R.subprocess.run.__wrapped__(cmd,*a,**kw) if hasattr(R.subprocess.run,"__wrapped__") else __import__("subprocess").run(cmd,*a,**kw)
+import subprocess as _sp
+def fake2(cmd,*a,**kw):
+    if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
+    if cmd and cmd[0]=="gh": raise AssertionError(cmd)
+    return _sp.run(cmd,*a,**kw)
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    R.run(mp,False,os.path.join(tmp,"out"),"2026-09-24",adjudicator="offline-probe")
+cls=json.load(open(os.path.join(tmp,"out","classification.json")))["findings"]
+sec=cls[0]["section"] if cls else None
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+stmts=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
+print("OK" if sec==3 and inv==[] and stmts==[] else "BAD sec=%s inv=%s stmts=%d"%(sec,len(inv),len(stmts)))' "$ex8" "$F/run/manifest-mediumnofix.json" 2>/dev/null)"
+{ eq "$ex8r" "OK"; } && ok || no "expired acceptance reopens to §3 and removes the ignore/VEX" "$ex8r"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

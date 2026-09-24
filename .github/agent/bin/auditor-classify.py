@@ -83,6 +83,8 @@ def fp_verified(ids, logpath, findings):
         keys = {(k["scanner"], k["finding_id"], k["purl"]): row
                 for row in log.get("defects", []) for k in row.get("keys", [])}
         for f in findings:
+            if f.get("_lineage_only"):      # a bundle lineage vote is not per-CVE FP evidence
+                continue
             row = keys.get((f["scanner"], f["finding_id"], f["purl"]))
             if row and row.get("disposition") == "false_positive":
                 return {"check": "known-defect-log", "source_file": logpath,
@@ -190,15 +192,20 @@ def manifest_findings(manifest):
         groups[cid] = {"id": cid, "aliases": g["aliases"], "findings": g["findings"]}
         for a in g["aliases"]:
             cid_by_member[a] = cid
-    # distribute each advisory's bundle members (extra CVEs) to their groups as lineage,
-    # creating a group for any CVE seen ONLY in an advisory, without bridging distinct CVEs
+    # distribute each advisory's bundle members (extra CVEs) to their groups as LINEAGE,
+    # creating a group for any CVE seen ONLY in an advisory, without bridging distinct CVEs.
+    # The attached copy is marked `_lineage_only`: it counts as a scanner lineage/coverage vote
+    # for that CVE, but MUST NOT be used as per-CVE evidence (e.g. a defect-log false positive
+    # keyed to THIS advisory record's own vulnerability must not close a DIFFERENT bundled CVE)
+    # (R1 outer round-8 #1).
     for f in allf:
         for cve in (f.get("extra", {}).get("bundle_cves") or []):
             cid = cid_by_member.get(cve, cve)
             grp = groups.setdefault(cid, {"id": cid, "aliases": {cid}, "findings": []})
             grp["aliases"].add(cve)
-            if f not in grp["findings"]:
-                grp["findings"].append(f)
+            fk = (f.get("scanner"), f.get("finding_id"), f.get("purl"))
+            if not any((g.get("scanner"), g.get("finding_id"), g.get("purl")) == fk for g in grp["findings"]):
+                grp["findings"].append(dict(f, _lineage_only=True))
             cid_by_member.setdefault(cve, cid)
     return m, groups
 
