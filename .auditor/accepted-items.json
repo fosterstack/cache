@@ -1,0 +1,366 @@
+{
+ "accepted_items": [
+  {
+   "cve": "CVE-2005-2541",
+   "severity": "LOW",
+   "package": "tar",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2007-5686",
+   "severity": "LOW",
+   "package": "login",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2010-4756",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2011-3374",
+   "severity": "LOW",
+   "package": "apt",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2011-4116",
+   "severity": "LOW",
+   "package": "perl-base",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2013-4392",
+   "severity": "LOW",
+   "package": "libsystemd0",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2017-18018",
+   "severity": "LOW",
+   "package": "coreutils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2018-20796",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2018-6829",
+   "severity": "LOW",
+   "package": "libgcrypt20",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2019-1010022",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2019-1010023",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2019-1010024",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2019-1010025",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2019-9192",
+   "severity": "LOW",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2022-0563",
+   "severity": "LOW",
+   "package": "bsdutils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2022-27943",
+   "severity": "LOW",
+   "package": "gcc-12-base",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2022-3219",
+   "severity": "LOW",
+   "package": "gpgv",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2023-31437",
+   "severity": "LOW",
+   "package": "libsystemd0",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2023-31438",
+   "severity": "LOW",
+   "package": "libsystemd0",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2023-31439",
+   "severity": "LOW",
+   "package": "libsystemd0",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2024-2236",
+   "severity": "LOW",
+   "package": "libgcrypt20",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2024-56433",
+   "severity": "Low",
+   "package": "login",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2025-5278",
+   "severity": "LOW",
+   "package": "coreutils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2025-68972",
+   "severity": "Medium",
+   "package": "gpgv",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2025-8941",
+   "severity": "unknown",
+   "package": "pam",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-15534",
+   "severity": "Medium",
+   "package": "perl-base",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-18477",
+   "severity": "Medium",
+   "package": "tar",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-18508",
+   "severity": "Medium",
+   "package": "tar",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-40228",
+   "severity": "Low",
+   "package": "libsystemd0",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-42250",
+   "severity": "Medium",
+   "package": "libbz2-1.0",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-53910",
+   "severity": "LOW",
+   "package": "diffutils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-54411",
+   "severity": "Medium",
+   "package": "libpam-modules",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-56391",
+   "severity": "LOW",
+   "package": "coreutils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-56392",
+   "severity": "LOW",
+   "package": "coreutils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-5704",
+   "severity": "Medium",
+   "package": "tar",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-82560",
+   "severity": "High",
+   "package": "perl-base",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-85091",
+   "severity": "High",
+   "package": "zlib1g",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-8674",
+   "severity": "Medium",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-86805",
+   "severity": "Medium",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-89092",
+   "severity": "Medium",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "CVE-2026-95818",
+   "severity": "MEDIUM",
+   "package": "libc-bin",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "TEMP-0290435-0B57B5",
+   "severity": "LOW",
+   "package": "tar",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "TEMP-0517018-A83CE6",
+   "severity": "LOW",
+   "package": "sysvinit-utils",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "TEMP-0628843-DBAD28",
+   "severity": "LOW",
+   "package": "login",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  },
+  {
+   "cve": "TEMP-0841856-B18BAF",
+   "severity": "LOW",
+   "package": "bash",
+   "threshold": "below",
+   "owner_issue": null,
+   "expiry": "2026-10-24"
+  }
+ ],
+ "run_date": "2026-09-24",
+ "candidate_commit": "ef5b8941fed51aa56395771f7fe5136b5074aa76"
+}

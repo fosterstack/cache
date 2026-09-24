@@ -1,143 +1,640 @@
 {
-  "@context": "https://openvex.dev/ns/v0.2.0",
-  "@id": "https://fosterstack.com/vex/cache/openvex",
-  "author": "FosterStack LLC",
-  "role": "vendor",
-  "timestamp": "2026-09-20T09:00:00-04:00",
-  "version": 6,
-  "statements": [
+ "@context": "https://openvex.dev/ns/v0.2.0",
+ "@id": "https://fosterstack.com/vex/cache/openvex",
+ "author": "FosterStack LLC",
+ "role": "vendor",
+ "timestamp": "2026-09-24T00:00:00Z",
+ "version": 7,
+ "statements": [
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2005-2541",
+   "vulnerability": {
+    "name": "CVE-2005-2541"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
     {
-      "vulnerability": {
-        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2024-51744",
-        "name": "CVE-2024-51744",
-        "description": "Improper error handling in github.com/golang-jwt/jwt/v4 ParseWithClaims: a caller inspecting only jwt.ErrTokenExpired can overlook a co-reported jwt.ErrTokenSignatureInvalid.",
-        "aliases": [
-          "GHSA-29wx-vh33-7x7r",
-          "GO-2024-3250"
-        ]
-      },
-      "timestamp": "2026-09-07T12:00:00-04:00",
-      "products": [
-        {
-          "@id": "pkg:golang/github.com/fosterstack/cache"
-        },
-        {
-          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "component_not_present",
-      "impact_statement": "The advisory affects github.com/golang-jwt/jwt/v4 below v4.5.1. No golang-jwt module of any major version is present in FosterStack Cache: it is absent from go.sum, absent from the compiled package set, and absent from the dependency manifest embedded in the released binaries. golang-jwt/jwt/v5 appears in the module requirement graph only as a transitive requirement of packages of prometheus/client_golang and prometheus/common that this project does not import, and v5 is not affected by this advisory in any version range. Independently reproducible: `go version -m fscache` on any released binary lists the complete set of linked dependencies, and `govulncheck ./...` reports no vulnerabilities.",
-      "action_statement": "No action required. The affected component is not a dependency of this product, so no upgrade applies.",
-      "status_notes": "Raised by Snyk against the go.mod project as a module-graph finding. Verified against the shipped v0.1.0 binaries on 2026-09-07."
-    },
-    {
-      "vulnerability": {
-        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2025-60876",
-        "name": "CVE-2025-60876",
-        "description": "BusyBox wget HTTP request-line splitting via crafted request targets."
-      },
-      "timestamp": "2026-09-20T09:00:00-04:00",
-      "products": [
-        {
-          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
-          "identifiers": {
-            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
-          },
-          "subcomponents": [
-            {
-              "@id": "pkg:generic/busybox@1.37.0"
-            }
-          ]
-        },
-        {
-          "@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates",
-          "identifiers": {
-            "purl": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
-          },
-          "subcomponents": [
-            {
-              "@id": "pkg:generic/busybox@1.37.0"
-            }
-          ]
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable wget code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs wget by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
-      "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
-    },
-    {
-      "vulnerability": {
-        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2025-46394",
-        "name": "CVE-2025-46394",
-        "description": "BusyBox tar: filenames can be hidden from a listing through terminal escape sequences in archive entries (CVSS 3.3, local, requires the victim to list a crafted archive)."
-      },
-      "timestamp": "2026-09-20T09:00:00-04:00",
-      "products": [
-        {
-          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
-          "identifiers": {
-            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
-          },
-          "subcomponents": [
-            {
-              "@id": "pkg:generic/busybox@1.37.0"
-            }
-          ]
-        },
-        {
-          "@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates",
-          "identifiers": {
-            "purl": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
-          },
-          "subcomponents": [
-            {
-              "@id": "pkg:generic/busybox@1.37.0"
-            }
-          ]
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable tar code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs tar by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
-      "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
-    },
-    {
-      "vulnerability": {
-        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2024-58251",
-        "name": "CVE-2024-58251",
-        "description": "BusyBox netstat: a process argv[0] containing a terminal escape sequence can make the terminal unresponsive for a user running netstat (local DoS, requires user interaction)."
-      },
-      "timestamp": "2026-09-20T09:00:00-04:00",
-      "products": [
-        {
-          "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
-          "identifiers": {
-            "purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
-          },
-          "subcomponents": [
-            {
-              "@id": "pkg:generic/busybox@1.37.0"
-            }
-          ]
-        },
-        {
-          "@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates",
-          "identifiers": {
-            "purl": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
-          },
-          "subcomponents": [
-            {
-              "@id": "pkg:generic/busybox@1.37.0"
-            }
-          ]
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "Scoped to FosterStack's cache image by REGISTRY+REPOSITORY \u2014 the published repository ghcr.io/fosterstack/cache and the release-candidate repository ghcr.io/fosterstack/cache-candidates \u2014 and to busybox 1.37.0 as a subcomponent. Matching is repository-qualified, not by bare image name, so another vendor's like-named image is NOT covered; and the subcomponent is version-pinned, so a base-image bump that changes the busybox version re-trips the scanner and forces re-review. This statement makes NO claim about busybox 1.37.0 in any other product. busybox is present only in the :debug variant, included solely so an operator can exec an interactive shell (/busybox/sh); the production and -fips variants contain no busybox at all. The FosterStack server is a single Go binary that never shells out, so the vulnerable netstat code path is never executed during operation of THIS artifact \u2014 it is reachable only by an operator who has already exec'd into the container and runs netstat by hand against attacker-supplied input (vulnerable_code_not_in_execute_path). This is a claim about this FosterStack artifact's execution path, not about busybox generally; govulncheck covers the Go module only, not this base-image binary. The from-source PR/main candidate is loaded into the daemon as ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so grype derives pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache and this statement matches the rebuild by its FosterStack identity \u2014 no context-free package fallback. Assessed 2026-09-20 against the pinned grype v0.118.0 vulnerability database and re-verified on every scan run; trivy and snyk do not report it. Supersedes the pre-VEX-doctrine .grype.yaml suppression (same analysis, policy-governed location).",
-      "action_statement": "No action available or required: upstream busybox has no fixed release for this issue as of this statement. The busybox binary ships unmodified from the gcr.io/distroless/static:debug-nonroot base and updates with it; this statement is re-reviewed on every base-image bump."
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
     }
-  ]
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2007-5686",
+   "vulnerability": {
+    "name": "CVE-2007-5686"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2010-4756",
+   "vulnerability": {
+    "name": "CVE-2010-4756"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374",
+   "vulnerability": {
+    "name": "CVE-2011-3374"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-4116",
+   "vulnerability": {
+    "name": "CVE-2011-4116"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2013-4392",
+   "vulnerability": {
+    "name": "CVE-2013-4392"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2017-18018",
+   "vulnerability": {
+    "name": "CVE-2017-18018"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-20796",
+   "vulnerability": {
+    "name": "CVE-2018-20796"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-6829",
+   "vulnerability": {
+    "name": "CVE-2018-6829"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010022",
+   "vulnerability": {
+    "name": "CVE-2019-1010022"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010023",
+   "vulnerability": {
+    "name": "CVE-2019-1010023"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010024",
+   "vulnerability": {
+    "name": "CVE-2019-1010024"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010025",
+   "vulnerability": {
+    "name": "CVE-2019-1010025"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-9192",
+   "vulnerability": {
+    "name": "CVE-2019-9192"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-0563",
+   "vulnerability": {
+    "name": "CVE-2022-0563"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-27943",
+   "vulnerability": {
+    "name": "CVE-2022-27943"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-3219",
+   "vulnerability": {
+    "name": "CVE-2022-3219"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31437",
+   "vulnerability": {
+    "name": "CVE-2023-31437"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31438",
+   "vulnerability": {
+    "name": "CVE-2023-31438"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31439",
+   "vulnerability": {
+    "name": "CVE-2023-31439"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-2236",
+   "vulnerability": {
+    "name": "CVE-2024-2236"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-56433",
+   "vulnerability": {
+    "name": "CVE-2024-56433"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-5278",
+   "vulnerability": {
+    "name": "CVE-2025-5278"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-68972",
+   "vulnerability": {
+    "name": "CVE-2025-68972"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-8941",
+   "vulnerability": {
+    "name": "CVE-2025-8941"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-15534",
+   "vulnerability": {
+    "name": "CVE-2026-15534"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18477",
+   "vulnerability": {
+    "name": "CVE-2026-18477"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18508",
+   "vulnerability": {
+    "name": "CVE-2026-18508"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-40228",
+   "vulnerability": {
+    "name": "CVE-2026-40228"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-42250",
+   "vulnerability": {
+    "name": "CVE-2026-42250"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-53910",
+   "vulnerability": {
+    "name": "CVE-2026-53910"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-54411",
+   "vulnerability": {
+    "name": "CVE-2026-54411"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56391",
+   "vulnerability": {
+    "name": "CVE-2026-56391"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56392",
+   "vulnerability": {
+    "name": "CVE-2026-56392"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-5704",
+   "vulnerability": {
+    "name": "CVE-2026-5704"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-82560",
+   "vulnerability": {
+    "name": "CVE-2026-82560"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-85091",
+   "vulnerability": {
+    "name": "CVE-2026-85091"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-8674",
+   "vulnerability": {
+    "name": "CVE-2026-8674"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-86805",
+   "vulnerability": {
+    "name": "CVE-2026-86805"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-89092",
+   "vulnerability": {
+    "name": "CVE-2026-89092"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-95818",
+   "vulnerability": {
+    "name": "CVE-2026-95818"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-temp-0290435-0b57b5",
+   "vulnerability": {
+    "name": "TEMP-0290435-0B57B5"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-temp-0517018-a83ce6",
+   "vulnerability": {
+    "name": "TEMP-0517018-A83CE6"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-temp-0628843-dbad28",
+   "vulnerability": {
+    "name": "TEMP-0628843-DBAD28"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  },
+  {
+   "@id": "https://fosterstack.com/vex/cache/openvex#stmt-temp-0841856-b18baf",
+   "vulnerability": {
+    "name": "TEMP-0841856-B18BAF"
+   },
+   "timestamp": "2026-09-24T00:00:00Z",
+   "products": [
+    {
+     "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    }
+   ],
+   "status": "affected",
+   "action_statement": "no fix upstream; tracked; re-checked daily"
+  }
+ ]
 }

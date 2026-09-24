@@ -1,0 +1,180 @@
+[[IgnoredVulns]]
+id = "CVE-2005-2541"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2005-2541; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2007-5686"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2007-5686; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2010-4756"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2010-4756; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2011-3374"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2011-4116"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-4116; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2013-4392"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2013-4392; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2017-18018"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2017-18018; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2018-20796"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-20796; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2018-6829"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-6829; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2019-1010022"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010022; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2019-1010023"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010023; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2019-1010024"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010024; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2019-1010025"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010025; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2019-9192"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-9192; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2022-0563"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-0563; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2022-27943"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-27943; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2022-3219"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-3219; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2023-31437"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31437; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2023-31438"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31438; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2023-31439"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31439; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2024-2236"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-2236; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2024-56433"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-56433; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2025-5278"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-5278; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2025-68972"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-68972; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2025-8941"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-8941; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-15534"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-15534; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-18477"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18477; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-18508"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18508; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-40228"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-40228; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-42250"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-42250; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-53910"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-53910; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-54411"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-54411; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-56391"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56391; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-56392"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56392; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-5704"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-5704; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-82560"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-82560; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-85091"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-85091; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-8674"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-8674; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-86805"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-86805; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-89092"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-89092; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "CVE-2026-95818"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-95818; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "TEMP-0290435-0B57B5"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0290435-0b57b5; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "TEMP-0517018-A83CE6"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0517018-a83ce6; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "TEMP-0628843-DBAD28"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0628843-dbad28; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
+[[IgnoredVulns]]
+id = "TEMP-0841856-B18BAF"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0841856-b18baf; expires 2026-10-24"
+expires = "2026-10-24T00:00:00Z"
