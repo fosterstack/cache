@@ -60,7 +60,10 @@ def scope_id(vulnerability, product_id=None, subcomponents=None):
     base = "%s#stmt-%s" % (VEX_BASE, vulnerability.lower())
     if prod == VEX_PRODUCT and not subs:
         return base
-    h = hashlib.sha1((prod + "\n" + "\n".join(subs)).encode()).hexdigest()[:8]
+    # a 64-bit scope hash — the @id is a display/citation handle; correctness (merge dedup,
+    # inventory, expiry) keys on the FULL scope, not this hash, so a collision cannot lose a
+    # scope or an obligation, but a wide hash keeps @ids unique in practice too.
+    h = hashlib.sha1((prod + "\n" + "\n".join(subs)).encode()).hexdigest()[:16]
     return "%s~%s" % (base, h)
 
 

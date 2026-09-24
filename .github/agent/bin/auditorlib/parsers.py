@@ -187,7 +187,8 @@ def parse_govulncheck(path):
     by_osv = {}
     scan_level = None
     module = None
-    saw_any = False
+    sbom_ver = {}          # module path -> version, so a trace frame that omits the version
+    saw_any = False        # can still be scoped to the exact version scanned (REQ-AUD-13 AC5)
     for obj in _stream(text):
         if not isinstance(obj, dict):
             raise ParseError("govulncheck: non-object in stream")
@@ -197,6 +198,9 @@ def parse_govulncheck(path):
         if "SBOM" in obj:
             sbom = obj["SBOM"] or {}
             roots = sbom.get("roots") or []
+            for mm in (sbom.get("modules") or []):
+                if mm.get("path") and mm.get("version"):
+                    sbom_ver[mm["path"]] = mm["version"]
             mods = [(mm.get("path") or "") for mm in (sbom.get("modules") or []) if mm.get("path")]
             # roots[0] is the scanned PACKAGE import path, NOT the module (R1 outer round-3 #3):
             # the module is the SBOM module whose path is a prefix of that package (longest
@@ -221,7 +225,8 @@ def parse_govulncheck(path):
         imported_only = bool(trace) and not called
         # the (module, version) the trace actually names — a closure may only be scoped to
         # these, never to a sibling version the evidence does not cover (REQ-AUD-13 AC5).
-        modvers = {(fr.get("module"), fr.get("version")) for fr in trace if fr.get("module")}
+        modvers = {(fr["module"], fr.get("version") or sbom_ver.get(fr["module"]))
+                   for fr in trace if fr.get("module")}
         cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set()})
         by_osv[osv] = {"reachable": cur["reachable"] or called,
                        "imported_only": cur["imported_only"] or imported_only,

@@ -1265,17 +1265,21 @@ import json,os,sys
 sys.path.insert(0,".github/agent/bin")
 from auditorlib import vex
 tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp")
-c="CVE-2099-9601"
-old=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="x"); old["version"]=6
+from auditorlib import policy
+c="CVE-2099-9601"; pg="pkg:golang/example.org/libgo@v1"; po="pkg:deb/debian/libos@1"
+# two package scopes = two scoped affected statements + two scoped inventory items
+sg=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="x",subcomponents=[pg])["statements"][0]
+so=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="x",subcomponents=[po])["statements"][0]
+old={"@context":"c","@id":policy.VEX_BASE,"author":"FosterStack LLC","role":"vendor","version":6,"timestamp":"t","statements":[sg,so]}
 json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
 json.dump({"accepted_items":[
-  {"cve":c,"severity":"Critical","package":"libgo","threshold":"at_or_above","owner_issue":101,"expiry":"2026-10-23"},
-  {"cve":c,"severity":"Medium","package":"libos","threshold":"below","expiry":"2026-10-23"}]},
+  {"cve":c,"severity":"Critical","package":"libgo","threshold":"at_or_above","owner_issue":101,"vex_id":sg["@id"],"product":policy.VEX_PRODUCT,"scope_purls":[pg],"expiry":"2026-10-23"},
+  {"cve":c,"severity":"Medium","package":"libos","threshold":"below","vex_id":so["@id"],"product":policy.VEX_PRODUCT,"scope_purls":[po],"expiry":"2026-10-23"}]},
   open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
-new=vex.doc(c,"affected","2026-09-24T00:00:00Z",action="x")
+new=vex.doc(c,"affected","2026-09-24T00:00:00Z",action="x",subcomponents=[po])
 json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
 open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
-json.dump({"accepted_items":[{"cve":c,"severity":"Medium","package":"libos","threshold":"below","expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"severity":"Medium","package":"libos","threshold":"below","vex_id":new["statements"][0]["@id"],"product":policy.VEX_PRODUCT,"scope_purls":[po],"expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
 PP
 ivres="$("$PY" -c '
 import json,os,sys,importlib.util
@@ -1409,7 +1413,7 @@ print("OK" if own_ok and ext_ok else "BAD own=%s ext=%s"%([f.get("_lineage_only"
 begin "olr8-2-go-unreachable-closure-is-scoped" "a Go imported-not-called closure writes not_affected SCOPED to the Go package's subcomponents, never product-wide (so it cannot suppress a sibling OS scope)"
 g8="$WORK/olr8-go"; rm -rf "$g8"
 gv="$g8/gvc.json"; mkdir -p "$g8"
-printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib"}]}}' '{"finding":{"osv":"GO-2099-8802","trace":[{"module":"example.org/lib","package":"example.org/lib/unused"}]}}' > "$gv"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib","version":"v1.0.0"}]}}' '{"finding":{"osv":"GO-2099-8802","trace":[{"module":"example.org/lib","package":"example.org/lib/unused"}]}}' > "$gv"
 sc8="$("$PY" -c '
 import json,sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
@@ -1663,6 +1667,80 @@ final=[s["vulnerability"]["name"] for s in json.load(open(os.path.join(ws,".vex"
 kept_perm = "CVE-2099-7777" in final
 print("OK" if no_renew and kept_perm else "BAD exp1=%s exp2=%s final=%s"%(exp1,exp2,final))' 2>/dev/null)"
 { eq "$a6" "OK"; } && ok || no "expiry original-date, no daily renewal, per-scope removal" "$a6"
+
+echo "=== REQ-AUD-13 refactor boundary regressions (refactor-loop round 1) ==="
+
+begin "refr1-1-scope-key-normalizes-purl-representation" "the scope key is representation-invariant: subcomponents by @id and by identifiers.purl for the same purl are the SAME scope; distinct purls are distinct"
+r1="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+byid={"products":[{"@id":"P","subcomponents":[{"@id":"pkg:deb/debian/lib@1"}]}]}
+bypurl={"products":[{"@id":"P","subcomponents":[{"identifiers":{"purl":"pkg:deb/debian/lib@1"}}]}]}
+dup={"products":[{"@id":"P","subcomponents":[{"@id":"pkg:deb/debian/lib@1"},{"identifiers":{"purl":"pkg:deb/debian/lib@1"}}]}]}
+diff={"products":[{"@id":"P","subcomponents":[{"identifiers":{"purl":"pkg:deb/debian/lib@2"}}]}]}
+ok = R._scope_key(byid)==R._scope_key(bypurl)==R._scope_key(dup) and R._scope_key(byid)!=R._scope_key(diff)
+print("OK" if ok else "BAD")' 2>/dev/null)"
+{ eq "$r1" "OK"; } && ok || no "scope key normalizes @id / identifiers.purl and dedupes" "$r1"
+
+begin "refr1-2-inventory-keys-on-full-scope-not-hash" "two distinct scopes that share a truncated statement-id hash keep DISTINCT inventory obligations (the rejected scope holds release); inventory keys on the full scope, not the hash"
+t2="$WORK/refr1-2"; rm -rf "$t2"; mkdir -p "$t2/ws/.vex" "$t2/ws/.auditor" "$t2/supp" "$t2/.auditor"
+"$PY" - "$t2" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp"); c="CVE-2099-1301"
+# two distinct package scopes, each represented via identifiers.purl (exercising normalization)
+a=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="x",subcomponents=["pkg:deb/debian/lib@1"])["statements"][0]
+b=vex.doc(c,"affected","2026-09-24T00:00:00Z",action="x",subcomponents=["pkg:deb/debian/lib@2"])["statements"][0]
+old={"@context":"c","@id":policy.VEX_BASE,"author":"FosterStack LLC","role":"vendor","version":6,"timestamp":"t","statements":[a]}
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"package":"lib","threshold":"at_or_above","owner_issue":101,"vex_id":a["@id"],"product":policy.VEX_PRODUCT,"scope_purls":["pkg:deb/debian/lib@1"],"expiry":"2026-10-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+json.dump({"@context":"c","@id":policy.VEX_BASE,"author":"x","role":"vendor","version":1,"timestamp":"t","statements":[b]},open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+json.dump({"accepted_items":[{"cve":c,"package":"lib","threshold":"below","owner_issue":None,"vex_id":b["@id"],"product":policy.VEX_PRODUCT,"scope_purls":["pkg:deb/debian/lib@2"],"expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+PP
+r2="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+stmts=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+issues=sorted(str(i.get("owner_issue")) for i in inv)
+print("OK" if len(stmts)==2 and issues==["101","None"] else "BAD stmts=%d issues=%s"%(len(stmts),issues))' "$t2" 2>/dev/null)"
+{ eq "$r2" "OK"; } && ok || no "distinct scopes keep distinct obligations under a shared hash" "$r2"
+
+begin "refr1-3-partial-go-routes-uncovered-version" "a Go closure supported by the trace at v1 only closes v1 and ROUTES v2 (unsupported) on its own; it never drops the uncovered version or closes it product-wide"
+t3="$WORK/refr1-3"; rm -rf "$t3"; mkdir -p "$t3"
+gv3="$t3/gvc.json"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib","version":"v1.0.0"}]}}' '{"finding":{"osv":"GO-2099-1302","trace":[{"module":"example.org/lib","version":"v1.0.0","package":"example.org/lib/x"}]}}' > "$gv3"
+r3="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+gv,out=sys.argv[1],sys.argv[2]
+env={"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
+def gm(v,sc): return {"scanner":sc,"finding_id":"GO-2099-1302","purl":"pkg:golang/example.org/lib@"+v,"aliases":["GO-2099-1302","CVE-2099-1302"],"package":"example.org/lib","fixed_version":None,"severity":"Critical","extra":{}}
+# two scanner lineages per version so a no-fix version routes to POA&M without a model call
+rows,_=R._dispose_split("CVE-2099-1302",[gm("v1.0.0","grype"),gm("v1.0.0","osv-scanner-gomod"),gm("v2.0.0","grype"),gm("v2.0.0","osv-scanner-gomod")],["CVE-2099-1302","GO-2099-1302"],env,[])
+secs=sorted(r["section"] for r in rows)
+print("OK" if secs==[2,5] else "BAD:%s"%[ (r["section"],r["disposition"]) for r in rows])' "$gv3" "$t3/out" 2>/dev/null | tail -1)"
+{ eq "$r3" "OK"; } && ok || no "uncovered Go version routed (5 closed + 2 carried)" "$r3"
+
+begin "refr1-7-reopen-on-the-deadline-day" "a carried acceptance whose time box is TODAY is expired and reopens this run (the emitted expires timestamp is start-of-day), not a day later"
+r7="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
+purl="pkg:deb/debian/lib@1"; sc=((policy.VEX_PRODUCT,),(purl,))
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr1-7out","ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
+     "carried_expiry":{sc:"2026-09-23"},"today":"2026-09-23"}
+import os,shutil; shutil.rmtree("/tmp/refr1-7out",ignore_errors=True)
+f={"scanner":"grype","finding_id":"CVE-2099-1303","purl":purl,"aliases":["CVE-2099-1303"],"package":"lib","fixed_version":None,"severity":"Medium","extra":{}}
+row,_=R._dispose("CVE-2099-1303",[f],["CVE-2099-1303"],env,[])
+print("OK" if row["section"]==3 and row.get("reopened_expired")=="2026-09-23" else "BAD:%s"%(row["section"]))' 2>/dev/null)"
+{ eq "$r7" "OK"; } && ok || no "deadline-day acceptance reopens (<=today)" "$r7"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
