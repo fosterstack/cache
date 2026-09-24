@@ -192,10 +192,10 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if r.returncode != 0:
         return None, ("git checkout: " + (r.stderr or "").strip())
     try:
-        os.makedirs(os.path.join(ws, ".vex"), exist_ok=True)
-        shutil.copyfile(os.path.join(supp, "fosterstack-cache.openvex.json"), os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"))
-        shutil.copyfile(os.path.join(supp, ".snyk"), os.path.join(ws, ".snyk"))
-        shutil.copyfile(os.path.join(supp, "osv-scanner.toml"), os.path.join(ws, "osv-scanner.toml"))
+        # MERGE into the existing reviewed suppressions, do NOT overwrite them (R1 outer
+        # round-4 #3): a statement this run does not touch (e.g. a debug-variant suppression
+        # absent from a production scan) must survive, and the document version continues.
+        _merge_suppressions(ws, supp)
         ai = os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json")   # out/.auditor/...
         if os.path.exists(ai):
             os.makedirs(os.path.join(ws, ".auditor"), exist_ok=True)
@@ -209,11 +209,97 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     r = _git("push", "-u", "origin", branch, "--force-with-lease")
     if r.returncode != 0:
         return None, ("git push: " + (r.stderr or "").strip())
+    # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
+    # it (no duplicate, no false failure) instead of a second `gh pr create`.
+    def _existing_pr():
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
+                            "--jq", ".[0].url // \"\""], cwd=ws, capture_output=True, text=True)
+        return (q.stdout or "").strip() if q.returncode == 0 else ""
+    ex = _existing_pr()
+    if ex:
+        return ex, None
     r = subprocess.run(["gh", "pr", "create", "--draft", "--base", "main", "--head", branch,
                         "--title", title, "--body", body], cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
+        if "already exists" in (r.stderr or "").lower():   # race: reuse the existing one
+            ex = _existing_pr()
+            if ex:
+                return ex, None
         return None, ("gh pr create: " + (r.stderr or "").strip())
     return r.stdout.strip(), None
+
+
+def _merge_suppressions(ws, supp):
+    """Merge this run's consolidated suppressions INTO the existing reviewed files in the
+    checkout, preserving statements/entries this run does not touch and continuing the VEX
+    document version (R1 outer round-4 #3). Statements are keyed by @id (this run replaces a
+    same-@id statement, adds new ones, keeps the rest); .snyk/osv-scanner.toml entries are
+    unioned by CVE (this run wins on a conflict)."""
+    import shutil
+    vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
+    os.makedirs(os.path.dirname(vp), exist_ok=True)
+    newdoc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
+    existing = {}
+    if os.path.exists(vp):
+        try:
+            existing = json.load(open(vp))
+        except Exception:
+            existing = {}
+    by_id = {}
+    for s in existing.get("statements", []):
+        if s.get("@id"):
+            by_id[s["@id"]] = s
+    for s in newdoc.get("statements", []):
+        by_id[s["@id"]] = s                       # this run replaces/adds
+    merged = dict(existing) if existing else dict(newdoc)
+    merged["statements"] = list(by_id.values())
+    merged["version"] = int(existing.get("version", 0)) + 1 if existing else newdoc.get("version", 1)
+    for k in ("@context", "@id", "author", "role"):
+        merged.setdefault(k, newdoc.get(k))
+    merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
+    cli.writej(vp, merged)
+
+    def _union_blocks(existing_text, new_text, split_key, key_re):
+        # union blocks keyed by CVE; new wins; keep existing blocks for untouched CVEs
+        def blocks(t):
+            out = {}
+            for b in t.split(split_key)[1:]:
+                mid = re.search(key_re, b)
+                if mid:
+                    out[mid.group(1)] = b
+            return out
+        old = blocks(existing_text) if existing_text else {}
+        new = blocks(new_text)
+        old.update(new)
+        return old
+
+    # osv-scanner.toml union
+    otoml = os.path.join(ws, "osv-scanner.toml")
+    old_t = open(otoml).read() if os.path.exists(otoml) else ""
+    new_t = open(os.path.join(supp, "osv-scanner.toml")).read()
+    blk = _union_blocks(old_t, new_t, "[[IgnoredVulns]]", r'id\s*=\s*"([^"]+)"')
+    open(otoml, "w").write("".join("[[IgnoredVulns]]" + b for b in blk.values()) if blk else new_t)
+
+    # .snyk: keep existing ignore keys not in the new set, then append the new file's ignores.
+    # (Simple, safe union: prefer the new file wholesale but re-add untouched old CVE keys.)
+    sp = os.path.join(ws, ".snyk")
+    if os.path.exists(sp):
+        old_s = open(sp).read(); new_s = open(os.path.join(supp, ".snyk")).read()
+        new_cves = set(re.findall(r"^  (\S+):\s*$", new_s, re.M))
+        kept = []
+        i, lines = 0, old_s.splitlines()
+        while i < len(lines):
+            m = re.match(r"^  (\S+):\s*$", lines[i])
+            if m and m.group(1) not in new_cves:
+                kept.append(lines[i]); i += 1
+                while i < len(lines) and (lines[i].strip() == "" or re.match(r"^   ", lines[i])):
+                    kept.append(lines[i]); i += 1
+                continue
+            i += 1
+        merged_snyk = new_s.rstrip("\n") + ("\n" + "\n".join(kept) if kept else "") + "\n"
+        open(sp, "w").write(merged_snyk)
+    else:
+        shutil.copyfile(os.path.join(supp, ".snyk"), sp)
 
 
 def _consolidate(out, ts):
@@ -368,6 +454,23 @@ def _row_line(r):
     if r["section"] == 4 and r.get("cause"):
         line += " — cause: %s" % r["cause"]
     return line
+
+
+def _dispose_split(c, findings, aliases, env, would, base=None):
+    """Route a finding set, SPLIT BY ECOSYSTEM (R1 outer round-4 #1): Go findings and OS
+    (non-Go) findings for the same CVE are dispositioned separately with distinct VEX names,
+    so a Go reachability closure never closes an OS finding (and vice versa)."""
+    base = base or c
+    go = [f for f in findings if _eco(f.get("purl")) in ("golang", "go")]
+    other = [f for f in findings if _eco(f.get("purl")) not in ("golang", "go")]
+    subsets = [("go", go), ("os", other)]
+    subsets = [(tag, s) for tag, s in subsets if s]
+    out_rows = []; mc = 0
+    for tag, sub in subsets:
+        nm = base if len(subsets) == 1 else "%s-%s" % (base, tag)
+        row, mi = _dispose(c, sub, aliases, env, would, name=nm)
+        out_rows.append(row); mc += mi
+    return out_rows, mc
 
 
 def _dispose(c, findings, aliases, env, would, name=None):
@@ -543,11 +646,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             uncovered = [f for f in grp["findings"] if not _cov(f)]
             if uncovered:
                 # distinct VEX/ignore name so the sibling's disposition never clobbers the FP one
-                row2, mi = _dispose(c, uncovered, sorted(grp["aliases"]), env, would, name=c + "-sibling")
-                rows.append(row2); m_count += mi
+                rs, mi = _dispose_split(c, uncovered, sorted(grp["aliases"]), env, would, base=c + "-sibling")
+                rows.extend(rs); m_count += mi
             continue
-        row, mi = _dispose(c, grp["findings"], sorted(grp["aliases"]), env, would)
-        rows.append(row); m_count += mi
+        rs, mi = _dispose_split(c, grp["findings"], sorted(grp["aliases"]), env, would)
+        rows.extend(rs); m_count += mi
 
     # sections + status
     sections = {n: [] for n in range(1, 8)}
@@ -600,9 +703,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
     supp, nstmt = _consolidate(out, ts)
     consistency = _consistency(out, supp, manifest_path)
+    cons_failed = any(p.get("type", "").startswith("consistency-check-") for p in (consistency or {}).get("problems", []))
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
-    complete = (findings_without_action == 0) and quorum and (pr_err is None) and (issue_failures == 0)
+    complete = (findings_without_action == 0) and quorum and (pr_err is None) and (issue_failures == 0) and not cons_failed
     if complete:
         status = "AUDIT COMPLETE"
     else:
@@ -616,6 +720,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             bits.append("suppression PR delivery failed: %s" % pr_err)
         if issue_failures:
             bits.append("%d owner-decision issue(s) failed to open" % issue_failures)
+        if cons_failed:
+            bits.append("consistency check did not complete")
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
@@ -637,15 +743,19 @@ def _expiry(today):
 
 
 def _consistency(out, supp, manifest_path):
+    # A FAILED consistency check is NOT "clean" (R1 outer round-4 #4): a nonzero exit or a
+    # missing result is recorded as a problem so the run is not reported verified-and-complete.
+    cj = os.path.join(out, "consistency.json")
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "auditor-consistency.py"),
                             "--suppression-dir", supp, "--live-findings", manifest_path,
-                            "--out", os.path.join(out, "consistency.json")], capture_output=True, text=True)
-        if r.returncode == 0 and os.path.exists(os.path.join(out, "consistency.json")):
-            return json.load(open(os.path.join(out, "consistency.json")))
+                            "--out", cj], capture_output=True, text=True)
+        if r.returncode == 0 and os.path.exists(cj):
+            return json.load(open(cj))
+        return {"problems": [{"type": "consistency-check-failed",
+                              "detail": "rc=%d %s" % (r.returncode, (r.stderr or "").strip()[:200])}]}
     except Exception as e:
         return {"problems": [{"type": "consistency-check-error", "detail": str(e)}]}
-    return {"problems": []}
 
 
 def _persist(out, rows, today):

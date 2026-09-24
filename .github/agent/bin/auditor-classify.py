@@ -146,12 +146,36 @@ def manifest_findings(manifest):
         path = r.get(name)
         if path:                                    # a null scanner is skipped, not fatal
             allf += fn(path)
-    groups = {}
+    # Group by CONNECTED alias sets, not each record's own canonical CVE (R1 outer round-4
+    # #2): two findings the scanners connect through a shared alias belong to ONE group, so a
+    # reachable trace for one is not hidden from the other. Union-find over every id/alias.
+    parent = {}
+
+    def _find(x):
+        parent.setdefault(x, x)
+        r = x
+        while parent[r] != r:
+            r = parent[r]
+        while parent[x] != r:
+            parent[x], x = r, parent[x]
+        return r
+
+    def _union(a, b):
+        parent[_find(a)] = _find(b)
+
     for f in allf:
-        c = canon(f["finding_id"], f["aliases"])
-        groups.setdefault(c, {"id": c, "aliases": set(), "findings": []})
-        groups[c]["aliases"].update(f["aliases"]); groups[c]["aliases"].add(f["finding_id"])
-        groups[c]["findings"].append(f)
+        ids = [f["finding_id"]] + list(f["aliases"])
+        for i in ids[1:]:
+            _union(ids[0], i)
+    comps = {}
+    for f in allf:
+        root = _find(f["finding_id"])
+        g = comps.setdefault(root, {"aliases": set(), "findings": []})
+        g["aliases"].update(f["aliases"]); g["aliases"].add(f["finding_id"]); g["findings"].append(f)
+    groups = {}
+    for g in comps.values():
+        cid = canon(sorted(g["aliases"])[0], g["aliases"])   # a CVE from the connected union
+        groups[cid] = {"id": cid, "aliases": g["aliases"], "findings": g["findings"]}
     return m, groups
 
 

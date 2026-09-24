@@ -1148,6 +1148,46 @@ g=P.parse_govulncheck(sys.argv[1]); print(g["module"])' "$gv" 2>/dev/null)"
 { eq "$modout" "github.com/fosterstack/cache"; } \
   && ok || no "module resolved from SBOM.modules" "module=$modout"
 
+echo "=== outer-loop round 4 (Codex second-vendor) regressions ==="
+
+begin "olr4-1-alias-union-find-one-group" "two grype matches whose ids are each other's related-vuln collapse into ONE finding group (union-find over aliases), not two"
+ng="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-aliases.json")
+print(len(groups))' 2>/dev/null)"
+{ eq "$ng" "1"; } && ok || no "aliased matches form one group" "groups=$ng"
+
+begin "olr4-2-vex-merge-preserves-existing" "delivering this run's suppressions MERGES into an existing reviewed .vex (keeps prior statements, bumps version), never overwrites"
+mo="$WORK/olr4-merge"; rm -rf "$mo"; mkdir -p "$mo/ws/.vex" "$mo/supp"
+"$PY" - "$mo" <<'PP'
+import json,os,sys
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp")
+old={"@context":"c","@id":"i","author":"FosterStack LLC","role":"vendor","version":6,"timestamp":"t",
+ "statements":[{"@id":"s#a","vulnerability":{"name":"CVE-2024-1"},"status":"not_affected","products":[{"@id":"p"}]},
+               {"@id":"s#b","vulnerability":{"name":"CVE-2024-2"},"status":"not_affected","products":[{"@id":"p"}]}]}
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(ws,".snyk"),"w").write("version: v1.5.0\nignore:\n  CVE-2024-1:\n    - '*':\n        reason: reviewed\n")
+open(os.path.join(ws,"osv-scanner.toml"),"w").write('[[IgnoredVulns]]\nid = "CVE-2024-1"\nreason = "reviewed"\n')
+new={"@context":"c","@id":"i","author":"FosterStack LLC","role":"vendor","version":1,"timestamp":"t2",
+ "statements":[{"@id":"s#c","vulnerability":{"name":"CVE-2099-9"},"status":"affected","products":[{"@id":"p"}]}]}
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore:\n  CVE-2099-9:\n    - '*':\n        reason: 'affected'\n")
+open(os.path.join(supp,"osv-scanner.toml"),"w").write('[[IgnoredVulns]]\nid = "CVE-2099-9"\nreason = "affected"\n')
+PP
+mres="$("$PY" -c '
+import sys,json,os,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py")
+R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+m=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))
+names=sorted(s["vulnerability"]["name"] for s in m["statements"])
+snyk=open(os.path.join(ws,".snyk")).read()
+ok = names==["CVE-2024-1","CVE-2024-2","CVE-2099-9"] and m["version"]==7 and "CVE-2024-1" in snyk and "CVE-2099-9" in snyk
+print("OK" if ok else "BAD:%s v%s"%(names,m["version"]))' "$mo" 2>/dev/null)"
+{ eq "$mres" "OK"; } && ok || no "merge preserves prior statements + bumps version" "$mres"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
