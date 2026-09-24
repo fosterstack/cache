@@ -200,8 +200,12 @@ jobs:
           adj_arg=""
           [ "$adj" = "stub" ] && adj_arg="--adjudicator .github/agent/fixtures/adjudicator/stub-adjudicator.py"
           # when an App token is present (delivery run), authenticate git/gh with it and set
-          # the commit identity to the App bot (no vendor/model name anywhere).
+          # the commit identity to the App bot (no vendor/model name anywhere). actions/checkout
+          # persists the read-only JOB token as an http extraheader that would otherwise win
+          # over the App credential, so clear it first; then the App token (GH_TOKEN) is the
+          # push credential via gh's git credential helper.
           if [ -n "${AUDITOR_APP_SLUG:-}" ]; then
+            git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
             gh auth setup-git
             git config user.name "${AUDITOR_APP_SLUG}[bot]"
             git config user.email "${AUDITOR_APP_SLUG}[bot]@users.noreply.github.com"
