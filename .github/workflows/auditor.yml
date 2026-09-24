@@ -154,6 +154,20 @@ jobs:
             // re-mint every 4 minutes; the step returns immediately, the timer lives with the job
             setInterval(refresh, 4 * 60 * 1000).unref?.()
 
+      # Mint a GitHub App installation token (fosterstack-auditor, cache only, Contents +
+      # Pull requests write) ONLY for delivery runs. The job's own GITHUB_TOKEN stays
+      # contents:read; this token goes to the driver step alone, as its GH_TOKEN and git push
+      # credential, so the auditor's draft PR is opened by the App identity and bound by the
+      # rulesets on main (the App is on no bypass list). No PAT, ever.
+      - name: Mint the delivery App token (non-dry runs only)
+        id: app-token
+        if: ${{ github.event_name == 'schedule' || inputs.dry_run == false }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+
       - name: Run the auditor
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
@@ -163,8 +177,13 @@ jobs:
           AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
           AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
           AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
-          GH_TOKEN: ${{ github.token }}
+          # the App installation token (delivery) for THIS step only; falls back to the
+          # read-only job token on a dry run where no delivery happens. Owner-decision issues
+          # continue to use the job token's issues:write, unaffected.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
           curl -fsS https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json \
@@ -173,6 +192,13 @@ jobs:
           dry='${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}'
           adj_arg=""
           [ "$adj" = "stub" ] && adj_arg="--adjudicator .github/agent/fixtures/adjudicator/stub-adjudicator.py"
+          # when an App token is present (delivery run), authenticate git/gh with it and set
+          # the commit identity to the App bot (no vendor/model name anywhere).
+          if [ -n "${AUDITOR_APP_SLUG:-}" ]; then
+            gh auth setup-git
+            git config user.name "${AUDITOR_APP_SLUG}[bot]"
+            git config user.email "${AUDITOR_APP_SLUG}[bot]@users.noreply.github.com"
+          fi
           set -e
           python3 .github/agent/bin/auditor-run.py \
             --manifest "${RUNNER_TEMP}/manifest.json" \

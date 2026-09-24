@@ -532,7 +532,7 @@ if ! have "$WF"; then no "$WF present" "absent"; else
 begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers come from secrets.* (GitHub masks them); NO vars.* reference anywhere in the workflow"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
-  want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","SNYK_TOKEN"]'
+  want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","SNYK_TOKEN"]'
   fromsecrets="$(pj "$WORK/sh.json" 'str(sorted(d.get("secret_refs",[]))=='"$want"')')"
   novars="$(pj "$WORK/sh.json" 'd.get("references_vars")')"
   { eq "$fromsecrets" "True" && eq "$novars" "false"; } \
@@ -837,14 +837,15 @@ comments="$(grep -c 'issue comment .*CVE-2099-9001' "$shim" 2>/dev/null)"; comme
 { eq "$creates" "1" && [ "$comments" -ge 1 ] 2>/dev/null; } \
   && ok || no "one issue create + a comment across two runs" "creates=$creates comments=$comments"
 
-begin "il6-vex-proposed-via-audit-lane-pr-and-consolidated" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and proposes it through an audit-lane branch PR (never a direct .vex edit)"
+begin "il6-vex-consolidated-and-delivered-as-draft-pr" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and delivers it as a single draft PR off main (R16), never a direct .vex edit"
 o="$WORK/il6"; shim="$WORK/il6.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
-env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 consolidated="$(have "$o/suppressions/fosterstack-cache.openvex.json" && echo yes || echo no)"
 nstmt="$(pj "$o/suppressions/fosterstack-cache.openvex.json" 'len(d.get("statements",[]))')"
-prlane="$(grep -c 'pr create .*auditor/vex-update .*audit-lane' "$shim" 2>/dev/null)"; prlane="${prlane:-0}"
-{ eq "$consolidated" "yes" && [ "$nstmt" -ge 1 ] 2>/dev/null && [ "$prlane" -ge 1 ] 2>/dev/null; } \
-  && ok || no "consolidated VEX + audit-lane PR" "consolidated=$consolidated statements=$nstmt audit_lane_pr=$prlane"
+draftpr="$(grep -c 'gh pr create --draft --base main --head auditor/2026-09-24-' "$shim" 2>/dev/null)"; draftpr="${draftpr:-0}"
+offmain="$(grep -c 'git checkout -B auditor/2026-09-24-.* origin/main' "$shim" 2>/dev/null)"; offmain="${offmain:-0}"
+{ eq "$consolidated" "yes" && [ "$nstmt" -ge 1 ] 2>/dev/null && [ "$draftpr" -ge 1 ] 2>/dev/null && [ "$offmain" -ge 1 ] 2>/dev/null; } \
+  && ok || no "consolidated VEX + single draft PR off main" "consolidated=$consolidated statements=$nstmt draft_pr=$draftpr off_main=$offmain"
 
 begin "il7-split-cve-distinct-statement-ids" "the not_affected and affected VEX documents for a split CVE carry DISTINCT statement @ids"
 o="$WORK/il7"; rm -rf "$o"; : > "$LEDGER"
@@ -938,6 +939,41 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
   placeholder="$(printf '%s' "$poam7" | grep -c 'suppression in force (VEX)')"; placeholder="${placeholder:-0}"
   { [ "$realid" -ge 1 ] 2>/dev/null && eq "$placeholder" "0"; } \
     && ok || no "§7 POA&M row names a real vex id, no '(VEX)' placeholder" "real_id_rows=$realid placeholder_rows=$placeholder"; }
+
+########################################################################
+echo "=== Round 16 — App-token draft-PR delivery ==="
+
+begin "r16-push-failure-is-incomplete" "a suppression PR push/PR failure makes the run AUDIT INCOMPLETE (non-zero exit), with the git/gh stderr in the report — never a false 'opened'"
+o="$WORK/r16f"; shim="$WORK/r16f.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_SHIM_PR_FAIL=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rcf=$?
+inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
+stderrline="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -qi 'delivery FAILED' && echo yes || echo no)"
+lied="$(grep -ci 'draft PR opened' "$o/report.md" 2>/dev/null)"; lied="${lied:-0}"
+{ [ "$rcf" -ne 0 ] 2>/dev/null && eq "$inc" "yes" && eq "$stderrline" "yes" && eq "$lied" "0"; } \
+  && ok || no "push failure -> INCOMPLETE + stderr, no false 'opened'" "exit=$rcf incomplete=$inc stderr_in_report=$stderrline false_opened=$lied"
+
+begin "r16-single-nonstacked-draft-branch" "delivery opens exactly ONE branch, based on origin/main (non-stacked), with the --draft flag"
+o="$WORK/r16s"; shim="$WORK/r16s.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+branches="$(grep -c 'git checkout -B auditor/' "$shim" 2>/dev/null)"; branches="${branches:-0}"
+offmain="$(grep -c 'git checkout -B auditor/.* origin/main' "$shim" 2>/dev/null)"; offmain="${offmain:-0}"
+draft="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draft="${draft:-0}"
+{ eq "$branches" "1" && eq "$offmain" "1" && eq "$draft" "1"; } \
+  && ok || no "one branch off origin/main, one draft PR" "branches=$branches off_main=$offmain draft=$draft"
+
+begin "r16-pr-url-in-section6" "the delivered draft PR's URL is recorded in report §6"
+o="$WORK/r16u"; shim="$WORK/r16u.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+url="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -c '/pull/')"; url="${url:-0}"
+{ [ "$url" -ge 1 ] 2>/dev/null; } && ok || no "PR URL present in §6" "pull_url_lines=$url"
+
+begin "r16-no-vendor-or-model-name-in-delivery" "no vendor/model name appears in the delivery branch, commit, or PR text"
+o="$WORK/r16n"; shim="$WORK/r16n.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+names="$(grep -iE 'git checkout -B auditor/|git commit -m|gh pr create' "$shim" | grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt')"; names="${names:-0}"
+rptnames="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -ciE 'anthropic|claude|openai|codex|sonnet|opus|gpt|chatgpt')"; rptnames="${rptnames:-0}"
+{ eq "$names" "0" && eq "$rptnames" "0"; } \
+  && ok || no "no vendor/model name in branch/commit/PR or §6" "in_shim=$names in_section6=$rptnames"
 
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"

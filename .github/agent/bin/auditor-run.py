@@ -126,6 +126,69 @@ def _emit_owner_issue(title, dry, would):
         print("owner-issue open/update failed: %s" % e)
 
 
+def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would):
+    """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
+    carrying .vex/fosterstack-cache.openvex.json + .snyk + osv-scanner.toml in a single commit
+    by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
+    failure returns (None, stderr) so the caller marks the run AUDIT INCOMPLETE — never a
+    false 'opened'. No vendor/model name appears in the branch, commit, or PR text."""
+    if nstmt == 0:
+        return None, None
+    short = (commit or "unknown")[:12]
+    branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
+    title = "auditor: update suppressions (%d statements)" % nstmt
+    body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
+    if dry:
+        would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
+        print("dry-run would open draft PR on %s" % branch)
+        return None, None
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    if log:
+        seq = ["git checkout -B %s origin/main" % branch,
+               "git add .vex/fosterstack-cache.openvex.json .snyk osv-scanner.toml",
+               "git commit -m %s" % shlex.quote(title),
+               "git push -u origin %s" % branch,
+               "gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title))]
+        open(log, "a").write("\n".join(seq) + "\n")
+        if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
+            return None, "simulated: push to origin/%s rejected" % branch
+        url = "https://github.com/OWNER/REPO/pull/SHIM-%s" % short
+        open(log, "a").write("PR_URL %s\n" % url)
+        return url, None
+    if not _real_gh_allowed():
+        return None, None
+    import shutil
+    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+
+    def _git(*a):
+        return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
+    r = _git("fetch", "origin", "main")
+    if r.returncode != 0:
+        return None, ("git fetch: " + (r.stderr or "").strip())
+    r = _git("checkout", "-B", branch, "origin/main")     # off main => not stacked
+    if r.returncode != 0:
+        return None, ("git checkout: " + (r.stderr or "").strip())
+    try:
+        os.makedirs(os.path.join(ws, ".vex"), exist_ok=True)
+        shutil.copyfile(os.path.join(supp, "fosterstack-cache.openvex.json"), os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"))
+        shutil.copyfile(os.path.join(supp, ".snyk"), os.path.join(ws, ".snyk"))
+        shutil.copyfile(os.path.join(supp, "osv-scanner.toml"), os.path.join(ws, "osv-scanner.toml"))
+    except Exception as e:
+        return None, "stage files: %s" % e
+    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml")
+    r = _git("commit", "-m", title)
+    if r.returncode != 0:
+        return None, ("git commit: " + (r.stderr or "").strip())
+    r = _git("push", "-u", "origin", branch, "--force-with-lease")
+    if r.returncode != 0:
+        return None, ("git push: " + (r.stderr or "").strip())
+    r = subprocess.run(["gh", "pr", "create", "--draft", "--base", "main", "--head", branch,
+                        "--title", title, "--body", body], cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, ("gh pr create: " + (r.stderr or "").strip())
+    return r.stdout.strip(), None
+
+
 def _consolidate(out, ts):
     """Merge every per-CVE VEX this run wrote into ONE canonical
     suppressions/fosterstack-cache.openvex.json (the file scan/rescan/release-authz read),
@@ -425,7 +488,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
     agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
     quorum = len(ran_image) >= 3 and agree
-    complete = (findings_without_action == 0) and quorum
+    # consolidate every per-CVE VEX into the canonical suppression files, run the consistency
+    # check over THAT layout, then DELIVER the suppressions as one draft PR via the App token
+    # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
+    supp, nstmt = _consolidate(out, ts)
+    consistency = _consistency(out, supp, manifest_path)
+    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would)
+    complete = (findings_without_action == 0) and quorum and (pr_err is None)
     if complete:
         status = "AUDIT COMPLETE"
     else:
@@ -435,19 +504,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         if not quorum:
             bits.append("scanner quorum %d/4 (need 3 agreeing); did not run: %s"
                         % (len(ran_image), ", ".join(not_ran) or "none"))
+        if pr_err:
+            bits.append("suppression PR delivery failed: %s" % pr_err)
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
-
-    # consolidate every per-CVE VEX into the canonical suppression files, then run the
-    # consistency check over THAT layout (not a layout the run never writes), and propose
-    # the .vex change through the audit lane (R1 round-3).
-    supp, nstmt = _consolidate(out, ts)
-    consistency = _consistency(out, supp, manifest_path)
-    if nstmt:
-        _open_pr("auditor/vex-update", "auditor: update .vex suppressions (%d statements)" % nstmt,
-                 "audit-lane", dry, would, "auditor: update .vex suppressions")
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m)
-    report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion)
+    report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
@@ -522,7 +584,7 @@ def _conclusion(adjudicator, sections, m):
     return text
 
 
-def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion):
+def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None):
     st = m.get("scanner_status") or {}
     test = (m.get("provenance") or {}).get("source") == "test-image"
     digest = (m.get("candidate_digests") or {}).get("production", "unknown")
@@ -560,13 +622,16 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     for n in range(1, 8):
         L.append("## %d. %s" % (n, C.TITLES[n]))
         if n == 6:
+            if pr_url:
+                L.append("Suppression draft PR opened by the delivery App: %s" % pr_url)
+            elif pr_err:
+                L.append("Suppression PR delivery FAILED (run is INCOMPLETE): %s" % pr_err)
             if would:
                 for w in would:
                     L.append("dry run: would run `%s`" % w)
-            elif dry:
-                L.append("Nothing to open: no §3 fix PR or owner issue was warranted this run.")
-            else:
-                L.append(C.EMPTY[6].format(**ctx))
+            if not pr_url and not pr_err and not would:
+                L.append(C.EMPTY[6].format(**ctx) if not dry
+                         else "Nothing to open: no §3 fix PR or owner issue was warranted this run.")
             L.append(""); continue
         if sections[n]:
             for r in sections[n]:
