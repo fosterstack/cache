@@ -1,0 +1,182 @@
+version: v1.5.0
+ignore:
+  CVE-2005-2541:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2005-2541'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2005-2541'
+  CVE-2007-5686:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2007-5686'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2007-5686'
+  CVE-2010-4756:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2010-4756'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2010-4756'
+  CVE-2011-3374:
+    - '*':
+        reason: 'affected+not_affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374-sibling https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374-sibling'
+  CVE-2011-4116:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-4116'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-4116'
+  CVE-2013-4392:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2013-4392'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2013-4392'
+  CVE-2017-18018:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2017-18018'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2017-18018'
+  CVE-2018-20796:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-20796'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-20796'
+  CVE-2018-6829:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-6829'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-6829'
+  CVE-2019-1010022:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010022'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010022'
+  CVE-2019-1010023:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010023'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010023'
+  CVE-2019-1010024:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010024'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010024'
+  CVE-2019-1010025:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010025'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010025'
+  CVE-2019-9192:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-9192'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-9192'
+  CVE-2022-0563:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-0563'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-0563'
+  CVE-2022-27943:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-27943'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-27943'
+  CVE-2022-3219:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-3219'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-3219'
+  CVE-2023-31437:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31437'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31437'
+  CVE-2023-31438:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31438'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31438'
+  CVE-2023-31439:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31439'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31439'
+  CVE-2024-2236:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-2236'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-2236'
+  CVE-2024-56433:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-56433'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-56433'
+  CVE-2025-5278:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-5278'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-5278'
+  CVE-2025-68972:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-68972'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-68972'
+  CVE-2025-8941:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-8941'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-8941'
+  CVE-2026-15534:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-15534'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-15534'
+  CVE-2026-18477:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18477'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18477'
+  CVE-2026-18508:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18508'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18508'
+  CVE-2026-40228:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-40228'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-40228'
+  CVE-2026-42250:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-42250'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-42250'
+  CVE-2026-53910:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-53910'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-53910'
+  CVE-2026-54411:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-54411'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-54411'
+  CVE-2026-56391:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56391'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56391'
+  CVE-2026-56392:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56392'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56392'
+  CVE-2026-5704:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-5704'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-5704'
+  CVE-2026-82560:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-82560'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-82560'
+  CVE-2026-85091:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-85091'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-85091'
+  CVE-2026-8674:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-8674'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-8674'
+  CVE-2026-86805:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-86805'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-86805'
+  CVE-2026-89092:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-89092'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-89092'
+  CVE-2026-95818:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-95818'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-95818'
+  TEMP-0290435-0B57B5:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0290435-0b57b5'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-temp-0290435-0b57b5'
+  TEMP-0517018-A83CE6:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0517018-a83ce6'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-temp-0517018-a83ce6'
+  TEMP-0628843-DBAD28:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0628843-dbad28'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-temp-0628843-dbad28'
+  TEMP-0841856-B18BAF:
+    - '*':
+        reason: 'affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0841856-b18baf'
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-temp-0841856-b18baf'

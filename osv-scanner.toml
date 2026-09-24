@@ -1,0 +1,135 @@
+[[IgnoredVulns]]
+id = "CVE-2005-2541"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2005-2541"
+[[IgnoredVulns]]
+id = "CVE-2007-5686"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2007-5686"
+[[IgnoredVulns]]
+id = "CVE-2010-4756"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2010-4756"
+[[IgnoredVulns]]
+id = "CVE-2011-3374"
+reason = "affected+not_affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374-sibling https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374"
+[[IgnoredVulns]]
+id = "CVE-2011-4116"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-4116"
+[[IgnoredVulns]]
+id = "CVE-2013-4392"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2013-4392"
+[[IgnoredVulns]]
+id = "CVE-2017-18018"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2017-18018"
+[[IgnoredVulns]]
+id = "CVE-2018-20796"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-20796"
+[[IgnoredVulns]]
+id = "CVE-2018-6829"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2018-6829"
+[[IgnoredVulns]]
+id = "CVE-2019-1010022"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010022"
+[[IgnoredVulns]]
+id = "CVE-2019-1010023"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010023"
+[[IgnoredVulns]]
+id = "CVE-2019-1010024"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010024"
+[[IgnoredVulns]]
+id = "CVE-2019-1010025"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-1010025"
+[[IgnoredVulns]]
+id = "CVE-2019-9192"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2019-9192"
+[[IgnoredVulns]]
+id = "CVE-2022-0563"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-0563"
+[[IgnoredVulns]]
+id = "CVE-2022-27943"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-27943"
+[[IgnoredVulns]]
+id = "CVE-2022-3219"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2022-3219"
+[[IgnoredVulns]]
+id = "CVE-2023-31437"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31437"
+[[IgnoredVulns]]
+id = "CVE-2023-31438"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31438"
+[[IgnoredVulns]]
+id = "CVE-2023-31439"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2023-31439"
+[[IgnoredVulns]]
+id = "CVE-2024-2236"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-2236"
+[[IgnoredVulns]]
+id = "CVE-2024-56433"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2024-56433"
+[[IgnoredVulns]]
+id = "CVE-2025-5278"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-5278"
+[[IgnoredVulns]]
+id = "CVE-2025-68972"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-68972"
+[[IgnoredVulns]]
+id = "CVE-2025-8941"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2025-8941"
+[[IgnoredVulns]]
+id = "CVE-2026-15534"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-15534"
+[[IgnoredVulns]]
+id = "CVE-2026-18477"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18477"
+[[IgnoredVulns]]
+id = "CVE-2026-18508"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-18508"
+[[IgnoredVulns]]
+id = "CVE-2026-40228"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-40228"
+[[IgnoredVulns]]
+id = "CVE-2026-42250"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-42250"
+[[IgnoredVulns]]
+id = "CVE-2026-53910"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-53910"
+[[IgnoredVulns]]
+id = "CVE-2026-54411"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-54411"
+[[IgnoredVulns]]
+id = "CVE-2026-56391"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56391"
+[[IgnoredVulns]]
+id = "CVE-2026-56392"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-56392"
+[[IgnoredVulns]]
+id = "CVE-2026-5704"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-5704"
+[[IgnoredVulns]]
+id = "CVE-2026-82560"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-82560"
+[[IgnoredVulns]]
+id = "CVE-2026-85091"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-85091"
+[[IgnoredVulns]]
+id = "CVE-2026-8674"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-8674"
+[[IgnoredVulns]]
+id = "CVE-2026-86805"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-86805"
+[[IgnoredVulns]]
+id = "CVE-2026-89092"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-89092"
+[[IgnoredVulns]]
+id = "CVE-2026-95818"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-cve-2026-95818"
+[[IgnoredVulns]]
+id = "TEMP-0290435-0B57B5"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0290435-0b57b5"
+[[IgnoredVulns]]
+id = "TEMP-0517018-A83CE6"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0517018-a83ce6"
+[[IgnoredVulns]]
+id = "TEMP-0628843-DBAD28"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0628843-dbad28"
+[[IgnoredVulns]]
+id = "TEMP-0841856-B18BAF"
+reason = "affected; governed by https://fosterstack.com/vex/cache/openvex#stmt-temp-0841856-b18baf"
