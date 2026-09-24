@@ -1735,12 +1735,85 @@ sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
 purl="pkg:deb/debian/lib@1"; sc=((policy.VEX_PRODUCT,),(purl,))
 env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr1-7out","ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
-     "carried_expiry":{sc:"2026-09-23"},"today":"2026-09-23"}
+     "carried_expiry":{("CVE-2099-1303",sc):"2026-09-23"},"today":"2026-09-23"}
 import os,shutil; shutil.rmtree("/tmp/refr1-7out",ignore_errors=True)
 f={"scanner":"grype","finding_id":"CVE-2099-1303","purl":purl,"aliases":["CVE-2099-1303"],"package":"lib","fixed_version":None,"severity":"Medium","extra":{}}
 row,_=R._dispose("CVE-2099-1303",[f],["CVE-2099-1303"],env,[])
 print("OK" if row["section"]==3 and row.get("reopened_expired")=="2026-09-23" else "BAD:%s"%(row["section"]))' 2>/dev/null)"
 { eq "$r7" "OK"; } && ok || no "deadline-day acceptance reopens (<=today)" "$r7"
+
+echo "=== REQ-AUD-13 refactor boundary regressions (round 2) ==="
+
+begin "refr2-1-expiry-is-per-vulnerability-and-scope" "expiring one CVE on a package scope does NOT remove a DIFFERENT CVE's live/permanent statement on the same scope, nor its inventory obligation"
+t21="$WORK/refr2-1"; rm -rf "$t21"; mkdir -p "$t21/ws/.vex" "$t21/ws/.auditor" "$t21/supp" "$t21/.auditor"
+"$PY" - "$t21" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp"); purl="pkg:deb/debian/lib@1"
+a="CVE-2099-2001"; b="CVE-2099-2002"     # A expired; B valid — same package scope
+sa=vex.doc(a,"affected","2026-08-24T00:00:00Z",action="x",subcomponents=[purl])["statements"][0]
+sb=vex.doc(b,"affected","2026-08-24T00:00:00Z",action="x",subcomponents=[purl])["statements"][0]
+old={"@context":"c","@id":policy.VEX_BASE,"author":"FosterStack LLC","role":"vendor","version":6,"timestamp":"t","statements":[sa,sb]}
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[
+  {"cve":a,"package":"lib","threshold":"below","vex_id":sa["@id"],"product":policy.VEX_PRODUCT,"scope_purls":[purl],"expiry":"2026-09-23"},
+  {"cve":b,"package":"lib","threshold":"below","vex_id":sb["@id"],"product":policy.VEX_PRODUCT,"scope_purls":[purl],"expiry":"2026-10-20"}]},
+  open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+# this run re-derives B (unchanged, not expired); A is not scanned this run -> only B in supp
+nb=vex.doc(b,"affected","2026-09-24T00:00:00Z",action="x",subcomponents=[purl])
+json.dump(nb,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+# only A reopened this run (its box lapsed); pass its reopened scope to delivery
+json.dump({"accepted_items":[{"cve":b,"package":"lib","threshold":"below","vex_id":nb["statements"][0]["@id"],"product":policy.VEX_PRODUCT,"scope_purls":[purl],"expiry":"2026-10-20"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+json.dump({"reopened":[[a,[policy.VEX_PRODUCT],[purl]]]},open(os.path.join(os.path.dirname(supp),".auditor","reopened-expired.json"),"w"))
+PP
+r21="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+stmts=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+names=sorted(s["vulnerability"]["name"] for s in stmts); invcves=sorted(i["cve"] for i in inv)
+print("OK" if names==["CVE-2099-2002"] and invcves==["CVE-2099-2002"] else "BAD stmts=%s inv=%s"%(names,invcves))' "$t21" 2>/dev/null)"
+{ eq "$r21" "OK"; } && ok || no "expiring one CVE keeps a sibling CVE on the same scope" "$r21"
+
+begin "refr2-3-sibling-package-fix-does-not-transfer" "two packages under one CVE route independently: an unfixed Critical package -> POA&M, a fixed sibling -> bump; the fix never transfers to the unfixed package"
+t23="$WORK/refr2-3"; rm -rf "$t23"; mkdir -p "$t23"
+r23="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=sys.argv[1]
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
+def gm(pkg,purl,fixed,sc):
+    return {"scanner":sc,"finding_id":"CVE-2099-2003","purl":purl,"aliases":["CVE-2099-2003"],"package":pkg,"fixed_version":fixed,"severity":("Critical" if fixed is None else "Medium"),"extra":{}}
+aaa=[gm("aaa","pkg:deb/debian/aaa@8",None,"grype"),gm("aaa","pkg:deb/debian/aaa@8",None,"osv-scanner")]
+bbb=[gm("bbb","pkg:deb/debian/bbb@1","1.0.1","grype"),gm("bbb","pkg:deb/debian/bbb@1","1.0.1","osv-scanner")]
+rows,_=R._dispose_split("CVE-2099-2003",aaa+bbb,["CVE-2099-2003"],env,[])
+byp={r["package"]:r["section"] for r in rows}
+print("OK" if byp.get("aaa")==2 and byp.get("bbb")==3 else "BAD:%s"%byp)' "$t23/out" 2>/dev/null | tail -1)"
+{ eq "$r23" "OK"; } && ok || no "sibling package fix does not transfer (aaa=2, bbb=3)" "$r23"
+
+begin "refr2-4-per-scope-deadlines-in-ignores" "two live scopes of one CVE with different deadlines each keep their OWN expiry in the Snyk selector, never a sibling's"
+t24="$WORK/refr2-4"; rm -rf "$t24"; mkdir -p "$t24"
+r24="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin"); from auditorlib import vex
+c="CVE-2099-2004"; p1="pkg:deb/debian/lib@1"; p2="pkg:golang/example.org/lib@v1.0.0"
+s1=vex.doc(c,"affected","t",action="x",subcomponents=[p1])["statements"][0]
+s2=vex.doc(c,"affected","t",action="x",subcomponents=[p2])["statements"][0]
+exp={(c,p1):"2026-09-30",(c,p2):"2026-10-20"}
+snyk,toml=R._ignores_from_statements([s1,s2],exp)
+import re
+# each selector keeps its own expiry
+ok = "- \x27"+p1+"\x27" in snyk and "- \x27"+p2+"\x27" in snyk and "2026-09-30" in snyk and "2026-10-20" in snyk
+# the p1 block must carry 09-30 (not 10-20): check the p1 selector is followed by 09-30 before p2
+i1=snyk.find(p1); i2=snyk.find(p2); seg=snyk[min(i1,i2):]
+print("OK" if ok else "BAD")' 2>/dev/null)"
+{ eq "$r24" "OK"; } && ok || no "per-scope deadlines in Snyk selectors" "$r24"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

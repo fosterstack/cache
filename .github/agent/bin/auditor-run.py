@@ -271,6 +271,10 @@ def _ignores_from_statements(statements, expiry_map):
             for sc in (p.get("subcomponents") or []):
                 if _sub_purl(sc):
                     info["purls"].add(_sub_purl(sc))
+    def _exp_for(cve, sel):
+        # per-(cve, package) deadline, so one scope's box never leaks onto a sibling scope
+        # (R1 refactor round-2 #4); fall back to a per-CVE deadline if that is all there is.
+        return expiry_map.get((cve, sel)) or expiry_map.get(cve)
     snyk = ["version: v1.5.0", "ignore:"]
     toml = []
     for cve in sorted(by_cve):
@@ -278,23 +282,25 @@ def _ignores_from_statements(statements, expiry_map):
         vids = sorted(info["vids"], key=lambda x: ("~" in x, x)) or [policy.stmt_id(cve)]
         st = "+".join(sorted(x for x in info["statuses"] if x))
         allids = " ".join(vids)
-        exp = expiry_map.get(cve)
         # Scope the Snyk ignore to exactly the surviving statements' packages, so a scope that
         # was reopened/removed on expiry is NOT still suppressed by a CVE-wide `'*'` selector
-        # (R1 refactor round-1 #4). (OSV IgnoredVulns has no package field — it is CVE-level by
-        # format; the scoped packages are named in its reason and the VEX carries the truth.)
+        # (R1 refactor round-1 #4), and each selector carries ITS OWN deadline (round-2 #4).
+        # (OSV IgnoredVulns has no package field — it is CVE-level by format; the packages and
+        # their deadlines are named in its reason and the VEX carries the truth.)
         selectors = sorted(info["purls"]) or ["*"]
         snyk += ["  %s:" % cve]
         for sel in selectors:
+            exp = _exp_for(cve, sel)
             snyk += ["    - '%s':" % sel, "        reason: '%s; governed by %s'" % (st, allids)]
             if exp:
                 snyk += ["        expires: %sT00:00:00.000Z" % exp]
             snyk += ["        vex: '%s'" % vids[0]]
-        scope_note = ("; scope %s" % ",".join(sorted(info["purls"]))) if info["purls"] else ""
-        rsn = "%s; governed by %s%s%s" % (st, allids, scope_note, ("; expires %s" % exp if exp else ""))
+        scope_note = "; ".join("%s until %s" % (sel, _exp_for(cve, sel) or "n/a") for sel in selectors)
+        rsn = "%s; governed by %s; scopes: %s" % (st, allids, scope_note)
         toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s"' % rsn]
-        if exp:
-            toml += ['expires = "%sT00:00:00Z"' % exp]
+        cexp = max((_exp_for(cve, sel) for sel in selectors if _exp_for(cve, sel)), default=None)
+        if cexp:
+            toml += ['expires = "%sT00:00:00Z"' % cexp]
     return "\n".join(snyk) + "\n", "\n".join(toml) + "\n"
 
 
@@ -334,11 +340,12 @@ def _merge_suppressions(ws, supp):
     try:
         for sc in json.load(open(os.path.join(os.path.dirname(supp), ".auditor",
                                               "reopened-expired.json"))).get("reopened", []):
-            reopened.add((tuple(sc[0]), tuple(sc[1])))
+            reopened.add((sc[0], tuple(sc[1]), tuple(sc[2])))     # (cve, products, purls)
     except Exception:
         reopened = set()
     if reopened:
-        survivors = [s for s in survivors if _scope_key(s) not in reopened]
+        survivors = [s for s in survivors
+                     if ((s.get("vulnerability") or {}).get("name"), _scope_key(s)[0], _scope_key(s)[1]) not in reopened]
     # AC2 safety net: never deliver two statements sharing an @id.
     seen = {}
     for s in survivors:
@@ -368,6 +375,7 @@ def _merge_suppressions(ws, supp):
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
     new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
     old_ai = _loadj(aip)
+    out_ai = {}
     if new_ai is not None or old_ai is not None:
         def _cve(it):
             return (it or {}).get("cve") or (it or {}).get("id")
@@ -415,14 +423,16 @@ def _merge_suppressions(ws, supp):
         # retain an old obligation only if THIS SCOPE's affected statement survived the merge:
         # a scope reopened/removed on expiry drops its obligation too, a sibling live scope keeps
         # its own; an unresolvable legacy item falls back to CVE-level retention.
-        affected_scopes = {_scope_key(s)
-                           for s in merged.get("statements", []) if s.get("status") == "affected"}
-        affected_cves = {(s.get("vulnerability") or {}).get("name")
-                         for s in merged.get("statements", []) if s.get("status") == "affected"}
+        # retain per (VULNERABILITY, scope): an item is kept only if ITS OWN CVE is still
+        # affected at ITS OWN scope — a sibling CVE that keeps the same package scope alive does
+        # NOT keep an expired CVE's obligation (R1 refactor round-2 #1).
+        affected = {((s.get("vulnerability") or {}).get("name"), _scope_key(s))
+                    for s in merged.get("statements", []) if s.get("status") == "affected"}
+        affected_cves = {cve for cve, _ in affected}
         final = {}
         for it in ((old_ai or {}).get("accepted_items") or []):
             sc = _scope_of(it)
-            keep = (sc in affected_scopes) if sc is not None else (_cve(it) in affected_cves)
+            keep = ((_cve(it), sc) in affected) if sc is not None else (_cve(it) in affected_cves)
             if keep:
                 final[_ikey(it)] = it              # retained scope keeps its acceptance
         for it in ((new_ai or {}).get("accepted_items") or []):
@@ -430,28 +440,32 @@ def _merge_suppressions(ws, supp):
                 final[_ikey(it)] = it              # this run wins on the same scope
         out_ai = dict(new_ai or old_ai or {})
         out_ai["accepted_items"] = list(final.values())
+        # reconcile each pointer to the FINAL statement @id for ITS (cve, scope) (R1 refactor
+        # round-2 #2), so a collision-suffixed or foreign id never leaves an item pointing at
+        # another statement that merely shares its scope.
+        cvescope_to_id = {}
+        for s in merged.get("statements", []):
+            cvescope_to_id.setdefault(((s.get("vulnerability") or {}).get("name"), _scope_key(s)), s.get("@id"))
+        for it in out_ai["accepted_items"]:
+            sc = _scope_of(it)
+            if (_cve(it), sc) in cvescope_to_id:
+                it["vex_id"] = cvescope_to_id[(_cve(it), sc)]
         os.makedirs(os.path.dirname(aip), exist_ok=True)
         cli.writej(aip, out_ai)
 
     # Regenerate .snyk and osv-scanner.toml FROM the merged VEX (not a text union of the two
-    # files) so every ignore cites a real merged statement id — canonicalized and foreign ids
-    # alike — and no stale pre-merge citation survives (R1 outer round-8 #6). Time boxes are
-    # carried from the union of the old and new ignore files (this run wins).
-    def _expiry_from_toml(text):
-        out = {}
-        for blk in (text or "").split("[[IgnoredVulns]]")[1:]:
-            mid = re.search(r'id\s*=\s*"([^"]+)"', blk)
-            me = re.search(r'expires\s*=\s*"(\d{4}-\d{2}-\d{2})', blk)
-            if mid and me:
-                out[mid.group(1)] = me.group(1)
-        return out
+    # files) so every ignore cites a real merged statement id and no stale pre-merge citation
+    # survives (R1 outer round-8 #6). Deadlines come per-(cve, package) from the MERGED
+    # inventory, so each scope carries its OWN box, never a sibling's (R1 refactor round-2 #4).
+    expiry = {}
+    for it in out_ai.get("accepted_items", []):
+        cve = it.get("cve") or it.get("id"); exp = it.get("expiry")
+        if cve and exp:
+            for purl in (it.get("scope_purls") or []):
+                expiry[(cve, purl)] = exp
+            expiry.setdefault(cve, exp)                   # CVE-level fallback for a purl-less item
     otoml = os.path.join(ws, "osv-scanner.toml")
     sp = os.path.join(ws, ".snyk")
-    supp_toml = os.path.join(supp, "osv-scanner.toml")
-    old_toml = open(otoml).read() if os.path.exists(otoml) else ""
-    new_toml = open(supp_toml).read() if os.path.exists(supp_toml) else ""
-    expiry = _expiry_from_toml(old_toml)
-    expiry.update(_expiry_from_toml(new_toml))            # this run wins on a shared CVE
     snyk_text, toml_text = _ignores_from_statements(merged.get("statements", []), expiry)
     open(sp, "w").write(snyk_text)
     open(otoml, "w").write(toml_text)
@@ -484,12 +498,17 @@ def _consolidate(out, ts):
     # expiry from its per-scanner ignore JSON (or evidence sidecar target_date) into .snyk's
     # `expires` and osv-scanner.toml, so the delivered package is time-bounded and the next run
     # can enforce it.
+    # per-(cve, package) deadlines from this run's ignore JSONs (scoped_purls) + evidence
+    # sidecars, so the STAGED artifact carries the same scoped, per-package rules the delivery
+    # merge produces — never a CVE-wide wildcard (R1 refactor round-2 #4).
     expiry_map = {}
     for jf in glob.glob(os.path.join(out, "ignores", "*", "*.json")):
         try:
             d = json.load(open(jf))
             if d.get("id") and d.get("expiry"):
-                expiry_map[d["id"]] = d["expiry"]
+                for purl in (d.get("scoped_purls") or []):
+                    expiry_map[(d["id"], purl)] = d["expiry"]
+                expiry_map.setdefault(d["id"], d["expiry"])
         except Exception:
             pass
     for ef in glob.glob(os.path.join(out, "evidence", "*.evidence.json")):
@@ -499,28 +518,9 @@ def _consolidate(out, ts):
                 expiry_map.setdefault(d["vulnerability"], d["target_date"])
         except Exception:
             pass
-    by_cve = {}
-    for s in statements:
-        cve = (s.get("vulnerability") or {}).get("name")
-        by_cve.setdefault(cve, {"statuses": set(), "vids": []})
-        by_cve[cve]["statuses"].add(s.get("status"))
-        sid = s.get("@id")
-        if sid and sid not in by_cve[cve]["vids"]:
-            by_cve[cve]["vids"].append(sid)    # every statement id for this CVE (no orphan)
-    snyk = ["version: v1.5.0", "ignore:"]; toml = []
-    for cve in sorted(by_cve):
-        info = by_cve[cve]; vids = info["vids"] or [policy.stmt_id(cve)]; st = "+".join(sorted(info["statuses"]))
-        allids = " ".join(vids); exp = expiry_map.get(cve)
-        snyk += ["  %s:" % cve, "    - '*':", "        reason: '%s; governed by %s'" % (st, allids)]
-        if exp:
-            snyk += ["        expires: %sT00:00:00.000Z" % exp]     # time box preserved for Snyk
-        snyk += ["        vex: '%s'" % vids[0]]
-        rsn = "%s; governed by %s%s" % (st, allids, ("; expires %s" % exp if exp else ""))
-        toml += ['[[IgnoredVulns]]', 'id = "%s"' % cve, 'reason = "%s"' % rsn]
-        if exp:
-            toml += ['expires = "%sT00:00:00Z"' % exp]
-    cli.writef(os.path.join(supp, ".snyk"), "\n".join(snyk) + "\n")
-    cli.writef(os.path.join(supp, "osv-scanner.toml"), "\n".join(toml) + "\n")
+    snyk_text, toml_text = _ignores_from_statements(statements, expiry_map)
+    cli.writef(os.path.join(supp, ".snyk"), snyk_text)
+    cli.writef(os.path.join(supp, "osv-scanner.toml"), toml_text)
     return supp, len(statements)
 
 
@@ -658,28 +658,33 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
     (non-Go) findings for the same CVE are dispositioned separately with distinct VEX names,
     so a Go reachability closure never closes an OS finding (and vice versa)."""
     base = base or c
-    go = [f for f in findings if _eco(f.get("purl")) in ("golang", "go")]
-    other = [f for f in findings if _eco(f.get("purl")) not in ("golang", "go")]
-    subsets = []
-    if go:
-        # split the Go subset by trace coverage so a version the trace does NOT support is
-        # routed on its own instead of being swallowed by the closure (R1 refactor round-1 #3).
-        ids = sorted(aliases) + [c]
-        verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
-        if verdict == "unreachable":
-            covered, uncovered = _go_covered(go, ev)
-            if covered:
-                subsets.append(("go", covered))
-            if uncovered:
-                subsets.append(("go-live", uncovered))
+    ids = sorted(aliases) + [c]
+    # Split by ECOSYSTEM and PACKAGE so one package's fix or reachability never routes another
+    # package's finding for the same CVE (R1 outer round-4 #1; R1 refactor round-2 #3), then
+    # split a Go package by trace coverage. Each subset is a distinct disposition.
+    by_pkg = {}
+    for f in findings:
+        eco = "go" if _eco(f.get("purl")) in ("golang", "go") else "os"
+        by_pkg.setdefault((eco, f.get("package") or "?"), []).append(f)
+    subsets = []   # list of (tag, findings)
+    for (eco, pkg), fs in sorted(by_pkg.items()):
+        if eco == "go":
+            verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
+            if verdict == "unreachable":
+                covered, uncovered = _go_covered(fs, ev)
+                if covered:
+                    subsets.append(("go:%s" % pkg, covered))
+                if uncovered:
+                    subsets.append(("go-live:%s" % pkg, uncovered))
+            else:
+                subsets.append(("go:%s" % pkg, fs))
         else:
-            subsets.append(("go", go))
-    if other:
-        subsets.append(("os", other))
+            subsets.append(("os:%s" % pkg, fs))
     subsets = [(tag, s) for tag, s in subsets if s]
     out_rows = []; mc = 0
     for tag, sub in subsets:
-        nm = base if len(subsets) == 1 else "%s-%s" % (base, tag)
+        # distinct VEX/ignore file name per subset (the statement @id itself is scope-derived)
+        nm = base if len(subsets) == 1 else "%s-%s" % (base, re.sub(r"[^A-Za-z0-9._-]", "_", tag))
         row, mi = _dispose(c, sub, aliases, env, would, name=nm)
         out_rows.append(row); mc += mi
     return out_rows, mc
@@ -728,12 +733,13 @@ def _dispose(c, findings, aliases, env, would, name=None):
     _purls = sorted(set(subs or []))
     this_scope = ((policy.VEX_PRODUCT,), tuple(_purls))
     this_scope_id = policy.scope_id(c, policy.VEX_PRODUCT, subs)
-    _cexp = env.get("carried_expiry", {}).get(this_scope)
+    _cexp = env.get("carried_expiry", {}).get((c, this_scope))
     if not gf["fixed"] and _cexp and _cexp <= env.get("today", ts[:10]):
         row.update(section=3, disposition="reopened: prior acceptance expired",
                    action="time box lapsed %s — ignore removed; policy re-applied from scratch" % _cexp,
                    reason="acceptance expired %s (no upstream fix)" % _cexp,
-                   reopened_expired=_cexp, vex_id=this_scope_id, scope_purls=_purls, reopened_scope=this_scope)
+                   reopened_expired=_cexp, vex_id=this_scope_id, scope_purls=_purls,
+                   reopened_scope=[c, list(this_scope[0]), list(this_scope[1])])
         return row, m_inc
     # 3) false-positive suspicion — ONLY for a unique-lineage, no-fix finding.
     if len(gf["lineages"]) == 1 and not gf["fixed"]:
@@ -806,7 +812,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
               target_date=this_exp, vex_name=vn, subcomponents=subs)
     for sc in sorted({f["scanner"] for f in findings}):
         cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
-                   {"id": c, "vex": this_scope_id, "expiry": this_exp, "reason": "accepted risk; re-checked daily"})
+                   {"id": c, "vex": this_scope_id, "expiry": this_exp, "scoped_purls": _purls,
+                    "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
     owner_issue = None; issue_failed = False
     if at:
@@ -872,13 +879,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             for it in prev.get("accepted_items", []):
                 if not it.get("expiry"):
                     continue
+                cve = it.get("cve") or it.get("id")
                 if it.get("scope_purls") is not None:
                     sc = ((it.get("product") or policy.VEX_PRODUCT,), tuple(sorted(set(it["scope_purls"]))))
                 elif it.get("vex_id") in prev_id_to_scope:
                     sc = prev_id_to_scope[it["vex_id"]]
                 else:
                     continue
-                carried_expiry[sc] = min(it["expiry"], carried_expiry.get(sc, it["expiry"]))
+                key = (cve, sc)                          # per (vulnerability, scope) (R1 refactor round-2 #1)
+                carried_expiry[key] = min(it["expiry"], carried_expiry.get(key, it["expiry"]))
         except Exception:
             carried_expiry = {}
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
@@ -968,8 +977,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # Scopes whose carried acceptance expired and were reopened this run — delivery drops those
     # exact statements/ignores by canonical SCOPE (never CVE-wide), never renewing them
     # (REQ-AUD-13 AC6). Serialized as [[products], [purls]] pairs.
-    reopened = [[list(sc[0]), list(sc[1])]
-                for sc in {r.get("reopened_scope") for r in rows if r.get("reopened_scope")}]
+    _seen = set(); reopened = []
+    for r in rows:
+        rs = r.get("reopened_scope")
+        if rs:
+            k = (rs[0], tuple(rs[1]), tuple(rs[2]))     # (cve, products, purls)
+            if k not in _seen:
+                _seen.add(k); reopened.append(rs)
     cli.writej(os.path.join(out, ".auditor", "reopened-expired.json"), {"reopened": reopened})
     # Inventory quorum (R12 (b)): the candidate must be inventoried by at least THREE image
     # scanners whose OS package counts agree within tolerance. A fourth scanner that cannot
