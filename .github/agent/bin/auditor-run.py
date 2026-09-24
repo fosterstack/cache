@@ -667,14 +667,23 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
     # disposition (R1 refactor round-3 #5) — it stays a quorum/lineage signal at the group level.
     nonlineage = [f for f in findings if not f.get("_lineage_only")]
     lineage = [f for f in findings if f.get("_lineage_only")]
+    if not nonlineage:
+        # a PURE lineage-only CVE: reported only through an advisory bundle, with no per-CVE
+        # scanner record establishing a package. Surface it for assessment; do NOT build a
+        # product-wide acceptance/VEX from the advisory's package metadata (R1 refactor round-4
+        # #3). Its lineage stays an agreement signal, not a disposition.
+        gf = _group_facts(c, {"findings": findings, "aliases": aliases})
+        row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": None,
+               "severity": gf["severity"] or "Unknown", "section": 4,
+               "disposition": "under investigation", "reachability": "n/a",
+               "action": "advisory-only: reported via a co-report bundle, no per-CVE scanner record",
+               "reason": "no per-CVE scanner record establishes an affected package",
+               "cause": "advisory/bundle lineage only"}
+        return [row], 0
     by_scope = {}
     for f in nonlineage:
         eco = "go" if _eco(f.get("purl")) in ("golang", "go") else "os"
         by_scope.setdefault((eco, f.get("package") or "?", _ver_from_purl(f.get("purl")) or "?"), []).append(f)
-    if not by_scope and lineage:
-        # a pure-bundle CVE (only advisory lineage) still needs one disposition
-        f0 = lineage[0]
-        by_scope[("os", f0.get("package") or "?", _ver_from_purl(f0.get("purl")) or "?")] = lineage
     subsets = []   # list of (tag, findings)
     for key in sorted(by_scope, key=str):
         eco = key[0]; fs = by_scope[key]
@@ -701,7 +710,10 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
         else:
             h = hashlib.sha1("\n".join(sorted(f.get("purl") or "" for f in sub)).encode()).hexdigest()[:12]
             nm = "%s-%s-%s" % (base, tag, h)
-        row, mi = _dispose(c, sub, aliases, env, would, name=nm)
+        # attach the group's lineage-only records so this subset's agreement/lineage vote is
+        # counted (excluded from evidence by _group_facts) — a real finding backed by an advisory
+        # is not mistaken for unique-lineage (R1 refactor round-4 #5).
+        row, mi = _dispose(c, sub + lineage, aliases, env, would, name=nm)
         out_rows.append(row); mc += mi
     return out_rows, mc
 
@@ -722,13 +734,21 @@ def _dispose(c, findings, aliases, env, would, name=None):
     subs = sorted({f["purl"] for f in findings if f.get("purl") and not f.get("_lineage_only")}) or None
     row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
            "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
-           "disposition": None, "action": None, "reason": None}
+           "disposition": None, "action": None, "reason": None,
+           "scope_purls": sorted(set(subs or []))}   # this row's scope, for per-scope table mapping
     out = env["out"]; ts = env["ts"]; exp = env["exp"]; dry = env["dry"]
+    _purls = sorted(set(subs or []))
+    this_scope = ((policy.VEX_PRODUCT,), tuple(_purls))
+    this_scope_id = policy.scope_id(c, policy.VEX_PRODUCT, subs)
+    _carried = (c, this_scope) in env.get("carried_scopes", set())
     # 2) reachability for Go modules — deterministic govulncheck.
     if gf["is_go"]:
         verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
         row["reachability"] = "govulncheck: %s" % verdict
-        if verdict == "unreachable":
+        # a FRESH unreachable finding closes §5 even if a fix exists (unreachable => not
+        # exploitable); only a CARRIED reachability suppression defers to the fix so it can be
+        # LIFTED and bumped (REQ-AUD-13 AC7; R1 refactor round-4 #4).
+        if verdict == "unreachable" and not (gf["fixed"] and _carried):
             # scope the closure to EXACTLY the module@version the trace supports, from the
             # NON-lineage Go findings only; a sibling version the evidence does not cover, or a
             # group whose only records are lineage, gets NO closure (REQ-AUD-13 AC5).
@@ -746,9 +766,6 @@ def _dispose(c, findings, aliases, env, would, name=None):
     # An expired carried acceptance for THIS scope reopens the finding into §3 BEFORE any FP
     # suspicion — a model refusal must never hide the lapsed time box (REQ-AUD-13 AC6). A now-
     # fixable finding falls through to the bump instead (its box is moot).
-    _purls = sorted(set(subs or []))
-    this_scope = ((policy.VEX_PRODUCT,), tuple(_purls))
-    this_scope_id = policy.scope_id(c, policy.VEX_PRODUCT, subs)
     _cexp = env.get("carried_expiry", {}).get((c, this_scope))
     if not gf["fixed"] and _cexp and _cexp <= env.get("today", ts[:10]):
         row.update(section=3, disposition="reopened: prior acceptance expired",
@@ -799,7 +816,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         # AC7: a fix that is now pullable LIFTS a suppression this scope was carrying — the old
         # affected/temporary VEX, ignore and inventory for this exact scope are removed this run
         # (delivery drops them) and the row is §1 lifted; otherwise a fresh fixable finding is §3.
-        lifted = bool(env.get("carried_expiry", {}).get((c, this_scope)))
+        lifted = _carried or bool(env.get("carried_expiry", {}).get((c, this_scope)))
         if gf["is_go"]:
             title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
             _open_pr("auditor/bump-%s" % c, title, "auto-merge-lane", dry, would, "auditor: bump %s" % c)
@@ -884,7 +901,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
-    carried_expiry = {}
+    carried_expiry = {}; carried_scopes = set()
     ws0 = os.environ.get("GITHUB_WORKSPACE")
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -896,6 +913,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             for s in pv.get("statements", []):
                 if s.get("@id"):
                     prev_id_to_scope[s["@id"]] = _scope_key(s)
+                nm = (s.get("vulnerability") or {}).get("name")
+                if nm:
+                    # every carried (cve, scope) — including a reachability not_affected that has
+                    # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC7; R1 refactor #4)
+                    carried_scopes.add((nm, _scope_key(s)))
         except Exception:
             prev_id_to_scope = {}
         try:
@@ -917,7 +939,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
-           "carried_expiry": carried_expiry, "today": today}
+           "carried_expiry": carried_expiry, "carried_scopes": carried_scopes, "today": today}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
         # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
@@ -929,19 +951,22 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # coverage is scoped to package AND version (R1 outer round-1 #1): a log FP for
         # libfoo@1 covers every arch/scanner of libfoo@1 (the round-2 same-package fix) but
         # NOT libfoo@2 — a name match cannot establish version applicability without evidence.
-        fp_keys = set()   # (package, version)
+        # a trusted-log FP covers only the same package in the same ECOSYSTEM at the same
+        # version — never a different ecosystem's package of the same name/version (a Debian
+        # backport does not patch an independently installed PyPI dist) (R1 refactor round-4 #2).
+        fp_keys = set()   # (ecosystem, package, version)
         for f in grp["findings"]:
             if f.get("_lineage_only"):     # an advisory's defect-log FP is about ITS OWN
                 continue                   # vulnerability, not a different bundled CVE (round-8 #1)
             r = idx.get((f["scanner"], f["finding_id"], f["purl"]))
             if r and r.get("disposition") == "false_positive":
-                fp_keys.add(((r.get("package") or f.get("package")), _ver_from_purl(f["purl"])))
+                fp_keys.add((_eco(f.get("purl")), (r.get("package") or f.get("package")), _ver_from_purl(f["purl"])))
         def _cov(f):
-            return not f.get("_lineage_only") and (f.get("package"), _ver_from_purl(f["purl"])) in fp_keys
+            return not f.get("_lineage_only") and (_eco(f.get("purl")), f.get("package"), _ver_from_purl(f["purl"])) in fp_keys
         covered = [f for f in grp["findings"] if _cov(f)]
         if covered:
             subs = sorted({f["purl"] for f in covered if f["purl"]})
-            covpkgs = sorted({"%s@%s" % (p, v or "?") for (p, v) in fp_keys})
+            covpkgs = sorted({"%s@%s" % (p, v or "?") for (_e, p, v) in fp_keys})
             ev = {"check": "known-defect-log", "source_file": logpath,
                   "detail": "trusted false_positive for %s" % covpkgs}
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev, subcomponents=subs or None)
@@ -993,7 +1018,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # driver holds contents:read and only the App-token SUPPRESSION PR is delivered. Those
     # proposals are real PENDING work; the report must say so rather than claim completion
     # with nothing pending (R1 outer round-8 #3). Each such row is flagged for §6.
-    fix_pending = [r for r in sections[3] if not dry and "delivery pending" in (r.get("action") or "")]
+    # a proposed-but-undelivered fix is pending whether it sits in §3 or was moved to §1 by an
+    # AC7 lift (R1 refactor round-4 #7).
+    fix_pending = [r for r in (sections[3] + sections[1]) if not dry and "delivery pending" in (r.get("action") or "")]
     for r in fix_pending:
         r["pending_delivery"] = True
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
@@ -1036,6 +1063,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
     agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
     quorum = len(ran_image) >= 3 and agree
+    # the honest quorum for the header uses THIS agreement decision, not per-scanner default
+    # flags (R1 refactor round-4 #8): when the ran scanners' OS counts do not agree numerically,
+    # none is labelled "agreed".
+    _mx = max(oscounts) if oscounts else 0
+    quorum_info = {"agreed": [s for s in ran_image if agree and _mx and ((st.get(s) or {}).get("os_package_count") or 0) >= 0.5 * _mx],
+                   "disagreed": [s for s in ran_image if not (agree and _mx and ((st.get(s) or {}).get("os_package_count") or 0) >= 0.5 * _mx)],
+                   "not_ran": not_ran, "excluded": excluded}
     # consolidate every per-CVE VEX into the canonical suppression files, run the consistency
     # check over THAT layout, then DELIVER the suppressions as one draft PR via the App token
     # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
@@ -1069,7 +1103,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
-    report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err)
+    report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
@@ -1184,13 +1218,18 @@ def _scanner_tables(m, rows, out):
     from auditorlib import parsers as P
     st = m.get("scanner_status") or {}
     reports = m.get("scanner_reports") or {}
-    sec_by_cve = {}
+    # map disposition by (cve, package purl) — the ROUTED scope — not by CVE alone, so two
+    # versions of a package that landed in different sections are not both shown for each row
+    # (R1 refactor round-4 #6). Fall back to the CVE's sections only if the purl is unmatched.
+    sec_by_scope = {}; sec_by_cve = {}
     for r in rows:
         sec_by_cve.setdefault(r["id"], set()).add(r["section"])
+        for purl in (r.get("scope_purls") or []):
+            sec_by_scope.setdefault((r["id"], purl), set()).add(r["section"])
 
-    def _disp(fid, aliases):
+    def _disp(fid, aliases, purl):
         cve = C.canon(fid, aliases)
-        secs = sec_by_cve.get(cve)
+        secs = sec_by_scope.get((cve, purl)) or sec_by_cve.get(cve)
         return ("§" + ",".join(str(x) for x in sorted(secs))) if secs else "-"
     PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
                ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")), ("snyk", P.parse_snyk)]
@@ -1215,7 +1254,7 @@ def _scanner_tables(m, rows, out):
             inst = (f.get("extra") or {}).get("installed_version") or _ver_from_purl(f.get("purl")) or "-"
             table.append([f.get("package") or "-", inst, f.get("finding_id") or "-",
                           (f.get("severity") or "-"), (f.get("fixed_version") or "-"),
-                          _disp(f.get("finding_id"), f.get("aliases") or [])])
+                          _disp(f.get("finding_id"), f.get("aliases") or [], f.get("purl"))])
         hdr = ["package", "installed", "vulnerability id", "severity", "fixed", "disposition"]
         widths = [max(len(hdr[i]), max(len(str(r[i])) for r in table)) for i in range(len(hdr))]
         fmt = "  " + "  ".join("%-" + str(w) + "s" for w in widths)
@@ -1229,7 +1268,7 @@ def _scanner_tables(m, rows, out):
     cli.writef(os.path.join(out, "reports", "scanner-tables.txt"), text)
 
 
-def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None):
+def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None, quorum_info=None):
     st = m.get("scanner_status") or {}
     test = (m.get("provenance") or {}).get("source") == "test-image"
     digest = (m.get("candidate_digests") or {}).get("production", "unknown")
@@ -1258,14 +1297,14 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     # so a total-package figure is never mistaken for the agreement (R1 report item 3).
     def _osc(s):
         return (st.get(s) or {}).get("os_package_count")
-    agreed = [s for s in IMAGE_SCANNERS
-              if (st.get(s) or {}).get("ran") and (_osc(s) or 0) > 0 and (st.get(s) or {}).get("quorum_ok", True)]
-    excl = [s for s in IMAGE_SCANNERS
-            if (st.get(s) or {}).get("ran") and (_osc(s) or 0) > 0 and not (st.get(s) or {}).get("quorum_ok", True)]
-    noinv = [s for s in IMAGE_SCANNERS if s not in agreed and s not in excl]
+    # use the run's ACTUAL agreement decision (round-4 #8), falling back to a local recompute
+    qi = quorum_info or {}
+    agreed = qi.get("agreed") or []
+    excl = list(dict.fromkeys((qi.get("disagreed") or []) + (qi.get("excluded") or [])))
+    noinv = qi.get("not_ran") or [s for s in IMAGE_SCANNERS if s not in agreed and s not in excl]
     parts = ["agreed on OS packages: " + (", ".join("%s(%s)" % (s, _osc(s)) for s in agreed) or "none")]
     if excl:
-        parts.append("excluded as outliers: " + ", ".join("%s(%s)" % (s, _osc(s)) for s in excl))
+        parts.append("did not agree / excluded: " + ", ".join("%s(%s)" % (s, _osc(s)) for s in excl))
     if noinv:
         parts.append("did not inventory: " + ", ".join("%s (%s)" % (s, (st.get(s) or {}).get("reason", "no report")) for s in noinv))
     L.append("**Inventory quorum:** " + "; ".join(parts))
@@ -1292,7 +1331,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             if would:
                 for w in would:
                     L.append("dry run: would run `%s`" % w)
-            pend = [r for r in sections[3] if r.get("pending_delivery")]
+            pend = [r for r in (sections[3] + sections[1]) if r.get("pending_delivery")]
             for r in pend:
                 L.append("Fix PR PROPOSED but NOT delivered (needs an authorized delivery step): %s — %s"
                          % (r["id"], r.get("action")))

@@ -1919,6 +1919,125 @@ snyk,_t=R._ignores_from_statements([perm,tmp],{(c,"pkg:deb/debian/temp@1"):"2026
 seg=snyk.split("perm@1")[1].split("temp@1")[0]
 print("OK" if "expires" not in seg and "2026-09-30" in snyk else "BAD")' 2>/dev/null | tail -1)"
 { eq "$res" "OK"; } && ok || no "permanent scope keeps no deadline" "$res"
+
+echo "=== REQ-AUD-13 refactor boundary regressions (round 4) ==="
+
+begin "refr4-2-fp-log-does-not-cross-ecosystem" "a trusted defect-log FP for a Debian package closes ONLY the Debian ecosystem at that name/version, never an independently installed PyPI dist of the same name/version"
+o="$WORK/refr4-2"; rm -rf "$o"; mkdir -p "$o"
+cat > "$o/grype.json" <<'EOF'
+{"matches":[
+ {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"deb","purl":"pkg:deb/debian/requests@2.28.1"}},
+ {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"python","purl":"pkg:pypi/requests@2.28.1"}}
+],"source":{"type":"image"},"distro":{"name":"debian","version":"12.0"},"descriptor":{"name":"grype","version":"0.118.0","db":{"status":{"from":"x_2026-09-22T00:00:00Z_x"}}}}
+EOF
+cat > "$o/log.json" <<'EOF'
+{"defects":[{"package":"requests","disposition":"false_positive","keys":[{"scanner":"grype","finding_id":"CVE-2099-1951","purl":"pkg:deb/debian/requests@2.28.1"}],"evidence":{"detail":"debian backport"}}]}
+EOF
+"$PY" - "$o" <<'PP'
+import json,os,sys
+m={"commit":"ab","module":"x","base_os":"debian","candidate_variant":"production","candidate_digests":{"production":"sha256:ab"},
+   "scanner_reports":{"grype":os.path.join(sys.argv[1],"grype.json"),"trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},
+   "scanner_status":{s:{"ran":True,"scan_ok":True,"quorum_ok":True,"version":"x","reason":"ok","package_count":2,"os_package_count":1,"db_date":"2026-09-22","findings":2} for s in ("grype","trivy","osv-scanner","snyk")},
+   "govulncheck":None,"known_defect_log":os.path.join(sys.argv[1],"log.json"),"kev_catalog":None}
+m["scanner_status"]["osv-scanner-gomod"]={"ran":True,"version":"x","reason":"ok","package_count":None}
+json.dump(m,open(os.path.join(sys.argv[1],"manifest.json"),"w"))
+PP
+r2="$("$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$o/manifest.json" --adjudicator "$STUB" --out "$o/out" >/dev/null 2>&1; "$PY" -c '
+import json
+c=json.load(open("'"$o"'/out/classification.json"))["findings"]
+secs={}
+for r in c: secs.setdefault(r["section"],0); secs[r["section"]]+=1
+# the deb FP closes in §5; the pypi finding must NOT be §5 (routed on its own, e.g. §2)
+print("OK" if 5 in secs and any(r["section"]!=5 for r in c) else "BAD:%s"%[(r["id"],r["section"]) for r in c])' 2>/dev/null)"
+{ eq "$r2" "OK"; } && ok || no "deb FP does not close a same-name PyPI dist" "$r2"
+
+begin "refr4-3-pure-lineage-no-product-wide-acceptance" "a CVE reported ONLY via advisory lineage (no per-CVE scanner record) is surfaced §4 under investigation, not a product-wide affected acceptance"
+o="$WORK/refr4-3"; rm -rf "$o"
+r3="$("$PY" -c '
+import importlib.util,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
+lin=[{"scanner":"osv-scanner","finding_id":"GO-1","purl":"pkg:golang/adv/lib@v1","aliases":["CVE-2099-3001"],"package":"adv/lib","fixed_version":None,"severity":"High","extra":{},"_lineage_only":True}]
+rows,_=R._dispose_split("CVE-2099-3001",lin,["CVE-2099-3001"],env,[])
+import glob
+vex_files=glob.glob(out+"/vex/*.json")
+print("OK" if len(rows)==1 and rows[0]["section"]==4 and not vex_files else "BAD:%s vex=%d"%(rows[0]["section"],len(vex_files)))' "$o" 2>/dev/null | tail -1)"
+{ eq "$r3" "OK"; } && ok || no "pure lineage-only CVE is §4, no acceptance/VEX" "$r3"
+
+begin "refr4-5-advisory-lineage-vote-counts-in-routing" "a real finding backed by a co-report advisory has TWO lineages and is NOT treated as unique-lineage (no model call / §4 refusal), routing to POA&M"
+o="$WORK/refr4-5"; rm -rf "$o"
+r5="$("$PY" -c '
+import importlib.util,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":set(),"today":"2026-09-24"}
+bbb=[{"scanner":"grype","finding_id":"CVE-2099-3002","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-3002"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}}]
+lin={"scanner":"osv-scanner","finding_id":"GO-2","purl":"pkg:golang/adv@v1","aliases":["CVE-2099-3002"],"package":"adv","fixed_version":None,"severity":"Low","extra":{},"_lineage_only":True}
+rows,_=R._dispose_split("CVE-2099-3002",bbb+[lin],["CVE-2099-3002"],env,[])
+print("OK" if [r["section"] for r in rows]==[2] else "BAD:%s"%[r["section"] for r in rows])' "$o" 2>/dev/null | tail -1)"
+{ eq "$r5" "OK"; } && ok || no "advisory lineage vote keeps a real finding out of unique-lineage suspicion" "$r5"
+
+begin "refr4-4-pullable-fix-lifts-carried-reachability" "a pullable fix lifts a CARRIED reachability not_affected (which has no time box) — §1 lifted + removal — while a FRESH unreachable-with-fix still closes §5"
+r4="$("$PY" -c '
+import importlib.util,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
+gv="/tmp/refr4-4-gvc.json"
+open(gv,"w").write("\n".join([
+  "{\"config\":{\"scan_level\":\"symbol\"}}",
+  "{\"SBOM\":{\"roots\":[\"example.org/lib\"],\"modules\":[{\"path\":\"example.org/lib\",\"version\":\"v1.0.0\"}]}}",
+  "{\"finding\":{\"osv\":\"GO-2099-3004\",\"trace\":[{\"module\":\"example.org/lib\",\"version\":\"v1.0.0\",\"package\":\"example.org/lib/x\"}]}}"]))
+def env(cs):
+    shutil.rmtree("/tmp/refr4-4out",ignore_errors=True)
+    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr4-4out","ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
+f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-3004","purl":purl,"aliases":["GO-2099-3004","CVE-2099-3004"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
+carried,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env({("CVE-2099-3004",sc)}),[])
+fresh,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env(set()),[])
+print("OK" if carried["section"]==1 and fresh["section"]==5 else "BAD carried=%s fresh=%s"%(carried["section"],fresh["section"]))' 2>/dev/null | tail -1)"
+{ eq "$r4" "OK"; } && ok || no "pullable fix lifts carried reachability; fresh unreachable stays §5" "$r4"
+
+begin "refr4-6-scanner-table-disposition-by-scope" "the scanner table maps each version row to its OWN routed section, not every section the CVE touched"
+o="$WORK/refr4-6"; rm -rf "$o"; mkdir -p "$o/reports"
+r6="$("$PY" -c '
+import importlib.util,json,os
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=__import__("sys").argv[1]
+rows=[{"id":"CVE-9","section":3,"scope_purls":["pkg:golang/lib@v1.0.0"]},{"id":"CVE-9","section":2,"scope_purls":["pkg:golang/lib@v8.0.0"]}]
+grype={"matches":[{"vulnerability":{"id":"CVE-9","severity":"Medium","fix":{"state":"fixed","versions":["1.0.1"]}},"artifact":{"name":"lib","version":"v1.0.0","type":"golang","purl":"pkg:golang/lib@v1.0.0"}},{"vulnerability":{"id":"CVE-9","severity":"Critical"},"artifact":{"name":"lib","version":"v8.0.0","type":"golang","purl":"pkg:golang/lib@v8.0.0"}}]}
+json.dump(grype,open(out+"/grype.json","w"))
+m={"scanner_reports":{"grype":out+"/grype.json"},"scanner_status":{"grype":{"ran":True,"package_count":2,"findings":2}}}
+R._scanner_tables(m,rows,out)
+t=open(out+"/reports/scanner-tables.txt").read().splitlines()
+v1=[l for l in t if "v1.0.0" in l][0]; v8=[l for l in t if "v8.0.0" in l][0]
+ok=("§3" in v1 and "§2" not in v1) and ("§2" in v8 and "§3" not in v8)
+print("OK" if ok else "BAD v1=%r v8=%r"%(v1,v8))' "$o" 2>/dev/null | tail -1)"
+{ eq "$r6" "OK"; } && ok || no "scanner table disposition is per-scope" "$r6"
+
+begin "refr4-8-quorum-header-matches-agreement-decision" "the Inventory-quorum header uses the run's numerical agreement: when the ran scanners' OS counts do NOT agree, none is labelled agreed"
+r8="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+qi={"agreed":[],"disagreed":["grype","trivy","osv-scanner","snyk"],"not_ran":[],"excluded":[]}
+st={s:{"ran":True,"os_package_count":(100 if s=="snyk" else 10),"package_count":10,"findings":0,"version":"x","db_date":None} for s in ("grype","trivy","osv-scanner","snyk")}
+m={"scanner_status":st,"scanner_reports":{s:"x" for s in st},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,[],{n:[] for n in range(1,8)},[],"AUDIT INCOMPLETE",True,"stub",{},"h","c",None,None,qi)
+ql=[l for l in rep.splitlines() if "Inventory quorum:" in l][0]
+print("OK" if "agreed on OS packages: none" in ql else "BAD:%s"%ql)' 2>/dev/null | tail -1)"
+{ eq "$r8" "OK"; } && ok || no "quorum header reflects the numerical agreement decision" "$r8"
+
+begin "refr4-7-lifted-bump-still-pending-in-section6" "a bump moved to §1 by an AC7 lift but not yet delivered still appears as pending work in §6, not dropped"
+r7="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+sections[1]=[{"id":"CVE-9","section":1,"disposition":"lifted (fix now pullable)","action":"proposed bump PR (auto-merge lane; delivery pending); prior suppression lifted","reason":"x","package":"lib","installed":"1","fixed":"1.1","severity":"High","pending_delivery":True}]
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,sections[1],sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s6=rep.split("## 6.")[1].split("## 7.")[0]
+print("OK" if ("CVE-9" in s6 and "PROPOSED" in s6) else "BAD")' 2>/dev/null | tail -1)"
+{ eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump listed in §6" "$r7"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
