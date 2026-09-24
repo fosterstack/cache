@@ -291,7 +291,8 @@ def adjudicate(adjudicator, ctx, state):
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
-        except cli.Refused:
+        except cli.Refused as e:
+            state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a refusal is still billed
             continue
         except Exception:
             # never echo the exception text: an adjudicator's stderr can name the model id.
@@ -571,8 +572,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # counts for QUORUM only if it ran, inventoried packages, and was not excluded as an
         # inventory outlier (whose findings are still parsed and dispositioned).
         return bool(info.get("ran")) and (info.get("package_count") or 0) > 0 and info.get("quorum_ok", True)
+    def _scanned(s):
+        info = st.get(s) or {}
+        return bool(info.get("ran")) and (info.get("package_count") or 0) > 0
     ran_image = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _ran(s)]
-    not_ran = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if not _ran(s)]
+    excluded = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _scanned(s) and not (st.get(s) or {}).get("quorum_ok", True)]
+    not_ran = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if not _scanned(s)]
     oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
     agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
     quorum = len(ran_image) >= 3 and agree
@@ -591,8 +596,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         if findings_without_action:
             bits.append("%d findings without an action" % findings_without_action)
         if not quorum:
-            bits.append("scanner quorum %d/4 (need 3 agreeing); did not run: %s"
-                        % (len(ran_image), ", ".join(not_ran) or "none"))
+            bits.append("scanner quorum %d/4 (need 3 agreeing); did not run: %s; excluded as outliers: %s"
+                        % (len(ran_image), ", ".join(not_ran) or "none", ", ".join(excluded) or "none"))
         if pr_err:
             bits.append("suppression PR delivery failed: %s" % pr_err)
         if issue_failures:

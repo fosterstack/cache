@@ -266,14 +266,19 @@ def main():
     # below tolerance*max is excluded from the QUORUM (quorum_ok=False) — but its report is
     # KEPT so its actual findings are still parsed and dispositioned (R1 outer round-1 #2:
     # three inventories agreeing does not disprove the fourth scanner's real finding).
+    # Exclude an outlier vs the MEDIAN, not the max (R1 outer round-2 #3): one scanner that
+    # OVER-counts must not disqualify three that agree. A scanner outside [tol*median,
+    # median/tol] is excluded from the quorum (its findings are still assessed).
     live = {k: v for k, v in counts.items() if v is not None and v > 0}
     if len(live) >= 2:
-        mx = max(live.values())
+        import statistics
+        med = statistics.median(sorted(live.values()))
+        lo, hi = tol * med, (med / tol if tol else med)
         for k, v in list(live.items()):
-            if v < tol * mx:
+            if v < lo or v > hi:
                 status[k]["quorum_ok"] = False
-                status[k]["reason"] = "excluded from quorum: inventory disagreement (os_packages=%d vs max %d); findings still assessed" % (v, mx)
-                print("%s QUORUM-EXCLUDED (findings kept): os_packages=%d < %.2f*%d" % (k, v, tol, mx))
+                status[k]["reason"] = "excluded from quorum: inventory outlier (os_packages=%d vs median %g); findings still assessed" % (v, med)
+                print("%s QUORUM-EXCLUDED (findings kept): os_packages=%d outside [%.1f, %.1f]" % (k, v, lo, hi))
 
     # OSV Go-module source scan of the checked-out tree.
     gomod = os.path.join(reports, "osv-gomod.json")

@@ -1077,6 +1077,31 @@ leaked="$(grep -ciE 'anthropic|claude-secret' "$o/report.md" 2>/dev/null)"; leak
 withheld="$(grep -qi 'conclusion withheld' "$o/report.md" && echo yes || echo no)"
 { eq "$leaked" "0" && eq "$withheld" "yes"; } && ok || no "model name withheld from the report" "leaked=$leaked withheld=$withheld"
 
+########################################################################
+echo "=== outer-loop regressions (round 2) ==="
+
+begin "ol2-1-expired-supersede-acceptance-holds" "a later, expired ACCEPT supersedes an earlier longer one — the release gate HOLDS, not promote"
+o="$WORK/ol21"; rm -rf "$o"
+run "$PY" "$BIN/auditor-release-authz.py" --candidate "$F/release/cand-01.json" --issues "$F/release/iss-expired-super.json" --owner fosterstack-admin --today 2026-09-24 --out "$o/authz.json" && {
+  d="$(pj "$o/authz.json" 'd.get("decision")')"
+  eq "$d" "hold" && ok || no "hold on an expired superseding acceptance" "decision=$d"; }
+
+begin "ol2-2-refusal-usage-charged-to-budget" "adjudicate charges token usage even for a refusal, so the budget advances and stops"
+charged="$("$PY" -c '
+import sys,importlib.util,tempfile,os
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\njson.dump({\"refused\":True,\"token_usage\":100001},sys.stdout)\n")
+st={"tokens":0,"iters":0}
+R.adjudicate(fa,{"finding_id":"CVE-X"},st)
+print(st["tokens"])' 2>/dev/null)"
+{ [ "$charged" -ge 100001 ] 2>/dev/null; } && ok || no "refusal usage charged to the budget" "tokens=$charged"
+
+begin "ol2-3-high-outlier-excluded-quorum-holds" "one over-counting scanner is excluded as an outlier; the three agreeing scanners still form the quorum -> AUDIT COMPLETE, osv named excluded not did-not-run"
+o="$WORK/ol23"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-outlier.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  complete="$(grep -qi 'AUDIT COMPLETE' "$o/report.md" && echo yes || echo no)"
+  { eq "$complete" "yes"; } && ok || no "three agreeing scanners hold the quorum despite the outlier" "complete=$complete"; }
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

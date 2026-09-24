@@ -27,17 +27,21 @@ def _valid_future(datestr, today):
 
 
 def acceptance_verdict(issues, owner, number, cve, today):
+    # The LATEST owner decision for this CVE wins, THEN its expiry is judged (R1 outer
+    # round-2 #1): a later ACCEPT that is already expired must NOT resurrect an earlier,
+    # longer acceptance — it supersedes it and holds.
     verdict = "none"
     for i in issues.get("issues", []):
         if i.get("number") != number:
             continue
-        for c in i.get("comments", []):          # chronological; the latest owner decision wins
+        for c in i.get("comments", []):          # chronological
             if not isinstance(c, dict) or c.get("author") != owner:
                 continue
             first = (c.get("body", "").splitlines() or [""])[0].strip()
             m = ACCEPT.match(first)
-            if m and m.group(1) == cve and _valid_future(m.group(2), today):
-                verdict = "accept"; continue
+            if m and m.group(1) == cve:
+                verdict = "accept" if _valid_future(m.group(2), today) else "expired"
+                continue
             r = REJECT.match(first)
             if r and r.group(1) == cve:
                 verdict = "reject"

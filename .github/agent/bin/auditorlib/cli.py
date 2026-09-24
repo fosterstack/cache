@@ -47,7 +47,9 @@ def ask_model(adjudicator, finding_id, attempt="primary", model="primary", conte
         raise RuntimeError("adjudicator exit %d: %s" % (p.returncode, p.stderr.strip()))
     ans = json.loads(p.stdout)
     if ans.get("refused"):
-        raise Refused(finding_id)
+        ex = Refused(finding_id)
+        ex.token_usage = int(ans.get("token_usage") or 0)   # a refusal is still billed
+        raise ex
     return ans
 
 
