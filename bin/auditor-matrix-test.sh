@@ -1843,6 +1843,34 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
   { printf '%s' "$line" | grep -q 'agreed on OS packages:' && printf '%s' "$line" | grep -Eq 'grype\([0-9]+\)'; } \
     && ok || no "quorum line names agreed scanners with OS counts" "line=[$line]"; }
 
+begin "rpt4-scanner-table-maps-advisory-via-router-identity" "an advisory/alias scanner record (a DSA co-reporting CVEs) that the router placed in a section shows that §n in the scanner table, mapped through the ROUTER's completed identity (every alias, not an independent re-canonicalization) — never a bare '-' (R1 refactor round-5 #4)"
+o="$WORK/rpt4"; rm -rf "$o"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-advisory-bundle.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
+  dsarow="$(grep 'DSA-9999-1' "$o/reports/scanner-tables.txt" 2>/dev/null | head -1)"
+  mapped="$(printf '%s' "$dsarow" | grep -Eq '§[0-9]' && echo yes || echo no)"
+  { eq "$mapped" "yes"; } \
+    && ok || no "advisory row DSA-9999-1 shows a routed §n, not '-'" "row=[$dsarow]"; }
+
+begin "rpt5-run-report-header-token-cost-and-role" "auditor-run.py's rendered report header carries the model ROLE and a TOKEN COST field (REQ-AUD-7 AC1), never omitted and never a model id (R1 refactor round-5 #5)"
+o="$WORK/rpt5"; rm -rf "$o"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
+  hdr="$(sed -n '/## Run header/,/^## /p' "$o/report.md")"
+  hastok="$(printf '%s' "$hdr" | grep -qi 'token cost' && echo yes || echo no)"
+  hasrole="$(printf '%s' "$hdr" | grep -qi '\*\*model:\*\*' && echo yes || echo no)"
+  noid="$(grep -qE 'claude-[a-z0-9.-]+' "$o/report.md" && echo no || echo yes)"
+  { eq "$hastok" "yes" && eq "$hasrole" "yes" && eq "$noid" "yes"; } \
+    && ok || no "run header has token cost + model role, no model id" "tok=$hastok role=$hasrole no_id=$noid"; }
+
+begin "rpt6-run-report-scanner-down-is-first-line" "when a scanner did not run, auditor-run.py's report FIRST line names it and marks the assessment NOT clean (REQ-AUD-7 AC2, R1 refactor round-5 #6)"
+o="$WORK/rpt6"; rm -rf "$o"
+# grype/snyk are down here -> quorum fails -> auditor-run EXITS NON-ZERO by design; do not use run()
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-down.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+first="$(sed -n '1p' "$o/report.md" 2>/dev/null)"
+firstok="$(printf '%s' "$first" | grep -qi 'SCANNER DID NOT RUN' && echo yes || echo no)"
+notclean="$(printf '%s' "$first" | grep -qi 'not clean' && echo yes || echo no)"
+{ eq "$firstok" "yes" && eq "$notclean" "yes"; } \
+  && ok || no "first line names a down scanner and says not clean" "first=[$first]"
+
 echo "=== REQ-AUD-13 refactor boundary regressions (round 3) ==="
 # shared env builder for direct _dispose/_dispose_split cases
 r3env() { cat <<PYENV

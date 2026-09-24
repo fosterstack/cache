@@ -545,6 +545,7 @@ def adjudicate(adjudicator, ctx, state):
             print("adjudicator error for %s (%s): call failed" % (ctx["finding_id"], attempt))
             continue
         state["tokens"] += int(ans.get("token_usage") or 0)
+        state.setdefault("roles_used", set()).add(role)
         return ans.get("category") or "unknown"
     return "refused"
 
@@ -675,6 +676,7 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
         gf = _group_facts(c, {"findings": findings, "aliases": aliases})
         row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": None,
                "severity": gf["severity"] or "Unknown", "section": 4,
+               "aliases": sorted(set(sorted(aliases) + [c])),
                "disposition": "under investigation", "reachability": "n/a",
                "action": "advisory-only: reported via a co-report bundle, no per-CVE scanner record",
                "reason": "no per-CVE scanner record establishes an affected package",
@@ -735,6 +737,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
     row = {"id": c, "package": gf["package"], "installed": gf["installed"], "fixed": gf["fixed"],
            "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
            "disposition": None, "action": None, "reason": None,
+           "aliases": sorted(set(ids)),               # every identifier this scope was grouped under
            "scope_purls": sorted(set(subs or []))}   # this row's scope, for per-scope table mapping
     out = env["out"]; ts = env["ts"]; exp = env["exp"]; dry = env["dry"]
     _purls = sorted(set(subs or []))
@@ -897,7 +900,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         else:
             kev_ok = False
     exp = _expiry(today)
-    state = {"tokens": 0, "iters": 0}
+    state = {"tokens": 0, "iters": 0, "roles_used": set()}
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
@@ -976,6 +979,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             rows.append({"id": c, "package": ",".join(covpkgs) or "?",
                          "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
                          "fixed": None, "severity": _max_sev(covered), "section": 5,
+                         "aliases": sorted(set(sorted(grp["aliases"]) + [c])),
+                         "scope_purls": subs or [],
                          "disposition": "not_affected (false positive)", "action": "closed",
                          "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(covpkgs)),
                          "vex_id": _fp_sid, "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"]})
@@ -1103,7 +1108,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
-    report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info)
+    report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info, state)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
@@ -1199,6 +1204,7 @@ def _conclusion(adjudicator, sections, m, state=None):
         text = (ans.get("narrative") or "").strip()
         if state is not None:
             state["tokens"] += int(ans.get("token_usage") or 0)   # narrative counts against the budget too
+            state.setdefault("roles_used", set()).add("primary")
     except Exception:
         # Never echo the exception text into the report: it can carry the model id from an
         # SDK error. A generic withheld line only.
@@ -1218,18 +1224,31 @@ def _scanner_tables(m, rows, out):
     from auditorlib import parsers as P
     st = m.get("scanner_status") or {}
     reports = m.get("scanner_reports") or {}
-    # map disposition by (cve, package purl) — the ROUTED scope — not by CVE alone, so two
+    # map disposition by (identifier, package purl) — the ROUTED scope — not by CVE alone, so two
     # versions of a package that landed in different sections are not both shown for each row
-    # (R1 refactor round-4 #6). Fall back to the CVE's sections only if the purl is unmatched.
-    sec_by_scope = {}; sec_by_cve = {}
+    # (R1 refactor round-4 #6). Index by EVERY identifier the router grouped the scope under
+    # (canonical id + all aliases), so an advisory/alias record (e.g. a DSA co-reporting several
+    # CVEs) that the router placed in a section is mapped through the router's completed identity
+    # rather than an independent re-canonicalization that may pick a different representative
+    # (R1 refactor round-5 #4). Fall back to any-purl match on those identifiers if the exact
+    # (id, purl) is unmatched.
+    sec_by_scope = {}; sec_by_id = {}
     for r in rows:
-        sec_by_cve.setdefault(r["id"], set()).add(r["section"])
-        for purl in (r.get("scope_purls") or []):
-            sec_by_scope.setdefault((r["id"], purl), set()).add(r["section"])
+        for rid in set([r["id"]] + list(r.get("aliases") or [])):
+            sec_by_id.setdefault(rid, set()).add(r["section"])
+            for purl in (r.get("scope_purls") or []):
+                sec_by_scope.setdefault((rid, purl), set()).add(r["section"])
 
     def _disp(fid, aliases, purl):
-        cve = C.canon(fid, aliases)
-        secs = sec_by_scope.get((cve, purl)) or sec_by_cve.get(cve)
+        cands = set([fid] + list(aliases or []))
+        cands.add(C.canon(fid, aliases))          # also try the record's own canonical form
+        secs = set()
+        for rid in cands:
+            secs |= sec_by_scope.get((rid, purl), set())
+        if not secs:                              # purl unmatched: fall back to identifier alone
+            for rid in cands:
+                secs |= sec_by_id.get(rid, set())
+        secs = {x for x in secs if x is not None}
         return ("§" + ",".join(str(x) for x in sorted(secs))) if secs else "-"
     PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
                ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")), ("snyk", P.parse_snyk)]
@@ -1268,15 +1287,13 @@ def _scanner_tables(m, rows, out):
     cli.writef(os.path.join(out, "reports", "scanner-tables.txt"), text)
 
 
-def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None, quorum_info=None):
+def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None, quorum_info=None, state=None):
     st = m.get("scanner_status") or {}
     test = (m.get("provenance") or {}).get("source") == "test-image"
     digest = (m.get("candidate_digests") or {}).get("production", "unknown")
     what = ("TEST IMAGE %s (dispatch override)" % (m.get("test_image") or digest)) if test \
         else ("candidate production %s commit %s" % (digest, m.get("commit")))
-    L = ["# Daily CVE auditor report", "", "## Conclusion", "", conclusion, "",
-         "## Run header", "", "**Audited:** %s" % what]
-    ran_lines = []; notrun_lines = []
+    ran_lines = []; notrun_lines = []; down_ac2 = []
     reports = m.get("scanner_reports") or {}
     for s in IMAGE_SCANNERS + ("osv-scanner-gomod",):
         info = st.get(s) or {}
@@ -1288,7 +1305,18 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             ran_lines.append("%s %s db=%s packages=%s os_packages=%s findings=%s"
                              % (s, info.get("version") or "-", db, pc, info.get("os_package_count"), fn))
         else:
-            notrun_lines.append("%s — %s" % (s, info.get("reason", "no report")))
+            reason = info.get("reason", "no report")
+            notrun_lines.append("%s — %s" % (s, reason))
+            if reason != "ok":                    # a scanner that genuinely did not inventory
+                down_ac2.append("%s (%s)" % (s, reason))
+    # A scanner that did not run is the report's FIRST line and the report is never labelled a
+    # clean bill (REQ-AUD-7 AC2, R1 refactor round-5 #6): an empty result while a scanner is
+    # down is NOT "all clear". Precede the title so a reader sees it before the conclusion.
+    L = []
+    if down_ac2:
+        L += ["> SCANNER DID NOT RUN — assessment is NOT clean: " + "; ".join(down_ac2), ""]
+    L += ["# Daily CVE auditor report", "", "## Conclusion", "", conclusion, "",
+          "## Run header", "", "**Audited:** %s" % what]
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
         L.append("**Did not run:** " + "; ".join(notrun_lines))
@@ -1310,8 +1338,12 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("**Inventory quorum:** " + "; ".join(parts))
     g = m.get("govulncheck")
     L.append("**Reachability:** " + ("govulncheck symbol @ %s (complete=%s)" % (g.get("commit"), g.get("complete")) if isinstance(g, dict) else "not run"))
-    L.append("**dry_run:** %s   **adjudicator:** %s" % ("yes" if dry else "no",
-             "stub" if "stub" in os.path.basename(adjudicator or "").lower() else "real"))
+    is_stub = "stub" in os.path.basename(adjudicator or "").lower()
+    roles = sorted((state or {}).get("roles_used") or [])
+    model_ran = "stub (no real model called)" if is_stub else ("+".join(roles) if roles else "none called")
+    tok = int((state or {}).get("tokens") or 0)
+    L.append("**dry_run:** %s   **adjudicator:** %s   **model:** %s   **token cost:** %d" %
+             ("yes" if dry else "no", "stub" if is_stub else "real", model_ran, tok))
     probs = (consistency or {}).get("problems", [])
     L.append("**Consistency:** %s   **Finding-set hash:** `%s`" % ("clean" if not probs else "%d problems" % len(probs), fs_hash))
     L.append("")
