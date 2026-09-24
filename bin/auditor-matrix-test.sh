@@ -1814,6 +1814,111 @@ ok = "- \x27"+p1+"\x27" in snyk and "- \x27"+p2+"\x27" in snyk and "2026-09-30" 
 i1=snyk.find(p1); i2=snyk.find(p2); seg=snyk[min(i1,i2):]
 print("OK" if ok else "BAD")' 2>/dev/null)"
 { eq "$r24" "OK"; } && ok || no "per-scope deadlines in Snyk selectors" "$r24"
+
+echo "=== report items (scanner tables, db dates, quorum honesty) ==="
+
+begin "rpt1-scanner-tables-groups-and-artifact" "after routing, each scanner gets a collapsible job-log group '<scanner> — <n> packages, <n> findings' with a fixed-width table incl a disposition (§n) column; the same text is in reports/scanner-tables.txt; a clean scanner is a one-line group"
+o="$WORK/rpt1"; rm -rf "$o"
+log="$(run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" 2>/dev/null; cat "$o/reports/scanner-tables.txt" 2>/dev/null)"
+tf="$o/reports/scanner-tables.txt"
+gr="$(grep -c '::group:: *grype — [0-9]* packages, [0-9]* findings' "$tf" 2>/dev/null || echo 0)"
+hascol="$(grep -c 'vulnerability id' "$tf" 2>/dev/null || echo 0)"
+hasdisp="$(grep -Ec '§[0-9]' "$tf" 2>/dev/null || echo 0)"
+ends="$(grep -c '::endgroup::' "$tf" 2>/dev/null || echo 0)"
+{ [ "$gr" -ge 1 ] 2>/dev/null && [ "$hascol" -ge 1 ] 2>/dev/null && [ "$hasdisp" -ge 1 ] 2>/dev/null && [ "$ends" -ge 4 ] 2>/dev/null; } \
+  && ok || no "scanner-tables.txt has per-scanner groups + table + disposition column" "groups=$gr col=$hascol disp=$hasdisp ends=$ends"
+
+begin "rpt2-no-db-date-published-never-dash" "a scanner that publishes no database date shows 'no db date published' in the header, never a bare 'db=-'"
+o="$WORK/rpt2"; rm -rf "$o"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
+  nodash="$(grep -c 'db=-' "$o/report.md" 2>/dev/null)"; nodash="${nodash:-0}"
+  nopub="$(grep -c 'no db date published' "$o/report.md" 2>/dev/null)"; nopub="${nopub:-0}"
+  { [ "$nodash" -eq 0 ] 2>/dev/null && [ "$nopub" -ge 1 ] 2>/dev/null; } \
+    && ok || no "header says 'no db date published', never 'db=-'" "db_dash=$nodash no_db_published=$nopub"; }
+
+begin "rpt3-inventory-quorum-names-agreed-and-not" "the header names which scanners' OS inventories agreed (with counts) and which did not inventory"
+o="$WORK/rpt3b"; rm -rf "$o"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
+  line="$(grep 'Inventory quorum:' "$o/report.md")"
+  { printf '%s' "$line" | grep -q 'agreed on OS packages:' && printf '%s' "$line" | grep -Eq 'grype\([0-9]+\)'; } \
+    && ok || no "quorum line names agreed scanners with OS counts" "line=[$line]"; }
+
+echo "=== REQ-AUD-13 refactor boundary regressions (round 3) ==="
+# shared env builder for direct _dispose/_dispose_split cases
+r3env() { cat <<PYENV
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"$1","ts":"2026-09-24T00:00:00Z","dry":True,"digest":"x","carried_expiry":$2,"today":"2026-09-24"}
+PYENV
+}
+
+begin "refr3-2-fix-does-not-transfer-across-versions" "an unfixed version and a fixed version of the SAME package route independently (fixed -> §3 bump; unfixed -> not a §3 bump on the wrong version)"
+o="$WORK/refr3-2"; rm -rf "$o"
+res="$("$PY" -c '
+import importlib.util,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+def mk(v,fx,sc): return {"scanner":sc,"finding_id":"CVE-2099-1703","purl":"pkg:golang/example.org/lib@"+v,"aliases":["CVE-2099-1703"],"package":"example.org/lib","fixed_version":fx,"severity":("Critical" if fx is None else "Medium"),"extra":{}}
+fs=[mk("v8.0.0",None,"grype"),mk("v8.0.0",None,"osv-scanner-gomod"),mk("v1.0.0","1.0.1","grype"),mk("v1.0.0","1.0.1","osv-scanner-gomod")]
+rows,_=R._dispose_split("CVE-2099-1703",fs,["CVE-2099-1703"],env,[])
+byv={}
+for r in rows: byv[r.get("fixed")]=r["section"]
+ok = byv.get("1.0.1")==3 and byv.get(None)==2
+print("OK" if ok else "BAD:%s"%[(r.get("fixed"),r["section"]) for r in rows])' "$o" 2>/dev/null | tail -1)"
+{ eq "$res" "OK"; } && ok || no "fix does not transfer across versions" "$res"
+
+begin "refr3-3-per-scope-filenames-collision-free" "two package names that sanitize to the same basename get DISTINCT VEX files (no clobber before consolidation)"
+o="$WORK/refr3-3"; rm -rf "$o"
+res="$("$PY" -c '
+import importlib.util,glob,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+def mk(pkg,sc): return {"scanner":sc,"finding_id":"CVE-2099-1802","purl":"pkg:golang/"+pkg+"@v1.0.0","aliases":["CVE-2099-1802"],"package":pkg,"fixed_version":None,"severity":"High","extra":{}}
+fs=[mk("example.org/a/b","grype"),mk("example.org/a/b","osv-scanner-gomod"),mk("example.org/a_b","grype"),mk("example.org/a_b","osv-scanner-gomod")]
+R._dispose_split("CVE-2099-1802",fs,["CVE-2099-1802"],env,[])
+files=[x for x in glob.glob(out+"/vex/*.json")]
+print("OK" if len(files)==2 else "BAD:%d"%len(files))' "$o" 2>/dev/null | tail -1)"
+{ eq "$res" "OK"; } && ok || no "distinct scopes get distinct VEX filenames" "$res"
+
+begin "refr3-5-lineage-only-not-routed" "a lineage-only advisory record with a different package does NOT form its own disposition; only the real package finding is routed"
+o="$WORK/refr3-5"; rm -rf "$o"
+res="$("$PY" -c '
+import importlib.util,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+out=__import__("sys").argv[1]; shutil.rmtree(out,ignore_errors=True)
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":out,"ts":"t","dry":True,"digest":"x","carried_expiry":{},"today":"2026-09-24"}
+bbb=[{"scanner":"grype","finding_id":"CVE-2099-1806","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-1806"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}},
+     {"scanner":"osv-scanner","finding_id":"CVE-2099-1806","purl":"pkg:golang/example.org/bbb@v2","aliases":["CVE-2099-1806"],"package":"example.org/bbb","fixed_version":None,"severity":"Critical","extra":{}}]
+lin={"scanner":"osv-scanner","finding_id":"GO-2099-1805","purl":"pkg:golang/example.org/aaa@v1","aliases":["CVE-2099-1806"],"package":"example.org/aaa","fixed_version":None,"severity":"Low","extra":{},"_lineage_only":True}
+rows,_=R._dispose_split("CVE-2099-1806",bbb+[lin],["CVE-2099-1806"],env,[])
+pkgs=sorted(set(r["package"] for r in rows))
+print("OK" if pkgs==["example.org/bbb"] else "BAD:%s"%pkgs)' "$o" 2>/dev/null | tail -1)"
+{ eq "$res" "OK"; } && ok || no "lineage-only record not routed as its own disposition" "$res"
+
+begin "refr3-6-pullable-fix-lifts-carried-suppression" "when a fix becomes pullable for a carried scope, the finding is §1 lifted and its carried statement/ignore/inventory are removed"
+res="$("$PY" -c '
+import importlib.util,shutil
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+shutil.rmtree("/tmp/refr3-6",ignore_errors=True)
+purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr3-6","ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
+f={"scanner":"grype","finding_id":"CVE-2099-1801","purl":purl,"aliases":["CVE-2099-1801"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
+row,_=R._dispose("CVE-2099-1801",[f],["CVE-2099-1801"],env,[])
+print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row["section"])' 2>/dev/null | tail -1)"
+{ eq "$res" "OK"; } && ok || no "pullable fix lifts the carried suppression (§1 + removal)" "$res"
+
+begin "refr3-4-permanent-scope-keeps-no-deadline" "a permanent not_affected scope does not acquire a temporary sibling's expiry via a CVE-wide fallback"
+res="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+import sys; sys.path.insert(0,".github/agent/bin"); from auditorlib import vex
+c="CVE-2099-1807"
+perm=vex.doc(c,"not_affected","t",justification="vulnerable_code_not_present",subcomponents=["pkg:deb/debian/perm@1"])["statements"][0]
+tmp=vex.doc(c,"affected","t",action="x",subcomponents=["pkg:deb/debian/temp@1"])["statements"][0]
+snyk,_t=R._ignores_from_statements([perm,tmp],{(c,"pkg:deb/debian/temp@1"):"2026-09-30"})
+seg=snyk.split("perm@1")[1].split("temp@1")[0]
+print("OK" if "expires" not in seg and "2026-09-30" in snyk else "BAD")' 2>/dev/null | tail -1)"
+{ eq "$res" "OK"; } && ok || no "permanent scope keeps no deadline" "$res"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

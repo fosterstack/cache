@@ -272,9 +272,10 @@ def _ignores_from_statements(statements, expiry_map):
                 if _sub_purl(sc):
                     info["purls"].add(_sub_purl(sc))
     def _exp_for(cve, sel):
-        # per-(cve, package) deadline, so one scope's box never leaks onto a sibling scope
-        # (R1 refactor round-2 #4); fall back to a per-CVE deadline if that is all there is.
-        return expiry_map.get((cve, sel)) or expiry_map.get(cve)
+        # a deadline is applied ONLY to the exact (cve, package) scope that has one — never a
+        # CVE-wide fallback, so a permanent (not_affected) or longer-dated sibling scope does not
+        # acquire another scope's box (R1 refactor round-2 #4, round-3 #4).
+        return expiry_map.get((cve, sel))
     snyk = ["version: v1.5.0", "ignore:"]
     toml = []
     for cve in sorted(by_cve):
@@ -657,34 +658,49 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
     """Route a finding set, SPLIT BY ECOSYSTEM (R1 outer round-4 #1): Go findings and OS
     (non-Go) findings for the same CVE are dispositioned separately with distinct VEX names,
     so a Go reachability closure never closes an OS finding (and vice versa)."""
+    import hashlib
     base = base or c
     ids = sorted(aliases) + [c]
-    # Split by ECOSYSTEM and PACKAGE so one package's fix or reachability never routes another
-    # package's finding for the same CVE (R1 outer round-4 #1; R1 refactor round-2 #3), then
-    # split a Go package by trace coverage. Each subset is a distinct disposition.
-    by_pkg = {}
-    for f in findings:
+    # Route the NON-lineage findings, split by (ecosystem, package, INSTALLED VERSION): a fixed
+    # version and an unfixed version of the same package are distinct scopes and must not share a
+    # fix (R1 refactor round-3 #2), and a lineage-only advisory record never forms its own
+    # disposition (R1 refactor round-3 #5) — it stays a quorum/lineage signal at the group level.
+    nonlineage = [f for f in findings if not f.get("_lineage_only")]
+    lineage = [f for f in findings if f.get("_lineage_only")]
+    by_scope = {}
+    for f in nonlineage:
         eco = "go" if _eco(f.get("purl")) in ("golang", "go") else "os"
-        by_pkg.setdefault((eco, f.get("package") or "?"), []).append(f)
+        by_scope.setdefault((eco, f.get("package") or "?", _ver_from_purl(f.get("purl")) or "?"), []).append(f)
+    if not by_scope and lineage:
+        # a pure-bundle CVE (only advisory lineage) still needs one disposition
+        f0 = lineage[0]
+        by_scope[("os", f0.get("package") or "?", _ver_from_purl(f0.get("purl")) or "?")] = lineage
     subsets = []   # list of (tag, findings)
-    for (eco, pkg), fs in sorted(by_pkg.items()):
+    for key in sorted(by_scope, key=str):
+        eco = key[0]; fs = by_scope[key]
         if eco == "go":
             verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
             if verdict == "unreachable":
                 covered, uncovered = _go_covered(fs, ev)
                 if covered:
-                    subsets.append(("go:%s" % pkg, covered))
+                    subsets.append(("go", covered))
                 if uncovered:
-                    subsets.append(("go-live:%s" % pkg, uncovered))
+                    subsets.append(("go-live", uncovered))
             else:
-                subsets.append(("go:%s" % pkg, fs))
+                subsets.append(("go", fs))
         else:
-            subsets.append(("os:%s" % pkg, fs))
+            subsets.append(("os", fs))
     subsets = [(tag, s) for tag, s in subsets if s]
     out_rows = []; mc = 0
     for tag, sub in subsets:
-        # distinct VEX/ignore file name per subset (the statement @id itself is scope-derived)
-        nm = base if len(subsets) == 1 else "%s-%s" % (base, re.sub(r"[^A-Za-z0-9._-]", "_", tag))
+        # collision-free VEX/ignore file name: base + tag + a hash of the subset's exact purls,
+        # so two distinct scopes never share a basename (R1 refactor round-3 #3). The statement
+        # @id is scope-derived independently.
+        if len(subsets) == 1:
+            nm = base
+        else:
+            h = hashlib.sha1("\n".join(sorted(f.get("purl") or "" for f in sub)).encode()).hexdigest()[:12]
+            nm = "%s-%s-%s" % (base, tag, h)
         row, mi = _dispose(c, sub, aliases, env, would, name=nm)
         out_rows.append(row); mc += mi
     return out_rows, mc
@@ -780,6 +796,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
             return row, m_inc
     # 4) deterministic fix routing.
     if gf["fixed"]:
+        # AC7: a fix that is now pullable LIFTS a suppression this scope was carrying — the old
+        # affected/temporary VEX, ignore and inventory for this exact scope are removed this run
+        # (delivery drops them) and the row is §1 lifted; otherwise a fresh fixable finding is §3.
+        lifted = bool(env.get("carried_expiry", {}).get((c, this_scope)))
         if gf["is_go"]:
             title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
             _open_pr("auditor/bump-%s" % c, title, "auto-merge-lane", dry, would, "auditor: bump %s" % c)
@@ -793,6 +813,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
             row.update(section=3, disposition="real, fixable (base rebuild)", action=act,
                        fixed="base-image %s" % gf["fixed"], reachability="n/a (OS package)",
                        reason="awaiting base rebuild %s" % gf["fixed"])
+        if lifted:
+            row.update(section=1, disposition="lifted (fix now pullable)",
+                       action=row["action"] + "; prior suppression lifted (VEX/ignore/inventory removed)",
+                       reopened_scope=[c, list(this_scope[0]), list(this_scope[1])])
         return row, m_inc
     # Expiry is keyed by this disposition's SCOPE (REQ-AUD-13 AC6): the carried time box for
     # exactly this scope. If it has PASSED, only THIS scope reopens into §3 and only its
@@ -940,6 +964,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         rs, mi = _dispose_split(c, grp["findings"], sorted(grp["aliases"]), env, would)
         rows.extend(rs); m_count += mi
 
+    # after routing: per-scanner tables to the job log + reports/scanner-tables.txt (report item 1)
+    try:
+        _scanner_tables(m, rows, out)
+    except Exception as e:
+        print("scanner-tables emit failed: %s" % e)
     # sections + status
     sections = {n: [] for n in range(1, 8)}
     for r in rows:
@@ -1145,6 +1174,61 @@ def _conclusion(adjudicator, sections, m, state=None):
     return text
 
 
+def _scanner_tables(m, rows, out):
+    """After routing, emit ONE collapsible job-log group per image scanner titled
+    '<scanner> — <n> packages, <n> findings' with a fixed-width table (package, installed
+    version, vulnerability id, severity, fixed version, disposition = the §1-§7 section it
+    landed in). A clean scanner prints a one-line group. The same text is written to
+    reports/scanner-tables.txt in the artifact (R1 report item 1). Scanner-agnostic: it
+    iterates whatever image scanners the manifest records."""
+    from auditorlib import parsers as P
+    st = m.get("scanner_status") or {}
+    reports = m.get("scanner_reports") or {}
+    sec_by_cve = {}
+    for r in rows:
+        sec_by_cve.setdefault(r["id"], set()).add(r["section"])
+
+    def _disp(fid, aliases):
+        cve = C.canon(fid, aliases)
+        secs = sec_by_cve.get(cve)
+        return ("§" + ",".join(str(x) for x in sorted(secs))) if secs else "-"
+    PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
+               ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")), ("snyk", P.parse_snyk)]
+    lines = []
+    for name, fn in PARSERS:
+        info = st.get(name) or {}
+        path = reports.get(name)
+        pc = info.get("package_count"); fc = info.get("findings")
+        title = "%s — %s packages, %s findings" % (name, pc if pc is not None else "?", fc if fc is not None else "?")
+        lines.append("::group::" + title)
+        if not path or not info.get("ran"):
+            lines.append("  did not inventory: %s" % info.get("reason", "no report"))
+            lines.append("::endgroup::"); continue
+        try:
+            findings = fn(path)
+        except Exception as e:
+            findings = []; lines.append("  (could not parse report: %s)" % e)
+        if not findings:
+            lines.append("  clean — no findings"); lines.append("::endgroup::"); continue
+        table = []
+        for f in findings:
+            inst = (f.get("extra") or {}).get("installed_version") or _ver_from_purl(f.get("purl")) or "-"
+            table.append([f.get("package") or "-", inst, f.get("finding_id") or "-",
+                          (f.get("severity") or "-"), (f.get("fixed_version") or "-"),
+                          _disp(f.get("finding_id"), f.get("aliases") or [])])
+        hdr = ["package", "installed", "vulnerability id", "severity", "fixed", "disposition"]
+        widths = [max(len(hdr[i]), max(len(str(r[i])) for r in table)) for i in range(len(hdr))]
+        fmt = "  " + "  ".join("%-" + str(w) + "s" for w in widths)
+        lines.append(fmt % tuple(hdr))
+        lines.append("  " + "  ".join("-" * w for w in widths))
+        for r in sorted(table):
+            lines.append(fmt % tuple(r))
+        lines.append("::endgroup::")
+    text = "\n".join(lines) + "\n"
+    print(text)                                  # the job log
+    cli.writef(os.path.join(out, "reports", "scanner-tables.txt"), text)
+
+
 def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None):
     st = m.get("scanner_status") or {}
     test = (m.get("provenance") or {}).get("source") == "test-image"
@@ -1160,13 +1244,31 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         pc = info.get("package_count"); fn = info.get("findings")
         ran = bool(info.get("ran")) and (info.get("package_count") or 0) > 0
         if reports.get(s) and ran:
-            ran_lines.append("%s %s db=%s packages=%s findings=%s"
-                             % (s, info.get("version") or "-", info.get("db_date") or "-", pc, fn))
+            # a scanner that publishes no database date says so — never a bare dash
+            db = info.get("db_date") or "no db date published"
+            ran_lines.append("%s %s db=%s packages=%s os_packages=%s findings=%s"
+                             % (s, info.get("version") or "-", db, pc, info.get("os_package_count"), fn))
         else:
             notrun_lines.append("%s — %s" % (s, info.get("reason", "no report")))
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
         L.append("**Did not run:** " + "; ".join(notrun_lines))
+    # Inventory quorum honesty: name which image scanners' OS inventories AGREED (the quorum
+    # basis), which were excluded as outliers, and which did not inventory — with the OS counts,
+    # so a total-package figure is never mistaken for the agreement (R1 report item 3).
+    def _osc(s):
+        return (st.get(s) or {}).get("os_package_count")
+    agreed = [s for s in IMAGE_SCANNERS
+              if (st.get(s) or {}).get("ran") and (_osc(s) or 0) > 0 and (st.get(s) or {}).get("quorum_ok", True)]
+    excl = [s for s in IMAGE_SCANNERS
+            if (st.get(s) or {}).get("ran") and (_osc(s) or 0) > 0 and not (st.get(s) or {}).get("quorum_ok", True)]
+    noinv = [s for s in IMAGE_SCANNERS if s not in agreed and s not in excl]
+    parts = ["agreed on OS packages: " + (", ".join("%s(%s)" % (s, _osc(s)) for s in agreed) or "none")]
+    if excl:
+        parts.append("excluded as outliers: " + ", ".join("%s(%s)" % (s, _osc(s)) for s in excl))
+    if noinv:
+        parts.append("did not inventory: " + ", ".join("%s (%s)" % (s, (st.get(s) or {}).get("reason", "no report")) for s in noinv))
+    L.append("**Inventory quorum:** " + "; ".join(parts))
     g = m.get("govulncheck")
     L.append("**Reachability:** " + ("govulncheck symbol @ %s (complete=%s)" % (g.get("commit"), g.get("complete")) if isinstance(g, dict) else "not run"))
     L.append("**dry_run:** %s   **adjudicator:** %s" % ("yes" if dry else "no",
