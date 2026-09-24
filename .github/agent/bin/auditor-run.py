@@ -117,6 +117,10 @@ def _emit_owner_issue(title, body, dry, would):
     try:
         r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number,title"],
                            capture_output=True, text=True, env=ienv)
+        if r.returncode != 0:
+            # a FAILED discovery must NOT fall through to a duplicate create that abandons the
+            # existing acceptance pointer (R1 outer round-3 #2): abort as a failure.
+            print("owner-issue discovery FAILED: %s" % (r.stderr or "").strip()); return False, None
         found = [i for i in json.loads(r.stdout or "[]") if i.get("title") == title]
         if found:
             num = found[0]["number"]
@@ -447,6 +451,9 @@ def _dispose(c, findings, aliases, env, would, name=None):
     in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
     reason = policy.threshold_reason(gf["severity"], in_kev, gf["known_exploited"])
     at = reason != "below"
+    if not at and not env.get("kev_ok", True):
+        # KEV membership could not be checked -> do not downgrade; escalate (fail closed).
+        at = True; reason = "kev-unavailable (fail-closed)"
     vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
               target_date=exp, vex_name=vn)
@@ -480,17 +487,24 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
     idx = log_index(logpath)
     adjudicator = adjudicator or cli.opt("--adjudicator", os.path.join(HERE, "auditor-adjudicator-client.py"))
-    kev_ids = set()
-    if kevpath and os.path.exists(kevpath):
-        try:
-            from auditorlib import parsers as P
-            kev_ids = P.parse_kev(kevpath)
-        except Exception:
-            kev_ids = set()
+    # KEV availability is threshold EVIDENCE: an unavailable/malformed catalog is NOT the same
+    # as "checked, not a member" (R1 outer round-3 #1). kev_ok=False fails threshold closed
+    # (a below-threshold no-fix finding is escalated to at_or_above) so risk is never silently
+    # downgraded when CISA is unreachable.
+    kev_ids = set(); kev_ok = True
+    if kevpath is not None:
+        if os.path.exists(kevpath):
+            try:
+                from auditorlib import parsers as P
+                kev_ids = P.parse_kev(kevpath)
+            except Exception:
+                kev_ok = False
+        else:
+            kev_ok = False
     exp = _expiry(today)
     state = {"tokens": 0, "iters": 0}
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
-           "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "exp": exp, "out": out,
+           "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production")}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):

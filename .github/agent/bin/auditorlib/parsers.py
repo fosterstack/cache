@@ -165,9 +165,16 @@ def parse_govulncheck(path):
         if "config" in obj:
             scan_level = (obj["config"] or {}).get("scan_level")
         if "SBOM" in obj:
-            roots = (obj["SBOM"] or {}).get("roots") or []
-            if roots:
-                module = roots[0]
+            sbom = obj["SBOM"] or {}
+            roots = sbom.get("roots") or []
+            mods = [(mm.get("path") or "") for mm in (sbom.get("modules") or []) if mm.get("path")]
+            # roots[0] is the scanned PACKAGE import path, NOT the module (R1 outer round-3 #3):
+            # the module is the SBOM module whose path is a prefix of that package (longest
+            # match, excluding stdlib). Fall back to roots[0] only if no module matches.
+            root0 = roots[0] if roots else None
+            if root0:
+                cands = [p for p in mods if p != "stdlib" and (root0 == p or root0.startswith(p + "/"))]
+                module = max(cands, key=len) if cands else root0
         f = obj.get("finding")
         if not f:
             continue

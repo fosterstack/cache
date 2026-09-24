@@ -1102,6 +1102,52 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-outli
   complete="$(grep -qi 'AUDIT COMPLETE' "$o/report.md" && echo yes || echo no)"
   { eq "$complete" "yes"; } && ok || no "three agreeing scanners hold the quorum despite the outlier" "complete=$complete"; }
 
+########################################################################
+echo "=== outer-loop regressions (round 3) ==="
+
+begin "ol3-1-kev-unavailable-fails-closed" "a Medium no-fix finding with an UNAVAILABLE KEV catalog is escalated to at_or_above (fail-closed), not silently below-threshold"
+o="$WORK/ol31"; shim="$WORK/ol31.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-mediumnofix.json" --kev "$WORK/no-such-kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+esc="$(grep 'CVE-2099-9200' "$o/report.md" | grep -qi 'kev-unavailable' && echo at || echo no)"
+issued="$(grep -c 'issue create .*CVE-2099-9200' "$shim" 2>/dev/null)"; issued="${issued:-0}"
+{ eq "$esc" "at" && [ "$issued" -ge 1 ] 2>/dev/null; } \
+  && ok || no "KEV-unavailable escalates the finding + owner issue" "escalated=$esc issue=$issued"
+
+begin "ol3-2-issue-discovery-failure-incomplete" "a failed 'gh issue list' (discovery) does NOT create a duplicate; the run is AUDIT INCOMPLETE"
+o="$WORK/ol32"; rm -rf "$o"; fb="$WORK/ol32-bin"; rm -rf "$fb"; mkdir -p "$fb"; glog="$WORK/ol32-gh.log"; rm -f "$glog"
+cat > "$fb/gh" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$glog"
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "::error::HTTP 503" >&2; exit 1; fi
+if [ "\$1" = "pr" ] && [ "\$2" = "create" ]; then echo "https://github.com/OWNER/REPO/pull/1"; fi
+exit 0
+EOF
+cat > "$fb/git" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fb/gh" "$fb/git"
+env PATH="$fb:$PATH" AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP AUDITOR_ISSUES_TOKEN=JOB \
+  "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rc=$?
+inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
+created="$(grep -c 'issue create' "$glog" 2>/dev/null)"; created="${created:-0}"
+{ eq "$inc" "yes" && eq "$created" "0" && [ "$rc" -ne 0 ] 2>/dev/null; } \
+  && ok || no "failed discovery -> no duplicate create, INCOMPLETE" "incomplete=$inc creates=$created exit=$rc"
+
+begin "ol3-3-gvc-module-from-sbom-modules" "parse_govulncheck derives the module from SBOM.modules, not roots[0] (a scanned subpackage)"
+gv="$WORK/ol33-gvc.json"
+cat > "$gv" <<'EOF'
+{"config":{"scan_level":"symbol"}}
+{"SBOM":{"go_version":"go1.27.0","modules":[{"path":"github.com/fosterstack/cache"},{"path":"stdlib","version":"v1.27.0"}],"roots":["github.com/fosterstack/cache/internal/blobstore"]}}
+{"finding":{"osv":"GO-2099-9301","trace":[{"module":"golang.org/x/text","version":"v0.3.0"}]}}
+EOF
+modout="$("$PY" -c '
+import sys;sys.path.insert(0,".github/agent/bin")
+from auditorlib import parsers as P
+g=P.parse_govulncheck(sys.argv[1]); print(g["module"])' "$gv" 2>/dev/null)"
+{ eq "$modout" "github.com/fosterstack/cache"; } \
+  && ok || no "module resolved from SBOM.modules" "module=$modout"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
