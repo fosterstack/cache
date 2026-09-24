@@ -115,15 +115,22 @@ def parse_osv(path, scanner="osv-scanner"):
                 # bundle). Bundle detection therefore keys on `upstream` alone.
                 aliases = set(v.get("aliases") or [])
                 upstream = set(v.get("upstream") or [])
+                # The record's OWN identity CVEs come from its id + its explicit aliases (always
+                # equivalence). `upstream` CVEs that are NOT part of that identity are the extra
+                # members a distro advisory bundles in — those, and only those, are bundle
+                # members that must NOT bridge (R1 outer round-6 #2, round-7 #2). A record can be
+                # BOTH: its own identity (kept as aliases, union normally) AND an advisory that
+                # also covers other CVEs (carried as bundle_cves, distributed as lineage).
+                identity_cves = _cves(aliases | {fid})
                 up_cves = _cves(upstream | {fid})
+                extra_cves = up_cves - identity_cves
                 extra = {"ecosystem": pkg.get("ecosystem"),
                          "installed_version": pkg.get("version")}
-                if len(up_cves) >= 2 and fid not in up_cves:
-                    # advisory bundle: keep the record's true aliases and any non-CVE upstream
-                    # ids as identity, but do NOT let its distinct upstream CVEs bridge; carry
-                    # them so the grouper attaches this finding to each CVE's group as lineage.
-                    al = aliases | {a for a in upstream if a not in up_cves}
-                    extra["bundle_cves"] = sorted(up_cves)
+                if len(up_cves) >= 2 and fid not in up_cves and extra_cves:
+                    # keep own identity (aliases + any non-extra upstream ids); the extra
+                    # upstream CVEs are bundle members, distributed to their own groups as lineage.
+                    al = aliases | {a for a in upstream if a not in extra_cves}
+                    extra["bundle_cves"] = sorted(extra_cves)
                 else:
                     al = aliases | upstream
                 fixed = None

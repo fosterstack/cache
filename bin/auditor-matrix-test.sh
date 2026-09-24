@@ -1320,6 +1320,74 @@ ids=[s["@id"] for s in stmts]; base=policy.stmt_id("CVE-2099-9602")
 uniq=len(ids)==len(set(ids)); base_once=ids.count(base)==1; two=len(stmts)==2
 print("OK" if uniq and base_once and two else "BAD:%s"%ids)' "$sco" 2>/dev/null)"
 { eq "$scres" "OK"; } && ok || no "colliding-scope statements get distinct @ids" "$scres"
+
+echo "=== outer-loop round 7 (Codex second-vendor) regressions ==="
+
+begin "olr7-1-inventory-keeps-distinct-owner-obligations" "two accepted-items scopes of one CVE with the SAME package AND threshold but DIFFERENT owner issues both survive the merge — a rejected obligation is never collapsed away (release-hold bypass)"
+i7="$WORK/olr7-inv"; rm -rf "$i7"; mkdir -p "$i7/ws/.vex" "$i7/ws/.auditor" "$i7/supp" "$i7/.auditor"
+"$PY" - "$i7" <<'PP'
+import json,os,sys
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp"); c="CVE-2099-9701"
+old=vex.doc(c,"affected","2026-09-23T00:00:00Z",action="x"); old["version"]=6
+json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+json.dump({"accepted_items":[{"cve":c,"package":"libfoo","severity":"Critical","threshold":"at_or_above","owner_issue":101,"expiry":"2026-10-23"}]},open(os.path.join(ws,".auditor","accepted-items.json"),"w"))
+new=vex.doc(c,"affected","2026-09-24T00:00:00Z",action="x")
+json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
+open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
+json.dump({"accepted_items":[{"cve":c,"package":"libfoo","severity":"Critical","threshold":"at_or_above","owner_issue":102,"expiry":"2026-10-24"}]},open(os.path.join(os.path.dirname(supp),".auditor","accepted-items.json"),"w"))
+PP
+i7res="$("$PY" -c '
+import json,os,sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
+R._merge_suppressions(ws, os.path.join(tmp,"supp"))
+inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted_items"]
+issues=sorted(i.get("owner_issue") for i in inv)
+print("OK" if issues==[101,102] else "BAD:%s"%issues)' "$i7" 2>/dev/null)"
+{ eq "$i7res" "OK"; } && ok || no "distinct owner obligations both preserved" "$i7res"
+
+begin "olr7-2-mixed-alias-upstream-keeps-identity" "a record with explicit aliases AND a multi-CVE upstream keeps its own identity (its reachability id stays in its CVE group) while only the EXTRA upstream CVE becomes a separate distributed group"
+m7res="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-mixed-alias-upstream.json")
+g=groups.get("CVE-2099-9703",{}); has_go="GO-2099-9703" in (g.get("aliases") or set())
+ok = set(groups)=={"CVE-2099-9703","CVE-2099-9704"} and has_go
+print("OK" if ok else "BAD:%s go=%s"%(sorted(groups),has_go))' 2>/dev/null)"
+{ eq "$m7res" "OK"; } && ok || no "mixed record keeps identity + splits only extra CVE" "$m7res"
+
+begin "olr7-3-reassessment-stable-no-accumulation" "reassessing a scope whose @id was suffixed on an earlier merge REPLACES it (stable @id, no accumulation, unique ids) across repeated merges"
+r7="$WORK/olr7-reassess"; rm -rf "$r7"
+rr="$("$PY" - "$r7" <<'PP' 2>/dev/null
+import json,os,sys,shutil,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin"); from auditorlib import vex, policy
+tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); os.makedirs(os.path.join(ws,".vex")); c="CVE-2099-9702"
+def dbg(status):
+    d=vex.doc(c,status,"2026-09-23T00:00:00Z",subcomponents=["pkg:deb/debian/libdebug@1"])
+    d["statements"][0]["products"][0]["@id"]=policy.VEX_PRODUCT+"&variant=debug"; d["version"]=6; return d
+def supp_of(doc):
+    o=os.path.join(tmp,"o"); shutil.rmtree(o,ignore_errors=True); os.makedirs(os.path.join(o,"suppressions"))
+    json.dump(doc,open(os.path.join(o,"suppressions","fosterstack-cache.openvex.json"),"w"))
+    open(os.path.join(o,"suppressions",".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(o,"suppressions","osv-scanner.toml"),"w").write("")
+    return os.path.join(o,"suppressions")
+def prodsupp(status):
+    o=os.path.join(tmp,"op"); shutil.rmtree(o,ignore_errors=True); os.makedirs(o)
+    vex.write(o,c,status,"2026-09-24T00:00:00Z",action="x",subcomponents=["pkg:deb/debian/libprod@1"])
+    supp,_=R._consolidate(o,"2026-09-24T00:00:00Z"); return supp
+json.dump(dbg("not_affected"),open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
+R._merge_suppressions(ws,prodsupp("affected"))
+R._merge_suppressions(ws,supp_of(dbg("affected")))     # reassess debug
+R._merge_suppressions(ws,prodsupp("affected"))         # repeat prod
+s=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))["statements"]
+ids=[x["@id"] for x in s]
+print("OK" if len(s)==2 and len(ids)==len(set(ids)) else "BAD:%d %s"%(len(s),ids))
+PP
+)"
+{ eq "$rr" "OK"; } && ok || no "reassessment stays stable (2 statements, unique ids)" "$rr"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

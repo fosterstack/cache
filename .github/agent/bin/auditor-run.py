@@ -249,42 +249,58 @@ def _merge_suppressions(ws, supp):
     # production statement for the same CVE share an @id but address DIFFERENT scopes; keying
     # on @id alone would silently drop the unassessed scope. This run replaces a statement
     # only when the scope matches; disjoint scopes are preserved.
-    def _skey(s):
+    import hashlib
+    import re as _re
+    from collections import defaultdict as _dd
+
+    def _base_id(s):
+        return _re.sub(r"~[0-9a-f]{8}0*$", "", s.get("@id") or "")
+
+    def _scope(s):
         prods = tuple(sorted((p.get("@id") or "") for p in s.get("products", [])))
         subs = tuple(sorted((sc.get("@id") or "")
                             for p in s.get("products", []) for sc in (p.get("subcomponents") or [])))
-        return (s.get("@id"), prods, subs)
+        return (prods, subs)
+
+    def _skey(s):
+        # scope identity keyed on the BASE id, so a later same-scope reassessment (which the
+        # constructor writes with the base @id) REPLACES the retained statement whose @id was
+        # scope-suffixed on an earlier merge, instead of accumulating (R1 outer round-7 #3).
+        return (_base_id(s),) + _scope(s)
     by_id = {}
-    new_objs = set()
     for s in existing.get("statements", []):
         if s.get("@id"):
             by_id[_skey(s)] = s
     for s in newdoc.get("statements", []):
         by_id[_skey(s)] = s                       # this run replaces same-scope / adds new
-        new_objs.add(id(by_id[_skey(s)]))
     survivors = list(by_id.values())
-    # Every surviving statement must be SEPARATELY ADDRESSABLE (R1 outer round-6 #3): scope-
-    # keyed retention can leave two statements (a retained debug-variant scope and this run's
-    # production scope) sharing one CVE-derived @id, so a .snyk/osv-scanner.toml `vex:` citation
-    # cannot say which statement governs. On such a collision, give the RETAINED statement a
-    # deterministic scope-suffixed @id (the run's new statement keeps the base @id its freshly
-    # generated citation already points at), so no two statements share an @id.
-    import hashlib
-    from collections import defaultdict as _dd
+    # Canonicalize @ids so each scope is STABLE and uniquely addressable across runs (R1 outer
+    # round-5/6/7 #3): reduce every @id to its base, then where one base @id covers several
+    # scopes, the PRIMARY (plain-product) scope keeps the base id — so the run's freshly
+    # generated .snyk/osv-scanner.toml citation still resolves — and each other (variant) scope
+    # takes a deterministic hash of its scope. A scope maps to the same @id every run, so a
+    # same-scope reassessment replaces it (above); distinct scopes never share an @id.
+    def _is_primary(s):
+        return {(p.get("@id") or "") for p in s.get("products", [])} == {policy.VEX_PRODUCT}
 
-    def _scope_disc(s):
-        prods = sorted((p.get("@id") or "") for p in s.get("products", []))
-        subs = sorted((sc.get("@id") or "")
-                      for p in s.get("products", []) for sc in (p.get("subcomponents") or []))
-        return hashlib.sha1(("|".join(prods) + "#" + "|".join(subs)).encode()).hexdigest()[:8]
-    _byid = _dd(list)
+    def _disc(scope):
+        return hashlib.sha1(repr(scope).encode()).hexdigest()[:8]
+    _bybase = _dd(list)
     for s in survivors:
-        _byid[s.get("@id")].append(s)
-    for _sid, grp in _byid.items():
-        if len(grp) > 1:
-            for s in grp:
-                if id(s) not in new_objs:
-                    s["@id"] = "%s~%s" % (_sid, _scope_disc(s))
+        _bybase[_base_id(s)].append(s)
+    for base, grp in _bybase.items():
+        if len(grp) == 1:
+            grp[0]["@id"] = base
+            continue
+        grp.sort(key=lambda s: _scope(s))                 # deterministic order
+        primary = next((s for s in grp if _is_primary(s)), None)
+        assigned = {}
+        for s in grp:
+            sid = base if s is primary else "%s~%s" % (base, _disc(_scope(s)))
+            while sid in assigned:                        # guard a hash / primary collision
+                sid += "0"
+            assigned[sid] = s
+            s["@id"] = sid
     merged = dict(existing) if existing else dict(newdoc)
     merged["statements"] = survivors
     merged["version"] = int(existing.get("version", 0)) + 1 if existing else newdoc.get("version", 1)
@@ -309,14 +325,17 @@ def _merge_suppressions(ws, supp):
     if new_ai is not None or old_ai is not None:
         def _cve(it):
             return (it or {}).get("cve") or (it or {}).get("id")
-        # Key items by (cve, package, threshold), NOT by cve alone (R1 outer round-6 #1): one
-        # CVE can have SEVERAL scopes (e.g. a Critical at-or-above package and a below-threshold
-        # sibling); keying on cve collapses them so the last write erases another scope's owner
-        # obligation and lets release-authz promote without the required acceptance. Each scope
-        # is preserved independently; this run replaces only the SAME (cve, package, threshold).
+        # Key items by their FULL scope identity, not by cve (R1 outer round-6 #1) nor by
+        # (cve, package, threshold) alone (R1 outer round-7 #1): two scopes of one CVE can share
+        # package AND threshold yet carry DIFFERENT owner obligations (distinct owner-decision
+        # issues, distinct governing VEX statements). Keying on any subset lets the last write
+        # erase another scope's obligation and promote past a rejected owner. Include the
+        # governing statement id and the owner issue so every distinct obligation survives; this
+        # run replaces only the SAME scope.
         def _ikey(it):
             it = it or {}
-            return (_cve(it), it.get("package"), it.get("threshold"))
+            return (_cve(it), it.get("package"), it.get("threshold"),
+                    it.get("owner_issue"), it.get("vex_id"))
         affected = {s.get("vulnerability", {}).get("name")
                     for s in merged.get("statements", []) if s.get("status") == "affected"}
         final = {}
@@ -736,7 +755,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             sections[7].append(dict(r, action="suppression in force (%s)" % (r.get("vex_id") or "VEX")))
     accepted = [{"cve": r["id"], "severity": r["severity"], "package": r["package"],
                  "threshold": r.get("threshold", "at_or_above" if r.get("owner_issue") else "below"),
-                 "owner_issue": r.get("owner_issue"), "expiry": r.get("expiry", exp)}
+                 "owner_issue": r.get("owner_issue"), "expiry": r.get("expiry", exp),
+                 "vex_id": r.get("vex_id")}     # the governing statement's scope identity
                 for r in sections[2]]
     findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))
     if dry and sections[3] and not would:

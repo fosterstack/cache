@@ -163,19 +163,23 @@ def manifest_findings(manifest):
     def _union(a, b):
         parent[_find(a)] = _find(b)
 
-    # A finding carrying `bundle_cves` (a distro advisory that co-reports several DISTINCT
-    # CVEs) is NOT a vulnerability identity: it must not bridge those CVEs (R1 outer round-5
-    # #1). It creates no union edges; instead it is attached to EACH member CVE's group as
-    # lineage after the identity groups are built.
-    bundles, singles = [], []
-    for f in allf:
-        (bundles if f.get("extra", {}).get("bundle_cves") else singles).append(f)
-    for f in singles:
+    # `bundle_cves` marks the EXTRA CVEs a distro advisory co-reports beyond its own identity;
+    # those extra members must not bridge (R1 outer round-5 #1). But a record can ALSO carry a
+    # real identity in its aliases (R1 outer round-7 #2), so EVERY record still unions by its
+    # own aliases — that keeps a reachability id (e.g. a Go advisory's own id) attached to its
+    # CVE. Only a PURE bundle (bundle_cves but no CVE of its own) anchors no group; it is only
+    # distributed. Bundle members are attached to their groups as lineage after grouping.
+    def _own_cves(f):
+        ids = [f["finding_id"]] + list(f["aliases"])
+        return {a for a in ids if re.fullmatch(r"CVE-\d{4}-\d+", a)}
+    pure_bundles = [f for f in allf if f.get("extra", {}).get("bundle_cves") and not _own_cves(f)]
+    anchoring = [f for f in allf if f not in pure_bundles]
+    for f in anchoring:
         ids = [f["finding_id"]] + list(f["aliases"])
         for i in ids[1:]:
             _union(ids[0], i)
     comps = {}
-    for f in singles:
+    for f in anchoring:
         root = _find(f["finding_id"])
         g = comps.setdefault(root, {"aliases": set(), "findings": []})
         g["aliases"].update(f["aliases"]); g["aliases"].add(f["finding_id"]); g["findings"].append(f)
@@ -186,13 +190,15 @@ def manifest_findings(manifest):
         groups[cid] = {"id": cid, "aliases": g["aliases"], "findings": g["findings"]}
         for a in g["aliases"]:
             cid_by_member[a] = cid
-    # distribute each advisory bundle to its member CVEs' groups (creating a group for any
-    # CVE seen ONLY in the advisory), so every distinct CVE keeps its own disposition
-    for f in bundles:
-        for cve in f["extra"]["bundle_cves"]:
+    # distribute each advisory's bundle members (extra CVEs) to their groups as lineage,
+    # creating a group for any CVE seen ONLY in an advisory, without bridging distinct CVEs
+    for f in allf:
+        for cve in (f.get("extra", {}).get("bundle_cves") or []):
             cid = cid_by_member.get(cve, cve)
             grp = groups.setdefault(cid, {"id": cid, "aliases": {cid}, "findings": []})
-            grp["aliases"].add(cve); grp["findings"].append(f)
+            grp["aliases"].add(cve)
+            if f not in grp["findings"]:
+                grp["findings"].append(f)
             cid_by_member.setdefault(cve, cid)
     return m, groups
 
