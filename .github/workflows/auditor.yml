@@ -141,6 +141,19 @@ jobs:
             const p = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
             fs.writeFileSync(p, token)
             core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', p)
+            // Print ONLY the identity claims the Anthropic federation rule matches on, so a
+            // token-exchange 401 can be diagnosed against the real token shape. NEVER the token
+            // itself (it stays setSecret-masked). The payload is the middle JWT segment.
+            try {
+              const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))
+              const claims = {}
+              for (const k of ['sub','aud','ref','job_workflow_ref','environment','repository','repository_owner_id']) {
+                claims[k] = payload[k]
+              }
+              core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims))
+            } catch (e) {
+              core.warning('could not decode OIDC claims for logging: ' + e)
+            }
 
       - name: Refresh the identity token in the background (runs longer than four minutes)
         if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
