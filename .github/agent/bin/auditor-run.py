@@ -182,9 +182,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     failure returns (None, stderr) so the caller marks the run AUDIT INCOMPLETE — never a
     false 'opened'. No vendor/model name appears in the branch, commit, or PR text.
 
-    A TEST-IMAGE run opens NO PR (a VEX for an image we do not ship is not a proposal),
-    EXCEPT the one-off proof (AUDITOR_PROOF_PR=1), whose PR title is prefixed
-    'proof — do not merge'."""
+    A TEST-IMAGE run opens NO PR (a VEX for an image we do not ship is not a proposal, and a
+    test image always forces dry_run — REQ-AUD-15 AC9)."""
     # nstmt==0 with NO removals means nothing to deliver. But an expiry reopen (AC5c) produces
     # zero NEW statements yet must still REMOVE a carried statement/ignore — deliver that.
     has_removals = False
@@ -194,17 +193,13 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         has_removals = False
     if nstmt == 0 and not has_removals:
         return None, None
-    proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
-    if is_test and not proof:
+    if is_test:
         would.append("test-image run: no PR (not a shipped image)")
         print("test-image run: no suppression PR (not a shipped image)")
         return None, None
     short = (commit or "unknown")[:12]
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = "auditor: update suppressions (%d statements)" % nstmt
-    if is_test and proof:
-        branch = "auditor/proof-%s-%s" % (today, short)
-        title = "proof — do not merge: " + title
     body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
     if dry:
         would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
@@ -284,7 +279,7 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
     Returns (pr_url, err, status). status is one of: 'delivered' (draft PR opened/reused),
     'would' (dry run), 'unresolvable' (the fixed version does not resolve from the module
     proxy, or the bump is a no-op — the row stays in §3, never a broken PR), 'pending' (no
-    authorized delivery step this run), 'skipped-test' (test image, not the proof), 'error'
+    authorized delivery step this run), 'skipped-test' (test image), 'error'
     (a git/gh/tidy failure — the caller marks the run INCOMPLETE). No vendor/model name
     appears in the branch, commit, or PR text."""
     fb = row.get("fix_bump") or {}
@@ -296,13 +291,9 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
     runlink = ("%s/%s/actions/runs/%s" % (server, repo, rid)) if (server and repo and rid) else "the daily CVE auditor run report"
     body = ("Automated dependency bump from the daily CVE auditor. Draft for review; auto-merge is a later switch.\n\n"
             "- Vulnerability: %s\n- Module: %s\n- From: %s\n- To: %s\n\nRun report: %s" % (cve, module, frm, to, runlink))
-    proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
-    if is_test and not proof:
+    if is_test:                                 # a test image is not shipped and always dry (AC9)
         would.append("test-image run: no bump PR (not a shipped image)")
         return None, None, "skipped-test"
-    if is_test and proof:
-        branch = "auditor/proof-bump-%s-%s" % (cve, short)
-        title = "proof — do not merge: " + title
     if dry:
         would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
         print("dry-run would open draft bump PR on %s" % branch)
@@ -786,7 +777,7 @@ def _row_line(r):
     line = ("%s — %s@%s — %s — fix: %s — reachability: %s — %s — action: %s — %s"
             % (r["id"], r["package"], r["installed"], r["severity"], fix, reach,
                r["disposition"], r["action"], r["reason"]))
-    if r["section"] == 5 and r.get("vex_id"):
+    if r["section"] in (2, 5) and r.get("vex_id"):
         line += " — vex: %s — ignores: %s" % (r["vex_id"], ",".join(r.get("ignore_files", [])) or "none")
     if r["section"] == 4 and r.get("cause"):
         line += " — cause: %s" % r["cause"]

@@ -33,7 +33,7 @@ fails=0
 # Static cases parse the workflow file and exported policy fixtures only — they call
 # no auditor command, so any command-mutant replacement passes them legitimately once
 # a valid workflow exists. Command mutants are graded on the cases they can affect.
-STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry dadj-5-grype-counts-apk-and-rpm-os-packages r16-exactly-one-gh-token-key-in-driver-env"
+STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry dadj-5-grype-counts-apk-and-rpm-os-packages req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env"
 is_static(){ case " $STATIC " in *" $1 "*) return 0;; *) return 1;; esac; }
 MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
 cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/bin/auditor-matrix-test.sh" | sort -u; }

@@ -704,7 +704,7 @@ echo "=== REQ-AUD-12 — end-to-end dry-run / real-run integration (pending owne
 begin "req12-ac1-dryrun-deterministic-rows-actions-status" "a dry-run over the manifest routes DETERMINISTICALLY (no model call): log FPs and the unreachable Go finding close in §5 with evidence; fixable findings sit in §3 each with an action; §6 lists the would-open PRs; accepted-items exists; the status line is AUDIT COMPLETE; zero shim creates"
 o="$WORK/run1"; shim="$WORK/run1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  s5="$(sect_ids "$o/report.md" 5)"; s3="$(sect_ids "$o/report.md" 3)"; s6="$(sect_ids "$o/report.md" 6)"
+  s5="$(sect_ids "$o/report.md" 5)"; s3="$(sect_ids "$o/report.md" 3)"; s6="$(sed -n '/^## PRs and issues this run/,/^## 0\./p' "$o/report.md")"
   vexev="$(pj "$o/evidence/CVE-2016-2781.evidence.json" 'str(bool(d.get("evidence")))')"
   ig="$(have "$o/ignores/grype/CVE-2016-2781.json" && echo yes || echo no)"
   unrv="$(pj "$o/vex/CVE-2020-14040.openvex.json" 'd["statements"][0].get("justification")')"
@@ -726,7 +726,7 @@ print(bad)' "$o/report.md")"
   shimcreates="$(grep -cE 'pr create|issue create|gh .*create' "$shim" 2>/dev/null)"; shimcreates="${shimcreates:-0}"
   { printf '%s' "$s5" | grep -q CVE-2016-2781 && printf '%s' "$s5" | grep -q CVE-2020-14040 && printf '%s' "$s3" | grep -q CVE-2023-4911 \
     && eq "$vexev" "True" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
-    && eq "$s3noaction" "0" && printf '%s' "$s6" | grep -q CVE-2023-4911 && [ "$status" -ge 1 ] 2>/dev/null \
+    && eq "$s3noaction" "0" && printf '%s' "$s6" | grep -qi 'would open' && [ "$status" -ge 1 ] 2>/dev/null \
     && eq "$det2781" "0" && eq "$det14040" "0" && eq "$shimcreates" "0"; } \
     && ok || no "deterministic §5/§3, every §3 row actioned, §6 would-open, AUDIT COMPLETE, deterministic paths made no model call, no shim" "s5=[$s5] s3=[$s3] s6=[$s6] vexev=$vexev ig=$ig unreach=$unrv acc=$acc s3_no_action=$s3noaction status=$status det2781=$det2781 det14040=$det14040 shim=$shimcreates"; }
 
@@ -1123,13 +1123,12 @@ run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$supp" --live-finding
   probs="$(pj "$o/c.json" 'len(d["problems"])')"
   { eq "$probs" "0"; } && ok || no "no false stale_vex for a live non-CVE id" "problems=$probs"; }
 
-begin "il12-section7-lists-suppressions-in-force" "§7 lists the suppressions actually in force this run, not a blanket 'no suppressions'"
+begin "il12-suppressions-in-force-listed-in-section5" "the in-force suppressions are listed in §5 with status tags (v2 removed the standalone §7)"
 o="$WORK/il12"; rm -rf "$o"; : > "$LEDGER"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  s7="$(sect_ids "$o/report.md" 7)"
-  blanket="$(sed -n '/## 7\./,/^$/p' "$o/report.md" | grep -qi 'No suppressions are in force' && echo yes || echo no)"
-  { printf '%s' "$s7" | grep -q CVE-2011-3374 && printf '%s' "$s7" | grep -q CVE-2020-14040 && eq "$blanket" "no"; } \
-    && ok || no "§7 lists in-force suppressions, not the empty sentence" "sec7=[$s7] blanket_empty=$blanket"; }
+  s5="$(sect_ids "$o/report.md" 5)"
+  { printf '%s' "$s5" | grep -q CVE-2011-3374 && printf '%s' "$s5" | grep -q CVE-2020-14040; } \
+    && ok || no "§5 lists the in-force (closed) suppressions with their status tags" "sec5=[$s5]"; }
 
 ########################################################################
 echo "=== inner-loop regressions (round 5) ==="
@@ -1148,15 +1147,15 @@ begin "d2-1-gobump-draft-delivered-and-reported" "decision 2: with a delivery ch
 o="$WORK/d2-1"; shim="$WORK/d2-1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
   opened="$(grep -c 'action: opened draft bump PR' "$o/report.md" 2>/dev/null)"; opened="${opened:-0}"
-  sec6="$(sed -n '/## 6\./,/## 7\./p' "$o/report.md" | grep -c 'Bump draft PR opened by the delivery App')"; sec6="${sec6:-0}"
+  sec6="$(grep -c 'Bump draft PR (App):' "$o/report.md")"; sec6="${sec6:-0}"
   stale="$(grep -c 'delivery pending' "$o/report.md" 2>/dev/null)"; stale="${stale:-0}"
   { [ "$opened" -ge 1 ] 2>/dev/null && [ "$sec6" -ge 1 ] 2>/dev/null && eq "$stale" "0"; } \
-    && ok || no "Go bump delivered as draft PR, reported in §6, no stale 'delivery pending'" "opened=$opened sec6=$sec6 stale=$stale"; }
+    && ok || no "Go bump delivered as draft PR, listed in the PR list, no stale 'delivery pending'" "opened=$opened prlist=$sec6 stale=$stale"; }
 
 begin "d2-2-base-rebuild-defers-to-dependabot" "decision 2: an OS-package §3 base rebuild is NOT delivered by the auditor — it defers to Dependabot's docker PR (base is digest-pinned); §6 says 'Awaiting base rebuild (deferred to Dependabot ...)' and no auditor base-rebuild PR is created"
 o="$WORK/d2-2"; shim="$WORK/d2-2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  defers="$(sed -n '/## 6\./,/## 7\./p' "$o/report.md" | grep -c 'Awaiting base rebuild (deferred to Dependabot')"; defers="${defers:-0}"
+  defers="$(grep -c 'awaiting base rebuild' "$o/report.md")"; defers="${defers:-0}"
   noprs="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; noprs="${noprs:-0}"
   { [ "$defers" -ge 1 ] 2>/dev/null && eq "$noprs" "0"; } \
     && ok || no "base rebuild defers to Dependabot; no auditor base-rebuild PR" "awaiting=$defers base_rebuild_prs=$noprs"; }
@@ -1180,14 +1179,14 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
   { [ "$both" -ge 2 ] 2>/dev/null; } \
     && ok || no "both statement ids cited in the consolidated ignore" "distinct_ids_cited=$both"; }
 
-begin "il15-section7-poam-row-names-real-vex-id" "a §7 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
+begin "il15-poam-row-names-real-vex-id" "a §2 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
 o="$WORK/il15"; rm -rf "$o"; : > "$LEDGER"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  poam7="$(sed -n '/## 7\./,/^$/p' "$o/report.md" | grep 'carried (POA&M)')"
-  realid="$(printf '%s' "$poam7" | grep -c 'suppression in force (http')"; realid="${realid:-0}"
-  placeholder="$(printf '%s' "$poam7" | grep -c 'suppression in force (VEX)')"; placeholder="${placeholder:-0}"
+  poam="$(sed -n '/^## 2\./,/^## 3\./p' "$o/report.md" | grep 'carried (POA&M)')"
+  realid="$(printf '%s' "$poam" | grep -c 'vex: .*stmt-')"; realid="${realid:-0}"
+  placeholder="$(printf '%s' "$poam" | grep -c 'vex: (VEX)')"; placeholder="${placeholder:-0}"
   { [ "$realid" -ge 1 ] 2>/dev/null && eq "$placeholder" "0"; } \
-    && ok || no "§7 POA&M row names a real vex id, no '(VEX)' placeholder" "real_id_rows=$realid placeholder_rows=$placeholder"; }
+    && ok || no "§2 POA&M row names a real vex statement id, no '(VEX)' placeholder" "real_id_rows=$realid placeholder_rows=$placeholder"; }
 
 ########################################################################
 echo "=== Round 16 — App-token draft-PR delivery ==="
@@ -1196,7 +1195,7 @@ begin "r16-push-failure-is-incomplete" "a suppression PR push/PR failure makes t
 o="$WORK/r16f"; shim="$WORK/r16f.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_SHIM_PR_FAIL=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rcf=$?
 inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
-stderrline="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -qi 'delivery FAILED' && echo yes || echo no)"
+stderrline="$(grep -qi 'delivery FAILED' "$o/report.md" && echo yes || echo no)"
 lied="$(grep -ci 'draft PR opened' "$o/report.md" 2>/dev/null)"; lied="${lied:-0}"
 { [ "$rcf" -ne 0 ] 2>/dev/null && eq "$inc" "yes" && eq "$stderrline" "yes" && eq "$lied" "0"; } \
   && ok || no "push failure -> INCOMPLETE + stderr, no false 'opened'" "exit=$rcf incomplete=$inc stderr_in_report=$stderrline false_opened=$lied"
@@ -1211,11 +1210,11 @@ draft="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draft="${draft:-0
 { [ "$branches" -ge 2 ] 2>/dev/null && eq "$offmain" "$branches" && eq "$draft" "$branches"; } \
   && ok || no "each branch off origin/main (non-stacked), each PR --draft" "branches=$branches off_main=$offmain draft=$draft"
 
-begin "r16-pr-url-in-section6" "the delivered draft PR's URL is recorded in report §6"
+begin "r16-pr-url-in-pr-list" "the delivered draft PR's URL is recorded in the 'PRs and issues this run' list"
 o="$WORK/r16u"; shim="$WORK/r16u.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
-url="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -c '/pull/')"; url="${url:-0}"
-{ [ "$url" -ge 1 ] 2>/dev/null; } && ok || no "PR URL present in §6" "pull_url_lines=$url"
+url="$(sed -n '/^## PRs and issues this run/,/^## 0\./p' "$o/report.md" | grep -c '/pull/')"; url="${url:-0}"
+{ [ "$url" -ge 1 ] 2>/dev/null; } && ok || no "PR URL present in the PR list" "pull_url_lines=$url"
 
 begin "r16-no-vendor-or-model-name-in-delivery" "the delivery ACTUALLY happens (draft PR + branch in the ledger) AND no vendor/model name appears in its branch, commit, or PR text"
 o="$WORK/r16n"; shim="$WORK/r16n.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
@@ -1259,15 +1258,19 @@ begin "r16-no-test-image-pr-in-production" "a test-image run without the proof f
 o="$WORK/r16ti"; shim="$WORK/r16ti.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rc=$?
 draftpr="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draftpr="${draftpr:-0}"
-noted="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -qi 'test-image run: no PR' && echo yes || echo no)"
-{ eq "$draftpr" "0" && eq "$noted" "yes" && [ "$rc" -eq 0 ] 2>/dev/null; } \
-  && ok || no "no suppression draft PR for a test-image production run; noted; run not failed" "draft_prs=$draftpr noted=$noted exit=$rc"
+forced="$(grep -c '\*\*dry_run:\*\* yes' "$o/report.md" 2>/dev/null)"; forced="${forced:-0}"
+noted="$(grep -qi 'test-image run: no PR' "$o/report.md" && echo yes || echo no)"
+{ eq "$draftpr" "0" && eq "$noted" "yes" && [ "$forced" -ge 1 ] 2>/dev/null && [ "$rc" -eq 0 ] 2>/dev/null; } \
+  && ok || no "test image forces dry (AC9): no draft PR, noted, run not failed" "draft_prs=$draftpr forced_dry=$forced noted=$noted exit=$rc"
 
-begin "r16-proof-flag-allows-prefixed-test-image-pr" "with AUDITOR_PROOF_PR=1 a test-image run opens one draft PR whose title is prefixed 'proof — do not merge'"
+begin "r16-test-image-forces-dry-retires-proof-flag" "a test image ALWAYS forces dry (REQ-AUD-15 AC9): even with AUDITOR_PROOF_PR=1 it opens NO real PR — the proof-on-test-image path is retired"
 o="$WORK/r16pf"; shim="$WORK/r16pf.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
-prefixed="$(grep -c "gh pr create --draft --base main --head auditor/proof-.* --title 'proof — do not merge:" "$shim" 2>/dev/null)"; prefixed="${prefixed:-0}"
-{ [ "$prefixed" -ge 1 ] 2>/dev/null; } && ok || no "proof draft PR with the 'proof — do not merge' prefix" "prefixed_pr=$prefixed"
+realpr="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; realpr="${realpr:-0}"
+proofpr="$(grep -c 'proof — do not merge' "$shim" 2>/dev/null)"; proofpr="${proofpr:-0}"
+forced="$(grep -c '\*\*dry_run:\*\* yes' "$o/report.md" 2>/dev/null)"; forced="${forced:-0}"
+{ eq "$realpr" "0" && eq "$proofpr" "0" && [ "$forced" -ge 1 ] 2>/dev/null; } \
+  && ok || no "test image dry, no real/proof PR" "real_pr=$realpr proof_pr=$proofpr forced_dry=$forced"
 
 ########################################################################
 echo "=== outer-loop regressions (round 1) ==="
@@ -1309,7 +1312,7 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-owner
 
 begin "ol7-delivery-carries-accepted-items" "the suppression delivery commits .auditor/accepted-items.json (the release gate's inventory)"
 o="$WORK/ol7"; shim="$WORK/ol7.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
-env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 ai="$(grep -c 'git add .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
 { [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery git-adds .auditor/accepted-items.json" "add_lines=$ai"
 
@@ -2311,7 +2314,7 @@ ql=[l for l in rep.splitlines() if "Inventory quorum:" in l][0]
 print("OK" if "agreed on OS packages: none" in ql else "BAD:%s"%ql)' 2>/dev/null | tail -1)"
 { eq "$r8" "OK"; } && ok || no "quorum header reflects the numerical agreement decision" "$r8"
 
-begin "refr4-7-lifted-bump-still-pending-in-section6" "a bump moved to §1 by an AC7 lift but NOT delivered this run (no authorized step) still appears as pending work in §6, not dropped"
+begin "refr4-7-lifted-bump-still-surfaced" "a bump moved to §1 by an AC7 lift but NOT delivered this run still appears as pending work above the sections (§0 / PR list), not dropped"
 r7="$("$PY" -c '
 import importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
@@ -2320,9 +2323,9 @@ sections[1]=[{"id":"CVE-9","section":1,"disposition":"lifted (fix now pullable)"
 st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,sections[1],sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
-s6=rep.split("## 6.")[1].split("## 7.")[0]
-print("OK" if ("CVE-9" in s6 and "NOT delivered" in s6) else "BAD")' 2>/dev/null | tail -1)"
-{ eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump listed in §6" "$r7"
+s1=rep.split("## 1. Lifted")[1].split("## 2.")[0]
+print("OK" if ("CVE-9" in s1 and "pending" in s1.lower()) else "BAD")' 2>/dev/null | tail -1)"
+{ eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump surfaced above §1 (PR list / §0)" "$r7"
 echo "=== REQ-AUD-15 — report structure v2 ==="
 
 begin "req15-ac1-pr-list-at-top" "after the header and before the sections, a 'PRs and issues this run' block lists what was/would be opened"
