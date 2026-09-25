@@ -2323,6 +2323,46 @@ rep=R._render(m,sections[1],sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c"
 s6=rep.split("## 6.")[1].split("## 7.")[0]
 print("OK" if ("CVE-9" in s6 and "NOT delivered" in s6) else "BAD")' 2>/dev/null | tail -1)"
 { eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump listed in §6" "$r7"
+echo "=== REQ-AUD-15 — report structure v2 ==="
+
+begin "req15-ac1-pr-list-at-top" "after the header and before the sections, a 'PRs and issues this run' block lists what was/would be opened"
+o="$WORK/r15a"; rm -rf "$o"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
+  pl="$(grep -nE 'PRs and issues this run' "$o/report.md" | head -1 | cut -d: -f1)"
+  s0="$(grep -nE '^## 0\.' "$o/report.md" | head -1 | cut -d: -f1)"
+  { [ -n "$pl" ] && [ -n "$s0" ] && [ "$pl" -lt "$s0" ] 2>/dev/null; } \
+    && ok || no "PR/issue list appears before §0" "prlist=$pl sec0=$s0"; }
+
+begin "req15-ac2-section0-needs-a-human" "§0 Needs a human is present; a run with nothing waiting says so in one sentence"
+{ grep -qE '^## 0\. Needs a human' "$o/report.md" && grep -qi 'nothing needs a human this run' "$o/report.md"; } \
+  && ok || no "§0 present + empty sentence" "$(grep -m1 -E '^## 0' "$o/report.md")"
+
+begin "req15-ac8-section6-7-removed" "the old §6 (Pending) and §7 (Currently suppressed) headings are removed"
+{ ! grep -qE '^## 6\.|^## 7\.' "$o/report.md" && ! grep -qi 'Currently suppressed' "$o/report.md"; } \
+  && ok || no "no §6/§7 headings" "$(grep -nE '^## 6\.|^## 7\.|Currently suppressed' "$o/report.md" | head -1)"
+
+begin "req15-ac5-section3-os-vs-sca-with-actions" "§3 splits into 3A (OS/base) and 3B (SCA/libraries)"
+{ grep -qE '3A' "$o/report.md" && grep -qE '3B' "$o/report.md"; } \
+  && ok || no "§3 has 3A and 3B subsections" "3A=$(grep -c '3A' "$o/report.md") 3B=$(grep -c '3B' "$o/report.md")"
+
+begin "req15-ac7-section5-reachable-vs-fp-with-tags" "§5 splits into 5A (not reachable) / 5B (false positive) and a §5 VEX row carries a status tag"
+# manifest-01 closes CVE-2011-3374 as a known-defect-log false positive -> §5B
+fp="$(sed -n '/^## 5\./,/^## /p' "$o/report.md")"
+{ printf '%s' "$fp" | grep -qE '5B' && printf '%s' "$fp" | grep -qE 'proposed, not delivered \(dry run\)|in force \(main\)'; } \
+  && ok || no "§5 has 5B and a status tag" "$(printf '%s' "$fp" | grep -m1 CVE-2011-3374)"
+
+begin "req15-ac9-status-tag-on-vex-rows" "on a dry candidate run every VEX-backed row is tagged 'proposed, not delivered (dry run)'"
+tags="$(grep -c 'proposed, not delivered (dry run)' "$o/report.md" 2>/dev/null)"; tags="${tags:-0}"
+{ [ "$tags" -ge 1 ] 2>/dev/null; } && ok || no "dry-run status tag present" "tags=$tags"
+
+begin "req15-ac9-test-image-tag-and-forces-dry" "a test-image run tags every VEX row 'proposed, not delivered (test image)' regardless of main, and forces dry_run even when --dry-run false"
+o2="$WORK/r15ti"; rm -rf "$o2"
+"$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1 || true
+ti="$(grep -c 'proposed, not delivered (test image)' "$o2/report.md" 2>/dev/null)"; ti="${ti:-0}"
+forced="$(grep -c '\*\*dry_run:\*\* yes' "$o2/report.md" 2>/dev/null)"; forced="${forced:-0}"
+{ [ "$ti" -ge 1 ] 2>/dev/null && [ "$forced" -ge 1 ] 2>/dev/null; } \
+  && ok || no "test-image tag + forced dry" "test_image_tags=$ti forced_dry=$forced"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

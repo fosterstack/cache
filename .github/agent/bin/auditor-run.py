@@ -1018,7 +1018,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=this_scope_id,
                scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason),
-               threshold=("at_or_above" if at else "below"), expiry=this_exp)
+               threshold=("at_or_above" if at else "below"), expiry=this_exp, carried=_carried)
     if at:
         # at/above threshold -> owner-decision issue, deduped per (CVE, package) with every scope
         # listed in the body and emitted after routing (fix 4) — never one issue per binary that
@@ -1033,6 +1033,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
 
 def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     m, groups = C.manifest_findings(manifest_path)
+    # A test image is never shipped, so no statement on `main` applies and nothing is delivered:
+    # a test image ALWAYS forces dry_run regardless of the dispatch input (REQ-AUD-15 AC9).
+    if (m.get("provenance") or {}).get("source") == "test-image":
+        dry = True
     gvc, module, gvc_usable = C.manifest_gvc(m)
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
     idx = log_index(logpath)
@@ -1602,41 +1606,121 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
            "k": sum(1 for s in ("grype", "trivy", "osv-scanner", "snyk") if (st.get(s) or {}).get("ran")),
            "h": len(sections[5]), "m": len([r for r in sections[5]]), "consistency": "clean" if not probs else "%d problems" % len(probs),
            "down": ", ".join("%s (%s)" % (d["scanner"], d["reason"]) for d in C.scanners_down(m))}
-    for n in range(1, 8):
-        L.append("## %d. %s" % (n, C.TITLES[n]))
-        if n == 6:
-            if pr_url:
-                L.append("Suppression draft PR opened by the delivery App: %s" % pr_url)
-            elif pr_err:
-                L.append("Suppression PR delivery FAILED (run is INCOMPLETE): %s" % pr_err)
-            if would:
-                for w in would:
-                    L.append("dry run: would run `%s`" % w)
-            # Go-module bumps DELIVERED as draft PRs by the App this run (decision 2).
-            delivered = [r for r in (sections[3] + sections[1]) if r.get("fix_pr_url")]
-            for r in delivered:
-                L.append("Bump draft PR opened by the delivery App: %s — %s" % (r["id"], r["fix_pr_url"]))
-            # Base rebuilds defer to Dependabot's daily docker PR (REQ-AUD-2 AC3) — awaiting, not ours.
-            awaiting = [r for r in (sections[3] + sections[1]) if r.get("base_rebuild")]
-            for r in awaiting:
-                L.append("Awaiting base rebuild (deferred to Dependabot's docker PR): %s — %s" % (r["id"], r.get("fixed")))
-            # Fix PRs we could not deliver this run (no authorized step, or a delivery failure).
-            pend = [r for r in (sections[3] + sections[1]) if r.get("pending_delivery")]
-            for r in pend:
-                L.append("Fix PR NOT delivered: %s — %s" % (r["id"], r.get("action")))
-            if not pr_url and not pr_err and not would and not delivered and not awaiting and not pend:
-                L.append(C.EMPTY[6].format(**ctx) if not dry
-                         else "Nothing to open: no §3 fix PR or owner issue was warranted this run.")
-            L.append(""); continue
-        if sections[n]:
-            for r in sections[n]:
-                L.append(_row_line(r))
+
+    # --- report structure v2 (REQ-AUD-15) ---
+    def _tag(r):
+        """Status tag on a VEX-backed row, naming its actual state/reason (AC9)."""
+        if test:
+            return "proposed, not delivered (test image)"   # no statement on main applies
+        if dry:
+            return "proposed, not delivered (dry run)"
+        if r.get("carried"):
+            return "in force (main)"                         # carried, already published
+        if pr_url:
+            return "proposed (PR %s)" % pr_url.rstrip("/").split("/")[-1]
+        return "in force (main)"
+
+    def _tagged(r):
+        return _row_line(r) + " — status: " + _tag(r)
+
+    def _emit(title, rows_, empty, tagged=False, sub=None, downnote=False):
+        L.append("## " + title); L.append("")
+        if sub is not None:
+            for subtitle, subrows in sub:
+                L.append("**%s**" % subtitle)
+                if subrows:
+                    for r in subrows:
+                        L.append(_tagged(r) if tagged else _row_line(r))
+                else:
+                    L.append("None.")
+                L.append("")
+            return
+        if rows_:
+            for r in rows_:
+                L.append(_tagged(r) if tagged else _row_line(r))
         else:
-            sentence = C.EMPTY[n].format(**ctx)
-            if n in (3, 7) and ctx.get("down"):
+            sentence = empty
+            if downnote and ctx.get("down"):
                 sentence += " Not a complete assessment: %s did not run." % ctx["down"]
             L.append(sentence)
         L.append("")
+
+    # PRs and issues this run — above the sections (AC1).
+    L.append("## PRs and issues this run"); L.append("")
+    prlist = []
+    if pr_url:
+        prlist.append("Suppression draft PR (App): %s" % pr_url)
+    elif pr_err:
+        prlist.append("Suppression PR delivery FAILED (run INCOMPLETE): %s" % pr_err)
+    for r in (sections[1] + sections[3]):
+        if r.get("fix_pr_url"):
+            prlist.append("Bump draft PR (App): %s — %s" % (r["id"], r["fix_pr_url"]))
+    _seen_iss = set()
+    for r in rows:
+        oi = r.get("owner_issue")
+        if oi and oi not in _seen_iss:
+            _seen_iss.add(oi); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
+    if dry:
+        for w in would:
+            prlist.append("would open (dry run): `%s`" % w)
+    for x in (prlist or ["No PRs or issues this run."]):
+        L.append("- " + x)
+    L.append("")
+
+    # §0 Needs a human (AC2): owner items awaiting acceptance, draft PRs awaiting merge, and
+    # failures that made the run INCOMPLETE — duplicated from the sections below.
+    needs = []
+    for r in rows:
+        if r.get("owner_issue") and r.get("threshold") == "at_or_above":
+            needs.append("owner-decision (accept/reject): %s — %s" % (r["id"], r.get("owner_issue")))
+        if r.get("issue_failed"):
+            needs.append("owner-decision issue FAILED to open: %s" % r["id"])
+        if r.get("adjudicator_error"):
+            needs.append("unassessed — adjudicator unavailable: %s" % r["id"])
+    if not dry:
+        for r in (sections[1] + sections[3]):
+            if r.get("fix_pr_url"):
+                needs.append("draft PR awaiting merge: %s — %s" % (r["id"], r["fix_pr_url"]))
+        if pr_url:
+            needs.append("suppression draft PR awaiting merge: %s" % pr_url)
+    if "INCOMPLETE" in status:
+        needs.append("run INCOMPLETE — %s" % status.split("INCOMPLETE:", 1)[-1].strip()[:240])
+    needs = list(dict.fromkeys(needs))
+    L.append("## 0. Needs a human"); L.append("")
+    for x in (needs or ["Nothing needs a human this run."]):
+        L.append("- " + x if needs else x)
+    L.append("")
+
+    # §1 Lifted
+    _emit("1. Lifted", sections[1], C.EMPTY[1].format(**ctx), tagged=True)
+    # §2 Accepted risk: 2A no fix exists; 2Ba upstream-held; 2Bb policy-held (REQ-AUD-14 fills 2B).
+    s2 = sections[2]
+    twoBa = [r for r in s2 if r.get("not_pullable") == "upstream-held"]
+    twoBb = [r for r in s2 if r.get("not_pullable") == "policy-held"]
+    twoA = [r for r in s2 if r not in twoBa and r not in twoBb]
+    _emit("2. Accepted risk: real vulnerabilities with no fix available to us", s2,
+          C.EMPTY[2].format(**ctx), tagged=True,
+          sub=([("2A — no fix exists", twoA),
+                ("2Ba — fix exists, not pullable: upstream-held", twoBa),
+                ("2Bb — fix exists, not pullable: policy-held", twoBb)] if s2 else None))
+    # §3 Real vulnerabilities that are fixable: 3A OS/base; 3B libraries (SCA).
+    s3 = sections[3]
+    threeA = [r for r in s3 if r.get("base_rebuild")]
+    threeB = [r for r in s3 if not r.get("base_rebuild")]
+    if s3:
+        _emit("3. Real vulnerabilities that are fixable", s3, "",
+              sub=[("3A — OS / system packages (fix via base-image bump)", threeA),
+                   ("3B — libraries (SCA)", threeB)])
+    else:
+        _emit("3. Real vulnerabilities that are fixable", s3, C.EMPTY[3].format(**ctx), downnote=True)
+    # §4 Could not be assessed
+    _emit("4. Could not be assessed", sections[4], C.EMPTY[4].format(**ctx))
+    # §5 Closed as not affected: 5A not reachable; 5B false positive.
+    s5 = sections[5]
+    fiveA = [r for r in s5 if "unreachable" in (r.get("disposition") or "")]
+    fiveB = [r for r in s5 if r not in fiveA]
+    _emit("5. Closed as not affected", s5, C.EMPTY[5].format(**ctx), tagged=True,
+          sub=([("5A — not reachable", fiveA), ("5B — false positive", fiveB)] if s5 else None))
     return "\n".join(L) + "\n"
 
 
