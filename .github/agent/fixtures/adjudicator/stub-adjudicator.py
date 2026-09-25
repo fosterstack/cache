@@ -48,8 +48,7 @@ CANNED = {
     ("UNASSESSABLE", "fallback"): {"refused": True},
 }
 
-def main():
-    req = json.load(sys.stdin)
+def _answer(req):
     fid = req.get("finding_id"); attempt = req.get("attempt", "primary"); role = req.get("model", "primary")
     ledger = os.environ.get("AUDITOR_MODEL_LEDGER")
     if ledger:
@@ -57,7 +56,21 @@ def main():
             fh.write("%s|%s|%s\n" % (fid, attempt, role))
     ans = dict(CANNED.get((fid, attempt), {"refused": False, "category": "unknown", "justification": ""}))
     ans["token_usage"] = 1000
-    json.dump(ans, sys.stdout)
+    return ans
+
+
+def main():
+    # --serve: the driver keeps ONE process for the whole run and sends one request per line
+    # (so the real client exchanges its identity token once). Back-compat one-shot otherwise.
+    if "--serve" in sys.argv:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            sys.stdout.write(json.dumps(_answer(json.loads(line))) + "\n")
+            sys.stdout.flush()
+        return
+    json.dump(_answer(json.load(sys.stdin)), sys.stdout)
 
 if __name__ == "__main__":
     main()
