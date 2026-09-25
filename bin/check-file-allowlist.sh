@@ -114,12 +114,13 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/testlib/workflows/[A-Za-z0-9._-]+\.ya?ml$'
   # The reviewers' adversarial stand-ins, checked in as mutation-harness inputs.
   '^\.github/agent/fixtures/mutants/[A-Za-z0-9._-]+\.py$'
-  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\.go$'
-  # The fixture modules' manifests are stored as go.mod.fixture / go.sum.fixture (NOT go.mod /
-  # go.sum) so the dependency graph never indexes their deliberate vulnerable pin — they are
-  # materialized into a temp module at test time (bin/govulncheck-fixtures-test.sh). A plain
-  # go.mod / go.sum here is intentionally NOT allowed, so one can never be re-added.
-  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/go\.(mod|sum)\.fixture$'
+  # The fixture modules are stored ENTIRELY as .fixture files — go.mod.fixture / go.sum.fixture
+  # AND the sources as *.go.fixture — and materialized into a throwaway temp module at test time
+  # (bin/govulncheck-fixtures-test.sh). Storing go.mod/go.sum would re-index the deliberate
+  # vulnerable pin (golang.org/x/text v0.3.0) in the dependency graph; storing a plain *.go with
+  # no manifest would fold these package-main sources into the parent module and break
+  # `go ./...` / gosec. So a plain go.mod / go.sum / *.go here is intentionally NOT allowed.
+  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 

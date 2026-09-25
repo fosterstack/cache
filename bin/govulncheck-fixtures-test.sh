@@ -19,11 +19,13 @@ pass=0; fail=0
 ok()  { echo "ok:   $1"; pass=$((pass+1)); }
 no()  { echo "FAIL: $1 — $2"; fail=$((fail+1)); }
 
-# 1) No plain go.mod / go.sum may be tracked under the fixture src tree — that is exactly what
-#    would put the deliberate vulnerable pin back into the dependency graph.
-indexed="$(git ls-files "$SRC" | grep -E '/go\.(mod|sum)$' || true)"
-if [ -z "$indexed" ]; then ok "no indexable go.mod/go.sum tracked under $SRC"
-else no "an indexable manifest is tracked under $SRC (rename it to .fixture)" "$indexed"; fi
+# 1) No plain go.mod / go.sum / *.go may be tracked under the fixture src tree. A go.mod/go.sum
+#    would re-index the deliberate vulnerable pin in the dependency graph; a plain *.go (with the
+#    manifests gone) would fold these package-main sources into the PARENT module and break
+#    `go build/vet/test ./...` and gosec with type errors. Everything here must be a .fixture.
+indexed="$(git ls-files "$SRC" | grep -E '/(go\.(mod|sum)|[^/]+\.go)$' || true)"
+if [ -z "$indexed" ]; then ok "nothing indexable (go.mod/go.sum/*.go) tracked under $SRC — dirs are inert to Go tooling"
+else no "an indexable file is tracked under $SRC (rename it to .fixture)" "$indexed"; fi
 
 # 2) Every fixture module materializes into a temp module and is well-formed.
 found=0
@@ -32,10 +34,12 @@ for mf in "$SRC"/*/go.mod.fixture; do
   found=$((found+1))
   dir="$(dirname "$mf")"; name="$(basename "$dir")"
   tmp="$(mktemp -d)"
-  # materialize: the .fixture manifests become real ones ONLY inside the throwaway module
+  # materialize: every .fixture becomes its real name ONLY inside the throwaway module
   cp "$mf" "$tmp/go.mod"
   [ -e "$dir/go.sum.fixture" ] && cp "$dir/go.sum.fixture" "$tmp/go.sum"
-  cp "$dir"/*.go "$tmp/" 2>/dev/null || true
+  for gf in "$dir"/*.go.fixture; do
+    [ -e "$gf" ] && cp "$gf" "$tmp/$(basename "${gf%.fixture}")"
+  done
   goodmod="$(grep -c '^module ' "$tmp/go.mod")"; goodmod="${goodmod:-0}"
   hasdep="$(grep -c 'golang.org/x/text v0.3.0' "$tmp/go.mod")"; hasdep="${hasdep:-0}"
   hasgo="$(ls "$tmp"/*.go >/dev/null 2>&1 && echo 1 || echo 0)"
