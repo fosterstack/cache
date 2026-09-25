@@ -1031,6 +1031,31 @@ surfaced="$(grep -c 'transient upstream' "$o/report.md" 2>/dev/null)"; surfaced=
 { [ "$ids" = "1" ] 2>/dev/null && [ "$surfaced" -ge 1 ] 2>/dev/null; } \
   && ok || no "collapses to one representative request_id; error still surfaced" "distinct_request_ids=$ids surfaced=$surfaced"
 
+begin "dadj-7-one-client-process-for-the-whole-run" "N adjudications go through ONE persistent adjudicator client process — started once (one identity-token exchange), reused for every finding — never a fresh subprocess/exchange per finding (jti_reused fix)"
+o="$WORK/dadj7"; rm -rf "$o"; fa="$WORK/dadj7-count.py"; cnt="$WORK/dadj7.count"; rm -f "$cnt"
+cat > "$fa" <<'PYEOF'
+import json, sys, os
+# STARTS once per process (stands in for the single identity-token exchange); REQ once per call.
+open(os.environ["ADJ_COUNT"], "a").write("START\n")
+if "--serve" in sys.argv:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line: continue
+        json.loads(line)
+        open(os.environ["ADJ_COUNT"], "a").write("REQ\n")
+        sys.stdout.write(json.dumps({"refused": False, "category": "unknown", "token_usage": 1}) + "\n"); sys.stdout.flush()
+else:
+    json.loads(sys.stdin.read() or "{}")
+    open(os.environ["ADJ_COUNT"], "a").write("REQ\n")
+    json.dump({"refused": False, "category": "unknown", "token_usage": 1}, sys.stdout)
+PYEOF
+# manifest-owner-multiscope has two unique-lineage no-fix scopes => >=2 adjudications (+narrative)
+ADJ_COUNT="$cnt" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-owner-multiscope.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
+starts="$(grep -c START "$cnt" 2>/dev/null)"; starts="${starts:-0}"
+reqs="$(grep -c REQ "$cnt" 2>/dev/null)"; reqs="${reqs:-0}"
+{ eq "$starts" "1" && [ "$reqs" -ge 2 ] 2>/dev/null; } \
+  && ok || no "one process start (one exchange) serving >=2 adjudications" "starts=$starts reqs=$reqs"
+
 begin "il6-vex-consolidated-and-delivered-as-draft-pr" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and delivers it as a single draft PR off main (R16), never a direct .vex edit"
 o="$WORK/il6"; shim="$WORK/il6.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
@@ -1293,9 +1318,17 @@ o="$WORK/ol9"; rm -rf "$o"
 na="$WORK/ol9-narr.py"
 cat > "$na" <<'PYEOF'
 import json,sys
-req=json.load(sys.stdin)
-if req.get("mode")=="narrative": json.dump({"refused":False,"narrative":"Audit by Anthropic using claude-secret-x.","token_usage":10},sys.stdout)
-else: json.dump({"refused":False,"category":"real_fixable","token_usage":10},sys.stdout)
+def answer(req):
+    if req.get("mode")=="narrative":
+        return {"refused":False,"narrative":"Audit by Anthropic using claude-secret-x.","token_usage":10}
+    return {"refused":False,"category":"real_fixable","token_usage":10}
+if "--serve" in sys.argv:
+    for line in sys.stdin:
+        line=line.strip()
+        if not line: continue
+        sys.stdout.write(json.dumps(answer(json.loads(line)))+"\n"); sys.stdout.flush()
+else:
+    json.dump(answer(json.load(sys.stdin)),sys.stdout)
 PYEOF
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$na" --out "$o" >/dev/null 2>&1
 leaked="$(grep -ciE 'anthropic|claude-secret' "$o/report.md" 2>/dev/null)"; leaked="${leaked:-0}"

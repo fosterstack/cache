@@ -1651,6 +1651,8 @@ def main():
     except ValueError as e:
         print("daily CVE auditor: manifest invalid — %s" % e)
         return 3
+    finally:
+        cli.close_adjudicators()       # shut the run's single adjudicator client process down
     print("daily CVE auditor: dry_run=%s, out=%s" % (dry, out))
     return 0 if complete else 1        # AUDIT INCOMPLETE fails the job (R13 item 3)
 

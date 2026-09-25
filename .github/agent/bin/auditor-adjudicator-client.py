@@ -28,27 +28,30 @@ def _mask(s):
     return s
 
 
-def _fail(step, e):
-    """Surface the real error, secrets masked, naming which STEP failed (identity/federation vs
-    the model call) so a runner diagnosis knows exactly where it broke. The status code, when the
-    SDK carries one, disambiguates auth (401/403 => identity/federation) from a model-call error."""
+def _err_detail(step, e):
+    """(step, masked detail) for an SDK error. A 401/403 status is an identity/federation failure
+    (the scoped-token exchange), not the model call; secrets and model ids are masked."""
     status = getattr(e, "status_code", None) or getattr(e, "status", None)
     if status in (401, 403):
-        step = "identity/federation"        # a scoped-token exchange / auth failure, not the model
-    detail = "%s%s: %s" % (type(e).__name__, (" status=%s" % status) if status else "", _mask(str(e)))
+        step = "identity/federation"
+    return step, "%s%s: %s" % (type(e).__name__, (" status=%s" % status) if status else "", _mask(str(e)))
+
+
+def _fail(step, e):
+    """One-shot fatal: write the masked step failure to stderr and exit (the driver surfaces it)."""
+    step, detail = _err_detail(step, e)
     sys.stderr.write("adjudicator-client: %s step failed: %s\n" % (step, detail))
     sys.exit(5)
 
 
-def main():
-    req = json.load(sys.stdin)
+def _build_client():
+    """Construct the SDK client ONCE. The federated identity token is exchanged on the first API
+    call and its access token is cached in this process, so a whole run's findings reuse one
+    exchange (a fresh exchange per subprocess reused the identity token's jti -> jti_reused)."""
     token_file = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")
     if not token_file or not os.path.exists(token_file):
         sys.stderr.write("adjudicator-client: no identity token file; cannot reach the model\n")
         sys.exit(3)
-    model = os.environ.get("AUDITOR_MODEL_PRIMARY")
-    if req.get("attempt") == "fallback":
-        model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     try:
         import anthropic  # the SDK exchanges the identity token for a scoped access token
     except Exception as e:
@@ -56,9 +59,18 @@ def main():
                          % (type(e).__name__, _mask(str(e))))
         sys.exit(4)
     try:
-        client = anthropic.Anthropic()  # SDK reads ANTHROPIC_IDENTITY_TOKEN_FILE + workspace env
+        return anthropic.Anthropic()  # SDK reads ANTHROPIC_IDENTITY_TOKEN_FILE + workspace env
     except Exception as e:
         _fail("identity/federation", e)
+
+
+def _handle(req, client):
+    """One adjudication (or narrative) against the shared client. Raises the SDK error on a
+    model-call/federation failure; the caller decides whether to exit (one-shot) or return an
+    {"error": ...} answer (serve)."""
+    model = os.environ.get("AUDITOR_MODEL_PRIMARY")
+    if req.get("attempt") == "fallback":
+        model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     if req.get("mode") == "narrative":
         # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
         prompt = ("Write the audit Conclusion for our own container image from ONLY the "
@@ -68,16 +80,10 @@ def main():
                   "clean day, one sentence with the numbers. Name only CVE/GO ids present in the "
                   "sections; do not contradict a section. Do not produce exploit code.\n\n%s"
                   % json.dumps(req.get("structured"), indent=1))
-        try:
-            msg = client.messages.create(model=model, max_tokens=512,
-                                         messages=[{"role": "user", "content": prompt}])
-        except Exception as e:
-            # Surface the REAL error (class, status, message) with secrets/model-id MASKED, so a
-            # failure is diagnosable in the report; a 401/403 is reclassified as an identity step.
-            _fail("model-call", e)
+        msg = client.messages.create(model=model, max_tokens=512,
+                                     messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        json.dump({"refused": False, "narrative": text, "token_usage": _usage(msg)}, sys.stdout)
-        return
+        return {"refused": False, "narrative": text, "token_usage": _usage(msg)}
     # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
     # version, scanner set, and reachability summary. Its answer is still only a proposal our
     # code re-verifies against evidence before any VEX is written.
@@ -92,16 +98,39 @@ def main():
               "real_fixable | risk_acceptance). Reason ONLY about whether our code reaches the "
               "vulnerable path; do NOT produce exploit code. Your answer is a proposal our code "
               "re-verifies against scanner evidence.\n\n%s" % (ask, ctx))
-    try:
-        msg = client.messages.create(model=model, max_tokens=512,
-                                     messages=[{"role": "user", "content": prompt}])
-    except Exception as e:
-        _fail("model-call", e)
+    msg = client.messages.create(model=model, max_tokens=512,
+                                 messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
     cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
                             "risk_acceptance") if c in text), "under_investigation")
-    json.dump({"refused": "cannot" in text.lower() and cat == "under_investigation",
-               "category": cat, "proposed": True, "token_usage": _usage(msg)}, sys.stdout)
+    return {"refused": "cannot" in text.lower() and cat == "under_investigation",
+            "category": cat, "proposed": True, "token_usage": _usage(msg)}
+
+
+def main():
+    client = _build_client()   # ONE client / ONE exchange for the whole run
+    if "--serve" in sys.argv:
+        # The driver keeps this process for the run and sends one request per line. A per-request
+        # model-call failure is returned as {"error": ...} (masked) WITHOUT exiting, so the one
+        # exchange is preserved and every finding is answered from the same process.
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ans = _handle(json.loads(line), client)
+            except Exception as e:
+                step, detail = _err_detail("model-call", e)
+                ans = {"error": "adjudicator-client: %s step failed: %s" % (step, detail)}
+            sys.stdout.write(json.dumps(ans) + "\n")
+            sys.stdout.flush()
+        return
+    # one-shot back-compat
+    try:
+        ans = _handle(json.load(sys.stdin), client)
+    except Exception as e:
+        _fail("model-call", e)
+    json.dump(ans, sys.stdout)
 
 
 def _usage(msg):
