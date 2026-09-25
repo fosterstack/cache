@@ -6,7 +6,38 @@ calls this always re-verifies the proposal against evidence before writing any V
 compromised or wrong answer cannot itself produce a suppression. Reads one request as
 JSON on stdin, prints one answer on stdout (same contract as the stub). Never used by the
 suite (which passes --adjudicator <stub>); it is the workflow's default."""
-import json, os, sys
+import json, os, re, sys
+
+# The identifiers/tokens that must never reach the uploaded report. We surface the REAL error
+# (class, HTTP status, message) so a failure is diagnosable, but with these values redacted.
+_SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
+                "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
+                "AUDITOR_MODEL_PRIMARY", "AUDITOR_MODEL_FALLBACK", "SNYK_TOKEN",
+                "AUDITOR_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY")
+
+
+def _mask(s):
+    s = str(s or "")
+    for k in _SECRET_ENVS:
+        v = os.environ.get(k)
+        if v and len(v) >= 4:
+            s = s.replace(v, "<%s>" % k)
+    s = re.sub(r"claude-[A-Za-z0-9._-]+", "<model-id>", s)
+    s = re.sub(r"sk-[A-Za-z0-9._-]{6,}", "<redacted-key>", s)
+    s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._-]{6,}", "Bearer <redacted>", s)
+    return s
+
+
+def _fail(step, e):
+    """Surface the real error, secrets masked, naming which STEP failed (identity/federation vs
+    the model call) so a runner diagnosis knows exactly where it broke. The status code, when the
+    SDK carries one, disambiguates auth (401/403 => identity/federation) from a model-call error."""
+    status = getattr(e, "status_code", None) or getattr(e, "status", None)
+    if status in (401, 403):
+        step = "identity/federation"        # a scoped-token exchange / auth failure, not the model
+    detail = "%s%s: %s" % (type(e).__name__, (" status=%s" % status) if status else "", _mask(str(e)))
+    sys.stderr.write("adjudicator-client: %s step failed: %s\n" % (step, detail))
+    sys.exit(5)
 
 
 def main():
@@ -20,10 +51,14 @@ def main():
         model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     try:
         import anthropic  # the SDK exchanges the identity token for a scoped access token
-    except Exception:
-        sys.stderr.write("adjudicator-client: anthropic SDK not installed in this runner\n")
+    except Exception as e:
+        sys.stderr.write("adjudicator-client: sdk-import step failed: %s: %s\n"
+                         % (type(e).__name__, _mask(str(e))))
         sys.exit(4)
-    client = anthropic.Anthropic()  # SDK reads ANTHROPIC_IDENTITY_TOKEN_FILE + workspace env
+    try:
+        client = anthropic.Anthropic()  # SDK reads ANTHROPIC_IDENTITY_TOKEN_FILE + workspace env
+    except Exception as e:
+        _fail("identity/federation", e)
     if req.get("mode") == "narrative":
         # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
         prompt = ("Write the audit Conclusion for our own container image from ONLY the "
@@ -36,10 +71,10 @@ def main():
         try:
             msg = client.messages.create(model=model, max_tokens=512,
                                          messages=[{"role": "user", "content": prompt}])
-        except Exception:
-            # NEVER surface the SDK error text: it can name the configured model id, and
-            # this stderr is captured and written into the uploaded report.
-            sys.stderr.write("adjudicator-client: model call failed\n"); sys.exit(5)
+        except Exception as e:
+            # Surface the REAL error (class, status, message) with secrets/model-id MASKED, so a
+            # failure is diagnosable in the report; a 401/403 is reclassified as an identity step.
+            _fail("model-call", e)
         text = "".join(getattr(b, "text", "") for b in msg.content)
         json.dump({"refused": False, "narrative": text, "token_usage": _usage(msg)}, sys.stdout)
         return
@@ -60,8 +95,8 @@ def main():
     try:
         msg = client.messages.create(model=model, max_tokens=512,
                                      messages=[{"role": "user", "content": prompt}])
-    except Exception:
-        sys.stderr.write("adjudicator-client: model call failed\n"); sys.exit(5)
+    except Exception as e:
+        _fail("model-call", e)
     text = "".join(getattr(b, "text", "") for b in msg.content)
     cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
                             "risk_acceptance") if c in text), "under_investigation")

@@ -1,0 +1,13 @@
+{
+ "commit": "osq", "module": null, "base_os": "debian", "candidate_variant": "production",
+ "candidate_digests": {"production": "sha256:osq"},
+ "scanner_reports": {"grype": ".github/agent/fixtures/scanners/grype-empty.json", "trivy": null, "osv-scanner": null, "osv-scanner-gomod": null, "snyk": null},
+ "scanner_status": {
+   "grype": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 928, "os_package_count": 0, "db_date": "2026-09-22", "findings": 0},
+   "trivy": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 927, "os_package_count": 53, "db_date": "2026-09-22", "findings": 0},
+   "osv-scanner": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 35, "os_package_count": 0, "db_date": "2026-09-22", "findings": 0},
+   "snyk": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 53, "os_package_count": 53, "db_date": "2026-09-22", "findings": 0},
+   "osv-scanner-gomod": {"ran": true, "version": "x", "reason": "ok", "package_count": null}
+ },
+ "govulncheck": null, "known_defect_log": null, "kev_catalog": null
+}

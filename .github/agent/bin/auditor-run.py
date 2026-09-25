@@ -30,6 +30,27 @@ _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(
 C = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(C)
 IMAGE_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")
 
+# Identifiers/tokens that must never reach the uploaded report. We surface the REAL adjudicator
+# error (class, HTTP status, message) so a failure is diagnosable, but with these values redacted.
+_SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
+                "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
+                "AUDITOR_MODEL_PRIMARY", "AUDITOR_MODEL_FALLBACK", "SNYK_TOKEN",
+                "AUDITOR_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY")
+
+
+def _mask(s):
+    """Redact secret values and any model-id/token shapes from text before it is printed or
+    written into the report (REQ-AUD-6: identifiers never leak; R-live fix 1: surface the error)."""
+    s = str(s or "")
+    for k in _SECRET_ENVS:
+        v = os.environ.get(k)
+        if v and len(v) >= 4:
+            s = s.replace(v, "<%s>" % k)
+    s = re.sub(r"claude-[A-Za-z0-9._-]+", "<model-id>", s)
+    s = re.sub(r"sk-[A-Za-z0-9._-]{6,}", "<redacted-key>", s)
+    s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._-]{6,}", "Bearer <redacted>", s)
+    return s.strip()
+
 
 def _sub_purl(sc):
     """A subcomponent's package-URL, from either `@id` or `identifiers.purl` (the OpenVEX
@@ -631,28 +652,36 @@ def _consolidate(out, ts):
 
 
 def adjudicate(adjudicator, ctx, state):
-    """primary -> rephrase -> fallback for ONE finding, bounded PER FINDING by the
-    five-iteration stop and globally by the token budget. Returns the category (or
-    'refused' if the fallback chain is exhausted)."""
-    iters = 0
+    """primary -> rephrase -> fallback for ONE finding, bounded PER FINDING by the five-iteration
+    stop and globally by the token budget. Returns the category, 'refused' (a genuine refusal the
+    model WAS reachable for), or 'adjudicator_error' (every attempt errored — the model was
+    UNAVAILABLE). On an error, surface the REAL cause (exception class + HTTP status + message,
+    secrets MASKED) ONCE per distinct error into state['adj_errors'] so the header, §4 and the
+    status line can name it, and it is not repeated per finding (R-live fix 1)."""
+    iters = 0; errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
             state["stops"] = state.get("stops", 0) + 1
-            return "refused"
+            return "adjudicator_error" if (errored and not refused) else "refused"
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
             ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt=attempt, model=role, context=ctx)
         except cli.Refused as e:
             state["tokens"] += int(getattr(e, "token_usage", 0) or 0)   # a refusal is still billed
+            refused = True
             continue
-        except Exception:
-            # never echo the exception text: an adjudicator's stderr can name the model id.
-            print("adjudicator error for %s (%s): call failed" % (ctx["finding_id"], attempt))
+        except Exception as e:
+            errored = True
+            msg = "%s: %s" % (type(e).__name__, _mask(str(e)))    # class + masked message/status
+            errs = state.setdefault("adj_errors", {})
+            if msg not in errs:                                   # print/record ONCE per distinct error
+                print("adjudicator error (%s): %s" % (attempt, msg))
+            errs[msg] = errs.get(msg, 0) + 1
             continue
         state["tokens"] += int(ans.get("token_usage") or 0)
         state.setdefault("roles_used", set()).add(role)
         return ans.get("category") or "unknown"
-    return "refused"
+    return "adjudicator_error" if (errored and not refused) else "refused"
 
 
 # ---- deterministic facts from scanner data ----
@@ -899,6 +928,15 @@ def _dispose(c, findings, aliases, env, would, name=None):
                            ignore_files=["vex", "evidence"])
                 return row, m_inc
             # a FP the code cannot verify is NOT a disposition — fall through and route it.
+        elif cat == "adjudicator_error":
+            # the model was UNAVAILABLE — every attempt errored (not a refusal). Do NOT open a
+            # per-finding owner issue; run() opens ONE aggregate "adjudicator unavailable — N
+            # findings unassessed" issue and marks the run INCOMPLETE (R-live fix 3). §4, cause named.
+            row.update(section=4, disposition="under investigation",
+                       action="unassessed: adjudicator unavailable",
+                       reason="adjudicator unavailable (model calls failed)",
+                       cause="adjudicator unavailable", adjudicator_error=True)
+            return row, m_inc
         elif cat == "refused":
             # unassessed after the fallback chain -> owner-decision issue (REQ-AUD-9 AC3),
             # not a silent §4 (R1 outer round-1 #4). A stub run cannot escalate; say so.
@@ -908,16 +946,16 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=4, disposition="under investigation", action="none (stub: no owner escalation)",
                            reason="adjudication exhausted", cause=cause)
                 return row, m_inc
-            it = policy.owner_issue_title(c, gf["package"], "unassessed-after-fallback")
-            body = ("Finding %s (%s@%s, severity %s) could not be assessed after the "
-                    "primary/rephrase/fallback chain. Owner decision needed. Evidence: adjudication "
-                    "exhausted; reachability %s. Accept, reject, or provide guidance."
-                    % (c, gf["package"], gf["installed"], gf["severity"], row["reachability"]))
-            ok, ref = _emit_owner_issue(it, body, dry, would)
+            # genuine refusal (the model was reachable) -> owner-decision issue, deduped per
+            # (CVE, package) with every scope listed in the body, emitted after routing (fix 4).
             row.update(section=4, disposition="under investigation",
-                       action=("escalated to owner-decision issue" if ok else "OWNER ESCALATION FAILED"),
-                       reason="unassessed after fallback", cause=cause,
-                       owner_issue=(ref if ok else None), issue_failed=(not ok))
+                       action="escalation pending (owner-decision issue)",
+                       reason="unassessed after fallback", cause=cause)
+            row["owner_issue_intent"] = {
+                "cve": c, "package": gf["package"], "kind": "unassessed",
+                "reason_key": "unassessed-after-fallback",
+                "scope": "%s@%s (severity %s, reachability %s)"
+                         % (gf["package"], gf["installed"], gf["severity"], row["reachability"])}
             return row, m_inc
     # 4) deterministic fix routing.
     if gf["fixed"]:
@@ -974,23 +1012,18 @@ def _dispose(c, findings, aliases, env, would, name=None):
                    {"id": c, "vex": this_scope_id, "expiry": this_exp, "scoped_purls": _purls,
                     "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
-    owner_issue = None; issue_failed = False
-    if at:
-        it = policy.owner_issue_title(c, gf["package"], reason)
-        body = ("Accept risk for %s (%s@%s, severity %s, threshold %s)? No pullable upstream fix "
-                "(%s); an affected VEX + %d-day ignores are carried in this run's suppression "
-                "package (the artifact/PR). Reply on this issue: `ACCEPT %s until YYYY-MM-DD` or "
-                "`REJECT %s`."
-                % (c, gf["package"], gf["installed"], gf["severity"], reason, gf["nofix_reason"],
-                   policy.IGNORE_EXPIRY_DAYS, c, c))
-        ok, ref = _emit_owner_issue(it, body, dry, would)   # find-or-update, never a duplicate; failure propagates
-        if ok:
-            action += "; owner-decision issue opened/updated (issues:write)"; owner_issue = ref
-        else:
-            action += "; OWNER ISSUE FAILED"; issue_failed = True
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=this_scope_id,
-               scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason), owner_issue=owner_issue,
-               threshold=("at_or_above" if at else "below"), expiry=this_exp, issue_failed=issue_failed)
+               scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason),
+               threshold=("at_or_above" if at else "below"), expiry=this_exp)
+    if at:
+        # at/above threshold -> owner-decision issue, deduped per (CVE, package) with every scope
+        # listed in the body and emitted after routing (fix 4) — never one issue per binary that
+        # vendors the same package. run() sets the final action / owner_issue / issue_failed.
+        row["action"] = action + "; owner-decision issue pending"
+        row["owner_issue_intent"] = {
+            "cve": c, "package": gf["package"], "kind": "risk_acceptance", "reason_key": reason,
+            "scope": "%s@%s (severity %s, threshold %s, no fix: %s)"
+                     % (gf["package"], gf["installed"], gf["severity"], reason, gf["nofix_reason"])}
     return row, m_inc
 
 
@@ -1136,6 +1169,58 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # A Go-module fix (a module WE build) is DELIVERED as its own draft bump PR through the App
     # path below; a base rebuild defers to Dependabot's daily docker PR. §6 pending flags and the
     # honest action text are set by that delivery loop — not proposed-only here.
+    # ---- owner-decision issues, emitted AFTER routing ----
+    # (a) A GLOBAL adjudicator outage: if any finding was unassessed because the model was
+    # UNAVAILABLE, open exactly ONE issue naming the count and the (masked) cause — never one per
+    # finding (R-live fix 3) — and mark the run INCOMPLETE (below).
+    adj_unavailable = [r for r in rows if r.get("adjudicator_error")]
+    adj_err_msgs = sorted((state.get("adj_errors") or {}).keys())
+    adjudicator_down = bool(adj_unavailable)
+    adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
+    if adjudicator_down:
+        n = len(adj_unavailable)
+        ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))
+        title = "owner-decision: adjudicator unavailable — %d findings unassessed" % n
+        body = ("The adjudicator was unavailable this run: %d finding(s) could not be assessed "
+                "(primary/rephrase/fallback all failed). Cause: %s. The run is INCOMPLETE; no "
+                "disposition was inferred for these findings. Findings: %s"
+                % (n, adj_cause, ids[:1500]))
+        ok, ref = _emit_owner_issue(title, body, dry, would)
+        for r in adj_unavailable:
+            r["owner_issue"] = ref if ok else None
+            r["action"] = ("unassessed: adjudicator unavailable; one owner-decision issue opened"
+                           if ok else "unassessed: adjudicator unavailable; OWNER ISSUE FAILED")
+            r["issue_failed"] = (not ok)
+    # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
+    # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
+    _intents = {}
+    for r in rows:
+        it = r.get("owner_issue_intent")
+        if it:
+            _intents.setdefault((it["cve"], it["package"]), []).append((r, it))
+    for (cve, pkg), group in _intents.items():
+        kind = group[0][1]["kind"]; reason_key = group[0][1]["reason_key"]
+        scopes = sorted({it["scope"] for _r, it in group})
+        title = policy.owner_issue_title(cve, pkg, reason_key)
+        if kind == "risk_acceptance":
+            body = ("Accept risk for %s in %s? No pullable upstream fix; an affected VEX + %d-day "
+                    "ignores are carried in this run's suppression package (the artifact/PR). "
+                    "Scope(s) (%d):\n- %s\n\nReply on this issue: `ACCEPT %s until YYYY-MM-DD` or "
+                    "`REJECT %s`." % (cve, pkg, policy.IGNORE_EXPIRY_DAYS, len(scopes),
+                                      "\n- ".join(scopes), cve, cve))
+        else:
+            body = ("Finding %s in %s could not be assessed after the primary/rephrase/fallback "
+                    "chain. Owner decision needed. Scope(s) (%d):\n- %s\n\nAccept, reject, or "
+                    "provide guidance." % (cve, pkg, len(scopes), "\n- ".join(scopes)))
+        ok, ref = _emit_owner_issue(title, body, dry, would)
+        for r, _it in group:
+            r["owner_issue"] = ref if ok else None
+            r["issue_failed"] = (not ok)
+            if kind == "risk_acceptance":
+                base = r["action"].replace("; owner-decision issue pending", "")
+                r["action"] = base + ("; owner-decision issue opened/updated (issues:write)" if ok else "; OWNER ISSUE FAILED")
+            else:
+                r["action"] = ("escalated to owner-decision issue" if ok else "OWNER ESCALATION FAILED")
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
     issue_failures = sum(1 for r in rows if r.get("issue_failed"))
@@ -1159,30 +1244,34 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # read this image (osv-scanner does not read a distroless dpkg status.d) is RECORDED as
     # 'did not run' but does not by itself fail the audit when three others agree.
     st = m.get("scanner_status") or {}
-    def _ran(s):
-        # A scanner counts as run ONLY if the manifest records it ran AND it inventoried
-        # packages. Path-presence is NOT enough (R1 round-1): a manifest without a
-        # scanner_status block, or one reporting zero packages, fails the quorum closed.
+    def _os(s):
+        return (st.get(s) or {}).get("os_package_count") or 0
+    def _inv(s):
+        # Inventoried the OS layer for the QUORUM: ran AND reported > 0 OS packages AND not an
+        # excluded outlier. A scanner reporting 0 OS packages did NOT inventory the OS layer for
+        # this image (osv-scanner on a distroless dpkg status.d; grype/osv on a Go-only image) —
+        # it ABSTAINS from the OS-package quorum, it is not a disagreeing vote (R-live fix 2).
         info = st.get(s) or {}
-        # counts for QUORUM only if it ran, inventoried packages, and was not excluded as an
-        # inventory outlier (whose findings are still parsed and dispositioned).
-        return bool(info.get("ran")) and (info.get("package_count") or 0) > 0 and info.get("quorum_ok", True)
-    def _scanned(s):
+        return bool(info.get("ran")) and _os(s) > 0 and info.get("quorum_ok", True)
+    def _ran_os(s):
         info = st.get(s) or {}
-        return bool(info.get("ran")) and (info.get("package_count") or 0) > 0
-    ran_image = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _ran(s)]
-    excluded = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if _scanned(s) and not (st.get(s) or {}).get("quorum_ok", True)]
-    not_ran = [s for s in ("grype", "trivy", "osv-scanner", "snyk") if not _scanned(s)]
-    oscounts = [(st.get(s) or {}).get("os_package_count") or 0 for s in ran_image]
+        return bool(info.get("ran")) and _os(s) > 0
+    ran_image = [s for s in IMAGE_SCANNERS if _inv(s)]     # scanners that inventoried OS packages
+    excluded = [s for s in IMAGE_SCANNERS if _ran_os(s) and not (st.get(s) or {}).get("quorum_ok", True)]
+    not_ran = [s for s in IMAGE_SCANNERS if not _ran_os(s)]    # did not inventory the OS layer
+    oscounts = [_os(s) for s in ran_image]
     agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
     quorum = len(ran_image) >= 3 and agree
     # the honest quorum for the header uses THIS agreement decision, not per-scanner default
-    # flags (R1 refactor round-4 #8): when the ran scanners' OS counts do not agree numerically,
-    # none is labelled "agreed".
+    # flags (R1 refactor round-4 #8): when the inventorying scanners' OS counts do not agree
+    # numerically, none is labelled "agreed".
     _mx = max(oscounts) if oscounts else 0
-    quorum_info = {"agreed": [s for s in ran_image if agree and _mx and ((st.get(s) or {}).get("os_package_count") or 0) >= 0.5 * _mx],
-                   "disagreed": [s for s in ran_image if not (agree and _mx and ((st.get(s) or {}).get("os_package_count") or 0) >= 0.5 * _mx)],
-                   "not_ran": not_ran, "excluded": excluded}
+    quorum_info = {"agreed": [s for s in ran_image if agree and _mx and _os(s) >= 0.5 * _mx],
+                   "disagreed": [s for s in ran_image if not (agree and _mx and _os(s) >= 0.5 * _mx)],
+                   "not_ran": not_ran, "excluded": excluded,
+                   # the exact per-scanner OS counts the quorum compared, so the status/header line
+                   # is credible: "3 of 4 inventoried" is shown against the real 0/53/0/53 (fix 2)
+                   "os_counts": {s: _os(s) for s in IMAGE_SCANNERS}}
     # consolidate every per-CVE VEX into the canonical suppression files, run the consistency
     # check over THAT layout, then DELIVER the suppressions as one draft PR via the App token
     # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
@@ -1225,16 +1314,28 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     if dry and sections[3] and not would:
         findings_without_action += len(sections[3])
     complete = ((findings_without_action == 0) and quorum and (pr_err is None)
-                and (issue_failures == 0) and not cons_failed and not fix_errs)
+                and (issue_failures == 0) and not cons_failed and not fix_errs
+                and not adjudicator_down)
     if complete:
         status = "AUDIT COMPLETE"
     else:
         bits = []
+        # Name the ACTUAL cause first: an unavailable adjudicator leaves findings unassessed
+        # (R-live fix 2) — this is the primary failure of a run whose model calls all errored.
+        if adjudicator_down:
+            bits.append("%d findings unassessed: adjudicator unavailable (%s)"
+                        % (len(adj_unavailable), adj_cause))
         if findings_without_action:
             bits.append("%d findings without an action" % findings_without_action)
         if not quorum:
-            bits.append("scanner quorum %d/4 (need 3 agreeing); did not run: %s; excluded as outliers: %s"
-                        % (len(ran_image), ", ".join(not_ran) or "none", ", ".join(excluded) or "none"))
+            # show the exact per-scanner OS counts the quorum compared, so "N of 4 inventoried"
+            # is credible against the real numbers (fix 2). A 0 means that scanner did not
+            # inventory the OS layer (it abstains; it is not a disagreeing vote).
+            counts = ", ".join("%s(%d)" % (s, quorum_info["os_counts"].get(s, 0)) for s in IMAGE_SCANNERS)
+            bits.append("OS-package quorum not met: %d of 4 inventoried the OS layer [OS counts: %s] "
+                        "(need 3 agreeing within 50%%); agreed: %s; did not inventory OS: %s; excluded: %s"
+                        % (len(ran_image), counts, ", ".join(quorum_info["agreed"]) or "none",
+                           ", ".join(not_ran) or "none", ", ".join(excluded) or "none"))
         if pr_err:
             bits.append("suppression PR delivery failed: %s" % pr_err)
         if issue_failures:
@@ -1480,8 +1581,14 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     roles = sorted((state or {}).get("roles_used") or [])
     model_ran = "stub (no real model called)" if is_stub else ("+".join(roles) if roles else "none called")
     tok = int((state or {}).get("tokens") or 0)
+    # If the adjudicator was UNAVAILABLE, the header NAMES the cause (masked) — not a silent
+    # "none called" (R-live fix 1). The messages are already masked by adjudicate().
+    adj_errs = sorted((state or {}).get("adj_errors") or {})
+    adj_field = "real" if not is_stub else "stub"
+    if adj_errs and not is_stub:
+        adj_field = "real (UNAVAILABLE: %s)" % "; ".join(adj_errs)
     L.append("**dry_run:** %s   **adjudicator:** %s   **model:** %s   **token cost:** %d" %
-             ("yes" if dry else "no", "stub" if is_stub else "real", model_ran, tok))
+             ("yes" if dry else "no", adj_field, model_ran, tok))
     probs = (consistency or {}).get("problems", [])
     L.append("**Consistency:** %s   **Finding-set hash:** `%s`" % ("clean" if not probs else "%d problems" % len(probs), fs_hash))
     L.append("")

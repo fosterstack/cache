@@ -905,9 +905,9 @@ begin "il2-zero-package-scanner-not-quorum" "image scanners recorded ran:true bu
 o="$WORK/il2"; rm -rf "$o"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-zeropkg.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; rcz=$?
 inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
-quorum="$(grep -qi 'quorum 0/4' "$o/report.md" && echo yes || echo no)"
+quorum="$(grep -qiE '0 of 4 inventoried the OS layer' "$o/report.md" && grep -qi 'OS counts:' "$o/report.md" && echo yes || echo no)"
 { eq "$inc" "yes" && eq "$quorum" "yes" && [ "$rcz" -ne 0 ] 2>/dev/null; } \
-  && ok || no "AUDIT INCOMPLETE, quorum 0/4, non-zero exit" "incomplete=$inc quorum=$quorum exit=$rcz"
+  && ok || no "AUDIT INCOMPLETE, 0 of 4 inventoried OS + per-scanner counts, non-zero exit" "incomplete=$inc quorum=$quorum exit=$rcz"
 
 begin "il3-model-id-never-in-report" "when the adjudicator errors, the Conclusion is a generic withheld line — the model id / SDK error text never reaches report.md"
 o="$WORK/il3"; rm -rf "$o"; fa="$WORK/il3-fail.py"
@@ -942,6 +942,51 @@ creates="$(grep -c 'issue create .*CVE-2099-9001' "$shim" 2>/dev/null)"; creates
 comments="$(grep -c 'issue comment .*CVE-2099-9001' "$shim" 2>/dev/null)"; comments="${comments:-0}"
 { eq "$creates" "1" && [ "$comments" -ge 1 ] 2>/dev/null; } \
   && ok || no "one issue create + a comment across two runs" "creates=$creates comments=$comments"
+
+begin "dadj-1-adjudicator-unavailable-one-issue-incomplete" "when the adjudicator is UNAVAILABLE (every call errors), the run is AUDIT INCOMPLETE naming the cause, exactly ONE aggregate owner issue 'adjudicator unavailable — N findings unassessed' is opened (never one per finding), and the header names the (masked) cause (R-live fixes 1+3)"
+o="$WORK/dadj1"; shim="$WORK/dadj1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$F/adjudicator/fail-on-call.py" --out "$o" >/dev/null 2>&1
+inc="$(grep -c 'AUDIT INCOMPLETE:.*adjudicator unavailable' "$o/report.md" 2>/dev/null)"; inc="${inc:-0}"
+agg="$(grep -cE "issue create.*adjudicator unavailable — [0-9]+ findings unassessed" "$shim" 2>/dev/null)"; agg="${agg:-0}"
+perfinding="$(grep -c 'issue create.*unassessed-after-fallback' "$shim" 2>/dev/null)"; perfinding="${perfinding:-0}"
+hdr="$(grep -c 'UNAVAILABLE' "$o/report.md" 2>/dev/null)"; hdr="${hdr:-0}"
+{ [ "$inc" -ge 1 ] 2>/dev/null && eq "$agg" "1" && eq "$perfinding" "0" && [ "$hdr" -ge 1 ] 2>/dev/null; } \
+  && ok || no "INCOMPLETE names cause; ONE aggregate issue; no per-finding issue; header names cause" "incomplete=$inc aggregate=$agg per_finding=$perfinding header=$hdr"
+
+begin "dadj-2-adjudicator-error-surfaced-but-masked" "an adjudicator error is SURFACED in the report (so it is diagnosable) but any secret value and model id are MASKED — never leaked into report.md (R-live fix 1)"
+o="$WORK/dadj2"; rm -rf "$o"; fa="$WORK/dadj2-fail.py"
+cat > "$fa" <<'PYEOF'
+import os, sys
+sys.stderr.write("Error code: 401 auth failed for %s using claude-secret-zzz\n" % os.environ.get("AUDITOR_MODEL_PRIMARY", ""))
+sys.exit(7)
+PYEOF
+AUDITOR_MODEL_PRIMARY="SENTINEL_SECRET_9137" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
+surfaced="$(grep -c 'UNAVAILABLE' "$o/report.md" 2>/dev/null)"; surfaced="${surfaced:-0}"
+leak_secret="$(grep -c 'SENTINEL_SECRET_9137' "$o/report.md" 2>/dev/null)"; leak_secret="${leak_secret:-0}"
+leak_model="$(grep -c 'claude-secret-zzz' "$o/report.md" 2>/dev/null)"; leak_model="${leak_model:-0}"
+masked="$(grep -cE '<AUDITOR_MODEL_PRIMARY>|<model-id>' "$o/report.md" 2>/dev/null)"; masked="${masked:-0}"
+{ [ "$surfaced" -ge 1 ] 2>/dev/null && eq "$leak_secret" "0" && eq "$leak_model" "0" && [ "$masked" -ge 1 ] 2>/dev/null; } \
+  && ok || no "error surfaced; secret value + model id masked" "surfaced=$surfaced leak_secret=$leak_secret leak_model=$leak_model masked=$masked"
+
+begin "dadj-3-quorum-status-shows-per-scanner-os-counts" "the OS-package quorum line shows the per-scanner OS counts it compared, names 0-OS scanners as 'did not inventory OS' (abstain, not a disagreeing vote), and never claims '4/4 agreeing' against disparate counts (R-live fix 2)"
+o="$WORK/dadj3"; rm -rf "$o"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-osquorum.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+counts="$(grep -c 'OS counts: grype(0), trivy(53), osv-scanner(0), snyk(53)' "$o/report.md" 2>/dev/null)"; counts="${counts:-0}"
+abstain="$(grep -c 'did not inventory OS: grype, osv-scanner' "$o/report.md" 2>/dev/null)"; abstain="${abstain:-0}"
+inv2="$(grep -c '2 of 4 inventoried the OS layer' "$o/report.md" 2>/dev/null)"; inv2="${inv2:-0}"
+notfour="$(grep -cE '4/4 (agreeing|\(need)' "$o/report.md" 2>/dev/null)"; notfour="${notfour:-0}"
+{ [ "$counts" -ge 1 ] 2>/dev/null && [ "$abstain" -ge 1 ] 2>/dev/null && [ "$inv2" -ge 1 ] 2>/dev/null && eq "$notfour" "0"; } \
+  && ok || no "quorum shows compared per-scanner OS counts; 0-OS scanners abstain; no false 4/4" "counts=$counts abstain=$abstain inv2=$inv2 false_4of4=$notfour"
+
+begin "dadj-4-owner-issue-one-per-cve-package-scopes-in-body" "an at-threshold no-fix (CVE, package) present in TWO scopes opens exactly ONE owner-decision issue whose body lists BOTH scopes — never one issue per binary/version that vendors the package (R-live fix 4)"
+o="$WORK/dadj4"; shim="$WORK/dadj4.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-owner-multiscope.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+creates="$(grep -c 'issue create.*CVE-2099-7777' "$shim" 2>/dev/null)"; creates="${creates:-0}"
+both="$(grep -c 'libfoo@1' "$shim" 2>/dev/null)"; both="${both:-0}"
+both2="$(grep -c 'libfoo@2' "$shim" 2>/dev/null)"; both2="${both2:-0}"
+scopes2="$(grep -c 'Scope(s) (2)' "$shim" 2>/dev/null)"; scopes2="${scopes2:-0}"
+{ eq "$creates" "1" && [ "$both" -ge 1 ] 2>/dev/null && [ "$both2" -ge 1 ] 2>/dev/null && [ "$scopes2" -ge 1 ] 2>/dev/null; } \
+  && ok || no "one issue for (CVE,package) with both scopes in the body" "creates=$creates libfoo@1=$both libfoo@2=$both2 scopes2=$scopes2"
 
 begin "il6-vex-consolidated-and-delivered-as-draft-pr" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and delivers it as a single draft PR off main (R16), never a direct .vex edit"
 o="$WORK/il6"; shim="$WORK/il6.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
