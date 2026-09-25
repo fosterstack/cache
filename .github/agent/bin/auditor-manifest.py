@@ -54,6 +54,21 @@ def _module(source_dir):
 
 # ---- per-scanner inventory readers: (total_packages, os_packages, db_date) ----
 
+# An OS-layer package is any distro package manager's package — deb (Debian/Ubuntu), apk
+# (Alpine), or rpm (RHEL/Fedora/SUSE). Counting only "deb" made grype report 0 OS packages on
+# an Alpine image while trivy/snyk saw the apk layer, sinking the quorum on every Alpine base.
+_OS_PKG_TYPES = ("deb", "apk", "rpm")
+_OS_PURL_PREFIXES = ("pkg:deb", "pkg:apk", "pkg:rpm")
+_OS_OSV_ECOSYSTEMS = ("debian", "ubuntu", "alpine", "rhel", "red hat", "rocky", "almalinux", "suse", "opensuse")
+
+
+def _is_os_pkg(a):
+    """True if a grype/syft artifact is an OS-layer package (deb | apk | rpm), by type or purl."""
+    t = (a.get("type") or "").lower()
+    purl = str(a.get("purl") or "")
+    return t in _OS_PKG_TYPES or purl.startswith(_OS_PURL_PREFIXES)
+
+
 def _inv_grype(path):
     # grype 0.118.0 `-o json` emits `matches`, not a full package catalogue, so the package
     # inventory is the distinct set of matched artifacts (the vulnerable packages). A distro
@@ -66,7 +81,7 @@ def _inv_grype(path):
         a = mt.get("artifact") or {}
         key = (a.get("name"), a.get("version"), a.get("type"))
         seen.add(key)
-        if a.get("type") == "deb" or str(a.get("purl", "")).startswith("pkg:deb"):
+        if _is_os_pkg(a):
             osseen.add(key)
     dbfrom = ((d.get("descriptor") or {}).get("db") or {}).get("status", {}).get("from", "") or ""
     m = DATE_RE.search(dbfrom)
@@ -89,7 +104,7 @@ def _inv_osv(path):
         for p in r.get("packages") or []:
             total += 1
             eco = ((p.get("package") or {}).get("ecosystem") or "").lower()
-            if "debian" in eco:
+            if any(x in eco for x in _OS_OSV_ECOSYSTEMS):
                 osp += 1
             findings += len(p.get("vulnerabilities") or [])
     return total, osp, None, findings
@@ -99,7 +114,7 @@ def _inv_syft(path):
     """syft is grype's own cataloguer; unlike grype's match-JSON it emits the FULL package
     inventory, including a distroless image's /var/lib/dpkg/status.d packages (R12 (b))."""
     d = json.load(open(path)); arts = d.get("artifacts") or []
-    total = len(arts); osp = sum(1 for a in arts if a.get("type") == "deb")
+    total = len(arts); osp = sum(1 for a in arts if _is_os_pkg(a))
     return total, osp
 
 

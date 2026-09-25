@@ -175,6 +175,22 @@ jobs:
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
           repositories: cache
 
+      - name: Install the pinned adjudicator SDK (real adjudicator only, before the driver)
+        # The real adjudicator client imports the anthropic SDK; it was never installed, so every
+        # model call failed with ModuleNotFoundError (surfaced by the driver as "adjudicator
+        # unavailable"). Install it hash-pinned (the same pinned-checksum contract as the
+        # scanners) into the SAME python3 the driver runs, and ASSERT the workload-identity
+        # federation surface is importable — or fail the run with exactly that message.
+        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --require-hashes --break-system-packages \
+            -r .github/agent/adjudicator-requirements.txt
+          python3 - <<'PY'
+          from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
+          print("adjudicator SDK ready: anthropic workload-identity federation surface importable")
+          PY
+
       - name: Run the auditor
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
