@@ -507,18 +507,20 @@ if ! have "$WF"; then no "$WF present" "absent"; else
 
 ########################################################################
 echo "=== REQ-AUD-6 ==="
-begin "req6-ac1-env-agent-main-no-prtarget" "environment agent (restricted to main per policy), no pull_request_target, the job is not disabled with if:false"
+begin "req6-ac1-env-agent-conditional-main-no-prtarget" "environment agent (main-restricted per policy) is attached ONLY for a real adjudicator or a scheduled run — a stub dispatch attaches none; no pull_request_target; the job is not disabled with if:false"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   env_="$(pj "$WORK/sh.json" 'd.get("job_environment")')"; prt="$(pj "$WORK/sh.json" 'd.get("has_pull_request_target")')"
   onlymain="$(pj "$F/policy/env-01.json" 'str([b["name"] for b in d.get("branch_policies",[])]==["main"])')"
+  # conditional: gates 'agent' on schedule OR adjudicator==real, empty otherwise (no secrets for a stub dispatch)
+  cond="$(printf '%s' "$env_" | grep -qE "adjudicator == 'real'" && printf '%s' "$env_" | grep -q "schedule" && printf '%s' "$env_" | grep -q "'agent'" && printf '%s' "$env_" | grep -qE "\|\| ''" && echo yes || echo no)"
   disabled="$($YAML load "$WF" | "$PY" -c 'import json,sys
 try:
-    d=json.load(sys.stdin); jb=[j for j in d.get("jobs",{}).values() if isinstance(j,dict) and j.get("environment")=="agent"]
+    d=json.load(sys.stdin); jb=[j for j in d.get("jobs",{}).values() if isinstance(j,dict) and "agent" in str(j.get("environment") or "")]
     print("yes" if (jb and jb[0].get("if") in (False,"false","${{ false }}")) else "no")
 except Exception: print("yes")')"
-  { eq "$env_" "agent" && eq "$prt" "false" && eq "$onlymain" "True" && eq "$disabled" "no"; } \
-    && ok || no "environment agent, main-only, no pr_target, not if:false" "env=$env_ prtarget=$prt main-only=$onlymain disabled=$disabled"; fi
+  { eq "$cond" "yes" && eq "$prt" "false" && eq "$onlymain" "True" && eq "$disabled" "no"; } \
+    && ok || no "environment agent conditional on real/schedule, main-only, no pr_target, not if:false" "cond_agent=$cond env=[$env_] prtarget=$prt main-only=$onlymain disabled=$disabled"; fi
 
 begin "req6-ac1-oidc-federation-no-api-key" "id-token:write + contents:read, OIDC audience via github-script into the identity-token file, no ANTHROPIC_API_KEY (all from the parsed doc, comments never count)"
 if ! have "$WF"; then no "$WF present" "absent"; else

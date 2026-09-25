@@ -45,7 +45,11 @@ jobs:
   audit:
     name: audit
     runs-on: ubuntu-latest
-    environment: agent
+    # The `agent` environment (main-restricted, holds the model/App secrets) is attached ONLY when
+    # secrets are actually needed — a real adjudicator or a scheduled run. A stub-adjudicator
+    # dispatch attaches NO environment and needs NO secrets, so it can run on a req/ branch (e.g.
+    # a pre-merge proving run). Empty string => no environment.
+    environment: ${{ (github.event_name == 'schedule' || inputs.adjudicator == 'real') && 'agent' || '' }}
     permissions:
       id-token: write
       contents: read
