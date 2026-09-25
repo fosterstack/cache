@@ -71,6 +71,7 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
+  '^bin/govulncheck-fixtures-test\.sh$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
@@ -114,7 +115,11 @@ ALLOW_PATTERNS=(
   # The reviewers' adversarial stand-ins, checked in as mutation-harness inputs.
   '^\.github/agent/fixtures/mutants/[A-Za-z0-9._-]+\.py$'
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\.go$'
-  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/go\.mod$'
+  # The fixture modules' manifests are stored as go.mod.fixture / go.sum.fixture (NOT go.mod /
+  # go.sum) so the dependency graph never indexes their deliberate vulnerable pin — they are
+  # materialized into a temp module at test time (bin/govulncheck-fixtures-test.sh). A plain
+  # go.mod / go.sum here is intentionally NOT allowed, so one can never be re-added.
+  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/go\.(mod|sum)\.fixture$'
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 

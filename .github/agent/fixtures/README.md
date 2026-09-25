@@ -41,6 +41,10 @@ changing field structure:
   reaches our code) in `reachable.json`; it is imported-but-not-called in
   `imported-not-called.json`. Non-Go reachability (the libssl case) is a **separate evidence
   type**, `reachability/libssl-not-reachable.evidence.json`, never dressed as govulncheck.
+  Those modules' manifests are stored as `go.mod.fixture` (not `go.mod`) so the dependency
+  graph never indexes their deliberate vulnerable pin; `bin/govulncheck-fixtures-test.sh`
+  materializes them into a throwaway temp module at test time (and, to regenerate the streams,
+  materialize the same way, then run govulncheck over the temp module).
 - `kev/known-exploited-vulnerabilities.json` — real **CISA KEV** catalog (version 2026.09.21),
   trimmed to include CVE-2023-4911, which the real grype scan of this image also reports; the
   threshold KEV check is a deterministic membership test against this file.
