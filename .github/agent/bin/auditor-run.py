@@ -97,6 +97,13 @@ def _emit_create(cmd, dry, would):
             print("create failed (%s): %s" % (cmd, e))
 
 
+def _issue_pending_note(ref):
+    """Honest action wording when an owner issue was NOT actually delivered but did not fail:
+    a dry-run preview ("dry") or a real run with gh delivery disabled ("skipped"). Never say
+    "opened" for these — the row must not contradict the PR list's "would open" (Codex R3 blk)."""
+    return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
+
+
 def log_index(logpath):
     idx = {}
     if logpath and os.path.exists(logpath):
@@ -182,9 +189,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     failure returns (None, stderr) so the caller marks the run AUDIT INCOMPLETE — never a
     false 'opened'. No vendor/model name appears in the branch, commit, or PR text.
 
-    A TEST-IMAGE run opens NO PR (a VEX for an image we do not ship is not a proposal),
-    EXCEPT the one-off proof (AUDITOR_PROOF_PR=1), whose PR title is prefixed
-    'proof — do not merge'."""
+    A TEST-IMAGE run opens NO PR (a VEX for an image we do not ship is not a proposal, and a
+    test image always forces dry_run — REQ-AUD-15 AC9)."""
     # nstmt==0 with NO removals means nothing to deliver. But an expiry reopen (AC5c) produces
     # zero NEW statements yet must still REMOVE a carried statement/ignore — deliver that.
     has_removals = False
@@ -194,17 +200,13 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         has_removals = False
     if nstmt == 0 and not has_removals:
         return None, None
-    proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
-    if is_test and not proof:
+    if is_test:
         would.append("test-image run: no PR (not a shipped image)")
         print("test-image run: no suppression PR (not a shipped image)")
         return None, None
     short = (commit or "unknown")[:12]
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = "auditor: update suppressions (%d statements)" % nstmt
-    if is_test and proof:
-        branch = "auditor/proof-%s-%s" % (today, short)
-        title = "proof — do not merge: " + title
     body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
     if dry:
         would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
@@ -284,7 +286,7 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
     Returns (pr_url, err, status). status is one of: 'delivered' (draft PR opened/reused),
     'would' (dry run), 'unresolvable' (the fixed version does not resolve from the module
     proxy, or the bump is a no-op — the row stays in §3, never a broken PR), 'pending' (no
-    authorized delivery step this run), 'skipped-test' (test image, not the proof), 'error'
+    authorized delivery step this run), 'skipped-test' (test image), 'error'
     (a git/gh/tidy failure — the caller marks the run INCOMPLETE). No vendor/model name
     appears in the branch, commit, or PR text."""
     fb = row.get("fix_bump") or {}
@@ -296,13 +298,9 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
     runlink = ("%s/%s/actions/runs/%s" % (server, repo, rid)) if (server and repo and rid) else "the daily CVE auditor run report"
     body = ("Automated dependency bump from the daily CVE auditor. Draft for review; auto-merge is a later switch.\n\n"
             "- Vulnerability: %s\n- Module: %s\n- From: %s\n- To: %s\n\nRun report: %s" % (cve, module, frm, to, runlink))
-    proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
-    if is_test and not proof:
+    if is_test:                                 # a test image is not shipped and always dry (AC9)
         would.append("test-image run: no bump PR (not a shipped image)")
         return None, None, "skipped-test"
-    if is_test and proof:
-        branch = "auditor/proof-bump-%s-%s" % (cve, short)
-        title = "proof — do not merge: " + title
     if dry:
         would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
         print("dry-run would open draft bump PR on %s" % branch)
@@ -786,7 +784,7 @@ def _row_line(r):
     line = ("%s — %s@%s — %s — fix: %s — reachability: %s — %s — action: %s — %s"
             % (r["id"], r["package"], r["installed"], r["severity"], fix, reach,
                r["disposition"], r["action"], r["reason"]))
-    if r["section"] == 5 and r.get("vex_id"):
+    if r["section"] in (2, 5) and r.get("vex_id"):
         line += " — vex: %s — ignores: %s" % (r["vex_id"], ",".join(r.get("ignore_files", [])) or "none")
     if r["section"] == 4 and r.get("cause"):
         line += " — cause: %s" % r["cause"]
@@ -876,12 +874,17 @@ def _dispose(c, findings, aliases, env, would, name=None):
            "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
            "disposition": None, "action": None, "reason": None,
            "aliases": sorted(set(ids)),               # every identifier this scope was grouped under
+           "is_os": not gf["is_go"],                  # 3A (OS) vs 3B (SCA) split keys on ecosystem, not a delivery flag
            "scope_purls": sorted(set(subs or []))}   # this row's scope, for per-scope table mapping
     out = env["out"]; ts = env["ts"]; exp = env["exp"]; dry = env["dry"]
     _purls = sorted(set(subs or []))
     this_scope = ((policy.VEX_PRODUCT,), tuple(_purls))
     this_scope_id = policy.scope_id(c, policy.VEX_PRODUCT, subs)
     _carried = (c, this_scope) in env.get("carried_scopes", set())
+    # the disposition PUBLISHED on main for this exact scope (None if none). The display flag
+    # `carried` ("in force (main)") is set only when THIS run writes the SAME disposition; the
+    # membership flag `_carried` still drives AC7 lift logic regardless of the prior status.
+    _cstat = env.get("carried_status", {}).get((c, this_scope))
     # 2) reachability for Go modules — deterministic govulncheck.
     if gf["is_go"]:
         verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
@@ -900,7 +903,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=5, disposition="not_affected (unreachable)", action="closed",
                            reason="govulncheck: imported, not called",
                            vex_id=policy.scope_id(c, policy.VEX_PRODUCT, go_subs),
-                           ignore_files=["vex", "evidence"])
+                           ignore_files=["vex", "evidence"], carried=(_cstat == "not_affected"))
                 return row, 1
             # evidence covers no scanned version (or only lineage) — do not close; route below.
     m_inc = 0
@@ -929,7 +932,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=5, disposition="not_affected (false positive)", action="closed",
                            reason="model FP, evidence-verified",
                            vex_id=policy.scope_id(c, policy.VEX_PRODUCT, subs),
-                           ignore_files=["vex", "evidence"])
+                           ignore_files=["vex", "evidence"], carried=(_cstat == "not_affected"))
                 return row, m_inc
             # a FP the code cannot verify is NOT a disposition — fall through and route it.
         elif cat == "adjudicator_error":
@@ -1011,14 +1014,18 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
               target_date=this_exp, vex_name=vn, subcomponents=subs)
-    for sc in sorted({f["scanner"] for f in findings}):
+    _ig_scanners = sorted({f["scanner"] for f in findings})
+    for sc in _ig_scanners:
         cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                    {"id": c, "vex": this_scope_id, "expiry": this_exp, "scoped_purls": _purls,
                     "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
+    # name the ignore artifacts this acceptance actually writes so the row line is honest — a
+    # §2 POA&M without ignore_files defaulted _row_line to "ignores: none" (Codex round-2 P2).
+    _ig_files = [os.path.join("ignores", sc, vn + ".json") for sc in _ig_scanners] + [".snyk", "osv-scanner.toml"]
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=this_scope_id,
-               scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason),
-               threshold=("at_or_above" if at else "below"), expiry=this_exp)
+               scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason), ignore_files=_ig_files,
+               threshold=("at_or_above" if at else "below"), expiry=this_exp, carried=(_cstat == "affected"))
     if at:
         # at/above threshold -> owner-decision issue, deduped per (CVE, package) with every scope
         # listed in the body and emitted after routing (fix 4) — never one issue per binary that
@@ -1033,6 +1040,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
 
 def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     m, groups = C.manifest_findings(manifest_path)
+    # A test image is never shipped, so no statement on `main` applies and nothing is delivered:
+    # a test image ALWAYS forces dry_run regardless of the dispatch input (REQ-AUD-15 AC9).
+    if (m.get("provenance") or {}).get("source") == "test-image":
+        dry = True
     gvc, module, gvc_usable = C.manifest_gvc(m)
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
     idx = log_index(logpath)
@@ -1056,7 +1067,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
-    carried_expiry = {}; carried_scopes = set()
+    carried_expiry = {}; carried_scopes = set(); carried_status = {}
     ws0 = os.environ.get("GITHUB_WORKSPACE")
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -1073,6 +1084,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     # every carried (cve, scope) — including a reachability not_affected that has
                     # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC7; R1 refactor #4)
                     carried_scopes.add((nm, _scope_key(s)))
+                    # the PUBLISHED status for this exact scope, so the "in force (main)" display
+                    # tag is only applied when THIS run writes the SAME disposition already on main:
+                    # a scope carried as `affected` but re-dispositioned `not_affected` this run
+                    # (e.g. new unreachability evidence) is NOT yet published as not_affected, so it
+                    # must render "proposed", not "in force (main)" (Codex round-2 residual #3).
+                    carried_status[(nm, _scope_key(s))] = s.get("status")
         except Exception:
             prev_id_to_scope = {}
         try:
@@ -1094,7 +1111,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
-           "carried_expiry": carried_expiry, "carried_scopes": carried_scopes, "today": today}
+           "carried_expiry": carried_expiry, "carried_scopes": carried_scopes,
+           "carried_status": carried_status, "today": today}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
         # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
@@ -1128,6 +1146,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             igf = os.path.join("ignores", "grype", c + ".json")
             _fp_sid = policy.scope_id(c, policy.VEX_PRODUCT, subs or None)
             cli.writej(os.path.join(out, igf), {"vex": _fp_sid, "id": c, "evidence": ev, "scoped_purls": subs})
+            # carried: this exact scope's not_affected is already in force on main (unchanged
+            # from a prior day) -> "in force (main)" with its published link; a fresh FP, or a
+            # scope whose published statement is `affected`, is proposed (Codex round-2 residual #3).
+            _fp_carried = carried_status.get((c, ((policy.VEX_PRODUCT,), tuple(subs or [])))) == "not_affected"
             rows.append({"id": c, "package": ",".join(covpkgs) or "?",
                          "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
                          "fixed": None, "severity": _max_sev(covered), "section": 5,
@@ -1135,7 +1157,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                          "scope_purls": subs or [],
                          "disposition": "not_affected (false positive)", "action": "closed",
                          "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(covpkgs)),
-                         "vex_id": _fp_sid, "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"]})
+                         "vex_id": _fp_sid, "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"],
+                         "carried": _fp_carried, "is_os": True})
             h_count += 1
             uncovered = [f for f in grp["findings"] if not _cov(f)]
             if uncovered:
@@ -1190,10 +1213,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 "disposition was inferred for these findings. Findings: %s"
                 % (n, adj_cause, ids[:1500]))
         ok, ref = _emit_owner_issue(title, body, dry, would)
+        _delivered = ok and ref not in ("dry", "skipped")
         for r in adj_unavailable:
             r["owner_issue"] = ref if ok else None
-            r["action"] = ("unassessed: adjudicator unavailable; one owner-decision issue opened"
-                           if ok else "unassessed: adjudicator unavailable; OWNER ISSUE FAILED")
+            if _delivered:
+                r["action"] = "unassessed: adjudicator unavailable; one owner-decision issue opened"
+            elif ok:
+                r["action"] = "unassessed: adjudicator unavailable; one owner-decision issue " + _issue_pending_note(ref)
+            else:
+                r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
@@ -1217,14 +1245,25 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     "chain. Owner decision needed. Scope(s) (%d):\n- %s\n\nAccept, reject, or "
                     "provide guidance." % (cve, pkg, len(scopes), "\n- ".join(scopes)))
         ok, ref = _emit_owner_issue(title, body, dry, would)
+        _delivered = ok and ref not in ("dry", "skipped")
         for r, _it in group:
             r["owner_issue"] = ref if ok else None
             r["issue_failed"] = (not ok)
             if kind == "risk_acceptance":
                 base = r["action"].replace("; owner-decision issue pending", "")
-                r["action"] = base + ("; owner-decision issue opened/updated (issues:write)" if ok else "; OWNER ISSUE FAILED")
+                if _delivered:
+                    r["action"] = base + "; owner-decision issue opened/updated (issues:write)"
+                elif ok:
+                    r["action"] = base + "; owner-decision issue " + _issue_pending_note(ref)
+                else:
+                    r["action"] = base + "; OWNER ISSUE FAILED"
             else:
-                r["action"] = ("escalated to owner-decision issue" if ok else "OWNER ESCALATION FAILED")
+                if _delivered:
+                    r["action"] = "escalated to owner-decision issue"
+                elif ok:
+                    r["action"] = "owner-decision issue " + _issue_pending_note(ref)
+                else:
+                    r["action"] = "OWNER ESCALATION FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
     issue_failures = sum(1 for r in rows if r.get("issue_failed"))
@@ -1602,41 +1641,152 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
            "k": sum(1 for s in ("grype", "trivy", "osv-scanner", "snyk") if (st.get(s) or {}).get("ran")),
            "h": len(sections[5]), "m": len([r for r in sections[5]]), "consistency": "clean" if not probs else "%d problems" % len(probs),
            "down": ", ".join("%s (%s)" % (d["scanner"], d["reason"]) for d in C.scanners_down(m))}
-    for n in range(1, 8):
-        L.append("## %d. %s" % (n, C.TITLES[n]))
-        if n == 6:
-            if pr_url:
-                L.append("Suppression draft PR opened by the delivery App: %s" % pr_url)
-            elif pr_err:
-                L.append("Suppression PR delivery FAILED (run is INCOMPLETE): %s" % pr_err)
-            if would:
-                for w in would:
-                    L.append("dry run: would run `%s`" % w)
-            # Go-module bumps DELIVERED as draft PRs by the App this run (decision 2).
-            delivered = [r for r in (sections[3] + sections[1]) if r.get("fix_pr_url")]
-            for r in delivered:
-                L.append("Bump draft PR opened by the delivery App: %s — %s" % (r["id"], r["fix_pr_url"]))
-            # Base rebuilds defer to Dependabot's daily docker PR (REQ-AUD-2 AC3) — awaiting, not ours.
-            awaiting = [r for r in (sections[3] + sections[1]) if r.get("base_rebuild")]
-            for r in awaiting:
-                L.append("Awaiting base rebuild (deferred to Dependabot's docker PR): %s — %s" % (r["id"], r.get("fixed")))
-            # Fix PRs we could not deliver this run (no authorized step, or a delivery failure).
-            pend = [r for r in (sections[3] + sections[1]) if r.get("pending_delivery")]
-            for r in pend:
-                L.append("Fix PR NOT delivered: %s — %s" % (r["id"], r.get("action")))
-            if not pr_url and not pr_err and not would and not delivered and not awaiting and not pend:
-                L.append(C.EMPTY[6].format(**ctx) if not dry
-                         else "Nothing to open: no §3 fix PR or owner issue was warranted this run.")
-            L.append(""); continue
-        if sections[n]:
-            for r in sections[n]:
-                L.append(_row_line(r))
+
+    # --- report structure v2 (REQ-AUD-15) ---
+    def _tag(r):
+        """Status tag on a VEX-backed row, naming its actual state/reason (AC9)."""
+        if test:
+            return "proposed, not delivered (test image)"   # no statement on main applies
+        if r.get("carried"):
+            # already published on main (same disposition) — a dry run does not change that, so
+            # this is checked BEFORE `dry` (Sonnet D). `carried` is set only when THIS run's
+            # disposition matches the one on main (see _cstat), so it can never over-claim.
+            return "in force (main)"
+        if dry:
+            return "proposed, not delivered (dry run)"
+        # freshly written this run — NEVER "in force (main)" without evidence it is on main (AC9).
+        if r.get("section") == 1 and r.get("fix_pr_url"):
+            # a lifted row's delivery is its BUMP PR, not the suppression PR — name the PR its own
+            # action text names, never a different one (Sonnet C).
+            return "proposed (PR #%s)" % r["fix_pr_url"].rstrip("/").split("/")[-1]
+        if pr_url:
+            return "proposed (PR #%s)" % pr_url.rstrip("/").split("/")[-1]
+        if pr_err:
+            return "proposed, not delivered (delivery failed)"
+        return "proposed, not delivered (no suppression PR)"
+
+    def _tagged(r):
+        tag = _tag(r)
+        line = _row_line(r)
+        if tag != "in force (main)":
+            # AC9: the fosterstack.com VEX link is printed ONLY for in-force (published) statements.
+            # A proposed / not-yet-delivered statement shows its id (the #stmt fragment) without the
+            # published link, so a reader is never pointed at a link that does not resolve yet.
+            line = re.sub(r"vex: https?://[^\s]*?(#stmt-[^\s]+)", r"vex: \1", line)
+        return line + " — status: " + tag
+
+    def _emit(title, rows_, empty, tagged=False, sub=None, downnote=False):
+        L.append("## " + title); L.append("")
+        if sub is not None:
+            for subtitle, subrows in sub:
+                L.append("**%s**" % subtitle)
+                if subrows:
+                    for r in subrows:
+                        L.append(_tagged(r) if tagged else _row_line(r))
+                else:
+                    L.append("None.")
+                L.append("")
+            return
+        if rows_:
+            for r in rows_:
+                L.append(_tagged(r) if tagged else _row_line(r))
         else:
-            sentence = C.EMPTY[n].format(**ctx)
-            if n in (3, 7) and ctx.get("down"):
+            sentence = empty
+            if downnote and ctx.get("down"):
                 sentence += " Not a complete assessment: %s did not run." % ctx["down"]
             L.append(sentence)
         L.append("")
+
+    # PRs and issues this run — above the sections (AC1).
+    L.append("## PRs and issues this run"); L.append("")
+    prlist = []
+    if pr_url:
+        prlist.append("Suppression draft PR (App): %s" % pr_url)
+    elif pr_err:
+        prlist.append("Suppression PR delivery FAILED (run INCOMPLETE): %s" % pr_err)
+    for r in (sections[1] + sections[3]):
+        if r.get("fix_pr_url"):
+            prlist.append("Bump draft PR (App): %s — %s" % (r["id"], r["fix_pr_url"]))
+    _seen_iss = set()
+    for r in rows:
+        oi = r.get("owner_issue")
+        # the dry sentinel is already represented by the "would open (dry run)" entries below —
+        # listing it here too double-counts it (AC1). "skipped" (a real run with gh disabled) has
+        # NO would-open line, so keep it visible here rather than dropping the issue (Sonnet B).
+        # A real issue ref is shared across the rows of one issue -> dedup by ref (one line); the
+        # "skipped" sentinel is shared across DISTINCT would-be issues -> dedup by (id, ref) so two
+        # different CVEs are not collapsed into one line (Codex R3 P3).
+        _isskey = (r["id"], oi) if oi == "skipped" else oi
+        if oi and oi != "dry" and _isskey not in _seen_iss:
+            _seen_iss.add(_isskey); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
+    if dry:
+        for w in would:
+            prlist.append("would open (dry run): `%s`" % w)
+    for x in (prlist or ["No PRs or issues this run."]):
+        L.append("- " + x)
+    L.append("")
+
+    # §0 Needs a human (AC2): owner items awaiting acceptance, draft PRs awaiting merge, and
+    # failures that made the run INCOMPLETE — duplicated from the sections below.
+    needs = []
+    for r in rows:
+        if r.get("owner_issue") and r.get("owner_issue") not in ("dry", "skipped") and not r.get("adjudicator_error"):
+            # every genuinely-open owner-decision issue (risk-acceptance AND unassessed-after-
+            # fallback) needs a human — never gate on `threshold`, which only the §2 branch sets
+            # (AC2). Exclude the dry/skipped sentinels: no issue was actually opened, so §0 must
+            # not present hypothetical work as real (the dry preview is the PR list's "would open").
+            # The global-outage aggregate has its own line below (adjudicator_error).
+            needs.append("owner-decision needed: %s — %s" % (r["id"], r.get("owner_issue")))
+        if r.get("issue_failed"):
+            needs.append("owner-decision issue FAILED to open: %s" % r["id"])
+        if r.get("adjudicator_error"):
+            needs.append("unassessed — adjudicator unavailable: %s" % r["id"])
+    if not dry:
+        for r in (sections[1] + sections[3]):
+            if r.get("fix_pr_url"):
+                needs.append("draft PR awaiting merge: %s — %s" % (r["id"], r["fix_pr_url"]))
+        if pr_url:
+            needs.append("suppression draft PR awaiting merge: %s" % pr_url)
+    if "INCOMPLETE" in status:
+        needs.append("run INCOMPLETE — %s" % status.split("INCOMPLETE:", 1)[-1].strip()[:240])
+    needs = list(dict.fromkeys(needs))
+    L.append("## 0. Needs a human"); L.append("")
+    for x in (needs or ["Nothing needs a human this run."]):
+        L.append("- " + x if needs else x)
+    L.append("")
+
+    # §1 Lifted
+    _emit("1. Lifted", sections[1], C.EMPTY[1].format(**ctx), tagged=True)
+    # §2 Accepted risk: 2A no fix exists; 2Ba upstream-held; 2Bb policy-held (REQ-AUD-14 fills 2B).
+    s2 = sections[2]
+    twoBa = [r for r in s2 if r.get("not_pullable") == "upstream-held"]
+    twoBb = [r for r in s2 if r.get("not_pullable") == "policy-held"]
+    twoA = [r for r in s2 if r not in twoBa and r not in twoBb]
+    _emit("2. Accepted risk: real vulnerabilities with no fix available to us", s2,
+          C.EMPTY[2].format(**ctx), tagged=True,
+          sub=([("2A — no fix exists", twoA),
+                ("2Ba — fix exists, not pullable: upstream-held", twoBa),
+                ("2Bb — fix exists, not pullable: policy-held", twoBb)] if s2 else None))
+    # §3 Real vulnerabilities that are fixable: 3A OS/base; 3B libraries (SCA).
+    s3 = sections[3]
+    # 3A vs 3B keys on ECOSYSTEM, not the base_rebuild delivery flag: an expired OS acceptance
+    # reopened into §3 carries no base_rebuild flag yet is still an OS finding (Codex/Sonnet AC5).
+    threeA = [r for r in s3 if r.get("base_rebuild") or r.get("is_os")]
+    threeB = [r for r in s3 if r not in threeA]
+    if s3:
+        _emit("3. Real vulnerabilities that are fixable", s3, "",
+              sub=[("3A — OS / system packages (fix via base-image bump)", threeA),
+                   ("3B — libraries (SCA)", threeB)])
+    else:
+        _emit("3. Real vulnerabilities that are fixable", s3, C.EMPTY[3].format(**ctx), downnote=True)
+    # §4 Could not be assessed
+    _emit("4. Could not be assessed", sections[4], C.EMPTY[4].format(**ctx))
+    # §5 Closed as not affected: 5A not reachable; 5B false positive.
+    s5 = sections[5]
+    fiveA = [r for r in s5 if "unreachable" in (r.get("disposition") or "")]
+    fiveB = [r for r in s5 if r not in fiveA]
+    _emit("5. Closed as not affected", s5, C.EMPTY[5].format(**ctx), tagged=True,
+          sub=([("5A — not reachable", fiveA), ("5B — false positive", fiveB)] if s5 else None))
     return "\n".join(L) + "\n"
 
 

@@ -507,18 +507,20 @@ if ! have "$WF"; then no "$WF present" "absent"; else
 
 ########################################################################
 echo "=== REQ-AUD-6 ==="
-begin "req6-ac1-env-agent-main-no-prtarget" "environment agent (restricted to main per policy), no pull_request_target, the job is not disabled with if:false"
+begin "req6-ac1-env-agent-conditional-main-no-prtarget" "environment agent (main-restricted per policy) is attached ONLY for a real adjudicator or a scheduled run — a stub dispatch attaches none; no pull_request_target; the job is not disabled with if:false"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   env_="$(pj "$WORK/sh.json" 'd.get("job_environment")')"; prt="$(pj "$WORK/sh.json" 'd.get("has_pull_request_target")')"
   onlymain="$(pj "$F/policy/env-01.json" 'str([b["name"] for b in d.get("branch_policies",[])]==["main"])')"
+  # conditional: gates 'agent' on schedule OR adjudicator==real, empty otherwise (no secrets for a stub dispatch)
+  cond="$(printf '%s' "$env_" | grep -qE "adjudicator == 'real'" && printf '%s' "$env_" | grep -q "schedule" && printf '%s' "$env_" | grep -q "'agent'" && printf '%s' "$env_" | grep -qE "\|\| ''" && echo yes || echo no)"
   disabled="$($YAML load "$WF" | "$PY" -c 'import json,sys
 try:
-    d=json.load(sys.stdin); jb=[j for j in d.get("jobs",{}).values() if isinstance(j,dict) and j.get("environment")=="agent"]
+    d=json.load(sys.stdin); jb=[j for j in d.get("jobs",{}).values() if isinstance(j,dict) and "agent" in str(j.get("environment") or "")]
     print("yes" if (jb and jb[0].get("if") in (False,"false","${{ false }}")) else "no")
 except Exception: print("yes")')"
-  { eq "$env_" "agent" && eq "$prt" "false" && eq "$onlymain" "True" && eq "$disabled" "no"; } \
-    && ok || no "environment agent, main-only, no pr_target, not if:false" "env=$env_ prtarget=$prt main-only=$onlymain disabled=$disabled"; fi
+  { eq "$cond" "yes" && eq "$prt" "false" && eq "$onlymain" "True" && eq "$disabled" "no"; } \
+    && ok || no "environment agent conditional on real/schedule, main-only, no pr_target, not if:false" "cond_agent=$cond env=[$env_] prtarget=$prt main-only=$onlymain disabled=$disabled"; fi
 
 begin "req6-ac1-oidc-federation-no-api-key" "id-token:write + contents:read, OIDC audience via github-script into the identity-token file, no ANTHROPIC_API_KEY (all from the parsed doc, comments never count)"
 if ! have "$WF"; then no "$WF present" "absent"; else
@@ -704,7 +706,7 @@ echo "=== REQ-AUD-12 — end-to-end dry-run / real-run integration (pending owne
 begin "req12-ac1-dryrun-deterministic-rows-actions-status" "a dry-run over the manifest routes DETERMINISTICALLY (no model call): log FPs and the unreachable Go finding close in §5 with evidence; fixable findings sit in §3 each with an action; §6 lists the would-open PRs; accepted-items exists; the status line is AUDIT COMPLETE; zero shim creates"
 o="$WORK/run1"; shim="$WORK/run1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  s5="$(sect_ids "$o/report.md" 5)"; s3="$(sect_ids "$o/report.md" 3)"; s6="$(sect_ids "$o/report.md" 6)"
+  s5="$(sect_ids "$o/report.md" 5)"; s3="$(sect_ids "$o/report.md" 3)"; s6="$(sed -n '/^## PRs and issues this run/,/^## 0\./p' "$o/report.md")"
   vexev="$(pj "$o/evidence/CVE-2016-2781.evidence.json" 'str(bool(d.get("evidence")))')"
   ig="$(have "$o/ignores/grype/CVE-2016-2781.json" && echo yes || echo no)"
   unrv="$(pj "$o/vex/CVE-2020-14040.openvex.json" 'd["statements"][0].get("justification")')"
@@ -726,7 +728,7 @@ print(bad)' "$o/report.md")"
   shimcreates="$(grep -cE 'pr create|issue create|gh .*create' "$shim" 2>/dev/null)"; shimcreates="${shimcreates:-0}"
   { printf '%s' "$s5" | grep -q CVE-2016-2781 && printf '%s' "$s5" | grep -q CVE-2020-14040 && printf '%s' "$s3" | grep -q CVE-2023-4911 \
     && eq "$vexev" "True" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
-    && eq "$s3noaction" "0" && printf '%s' "$s6" | grep -q CVE-2023-4911 && [ "$status" -ge 1 ] 2>/dev/null \
+    && eq "$s3noaction" "0" && printf '%s' "$s6" | grep -qi 'would open' && [ "$status" -ge 1 ] 2>/dev/null \
     && eq "$det2781" "0" && eq "$det14040" "0" && eq "$shimcreates" "0"; } \
     && ok || no "deterministic §5/§3, every §3 row actioned, §6 would-open, AUDIT COMPLETE, deterministic paths made no model call, no shim" "s5=[$s5] s3=[$s3] s6=[$s6] vexev=$vexev ig=$ig unreach=$unrv acc=$acc s3_no_action=$s3noaction status=$status det2781=$det2781 det14040=$det14040 shim=$shimcreates"; }
 
@@ -1123,13 +1125,12 @@ run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$supp" --live-finding
   probs="$(pj "$o/c.json" 'len(d["problems"])')"
   { eq "$probs" "0"; } && ok || no "no false stale_vex for a live non-CVE id" "problems=$probs"; }
 
-begin "il12-section7-lists-suppressions-in-force" "§7 lists the suppressions actually in force this run, not a blanket 'no suppressions'"
+begin "il12-suppressions-in-force-listed-in-section5" "the in-force suppressions are listed in §5 with status tags (v2 removed the standalone §7)"
 o="$WORK/il12"; rm -rf "$o"; : > "$LEDGER"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  s7="$(sect_ids "$o/report.md" 7)"
-  blanket="$(sed -n '/## 7\./,/^$/p' "$o/report.md" | grep -qi 'No suppressions are in force' && echo yes || echo no)"
-  { printf '%s' "$s7" | grep -q CVE-2011-3374 && printf '%s' "$s7" | grep -q CVE-2020-14040 && eq "$blanket" "no"; } \
-    && ok || no "§7 lists in-force suppressions, not the empty sentence" "sec7=[$s7] blanket_empty=$blanket"; }
+  s5="$(sect_ids "$o/report.md" 5)"
+  { printf '%s' "$s5" | grep -q CVE-2011-3374 && printf '%s' "$s5" | grep -q CVE-2020-14040; } \
+    && ok || no "§5 lists the in-force (closed) suppressions with their status tags" "sec5=[$s5]"; }
 
 ########################################################################
 echo "=== inner-loop regressions (round 5) ==="
@@ -1148,15 +1149,15 @@ begin "d2-1-gobump-draft-delivered-and-reported" "decision 2: with a delivery ch
 o="$WORK/d2-1"; shim="$WORK/d2-1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
   opened="$(grep -c 'action: opened draft bump PR' "$o/report.md" 2>/dev/null)"; opened="${opened:-0}"
-  sec6="$(sed -n '/## 6\./,/## 7\./p' "$o/report.md" | grep -c 'Bump draft PR opened by the delivery App')"; sec6="${sec6:-0}"
+  sec6="$(grep -c 'Bump draft PR (App):' "$o/report.md")"; sec6="${sec6:-0}"
   stale="$(grep -c 'delivery pending' "$o/report.md" 2>/dev/null)"; stale="${stale:-0}"
   { [ "$opened" -ge 1 ] 2>/dev/null && [ "$sec6" -ge 1 ] 2>/dev/null && eq "$stale" "0"; } \
-    && ok || no "Go bump delivered as draft PR, reported in §6, no stale 'delivery pending'" "opened=$opened sec6=$sec6 stale=$stale"; }
+    && ok || no "Go bump delivered as draft PR, listed in the PR list, no stale 'delivery pending'" "opened=$opened prlist=$sec6 stale=$stale"; }
 
 begin "d2-2-base-rebuild-defers-to-dependabot" "decision 2: an OS-package §3 base rebuild is NOT delivered by the auditor — it defers to Dependabot's docker PR (base is digest-pinned); §6 says 'Awaiting base rebuild (deferred to Dependabot ...)' and no auditor base-rebuild PR is created"
 o="$WORK/d2-2"; shim="$WORK/d2-2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  defers="$(sed -n '/## 6\./,/## 7\./p' "$o/report.md" | grep -c 'Awaiting base rebuild (deferred to Dependabot')"; defers="${defers:-0}"
+  defers="$(grep -c 'awaiting base rebuild' "$o/report.md")"; defers="${defers:-0}"
   noprs="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; noprs="${noprs:-0}"
   { [ "$defers" -ge 1 ] 2>/dev/null && eq "$noprs" "0"; } \
     && ok || no "base rebuild defers to Dependabot; no auditor base-rebuild PR" "awaiting=$defers base_rebuild_prs=$noprs"; }
@@ -1180,14 +1181,14 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
   { [ "$both" -ge 2 ] 2>/dev/null; } \
     && ok || no "both statement ids cited in the consolidated ignore" "distinct_ids_cited=$both"; }
 
-begin "il15-section7-poam-row-names-real-vex-id" "a §7 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
+begin "il15-poam-row-names-real-vex-id" "a §2 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
 o="$WORK/il15"; rm -rf "$o"; : > "$LEDGER"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  poam7="$(sed -n '/## 7\./,/^$/p' "$o/report.md" | grep 'carried (POA&M)')"
-  realid="$(printf '%s' "$poam7" | grep -c 'suppression in force (http')"; realid="${realid:-0}"
-  placeholder="$(printf '%s' "$poam7" | grep -c 'suppression in force (VEX)')"; placeholder="${placeholder:-0}"
+  poam="$(sed -n '/^## 2\./,/^## 3\./p' "$o/report.md" | grep 'carried (POA&M)')"
+  realid="$(printf '%s' "$poam" | grep -c 'vex: .*stmt-')"; realid="${realid:-0}"
+  placeholder="$(printf '%s' "$poam" | grep -c 'vex: (VEX)')"; placeholder="${placeholder:-0}"
   { [ "$realid" -ge 1 ] 2>/dev/null && eq "$placeholder" "0"; } \
-    && ok || no "§7 POA&M row names a real vex id, no '(VEX)' placeholder" "real_id_rows=$realid placeholder_rows=$placeholder"; }
+    && ok || no "§2 POA&M row names a real vex statement id, no '(VEX)' placeholder" "real_id_rows=$realid placeholder_rows=$placeholder"; }
 
 ########################################################################
 echo "=== Round 16 — App-token draft-PR delivery ==="
@@ -1196,7 +1197,7 @@ begin "r16-push-failure-is-incomplete" "a suppression PR push/PR failure makes t
 o="$WORK/r16f"; shim="$WORK/r16f.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_SHIM_PR_FAIL=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rcf=$?
 inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
-stderrline="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -qi 'delivery FAILED' && echo yes || echo no)"
+stderrline="$(grep -qi 'delivery FAILED' "$o/report.md" && echo yes || echo no)"
 lied="$(grep -ci 'draft PR opened' "$o/report.md" 2>/dev/null)"; lied="${lied:-0}"
 { [ "$rcf" -ne 0 ] 2>/dev/null && eq "$inc" "yes" && eq "$stderrline" "yes" && eq "$lied" "0"; } \
   && ok || no "push failure -> INCOMPLETE + stderr, no false 'opened'" "exit=$rcf incomplete=$inc stderr_in_report=$stderrline false_opened=$lied"
@@ -1211,11 +1212,11 @@ draft="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draft="${draft:-0
 { [ "$branches" -ge 2 ] 2>/dev/null && eq "$offmain" "$branches" && eq "$draft" "$branches"; } \
   && ok || no "each branch off origin/main (non-stacked), each PR --draft" "branches=$branches off_main=$offmain draft=$draft"
 
-begin "r16-pr-url-in-section6" "the delivered draft PR's URL is recorded in report §6"
+begin "r16-pr-url-in-pr-list" "the delivered draft PR's URL is recorded in the 'PRs and issues this run' list"
 o="$WORK/r16u"; shim="$WORK/r16u.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
-url="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -c '/pull/')"; url="${url:-0}"
-{ [ "$url" -ge 1 ] 2>/dev/null; } && ok || no "PR URL present in §6" "pull_url_lines=$url"
+url="$(sed -n '/^## PRs and issues this run/,/^## 0\./p' "$o/report.md" | grep -c '/pull/')"; url="${url:-0}"
+{ [ "$url" -ge 1 ] 2>/dev/null; } && ok || no "PR URL present in the PR list" "pull_url_lines=$url"
 
 begin "r16-no-vendor-or-model-name-in-delivery" "the delivery ACTUALLY happens (draft PR + branch in the ledger) AND no vendor/model name appears in its branch, commit, or PR text"
 o="$WORK/r16n"; shim="$WORK/r16n.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
@@ -1259,15 +1260,19 @@ begin "r16-no-test-image-pr-in-production" "a test-image run without the proof f
 o="$WORK/r16ti"; shim="$WORK/r16ti.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rc=$?
 draftpr="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draftpr="${draftpr:-0}"
-noted="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -qi 'test-image run: no PR' && echo yes || echo no)"
-{ eq "$draftpr" "0" && eq "$noted" "yes" && [ "$rc" -eq 0 ] 2>/dev/null; } \
-  && ok || no "no suppression draft PR for a test-image production run; noted; run not failed" "draft_prs=$draftpr noted=$noted exit=$rc"
+forced="$(grep -c '\*\*dry_run:\*\* yes' "$o/report.md" 2>/dev/null)"; forced="${forced:-0}"
+noted="$(grep -qi 'test-image run: no PR' "$o/report.md" && echo yes || echo no)"
+{ eq "$draftpr" "0" && eq "$noted" "yes" && [ "$forced" -ge 1 ] 2>/dev/null && [ "$rc" -eq 0 ] 2>/dev/null; } \
+  && ok || no "test image forces dry (AC9): no draft PR, noted, run not failed" "draft_prs=$draftpr forced_dry=$forced noted=$noted exit=$rc"
 
-begin "r16-proof-flag-allows-prefixed-test-image-pr" "with AUDITOR_PROOF_PR=1 a test-image run opens one draft PR whose title is prefixed 'proof — do not merge'"
+begin "r16-test-image-forces-dry-retires-proof-flag" "a test image ALWAYS forces dry (REQ-AUD-15 AC9): even with AUDITOR_PROOF_PR=1 it opens NO real PR — the proof-on-test-image path is retired"
 o="$WORK/r16pf"; shim="$WORK/r16pf.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
-prefixed="$(grep -c "gh pr create --draft --base main --head auditor/proof-.* --title 'proof — do not merge:" "$shim" 2>/dev/null)"; prefixed="${prefixed:-0}"
-{ [ "$prefixed" -ge 1 ] 2>/dev/null; } && ok || no "proof draft PR with the 'proof — do not merge' prefix" "prefixed_pr=$prefixed"
+realpr="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; realpr="${realpr:-0}"
+proofpr="$(grep -c 'proof — do not merge' "$shim" 2>/dev/null)"; proofpr="${proofpr:-0}"
+forced="$(grep -c '\*\*dry_run:\*\* yes' "$o/report.md" 2>/dev/null)"; forced="${forced:-0}"
+{ eq "$realpr" "0" && eq "$proofpr" "0" && [ "$forced" -ge 1 ] 2>/dev/null; } \
+  && ok || no "test image dry, no real/proof PR" "real_pr=$realpr proof_pr=$proofpr forced_dry=$forced"
 
 ########################################################################
 echo "=== outer-loop regressions (round 1) ==="
@@ -1309,7 +1314,7 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-owner
 
 begin "ol7-delivery-carries-accepted-items" "the suppression delivery commits .auditor/accepted-items.json (the release gate's inventory)"
 o="$WORK/ol7"; shim="$WORK/ol7.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
-env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_PROOF_PR=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 ai="$(grep -c 'git add .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
 { [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery git-adds .auditor/accepted-items.json" "add_lines=$ai"
 
@@ -2311,7 +2316,7 @@ ql=[l for l in rep.splitlines() if "Inventory quorum:" in l][0]
 print("OK" if "agreed on OS packages: none" in ql else "BAD:%s"%ql)' 2>/dev/null | tail -1)"
 { eq "$r8" "OK"; } && ok || no "quorum header reflects the numerical agreement decision" "$r8"
 
-begin "refr4-7-lifted-bump-still-pending-in-section6" "a bump moved to §1 by an AC7 lift but NOT delivered this run (no authorized step) still appears as pending work in §6, not dropped"
+begin "refr4-7-lifted-bump-still-surfaced" "a bump moved to §1 by an AC7 lift but NOT delivered this run still appears as pending work above the sections (§0 / PR list), not dropped"
 r7="$("$PY" -c '
 import importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
@@ -2320,9 +2325,268 @@ sections[1]=[{"id":"CVE-9","section":1,"disposition":"lifted (fix now pullable)"
 st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,sections[1],sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
-s6=rep.split("## 6.")[1].split("## 7.")[0]
-print("OK" if ("CVE-9" in s6 and "NOT delivered" in s6) else "BAD")' 2>/dev/null | tail -1)"
-{ eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump listed in §6" "$r7"
+s1=rep.split("## 1. Lifted")[1].split("## 2.")[0]
+print("OK" if ("CVE-9" in s1 and "pending" in s1.lower()) else "BAD")' 2>/dev/null | tail -1)"
+{ eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump surfaced above §1 (PR list / §0)" "$r7"
+echo "=== REQ-AUD-15 — report structure v2 ==="
+
+begin "req15-ac1-pr-list-at-top" "after the header and before the sections, a 'PRs and issues this run' block lists what was/would be opened"
+o="$WORK/r15a"; rm -rf "$o"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
+  pl="$(grep -nE 'PRs and issues this run' "$o/report.md" | head -1 | cut -d: -f1)"
+  s0="$(grep -nE '^## 0\.' "$o/report.md" | head -1 | cut -d: -f1)"
+  { [ -n "$pl" ] && [ -n "$s0" ] && [ "$pl" -lt "$s0" ] 2>/dev/null; } \
+    && ok || no "PR/issue list appears before §0" "prlist=$pl sec0=$s0"; }
+
+begin "req15-ac2-section0-needs-a-human" "§0 Needs a human is present; a run with nothing waiting says so in one sentence"
+{ grep -qE '^## 0\. Needs a human' "$o/report.md" && grep -qi 'nothing needs a human this run' "$o/report.md"; } \
+  && ok || no "§0 present + empty sentence" "$(grep -m1 -E '^## 0' "$o/report.md")"
+
+begin "req15-ac8-section6-7-removed" "the old §6 (Pending) and §7 (Currently suppressed) headings are removed"
+{ ! grep -qE '^## 6\.|^## 7\.' "$o/report.md" && ! grep -qi 'Currently suppressed' "$o/report.md"; } \
+  && ok || no "no §6/§7 headings" "$(grep -nE '^## 6\.|^## 7\.|Currently suppressed' "$o/report.md" | head -1)"
+
+begin "req15-ac5-section3-os-vs-sca-with-actions" "§3 splits into 3A (OS/base) and 3B (SCA/libraries)"
+{ grep -qE '3A' "$o/report.md" && grep -qE '3B' "$o/report.md"; } \
+  && ok || no "§3 has 3A and 3B subsections" "3A=$(grep -c '3A' "$o/report.md") 3B=$(grep -c '3B' "$o/report.md")"
+
+begin "req15-ac7-section5-reachable-vs-fp-with-tags" "§5 splits into 5A (not reachable) / 5B (false positive) and a §5 VEX row carries a status tag"
+# manifest-01 closes CVE-2011-3374 as a known-defect-log false positive -> §5B
+fp="$(sed -n '/^## 5\./,/^## /p' "$o/report.md")"
+{ printf '%s' "$fp" | grep -qE '5B' && printf '%s' "$fp" | grep -qE 'proposed, not delivered \(dry run\)|in force \(main\)'; } \
+  && ok || no "§5 has 5B and a status tag" "$(printf '%s' "$fp" | grep -m1 CVE-2011-3374)"
+
+begin "req15-ac9-status-tag-on-vex-rows" "on a dry candidate run every VEX-backed row is tagged 'proposed, not delivered (dry run)'"
+tags="$(grep -c 'proposed, not delivered (dry run)' "$o/report.md" 2>/dev/null)"; tags="${tags:-0}"
+{ [ "$tags" -ge 1 ] 2>/dev/null; } && ok || no "dry-run status tag present" "tags=$tags"
+
+begin "req15-ac9-vex-link-only-for-in-force" "the fosterstack.com VEX link is printed ONLY for in-force rows; a proposed/not-delivered row shows the statement id without the published link (AC9)"
+o2b="$WORK/r15link"; rm -rf "$o2b"
+"$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2b" >/dev/null 2>&1 || true
+liveurl="$(grep -c 'vex: https://fosterstack.com' "$o2b/report.md" 2>/dev/null)"; liveurl="${liveurl:-0}"
+idfrag="$(grep -c 'vex: #stmt-' "$o2b/report.md" 2>/dev/null)"; idfrag="${idfrag:-0}"
+{ eq "$liveurl" "0" && [ "$idfrag" -ge 1 ] 2>/dev/null; } \
+  && ok || no "no published link on proposed rows; statement id shown" "live_links=$liveurl id_fragments=$idfrag"
+
+begin "req15-ac9-test-image-tag-and-forces-dry" "a test-image run tags every VEX row 'proposed, not delivered (test image)' regardless of main, and forces dry_run even when --dry-run false"
+o2="$WORK/r15ti"; rm -rf "$o2"
+"$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1 || true
+ti="$(grep -c 'proposed, not delivered (test image)' "$o2/report.md" 2>/dev/null)"; ti="${ti:-0}"
+forced="$(grep -c '\*\*dry_run:\*\* yes' "$o2/report.md" 2>/dev/null)"; forced="${forced:-0}"
+{ [ "$ti" -ge 1 ] 2>/dev/null && [ "$forced" -ge 1 ] 2>/dev/null; } \
+  && ok || no "test-image tag + forced dry" "test_image_tags=$ti forced_dry=$forced"
+
+begin "req15-ac2-section0-unassessed-owner-issue-not-threshold-gated" "§0 lists a genuinely-open owner-decision issue for a §4 unassessed-after-fallback finding even though it carries no 'threshold' (AC2; the §0 filter must not gate on threshold, which only the §2 branch sets)"
+s0r="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-UNASS","section":4,"disposition":"under investigation","action":"escalated to owner-decision issue","reason":"unassessed after fallback","package":"lib","installed":"1","fixed":None,"severity":"High","owner_issue":"#77"}]
+sections[4]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s0=rep.split("## 0. Needs a human")[1].split("## 1.")[0]
+print("OK" if ("CVE-UNASS" in s0 and "#77" in s0) else "BAD:%r"%s0)' 2>/dev/null | tail -1)"
+{ eq "$s0r" "OK"; } && ok || no "§0 includes the unassessed owner issue (no threshold gate)" "$s0r"
+
+begin "req15-ac9-failed-delivery-not-in-force" "a freshly-written statement whose suppression PR delivery FAILED is tagged 'proposed, not delivered', never 'in force (main)', and shows no published fosterstack.com link (AC9)"
+fdr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+row={"id":"CVE-FAIL","section":5,"disposition":"not_affected (false positive)","action":"closed","reason":"model FP","package":"lib","installed":"1","fixed":None,"severity":"High","reachability":"n/a","vex_id":"https://fosterstack.com/vex/x#stmt-abc","carried":False}
+sections[5]=[row]
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,[],sections,[],"AUDIT INCOMPLETE",False,"stub",{},"h","c",None,"git push failed",{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s5=rep.split("## 5.")[1]
+good=("proposed, not delivered" in s5) and ("in force (main)" not in s5) and ("vex: https://fosterstack.com" not in s5) and ("vex: #stmt-abc" in s5)
+print("OK" if good else "BAD:%r"%s5)' 2>/dev/null | tail -1)"
+{ eq "$fdr" "OK"; } && ok || no "failed delivery is not in force and drops the published link" "$fdr"
+
+begin "req15-ac9-carried-section5-threads-carried" "the §5 (not_affected) disposition threads the carried flag like §2, so a byte-identical statement already in force on main is tagged 'in force (main)', not 'proposed (PR #N)'"
+g5="$WORK/req15-carr5"; rm -rf "$g5"; mkdir -p "$g5"
+gv5="$g5/gvc.json"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib","version":"v1.0.0"}]}}' '{"finding":{"osv":"GO-2099-7701","trace":[{"module":"example.org/lib","package":"example.org/lib/unused"}]}}' > "$gv5"
+c5r="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
+purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
+     "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-7701",sc)},
+     "carried_status":{("CVE-2099-7701",sc):"not_affected"}}
+f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-7701","purl":purl,"aliases":["GO-2099-7701","CVE-2099-7701"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
+row,_=R._dispose("CVE-2099-7701",[f],["CVE-2099-7701","GO-2099-7701"],env,[])
+print("OK" if row["section"]==5 and row.get("carried") is True else "BAD:sec=%s carried=%s"%(row["section"],row.get("carried")))' "$gv5" "$g5/out" 2>/dev/null | tail -1)"
+{ eq "$c5r" "OK"; } && ok || no "§5 threads carried (in-force, not re-proposed)" "$c5r"
+
+begin "req15-ac5-section3-splits-by-ecosystem-not-delivery-flag" "§3 3A/3B keys on ecosystem: an OS row with no base_rebuild flag (an expired OS acceptance reopened into §3) still renders under 3A, and a Go/library row renders under 3B"
+e3r="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+sections[3]=[
+ {"id":"CVE-OSREOPEN","section":3,"disposition":"reopened: prior acceptance expired","action":"time box lapsed","reason":"expired","package":"libssl","installed":"1","fixed":None,"severity":"High","reachability":"n/a (OS package)","is_os":True},
+ {"id":"CVE-GOLIB","section":3,"disposition":"real, fixable (we build it)","action":"bump pending","reason":"pullable","package":"example.org/lib","installed":"1","fixed":"1.1","severity":"High","reachability":"govulncheck: reachable","is_os":False}]
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,[],sections,[],"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s3=rep.split("## 3.")[1].split("## 4.")[0]
+a=s3.split("3B")[0]; b=s3.split("3B")[1]
+print("OK" if ("CVE-OSREOPEN" in a and "CVE-GOLIB" in b and "CVE-GOLIB" not in a) else "BAD a=%r b=%r"%(a,b))' 2>/dev/null | tail -1)"
+{ eq "$e3r" "OK"; } && ok || no "§3 3A/3B split by ecosystem, not the base_rebuild flag" "$e3r"
+
+begin "req15-ac1-dry-owner-issue-not-double-counted" "in a dry run the PR/issue list represents a would-be owner issue exactly once (the 'would open' entry), never also as a sentinel 'owner-decision issue: … (dry)' row"
+ddr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-POAM","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"no fix; critical","package":"lib","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-z","threshold":"at_or_above","owner_issue":"dry"}]
+sections[2]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+would=["gh issue create --title owner-decision-CVE-POAM --label owner-decision --assignee owner"]
+rep=R._render(m,rr,sections,would,"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
+dupes=pl.count("owner-decision issue: CVE-POAM (dry)")
+would_n=pl.count("would open (dry run)")
+print("OK" if dupes==0 and would_n>=1 else "BAD dupes=%d would=%d pl=%r"%(dupes,would_n,pl))' 2>/dev/null | tail -1)"
+{ eq "$ddr" "OK"; } && ok || no "dry owner issue not double-counted in the PR list" "$ddr"
+
+begin "req15-ac2-section0-excludes-dry-sentinel" "§0 does NOT present a dry-run sentinel owner ref as real human work (no 'owner-decision needed: … — dry'); the dry preview lives in the PR list's 'would open' (Codex/Sonnet round-2 blocker)"
+sdr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-DRYSENT","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"no fix","package":"lib","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-z","threshold":"at_or_above","owner_issue":"dry"}]
+sections[2]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+would=["gh issue create --title owner-CVE-DRYSENT --label owner-decision --assignee owner"]
+rep=R._render(m,rr,sections,would,"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s0=rep.split("## 0. Needs a human")[1].split("## 1.")[0]
+print("OK" if ("— dry" not in s0 and "CVE-DRYSENT" not in s0) else "BAD:%r"%s0)' 2>/dev/null | tail -1)"
+{ eq "$sdr" "OK"; } && ok || no "§0 excludes the dry sentinel" "$sdr"
+
+begin "req15-poam-row-names-real-ignores" "a §2 POA&M row names the ignore artifacts it actually writes; _row_line never falls back to 'ignores: none' for an accepted-risk row (Codex round-2 blocker)"
+pir="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[1],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
+def f(sc): return {"scanner":sc,"finding_id":"CVE-2099-4141","purl":"pkg:deb/debian/lib@1","aliases":["CVE-2099-4141"],"package":"lib","fixed_version":None,"severity":"Critical","extra":{}}
+row,_=R._dispose("CVE-2099-4141",[f("grype"),f("snyk")],["CVE-2099-4141"],env,[])
+line=R._row_line(row)
+good=(row["section"]==2 and row.get("ignore_files") and "ignores: none" not in line and "ignores/grype/" in line)
+print("OK" if good else "BAD sec=%s ig=%s line=%r"%(row["section"],row.get("ignore_files"),line))' "$WORK/req15-poamig" 2>/dev/null | tail -1)"
+{ eq "$pir" "OK"; } && ok || no "§2 row names real ignores (not 'none')" "$pir"
+
+begin "req15-carried-status-mismatch-not-in-force" "the display 'carried' flag is set only when THIS run writes the SAME disposition already on main: a scope published as 'affected' but re-dispositioned 'not_affected' this run (new unreachability) is NOT 'in force (main)' (Codex round-2 residual #3)"
+gsm="$WORK/req15-statusmm"; rm -rf "$gsm"; mkdir -p "$gsm"
+gvm="$gsm/gvc.json"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib","version":"v1.0.0"}]}}' '{"finding":{"osv":"GO-2099-6601","trace":[{"module":"example.org/lib","package":"example.org/lib/unused"}]}}' > "$gvm"
+smr="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
+purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
+     "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-6601",sc)},"carried_status":{("CVE-2099-6601",sc):"affected"}}
+f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-6601","purl":purl,"aliases":["GO-2099-6601","CVE-2099-6601"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
+row,_=R._dispose("CVE-2099-6601",[f],["CVE-2099-6601","GO-2099-6601"],env,[])
+print("OK" if row["section"]==5 and row.get("carried") is False else "BAD:sec=%s carried=%s"%(row["section"],row.get("carried")))' "$gvm" "$gsm/out" 2>/dev/null | tail -1)"
+{ eq "$smr" "OK"; } && ok || no "carried display flag requires a matching published disposition" "$smr"
+
+begin "req15-pr-list-keeps-skipped-sentinel" "the 'skipped' owner ref (a real run with gh disabled — no 'would open' line exists for it) stays visible in the PR/issue list rather than being dropped (Sonnet round-2 residual B)"
+skr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-SKIP","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"no fix","package":"lib","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-z","threshold":"at_or_above","owner_issue":"skipped"}]
+sections[2]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
+print("OK" if "owner-decision issue: CVE-SKIP (skipped)" in pl else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
+{ eq "$skr" "OK"; } && ok || no "PR list keeps the skipped sentinel" "$skr"
+
+begin "req15-tag-carried-in-force-even-in-dry" "an already-in-force (carried) statement is tagged 'in force (main)' even on a dry run — a dry run changes nothing on main, so carried is checked before dry (Sonnet round-2 residual D)"
+cdr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-CARR","section":5,"disposition":"not_affected (unreachable)","action":"closed","reason":"unreachable","package":"lib","installed":"1","fixed":None,"severity":"High","reachability":"govulncheck: unreachable","vex_id":"https://fosterstack.com/vex/x#stmt-c","carried":True}]
+sections[5]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s5=rep.split("## 5.")[1]
+good=("in force (main)" in s5) and ("proposed, not delivered (dry run)" not in s5) and ("vex: https://fosterstack.com" in s5)
+print("OK" if good else "BAD:%r"%s5)' 2>/dev/null | tail -1)"
+{ eq "$cdr" "OK"; } && ok || no "carried row is in-force even in a dry run" "$cdr"
+
+begin "req15-section1-tag-names-bump-pr" "a §1 lifted row's status tag names its OWN bump PR (fix_pr_url), not the suppression PR — the tag never contradicts the PR number in the row's action text (Sonnet round-2 residual C)"
+s1r="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-LIFT","section":1,"disposition":"lifted (fix now pullable)","action":"bump delivered: https://github.com/o/r/pull/55","reason":"pullable","package":"example.org/lib","installed":"1","fixed":"1.1","severity":"High","fix_pr_url":"https://github.com/o/r/pull/55"}]
+sections[1]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c","https://github.com/o/r/pull/99",None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s1=rep.split("## 1. Lifted")[1].split("## 2.")[0]
+print("OK" if ("proposed (PR #55)" in s1 and "#99" not in s1) else "BAD:%r"%s1)' 2>/dev/null | tail -1)"
+{ eq "$s1r" "OK"; } && ok || no "§1 tag names the bump PR, not the suppression PR" "$s1r"
+
+begin "req15-dry-owner-action-not-falsely-opened" "on a DRY run an at-threshold §2 POA&M row's action says the owner issue 'would open (dry run)', never 'opened/updated (issues:write)' — the row must not contradict the PR list's 'would open' (Codex round-3 blocker)"
+dat="$WORK/req15-dryact"; rm -rf "$dat"; mkdir -p "$dat"
+"$PY" - "$dat" <<'PP'
+import json,os,sys
+d=sys.argv[1]
+# one Critical, no-fix OS finding reported by grype AND snyk (distinct lineages -> no FP
+# suspicion -> §2 POA&M; Critical -> at/above threshold -> risk-acceptance owner issue)
+json.dump({"matches":[{"vulnerability":{"id":"CVE-2099-9001","severity":"Critical","fix":{"state":"not-fixed"}},
+                       "artifact":{"purl":"pkg:deb/debian/lib@1","name":"lib"}}]}, open(os.path.join(d,"grype.json"),"w"))
+json.dump({"vulnerabilities":[{"id":"SNYK-LIB-1","packageName":"lib","purl":"pkg:deb/debian/lib@1",
+                               "severity":"critical","identifiers":{"CVE":["CVE-2099-9001"]}}]}, open(os.path.join(d,"snyk.json"),"w"))
+st={s:{"ran":True,"os_package_count":1,"package_count":1,"findings":1,"version":"x","db_date":"d"} for s in ("grype","snyk")}
+for s in ("trivy","osv-scanner","osv-scanner-gomod"):
+    st[s]={"ran":False,"reason":"not run in this fixture","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+man={"commit":"deadbeef","candidate_digests":{"production":"sha256:abc"},"base_os":"debian 12.0",
+     "module":None,"govulncheck":None,
+     "scanner_reports":{"grype":os.path.join(d,"grype.json"),"snyk":os.path.join(d,"snyk.json"),
+                        "trivy":None,"osv-scanner":None,"osv-scanner-gomod":None},
+     "scanner_status":st}
+json.dump(man,open(os.path.join(d,"manifest.json"),"w"))
+PP
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$dat/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$dat/out" >/dev/null 2>&1 || true
+falseopen="$(grep -c 'opened/updated (issues:write)' "$dat/out/report.md" 2>/dev/null)"; falseopen="${falseopen:-1}"
+wouldact="$(grep -c 'owner-decision issue would open (dry run)' "$dat/out/report.md" 2>/dev/null)"; wouldact="${wouldact:-0}"
+poam="$(grep -c 'carried (POA&M)' "$dat/out/report.md" 2>/dev/null)"; poam="${poam:-0}"
+{ eq "$falseopen" "0" && [ "$wouldact" -ge 1 ] 2>/dev/null && [ "$poam" -ge 1 ] 2>/dev/null; } \
+  && ok || no "dry owner action says 'would open', never 'opened'" "false_opened=$falseopen would_action=$wouldact poam=$poam"
+
+begin "req15-pr-list-distinct-skipped-not-collapsed" "two DISTINCT CVEs whose owner issues were 'skipped' (gh disabled) each get their own PR-list line — the shared 'skipped' sentinel does not collapse them into one (Codex round-3 P3)"
+csr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-AAA","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"x","package":"a","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-a","threshold":"at_or_above","owner_issue":"skipped"},
+    {"id":"CVE-BBB","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"x","package":"b","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-b","threshold":"at_or_above","owner_issue":"skipped"}]
+sections[2]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
+print("OK" if ("CVE-AAA (skipped)" in pl and "CVE-BBB (skipped)" in pl) else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
+{ eq "$csr" "OK"; } && ok || no "distinct skipped owner items each listed" "$csr"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

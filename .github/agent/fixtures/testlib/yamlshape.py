@@ -42,7 +42,7 @@ def shape(text):
     job = None
     if isinstance(jobs, dict):
         for jb in jobs.values():
-            if isinstance(jb, dict) and jb.get("environment") == "agent":
+            if isinstance(jb, dict) and "agent" in str(jb.get("environment") or ""):
                 job = jb; break
         if job is None and jobs:
             job = list(jobs.values())[0]

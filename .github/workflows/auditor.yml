@@ -37,10 +37,6 @@ on:
         description: 'Known-defect log path (proving runs may point at a fixture log)'
         type: string
         default: .github/agent/known-defect-log.json
-      proof_pr:
-        description: 'One-off: allow a test_image draft PR (title prefixed "proof — do not merge")'
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -49,7 +45,11 @@ jobs:
   audit:
     name: audit
     runs-on: ubuntu-latest
-    environment: agent
+    # The `agent` environment (main-restricted, holds the model/App secrets) is attached ONLY when
+    # secrets are actually needed — a real adjudicator or a scheduled run. A stub-adjudicator
+    # dispatch attaches NO environment and needs NO secrets, so it can run on a req/ branch (e.g.
+    # a pre-merge proving run). Empty string => no environment.
+    environment: ${{ (github.event_name == 'schedule' || inputs.adjudicator == 'real') && 'agent' || '' }}
     permissions:
       id-token: write
       contents: read
@@ -221,7 +221,6 @@ jobs:
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
-          AUDITOR_PROOF_PR: ${{ inputs.proof_pr }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
