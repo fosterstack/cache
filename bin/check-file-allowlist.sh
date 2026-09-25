@@ -70,6 +70,7 @@ ALLOW_PATTERNS=(
   # This mechanism itself.
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
+  '^bin/check-file-allowlist-test\.sh$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
@@ -126,6 +127,34 @@ ALLOW_PATTERNS=(
   # The real Maven project the Maven acceptance workflow builds.
   '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
 )
+
+# Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore
+# files the scanners read, and the .auditor/accepted-items.json inventory the
+# release-authorization gate reads (REQ-AUD-11). These are generated, never
+# hand-authored, and delivered ONLY through the auditor's own PR lane
+# (auditor/<date>-<sha> branches; see _deliver_suppression_pr in
+# .github/agent/bin/auditor-run.py). They must be allowed to LIVE on main so
+# the next scan suppresses and the release gate can read the inventory — but
+# their INTRODUCTION/CHANGE is scoped to the auditor/ branch prefix, so an
+# ordinary feature PR cannot add or edit a suppression to slip past a scanner.
+# The scoping is enforced by the head branch of the change: a pull_request from
+# a non-auditor branch that touches these paths is blocked; the auditor lane and
+# the merged state on main are allowed. (VEX itself already lives in .vex/ above,
+# published for anyone auditing an artifact; these are its scanner-native forms.)
+SUPPRESSION_PATTERNS=(
+  '^\.snyk$'
+  '^osv-scanner\.toml$'
+  '^\.auditor/accepted-items\.json$'
+)
+# Resolve the branch under check: the PR HEAD (source) branch on pull_request,
+# else the pushed ref, else the local branch (pre-commit hook). Empty resolves
+# to a non-auditor branch, i.e. suppression paths stay blocked by default.
+_branch="${GITHUB_HEAD_REF:-}"
+[ -n "$_branch" ] || _branch="${GITHUB_REF_NAME:-}"
+[ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+case "$_branch" in
+  auditor/*|main) ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}") ;;
+esac
 
 blocked=()
 while IFS= read -r path; do
