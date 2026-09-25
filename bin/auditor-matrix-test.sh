@@ -728,11 +728,16 @@ print(bad)' "$o/report.md")"
     && eq "$det2781" "0" && eq "$det14040" "0" && eq "$shimcreates" "0"; } \
     && ok || no "deterministic §5/§3, every §3 row actioned, §6 would-open, AUDIT COMPLETE, deterministic paths made no model call, no shim" "s5=[$s5] s3=[$s3] s6=[$s6] vexev=$vexev ig=$ig unreach=$unrv acc=$acc s3_no_action=$s3noaction status=$status det2781=$det2781 det14040=$det14040 shim=$shimcreates"; }
 
-begin "req12-ac2-realrun-opens-the-prs-through-the-shim" "the same run with dry_run=false records the bump/base-rebuild PR creates in the shim ledger"
+begin "req12-ac2-realrun-opens-the-prs-through-the-shim" "with a delivery channel (shim), dry_run=false DELIVERS the Go bump as a DRAFT PR (go get + go mod tidy, go.mod/go.sum) recorded in the shim ledger, plus the suppression draft PR; a base rebuild is NOT a PR (defers to Dependabot)"
 o="$WORK/run2"; shim="$WORK/run2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  prs="$(grep -cE 'pr create .*auditor/(bump|base-rebuild)' "$shim" 2>/dev/null)"; prs="${prs:-0}"
-  { [ "$prs" -ge 1 ] 2>/dev/null; } && ok || no "bump/base-rebuild PR creates recorded in the shim ledger" "pr_creates=$prs"; }
+  bump="$(grep -cE 'pr create --draft .*auditor/bump' "$shim" 2>/dev/null)"; bump="${bump:-0}"
+  baserb="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; baserb="${baserb:-0}"
+  goget="$(grep -cE '^go get ' "$shim" 2>/dev/null)"; goget="${goget:-0}"
+  tidy="$(grep -cE '^go mod tidy' "$shim" 2>/dev/null)"; tidy="${tidy:-0}"
+  addonly="$(grep -cE '^git add go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
+  { [ "$bump" -ge 1 ] 2>/dev/null && [ "$baserb" -eq 0 ] 2>/dev/null && [ "$goget" -ge 1 ] 2>/dev/null && [ "$tidy" -ge 1 ] 2>/dev/null && [ "$addonly" -ge 1 ] 2>/dev/null; } \
+    && ok || no "draft bump PR delivered via go get/tidy + go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy add_gomod_gosum=$addonly"; }
 
 begin "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" "the workflow's run step invokes auditor-run.py with the dispatch dry_run input"
 if ! have "$WF"; then no "$WF present" "absent"; else
@@ -866,7 +871,7 @@ run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$supp" --live-finding
 ########################################################################
 echo "=== inner-loop regressions (round 4) ==="
 
-begin "il9-pr-branch-created-before-pr-create" "a real run creates the branch (git checkout -b) BEFORE gh pr create for every PR — the PR never targets a branch that was never made"
+begin "il9-pr-branch-created-before-pr-create" "a real run creates the branch (git checkout -B ... origin/main) BEFORE gh pr create for every PR — the PR never targets a branch that was never made"
 o="$WORK/il9"; shim="$WORK/il9.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
 ordered="$("$PY" -c '
@@ -874,12 +879,12 @@ import sys
 lines=open(sys.argv[1]).read().splitlines()
 ok=True
 for i,l in enumerate(lines):
-    if l.startswith("gh pr create --head "):
+    if l.startswith("gh pr create") and "--head " in l:
         br=l.split("--head ",1)[1].split()[0]
-        made=any(x=="git checkout -b "+br for x in lines[:i])
+        made=any(x=="git checkout -B "+br+" origin/main" for x in lines[:i])
         if not made: ok=False
 print("yes" if ok else "no")' "$shim")"
-prs="$(grep -c 'gh pr create --head' "$shim" 2>/dev/null)"; prs="${prs:-0}"
+prs="$(grep -c 'gh pr create' "$shim" 2>/dev/null)"; prs="${prs:-0}"
 { eq "$ordered" "yes" && [ "$prs" -ge 1 ] 2>/dev/null; } \
   && ok || no "every pr-create is preceded by its branch checkout" "ordered=$ordered pr_count=$prs"
 
@@ -915,13 +920,42 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
 ########################################################################
 echo "=== inner-loop regressions (round 5) ==="
 
-begin "il13-pr-action-text-honest-proposed" "a real run's §3 rows say 'proposed ... PR', never a false 'opened' — the driver does not deliver PRs itself"
+begin "il13-pr-action-text-honest-no-channel" "a non-dry run with NO delivery channel (no shim, real gh not opted in) never falsely claims 'opened': a Go bump says it is pending an authorized step, and a base rebuild says it defers to Dependabot — never 'opened draft bump PR' (decision 2)"
 o="$WORK/il13"; rm -rf "$o"; : > "$LEDGER"
+# no AUDITOR_GIT_SHIM_LOG and no AUDITOR_ALLOW_REAL_GH => the safety default: deliver nothing, claim nothing
 run "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  lied="$(grep -cE 'action: opened (bump|base-rebuild) PR' "$o/report.md" 2>/dev/null)"; lied="${lied:-0}"
-  proposed="$(grep -cE 'action: proposed (bump|base-rebuild) PR' "$o/report.md" 2>/dev/null)"; proposed="${proposed:-0}"
-  { eq "$lied" "0" && [ "$proposed" -ge 1 ] 2>/dev/null; } \
-    && ok || no "no false 'opened', at least one honest 'proposed'" "opened=$lied proposed=$proposed"; }
+  lied="$(grep -c 'opened draft bump PR' "$o/report.md" 2>/dev/null)"; lied="${lied:-0}"
+  pending="$(grep -c 'bump PR pending: no authorized delivery step' "$o/report.md" 2>/dev/null)"; pending="${pending:-0}"
+  defers="$(grep -c "defer to Dependabot's docker PR" "$o/report.md" 2>/dev/null)"; defers="${defers:-0}"
+  { eq "$lied" "0" && [ "$pending" -ge 1 ] 2>/dev/null && [ "$defers" -ge 1 ] 2>/dev/null; } \
+    && ok || no "no false 'opened'; honest pending bump + base rebuild defers to Dependabot" "opened=$lied pending=$pending defers=$defers"; }
+
+begin "d2-1-gobump-draft-delivered-and-reported" "decision 2: with a delivery channel, a Go-module §3 bump is DELIVERED as a draft PR by the App; the row action says 'opened draft bump PR' and §6 lists it — never a false 'proposed ... delivery pending'"
+o="$WORK/d2-1"; shim="$WORK/d2-1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  opened="$(grep -c 'action: opened draft bump PR' "$o/report.md" 2>/dev/null)"; opened="${opened:-0}"
+  sec6="$(sed -n '/## 6\./,/## 7\./p' "$o/report.md" | grep -c 'Bump draft PR opened by the delivery App')"; sec6="${sec6:-0}"
+  stale="$(grep -c 'delivery pending' "$o/report.md" 2>/dev/null)"; stale="${stale:-0}"
+  { [ "$opened" -ge 1 ] 2>/dev/null && [ "$sec6" -ge 1 ] 2>/dev/null && eq "$stale" "0"; } \
+    && ok || no "Go bump delivered as draft PR, reported in §6, no stale 'delivery pending'" "opened=$opened sec6=$sec6 stale=$stale"; }
+
+begin "d2-2-base-rebuild-defers-to-dependabot" "decision 2: an OS-package §3 base rebuild is NOT delivered by the auditor — it defers to Dependabot's docker PR (base is digest-pinned); §6 says 'Awaiting base rebuild (deferred to Dependabot ...)' and no auditor base-rebuild PR is created"
+o="$WORK/d2-2"; shim="$WORK/d2-2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  defers="$(sed -n '/## 6\./,/## 7\./p' "$o/report.md" | grep -c 'Awaiting base rebuild (deferred to Dependabot')"; defers="${defers:-0}"
+  noprs="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; noprs="${noprs:-0}"
+  { [ "$defers" -ge 1 ] 2>/dev/null && eq "$noprs" "0"; } \
+    && ok || no "base rebuild defers to Dependabot; no auditor base-rebuild PR" "awaiting=$defers base_rebuild_prs=$noprs"; }
+
+begin "d2-3-bump-delivery-failure-marks-incomplete" "decision 2: a bump PR delivery FAILURE marks the run AUDIT INCOMPLETE and exits non-zero (never a false 'opened')"
+o="$WORK/d2-3"; shim="$WORK/d2-3.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+# a delivery failure makes auditor-run exit non-zero by design; do not use run()
+env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_SHIM_PR_FAIL=1 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+rc=$?
+incomplete="$(grep -c 'AUDIT INCOMPLETE' "$o/report.md" 2>/dev/null)"; incomplete="${incomplete:-0}"
+failed="$(grep -c 'bump PR delivery FAILED' "$o/report.md" 2>/dev/null)"; failed="${failed:-0}"
+{ [ "$rc" -ne 0 ] 2>/dev/null && [ "$incomplete" -ge 1 ] 2>/dev/null && [ "$failed" -ge 1 ] 2>/dev/null; } \
+  && ok || no "delivery failure => INCOMPLETE, non-zero exit, honest FAILED line" "rc=$rc incomplete=$incomplete failed=$failed"
 
 begin "il14-consolidated-ignore-cites-all-statement-ids" "a split CVE's consolidated ignore cites BOTH statement ids (the sibling id is not orphaned)"
 o="$WORK/il14"; rm -rf "$o"; : > "$LEDGER"
@@ -953,14 +987,15 @@ lied="$(grep -ci 'draft PR opened' "$o/report.md" 2>/dev/null)"; lied="${lied:-0
 { [ "$rcf" -ne 0 ] 2>/dev/null && eq "$inc" "yes" && eq "$stderrline" "yes" && eq "$lied" "0"; } \
   && ok || no "push failure -> INCOMPLETE + stderr, no false 'opened'" "exit=$rcf incomplete=$inc stderr_in_report=$stderrline false_opened=$lied"
 
-begin "r16-single-nonstacked-draft-branch" "delivery opens exactly ONE branch, based on origin/main (non-stacked), with the --draft flag"
+begin "r16-nonstacked-draft-branches" "every delivery branch (suppression + each bump) is based on origin/main (non-stacked) and every delivered PR carries --draft"
 o="$WORK/r16s"; shim="$WORK/r16s.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 branches="$(grep -c 'git checkout -B auditor/' "$shim" 2>/dev/null)"; branches="${branches:-0}"
 offmain="$(grep -c 'git checkout -B auditor/.* origin/main' "$shim" 2>/dev/null)"; offmain="${offmain:-0}"
 draft="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draft="${draft:-0}"
-{ eq "$branches" "1" && eq "$offmain" "1" && eq "$draft" "1"; } \
-  && ok || no "one branch off origin/main, one draft PR" "branches=$branches off_main=$offmain draft=$draft"
+# at least the suppression PR + the one Go bump; every branch off origin/main; every PR a draft
+{ [ "$branches" -ge 2 ] 2>/dev/null && eq "$offmain" "$branches" && eq "$draft" "$branches"; } \
+  && ok || no "each branch off origin/main (non-stacked), each PR --draft" "branches=$branches off_main=$offmain draft=$draft"
 
 begin "r16-pr-url-in-section6" "the delivered draft PR's URL is recorded in report §6"
 o="$WORK/r16u"; shim="$WORK/r16u.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
@@ -2054,17 +2089,17 @@ ql=[l for l in rep.splitlines() if "Inventory quorum:" in l][0]
 print("OK" if "agreed on OS packages: none" in ql else "BAD:%s"%ql)' 2>/dev/null | tail -1)"
 { eq "$r8" "OK"; } && ok || no "quorum header reflects the numerical agreement decision" "$r8"
 
-begin "refr4-7-lifted-bump-still-pending-in-section6" "a bump moved to §1 by an AC7 lift but not yet delivered still appears as pending work in §6, not dropped"
+begin "refr4-7-lifted-bump-still-pending-in-section6" "a bump moved to §1 by an AC7 lift but NOT delivered this run (no authorized step) still appears as pending work in §6, not dropped"
 r7="$("$PY" -c '
 import importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sections={n:[] for n in range(1,8)}
-sections[1]=[{"id":"CVE-9","section":1,"disposition":"lifted (fix now pullable)","action":"proposed bump PR (auto-merge lane; delivery pending); prior suppression lifted","reason":"x","package":"lib","installed":"1","fixed":"1.1","severity":"High","pending_delivery":True}]
+sections[1]=[{"id":"CVE-9","section":1,"disposition":"lifted (fix now pullable)","action":"bump PR pending: no authorized delivery step this run; prior suppression lifted","reason":"x","package":"lib","installed":"1","fixed":"1.1","severity":"High","pending_delivery":True}]
 st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,sections[1],sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
 s6=rep.split("## 6.")[1].split("## 7.")[0]
-print("OK" if ("CVE-9" in s6 and "PROPOSED" in s6) else "BAD")' 2>/dev/null | tail -1)"
+print("OK" if ("CVE-9" in s6 and "NOT delivered" in s6) else "BAD")' 2>/dev/null | tail -1)"
 { eq "$r7" "OK"; } && ok || no "lifted-but-undelivered bump listed in §6" "$r7"
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"

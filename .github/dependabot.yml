@@ -36,4 +36,6 @@ updates:
   - package-ecosystem: "docker"
     directory: "/build/docker"
     schedule:
-      interval: "weekly"
+      # daily so a base-image CVE fix waits a day, not a week (auditor defers base
+      # rebuilds to Dependabot per REQ-AUD-2 AC3; the auditor never edits a base digest).
+      interval: "daily"

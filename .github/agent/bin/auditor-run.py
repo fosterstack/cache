@@ -252,6 +252,111 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     return r.stdout.strip(), None
 
 
+def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
+    """Deliver ONE Go-module bump as a DRAFT PR on a fresh auditor/ branch by the App bot
+    (decision 2): `go get <module>@<fixed>` + `go mod tidy`, committing ONLY go.mod and go.sum
+    — no source edits, no vendor directory, no version guessing. The PR body names the CVE,
+    the module, the from/to versions, and links the run's report; CI on the draft proves the
+    bump compiles, which is what the draft is for. Base rebuilds are NOT delivered here (an OS
+    fix defers to Dependabot's docker PR, REQ-AUD-2 AC3).
+
+    Returns (pr_url, err, status). status is one of: 'delivered' (draft PR opened/reused),
+    'would' (dry run), 'unresolvable' (the fixed version does not resolve from the module
+    proxy, or the bump is a no-op — the row stays in §3, never a broken PR), 'pending' (no
+    authorized delivery step this run), 'skipped-test' (test image, not the proof), 'error'
+    (a git/gh/tidy failure — the caller marks the run INCOMPLETE). No vendor/model name
+    appears in the branch, commit, or PR text."""
+    fb = row.get("fix_bump") or {}
+    module = fb.get("module"); to = fb.get("to"); frm = fb.get("from"); cve = fb.get("cve") or row["id"]
+    short = (commit or "unknown")[:12]
+    branch = "auditor/bump-%s-%s" % (cve, short)
+    title = "auditor: bump %s %s -> %s (%s)" % (module, frm, to, cve)
+    server = os.environ.get("GITHUB_SERVER_URL"); repo = os.environ.get("GITHUB_REPOSITORY"); rid = os.environ.get("GITHUB_RUN_ID")
+    runlink = ("%s/%s/actions/runs/%s" % (server, repo, rid)) if (server and repo and rid) else "the daily CVE auditor run report"
+    body = ("Automated dependency bump from the daily CVE auditor. Draft for review; auto-merge is a later switch.\n\n"
+            "- Vulnerability: %s\n- Module: %s\n- From: %s\n- To: %s\n\nRun report: %s" % (cve, module, frm, to, runlink))
+    proof = os.environ.get("AUDITOR_PROOF_PR") in ("1", "true", "True")
+    if is_test and not proof:
+        would.append("test-image run: no bump PR (not a shipped image)")
+        return None, None, "skipped-test"
+    if is_test and proof:
+        branch = "auditor/proof-bump-%s-%s" % (cve, short)
+        title = "proof — do not merge: " + title
+    if dry:
+        would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
+        print("dry-run would open draft bump PR on %s" % branch)
+        return None, None, "would"
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    if log:
+        seq = ["git checkout -B %s origin/main" % branch,
+               "go get %s@%s" % (module, to),
+               "go mod tidy",
+               "git add go.mod go.sum",
+               "git commit -m %s" % shlex.quote(title),
+               "git push -u origin %s" % branch,
+               "gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title))]
+        open(log, "a").write("\n".join(seq) + "\n")
+        if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
+            return None, "simulated: push to origin/%s rejected" % branch, "error"
+        url = "https://github.com/OWNER/REPO/pull/SHIM-bump-%s" % short
+        open(log, "a").write("PR_URL %s\n" % url)
+        return url, None, "delivered"
+    if not _real_gh_allowed():
+        print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
+        return None, None, "pending"
+    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+
+    def _git(*a):
+        return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
+
+    def _go(*a):
+        return subprocess.run(["go", *a], cwd=ws, capture_output=True, text=True)
+    _git("reset", "--hard")                                # clean base; each bump is off origin/main
+    r = _git("fetch", "origin", "main")
+    if r.returncode != 0:
+        return None, ("git fetch: " + (r.stderr or "").strip()), "error"
+    r = _git("checkout", "-B", branch, "origin/main")
+    if r.returncode != 0:
+        return None, ("git checkout: " + (r.stderr or "").strip()), "error"
+    g = _go("get", "%s@%s" % (module, to))
+    if g.returncode != 0:
+        # the fixed version does not resolve from the module proxy — NOT a broken PR (stays §3)
+        _git("reset", "--hard", "origin/main")
+        return None, None, "unresolvable"
+    t = _go("mod", "tidy")
+    if t.returncode != 0:
+        _git("reset", "--hard", "origin/main")
+        return None, ("go mod tidy: " + (t.stderr or "").strip()), "error"
+    _git("add", "go.mod", "go.sum")
+    if _git("diff", "--cached", "--quiet").returncode == 0:
+        # the bump changed nothing (already at/after the fixed version) — nothing to deliver
+        _git("reset", "--hard", "origin/main")
+        return None, None, "unresolvable"
+    r = _git("commit", "-m", title)
+    if r.returncode != 0:
+        return None, ("git commit: " + (r.stderr or "").strip()), "error"
+    r = _git("push", "-u", "origin", branch, "--force-with-lease")
+    if r.returncode != 0:
+        return None, ("git push: " + (r.stderr or "").strip()), "error"
+
+    def _existing():
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
+                            "--jq", ".[0].url // \"\""], cwd=ws, capture_output=True, text=True)
+        return (q.stdout or "").strip() if q.returncode == 0 else ""
+    ex = _existing()
+    if ex:
+        return ex, None, "delivered"
+    r = subprocess.run(["gh", "pr", "create", "--draft", "--base", "main", "--head", branch,
+                        "--title", title, "--body", body], cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0:
+        if "already exists" in (r.stderr or "").lower():
+            ex = _existing()
+            if ex:
+                return ex, None, "delivered"
+        return None, ("gh pr create: " + (r.stderr or "").strip()), "error"
+    return r.stdout.strip(), None, "delivered"
+
+
 def _ignores_from_statements(statements, expiry_map):
     """Build (.snyk text, osv-scanner.toml text) from a set of VEX statements: ONE ignore per
     CVE, citing EVERY one of that CVE's statement ids (base id first, so `vex:` anchors on the
@@ -820,23 +925,33 @@ def _dispose(c, findings, aliases, env, would, name=None):
         # affected/temporary VEX, ignore and inventory for this exact scope are removed this run
         # (delivery drops them) and the row is §1 lifted; otherwise a fresh fixable finding is §3.
         lifted = _carried or bool(env.get("carried_expiry", {}).get((c, this_scope)))
+        lift_note = "; prior suppression lifted (VEX/ignore/inventory removed)" if lifted else ""
         if gf["is_go"]:
-            title = "auditor/bump-%s: %s %s -> %s" % (c, gf["package"], gf["installed"], gf["fixed"])
-            _open_pr("auditor/bump-%s" % c, title, "auto-merge-lane", dry, would, "auditor: bump %s" % c)
-            act = ("dry run: would open PR '%s'" % title) if dry else "proposed bump PR (auto-merge lane; delivery pending)"
-            row.update(section=3, disposition="real, fixable (we build it)", action=act,
+            # A module WE BUILD: the auditor delivers the bump itself as a DRAFT PR through the
+            # App path (go get module@fixed + go mod tidy, go.mod/go.sum only) — the actual
+            # delivery + honest action text are set in run() after routing (decision 2). Record
+            # the bump intent here; an unresolvable fixed version stays in §3, never a broken PR.
+            row["fix_bump"] = {"cve": c, "module": gf["package"], "from": gf["installed"], "to": gf["fixed"]}
+            row["lift_note"] = lift_note
+            row.update(section=(1 if lifted else 3),
+                       disposition=("lifted (fix now pullable)" if lifted else "real, fixable (we build it)"),
+                       action="bump pending delivery" + lift_note,
                        fixed=gf["fixed"], reason="pullable fix in a module we build")
         else:
-            title = "auditor/base-rebuild-%s: base image -> %s (%s)" % (c, gf["fixed"], gf["package"])
-            _open_pr("auditor/base-rebuild-%s" % c, title, "base-bump", dry, would, "auditor: base rebuild %s" % c)
-            act = ("dry run: would open PR '%s'" % title) if dry else "proposed base-rebuild PR (delivery pending)"
-            row.update(section=3, disposition="real, fixable (base rebuild)", action=act,
+            # An OS PACKAGE fix comes with the base image: defer to Dependabot's docker PR
+            # (REQ-AUD-2 AC3). The base is digest-pinned on purpose and the auditor never edits
+            # a base digest or races Dependabot over the network — the Dependabot docker
+            # ecosystem runs daily (.github/dependabot.yml). POA&M shape: stays in §3 awaiting
+            # the base rebuild.
+            row.update(section=(1 if lifted else 3),
+                       disposition=("lifted (fix now pullable)" if lifted else "real, fixable (base rebuild)"),
+                       action=("awaiting base rebuild %s — defer to Dependabot's docker PR "
+                               "(base is digest-pinned; the auditor does not edit it)" % gf["fixed"]) + lift_note,
                        fixed="base-image %s" % gf["fixed"], reachability="n/a (OS package)",
-                       reason="awaiting base rebuild %s" % gf["fixed"])
+                       reason="awaiting base rebuild %s (Dependabot docker ecosystem, daily)" % gf["fixed"],
+                       base_rebuild=True)
         if lifted:
-            row.update(section=1, disposition="lifted (fix now pullable)",
-                       action=row["action"] + "; prior suppression lifted (VEX/ignore/inventory removed)",
-                       reopened_scope=[c, list(this_scope[0]), list(this_scope[1])])
+            row["reopened_scope"] = [c, list(this_scope[0]), list(this_scope[1])]
         return row, m_inc
     # Expiry is keyed by this disposition's SCOPE (REQ-AUD-13 AC6): the carried time box for
     # exactly this scope. If it has PASSED, only THIS scope reopens into §3 and only its
@@ -1016,18 +1131,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                  "product": policy.VEX_PRODUCT,                   # the FULL canonical scope, so
                  "scope_purls": r.get("scope_purls") or []}       # inventory keys on scope, not a hash
                 for r in sections[2]]
-    findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))
-    if dry and sections[3] and not would:
-        findings_without_action += len(sections[3])
-    # A non-dry run PROPOSES fix PRs (bump / base-rebuild) but does not deliver them — the
-    # driver holds contents:read and only the App-token SUPPRESSION PR is delivered. Those
-    # proposals are real PENDING work; the report must say so rather than claim completion
-    # with nothing pending (R1 outer round-8 #3). Each such row is flagged for §6.
-    # a proposed-but-undelivered fix is pending whether it sits in §3 or was moved to §1 by an
-    # AC7 lift (R1 refactor round-4 #7).
-    fix_pending = [r for r in (sections[3] + sections[1]) if not dry and "delivery pending" in (r.get("action") or "")]
-    for r in fix_pending:
-        r["pending_delivery"] = True
+    # findings_without_action is computed AFTER delivery (below), once every §1/§3 row's action
+    # is final and the dry-run `would` list is populated (decision 2 moved fix delivery there).
+    # A Go-module fix (a module WE build) is DELIVERED as its own draft bump PR through the App
+    # path below; a base rebuild defers to Dependabot's daily docker PR. §6 pending flags and the
+    # honest action text are set by that delivery loop — not proposed-only here.
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
     issue_failures = sum(1 for r in rows if r.get("issue_failed"))
@@ -1083,13 +1191,41 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     cons_failed = any(p.get("type", "").startswith("consistency-check-") for p in (consistency or {}).get("problems", []))
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
-    # NOTE: proposed-but-undelivered fix PRs are surfaced in §6 (honest reporting) but do NOT
-    # by themselves mark the run INCOMPLETE — the ratified design (REQ-AUD-12 AC2, REQ-AUD-7
-    # AC3; tests req12-ac2, il13) is that the driver PROPOSES fix PRs and an authorized step
-    # delivers them; proposing is the complete driver behavior. (R1 outer round-8 #3 asked for
-    # completion to reflect delivery, which would change that ratified AC — surfaced to owner.)
+    # Decision 2: the auditor DELIVERS its own Go-module bumps as draft PRs through the App path
+    # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one
+    # draft PR; an unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy
+    # failure marks the run INCOMPLETE. Base rebuilds are NOT delivered here — they defer to
+    # Dependabot's daily docker PR (REQ-AUD-2 AC3). The honest action text is set from the
+    # delivery status, replacing the pre-delivery placeholder.
+    fix_errs = []
+    for r in rows:
+        if not r.get("fix_bump"):
+            continue
+        fb = r["fix_bump"]; lift = r.get("lift_note", "")
+        furl, ferr, fstatus = _deliver_fix_pr(r, today, m.get("commit"), dry, would, is_test=is_test)
+        if fstatus == "delivered":
+            r["action"] = ("opened draft bump PR: %s" % (furl or "(App bot)")) + lift
+            r["fix_pr_url"] = furl
+        elif fstatus == "would":
+            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"], fb["to"])) + lift
+        elif fstatus == "unresolvable":
+            r["action"] = ("fix not resolvable: %s@%s did not resolve from the module proxy — stays in section 3" % (fb["module"], fb["to"])) + lift
+        elif fstatus == "skipped-test":
+            r["action"] = "test-image run: no bump PR (not a shipped image)" + lift
+        elif fstatus == "pending":
+            r["action"] = "bump PR pending: no authorized delivery step this run" + lift
+            r["pending_delivery"] = True
+        else:  # 'error'
+            r["action"] = ("bump PR delivery FAILED (run INCOMPLETE): %s" % ferr) + lift
+            r["pending_delivery"] = True
+            fix_errs.append(ferr)
+    # Now every §1/§3 row action is final: a §2/§3 row still lacking an action is a real gap. In
+    # a dry run that surfaced NO would-open work at all for its §3 rows, count them as unactioned.
+    findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))
+    if dry and sections[3] and not would:
+        findings_without_action += len(sections[3])
     complete = ((findings_without_action == 0) and quorum and (pr_err is None)
-                and (issue_failures == 0) and not cons_failed)
+                and (issue_failures == 0) and not cons_failed and not fix_errs)
     if complete:
         status = "AUDIT COMPLETE"
     else:
@@ -1105,6 +1241,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             bits.append("%d owner-decision issue(s) failed to open" % issue_failures)
         if cons_failed:
             bits.append("consistency check did not complete")
+        if fix_errs:
+            bits.append("%d bump PR(s) failed to deliver: %s" % (len(fix_errs), "; ".join(fix_errs)))
         status = "AUDIT INCOMPLETE: " + "; ".join(bits)
     fs_hash = _persist(out, rows, today)
     conclusion = _conclusion(adjudicator, sections, m, state)
@@ -1363,11 +1501,19 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             if would:
                 for w in would:
                     L.append("dry run: would run `%s`" % w)
+            # Go-module bumps DELIVERED as draft PRs by the App this run (decision 2).
+            delivered = [r for r in (sections[3] + sections[1]) if r.get("fix_pr_url")]
+            for r in delivered:
+                L.append("Bump draft PR opened by the delivery App: %s — %s" % (r["id"], r["fix_pr_url"]))
+            # Base rebuilds defer to Dependabot's daily docker PR (REQ-AUD-2 AC3) — awaiting, not ours.
+            awaiting = [r for r in (sections[3] + sections[1]) if r.get("base_rebuild")]
+            for r in awaiting:
+                L.append("Awaiting base rebuild (deferred to Dependabot's docker PR): %s — %s" % (r["id"], r.get("fixed")))
+            # Fix PRs we could not deliver this run (no authorized step, or a delivery failure).
             pend = [r for r in (sections[3] + sections[1]) if r.get("pending_delivery")]
             for r in pend:
-                L.append("Fix PR PROPOSED but NOT delivered (needs an authorized delivery step): %s — %s"
-                         % (r["id"], r.get("action")))
-            if not pr_url and not pr_err and not would and not pend:
+                L.append("Fix PR NOT delivered: %s — %s" % (r["id"], r.get("action")))
+            if not pr_url and not pr_err and not would and not delivered and not awaiting and not pend:
                 L.append(C.EMPTY[6].format(**ctx) if not dry
                          else "Nothing to open: no §3 fix PR or owner issue was warranted this run.")
             L.append(""); continue
