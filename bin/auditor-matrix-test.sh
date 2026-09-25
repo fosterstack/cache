@@ -529,14 +529,16 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   { eq "$idt" "write" && eq "$cont" "read" && eq "$aud" "https://api.anthropic.com" && eq "$ghs" "true" && eq "$tf" "true" && eq "$apik" "false"; } \
     && ok || no "OIDC wired via github-script, no API key" "id-token=$idt contents=$cont audience=$aud github-script=$ghs token-file=$tf api-key=$apik"; fi
 
-begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers come from secrets.* (GitHub masks them); NO vars.* reference anywhere in the workflow"
+begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers + tokens come from secrets.* (GitHub masks them); the ONLY vars.* is the non-secret AUDITOR_SCHEDULE_MODE toggle — no secret identifier is ever a vars.*"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","SNYK_TOKEN"]'
   fromsecrets="$(pj "$WORK/sh.json" 'str(sorted(d.get("secret_refs",[]))=='"$want"')')"
-  novars="$(pj "$WORK/sh.json" 'd.get("references_vars")')"
-  { eq "$fromsecrets" "True" && eq "$novars" "false"; } \
-    && ok || no "the identifiers + SNYK_TOKEN via secrets.*, no vars.* anywhere" "from_secrets=$fromsecrets references_vars=$novars secrets=$(pj "$WORK/sh.json" 'd.get("secret_refs")')"; fi
+  # the only permitted variable is the non-secret schedule toggle; none of the secret
+  # identifiers may appear as vars.* (they would not be masked)
+  onlytoggle="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))==["AUDITOR_SCHEDULE_MODE"])')"
+  { eq "$fromsecrets" "True" && eq "$onlytoggle" "True"; } \
+    && ok || no "identifiers+SNYK_TOKEN via secrets.*; only vars.* is AUDITOR_SCHEDULE_MODE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
 
 begin "req6-ac2-token-budget-in-workflow" "driving usage to the budget stops the run with tokens_used>0 up to the cap"
 o="$WORK/budget"; rm -rf "$o"
@@ -744,6 +746,105 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   runs="$(pj "$WORK/sh.json" 'd.get("runs_auditor_run")')"
   eq "$runs" "true" && ok || no "run step invokes auditor-run.py with inputs.dry_run" "runs_auditor_run=$runs"; fi
+
+begin "req12-schedule-mode-unset-is-dry" "a scheduled run is DRY unless the repo variable AUDITOR_SCHEDULE_MODE is exactly 'live' (unset => dry); both the dry flag and the App-token step follow it; dispatch follows dry_run"
+if ! have "$WF"; then no "$WF present" "absent"; else
+  r="$(WF="$WF" "$PY" - <<'PY'
+import os, re, sys
+sys.path.insert(0, ".github/agent/fixtures/testlib")
+import pyyaml as yaml
+doc = yaml.safe_load(open(os.environ["WF"]).read()) or {}
+jobs = doc.get("jobs") or {}
+job = next((j for j in jobs.values() if isinstance(j, dict) and j.get("environment") == "agent"), None) or (list(jobs.values())[0] if jobs else {})
+steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
+apptok = next((s for s in steps if s.get("id") == "app-token"), None)
+runstep = next((s for s in steps if isinstance(s.get("run"), str) and "dry='${{" in s["run"]), None)
+if not apptok or not runstep:
+    print("BAD: could not find app-token step or dry assignment"); sys.exit()
+if_expr = apptok.get("if") or ""
+m = re.search(r"dry='(\$\{\{.*?\}\})'", runstep["run"])
+if not m:
+    print("BAD: no dry expression"); sys.exit()
+dry_expr = m.group(1)
+
+# --- minimal GitHub Actions expression evaluator (the operators these two use) ---
+def tokenize(e):
+    e = e.strip()
+    assert e.startswith("${{") and e.endswith("}}"), e
+    e = e[3:-2]
+    toks, i = [], 0
+    while i < len(e):
+        c = e[i]
+        if c.isspace(): i += 1; continue
+        if c == "'":
+            j = e.index("'", i+1); toks.append(("str", e[i+1:j])); i = j+1; continue
+        two = e[i:i+2]
+        if two in ("==","!=","&&","||"):
+            toks.append(("op", two)); i += 2; continue
+        if c in "()":
+            toks.append(("par", c)); i += 1; continue
+        j = i
+        while j < len(e) and (e[j].isalnum() or e[j] in "._"): j += 1
+        w = e[i:j]; i = j
+        if w == "true": toks.append(("lit", True))
+        elif w == "false": toks.append(("lit", False))
+        else: toks.append(("name", w))
+    return toks
+
+def truthy(v): return not (v is False or v is None or v == "" or v == 0)
+
+class P:
+    def __init__(self, toks, env): self.t = toks; self.i = 0; self.env = env
+    def peek(self): return self.t[self.i] if self.i < len(self.t) else (None, None)
+    def eat(self): tok = self.t[self.i]; self.i += 1; return tok
+    def p_or(self):
+        v = self.p_and()
+        while self.peek() == ("op","||"): self.eat(); r = self.p_and(); v = v if truthy(v) else r
+        return v
+    def p_and(self):
+        v = self.p_eq()
+        while self.peek() == ("op","&&"): self.eat(); r = self.p_eq(); v = r if truthy(v) else v
+        return v
+    def p_eq(self):
+        v = self.p_prim()
+        while self.peek()[0] == "op" and self.peek()[1] in ("==","!="):
+            op = self.eat()[1]; r = self.p_prim(); v = (v == r) if op == "==" else (v != r)
+        return v
+    def p_prim(self):
+        k, val = self.eat()
+        if k == "par" and val == "(":
+            v = self.p_or(); assert self.eat() == ("par",")"); return v
+        if k == "str": return val
+        if k == "lit": return val
+        if k == "name": return self.env.get(val)  # unset -> None
+        raise AssertionError((k, val))
+
+def ev(expr, env): return P(tokenize(expr), env).p_or()
+
+def norm(v):
+    if v is True: return "true"
+    if v is False or v is None or v == "": return "false" if v is False else str(v)
+    return str(v)
+
+cases = {
+  "schedule+unset": {"github.event_name":"schedule"},
+  "schedule+live":  {"github.event_name":"schedule", "vars.AUDITOR_SCHEDULE_MODE":"live"},
+  "schedule+other": {"github.event_name":"schedule", "vars.AUDITOR_SCHEDULE_MODE":"on"},
+  "dispatch+dryT":  {"github.event_name":"workflow_dispatch", "inputs.dry_run":True},
+  "dispatch+dryF":  {"github.event_name":"workflow_dispatch", "inputs.dry_run":False},
+}
+res = {k: (norm(ev(dry_expr, env)), truthy(ev(if_expr, env))) for k, env in cases.items()}
+want = {
+  "schedule+unset": ("true", False),   # unset => dry, App token NOT minted
+  "schedule+live":  ("false", True),   # live => non-dry, App token minted
+  "schedule+other": ("true", False),   # anything but 'live' => dry
+  "dispatch+dryT":  ("true", False),
+  "dispatch+dryF":  ("false", True),
+}
+print("OK" if res == want else "BAD: %s (dry_expr=%s if_expr=%s)" % (res, dry_expr, if_expr))
+PY
+)"
+  eq "$r" "OK" && ok || no "schedule dry/App-token follow AUDITOR_SCHEDULE_MODE; unset is dry" "$r"; fi
 
 ########################################################################
 echo "=== REQ-AUD-12 — Round 12: honest scanner status, no empty sections, conclusion ==="
