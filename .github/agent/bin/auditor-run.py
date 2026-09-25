@@ -874,6 +874,10 @@ def _dispose(c, findings, aliases, env, would, name=None):
     this_scope = ((policy.VEX_PRODUCT,), tuple(_purls))
     this_scope_id = policy.scope_id(c, policy.VEX_PRODUCT, subs)
     _carried = (c, this_scope) in env.get("carried_scopes", set())
+    # the disposition PUBLISHED on main for this exact scope (None if none). The display flag
+    # `carried` ("in force (main)") is set only when THIS run writes the SAME disposition; the
+    # membership flag `_carried` still drives AC7 lift logic regardless of the prior status.
+    _cstat = env.get("carried_status", {}).get((c, this_scope))
     # 2) reachability for Go modules — deterministic govulncheck.
     if gf["is_go"]:
         verdict, ev = C.gvc_verdict(env["gvc"], ids, env["module"], env["gvc_usable"])
@@ -892,7 +896,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=5, disposition="not_affected (unreachable)", action="closed",
                            reason="govulncheck: imported, not called",
                            vex_id=policy.scope_id(c, policy.VEX_PRODUCT, go_subs),
-                           ignore_files=["vex", "evidence"], carried=_carried)
+                           ignore_files=["vex", "evidence"], carried=(_cstat == "not_affected"))
                 return row, 1
             # evidence covers no scanned version (or only lineage) — do not close; route below.
     m_inc = 0
@@ -921,7 +925,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=5, disposition="not_affected (false positive)", action="closed",
                            reason="model FP, evidence-verified",
                            vex_id=policy.scope_id(c, policy.VEX_PRODUCT, subs),
-                           ignore_files=["vex", "evidence"], carried=_carried)
+                           ignore_files=["vex", "evidence"], carried=(_cstat == "not_affected"))
                 return row, m_inc
             # a FP the code cannot verify is NOT a disposition — fall through and route it.
         elif cat == "adjudicator_error":
@@ -1003,14 +1007,18 @@ def _dispose(c, findings, aliases, env, would, name=None):
     vex.write(out, c, "affected", ts, action="no fix upstream; tracked; re-checked daily",
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
               target_date=this_exp, vex_name=vn, subcomponents=subs)
-    for sc in sorted({f["scanner"] for f in findings}):
+    _ig_scanners = sorted({f["scanner"] for f in findings})
+    for sc in _ig_scanners:
         cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                    {"id": c, "vex": this_scope_id, "expiry": this_exp, "scoped_purls": _purls,
                     "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
+    # name the ignore artifacts this acceptance actually writes so the row line is honest — a
+    # §2 POA&M without ignore_files defaulted _row_line to "ignores: none" (Codex round-2 P2).
+    _ig_files = [os.path.join("ignores", sc, vn + ".json") for sc in _ig_scanners] + [".snyk", "osv-scanner.toml"]
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=this_scope_id,
-               scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason),
-               threshold=("at_or_above" if at else "below"), expiry=this_exp, carried=_carried)
+               scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason), ignore_files=_ig_files,
+               threshold=("at_or_above" if at else "below"), expiry=this_exp, carried=(_cstat == "affected"))
     if at:
         # at/above threshold -> owner-decision issue, deduped per (CVE, package) with every scope
         # listed in the body and emitted after routing (fix 4) — never one issue per binary that
@@ -1052,7 +1060,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
-    carried_expiry = {}; carried_scopes = set()
+    carried_expiry = {}; carried_scopes = set(); carried_status = {}
     ws0 = os.environ.get("GITHUB_WORKSPACE")
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -1069,6 +1077,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     # every carried (cve, scope) — including a reachability not_affected that has
                     # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC7; R1 refactor #4)
                     carried_scopes.add((nm, _scope_key(s)))
+                    # the PUBLISHED status for this exact scope, so the "in force (main)" display
+                    # tag is only applied when THIS run writes the SAME disposition already on main:
+                    # a scope carried as `affected` but re-dispositioned `not_affected` this run
+                    # (e.g. new unreachability evidence) is NOT yet published as not_affected, so it
+                    # must render "proposed", not "in force (main)" (Codex round-2 residual #3).
+                    carried_status[(nm, _scope_key(s))] = s.get("status")
         except Exception:
             prev_id_to_scope = {}
         try:
@@ -1090,7 +1104,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
-           "carried_expiry": carried_expiry, "carried_scopes": carried_scopes, "today": today}
+           "carried_expiry": carried_expiry, "carried_scopes": carried_scopes,
+           "carried_status": carried_status, "today": today}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
         # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
@@ -1125,8 +1140,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             _fp_sid = policy.scope_id(c, policy.VEX_PRODUCT, subs or None)
             cli.writej(os.path.join(out, igf), {"vex": _fp_sid, "id": c, "evidence": ev, "scoped_purls": subs})
             # carried: this exact scope's not_affected is already in force on main (unchanged
-            # from a prior day) -> "in force (main)" with its published link; a fresh FP is proposed.
-            _fp_carried = (c, ((policy.VEX_PRODUCT,), tuple(subs or []))) in carried_scopes
+            # from a prior day) -> "in force (main)" with its published link; a fresh FP, or a
+            # scope whose published statement is `affected`, is proposed (Codex round-2 residual #3).
+            _fp_carried = carried_status.get((c, ((policy.VEX_PRODUCT,), tuple(subs or [])))) == "not_affected"
             rows.append({"id": c, "package": ",".join(covpkgs) or "?",
                          "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
                          "fixed": None, "severity": _max_sev(covered), "section": 5,
@@ -1608,11 +1624,18 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         """Status tag on a VEX-backed row, naming its actual state/reason (AC9)."""
         if test:
             return "proposed, not delivered (test image)"   # no statement on main applies
+        if r.get("carried"):
+            # already published on main (same disposition) — a dry run does not change that, so
+            # this is checked BEFORE `dry` (Sonnet D). `carried` is set only when THIS run's
+            # disposition matches the one on main (see _cstat), so it can never over-claim.
+            return "in force (main)"
         if dry:
             return "proposed, not delivered (dry run)"
-        if r.get("carried"):
-            return "in force (main)"                         # carried: verified already on main
         # freshly written this run — NEVER "in force (main)" without evidence it is on main (AC9).
+        if r.get("section") == 1 and r.get("fix_pr_url"):
+            # a lifted row's delivery is its BUMP PR, not the suppression PR — name the PR its own
+            # action text names, never a different one (Sonnet C).
+            return "proposed (PR #%s)" % r["fix_pr_url"].rstrip("/").split("/")[-1]
         if pr_url:
             return "proposed (PR #%s)" % pr_url.rstrip("/").split("/")[-1]
         if pr_err:
@@ -1664,9 +1687,10 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     _seen_iss = set()
     for r in rows:
         oi = r.get("owner_issue")
-        # in dry runs the sentinel ref ("dry"/"skipped") is already represented by the
-        # "would open (dry run)" entries below — listing it here too double-counts it (AC1).
-        if oi and oi not in ("dry", "skipped") and oi not in _seen_iss:
+        # the dry sentinel is already represented by the "would open (dry run)" entries below —
+        # listing it here too double-counts it (AC1). "skipped" (a real run with gh disabled) has
+        # NO would-open line, so keep it visible here rather than dropping the issue (Sonnet B).
+        if oi and oi != "dry" and oi not in _seen_iss:
             _seen_iss.add(oi); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
     if dry:
         for w in would:
@@ -1679,10 +1703,12 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     # failures that made the run INCOMPLETE — duplicated from the sections below.
     needs = []
     for r in rows:
-        if r.get("owner_issue") and not r.get("adjudicator_error"):
+        if r.get("owner_issue") and r.get("owner_issue") not in ("dry", "skipped") and not r.get("adjudicator_error"):
             # every genuinely-open owner-decision issue (risk-acceptance AND unassessed-after-
             # fallback) needs a human — never gate on `threshold`, which only the §2 branch sets
-            # (AC2). The global-outage aggregate has its own line below (adjudicator_error).
+            # (AC2). Exclude the dry/skipped sentinels: no issue was actually opened, so §0 must
+            # not present hypothetical work as real (the dry preview is the PR list's "would open").
+            # The global-outage aggregate has its own line below (adjudicator_error).
             needs.append("owner-decision needed: %s — %s" % (r["id"], r.get("owner_issue")))
         if r.get("issue_failed"):
             needs.append("owner-decision issue FAILED to open: %s" % r["id"])
