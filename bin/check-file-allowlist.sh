@@ -97,6 +97,9 @@ ALLOW_PATTERNS=(
   # The production known-defect log the auditor reads (Round 11): trusted
   # dispositions authored only through the audit-lane PR review; starts empty.
   '^\.github/agent/known-defect-log\.json$'
+  # The hash-pinned adjudicator SDK requirements (anthropic + transitive tree), installed
+  # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
+  '^\.github/agent/adjudicator-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
   # docs/quality/cve-auditor-matrix.md and bin/auditor-matrix-test.sh: real

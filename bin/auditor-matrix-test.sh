@@ -988,6 +988,33 @@ scopes2="$(grep -c 'Scope(s) (2)' "$shim" 2>/dev/null)"; scopes2="${scopes2:-0}"
 { eq "$creates" "1" && [ "$both" -ge 1 ] 2>/dev/null && [ "$both2" -ge 1 ] 2>/dev/null && [ "$scopes2" -ge 1 ] 2>/dev/null; } \
   && ok || no "one issue for (CVE,package) with both scopes in the body" "creates=$creates libfoo@1=$both libfoo@2=$both2 scopes2=$scopes2"
 
+begin "dadj-5-grype-counts-apk-and-rpm-os-packages" "grype's OS-package inventory counts apk (Alpine) and rpm, not just deb — an Alpine image inventories its OS layer, so the quorum does not fail on every Alpine base (R-live: apk count)"
+gr="$WORK/grype-alpine.json"
+cat > "$gr" <<'JSON'
+{"matches":[
+ {"artifact":{"name":"musl","version":"1.2.4","type":"apk","purl":"pkg:apk/alpine/musl@1.2.4"}},
+ {"artifact":{"name":"busybox","version":"1.36","type":"apk","purl":"pkg:apk/alpine/busybox@1.36"}},
+ {"artifact":{"name":"openssl","version":"3.1","type":"apk","purl":"pkg:apk/alpine/openssl@3.1"}},
+ {"artifact":{"name":"leftpad","version":"1.0","type":"npm","purl":"pkg:npm/leftpad@1.0"}}
+],"descriptor":{"name":"grype","version":"0.118.0","db":{"status":{"from":"x_2026-09-25T00:00:00Z_x"}}}}
+JSON
+r="$(MF="$gr" "$PY" - <<'PYEOF'
+import importlib.util, os
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+total, osp, db, findings = M._inv_grype(os.environ["MF"])
+print("os=%d apk_type=%s apk_purl=%s rpm=%s deb=%s npm=%s" % (
+  osp, M._is_os_pkg({"type":"apk"}), M._is_os_pkg({"purl":"pkg:apk/alpine/x@1"}),
+  M._is_os_pkg({"type":"rpm"}), M._is_os_pkg({"type":"deb"}),
+  M._is_os_pkg({"type":"npm","purl":"pkg:npm/x@1"})))
+PYEOF
+)"
+osc="$(printf '%s' "$r" | grep -oE 'os=[0-9]+' | cut -d= -f2)"; osc="${osc:-0}"
+apkt="$(printf '%s' "$r" | grep -oE 'apk_type=[A-Za-z]+' | cut -d= -f2)"
+rpm="$(printf '%s' "$r" | grep -oE 'rpm=[A-Za-z]+' | cut -d= -f2)"
+npm="$(printf '%s' "$r" | grep -oE 'npm=[A-Za-z]+' | cut -d= -f2)"
+{ [ "$osc" = "3" ] 2>/dev/null && eq "$apkt" "True" && eq "$rpm" "True" && eq "$npm" "False"; } \
+  && ok || no "grype counts 3 apk OS packages; apk+rpm are OS, npm is not" "[$r]"
+
 begin "il6-vex-consolidated-and-delivered-as-draft-pr" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and delivers it as a single draft PR off main (R16), never a direct .vex edit"
 o="$WORK/il6"; shim="$WORK/il6.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1

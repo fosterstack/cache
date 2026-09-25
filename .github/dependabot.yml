@@ -39,3 +39,11 @@ updates:
       # daily so a base-image CVE fix waits a day, not a week (auditor defers base
       # rebuilds to Dependabot per REQ-AUD-2 AC3; the auditor never edits a base digest).
       interval: "daily"
+
+  # The hash-pinned adjudicator SDK (anthropic) the auditor's real model client imports.
+  # Dependabot bumps the pin + regenerates hashes; the workflow installs it with
+  # --require-hashes only on real/schedule runs.
+  - package-ecosystem: "pip"
+    directory: "/.github/agent"
+    schedule:
+      interval: "weekly"
