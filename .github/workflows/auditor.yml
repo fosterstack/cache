@@ -165,7 +165,10 @@ jobs:
       # rulesets on main (the App is on no bypass list). No PAT, ever.
       - name: Mint the delivery App token (non-dry runs only)
         id: app-token
-        if: ${{ github.event_name == 'schedule' || inputs.dry_run == false }}
+        # Non-dry only. On a scheduled run "non-dry" requires the repo variable
+        # AUDITOR_SCHEDULE_MODE to be exactly "live"; unset or anything else keeps the schedule
+        # dry (the rollout's dry week). On dispatch it follows the dry_run input as before.
+        if: ${{ (github.event_name == 'schedule' && vars.AUDITOR_SCHEDULE_MODE == 'live') || (github.event_name != 'schedule' && inputs.dry_run == false) }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
@@ -196,7 +199,10 @@ jobs:
           curl -fsS https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json \
             -o "${AUDITOR_KEV_CATALOG}" || echo "::warning::could not fetch the CISA KEV catalog"
           adj='${{ github.event_name == 'schedule' && 'real' || inputs.adjudicator }}'
-          dry='${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}'
+          # The schedule is DRY unless the repo variable AUDITOR_SCHEDULE_MODE is exactly "live"
+          # (unset or anything else => dry). Dispatch follows the dry_run input. The schedule
+          # always uses the REAL adjudicator (a dry week still exercises the real model).
+          dry='${{ github.event_name == 'schedule' && (vars.AUDITOR_SCHEDULE_MODE == 'live' && 'false' || 'true') || inputs.dry_run }}'
           adj_arg=""
           [ "$adj" = "stub" ] && adj_arg="--adjudicator .github/agent/fixtures/adjudicator/stub-adjudicator.py"
           # when an App token is present (delivery run), authenticate git/gh with it and set
