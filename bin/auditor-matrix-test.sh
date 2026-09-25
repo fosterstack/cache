@@ -2360,6 +2360,14 @@ begin "req15-ac9-status-tag-on-vex-rows" "on a dry candidate run every VEX-backe
 tags="$(grep -c 'proposed, not delivered (dry run)' "$o/report.md" 2>/dev/null)"; tags="${tags:-0}"
 { [ "$tags" -ge 1 ] 2>/dev/null; } && ok || no "dry-run status tag present" "tags=$tags"
 
+begin "req15-ac9-vex-link-only-for-in-force" "the fosterstack.com VEX link is printed ONLY for in-force rows; a proposed/not-delivered row shows the statement id without the published link (AC9)"
+o2b="$WORK/r15link"; rm -rf "$o2b"
+"$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2b" >/dev/null 2>&1 || true
+liveurl="$(grep -c 'vex: https://fosterstack.com' "$o2b/report.md" 2>/dev/null)"; liveurl="${liveurl:-0}"
+idfrag="$(grep -c 'vex: #stmt-' "$o2b/report.md" 2>/dev/null)"; idfrag="${idfrag:-0}"
+{ eq "$liveurl" "0" && [ "$idfrag" -ge 1 ] 2>/dev/null; } \
+  && ok || no "no published link on proposed rows; statement id shown" "live_links=$liveurl id_fragments=$idfrag"
+
 begin "req15-ac9-test-image-tag-and-forces-dry" "a test-image run tags every VEX row 'proposed, not delivered (test image)' regardless of main, and forces dry_run even when --dry-run false"
 o2="$WORK/r15ti"; rm -rf "$o2"
 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1 || true

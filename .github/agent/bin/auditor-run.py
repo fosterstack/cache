@@ -1612,7 +1612,14 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         return "in force (main)"
 
     def _tagged(r):
-        return _row_line(r) + " — status: " + _tag(r)
+        tag = _tag(r)
+        line = _row_line(r)
+        if tag != "in force (main)":
+            # AC9: the fosterstack.com VEX link is printed ONLY for in-force (published) statements.
+            # A proposed / not-yet-delivered statement shows its id (the #stmt fragment) without the
+            # published link, so a reader is never pointed at a link that does not resolve yet.
+            line = re.sub(r"vex: https?://[^\s]*?(#stmt-[^\s]+)", r"vex: \1", line)
+        return line + " — status: " + tag
 
     def _emit(title, rows_, empty, tagged=False, sub=None, downnote=False):
         L.append("## " + title); L.append("")
