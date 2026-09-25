@@ -49,6 +49,23 @@ run fail "auditor/2026-09-24-abc123" "auditor/ lane does NOT allow arbitrary roo
 # Ordinary product files still pass regardless of branch.
 run pass "feature/x" "product Go source still allowed off the auditor lane" "internal/cache/store.go"
 
+# The reserved-branch guard: only the delivery App may push the auditor/* lane (the allowlist
+# relaxes suppression paths there), so a dev branch can never use it to slip a suppression past.
+GUARD=.github/workflows/reserved-branch-guard.yml
+gp() { echo "ok:   $1"; pass=$((pass+1)); }
+gf() { echo "FAIL: $1 — $2"; fail=$((fail+1)); }
+if [ -f "$GUARD" ]; then
+  gp "reserved-branch guard workflow present"
+  if grep -qE "auditor/\*\*" "$GUARD" && grep -qE "^\s*push:" "$GUARD"; then
+    gp "guard triggers on push to auditor/*"
+  else gf "guard triggers on push to auditor/*" "missing push:auditor/** trigger"; fi
+  if grep -q "fosterstack-automation" "$GUARD" && grep -qE "exit 1" "$GUARD"; then
+    gp "guard rejects any pusher that is not the delivery App"
+  else gf "guard gates on the App actor and fails closed" "missing App-actor check / exit 1"; fi
+else
+  gf "reserved-branch guard workflow present" "$GUARD missing"
+fi
+
 echo "----"
 echo "check-file-allowlist: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
