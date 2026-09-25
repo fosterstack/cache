@@ -673,10 +673,14 @@ def adjudicate(adjudicator, ctx, state):
         except Exception as e:
             errored = True
             msg = "%s: %s" % (type(e).__name__, _mask(str(e)))    # class + masked message/status
+            # Dedup by a NORMALIZED key that strips volatile per-call ids (e.g. request_id), so N
+            # identical failures (one per finding/attempt) collapse to ONE recorded error instead
+            # of flooding the header/status; store the first FULL message as the representative.
+            key = re.sub(r"\s*\[?request[_-]?id[=:]\s*[^\]\s]+\]?", "", msg, flags=re.I)
             errs = state.setdefault("adj_errors", {})
-            if msg not in errs:                                   # print/record ONCE per distinct error
+            if key not in errs:                                   # print/record ONCE per distinct error
                 print("adjudicator error (%s): %s" % (attempt, msg))
-            errs[msg] = errs.get(msg, 0) + 1
+                errs[key] = msg                                   # representative full message
             continue
         state["tokens"] += int(ans.get("token_usage") or 0)
         state.setdefault("roles_used", set()).add(role)
@@ -1174,7 +1178,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # UNAVAILABLE, open exactly ONE issue naming the count and the (masked) cause — never one per
     # finding (R-live fix 3) — and mark the run INCOMPLETE (below).
     adj_unavailable = [r for r in rows if r.get("adjudicator_error")]
-    adj_err_msgs = sorted((state.get("adj_errors") or {}).keys())
+    adj_err_msgs = sorted((state.get("adj_errors") or {}).values())
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
     if adjudicator_down:
@@ -1583,7 +1587,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     tok = int((state or {}).get("tokens") or 0)
     # If the adjudicator was UNAVAILABLE, the header NAMES the cause (masked) — not a silent
     # "none called" (R-live fix 1). The messages are already masked by adjudicate().
-    adj_errs = sorted((state or {}).get("adj_errors") or {})
+    adj_errs = sorted(((state or {}).get("adj_errors") or {}).values())
     adj_field = "real" if not is_stub else "stub"
     if adj_errs and not is_stub:
         adj_field = "real (UNAVAILABLE: %s)" % "; ".join(adj_errs)

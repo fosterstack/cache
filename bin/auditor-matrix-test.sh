@@ -1015,6 +1015,22 @@ npm="$(printf '%s' "$r" | grep -oE 'npm=[A-Za-z]+' | cut -d= -f2)"
 { [ "$osc" = "3" ] 2>/dev/null && eq "$apkt" "True" && eq "$rpm" "True" && eq "$npm" "False"; } \
   && ok || no "grype counts 3 apk OS packages; apk+rpm are OS, npm is not" "[$r]"
 
+begin "dadj-6-adjudicator-error-dedup-collapses-volatile-request-id" "repeated adjudicator failures that differ ONLY by a per-call request_id collapse to ONE recorded error (not one per finding/attempt), so the header/status is not flooded (R-live fix 1 dedup)"
+o="$WORK/dadj6"; rm -rf "$o"; fa="$WORK/dadj6-fail.py"
+cat > "$fa" <<'PYEOF'
+import os, sys, time
+# a unique request_id per invocation — without normalization these would each be "distinct"
+sys.stderr.write("APIConnectionError status=503: transient upstream [request_id=req_%d_%d]\n" % (os.getpid(), time.time_ns()))
+sys.exit(5)
+PYEOF
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
+# one FP-suspicion finding retries primary/rephrase/fallback => >=3 calls => >=3 unique ids;
+# after dedup the report keeps exactly ONE representative request_id
+ids="$(grep -oE 'req_[0-9]+_[0-9]+' "$o/report.md" 2>/dev/null | sort -u | wc -l | tr -d ' ')"; ids="${ids:-0}"
+surfaced="$(grep -c 'transient upstream' "$o/report.md" 2>/dev/null)"; surfaced="${surfaced:-0}"
+{ [ "$ids" = "1" ] 2>/dev/null && [ "$surfaced" -ge 1 ] 2>/dev/null; } \
+  && ok || no "collapses to one representative request_id; error still surfaced" "distinct_request_ids=$ids surfaced=$surfaced"
+
 begin "il6-vex-consolidated-and-delivered-as-draft-pr" "a run that writes VEX consolidates it into suppressions/fosterstack-cache.openvex.json and delivers it as a single draft PR off main (R16), never a direct .vex edit"
 o="$WORK/il6"; shim="$WORK/il6.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
