@@ -1,0 +1,27 @@
+{
+ "vex_id": "https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374",
+ "cve": "CVE-2011-3374",
+ "status": "not_affected",
+ "justification": "vulnerable_code_not_in_execute_path",
+ "permanent": false,
+ "expiry": "2026-10-22",
+ "reason": "Base-OS apt signature-check path not on any execution path of the statically-linked Go binary; re-checked every run.",
+ "products_scope": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+ "scanners": [
+  "grype",
+  "trivy",
+  "snyk",
+  "osv-scanner"
+ ],
+ "purls": {
+  "grype": "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0",
+  "trivy": "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0",
+  "snyk": "pkg:deb/debian/apt@2.6.1?distro=debian-12.0",
+  "osv-scanner": "pkg:deb/debian/apt@2.6.1"
+ },
+ "evidence": {
+  "check": "known-defect-log",
+  "source_file": ".github/agent/fixtures/dl/log.json",
+  "detail": "exact key grype/CVE-2011-3374/pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0"
+ }
+}

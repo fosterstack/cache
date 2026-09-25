@@ -1,0 +1,45 @@
+{
+ "run": {
+  "workflow": "auditor.yml",
+  "commit": "0bfc498ecfca3e38cb4a456acda44359a1620c5a",
+  "timestamp": "2026-09-22T08:41:00Z",
+  "candidate_digests": {
+   "production": "sha256:8df991b5febdf5b4a177325b8af95b6bb6c321059e1715c06cb659c659f5a4f0"
+  },
+  "base_os": "debian 13.7"
+ },
+ "scanners": [
+  {
+   "name": "grype",
+   "ran": true,
+   "version": "0.118.0",
+   "db_date": "2026-09-22T01:05:00Z",
+   "findings": []
+  },
+  {
+   "name": "osv-scanner",
+   "ran": true,
+   "version": "2.6.0",
+   "db_date": null,
+   "findings": []
+  },
+  {
+   "name": "trivy",
+   "ran": false,
+   "version": null,
+   "db_date": null,
+   "error": "install-scanner.sh: checksum verification failed for trivy 0.74.0",
+   "findings": []
+  },
+  {
+   "name": "snyk",
+   "ran": true,
+   "version": "1.1307.0",
+   "db_date": null,
+   "findings": []
+  }
+ ],
+ "model": "primary",
+ "token_cost": 0,
+ "findings": []
+}

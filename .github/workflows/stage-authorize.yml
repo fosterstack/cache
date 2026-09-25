@@ -42,6 +42,7 @@ jobs:
       packages: read      # read attestations against the private candidates
       id-token: write     # sign the release-authorization predicate
       attestations: write
+      issues: read        # REQ-AUD-11: read owner-decision issue acceptance state
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -217,6 +218,28 @@ jobs:
           done
 
           echo "graph verified: $(wc -l < /tmp/verified-statements.jsonl) statements"
+
+      # REQ-AUD-11: the daily auditor writes .auditor/accepted-items.json (every
+      # at-or-above-threshold accepted item, its issue number, expiry) on every run and
+      # commits it through the PR lane with the VEX. This gate FAILS CLOSED: a MISSING
+      # inventory is a hold whenever the candidate carries any `affected` VEX statement
+      # (a real accepted risk with no recorded inventory); it promotes only when the
+      # inventory exists and every listed item has the owner's recorded acceptance.
+      - name: auditor risk-acceptance gate (REQ-AUD-11)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue list --label owner-decision --state all --limit 500 --json number,comments \
+            --jq '{issues: [.[] | {number, comments: [.comments[] | {author: .author.login, body}]}]}' \
+            > "${RUNNER_TEMP}/auditor-issues.json" || echo '{"issues":[]}' > "${RUNNER_TEMP}/auditor-issues.json"
+          python3 .github/agent/bin/auditor-release-authz.py \
+            --candidate .auditor/accepted-items.json --vex-dir .vex \
+            --issues "${RUNNER_TEMP}/auditor-issues.json" --today "$(date -u +%F)" \
+            --out "${RUNNER_TEMP}/authz.json"
+          decision=$(python3 -c 'import json;print(json.load(open("'"${RUNNER_TEMP}"'/authz.json"))["decision"])')
+          echo "auditor release authorization: ${decision}"
+          [ "$decision" = "promote" ] || { echo "::error::held: a carried affected item lacks a complete inventory with recorded owner acceptance" >&2; exit 1; }
 
       - name: write and sign the release-authorization predicate
         id: predicate

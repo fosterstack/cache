@@ -1,0 +1,11 @@
+version: v1.5.0
+ignore:
+  SNYK-DEBIAN12-APT-1:
+    - '*':
+        reason: 'not_affected; see stmt-cve-2011-3374'
+        expires: 2026-10-22T00:00:00.000Z
+        vex: 'https://fosterstack.com/vex/cache/openvex#stmt-cve-2011-3374'
+  SNYK-DEBIAN12-COREUTILS-2:
+    - '*':
+        reason: 'muted'
+        expires: 2026-10-01T00:00:00.000Z

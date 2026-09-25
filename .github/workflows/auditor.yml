@@ -1,12 +1,23 @@
 name: Daily CVE auditor
 
-# BOOTSTRAP ONLY. GitHub's workflow_dispatch will not dispatch a workflow that has never
-# existed on the default branch. This minimal file registers the workflow so the real
-# implementation on PR #94 (matrix/cve-auditor) can be dispatched on its own branch. It
-# carries the same dispatch inputs so a branch dispatch validates, has default permissions,
-# no environment, and no schedule, and its only job echoes that it is a placeholder.
-# PR #94 replaces this file wholesale.
+# The sealed daily CVE auditor. It consumes the day's main-candidate-rescan artifacts
+# (selected by TODAY'S main head, regardless of the rescan's conclusion — a red rescan is
+# exactly the day that needs adjudication), installs the pinned scanners, scans the
+# candidate image and the checked-out source ON THE RUNNER, builds a validated run
+# manifest, audits the findings and (when not dry) opens the PRs and owner-decision issues.
+#
+# Two dispatch knobs (workflow_dispatch only): dry_run (default true) does everything except
+# gh pr create / gh issue create; adjudicator (real|stub, default real) chooses the model
+# client. adjudicator=stub uses the checked-in test double and SKIPS the OIDC mint, so the
+# workflow can be dispatched green on a feature branch where the federation rule refuses a
+# token. Schedule runs are always real and never dry.
+#
+# The federated identity is minted AFTER installs and scans, immediately before the driver,
+# and refreshed in the background for long runs. The six model/workspace identifiers are
+# GitHub environment SECRETS (masked in logs); no vars.* and no ANTHROPIC_API_KEY anywhere.
 on:
+  schedule:
+    - cron: '23 8 * * *'   # after the 07:41 main-candidate rescan; offset from 0/11/41
   workflow_dispatch:
     inputs:
       dry_run:
@@ -18,13 +29,213 @@ on:
         type: choice
         options: [real, stub]
         default: real
+      test_image:
+        description: 'Audit this image ref@digest instead of the day''s candidate (proving runs)'
+        type: string
+        default: ''
+      known_defect_log:
+        description: 'Known-defect log path (proving runs may point at a fixture log)'
+        type: string
+        default: .github/agent/known-defect-log.json
+      proof_pr:
+        description: 'One-off: allow a test_image draft PR (title prefixed "proof — do not merge")'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  bootstrap:
-    name: bootstrap
+  audit:
+    name: audit
     runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read        # to list/download the rescan run's artifacts
     steps:
-      - run: echo "bootstrap — replaced by PR #94."
+      - uses: actions/checkout@v4
+
+      - name: Select and download the day's main-candidate-rescan artifacts
+        id: rescan
+        if: ${{ github.event_name == 'schedule' || inputs.test_image == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo='${{ github.repository }}'
+          main_head=$(gh api "repos/${repo}/commits/main" --jq '.sha')
+          echo "main head: ${main_head}"
+          runs=$(gh run list --workflow main-candidate-rescan.yml --branch main --limit 50 \
+                   --json databaseId,headSha,conclusion,createdAt)
+          # today's main head, regardless of conclusion (a red rescan is the day that needs us)
+          rid=$(printf '%s' "$runs" | jq -r --arg h "$main_head" \
+                  '[.[]|select(.headSha==$h)]|sort_by(.createdAt)|last|.databaseId // empty')
+          if [ -z "$rid" ]; then
+            rid=$(printf '%s' "$runs" | jq -r 'sort_by(.createdAt)|last|.databaseId // empty')
+            echo "::warning::no main-candidate-rescan run for main head ${main_head}; using latest run ${rid} (digest binding unavailable)"
+            echo "head_bound=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "head_bound=true" >> "$GITHUB_OUTPUT"
+          fi
+          [ -n "$rid" ] || { echo "::error::no main-candidate-rescan run to consume" >&2; exit 1; }
+          echo "selected rescan run: ${rid}"
+          echo "run_id=${rid}" >> "$GITHUB_OUTPUT"
+          mkdir -p "${RUNNER_TEMP}/rescan" "${RUNNER_TEMP}/rescan-reports"
+          gh run download "$rid" -n oci-candidate -D "${RUNNER_TEMP}/rescan" \
+            || gh run download "$rid" -D "${RUNNER_TEMP}/rescan"
+          # the rescan's own scanner reports + recorded candidate digests, if that run
+          # produced them (added this round; older runs pre-date the upload — not fatal)
+          gh run download "$rid" -n rescan-scanner-reports -D "${RUNNER_TEMP}/rescan-reports" \
+            || echo "::warning::selected run has no rescan-scanner-reports artifact; the auditor will scan on the runner and cannot assert the recorded digest"
+
+      - name: Set up Go for govulncheck and the source scan
+        uses: actions/setup-go@v5
+        continue-on-error: true
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install the pinned scanners and build the validated run manifest
+        id: manifest
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          TEST_IMAGE: ${{ inputs.test_image }}
+          KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -uo pipefail
+          command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true
+          for s in grype trivy osv-scanner snyk; do ./bin/install-scanner.sh "$s" || echo "::warning::${s} install failed; it will be recorded 'did not run'"; done
+          # govulncheck + syft pinned by version (best-effort; syft is grype's cataloguer and
+          # reads distroless status.d, so grype's package inventory is real even on distroless)
+          GOBIN="${RUNNER_TEMP}/gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 \
+            || echo "::warning::could not install govulncheck; reachability will be recorded 'did not run'"
+          GOBIN="${RUNNER_TEMP}/gobin" go install github.com/anchore/syft/cmd/syft@v1.52.0 \
+            || echo "::warning::could not install syft; grype inventory falls back to matched packages"
+          export PATH="${RUNNER_TEMP}/gobin:${PATH}"
+          # Scan a CONTAINER ARCHIVE, never a daemon ref (R12 item 2). one line per scanner
+          # is printed here (grype 0.118.0 db=… packages=… findings=…); a scanner that
+          # inventories zero packages is recorded 'did not run'.
+          python3 .github/agent/bin/auditor-manifest.py \
+            --rescan-dir "${RUNNER_TEMP}/rescan" \
+            --rescan-reports "${RUNNER_TEMP}/rescan-reports" \
+            --source-dir "${GITHUB_WORKSPACE}" \
+            --reports "${RUNNER_TEMP}/reports" \
+            --test-image "${TEST_IMAGE}" \
+            --known-defect-log "${KNOWN_DEFECT_LOG:-.github/agent/known-defect-log.json}" \
+            --out "${RUNNER_TEMP}/manifest.json"
+
+      - name: Mint the federated OIDC identity token (real adjudicator only, after scans)
+        id: oidc
+        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('https://api.anthropic.com')
+            core.setSecret(token)
+            const fs = require('fs')
+            const p = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
+            fs.writeFileSync(p, token)
+            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', p)
+
+      - name: Refresh the identity token in the background (runs longer than four minutes)
+        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const p = `${process.env.RUNNER_TEMP}/anthropic-identity-token`
+            const refresh = async () => {
+              try {
+                const t = await core.getIDToken('https://api.anthropic.com')
+                core.setSecret(t); fs.writeFileSync(p, t)
+              } catch (e) { core.warning(`identity refresh failed: ${e}`) }
+            }
+            // re-mint every 4 minutes; the step returns immediately, the timer lives with the job
+            setInterval(refresh, 4 * 60 * 1000).unref?.()
+
+      # Mint a GitHub App installation token (fosterstack-auditor, cache only, Contents +
+      # Pull requests write) ONLY for delivery runs. The job's own GITHUB_TOKEN stays
+      # contents:read; this token goes to the driver step alone, as its GH_TOKEN and git push
+      # credential, so the auditor's draft PR is opened by the App identity and bound by the
+      # rulesets on main (the App is on no bypass list). No PAT, ever.
+      - name: Mint the delivery App token (non-dry runs only)
+        id: app-token
+        if: ${{ github.event_name == 'schedule' || inputs.dry_run == false }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+
+      - name: Run the auditor
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
+          AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
+          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
+          # the App installation token (delivery) for THIS step only — git push + gh pr create;
+          # falls back to the read-only job token on a dry run where no delivery happens.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # the App has Contents + Pull requests only (no Issues), so owner-decision issues
+          # MUST use the job token's issues:write, passed separately.
+          AUDITOR_ISSUES_TOKEN: ${{ github.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
+          AUDITOR_PROOF_PR: ${{ inputs.proof_pr }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          curl -fsS https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json \
+            -o "${AUDITOR_KEV_CATALOG}" || echo "::warning::could not fetch the CISA KEV catalog"
+          adj='${{ github.event_name == 'schedule' && 'real' || inputs.adjudicator }}'
+          dry='${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}'
+          adj_arg=""
+          [ "$adj" = "stub" ] && adj_arg="--adjudicator .github/agent/fixtures/adjudicator/stub-adjudicator.py"
+          # when an App token is present (delivery run), authenticate git/gh with it and set
+          # the commit identity to the App bot (no vendor/model name anywhere). actions/checkout
+          # persists the read-only JOB token as an http extraheader that would otherwise win
+          # over the App credential, so clear it first; then the App token (GH_TOKEN) is the
+          # push credential via gh's git credential helper.
+          if [ -n "${AUDITOR_APP_SLUG:-}" ]; then
+            git config --unset-all "http.https://github.com/.extraheader" 2>/dev/null || true
+            gh auth setup-git
+            git config user.name "${AUDITOR_APP_SLUG}[bot]"
+            git config user.email "${AUDITOR_APP_SLUG}[bot]@users.noreply.github.com"
+          fi
+          set -e
+          python3 .github/agent/bin/auditor-run.py \
+            --manifest "${RUNNER_TEMP}/manifest.json" \
+            --kev "${AUDITOR_KEV_CATALOG}" \
+            --dry-run "${dry}" --today "$(date -u +%F)" \
+            --out "${RUNNER_TEMP}/auditor-out" ${adj_arg}
+          cp "${RUNNER_TEMP}/manifest.json" "${RUNNER_TEMP}/auditor-out/manifest.json" || true
+          cp -r "${RUNNER_TEMP}/reports" "${RUNNER_TEMP}/auditor-out/scanner-reports" 2>/dev/null || true
+          cp "${AUDITOR_KEV_CATALOG}" "${RUNNER_TEMP}/auditor-out/kev.json" 2>/dev/null || true
+
+      - name: Publish the report to the run summary
+        if: ${{ always() }}
+        run: |
+          if [ -f "${RUNNER_TEMP}/auditor-out/report.md" ]; then
+            cat "${RUNNER_TEMP}/auditor-out/report.md" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "The auditor produced no report (see the failed step above)." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload the full audit trail
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: auditor-run
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/auditor-out
+            ${{ runner.temp }}/manifest.json
+            ${{ runner.temp }}/reports

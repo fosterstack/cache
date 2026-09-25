@@ -1,0 +1,13 @@
+{
+ "cve": "CVE-2023-4911",
+ "package": "libc6",
+ "purl": "pkg:deb/debian/libc6@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc",
+ "reachable": true,
+ "fix_pullable": false,
+ "severity": "High",
+ "scanners": [
+  "grype",
+  "trivy",
+  "osv-scanner"
+ ]
+}

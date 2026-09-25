@@ -1,0 +1,63 @@
+{
+ "commit": "deadbeef",
+ "module": null,
+ "base_os": "debian",
+ "candidate_variant": "production",
+ "candidate_digests": {
+  "production": "sha256:owner"
+ },
+ "scanner_reports": {
+  "grype": ".github/agent/fixtures/scanners/grype-critical-nofix.json",
+  "trivy": null,
+  "osv-scanner": null,
+  "osv-scanner-gomod": null,
+  "snyk": null
+ },
+ "scanner_status": {
+  "grype": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 1
+  },
+  "trivy": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 1
+  },
+  "osv-scanner": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 1
+  },
+  "snyk": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": 10,
+   "os_package_count": 10,
+   "db_date": "2026-09-22",
+   "findings": 1
+  },
+  "osv-scanner-gomod": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": null
+  }
+ },
+ "govulncheck": null,
+ "known_defect_log": null,
+ "kev_catalog": null
+}

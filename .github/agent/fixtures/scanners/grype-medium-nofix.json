@@ -1,0 +1,8 @@
+{
+ "matches": [
+  {"vulnerability": {"id": "CVE-2099-9200", "severity": "Medium", "fix": {"state": "not-fixed", "versions": []}},
+   "artifact": {"name": "libmed", "version": "1", "type": "deb", "purl": "pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"}, "relatedVulnerabilities": []}
+ ],
+ "source": {"type": "image"}, "distro": {"name": "debian", "version": "12.0"},
+ "descriptor": {"name": "grype", "version": "0.118.0", "db": {"status": {"from": "x_2026-09-22T00:00:00Z_x"}}}
+}

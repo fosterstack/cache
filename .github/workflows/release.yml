@@ -113,6 +113,16 @@ jobs:
 
   authorization:
     needs: [admission, build, image, scans, acceptance-predicate]
+    # The caller grants what stage-authorize's `authorize` job needs (a reusable workflow cannot
+    # raise its caller's grant, R01): contents:read, id-token:write to sign the release-
+    # authorization predicate, and issues:read so it can read the owner-decision issue acceptance
+    # state (REQ-AUD-11). The workflow-level default omits issues:read, so declare it here.
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+      attestations: write
+      issues: read
     uses: ./.github/workflows/stage-authorize.yml
     with:
       digests: ${{ needs.image.outputs.digests }}

@@ -1,0 +1,60 @@
+{
+ "commit": "0bfc498ecfca3e38cb4a456acda44359a1620c5a",
+ "candidate_digests": {
+  "production": "sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b"
+ },
+ "base_os": "debian 12.0",
+ "scanner_reports": {
+  "grype": null,
+  "trivy": ".github/agent/fixtures/scanners/trivy.json",
+  "osv-scanner": ".github/agent/fixtures/scanners/osv-image.json",
+  "snyk": ".github/agent/fixtures/scanners/snyk.json",
+  "osv-scanner-gomod": ".github/agent/fixtures/scanners/osv-gomod.json"
+ },
+ "govulncheck": ".github/agent/fixtures/govulncheck/gv-01.json",
+ "known_defect_log": ".github/agent/fixtures/dl/log.json",
+ "module": "example.com/reach",
+ "scanner_status": {
+  "grype": {
+   "ran": false,
+   "version": "grype 0.118.0",
+   "reason": "0 packages inventoried (scanner produced no package inventory)",
+   "package_count": 0,
+   "os_package_count": 0,
+   "db_date": "2026-09-22",
+   "findings": 0
+  },
+  "trivy": {
+   "ran": true,
+   "version": "Version: 0.74.0",
+   "reason": "ok",
+   "package_count": 18,
+   "os_package_count": 6,
+   "db_date": null,
+   "findings": 3
+  },
+  "osv-scanner": {
+   "ran": true,
+   "version": "osv-scanner version: 2.6.0",
+   "reason": "ok",
+   "package_count": 15,
+   "os_package_count": 6,
+   "db_date": null,
+   "findings": 2
+  },
+  "osv-scanner-gomod": {
+   "ran": true,
+   "version": "osv-scanner version: 2.6.0",
+   "reason": "ok",
+   "package_count": null,
+   "db_date": null
+  },
+  "snyk": {
+   "ran": false,
+   "version": null,
+   "reason": "no SNYK_TOKEN in this workflow; Snyk stays null",
+   "package_count": null,
+   "db_date": null
+  }
+ }
+}

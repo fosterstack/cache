@@ -1,0 +1,13 @@
+{
+ "cve": "CVE-2013-4392",
+ "package": "libsystemd0",
+ "purl": "pkg:deb/debian/libsystemd0@252.38-1~deb12u1?arch=arm64&distro=debian-12.0",
+ "reachable": true,
+ "fix_pullable": false,
+ "severity": "Critical",
+ "scanners": [
+  "grype",
+  "trivy",
+  "osv-scanner"
+ ]
+}

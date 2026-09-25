@@ -1,0 +1,37 @@
+{
+ "name": "main-protection",
+ "target": "branch",
+ "enforcement": "active",
+ "conditions": {
+  "ref_name": {
+   "include": [
+    "refs/heads/main"
+   ]
+  }
+ },
+ "bypass_actors": [],
+ "rules": [
+  {
+   "type": "pull_request",
+   "parameters": {
+    "required_approving_review_count": 1
+   }
+  },
+  {
+   "type": "required_status_checks",
+   "parameters": {
+    "required_status_checks": [
+     {
+      "context": "scan"
+     },
+     {
+      "context": "allowlist"
+     }
+    ]
+   }
+  },
+  {
+   "type": "non_fast_forward"
+  }
+ ]
+}

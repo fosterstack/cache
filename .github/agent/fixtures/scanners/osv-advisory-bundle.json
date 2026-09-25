@@ -1,0 +1,15 @@
+{
+ "results": [
+  {"packages": [
+   {"package": {"name": "glibc", "version": "2.36-9", "ecosystem": "Debian:12"},
+    "groups": [{"ids": ["DSA-9999-1","DEBIAN-CVE-2099-7001","DEBIAN-CVE-2099-7002","DEBIAN-CVE-2099-7003"],
+                "aliases": ["CVE-2099-7001","CVE-2099-7002","CVE-2099-7003","DSA-9999-1"]}],
+    "vulnerabilities": [
+     {"id": "DSA-9999-1", "upstream": ["CVE-2099-7001","CVE-2099-7002","CVE-2099-7003","DEBIAN-CVE-2099-7001","DEBIAN-CVE-2099-7002","DEBIAN-CVE-2099-7003"]},
+     {"id": "DEBIAN-CVE-2099-7001", "upstream": ["CVE-2099-7001"]},
+     {"id": "DEBIAN-CVE-2099-7002", "upstream": ["CVE-2099-7002"]},
+     {"id": "DEBIAN-CVE-2099-7003", "upstream": ["CVE-2099-7003"]}
+    ]}
+  ]}
+ ]
+}

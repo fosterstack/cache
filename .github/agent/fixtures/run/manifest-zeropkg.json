@@ -1,0 +1,61 @@
+{
+ "commit": "0bfc498ecfca3e38cb4a456acda44359a1620c5a",
+ "candidate_digests": {
+  "production": "sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b"
+ },
+ "base_os": "debian 12.0",
+ "scanner_reports": {
+  "grype": ".github/agent/fixtures/scanners/grype.json",
+  "trivy": ".github/agent/fixtures/scanners/trivy.json",
+  "osv-scanner": ".github/agent/fixtures/scanners/osv-image.json",
+  "snyk": ".github/agent/fixtures/scanners/snyk.json",
+  "osv-scanner-gomod": ".github/agent/fixtures/scanners/osv-gomod.json"
+ },
+ "govulncheck": ".github/agent/fixtures/govulncheck/gv-01.json",
+ "known_defect_log": ".github/agent/fixtures/dl/log.json",
+ "module": "example.com/reach",
+ "scanner_status": {
+  "grype": {
+   "ran": true,
+   "version": "x",
+   "reason": "0 packages inventoried",
+   "package_count": 0,
+   "os_package_count": 0,
+   "db_date": null,
+   "findings": 0
+  },
+  "trivy": {
+   "ran": true,
+   "version": "x",
+   "reason": "0 packages inventoried",
+   "package_count": 0,
+   "os_package_count": 0,
+   "db_date": null,
+   "findings": 0
+  },
+  "osv-scanner": {
+   "ran": true,
+   "version": "x",
+   "reason": "0 packages inventoried",
+   "package_count": 0,
+   "os_package_count": 0,
+   "db_date": null,
+   "findings": 0
+  },
+  "snyk": {
+   "ran": true,
+   "version": "x",
+   "reason": "0 packages inventoried",
+   "package_count": 0,
+   "os_package_count": 0,
+   "db_date": null,
+   "findings": 0
+  },
+  "osv-scanner-gomod": {
+   "ran": true,
+   "version": "x",
+   "reason": "ok",
+   "package_count": null
+  }
+ }
+}

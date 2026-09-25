@@ -1,0 +1,4 @@
+{
+  "_comment": "Production known-defect log for the daily CVE auditor. Each defect row lists the EXACT (scanner, finding_id, purl) keys it covers and a trusted disposition. A row is authored only through the audit-lane PR review; the auditor never trusts a model-proposed row (auditor-defectlog.py stores those as disposition=proposed). Empty is the correct starting state.",
+  "defects": []
+}

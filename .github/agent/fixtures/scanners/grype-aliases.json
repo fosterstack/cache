@@ -1,0 +1,12 @@
+{
+ "matches": [
+  {"vulnerability": {"id": "CVE-2099-9402", "severity": "High", "fix": {"state": "fixed", "versions": ["1.1"]}},
+   "artifact": {"name": "libx", "version": "1", "type": "golang", "purl": "pkg:golang/example.org/libx@1"},
+   "relatedVulnerabilities": [{"id": "CVE-2099-9403"}]},
+  {"vulnerability": {"id": "CVE-2099-9403", "severity": "High", "fix": {"state": "fixed", "versions": ["1.1"]}},
+   "artifact": {"name": "libx", "version": "1", "type": "golang", "purl": "pkg:golang/example.org/libx@1"},
+   "relatedVulnerabilities": [{"id": "CVE-2099-9402"}]}
+ ],
+ "source": {"type": "image"}, "distro": {"name": "debian", "version": "12.0"},
+ "descriptor": {"name": "grype", "version": "0.118.0", "db": {"status": {"from": "x_2026-09-22T00:00:00Z_x"}}}
+}

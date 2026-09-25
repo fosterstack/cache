@@ -1,0 +1,20 @@
+{
+ "owner_login": "fosterstack-admin",
+ "issues": [
+  {
+   "number": 41,
+   "title": "owner-decision: accept risk CVE-2023-4911",
+   "labels": [
+    "owner-decision"
+   ],
+   "assignee": "fosterstack-admin",
+   "comments": [
+    {
+     "author": "fosterstack-admin",
+     "body": "Investigating; not accepted yet."
+    }
+   ],
+   "reviews": []
+  }
+ ]
+}

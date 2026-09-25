@@ -1,0 +1,61 @@
+"""Command helpers: arg parsing, effect writing, adjudicator + fake-GitHub calls."""
+import json, os, subprocess, sys
+
+ARGS = sys.argv[1:]
+
+
+def opt(k, default=None):
+    return ARGS[ARGS.index(k) + 1] if k in ARGS else default
+
+
+def flag(k):
+    return k in ARGS
+
+
+def positional(i):
+    ps = [a for a in ARGS if not a.startswith("--")]
+    return ps[i] if i < len(ps) else None
+
+
+def writej(path, obj):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    json.dump(obj, open(path, "w"), indent=1)
+
+
+def writef(path, text):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    open(path, "w").write(text)
+
+
+class Refused(Exception):
+    pass
+
+
+def ask_model(adjudicator, finding_id, attempt="primary", model="primary", context=None):
+    """Invoke the adjudicator (the model, in production; a stub/spy in tests). The
+    caller uses this ONLY on a log miss. `context` carries the full finding evidence
+    (ids, aliases, package, purl, versions, scanners, reachability, digest) so the model
+    reasons about THIS finding, not a bare id; the stub ignores the extra fields. Returns
+    the answer dict; raises Refused on a refusal and RuntimeError on a nonzero exit."""
+    req = {"finding_id": finding_id, "attempt": attempt, "model": model}
+    if context:
+        req.update(context)
+    p = subprocess.run([sys.executable, adjudicator],
+                       input=json.dumps(req),
+                       text=True, capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError("adjudicator exit %d: %s" % (p.returncode, p.stderr.strip()))
+    ans = json.loads(p.stdout)
+    if ans.get("refused"):
+        ex = Refused(finding_id)
+        ex.token_usage = int(ans.get("token_usage") or 0)   # a refusal is still billed
+        raise ex
+    return ans
+
+
+def gh(api, *cmd):
+    p = subprocess.run([sys.executable, api, *[str(c) for c in cmd]],
+                       text=True, capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError("gh api exit %d: %s" % (p.returncode, p.stderr.strip()))
+    return p.stdout.strip()

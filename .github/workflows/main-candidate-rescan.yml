@@ -312,3 +312,58 @@ jobs:
         run: |
           echo "::error::main-candidate trivy is not clean on main — see the tracking issue" >&2
           exit 1
+
+  # The daily auditor (auditor.yml) consumes this run: it needs the candidate's recorded
+  # digest (to assert it loaded the right image) and, in production, the scanners' JSON
+  # reports (so REQ-AUD-1 AC2 — "consume the rescan's own scan output" — holds without the
+  # auditor re-scanning). This job GATES NOTHING (mirrors the trivy/snyk daily jobs): it
+  # writes machine-readable reports and uploads them with if: always(), so even a day the
+  # candidate is red still hands the auditor its inputs.
+  scanner-reports:
+    name: scanner reports for the daily auditor (non-gating)
+    needs: [build, assemble]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oci-candidate
+          path: /tmp/oci/
+      - name: install scanners (pinned by checksum)
+        run: for s in grype trivy osv-scanner; do ./bin/install-scanner.sh "$s" || true; done
+      - name: load the candidates and emit JSON reports + recorded digests
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true
+          mkdir -p /tmp/reports
+          : > /tmp/reports/candidate-digests.json
+          python3 - <<'PY'
+          import json, subprocess, os
+          digs = {}
+          for v in ("production", "debug", "fips"):
+              oci = "/tmp/oci/%s.oci" % v
+              if not os.path.exists(oci):
+                  continue
+              ref = "ghcr.io/fosterstack/cache:cand-%s" % v
+              subprocess.run(["skopeo", "copy", "oci-archive:%s" % oci, "docker-daemon:%s" % ref], check=False)
+              d = subprocess.run(["skopeo", "inspect", "--format", "{{.Digest}}", "docker-daemon:%s" % ref],
+                                 capture_output=True, text=True).stdout.strip()
+              if d:
+                  digs[v] = d
+          json.dump(digs, open("/tmp/reports/candidate-digests.json", "w"), indent=1)
+          print("recorded digests:", digs)
+          PY
+          ref="ghcr.io/fosterstack/cache:cand-production"
+          grype "docker:${ref}" -o json > /tmp/reports/grype.json 2>/dev/null || true
+          trivy image --quiet --format json "${ref}" > /tmp/reports/trivy.json 2>/dev/null || true
+          osv-scanner scan image --format json "${ref}" > /tmp/reports/osv-image.json 2>/dev/null || true
+          osv-scanner scan source --format json ./go.mod > /tmp/reports/osv-gomod.json 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: rescan-scanner-reports
+          include-hidden-files: true
+          path: /tmp/reports

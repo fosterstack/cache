@@ -70,6 +70,8 @@ ALLOW_PATTERNS=(
   # This mechanism itself.
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
+  '^bin/check-file-allowlist-test\.sh$'
+  '^bin/govulncheck-fixtures-test\.sh$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
@@ -84,6 +86,43 @@ ALLOW_PATTERNS=(
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
   '^bin/go-bump-open-pr-test\.sh$'
+  '^bin/auditor-matrix-test\.sh$'
+  '^bin/auditor-matrix-mutants\.sh$'
+  '^bin/auditor-parser-tests\.sh$'
+  # The auditor implementation now lands (Round 8): sealed command scripts, the
+  # shared library, and their parser unit tests, plus the parser-test runner.
+  '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
+  '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
+  '^\.github/agent/bin/tests/[A-Za-z0-9._-]+\.py$'
+  # The production known-defect log the auditor reads (Round 11): trusted
+  # dispositions authored only through the audit-lane PR review; starts empty.
+  '^\.github/agent/known-defect-log\.json$'
+
+  # Daily CVE auditor — matrix-first TEST FIXTURES backing
+  # docs/quality/cve-auditor-matrix.md and bin/auditor-matrix-test.sh: real
+  # captured scanner output, native-schema samples, and canned test doubles
+  # (no secrets, no private-side content).
+  '^\.github/agent/fixtures/README\.md$'
+  '^\.github/agent/fixtures/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.json$'
+  # Test doubles and the test-owned YAML reader (Python); the tiny Go modules that
+  # produced the real govulncheck fixtures. All test inputs, never auditor code.
+  '^\.github/agent/fixtures/adjudicator/[A-Za-z0-9._-]+\.py$'
+  '^\.github/agent/fixtures/testlib/[A-Za-z0-9._-]+\.py$'
+  # Vendored pure-Python PyYAML (with its LICENSE) — the test-owned YAML reader.
+  '^\.github/agent/fixtures/testlib/pyyaml/[A-Za-z0-9._-]+\.py$'
+  '^\.github/agent/fixtures/testlib/pyyaml/LICENSE$'
+  '^\.github/agent/fixtures/testlib/workflows/[A-Za-z0-9._-]+\.ya?ml$'
+  # The reviewers' adversarial stand-ins, checked in as mutation-harness inputs.
+  '^\.github/agent/fixtures/mutants/[A-Za-z0-9._-]+\.py$'
+  # The fixture modules are stored ENTIRELY as .fixture files — go.mod.fixture / go.sum.fixture
+  # AND the sources as *.go.fixture — and materialized into a throwaway temp module at test time
+  # (bin/govulncheck-fixtures-test.sh). Storing go.mod/go.sum would re-index the deliberate
+  # vulnerable pin (golang.org/x/text v0.3.0) in the dependency graph; storing a plain *.go with
+  # no manifest would fold these package-main sources into the parent module and break
+  # `go ./...` / gosec. So a plain go.mod / go.sum / *.go here is intentionally NOT allowed.
+  '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
+  '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
+  '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
@@ -94,6 +133,34 @@ ALLOW_PATTERNS=(
   # The real Maven project the Maven acceptance workflow builds.
   '^bench/maven-sample/(\.mvn/)?([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(xml|java)$'
 )
+
+# Daily CVE auditor SUPPRESSION OUTPUTS — the .snyk / osv-scanner.toml ignore
+# files the scanners read, and the .auditor/accepted-items.json inventory the
+# release-authorization gate reads (REQ-AUD-11). These are generated, never
+# hand-authored, and delivered ONLY through the auditor's own PR lane
+# (auditor/<date>-<sha> branches; see _deliver_suppression_pr in
+# .github/agent/bin/auditor-run.py). They must be allowed to LIVE on main so
+# the next scan suppresses and the release gate can read the inventory — but
+# their INTRODUCTION/CHANGE is scoped to the auditor/ branch prefix, so an
+# ordinary feature PR cannot add or edit a suppression to slip past a scanner.
+# The scoping is enforced by the head branch of the change: a pull_request from
+# a non-auditor branch that touches these paths is blocked; the auditor lane and
+# the merged state on main are allowed. (VEX itself already lives in .vex/ above,
+# published for anyone auditing an artifact; these are its scanner-native forms.)
+SUPPRESSION_PATTERNS=(
+  '^\.snyk$'
+  '^osv-scanner\.toml$'
+  '^\.auditor/accepted-items\.json$'
+)
+# Resolve the branch under check: the PR HEAD (source) branch on pull_request,
+# else the pushed ref, else the local branch (pre-commit hook). Empty resolves
+# to a non-auditor branch, i.e. suppression paths stay blocked by default.
+_branch="${GITHUB_HEAD_REF:-}"
+[ -n "$_branch" ] || _branch="${GITHUB_REF_NAME:-}"
+[ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+case "$_branch" in
+  auditor/*|main) ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}") ;;
+esac
 
 blocked=()
 while IFS= read -r path; do
