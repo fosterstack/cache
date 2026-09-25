@@ -2544,6 +2544,49 @@ s1=rep.split("## 1. Lifted")[1].split("## 2.")[0]
 print("OK" if ("proposed (PR #55)" in s1 and "#99" not in s1) else "BAD:%r"%s1)' 2>/dev/null | tail -1)"
 { eq "$s1r" "OK"; } && ok || no "§1 tag names the bump PR, not the suppression PR" "$s1r"
 
+begin "req15-dry-owner-action-not-falsely-opened" "on a DRY run an at-threshold §2 POA&M row's action says the owner issue 'would open (dry run)', never 'opened/updated (issues:write)' — the row must not contradict the PR list's 'would open' (Codex round-3 blocker)"
+dat="$WORK/req15-dryact"; rm -rf "$dat"; mkdir -p "$dat"
+"$PY" - "$dat" <<'PP'
+import json,os,sys
+d=sys.argv[1]
+# one Critical, no-fix OS finding reported by grype AND snyk (distinct lineages -> no FP
+# suspicion -> §2 POA&M; Critical -> at/above threshold -> risk-acceptance owner issue)
+json.dump({"matches":[{"vulnerability":{"id":"CVE-2099-9001","severity":"Critical","fix":{"state":"not-fixed"}},
+                       "artifact":{"purl":"pkg:deb/debian/lib@1","name":"lib"}}]}, open(os.path.join(d,"grype.json"),"w"))
+json.dump({"vulnerabilities":[{"id":"SNYK-LIB-1","packageName":"lib","purl":"pkg:deb/debian/lib@1",
+                               "severity":"critical","identifiers":{"CVE":["CVE-2099-9001"]}}]}, open(os.path.join(d,"snyk.json"),"w"))
+st={s:{"ran":True,"os_package_count":1,"package_count":1,"findings":1,"version":"x","db_date":"d"} for s in ("grype","snyk")}
+for s in ("trivy","osv-scanner","osv-scanner-gomod"):
+    st[s]={"ran":False,"reason":"not run in this fixture","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+man={"commit":"deadbeef","candidate_digests":{"production":"sha256:abc"},"base_os":"debian 12.0",
+     "module":None,"govulncheck":None,
+     "scanner_reports":{"grype":os.path.join(d,"grype.json"),"snyk":os.path.join(d,"snyk.json"),
+                        "trivy":None,"osv-scanner":None,"osv-scanner-gomod":None},
+     "scanner_status":st}
+json.dump(man,open(os.path.join(d,"manifest.json"),"w"))
+PP
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$dat/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$dat/out" >/dev/null 2>&1 || true
+falseopen="$(grep -c 'opened/updated (issues:write)' "$dat/out/report.md" 2>/dev/null)"; falseopen="${falseopen:-1}"
+wouldact="$(grep -c 'owner-decision issue would open (dry run)' "$dat/out/report.md" 2>/dev/null)"; wouldact="${wouldact:-0}"
+poam="$(grep -c 'carried (POA&M)' "$dat/out/report.md" 2>/dev/null)"; poam="${poam:-0}"
+{ eq "$falseopen" "0" && [ "$wouldact" -ge 1 ] 2>/dev/null && [ "$poam" -ge 1 ] 2>/dev/null; } \
+  && ok || no "dry owner action says 'would open', never 'opened'" "false_opened=$falseopen would_action=$wouldact poam=$poam"
+
+begin "req15-pr-list-distinct-skipped-not-collapsed" "two DISTINCT CVEs whose owner issues were 'skipped' (gh disabled) each get their own PR-list line — the shared 'skipped' sentinel does not collapse them into one (Codex round-3 P3)"
+csr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-AAA","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"x","package":"a","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-a","threshold":"at_or_above","owner_issue":"skipped"},
+    {"id":"CVE-BBB","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"x","package":"b","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-b","threshold":"at_or_above","owner_issue":"skipped"}]
+sections[2]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
+print("OK" if ("CVE-AAA (skipped)" in pl and "CVE-BBB (skipped)" in pl) else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
+{ eq "$csr" "OK"; } && ok || no "distinct skipped owner items each listed" "$csr"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

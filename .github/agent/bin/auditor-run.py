@@ -97,6 +97,13 @@ def _emit_create(cmd, dry, would):
             print("create failed (%s): %s" % (cmd, e))
 
 
+def _issue_pending_note(ref):
+    """Honest action wording when an owner issue was NOT actually delivered but did not fail:
+    a dry-run preview ("dry") or a real run with gh delivery disabled ("skipped"). Never say
+    "opened" for these — the row must not contradict the PR list's "would open" (Codex R3 blk)."""
+    return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
+
+
 def log_index(logpath):
     idx = {}
     if logpath and os.path.exists(logpath):
@@ -1206,10 +1213,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 "disposition was inferred for these findings. Findings: %s"
                 % (n, adj_cause, ids[:1500]))
         ok, ref = _emit_owner_issue(title, body, dry, would)
+        _delivered = ok and ref not in ("dry", "skipped")
         for r in adj_unavailable:
             r["owner_issue"] = ref if ok else None
-            r["action"] = ("unassessed: adjudicator unavailable; one owner-decision issue opened"
-                           if ok else "unassessed: adjudicator unavailable; OWNER ISSUE FAILED")
+            if _delivered:
+                r["action"] = "unassessed: adjudicator unavailable; one owner-decision issue opened"
+            elif ok:
+                r["action"] = "unassessed: adjudicator unavailable; one owner-decision issue " + _issue_pending_note(ref)
+            else:
+                r["action"] = "unassessed: adjudicator unavailable; OWNER ISSUE FAILED"
             r["issue_failed"] = (not ok)
     # (b) Genuine per-finding escalations, DEDUPED per (CVE, package) with every scope listed in the
     # body (R-live fix 4): one issue per (CVE, package), never one per binary that vendors it.
@@ -1233,14 +1245,25 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     "chain. Owner decision needed. Scope(s) (%d):\n- %s\n\nAccept, reject, or "
                     "provide guidance." % (cve, pkg, len(scopes), "\n- ".join(scopes)))
         ok, ref = _emit_owner_issue(title, body, dry, would)
+        _delivered = ok and ref not in ("dry", "skipped")
         for r, _it in group:
             r["owner_issue"] = ref if ok else None
             r["issue_failed"] = (not ok)
             if kind == "risk_acceptance":
                 base = r["action"].replace("; owner-decision issue pending", "")
-                r["action"] = base + ("; owner-decision issue opened/updated (issues:write)" if ok else "; OWNER ISSUE FAILED")
+                if _delivered:
+                    r["action"] = base + "; owner-decision issue opened/updated (issues:write)"
+                elif ok:
+                    r["action"] = base + "; owner-decision issue " + _issue_pending_note(ref)
+                else:
+                    r["action"] = base + "; OWNER ISSUE FAILED"
             else:
-                r["action"] = ("escalated to owner-decision issue" if ok else "OWNER ESCALATION FAILED")
+                if _delivered:
+                    r["action"] = "escalated to owner-decision issue"
+                elif ok:
+                    r["action"] = "owner-decision issue " + _issue_pending_note(ref)
+                else:
+                    r["action"] = "OWNER ESCALATION FAILED"
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
     issue_failures = sum(1 for r in rows if r.get("issue_failed"))
@@ -1690,8 +1713,12 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         # the dry sentinel is already represented by the "would open (dry run)" entries below —
         # listing it here too double-counts it (AC1). "skipped" (a real run with gh disabled) has
         # NO would-open line, so keep it visible here rather than dropping the issue (Sonnet B).
-        if oi and oi != "dry" and oi not in _seen_iss:
-            _seen_iss.add(oi); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
+        # A real issue ref is shared across the rows of one issue -> dedup by ref (one line); the
+        # "skipped" sentinel is shared across DISTINCT would-be issues -> dedup by (id, ref) so two
+        # different CVEs are not collapsed into one line (Codex R3 P3).
+        _isskey = (r["id"], oi) if oi == "skipped" else oi
+        if oi and oi != "dry" and _isskey not in _seen_iss:
+            _seen_iss.add(_isskey); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
     if dry:
         for w in would:
             prlist.append("would open (dry run): `%s`" % w)
