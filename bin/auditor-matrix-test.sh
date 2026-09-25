@@ -2376,6 +2376,85 @@ forced="$(grep -c '\*\*dry_run:\*\* yes' "$o2/report.md" 2>/dev/null)"; forced="
 { [ "$ti" -ge 1 ] 2>/dev/null && [ "$forced" -ge 1 ] 2>/dev/null; } \
   && ok || no "test-image tag + forced dry" "test_image_tags=$ti forced_dry=$forced"
 
+begin "req15-ac2-section0-unassessed-owner-issue-not-threshold-gated" "§0 lists a genuinely-open owner-decision issue for a §4 unassessed-after-fallback finding even though it carries no 'threshold' (AC2; the §0 filter must not gate on threshold, which only the §2 branch sets)"
+s0r="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-UNASS","section":4,"disposition":"under investigation","action":"escalated to owner-decision issue","reason":"unassessed after fallback","package":"lib","installed":"1","fixed":None,"severity":"High","owner_issue":"#77"}]
+sections[4]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s0=rep.split("## 0. Needs a human")[1].split("## 1.")[0]
+print("OK" if ("CVE-UNASS" in s0 and "#77" in s0) else "BAD:%r"%s0)' 2>/dev/null | tail -1)"
+{ eq "$s0r" "OK"; } && ok || no "§0 includes the unassessed owner issue (no threshold gate)" "$s0r"
+
+begin "req15-ac9-failed-delivery-not-in-force" "a freshly-written statement whose suppression PR delivery FAILED is tagged 'proposed, not delivered', never 'in force (main)', and shows no published fosterstack.com link (AC9)"
+fdr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+row={"id":"CVE-FAIL","section":5,"disposition":"not_affected (false positive)","action":"closed","reason":"model FP","package":"lib","installed":"1","fixed":None,"severity":"High","reachability":"n/a","vex_id":"https://fosterstack.com/vex/x#stmt-abc","carried":False}
+sections[5]=[row]
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,[],sections,[],"AUDIT INCOMPLETE",False,"stub",{},"h","c",None,"git push failed",{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s5=rep.split("## 5.")[1]
+good=("proposed, not delivered" in s5) and ("in force (main)" not in s5) and ("vex: https://fosterstack.com" not in s5) and ("vex: #stmt-abc" in s5)
+print("OK" if good else "BAD:%r"%s5)' 2>/dev/null | tail -1)"
+{ eq "$fdr" "OK"; } && ok || no "failed delivery is not in force and drops the published link" "$fdr"
+
+begin "req15-ac9-carried-section5-threads-carried" "the §5 (not_affected) disposition threads the carried flag like §2, so a byte-identical statement already in force on main is tagged 'in force (main)', not 'proposed (PR #N)'"
+g5="$WORK/req15-carr5"; rm -rf "$g5"; mkdir -p "$g5"
+gv5="$g5/gvc.json"
+printf '%s\n%s\n%s\n' '{"config":{"scan_level":"symbol"}}' '{"SBOM":{"roots":["example.org/lib"],"modules":[{"path":"example.org/lib","version":"v1.0.0"}]}}' '{"finding":{"osv":"GO-2099-7701","trace":[{"module":"example.org/lib","package":"example.org/lib/unused"}]}}' > "$gv5"
+c5r="$("$PY" -c '
+import sys,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
+purl="pkg:golang/example.org/lib@v1.0.0"; sc=((policy.VEX_PRODUCT,),(purl,))
+env={"gvc":sys.argv[1],"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[2],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x",
+     "carried_expiry":{},"today":"2026-09-24","carried_scopes":{("CVE-2099-7701",sc)}}
+f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-7701","purl":purl,"aliases":["GO-2099-7701","CVE-2099-7701"],"package":"example.org/lib","fixed_version":None,"severity":"High","extra":{}}
+row,_=R._dispose("CVE-2099-7701",[f],["CVE-2099-7701","GO-2099-7701"],env,[])
+print("OK" if row["section"]==5 and row.get("carried") is True else "BAD:sec=%s carried=%s"%(row["section"],row.get("carried")))' "$gv5" "$g5/out" 2>/dev/null | tail -1)"
+{ eq "$c5r" "OK"; } && ok || no "§5 threads carried (in-force, not re-proposed)" "$c5r"
+
+begin "req15-ac5-section3-splits-by-ecosystem-not-delivery-flag" "§3 3A/3B keys on ecosystem: an OS row with no base_rebuild flag (an expired OS acceptance reopened into §3) still renders under 3A, and a Go/library row renders under 3B"
+e3r="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+sections[3]=[
+ {"id":"CVE-OSREOPEN","section":3,"disposition":"reopened: prior acceptance expired","action":"time box lapsed","reason":"expired","package":"libssl","installed":"1","fixed":None,"severity":"High","reachability":"n/a (OS package)","is_os":True},
+ {"id":"CVE-GOLIB","section":3,"disposition":"real, fixable (we build it)","action":"bump pending","reason":"pullable","package":"example.org/lib","installed":"1","fixed":"1.1","severity":"High","reachability":"govulncheck: reachable","is_os":False}]
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,[],sections,[],"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+s3=rep.split("## 3.")[1].split("## 4.")[0]
+a=s3.split("3B")[0]; b=s3.split("3B")[1]
+print("OK" if ("CVE-OSREOPEN" in a and "CVE-GOLIB" in b and "CVE-GOLIB" not in a) else "BAD a=%r b=%r"%(a,b))' 2>/dev/null | tail -1)"
+{ eq "$e3r" "OK"; } && ok || no "§3 3A/3B split by ecosystem, not the base_rebuild flag" "$e3r"
+
+begin "req15-ac1-dry-owner-issue-not-double-counted" "in a dry run the PR/issue list represents a would-be owner issue exactly once (the 'would open' entry), never also as a sentinel 'owner-decision issue: … (dry)' row"
+ddr="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+sections={n:[] for n in range(1,8)}
+rr=[{"id":"CVE-POAM","section":2,"disposition":"carried (POA&M)","action":"POA&M","reason":"no fix; critical","package":"lib","installed":"1","fixed":None,"severity":"Critical","vex_id":"#stmt-z","threshold":"at_or_above","owner_issue":"dry"}]
+sections[2]=rr
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+would=["gh issue create --title owner-decision-CVE-POAM --label owner-decision --assignee owner"]
+rep=R._render(m,rr,sections,would,"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
+dupes=pl.count("owner-decision issue: CVE-POAM (dry)")
+would_n=pl.count("would open (dry run)")
+print("OK" if dupes==0 and would_n>=1 else "BAD dupes=%d would=%d pl=%r"%(dupes,would_n,pl))' 2>/dev/null | tail -1)"
+{ eq "$ddr" "OK"; } && ok || no "dry owner issue not double-counted in the PR list" "$ddr"
+
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

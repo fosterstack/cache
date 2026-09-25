@@ -867,6 +867,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
            "severity": gf["severity"], "reachability": "n/a (OS package)", "section": None,
            "disposition": None, "action": None, "reason": None,
            "aliases": sorted(set(ids)),               # every identifier this scope was grouped under
+           "is_os": not gf["is_go"],                  # 3A (OS) vs 3B (SCA) split keys on ecosystem, not a delivery flag
            "scope_purls": sorted(set(subs or []))}   # this row's scope, for per-scope table mapping
     out = env["out"]; ts = env["ts"]; exp = env["exp"]; dry = env["dry"]
     _purls = sorted(set(subs or []))
@@ -891,7 +892,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=5, disposition="not_affected (unreachable)", action="closed",
                            reason="govulncheck: imported, not called",
                            vex_id=policy.scope_id(c, policy.VEX_PRODUCT, go_subs),
-                           ignore_files=["vex", "evidence"])
+                           ignore_files=["vex", "evidence"], carried=_carried)
                 return row, 1
             # evidence covers no scanned version (or only lineage) — do not close; route below.
     m_inc = 0
@@ -920,7 +921,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                 row.update(section=5, disposition="not_affected (false positive)", action="closed",
                            reason="model FP, evidence-verified",
                            vex_id=policy.scope_id(c, policy.VEX_PRODUCT, subs),
-                           ignore_files=["vex", "evidence"])
+                           ignore_files=["vex", "evidence"], carried=_carried)
                 return row, m_inc
             # a FP the code cannot verify is NOT a disposition — fall through and route it.
         elif cat == "adjudicator_error":
@@ -1123,6 +1124,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             igf = os.path.join("ignores", "grype", c + ".json")
             _fp_sid = policy.scope_id(c, policy.VEX_PRODUCT, subs or None)
             cli.writej(os.path.join(out, igf), {"vex": _fp_sid, "id": c, "evidence": ev, "scoped_purls": subs})
+            # carried: this exact scope's not_affected is already in force on main (unchanged
+            # from a prior day) -> "in force (main)" with its published link; a fresh FP is proposed.
+            _fp_carried = (c, ((policy.VEX_PRODUCT,), tuple(subs or []))) in carried_scopes
             rows.append({"id": c, "package": ",".join(covpkgs) or "?",
                          "installed": (covered[0].get("extra") or {}).get("installed_version") or _ver_from_purl(covered[0].get("purl")) or "?",
                          "fixed": None, "severity": _max_sev(covered), "section": 5,
@@ -1130,7 +1134,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                          "scope_purls": subs or [],
                          "disposition": "not_affected (false positive)", "action": "closed",
                          "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(covpkgs)),
-                         "vex_id": _fp_sid, "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"]})
+                         "vex_id": _fp_sid, "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"],
+                         "carried": _fp_carried, "is_os": True})
             h_count += 1
             uncovered = [f for f in grp["findings"] if not _cov(f)]
             if uncovered:
@@ -1606,10 +1611,13 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         if dry:
             return "proposed, not delivered (dry run)"
         if r.get("carried"):
-            return "in force (main)"                         # carried, already published
+            return "in force (main)"                         # carried: verified already on main
+        # freshly written this run — NEVER "in force (main)" without evidence it is on main (AC9).
         if pr_url:
-            return "proposed (PR %s)" % pr_url.rstrip("/").split("/")[-1]
-        return "in force (main)"
+            return "proposed (PR #%s)" % pr_url.rstrip("/").split("/")[-1]
+        if pr_err:
+            return "proposed, not delivered (delivery failed)"
+        return "proposed, not delivered (no suppression PR)"
 
     def _tagged(r):
         tag = _tag(r)
@@ -1656,7 +1664,9 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     _seen_iss = set()
     for r in rows:
         oi = r.get("owner_issue")
-        if oi and oi not in _seen_iss:
+        # in dry runs the sentinel ref ("dry"/"skipped") is already represented by the
+        # "would open (dry run)" entries below — listing it here too double-counts it (AC1).
+        if oi and oi not in ("dry", "skipped") and oi not in _seen_iss:
             _seen_iss.add(oi); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
     if dry:
         for w in would:
@@ -1669,8 +1679,11 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     # failures that made the run INCOMPLETE — duplicated from the sections below.
     needs = []
     for r in rows:
-        if r.get("owner_issue") and r.get("threshold") == "at_or_above":
-            needs.append("owner-decision (accept/reject): %s — %s" % (r["id"], r.get("owner_issue")))
+        if r.get("owner_issue") and not r.get("adjudicator_error"):
+            # every genuinely-open owner-decision issue (risk-acceptance AND unassessed-after-
+            # fallback) needs a human — never gate on `threshold`, which only the §2 branch sets
+            # (AC2). The global-outage aggregate has its own line below (adjudicator_error).
+            needs.append("owner-decision needed: %s — %s" % (r["id"], r.get("owner_issue")))
         if r.get("issue_failed"):
             needs.append("owner-decision issue FAILED to open: %s" % r["id"])
         if r.get("adjudicator_error"):
@@ -1703,8 +1716,10 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
                 ("2Bb — fix exists, not pullable: policy-held", twoBb)] if s2 else None))
     # §3 Real vulnerabilities that are fixable: 3A OS/base; 3B libraries (SCA).
     s3 = sections[3]
-    threeA = [r for r in s3 if r.get("base_rebuild")]
-    threeB = [r for r in s3 if not r.get("base_rebuild")]
+    # 3A vs 3B keys on ECOSYSTEM, not the base_rebuild delivery flag: an expired OS acceptance
+    # reopened into §3 carries no base_rebuild flag yet is still an OS finding (Codex/Sonnet AC5).
+    threeA = [r for r in s3 if r.get("base_rebuild") or r.get("is_os")]
+    threeB = [r for r in s3 if r not in threeA]
     if s3:
         _emit("3. Real vulnerabilities that are fixable", s3, "",
               sub=[("3A — OS / system packages (fix via base-image bump)", threeA),
