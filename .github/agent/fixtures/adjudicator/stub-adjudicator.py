@@ -46,6 +46,30 @@ CANNED = {
     ("UNASSESSABLE", "primary"):  {"refused": True},
     ("UNASSESSABLE", "rephrase"): {"refused": True},
     ("UNASSESSABLE", "fallback"): {"refused": True},
+    # REQ-AUD-14 pullability verdicts (attempt == "pullability"): a NAMED fix that is not
+    # pullable because the vulnerable component is carried in another artifact, or held by the
+    # base pin; and one that has BECOME pullable (the lift case).
+    ("CVE-2099-CARRIED", "pullability"): {
+        "refused": False, "pullable": False, "hold": "upstream-held",
+        "component_fixed": "3.0.13", "candidate_release": None,
+        "bump_attempted": False, "bump_result": "no carrier release yet embeds openssl >= 3.0.13",
+        "lift_trigger": "nodejs >= 20.11.0 (embeds openssl >= 3.0.13)",
+        "evidence": {"how": "statically linked", "carrier": "nodejs", "carrier_version": "18.19.0",
+                     "source": "SBOM relationship + upstream release notes"}},
+    ("CVE-2099-POLICY", "pullability"): {
+        "refused": False, "pullable": False, "hold": "policy-held",
+        "component_fixed": "1.2.3-1", "repo_version": "1.2.3-1", "base_release": "debian 12.0",
+        "candidate_release": "debian 12.6",
+        "bump_attempted": False, "bump_result": "fix is in the debian repo; base pin predates it",
+        "lift_trigger": "base release >= debian 12.6",
+        "evidence": {"how": "base/OS release pin (reproducibility policy)", "source": "distro security tracker"}},
+    ("CVE-2099-LIFT", "pullability"): {
+        "refused": False, "pullable": True, "component_fixed": "3.0.13",
+        "candidate_release": "nodejs 20.11.0", "bump_attempted": True,
+        "bump_result": "carrier now embeds the fix; pullable",
+        "evidence": {"how": "statically linked", "carrier": "nodejs", "carrier_version": "20.11.0"}},
+    # an INCOMPLETE not-pullable verdict (no lift trigger) -> must not create a §2B acceptance
+    ("CVE-2099-VAGUE", "pullability"): {"refused": False, "pullable": False},
 }
 
 def _answer(req):

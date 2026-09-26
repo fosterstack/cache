@@ -57,8 +57,12 @@ def validate(document):
 
 
 def write(out_dir, fid, status, timestamp, justification=None, action=None,
-          evidence=None, target_date=None, vex_name=None, subcomponents=None):
-    """Write a conformant VEX and its evidence sidecar. Returns the VEX path."""
+          evidence=None, target_date=None, vex_name=None, subcomponents=None, lift_trigger=None):
+    """Write a conformant VEX and its evidence sidecar. Returns the VEX path.
+
+    `lift_trigger` is a machine-checkable condition (REQ-AUD-14 AC3) recorded in the sidecar
+    beside the evidence and the time box — the OpenVEX statement schema forbids extra keys, so
+    the trigger and the carrier analysis live in the evidence sidecar the statement points at."""
     document = doc(fid, status, timestamp, justification, action, subcomponents, stmt_base=vex_name)
     validate(document)
     vpath = os.path.join(out_dir, "vex", (vex_name or fid) + ".openvex.json")
@@ -70,6 +74,8 @@ def write(out_dir, fid, status, timestamp, justification=None, action=None,
         side["evidence"] = evidence
     if target_date is not None:
         side["target_date"] = target_date
+    if lift_trigger is not None:
+        side["lift_trigger"] = lift_trigger
     # key the sidecar by the VEX name so a CVE with two dispositions (not_affected for one
     # package, affected for a sibling) does not overwrite its own evidence.
     spath = os.path.join(out_dir, "evidence", (vex_name or fid) + ".evidence.json")

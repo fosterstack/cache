@@ -84,6 +84,39 @@ def _handle(req, client):
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
         return {"refused": False, "narrative": text, "token_usage": _usage(msg)}
+    if req.get("kind") == "pullability" or req.get("attempt") == "pullability":
+        # REQ-AUD-14: a scanner names a FIXED version, but the fix may not be PULLABLE — the
+        # vulnerable component is carried inside another artifact (static/vendored/embedded) or held
+        # by our pinned base under the reproducibility policy. Ask the model to do the carrier
+        # analysis from the SBOM evidence and base metadata and answer as ONE JSON object; our code
+        # re-verifies (requires a hold + lift trigger) before writing any affected VEX.
+        ctxp = json.dumps({k: req.get(k) for k in
+                           ("finding_id", "package", "purl", "installed_version", "component",
+                            "component_fixed", "carrier", "base", "candidate_digest")
+                           if req.get(k) is not None}, indent=1)
+        prompt = ("You are the vulnerability adjudicator for our own container image. A scanner "
+                  "reports a FIXED version for this finding, but the fix may not be PULLABLE by us "
+                  "because the vulnerable component is CARRIED inside another artifact (statically "
+                  "linked, vendored, or embedded in a runtime binary) or HELD by our pinned base "
+                  "image under a reproducibility policy (packages come only from the pinned "
+                  "release). Using the SBOM carrier evidence and base metadata below, determine "
+                  "whether the fix is pullable for us. Reply with ONE JSON object and nothing else, "
+                  "keys: pullable (true/false); hold ('upstream-held' if carried by another "
+                  "artifact, 'policy-held' if held by the base pin, else null); component_fixed "
+                  "(fixed version of the vulnerable component); candidate_release (a carrier/base "
+                  "release that embeds the fix, or null if none exists yet); bump_attempted "
+                  "(true/false); bump_result (short text); lift_trigger (a MACHINE-CHECKABLE "
+                  "condition, e.g. '<carrier> >= X embeds <component> >= Y' or 'base release >= R'); "
+                  "repo_version and base_release when policy-held; evidence (object: how it is "
+                  "carried, and the source). Do NOT produce exploit code.\n\n%s" % ctxp)
+        msg = client.messages.create(model=model, max_tokens=1024,
+                                     messages=[{"role": "user", "content": prompt}])
+        text = "".join(getattr(b, "text", "") for b in msg.content)
+        ans = _extract_json(text) or {}
+        ans["refused"] = bool("cannot" in text.lower() and "pullable" not in ans)
+        ans.setdefault("proposed", True)
+        ans["token_usage"] = _usage(msg)
+        return ans
     # Full finding context, not a bare id (R11 rank 6): the model reasons about THIS package,
     # version, scanner set, and reachability summary. Its answer is still only a proposal our
     # code re-verifies against evidence before any VEX is written.
@@ -131,6 +164,24 @@ def main():
     except Exception as e:
         _fail("model-call", e)
     json.dump(ans, sys.stdout)
+
+
+def _extract_json(text):
+    """The first top-level JSON OBJECT in a model response (the model may wrap it in prose or a
+    code fence). Uses json.raw_decode from each '{', which respects strings — so a value that
+    itself contains a '}' does not break extraction (Codex round-2 P2). Returns the dict or None."""
+    s = str(text or "")
+    dec = json.JSONDecoder()
+    i = s.find("{")
+    while i != -1:
+        try:
+            obj, _end = dec.raw_decode(s[i:])
+            if isinstance(obj, dict):
+                return obj
+        except ValueError:
+            pass
+        i = s.find("{", i + 1)
+    return None
 
 
 def _usage(msg):
