@@ -85,6 +85,16 @@ def _load_prompt(key):
     return "\n".join(out).strip() or None
 
 
+def _require_prompt(key):
+    """Load a prompt section or raise a CLEARLY-LABELLED prompt-load error (so a missing prompt
+    file or section is diagnosed as a prompt-load failure, not misread as a model-call failure)."""
+    p = _load_prompt(key)
+    if not p:
+        raise RuntimeError("prompt-load: section %r missing from prompts/adjudicator.md "
+                           "(prompt file absent or malformed)" % key)
+    return p
+
+
 def _fill(tmpl, **kw):
     for k, v in kw.items():
         tmpl = tmpl.replace("{%s}" % k, v)
@@ -100,7 +110,7 @@ def _handle(req, client):
         model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     if req.get("mode") == "narrative":
         # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
-        prompt = _fill(_load_prompt("narrative"), context=json.dumps(req.get("structured"), indent=1))
+        prompt = _fill(_require_prompt("narrative"), context=json.dumps(req.get("structured"), indent=1))
         msg = client.messages.create(model=model, max_tokens=512,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
@@ -115,7 +125,7 @@ def _handle(req, client):
                            ("finding_id", "package", "purl", "installed_version", "component",
                             "component_fixed", "carrier", "base", "candidate_digest")
                            if req.get(k) is not None}, indent=1)
-        prompt = _fill(_load_prompt("pullability"), context=ctxp)
+        prompt = _fill(_require_prompt("pullability"), context=ctxp)
         msg = client.messages.create(model=model, max_tokens=1024,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
@@ -136,7 +146,7 @@ def _handle(req, client):
     # {knowledge} is the doc generated from our structured records (REQ-AUD-16 AC3), passed in by
     # the driver; the model reads it for pattern judgment but never free-writes it.
     knowledge = req.get("knowledge") or "(no prior scanner-defect or package patterns recorded yet)"
-    prompt = _fill(_load_prompt("disposition"), ask=ask, knowledge=knowledge, context=ctx)
+    prompt = _fill(_require_prompt("disposition"), ask=ask, knowledge=knowledge, context=ctx)
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)

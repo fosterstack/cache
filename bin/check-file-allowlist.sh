@@ -157,6 +157,11 @@ SUPPRESSION_PATTERNS=(
   '^\.snyk$'
   '^osv-scanner\.toml$'
   '^\.auditor/accepted-items\.json$'
+  # REQ-AUD-16: the generated knowledge document (AC3) and the model's merge-gated proposals
+  # (AC4), carried in the auditor's own suppression PR. Like the inventory, they are generated,
+  # delivered only through the auditor lane, and reviewed before merge.
+  '^\.auditor/knowledge\.md$'
+  '^\.auditor/proposals/[A-Za-z0-9._-]+\.json$'
 )
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves

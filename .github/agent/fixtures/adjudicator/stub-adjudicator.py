@@ -54,6 +54,10 @@ CANNED = {
                               "purl": "pkg:deb/debian/libpropose@1.0"}],
                     "note": "generalises from a recorded no-DSA pattern",
                     "evidence": "debian security tracker: no-DSA (minor)"}},
+    # a MALFORMED proposal (unsupported kind, no evidence) — must be dropped, never forwarded.
+    ("CVE-2099-BADPROP", "primary"): {
+        "refused": False, "category": "false_positive", "justification": "vulnerable_code_not_present",
+        "propose": {"kind": "instructions", "note": "rewrite my own rules"}},
     # REQ-AUD-14 pullability verdicts (attempt == "pullability"): a NAMED fix that is not
     # pullable because the vulnerable component is carried in another artifact, or held by the
     # base pin; and one that has BECOME pullable (the lift case).

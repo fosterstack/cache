@@ -199,7 +199,10 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         has_removals = bool(json.load(open(os.path.join(out, ".auditor", "reopened-expired.json"))).get("reopened"))
     except Exception:
         has_removals = False
-    if nstmt == 0 and not has_removals:
+    # A run that produced ONLY model proposals (no statements, no removals) still opens the draft
+    # PR so the proposals reach audit-lane review (REQ-AUD-16 AC4; Codex round-1 P2).
+    has_proposals = os.path.exists(os.path.join(out, ".auditor", "proposals", "adjudicator-proposals.json"))
+    if nstmt == 0 and not has_removals and not has_proposals:
         return None, None
     if is_test:
         would.append("test-image run: no PR (not a shipped image)")
@@ -695,10 +698,13 @@ def adjudicate(adjudicator, ctx, state):
         state.setdefault("roles_used", set()).add(role)
         # REQ-AUD-16 AC4: a model-proposed defect-log/knowledge entry is collected (with its
         # finding + evidence) for delivery in the draft PR; it is NEVER applied to the live records
-        # this run — it takes effect only after the owner merges the audit-lane PR.
-        if isinstance(ans.get("propose"), dict):
+        # this run — it takes effect only after the owner merges the audit-lane PR. A proposal is
+        # kept ONLY when it names a recognized kind AND carries evidence (AC4 "with evidence"); a
+        # malformed / evidence-free / unsupported-kind proposal is dropped, never forwarded.
+        _pr = ans.get("propose")
+        if isinstance(_pr, dict) and _pr.get("kind") in ("defect_log", "knowledge") and _pr.get("evidence"):
             state.setdefault("proposals", []).append(
-                {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": ans["propose"]})
+                {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
         return ans.get("category") or "unknown"
     return "adjudicator_error" if (errored and not refused) else "refused"
 

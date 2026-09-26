@@ -2655,6 +2655,33 @@ newc="$(grep -c 'CVE-2099-NEW' "$LEDGER" 2>/dev/null)"; newc="${newc:-0}"       
 { [ "$known" -eq 0 ] 2>/dev/null && [ "$newc" -ge 1 ] 2>/dev/null; } \
   && ok || no "known costs 0 model calls; the new suspected FP is the only one consulted" "known=$known new=$newc"
 
+begin "req16-ac4-malformed-proposal-dropped" "a proposal without a recognized kind or without evidence is DROPPED (never forwarded): AC4 requires proposals 'with evidence'"
+o="$WORK/req16-badprop"; rm -rf "$o"; : > "$LEDGER"; d="$WORK/req16-badprop-src"; rm -rf "$d"; mkdir -p "$d"
+"$PY" - "$d" <<'PP'
+import json,sys
+d=sys.argv[1]
+json.dump({"matches":[{"vulnerability":{"id":"CVE-2099-BADPROP","severity":"Medium","fix":{"state":"not-fixed"}},"artifact":{"purl":"pkg:deb/debian/libbad@1.0","name":"libbad"}}]},open(d+"/grype.json","w"))
+st={"grype":{"ran":True,"os_package_count":1,"package_count":1,"findings":1,"version":"x","db_date":"d"}}
+for s in ("trivy","osv-scanner","osv-scanner-gomod","snyk"): st[s]={"ran":False,"reason":"nr","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+json.dump({"defects":[]},open(d+"/log.json","w"))
+json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,"known_defect_log":d+"/log.json","scanner_reports":{"grype":d+"/grype.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},"scanner_status":st},open(d+"/manifest.json","w"))
+PP
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$d/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+present="$(have "$o/.auditor/proposals/adjudicator-proposals.json" && echo yes || echo no)"
+{ eq "$present" "no"; } && ok || no "malformed proposal dropped (no proposals artifact)" "proposals_present=$present"
+
+begin "req16-ac4-proposals-only-run-still-delivers" "a run that produced ONLY a model proposal (no statements, no removals) still opens the draft PR so the proposal reaches audit-lane review (Codex round-1 P2)"
+po="$WORK/req16-po"; rm -rf "$po"; mkdir -p "$po/.auditor/proposals" "$po/suppressions"; posh="$WORK/req16-po.shim"; rm -f "$posh"
+printf '{"proposals":[{"finding_id":"CVE-X","propose":{"kind":"defect_log","evidence":"e"}}]}' > "$po/.auditor/proposals/adjudicator-proposals.json"
+por="$("$PY" -c "
+import importlib.util,os
+spec=importlib.util.spec_from_file_location('r','.github/agent/bin/auditor-run.py'); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+os.environ['AUDITOR_GIT_SHIM_LOG']=os.path.join('$WORK','req16-po.shim')
+url,err=R._deliver_suppression_pr('$po','$po/suppressions',0,'2026-09-26','deadbeef',False,[],is_test=False)
+print('OK' if (url and err is None) else 'BAD url=%r err=%r'%(url,err))" 2>/dev/null | tail -1)"
+prc="$(grep -c 'gh pr create --draft' "$posh" 2>/dev/null)"; prc="${prc:-0}"
+{ eq "$por" "OK" && [ "$prc" -ge 1 ] 2>/dev/null; } && ok || no "proposals-only run opens the draft PR" "$por pr_create=$prc"
+
 echo "=== REQ-AUD-15 — report structure v2 ==="
 
 begin "req15-ac1-pr-list-at-top" "after the header and before the sections, a 'PRs and issues this run' block lists what was/would be opened"

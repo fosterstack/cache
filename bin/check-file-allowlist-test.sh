@@ -32,7 +32,10 @@ run_ref() {
   fi
 }
 
-SUPP=(".snyk" "osv-scanner.toml" ".auditor/accepted-items.json")
+SUPP=(".snyk" "osv-scanner.toml" ".auditor/accepted-items.json"
+      # REQ-AUD-16: the generated knowledge doc (AC3) and merge-gated proposals (AC4) the auditor
+      # carries in its own suppression PR.
+      ".auditor/knowledge.md" ".auditor/proposals/adjudicator-proposals.json")
 
 # The auditor lane may introduce/change its suppression outputs.
 run pass "auditor/2026-09-24-abc123"      "auditor/ PR head: suppression outputs allowed"      "${SUPP[@]}"
