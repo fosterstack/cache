@@ -1306,6 +1306,15 @@ env AUDITOR_GIT_SHIM_LOG="$shim" AUDITOR_SHIM_ISSUE_FAIL=1 "$PY" "$BIN/auditor-r
 inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && grep -qi 'issue(s) failed to open' "$o/report.md" && echo yes || echo no)"
 { eq "$inc" "yes" && [ "$rc5" -ne 0 ] 2>/dev/null; } && ok || no "issue failure -> INCOMPLETE + nonzero exit" "incomplete=$inc exit=$rc5"
 
+begin "ol5b-accepted-items-records-owner-issue-ref" "accepted-items.json records the REAL owner_issue reference for an at-or-above item (the inventory is built AFTER the owner-decision emission), so the release gate never wrongly HOLDS a tag the owner authorized because owner_issue was captured as None"
+o="$WORK/ol5b"; shim="$WORK/ol5b.shim"; rm -rf "$o"; rm -f "$shim"
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+oiok="$("$PY" -c 'import json,sys
+items=json.load(open(sys.argv[1]))["accepted_items"]
+at=[i for i in items if i.get("threshold")=="at_or_above"]
+print("OK" if at and all(i.get("owner_issue") for i in at) else "BAD:%r"%[(i["cve"],i.get("owner_issue")) for i in at])' "$o/.auditor/accepted-items.json" 2>/dev/null)"
+{ eq "$oiok" "OK"; } && ok || no "accepted-items records the owner_issue ref for at-or-above items (not None)" "$oiok"
+
 begin "ol6-consolidated-snyk-carries-expiry" "the consolidated .snyk for a carried (affected) CVE includes an expires field (time box survives consolidation)"
 o="$WORK/ol6"; rm -rf "$o"; : > "$LEDGER"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" && {

@@ -1386,15 +1386,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     for r in rows:
         if r["section"] in (2, 5):
             sections[7].append(dict(r, action="suppression in force (%s)" % (r.get("vex_id") or "VEX")))
-    accepted = [{"cve": r["id"], "severity": r["severity"], "package": r["package"],
-                 "threshold": r.get("threshold", "at_or_above" if r.get("owner_issue") else "below"),
-                 "owner_issue": r.get("owner_issue"), "expiry": r.get("expiry", exp),
-                 "vex_id": r.get("vex_id"),                       # the governing statement id
-                 "product": policy.VEX_PRODUCT,                   # the FULL canonical scope, so
-                 "scope_purls": r.get("scope_purls") or [],       # inventory keys on scope, not a hash
-                 "not_pullable": r.get("not_pullable"),           # REQ-AUD-14: the §2B hold kind, if any
-                 "lift_trigger": r.get("lift_trigger")}           # the machine-checkable lift condition
-                for r in sections[2]]
     # findings_without_action is computed AFTER delivery (below), once every §1/§3 row's action
     # is final and the dry-run `would` list is populated (decision 2 moved fix delivery there).
     # A Go-module fix (a module WE build) is DELIVERED as its own draft bump PR through the App
@@ -1471,6 +1462,20 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # a failed owner escalation (POA&M at-threshold, or §4 unassessed-after-fallback) is a
     # real gap: the required human decision was not delivered (R1 outer round-1 #4/#5).
     issue_failures = sum(1 for r in rows if r.get("issue_failed"))
+    # Build the acceptance inventory AFTER the owner-decision emission above, so each item records
+    # the REAL owner_issue reference the emission set on its row. Built earlier, it captured
+    # owner_issue=None for every at-or-above item, and the release gate then HELD every such
+    # release ("has no owner-decision issue") even after the owner accepted the risk — a wrong,
+    # fail-closed hold of a legitimately-authorized tag (owner review, Sep 26).
+    accepted = [{"cve": r["id"], "severity": r["severity"], "package": r["package"],
+                 "threshold": r.get("threshold", "at_or_above" if r.get("owner_issue") else "below"),
+                 "owner_issue": r.get("owner_issue"), "expiry": r.get("expiry", exp),
+                 "vex_id": r.get("vex_id"),                       # the governing statement id
+                 "product": policy.VEX_PRODUCT,                   # the FULL canonical scope, so
+                 "scope_purls": r.get("scope_purls") or [],       # inventory keys on scope, not a hash
+                 "not_pullable": r.get("not_pullable"),           # REQ-AUD-14: the §2B hold kind, if any
+                 "lift_trigger": r.get("lift_trigger")}           # the machine-checkable lift condition
+                for r in sections[2]]
     # write the acceptance inventory BEFORE delivery so the suppression PR can carry it — the
     # release gate reads .auditor/accepted-items.json from the checkout (R1 outer round-1 #7).
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
