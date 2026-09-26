@@ -2668,7 +2668,8 @@ json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":
 PP
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$d/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
 present="$(have "$o/.auditor/proposals/adjudicator-proposals.json" && echo yes || echo no)"
-{ eq "$present" "no"; } && ok || no "malformed proposal dropped (no proposals artifact)" "proposals_present=$present"
+ran="$(have "$o/report.md" && echo yes || echo no)"   # the run COMPLETED (guards against a crash falsely passing the absence check)
+{ eq "$present" "no" && eq "$ran" "yes"; } && ok || no "malformed proposal dropped (run completed; no proposals artifact)" "proposals_present=$present ran=$ran"
 
 begin "req16-ac4-proposals-only-run-still-delivers" "a run that produced ONLY a model proposal (no statements, no removals) still opens the draft PR so the proposal reaches audit-lane review (Codex round-1 P2)"
 po="$WORK/req16-po"; rm -rf "$po"; mkdir -p "$po/.auditor/proposals" "$po/suppressions"; posh="$WORK/req16-po.shim"; rm -f "$posh"
