@@ -686,6 +686,46 @@ def adjudicate(adjudicator, ctx, state):
     return "adjudicator_error" if (errored and not refused) else "refused"
 
 
+def _carrier_for(carriers, purls):
+    """The manifest carrier record (from the SBOM) that carries one of these component purls,
+    or None. `carriers` is the normalized list the manifest builder extracts from syft's
+    relationships (REQ-AUD-14 AC2: evidence from the SBOM)."""
+    if not carriers:
+        return None
+    ps = set(p for p in (purls or []) if p)
+    for cr in carriers:
+        if cr.get("component_purl") in ps:
+            return cr
+    return None
+
+
+def _pullability(adjudicator, ctx, state):
+    """ONE model call: is a NAMED fix actually PULLABLE, or is the vulnerable component carried
+    inside another artifact / held by the base pin (REQ-AUD-14)? Returns the verdict dict, or
+    None when the model was unavailable / refused / over budget — the caller then keeps the
+    existing routing, so a model outage never fabricates a not-pullable acceptance (fail toward
+    the actionable class). The call is billed like any other; an error is recorded (masked) once
+    so the header can name it, exactly as adjudicate() does."""
+    if state["tokens"] >= policy.TOKEN_BUDGET or state.get("iters", 0) >= policy.MAX_ITERATIONS:
+        return None
+    state["calls"] = state.get("calls", 0) + 1
+    try:
+        ans = cli.ask_model(adjudicator, ctx["finding_id"], attempt="pullability", model="primary", context=ctx)
+    except cli.Refused as e:
+        state["tokens"] += int(getattr(e, "token_usage", 0) or 0)
+        return None
+    except Exception as e:
+        msg = "%s: %s" % (type(e).__name__, _mask(str(e)))
+        key = re.sub(r"\s*\[?request[_-]?id[=:]\s*[^\]\s]+\]?", "", msg, flags=re.I)
+        errs = state.setdefault("adj_errors", {})
+        if key not in errs:
+            print("pullability error: %s" % msg); errs[key] = msg
+        return None
+    state["tokens"] += int(ans.get("token_usage") or 0)
+    state.setdefault("roles_used", set()).add("primary")
+    return ans
+
+
 # ---- deterministic facts from scanner data ----
 
 def _eco(purl):
@@ -966,6 +1006,74 @@ def _dispose(c, findings, aliases, env, would, name=None):
             return row, m_inc
     # 4) deterministic fix routing.
     if gf["fixed"]:
+        # REQ-AUD-14: a NAMED fix may not be PULLABLE — the vulnerable component is carried inside
+        # another artifact (upstream-held) or the base pin holds it under the reproducibility policy
+        # (policy-held). Consult the model ONLY when there is a signal (an SBOM carrier for this
+        # component, or the manifest marks the base policy-held for this scope); a module WE build is
+        # always pullable by our own bump, so it is never this class. Route the not-pullable case to
+        # §2B — never §3 "fix not resolvable", never §2A "no fix exists" (AC1). When the model reports
+        # the fix has BECOME pullable, control falls through to the lift/bump path below (AC4).
+        carrier = _carrier_for(env.get("carriers"), _purls)
+        base_hold = bool(env.get("base_policy_held"))
+        pull = None
+        if (carrier or base_hold) and not gf["is_go"]:
+            pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
+                    "installed_version": gf["installed"], "component_fixed": gf["fixed"],
+                    "purl": (subs or [None])[0], "carrier": carrier, "base": env.get("base"),
+                    "candidate_digest": env["digest"]}
+            pull = _pullability(env["adjudicator"], pctx, env["state"])
+            if pull is not None:
+                m_inc = 1
+        if pull and pull.get("pullable") is False:
+            hold = pull.get("hold") or ("policy-held" if (base_hold and not carrier) else "upstream-held")
+            this_exp2 = _cexp or exp
+            lift_trigger = pull.get("lift_trigger") or ""
+            comp_fixed = pull.get("component_fixed") or gf["fixed"]
+            ev = {"check": "fix-not-pullable", "hold": hold, "carrier": carrier,
+                  "component": gf["package"], "installed": gf["installed"], "component_fixed": comp_fixed,
+                  "candidate_release": pull.get("candidate_release"),
+                  "bump_attempted": pull.get("bump_attempted"), "bump_result": pull.get("bump_result"),
+                  "repo_version": pull.get("repo_version"), "base_release": pull.get("base_release"),
+                  "evidence": pull.get("evidence")}
+            vex.write(out, c, "affected", ts,
+                      action="fix exists but is not pullable (%s); tracked; re-checked daily" % hold,
+                      evidence=ev, target_date=this_exp2, lift_trigger=lift_trigger, vex_name=vn, subcomponents=subs)
+            scanners = sorted({f["scanner"] for f in findings})
+            for sc in scanners:
+                cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
+                           {"id": c, "vex": this_scope_id, "expiry": this_exp2, "scoped_purls": _purls,
+                            "reason": "fix not pullable (%s); re-checked daily" % hold})
+            if hold == "policy-held":
+                case = ("fix exists in %s as %s; not pullable: policy-held — our base pin %s predates it; "
+                        "lifts on base release >= %s"
+                        % ((env.get("base") or {}).get("repo") or gf["package"],
+                           pull.get("repo_version") or comp_fixed,
+                           pull.get("base_release") or (env.get("base") or {}).get("release") or "base",
+                           pull.get("candidate_release") or pull.get("repo_version") or "R"))
+            else:
+                cr_name = (carrier or {}).get("carrier") or (carrier or {}).get("carrier_purl") or "the carrier"
+                cr_ver = (carrier or {}).get("carrier_version") or "?"
+                case = ("fix exists in %s >= %s; not pullable: carried by %s at %s; lifts when %s"
+                        % (gf["package"], comp_fixed, cr_name, cr_ver,
+                           lift_trigger or ("%s embeds %s >= %s" % (cr_name, gf["package"], comp_fixed))))
+            in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
+            reason = policy.threshold_reason(gf["severity"], in_kev, gf["known_exploited"])
+            at = reason != "below"
+            if not at and not env.get("kev_ok", True):
+                at = True; reason = "kev-unavailable (fail-closed)"
+            row.update(section=2, not_pullable=hold, disposition="carried (fix not pullable)",
+                       action="POA&M: affected VEX + ignores + lift trigger, expiry %s" % this_exp2,
+                       vex_id=this_scope_id, scope_purls=_purls, reason=case, fixed=comp_fixed,
+                       ignore_files=[os.path.join("ignores", sc, vn + ".json") for sc in scanners] + [".snyk", "osv-scanner.toml"],
+                       threshold=("at_or_above" if at else "below"), expiry=this_exp2,
+                       carried=(_cstat == "affected"), lift_trigger=lift_trigger, is_os=not gf["is_go"],
+                       reachability="n/a (OS package)")
+            if at:
+                row["action"] += "; owner-decision issue pending"
+                row["owner_issue_intent"] = {
+                    "cve": c, "package": gf["package"], "kind": "risk_acceptance", "reason_key": reason,
+                    "scope": "%s@%s (severity %s, %s)" % (gf["package"], gf["installed"], gf["severity"], case)}
+            return row, m_inc
         # AC7: a fix that is now pullable LIFTS a suppression this scope was carrying — the old
         # affected/temporary VEX, ignore and inventory for this exact scope are removed this run
         # (delivery drops them) and the row is §1 lifted; otherwise a fresh fixable finding is §3.
@@ -1112,7 +1220,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
            "carried_expiry": carried_expiry, "carried_scopes": carried_scopes,
-           "carried_status": carried_status, "today": today}
+           "carried_status": carried_status, "today": today,
+           # REQ-AUD-14: SBOM carrier relationships and base-pin evidence for the pullability class.
+           "carriers": m.get("carriers") or [], "base": m.get("base") or {},
+           "base_policy_held": bool((m.get("base") or {}).get("policy_held"))}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
         # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
@@ -1620,6 +1731,23 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("**Inventory quorum:** " + "; ".join(parts))
     g = m.get("govulncheck")
     L.append("**Reachability:** " + ("govulncheck symbol @ %s (complete=%s)" % (g.get("commit"), g.get("complete")) if isinstance(g, dict) else "not run"))
+    # REQ-AUD-14 AC6/AC7: maintenance flags, INDEPENDENT of any CVE — a carrier on a maintenance-
+    # LTS or end-of-life line (endoflife.date, computed at manifest-build time), and a base pin more
+    # than N days behind its repository's fix. Stated in the header before the sections.
+    _flags = []
+    for e in (m.get("eol") or []):
+        stt = e.get("status"); nm = e.get("carrier") or "?"; cyc = e.get("cycle") or "?"
+        if stt == "eol":
+            _flags.append("carrier %s %s is END-OF-LIFE (per endoflife.date, EOL %s)" % (nm, cyc, e.get("eol_date") or "?"))
+        elif stt == "maintenance":
+            _flags.append("carrier %s %s is on a maintenance/LTS line (per endoflife.date, EOL %s)" % (nm, cyc, e.get("eol_date") or "?"))
+    _base = m.get("base") or {}
+    _thr = _base.get("behind_threshold_days", 30)
+    if isinstance(_base.get("days_behind"), int) and _base["days_behind"] > _thr:
+        _flags.append("base pin %s is %d days behind its repository's fix (threshold %d)"
+                      % (_base.get("release") or "base", _base["days_behind"], _thr))
+    if _flags:
+        L.append("**Maintenance flags:** " + "; ".join(_flags))
     is_stub = "stub" in os.path.basename(adjudicator or "").lower()
     roles = sorted((state or {}).get("roles_used") or [])
     model_ran = "stub (no real model called)" if is_stub else ("+".join(roles) if roles else "none called")

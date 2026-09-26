@@ -11,3 +11,6 @@ tools/requirements/requirements
 bench/maven-sample/**/target/
 bench/maven-sample/target/
 __pycache__/
+
+# Local, private standing-rule file (references private ops paths) — never commit
+CLAUDE.local.md

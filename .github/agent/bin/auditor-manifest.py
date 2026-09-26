@@ -118,6 +118,46 @@ def _inv_syft(path):
     return total, osp
 
 
+_CARRY_RELS = {"contains": "bundled", "ownership-by-file-overlap": "embedded (file overlap)",
+               "dependency-of": "vendored"}
+
+
+def _carriers(path):
+    """Candidate carrier relationships from the syft SBOM (REQ-AUD-14 AC2): a vulnerable-capable
+    component (a package with a purl) that is CARRIED inside another artifact — bundled, embedded,
+    or vendored — rather than installed as its own managed package. Extracted from syft's
+    `artifactRelationships`; the parent is the carrier, the child the carried component. This is a
+    SAFE over-approximation: it only decides which findings get a pullability model call — a wrong
+    candidate returns pullable and falls through to normal routing, so a false carrier costs one
+    call, never a wrong disposition. The model does the authoritative carrier analysis."""
+    try:
+        d = json.load(open(path))
+    except Exception:
+        return []
+    by_id = {a.get("id"): a for a in (d.get("artifacts") or []) if a.get("id")}
+    out = []; seen = set()
+    for rel in (d.get("artifactRelationships") or []):
+        how = _CARRY_RELS.get(rel.get("type"))
+        if not how:
+            continue
+        parent = by_id.get(rel.get("parent")); child = by_id.get(rel.get("child"))
+        if not parent or not child:
+            continue
+        cpurl = child.get("purl"); ppurl = parent.get("purl")
+        # the child must be a real, vulnerable-capable package with a purl, distinct from the
+        # carrier; a package "containing" its own files is not a carrier relationship.
+        if not cpurl or parent.get("id") == child.get("id") or cpurl == ppurl:
+            continue
+        key = (cpurl, ppurl)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"component": child.get("name"), "component_purl": cpurl,
+                    "component_version": child.get("version"), "carrier": parent.get("name"),
+                    "carrier_purl": ppurl, "carrier_version": parent.get("version"), "how": how})
+    return out
+
+
 def _inv_snyk(path):
     d = json.load(open(path))
     docs = d if isinstance(d, list) else [d]
@@ -231,9 +271,11 @@ def main():
     # (its own cataloguer), which reads distroless status.d. grype still supplies the matches.
     syft_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
     syft_path = os.path.join(reports, "syft.json")
+    carriers = []
     rc, _ = _run(["syft", syft_src, "-o", "syft-json"], out_path=syft_path)
     if rc == 0 and os.path.exists(syft_path) and os.path.getsize(syft_path) > 0:
         try:
+            carriers = _carriers(syft_path)   # REQ-AUD-14: SBOM carrier relationships
             stot, sos = _inv_syft(syft_path)
             gfind = status["grype"]["findings"]
             # syft supplies grype's package INVENTORY, but grype still counts as run only if
@@ -328,6 +370,10 @@ def main():
         "scanner_reports": scanner_reports, "scanner_status": status,
         "govulncheck": gvc, "known_defect_log": kdl if os.path.exists(kdl) else None,
         "kev_catalog": cli.opt("--kev"),
+        # REQ-AUD-14: SBOM carrier relationships (candidate not-pullable carriers). `eol` and
+        # `base` (endoflife.date status + base-pin lag) are populated best-effort when available;
+        # absent keys simply produce no maintenance flags.
+        "carriers": carriers,
         "provenance": {"source": ("test-image" if test_image else "own-scan"), "candidate": src,
                        "scanned": "docker-archive"},
     }
