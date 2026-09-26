@@ -29,6 +29,18 @@ NOTIFY_CHANNEL = "owner-decision-issue"
 OWNER_LABEL = "owner-decision"
 OWNER_LOGIN = "fosterstack-admin"
 
+# REQ-AUD-17 AC1: the fixed subject-prefix FAMILY. Every PR and issue the auditor opens leads
+# with this token so one mail filter catches them all; owner-decision issues keep their own
+# "owner-decision:" prefix after it (so an existing filter on that prefix still matches).
+AUDITOR_PREFIX = "auditor:"
+STANDING_ISSUE_TITLE = "%s needs a human" % AUDITOR_PREFIX   # derived, so it can't drift from the prefix
+
+
+def subject(text):
+    """Lead a PR/issue title with the auditor's fixed family prefix (idempotent)."""
+    text = text or ""
+    return text if text.startswith(AUDITOR_PREFIX) else "%s %s" % (AUDITOR_PREFIX, text)
+
 # Run bounds.
 MAX_ITERATIONS = 5
 TOKEN_BUDGET = 200000
@@ -79,8 +91,9 @@ def threshold_reason(severity=None, kev=False, known_exploited=False):
 
 
 def owner_issue_title(finding_id, package, reason):
-    """The owner's mail filter keys on this exact prefix/shape (R14)."""
-    return "owner-decision: %s — %s — %s" % (finding_id, package or "unknown-package", reason)
+    """The owner's mail filter keys on this exact prefix/shape (R14); the auditor family prefix
+    leads it (REQ-AUD-17 AC1), the "owner-decision:" sub-prefix is retained."""
+    return subject("owner-decision: %s — %s — %s" % (finding_id, package or "unknown-package", reason))
 
 
 def lineage_of(scanner):
