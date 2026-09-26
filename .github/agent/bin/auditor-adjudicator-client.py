@@ -109,7 +109,7 @@ def _handle(req, client):
                   "condition, e.g. '<carrier> >= X embeds <component> >= Y' or 'base release >= R'); "
                   "repo_version and base_release when policy-held; evidence (object: how it is "
                   "carried, and the source). Do NOT produce exploit code.\n\n%s" % ctxp)
-        msg = client.messages.create(model=model, max_tokens=700,
+        msg = client.messages.create(model=model, max_tokens=1024,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
         ans = _extract_json(text) or {}
@@ -167,23 +167,20 @@ def main():
 
 
 def _extract_json(text):
-    """The first balanced top-level JSON object in a model response (the model may wrap it in
-    prose or a code fence). Returns the parsed dict, or None if none parses."""
+    """The first top-level JSON OBJECT in a model response (the model may wrap it in prose or a
+    code fence). Uses json.raw_decode from each '{', which respects strings — so a value that
+    itself contains a '}' does not break extraction (Codex round-2 P2). Returns the dict or None."""
     s = str(text or "")
-    for i, ch in enumerate(s):
-        if ch != "{":
-            continue
-        depth = 0
-        for j in range(i, len(s)):
-            if s[j] == "{":
-                depth += 1
-            elif s[j] == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(s[i:j + 1])
-                    except Exception:
-                        break
+    dec = json.JSONDecoder()
+    i = s.find("{")
+    while i != -1:
+        try:
+            obj, _end = dec.raw_decode(s[i:])
+            if isinstance(obj, dict):
+                return obj
+        except ValueError:
+            pass
+        i = s.find("{", i + 1)
     return None
 
 

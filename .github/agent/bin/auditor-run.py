@@ -1107,25 +1107,47 @@ def _dispose(c, findings, aliases, env, would, name=None):
             hold = "policy-held" if (base_hold and not carrier) else "upstream-held"
             this_exp3 = _cexp or exp
             cause = "adjudicator unavailable" if (carrier or base_hold) and pull is None else "carrier signal absent this run"
+            # preserve the CONCRETE machine-checkable lift trigger from the prior acceptance rather
+            # than a generic placeholder, so a deferred recheck does not lose the condition (Codex
+            # round-2 P2). Falls back to a note only if none was carried.
+            prior_trigger = env.get("carried_lift_trigger", {}).get((c, this_scope))
+            deferred_trigger = (prior_trigger if prior_trigger
+                                else "prior lift trigger stands (recheck deferred: %s)" % cause)
             ev = {"check": "fix-not-pullable", "hold": hold, "recheck": "deferred", "cause": cause,
-                  "component": gf["package"], "installed": gf["installed"], "component_fixed": gf["fixed"]}
+                  "component": gf["package"], "installed": gf["installed"], "component_fixed": gf["fixed"],
+                  "lift_trigger": deferred_trigger}
             vex.write(out, c, "affected", ts,
                       action="fix exists but is not pullable (%s); recheck deferred (%s); suppression retained" % (hold, cause),
-                      evidence=ev, target_date=this_exp3,
-                      lift_trigger="prior lift trigger stands (recheck deferred: %s)" % cause,
+                      evidence=ev, target_date=this_exp3, lift_trigger=deferred_trigger,
                       vex_name=vn, subcomponents=subs)
             _scn = sorted({f["scanner"] for f in findings})
             for sc in _scn:
                 cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                            {"id": c, "vex": this_scope_id, "expiry": this_exp3, "scoped_purls": _purls,
                             "reason": "fix not pullable (%s); recheck deferred; re-checked daily" % hold})
+            # A deferred recheck NEVER downgrades the policy threshold: recompute it and preserve
+            # the owner-acceptance requirement, or the release gate silently drops a Critical/KEV
+            # finding's owner-decision hold when a later recheck merely could not confirm the fix
+            # (Codex round-2 P1). The owner-issue dedup means re-asserting it updates the standing
+            # issue, it does not spam a new one.
+            _in_kev = c in env["kev_ids"] or bool(set(aliases) & env["kev_ids"])
+            _reason = policy.threshold_reason(gf["severity"], _in_kev, gf["known_exploited"])
+            _at = _reason != "below"
+            if not _at and not env.get("kev_ok", True):
+                _at = True; _reason = "kev-unavailable (fail-closed)"
             row.update(section=2, not_pullable=hold, disposition="carried (fix not pullable) — recheck deferred",
                        action="POA&M: affected VEX + ignores retained, expiry %s; recheck deferred (%s)" % (this_exp3, cause),
                        vex_id=this_scope_id, scope_purls=_purls, fixed=gf["fixed"],
                        reason="fix exists but not pullable; recheck could not confirm a lift (%s)" % cause,
                        ignore_files=[os.path.join("ignores", sc, vn + ".json") for sc in _scn] + [".snyk", "osv-scanner.toml"],
-                       threshold="below", expiry=this_exp3, carried=(_cstat == "affected"), is_os=not gf["is_go"],
-                       reachability="n/a (OS package)")
+                       threshold=("at_or_above" if _at else "below"), expiry=this_exp3, lift_trigger=deferred_trigger,
+                       carried=(_cstat == "affected"), is_os=not gf["is_go"], reachability="n/a (OS package)")
+            if _at:
+                row["action"] += "; owner-decision issue pending"
+                row["owner_issue_intent"] = {
+                    "cve": c, "package": gf["package"], "kind": "risk_acceptance", "reason_key": _reason,
+                    "scope": "%s@%s (severity %s, %s; recheck deferred: %s)"
+                             % (gf["package"], gf["installed"], gf["severity"], hold, cause)}
             return row, m_inc
         # AC7: a fix that is now pullable LIFTS a suppression this scope was carrying — the old
         # affected/temporary VEX, ignore and inventory for this exact scope are removed this run
@@ -1234,6 +1256,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
     carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
+    carried_lift_trigger = {}
     ws0 = os.environ.get("GITHUB_WORKSPACE")
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -1274,6 +1297,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 carried_expiry[key] = min(it["expiry"], carried_expiry.get(key, it["expiry"]))
                 if it.get("not_pullable"):               # REQ-AUD-14: this scope was carried as §2B
                     carried_not_pullable.add(key)
+                    if it.get("lift_trigger"):           # preserve the machine-checkable condition
+                        carried_lift_trigger[key] = it["lift_trigger"]
         except Exception:
             carried_expiry = {}
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
@@ -1283,7 +1308,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
            "carried_status": carried_status, "today": today,
            # REQ-AUD-14: SBOM carrier relationships and base-pin evidence for the pullability class.
            "carriers": m.get("carriers") or [], "base": m.get("base") or {},
-           "carried_not_pullable": carried_not_pullable,
+           "carried_not_pullable": carried_not_pullable, "carried_lift_trigger": carried_lift_trigger,
            # policy-held routing fires when the base is KNOWN to hold a fix: an explicit flag, or a
            # base pin flagged behind its repository's fix by more than the threshold (AC7). On a
            # current base, OS fixes stay on the existing base-rebuild path.
@@ -1367,7 +1392,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                  "vex_id": r.get("vex_id"),                       # the governing statement id
                  "product": policy.VEX_PRODUCT,                   # the FULL canonical scope, so
                  "scope_purls": r.get("scope_purls") or [],       # inventory keys on scope, not a hash
-                 "not_pullable": r.get("not_pullable")}           # REQ-AUD-14: the §2B hold kind, if any
+                 "not_pullable": r.get("not_pullable"),           # REQ-AUD-14: the §2B hold kind, if any
+                 "lift_trigger": r.get("lift_trigger")}           # the machine-checkable lift condition
                 for r in sections[2]]
     # findings_without_action is computed AFTER delivery (below), once every §1/§3 row's action
     # is final and the dry-run `would` list is populated (decision 2 moved fix delivery there).

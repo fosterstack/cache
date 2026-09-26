@@ -2519,6 +2519,16 @@ good=row['section']==2 and row.get('not_pullable') in ('upstream-held','policy-h
 print('OK' if good else 'BAD sec=%s disp=%s'%(row['section'],row.get('disposition')))" 2>/dev/null | tail -1)"
 { eq "$nfl" "OK"; } && ok || no "carried §2B does not false-lift when unconfirmed" "$nfl"
 
+begin "req14-deferred-recheck-keeps-threshold-and-trigger" "a deferred recheck of a carried §2B finding recomputes and PRESERVES the policy threshold + owner-decision requirement (never silently downgrades a Critical to below) and keeps the CONCRETE lift trigger (Codex round-2 P1 + P2)"
+dt="$("$PY" -c "$(_req14_env)
+purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
+env=mkenv('$WORK/req14-defthr',carriers=[],carried_scopes={('CVE-2099-CRIT',sc)},carried_status={('CVE-2099-CRIT',sc):'affected'},carried_not_pullable={('CVE-2099-CRIT',sc)},carried_lift_trigger={('CVE-2099-CRIT',sc):'nodejs >= 20.11.0 embeds openssl >= 3.0.13'})
+row,_=R._dispose('CVE-2099-CRIT',[mkf('CVE-2099-CRIT',sev='Critical')],['CVE-2099-CRIT'],env,[])
+R.cli.close_adjudicators()
+good=row['section']==2 and row.get('threshold')=='at_or_above' and bool(row.get('owner_issue_intent')) and 'nodejs >= 20.11.0' in (row.get('lift_trigger') or '')
+print('OK' if good else 'BAD thr=%s oi=%s trig=%r'%(row.get('threshold'),bool(row.get('owner_issue_intent')),row.get('lift_trigger')))" 2>/dev/null | tail -1)"
+{ eq "$dt" "OK"; } && ok || no "deferred recheck keeps threshold + owner + concrete trigger" "$dt"
+
 begin "req14-ac6-header-flags-lts-eol-carrier" "the header flags any carrier on a maintenance-LTS or end-of-life line (endoflife.date), independent of any CVE"
 a6="$("$PY" -c "
 import importlib.util
