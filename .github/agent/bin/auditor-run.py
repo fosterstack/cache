@@ -192,6 +192,19 @@ def _automerge_on():
     return (os.environ.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
 
 
+def _arm_automerge(target, ws):
+    """Arm native GitHub auto-merge (squash) on a PR. A pre-ramp DRAFT PR reused after the owner
+    turns auto-merge on cannot auto-merge while still a draft, so mark it ready first; then enable
+    auto-merge. The merge still waits on all required checks + the main rulesets — the App has no
+    bypass. Prints a warning (never silent) if arming fails; a failure is non-fatal (the PR is
+    delivered and a human can still merge)."""
+    subprocess.run(["gh", "pr", "ready", target], cwd=ws, capture_output=True, text=True)
+    r = subprocess.run(["gh", "pr", "merge", "--auto", "--squash", target], cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0:
+        print("warning: could not arm auto-merge on %s: %s" % (target, _mask((r.stderr or "").strip())))
+    return r.returncode == 0
+
+
 def _automerge_allowed(paths):
     """Auto-merge is enabled ONLY when the owner turned it on (AC3) AND the change touches NO
     prompt file — the model's standing instructions are human-merged always (AC4). The records
@@ -303,7 +316,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     ex = _existing_pr()
     if ex:
         if automerge:
-            subprocess.run(["gh", "pr", "merge", "--auto", "--squash", ex], cwd=ws, capture_output=True, text=True)
+            _arm_automerge(ex, ws)
         return ex, None
     create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
     if not automerge:
@@ -314,14 +327,14 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
             ex = _existing_pr()
             if ex:
                 if automerge:
-                    subprocess.run(["gh", "pr", "merge", "--auto", "--squash", ex], cwd=ws, capture_output=True, text=True)
+                    _arm_automerge(ex, ws)
                 return ex, None
         return None, ("gh pr create: " + (r.stderr or "").strip())
     url = r.stdout.strip()
     # AC3: enable auto-merge (squash). The merge still waits on all required checks + the main
     # rulesets — the App has no bypass — so this arms the merge, it does not force it.
     if automerge and url:
-        subprocess.run(["gh", "pr", "merge", "--auto", "--squash", url], cwd=ws, capture_output=True, text=True)
+        _arm_automerge(url, ws)
     return url, None
 
 
@@ -422,7 +435,7 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
         return (q.stdout or "").strip() if q.returncode == 0 else ""
     def _arm(u):
         if automerge and u:
-            subprocess.run(["gh", "pr", "merge", "--auto", "--squash", u], cwd=ws, capture_output=True, text=True)
+            _arm_automerge(u, ws)
     ex = _existing()
     if ex:
         _arm(ex); return ex, None, "delivered"
@@ -1699,6 +1712,12 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # report shows — comment it (find-or-create) while §0 is non-empty; close it when §0 is empty.
     needs = _needs_human(rows, sections, dry, pr_url, status)
     _standing_ok, _standing_ref = _standing_issue(needs, dry, would)
+    # A failed standing-issue update is a real gap (the daily re-email did not go out): mark the
+    # run INCOMPLETE rather than reporting a false success (Codex round-1 P2 blocker).
+    if not _standing_ok:
+        _sf = "standing needs-a-human issue update failed (%s)" % _standing_ref
+        status = ("AUDIT INCOMPLETE: " + _sf) if "INCOMPLETE" not in status else (status + "; " + _sf)
+        complete = False                                  # fail the job, not a false success
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info, state)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
@@ -1907,32 +1926,61 @@ def _standing_issue(needs, dry, would):
     by the first run that finds §0 empty. Uses the JOB token (issues:write), the same shim/dry/
     real-gh contract as _emit_owner_issue."""
     title = policy.STANDING_ISSUE_TITLE
-    if needs:
-        body = ("The daily CVE auditor needs a human on %d item(s) this run:\n- %s\n\nThis issue "
-                "re-comments every run while any item is open, and closes automatically on the "
-                "first run with nothing waiting." % (len(needs), "\n- ".join(needs)))
-        return _emit_owner_issue(title, body, dry, would)   # find-or-create + comment
-    # §0 empty -> close the standing issue if it is open.
+    body = ("The daily CVE auditor needs a human on %d item(s) this run:\n- %s\n\nThis issue "
+            "re-comments every run while any item is open, and closes automatically on the first "
+            "run with nothing waiting." % (len(needs), "\n- ".join(needs))) if needs else None
     if dry:
-        would.append("gh issue close --title %s (if open)" % shlex.quote(title)); return True, "dry"
+        would.append(("gh issue comment/create --title %s (standing needs-a-human)" if needs
+                      else "gh issue close --title %s (if open)") % shlex.quote(title))
+        return True, "dry"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
-        open(log, "a").write("gh issue close --title %s\n" % shlex.quote(title)); return True, "shim-closed"
+        prior = open(log).read() if os.path.exists(log) else ""
+        if needs:
+            if ("issue create --title %s" % shlex.quote(title)) in prior:
+                open(log, "a").write("gh issue comment --title %s --body %s\n" % (shlex.quote(title), shlex.quote(body)))
+                return True, "shim-commented"
+            open(log, "a").write("gh issue create --title %s --label %s --assignee %s --body %s\n"
+                                 % (shlex.quote(title), policy.OWNER_LABEL, policy.OWNER_LOGIN, shlex.quote(body)))
+            return (not os.environ.get("AUDITOR_SHIM_ISSUE_FAIL")), ("shim-created" if not os.environ.get("AUDITOR_SHIM_ISSUE_FAIL") else None)
+        open(log, "a").write("gh issue close --title %s\n" % shlex.quote(title))
+        return True, "shim-closed"
     if not _real_gh_allowed():
-        print("would close standing issue (real gh disabled): " + title); return True, "skipped"
+        print("would %s standing issue (real gh disabled): %s" % ("update" if needs else "close", title))
+        return True, "skipped"
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
+
+    def _sh(*a):
+        return subprocess.run(["gh", "issue", *a], capture_output=True, text=True, env=ienv)
+    # Discover across ALL states so the standing issue is CREATED ONCE (a closed one is reopened,
+    # never re-created) and a FAILED discovery is a real failure, never a silent success.
+    r = _sh("list", "--search", title, "--state", "all", "--json", "number,state,title")
+    if r.returncode != 0:
+        return False, "standing-issue discovery failed: %s" % _mask((r.stderr or "").strip())
     try:
-        r = subprocess.run(["gh", "issue", "list", "--search", title, "--state", "open", "--json", "number"],
-                           capture_output=True, text=True, env=ienv)
-        nums = [str(x.get("number")) for x in json.loads(r.stdout or "[]")] if r.returncode == 0 else []
-        for n in nums:
-            subprocess.run(["gh", "issue", "close", n, "--comment",
-                            "Nothing needs a human this run; closing the standing issue."],
-                           capture_output=True, text=True, env=ienv)
-        return True, ("closed:%s" % ",".join(nums) if nums else "none-open")
+        found = [x for x in json.loads(r.stdout or "[]") if x.get("title") == title]
     except Exception as e:
-        return False, "standing-issue close failed: %s" % _mask(str(e))
+        return False, "standing-issue discovery parse failed: %s" % _mask(str(e))
+    openrows = [x for x in found if str(x.get("state", "")).upper() == "OPEN"]
+    closedrows = [x for x in found if str(x.get("state", "")).upper() == "CLOSED"]
+    if needs:
+        if openrows:
+            c = _sh("comment", str(openrows[0]["number"]), "--body", body)
+            return (c.returncode == 0), ("commented:%s" % openrows[0]["number"] if c.returncode == 0
+                                         else "standing comment failed: %s" % _mask((c.stderr or "").strip()))
+        if closedrows:                                   # reopen the SAME issue — created once
+            n = str(closedrows[0]["number"])
+            ro = _sh("reopen", n); c = _sh("comment", n, "--body", body)
+            ok = ro.returncode == 0 and c.returncode == 0
+            return ok, ("reopened:%s" % n if ok else "standing reopen/comment failed")
+        cr = _sh("create", "--title", title, "--label", policy.OWNER_LABEL, "--assignee", policy.OWNER_LOGIN, "--body", body)
+        return (cr.returncode == 0), ("created" if cr.returncode == 0 else "standing create failed: %s" % _mask((cr.stderr or "").strip()))
+    ok = True
+    for x in openrows:
+        c = _sh("close", str(x["number"]), "--comment", "Nothing needs a human this run; closing the standing issue.")
+        ok = ok and (c.returncode == 0)
+    return ok, ("closed:%s" % ",".join(str(x["number"]) for x in openrows) if openrows else "none-open")
 
 
 def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None, quorum_info=None, state=None):

@@ -33,7 +33,7 @@ OWNER_LOGIN = "fosterstack-admin"
 # with this token so one mail filter catches them all; owner-decision issues keep their own
 # "owner-decision:" prefix after it (so an existing filter on that prefix still matches).
 AUDITOR_PREFIX = "auditor:"
-STANDING_ISSUE_TITLE = "auditor: needs a human"
+STANDING_ISSUE_TITLE = "%s needs a human" % AUDITOR_PREFIX   # derived, so it can't drift from the prefix
 
 
 def subject(text):

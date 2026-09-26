@@ -1786,12 +1786,16 @@ tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
 def fake(cmd,*a,**kw):
     if cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
+    if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
+    if cmd[:2]==["gh","issue"]: return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[0]=="gh": raise AssertionError(cmd)
     return R.subprocess.run.__wrapped__(cmd,*a,**kw) if hasattr(R.subprocess.run,"__wrapped__") else __import__("subprocess").run(cmd,*a,**kw)
 import subprocess as _sp
 def fake2(cmd,*a,**kw):
     if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
+    if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
+    if cmd[:2]==["gh","issue"]: return _sp.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": raise AssertionError(cmd)
     return _sp.run(cmd,*a,**kw)
 with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
@@ -1915,6 +1919,8 @@ mp=".github/agent/fixtures/run/manifest-mediumnofix.json"
 def fake(cmd,*a,**kw):
     if cmd and cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
+    if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
+    if cmd[:2]==["gh","issue"]: return subprocess.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": raise AssertionError(cmd)
     return subprocess.run(cmd,*a,**kw)
 def go(day):
@@ -2618,6 +2624,40 @@ env AUDITOR_GIT_SHIM_LOG="$sh2" "$PY" "$BIN/auditor-run.py" --dry-run false --ma
 close2="$(grep -c "issue close --title 'auditor: needs a human'" "$sh2" 2>/dev/null)"; close2="${close2:-0}"
 { [ "$open1" -ge 1 ] 2>/dev/null && [ "$close2" -ge 1 ] 2>/dev/null; } \
   && ok || no "standing issue commented when §0 non-empty, closed when empty" "open=$open1 close=$close2"
+
+begin "req17-ac2-standing-issue-failure-is-incomplete" "a FAILED standing-issue update (e.g. gh issue discovery errors) returns failure — it never silently reports success (Codex round-1 blocker)"
+sif="$("$PY" -c '
+import importlib.util
+from unittest.mock import patch
+import subprocess as _sp, os
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+def failing(cmd,*a,**kw):
+    if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,1,"","connection reset")
+    return _sp.CompletedProcess(cmd,0,"","")
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1"}),patch.object(R.subprocess,"run",failing):
+    ok1,_=R._standing_issue(["owner-decision needed: CVE-X — #1"],False,[])   # non-empty
+    ok2,_=R._standing_issue([],False,[])                                        # empty (close)
+print("OK" if (ok1 is False and ok2 is False) else "BAD ok1=%s ok2=%s"%(ok1,ok2))' 2>/dev/null | tail -1)"
+{ eq "$sif" "OK"; } && ok || no "standing-issue failure propagates (never silent success)" "$sif"
+
+begin "req17-ac2-standing-issue-created-once-reopens" "the standing issue is CREATED ONCE: a run that finds it CLOSED reopens the SAME issue rather than creating a new one (Codex round-1 residual)"
+sco="$("$PY" -c '
+import importlib.util
+from unittest.mock import patch
+import subprocess as _sp, os
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+calls=[]
+def fake(cmd,*a,**kw):
+    calls.append(cmd)
+    if cmd[:3]==["gh","issue","list"]:
+        return _sp.CompletedProcess(cmd,0,"[{\"number\":5,\"state\":\"CLOSED\",\"title\":\"%s\"}]"%R.policy.STANDING_ISSUE_TITLE,"")
+    return _sp.CompletedProcess(cmd,0,"","")
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1"}),patch.object(R.subprocess,"run",fake):
+    ok,ref=R._standing_issue(["owner-decision needed: CVE-X — #1"],False,[])
+reopened=any(c[:3]==["gh","issue","reopen"] and "5" in c for c in calls)
+created=any(c[:3]==["gh","issue","create"] for c in calls)
+print("OK" if (ok and reopened and not created) else "BAD ok=%s reopened=%s created=%s ref=%s"%(ok,reopened,created,ref))' 2>/dev/null | tail -1)"
+{ eq "$sco" "OK"; } && ok || no "standing issue reopened (created once), not re-created" "$sco"
 
 begin "req17-ac3-repo-var-draft-to-automerge" "the AUDITOR_AUTOMERGE repo variable flips the suppression PR from draft to auto-merge (squash); unset keeps it a draft"
 o="$WORK/req17-ac3"; rm -rf "$o"; shd="$WORK/req17-ac3-draft.shim"; sha="$WORK/req17-ac3-auto.shim"; rm -f "$shd" "$sha"; _req17_src "$WORK/req17-ac3-src"
