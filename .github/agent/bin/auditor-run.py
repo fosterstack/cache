@@ -1955,7 +1955,7 @@ def _standing_issue(needs, dry, would):
         return subprocess.run(["gh", "issue", *a], capture_output=True, text=True, env=ienv)
     # Discover across ALL states so the standing issue is CREATED ONCE (a closed one is reopened,
     # never re-created) and a FAILED discovery is a real failure, never a silent success.
-    r = _sh("list", "--search", title, "--state", "all", "--json", "number,state,title")
+    r = _sh("list", "--search", title, "--state", "all", "--limit", "100", "--json", "number,state,title")
     if r.returncode != 0:
         return False, "standing-issue discovery failed: %s" % _mask((r.stderr or "").strip())
     try:
@@ -1980,7 +1980,10 @@ def _standing_issue(needs, dry, would):
     for x in openrows:
         c = _sh("close", str(x["number"]), "--comment", "Nothing needs a human this run; closing the standing issue.")
         ok = ok and (c.returncode == 0)
-    return ok, ("closed:%s" % ",".join(str(x["number"]) for x in openrows) if openrows else "none-open")
+    if not openrows:
+        return True, "none-open"
+    nums = ",".join(str(x["number"]) for x in openrows)
+    return ok, (("closed:%s" if ok else "close-failed:%s") % nums)
 
 
 def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url=None, pr_err=None, quorum_info=None, state=None):
