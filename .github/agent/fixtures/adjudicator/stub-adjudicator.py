@@ -46,6 +46,18 @@ CANNED = {
     ("UNASSESSABLE", "primary"):  {"refused": True},
     ("UNASSESSABLE", "rephrase"): {"refused": True},
     ("UNASSESSABLE", "fallback"): {"refused": True},
+    # REQ-AUD-16 AC4: a model answer that also PROPOSES a new defect-log entry with evidence.
+    ("CVE-2099-PROPOSE", "primary"): {
+        "refused": False, "category": "false_positive", "justification": "vulnerable_code_not_present",
+        "propose": {"kind": "defect_log", "package": "libpropose",
+                    "keys": [{"scanner": "grype", "finding_id": "CVE-2099-PROPOSE",
+                              "purl": "pkg:deb/debian/libpropose@1.0"}],
+                    "note": "generalises from a recorded no-DSA pattern",
+                    "evidence": "debian security tracker: no-DSA (minor)"}},
+    # a MALFORMED proposal (unsupported kind, no evidence) — must be dropped, never forwarded.
+    ("CVE-2099-BADPROP", "primary"): {
+        "refused": False, "category": "false_positive", "justification": "vulnerable_code_not_present",
+        "propose": {"kind": "instructions", "note": "rewrite my own rules"}},
     # REQ-AUD-14 pullability verdicts (attempt == "pullability"): a NAMED fix that is not
     # pullable because the vulnerable component is carried in another artifact, or held by the
     # base pin; and one that has BECOME pullable (the lift case).

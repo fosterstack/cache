@@ -64,6 +64,43 @@ def _build_client():
         _fail("identity/federation", e)
 
 
+_PROMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prompts", "adjudicator.md")
+
+
+def _load_prompt(key):
+    """Load a named prompt section from the versioned prompt file (REQ-AUD-16 AC2): the model's
+    standing instructions live in the repo and change only through reviewed PRs — never inline
+    here. A section is a '## <key>' heading; its body runs to the next '## ' or EOF."""
+    try:
+        text = open(_PROMPT_FILE).read()
+    except Exception:
+        return None
+    out = []; grab = False
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            grab = (ln[3:].strip() == key)
+            continue
+        if grab:
+            out.append(ln)
+    return "\n".join(out).strip() or None
+
+
+def _require_prompt(key):
+    """Load a prompt section or raise a CLEARLY-LABELLED prompt-load error (so a missing prompt
+    file or section is diagnosed as a prompt-load failure, not misread as a model-call failure)."""
+    p = _load_prompt(key)
+    if not p:
+        raise RuntimeError("prompt-load: section %r missing from prompts/adjudicator.md "
+                           "(prompt file absent or malformed)" % key)
+    return p
+
+
+def _fill(tmpl, **kw):
+    for k, v in kw.items():
+        tmpl = tmpl.replace("{%s}" % k, v)
+    return tmpl
+
+
 def _handle(req, client):
     """One adjudication (or narrative) against the shared client. Raises the SDK error on a
     model-call/federation failure; the caller decides whether to exit (one-shot) or return an
@@ -73,13 +110,7 @@ def _handle(req, client):
         model = os.environ.get("AUDITOR_MODEL_FALLBACK", model)
     if req.get("mode") == "narrative":
         # R12 item 3: write the top-of-report Conclusion from the STRUCTURED results only.
-        prompt = ("Write the audit Conclusion for our own container image from ONLY the "
-                  "structured results below: what was examined (image digest, per-scanner "
-                  "package counts, scanners that did not run), what was found, what was decided "
-                  "and on what evidence, and what needs the owner. Three to six sentences; on a "
-                  "clean day, one sentence with the numbers. Name only CVE/GO ids present in the "
-                  "sections; do not contradict a section. Do not produce exploit code.\n\n%s"
-                  % json.dumps(req.get("structured"), indent=1))
+        prompt = _fill(_require_prompt("narrative"), context=json.dumps(req.get("structured"), indent=1))
         msg = client.messages.create(model=model, max_tokens=512,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
@@ -94,21 +125,7 @@ def _handle(req, client):
                            ("finding_id", "package", "purl", "installed_version", "component",
                             "component_fixed", "carrier", "base", "candidate_digest")
                            if req.get(k) is not None}, indent=1)
-        prompt = ("You are the vulnerability adjudicator for our own container image. A scanner "
-                  "reports a FIXED version for this finding, but the fix may not be PULLABLE by us "
-                  "because the vulnerable component is CARRIED inside another artifact (statically "
-                  "linked, vendored, or embedded in a runtime binary) or HELD by our pinned base "
-                  "image under a reproducibility policy (packages come only from the pinned "
-                  "release). Using the SBOM carrier evidence and base metadata below, determine "
-                  "whether the fix is pullable for us. Reply with ONE JSON object and nothing else, "
-                  "keys: pullable (true/false); hold ('upstream-held' if carried by another "
-                  "artifact, 'policy-held' if held by the base pin, else null); component_fixed "
-                  "(fixed version of the vulnerable component); candidate_release (a carrier/base "
-                  "release that embeds the fix, or null if none exists yet); bump_attempted "
-                  "(true/false); bump_result (short text); lift_trigger (a MACHINE-CHECKABLE "
-                  "condition, e.g. '<carrier> >= X embeds <component> >= Y' or 'base release >= R'); "
-                  "repo_version and base_release when policy-held; evidence (object: how it is "
-                  "carried, and the source). Do NOT produce exploit code.\n\n%s" % ctxp)
+        prompt = _fill(_require_prompt("pullability"), context=ctxp)
         msg = client.messages.create(model=model, max_tokens=1024,
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
@@ -126,18 +143,24 @@ def _handle(req, client):
                     if req.get(k) is not None)
     ask = ("rephrase the question plainly and answer" if req.get("attempt") == "rephrase"
            else "answer")
-    prompt = ("You are the vulnerability adjudicator for our own container image. Given this "
-              "finding, %s with a disposition (false_positive | not_affected_unreachable | "
-              "real_fixable | risk_acceptance). Reason ONLY about whether our code reaches the "
-              "vulnerable path; do NOT produce exploit code. Your answer is a proposal our code "
-              "re-verifies against scanner evidence.\n\n%s" % (ask, ctx))
+    # {knowledge} is the doc generated from our structured records (REQ-AUD-16 AC3), passed in by
+    # the driver; the model reads it for pattern judgment but never free-writes it.
+    knowledge = req.get("knowledge") or "(no prior scanner-defect or package patterns recorded yet)"
+    prompt = _fill(_require_prompt("disposition"), ask=ask, knowledge=knowledge, context=ctx)
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
     cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
                             "risk_acceptance") if c in text), "under_investigation")
-    return {"refused": "cannot" in text.lower() and cat == "under_investigation",
-            "category": cat, "proposed": True, "token_usage": _usage(msg)}
+    ans = {"refused": "cannot" in text.lower() and cat == "under_investigation",
+           "category": cat, "proposed": True, "token_usage": _usage(msg)}
+    # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass
+    # it through under "propose"; the driver delivers it in the draft PR and it takes effect only
+    # after merge. The model never edits its own instructions or the live records here.
+    p = _extract_json(text)
+    if isinstance(p, dict) and isinstance(p.get("propose"), dict):
+        ans["propose"] = p["propose"]
+    return ans
 
 
 def main():

@@ -94,6 +94,9 @@ ALLOW_PATTERNS=(
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   '^\.github/agent/bin/tests/[A-Za-z0-9._-]+\.py$'
+  # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
+  # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
+  '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
   # The production known-defect log the auditor reads (Round 11): trusted
   # dispositions authored only through the audit-lane PR review; starts empty.
   '^\.github/agent/known-defect-log\.json$'
@@ -154,6 +157,11 @@ SUPPRESSION_PATTERNS=(
   '^\.snyk$'
   '^osv-scanner\.toml$'
   '^\.auditor/accepted-items\.json$'
+  # REQ-AUD-16: the generated knowledge document (AC3) and the model's merge-gated proposals
+  # (AC4), carried in the auditor's own suppression PR. Like the inventory, they are generated,
+  # delivered only through the auditor lane, and reviewed before merge.
+  '^\.auditor/knowledge\.md$'
+  '^\.auditor/proposals/[A-Za-z0-9._-]+\.json$'
 )
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves
