@@ -110,6 +110,21 @@ def _inv_osv(path):
     return total, osp, None, findings
 
 
+def _base_os(path):
+    """The base OS release from syft's `distro` block (e.g. 'debian 12.0') — REQ-AUD-14 AC7 needs
+    the PINNED release, not a hardcoded 'debian', so the endoflife.date lookup matches the right
+    cycle. None if syft did not report a distro."""
+    try:
+        dist = (json.load(open(path)).get("distro") or {})
+    except Exception:
+        return None
+    did = (dist.get("id") or "").strip().lower()
+    ver = (dist.get("versionID") or "").strip()
+    if did and ver:
+        return "%s %s" % (did, ver)
+    return did or None
+
+
 def _inv_syft(path):
     """syft is grype's own cataloguer; unlike grype's match-JSON it emits the FULL package
     inventory, including a distroless image's /var/lib/dpkg/status.d packages (R12 (b))."""
@@ -147,9 +162,10 @@ def _carriers(path):
         if not parent or not child:
             continue
         cpurl = child.get("purl"); ppurl = parent.get("purl")
-        # the child must be a real, vulnerable-capable package with a purl, distinct from the
-        # carrier; a package "containing" its own files is not a carrier relationship.
-        if not cpurl or parent.get("id") == child.get("id") or cpurl == ppurl:
+        # BOTH must be real, vulnerable-capable packages with a purl, and distinct: an image (no
+        # purl) "contains" packages, and a package "contains" its own files (no purl) — neither is
+        # a carrier relationship. Only a package that bundles another package counts.
+        if not cpurl or not ppurl or parent.get("id") == child.get("id") or cpurl == ppurl:
             continue
         key = (cpurl, ppurl)
         if key in seen:
@@ -370,11 +386,12 @@ def main():
     # (its own cataloguer), which reads distroless status.d. grype still supplies the matches.
     syft_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
     syft_path = os.path.join(reports, "syft.json")
-    carriers = []
+    carriers = []; base_os = "debian"
     rc, _ = _run(["syft", syft_src, "-o", "syft-json"], out_path=syft_path)
     if rc == 0 and os.path.exists(syft_path) and os.path.getsize(syft_path) > 0:
         try:
             carriers = _carriers(syft_path)   # REQ-AUD-14: SBOM carrier relationships
+            base_os = _base_os(syft_path) or base_os
             stot, sos = _inv_syft(syft_path)
             gfind = status["grype"]["findings"]
             # syft supplies grype's package INVENTORY, but grype still counts as run only if
@@ -471,12 +488,12 @@ def main():
     except Exception:
         _today_iso = "1970-01-01"
     try:
-        _eol_list, _base_block = _lifecycle("debian", carriers, _eol_fetch, _today_iso)
+        _eol_list, _base_block = _lifecycle(base_os, carriers, _eol_fetch, _today_iso)
     except Exception as e:
         print("lifecycle lookup failed: %s" % e); _eol_list, _base_block = [], {}
 
     manifest = {
-        "commit": commit, "module": module, "base_os": "debian",
+        "commit": commit, "module": module, "base_os": base_os,
         "candidate_variant": "production", "candidate_digests": {"production": digest},
         "scanner_reports": scanner_reports, "scanner_status": status,
         "govulncheck": gvc, "known_defect_log": kdl if os.path.exists(kdl) else None,

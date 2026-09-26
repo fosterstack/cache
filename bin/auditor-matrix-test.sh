@@ -2484,6 +2484,31 @@ good=len(cs)==1 and cs[0]['carrier']=='nodejs' and cs[0]['component']=='openssl'
 print('OK' if good else 'BAD:%r'%cs)" 2>/dev/null | tail -1)"
 { eq "$cext" "OK"; } && ok || no "only 'contains' is a carrier relationship" "$cext"
 
+begin "req14-carrier-ignores-image-and-file-contains" "a 'contains' whose parent is the image (no purl) or whose child is a file (no purl) is NOT a carrier — only a package that bundles another vulnerable-capable package (both have purls) counts (avoids the 4831 image/file 'contains' on a real debian SBOM)"
+cif="$("$PY" -c "
+import importlib.util,json,tempfile
+spec=importlib.util.spec_from_file_location('m','.github/agent/bin/auditor-manifest.py'); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+d={'artifacts':[{'id':'img','name':'image','type':'image'},
+                {'id':'p1','name':'openssl','version':'1.1.1','type':'deb','purl':'pkg:deb/debian/openssl@1.1.1'},
+                {'id':'f1','name':'/usr/bin/x','type':'file'},
+                {'id':'nb','name':'nodejs','version':'18','type':'binary','purl':'pkg:generic/node@18'}],
+   'artifactRelationships':[{'parent':'img','child':'p1','type':'contains'},
+                            {'parent':'p1','child':'f1','type':'contains'},
+                            {'parent':'nb','child':'p1','type':'contains'}]}
+p=tempfile.mktemp(suffix='.json'); json.dump(d,open(p,'w'))
+cs=M._carriers(p)
+good=len(cs)==1 and cs[0]['carrier']=='nodejs' and cs[0]['component']=='openssl'
+print('OK' if good else 'BAD:%r'%cs)" 2>/dev/null | tail -1)"
+{ eq "$cif" "OK"; } && ok || no "image/file 'contains' are not carriers" "$cif"
+
+begin "req14-base-os-from-syft-distro" "the builder reads the PINNED base release from syft's distro block (so the endoflife lookup matches the right cycle, not a hardcoded 'debian')"
+bos="$("$PY" -c "
+import importlib.util,json,tempfile
+spec=importlib.util.spec_from_file_location('m','.github/agent/bin/auditor-manifest.py'); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+p=tempfile.mktemp(suffix='.json'); json.dump({'distro':{'id':'debian','versionID':'12.0'}},open(p,'w'))
+print('OK' if M._base_os(p)=='debian 12.0' else 'BAD:%r'%M._base_os(p))" 2>/dev/null | tail -1)"
+{ eq "$bos" "OK"; } && ok || no "base_os from syft distro" "$bos"
+
 begin "req14-carried-notpullable-no-false-lift" "a scope carried as §2B not-pullable does NOT lift when the recheck cannot confirm the fix became pullable (model outage / carrier signal gone) — it re-carries the suppression, never fabricates 'lifted (fix now pullable)' (Sonnet round-1 blocker 1)"
 nfl="$("$PY" -c "$(_req14_env)
 purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
