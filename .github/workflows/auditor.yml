@@ -57,7 +57,7 @@ jobs:
       issues: write
       actions: read        # to list/download the rescan run's artifacts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Select and download the day's main-candidate-rescan artifacts
         id: rescan
