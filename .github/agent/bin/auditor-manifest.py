@@ -118,18 +118,21 @@ def _inv_syft(path):
     return total, osp
 
 
-_CARRY_RELS = {"contains": "bundled", "ownership-by-file-overlap": "embedded (file overlap)",
-               "dependency-of": "vendored"}
+# ONLY the "contains" relationship is a genuine carrier signal — the parent artifact BUNDLES the
+# child (e.g. a binary that embeds a library). syft's "dependency-of" links ordinary,
+# independently-upgradable packages (apt deps, Go stdlib) and is NOT carrying — including it
+# inverted every real relationship (dpkg "carried by" zlib1g); "ownership-by-file-overlap" is
+# likewise not embedding. Both are excluded (Sonnet round-1 blocker 2).
+_CARRY_RELS = {"contains": "bundled"}
 
 
 def _carriers(path):
     """Candidate carrier relationships from the syft SBOM (REQ-AUD-14 AC2): a vulnerable-capable
-    component (a package with a purl) that is CARRIED inside another artifact — bundled, embedded,
-    or vendored — rather than installed as its own managed package. Extracted from syft's
-    `artifactRelationships`; the parent is the carrier, the child the carried component. This is a
-    SAFE over-approximation: it only decides which findings get a pullability model call — a wrong
-    candidate returns pullable and falls through to normal routing, so a false carrier costs one
-    call, never a wrong disposition. The model does the authoritative carrier analysis."""
+    component (a package with a purl) that is CARRIED inside another artifact — the parent artifact
+    `contains` (bundles) the child. This is a SAFE over-approximation: it only decides which findings
+    get a pullability model call — a wrong candidate returns pullable and falls through to normal
+    routing, so a false carrier costs one call, never a wrong disposition. The model does the
+    authoritative carrier analysis."""
     try:
         d = json.load(open(path))
     except Exception:
@@ -156,6 +159,102 @@ def _carriers(path):
                     "component_version": child.get("version"), "carrier": parent.get("name"),
                     "carrier_purl": ppurl, "carrier_version": parent.get("version"), "how": how})
     return out
+
+
+# endoflife.date product ids for the carriers/base we recognize (REQ-AUD-14 AC6/AC7).
+_EOL_PRODUCT = {"debian": "debian", "ubuntu": "ubuntu", "alpine": "alpine",
+                "nodejs": "nodejs", "node": "nodejs", "python": "python",
+                "openssl": "openssl", "postgresql": "postgresql", "postgres": "postgresql",
+                "nginx": "nginx", "go": "go", "golang": "go"}
+
+
+def _eol_fetch(product):
+    """Best-effort endoflife.date lookup; None on any failure (offline, 404, timeout). The runner
+    has network; a failure simply produces no maintenance flag rather than blocking the manifest."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen("https://endoflife.date/api/%s.json" % product, timeout=10) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return None
+
+
+def _major(ver):
+    m = re.match(r"(\d+(?:\.\d+)?)", str(ver or ""))
+    return m.group(1) if m else None
+
+
+def _days_between(a, b):
+    from datetime import date
+    try:
+        return (date.fromisoformat(b) - date.fromisoformat(a)).days
+    except Exception:
+        return None
+
+
+def _cycle_status(cyc, today):
+    """endoflife cycle -> 'eol' | 'maintenance' | 'active' at `today`. A dated eol in the past is
+    end-of-life; an active LTS/maintenance window is 'maintenance'."""
+    def _passed(v):
+        return isinstance(v, str) and len(v) == 10 and v <= today
+    if _passed(cyc.get("eol")):
+        return "eol"
+    lts = cyc.get("lts")
+    if lts is True or _passed(lts):
+        return "maintenance"
+    return "active"
+
+
+def _match_cycle(data, ver):
+    maj = _major(ver)
+    if maj:
+        c = next((c for c in data if str(c.get("cycle")) == maj), None)
+        if c:
+            return c
+        c = next((c for c in data if str(c.get("cycle")) == maj.split(".")[0]), None)
+        if c:
+            return c
+    return None
+
+
+def _lifecycle(base_os, carriers, fetch, today):
+    """The `eol` maintenance-flag list and the `base` pin-lag block for the manifest header
+    (REQ-AUD-14 AC6/AC7), from endoflife.date via `fetch`. Pure given `fetch` and `today`, so the
+    suite injects canned endoflife data and never hits the network."""
+    eol = []; base = {}; seen = set()
+
+    def _add(product, cyc):
+        st = _cycle_status(cyc, today)
+        if st in ("eol", "maintenance") and product not in seen:
+            seen.add(product)
+            eol.append({"carrier": product, "cycle": str(cyc.get("cycle")), "status": st,
+                        "eol_date": cyc.get("eol") if isinstance(cyc.get("eol"), str) else None})
+
+    parts = (base_os or "").split()
+    bprod = _EOL_PRODUCT.get(parts[0].lower()) if parts else None
+    bver = parts[-1] if len(parts) > 1 else ""
+    bdata = fetch(bprod) if bprod else None
+    if bdata:
+        cyc = _match_cycle(bdata, bver) or (bdata[0] if bdata else None)
+        if cyc:
+            _add(bprod, cyc)
+            lrd = cyc.get("latestReleaseDate"); latest = str(cyc.get("latest") or "")
+            base = {"release": base_os, "behind_threshold_days": 30}
+            if isinstance(lrd, str) and len(lrd) == 10 and latest and latest != bver:
+                d = _days_between(lrd, today)
+                if d is not None:
+                    base["days_behind"] = d; base["latest"] = latest
+    for cr in (carriers or []):
+        nm = (cr.get("carrier") or "").lower(); prod = _EOL_PRODUCT.get(nm)
+        if not prod:
+            continue
+        d = fetch(prod)
+        if not d:
+            continue
+        cyc = _match_cycle(d, cr.get("carrier_version"))
+        if cyc:
+            _add(prod, cyc)
+    return eol, base
 
 
 def _inv_snyk(path):
@@ -364,16 +463,28 @@ def main():
     if not digest:
         digest = test_image.split("@")[-1] if "@" in test_image else "sha256:unknown"
 
+    # REQ-AUD-14 AC6/AC7: endoflife.date maintenance flags for the base + carriers, and the base
+    # pin-lag block (best-effort; empty when endoflife.date is unreachable).
+    from datetime import date
+    try:
+        _today_iso = os.environ.get("AUDITOR_TODAY") or date.today().isoformat()
+    except Exception:
+        _today_iso = "1970-01-01"
+    try:
+        _eol_list, _base_block = _lifecycle("debian", carriers, _eol_fetch, _today_iso)
+    except Exception as e:
+        print("lifecycle lookup failed: %s" % e); _eol_list, _base_block = [], {}
+
     manifest = {
         "commit": commit, "module": module, "base_os": "debian",
         "candidate_variant": "production", "candidate_digests": {"production": digest},
         "scanner_reports": scanner_reports, "scanner_status": status,
         "govulncheck": gvc, "known_defect_log": kdl if os.path.exists(kdl) else None,
         "kev_catalog": cli.opt("--kev"),
-        # REQ-AUD-14: SBOM carrier relationships (candidate not-pullable carriers). `eol` and
-        # `base` (endoflife.date status + base-pin lag) are populated best-effort when available;
-        # absent keys simply produce no maintenance flags.
-        "carriers": carriers,
+        # REQ-AUD-14: SBOM carrier relationships (candidate not-pullable carriers) + the
+        # endoflife.date maintenance flags (carriers/base on LTS/EOL lines) and the base pin-lag
+        # block. `eol`/`base` are best-effort (empty when endoflife.date is unreachable).
+        "carriers": carriers, "eol": _eol_list, "base": _base_block,
         "provenance": {"source": ("test-image" if test_image else "own-scan"), "candidate": src,
                        "scanned": "docker-archive"},
     }

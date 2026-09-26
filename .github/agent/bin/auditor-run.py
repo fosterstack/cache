@@ -1024,8 +1024,24 @@ def _dispose(c, findings, aliases, env, would, name=None):
             pull = _pullability(env["adjudicator"], pctx, env["state"])
             if pull is not None:
                 m_inc = 1
-        if pull and pull.get("pullable") is False:
+        # An acceptance requires ACTIONABLE evidence: a not-pullable verdict is written as accepted
+        # risk ONLY when it carries a machine-checkable lift trigger (AC3). An incomplete verdict
+        # ({"pullable": false} with no lift trigger) must NOT create a silent suppression — it falls
+        # through to the normal fixable routing, so the finding stays visible (Codex R1 residual 3).
+        _not_pullable = bool(pull and pull.get("pullable") is False and (pull.get("lift_trigger") or "").strip())
+        if _not_pullable:
             hold = pull.get("hold") or ("policy-held" if (base_hold and not carrier) else "upstream-held")
+            # An expired carried acceptance for THIS scope reopens into §3 BEFORE re-accepting — a
+            # lapsed time box is never silently renewed just because the fix is still not pullable
+            # (REQ-AUD-2 AC5c; parity with the no-fix expiry path, which skipped a fixed finding).
+            if _cexp and _cexp <= env.get("today", ts[:10]):
+                row.update(section=3, disposition="reopened: prior acceptance expired",
+                           action="time box lapsed %s — ignore removed; policy re-applied from scratch" % _cexp,
+                           reason="acceptance expired %s (fix exists but was not pullable)" % _cexp,
+                           reopened_expired=_cexp, vex_id=this_scope_id, scope_purls=_purls,
+                           is_os=not gf["is_go"], not_pullable=None,
+                           reopened_scope=[c, list(this_scope[0]), list(this_scope[1])])
+                return row, m_inc
             this_exp2 = _cexp or exp
             lift_trigger = pull.get("lift_trigger") or ""
             comp_fixed = pull.get("component_fixed") or gf["fixed"]
@@ -1074,11 +1090,53 @@ def _dispose(c, findings, aliases, env, would, name=None):
                     "cve": c, "package": gf["package"], "kind": "risk_acceptance", "reason_key": reason,
                     "scope": "%s@%s (severity %s, %s)" % (gf["package"], gf["installed"], gf["severity"], case)}
             return row, m_inc
+        # A scope carried AS NOT-PULLABLE (§2B) must NEVER lift without POSITIVE confirmation the fix
+        # became pullable. A model outage, a refusal, an incomplete verdict, or a vanished carrier
+        # signal on a later recheck must RE-CARRY the suppression — never fabricate "lifted (fix now
+        # pullable)" and delete the VEX with no evidence (Sonnet round-1 blocker 1). Only a confirmed
+        # pullable=True verdict falls through to the lift below.
+        confirmed_pullable = bool(pull and pull.get("pullable") is True)
+        if (c, this_scope) in env.get("carried_not_pullable", set()) and not confirmed_pullable:
+            if _cexp and _cexp <= env.get("today", ts[:10]):
+                row.update(section=3, disposition="reopened: prior acceptance expired",
+                           action="time box lapsed %s — ignore removed; policy re-applied from scratch" % _cexp,
+                           reason="acceptance expired %s (fix exists but not pullable; recheck deferred)" % _cexp,
+                           reopened_expired=_cexp, vex_id=this_scope_id, scope_purls=_purls,
+                           is_os=not gf["is_go"], reopened_scope=[c, list(this_scope[0]), list(this_scope[1])])
+                return row, m_inc
+            hold = "policy-held" if (base_hold and not carrier) else "upstream-held"
+            this_exp3 = _cexp or exp
+            cause = "adjudicator unavailable" if (carrier or base_hold) and pull is None else "carrier signal absent this run"
+            ev = {"check": "fix-not-pullable", "hold": hold, "recheck": "deferred", "cause": cause,
+                  "component": gf["package"], "installed": gf["installed"], "component_fixed": gf["fixed"]}
+            vex.write(out, c, "affected", ts,
+                      action="fix exists but is not pullable (%s); recheck deferred (%s); suppression retained" % (hold, cause),
+                      evidence=ev, target_date=this_exp3,
+                      lift_trigger="prior lift trigger stands (recheck deferred: %s)" % cause,
+                      vex_name=vn, subcomponents=subs)
+            _scn = sorted({f["scanner"] for f in findings})
+            for sc in _scn:
+                cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
+                           {"id": c, "vex": this_scope_id, "expiry": this_exp3, "scoped_purls": _purls,
+                            "reason": "fix not pullable (%s); recheck deferred; re-checked daily" % hold})
+            row.update(section=2, not_pullable=hold, disposition="carried (fix not pullable) — recheck deferred",
+                       action="POA&M: affected VEX + ignores retained, expiry %s; recheck deferred (%s)" % (this_exp3, cause),
+                       vex_id=this_scope_id, scope_purls=_purls, fixed=gf["fixed"],
+                       reason="fix exists but not pullable; recheck could not confirm a lift (%s)" % cause,
+                       ignore_files=[os.path.join("ignores", sc, vn + ".json") for sc in _scn] + [".snyk", "osv-scanner.toml"],
+                       threshold="below", expiry=this_exp3, carried=(_cstat == "affected"), is_os=not gf["is_go"],
+                       reachability="n/a (OS package)")
+            return row, m_inc
         # AC7: a fix that is now pullable LIFTS a suppression this scope was carrying — the old
         # affected/temporary VEX, ignore and inventory for this exact scope are removed this run
         # (delivery drops them) and the row is §1 lifted; otherwise a fresh fixable finding is §3.
         lifted = _carried or bool(env.get("carried_expiry", {}).get((c, this_scope)))
         lift_note = "; prior suppression lifted (VEX/ignore/inventory removed)" if lifted else ""
+        # REQ-AUD-14 AC4: when a NOT-PULLABLE carried scope lifts because the model reports the fix
+        # has become pullable, name the carrier/base release that reached the trigger — never drop it
+        # (Codex round-1 residual 5). The bump itself follows the ecosystem path below.
+        if lifted and pull and pull.get("pullable") and pull.get("candidate_release"):
+            lift_note += "; lift trigger met: %s embeds the fix" % pull.get("candidate_release")
         if gf["is_go"]:
             # A module WE BUILD: the auditor delivers the bump itself as a DRAFT PR through the
             # App path (go get module@fixed + go mod tidy, go.mod/go.sum only) — the actual
@@ -1175,7 +1233,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
-    carried_expiry = {}; carried_scopes = set(); carried_status = {}
+    carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
     ws0 = os.environ.get("GITHUB_WORKSPACE")
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -1214,6 +1272,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     continue
                 key = (cve, sc)                          # per (vulnerability, scope) (R1 refactor round-2 #1)
                 carried_expiry[key] = min(it["expiry"], carried_expiry.get(key, it["expiry"]))
+                if it.get("not_pullable"):               # REQ-AUD-14: this scope was carried as §2B
+                    carried_not_pullable.add(key)
         except Exception:
             carried_expiry = {}
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
@@ -1223,7 +1283,13 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
            "carried_status": carried_status, "today": today,
            # REQ-AUD-14: SBOM carrier relationships and base-pin evidence for the pullability class.
            "carriers": m.get("carriers") or [], "base": m.get("base") or {},
-           "base_policy_held": bool((m.get("base") or {}).get("policy_held"))}
+           "carried_not_pullable": carried_not_pullable,
+           # policy-held routing fires when the base is KNOWN to hold a fix: an explicit flag, or a
+           # base pin flagged behind its repository's fix by more than the threshold (AC7). On a
+           # current base, OS fixes stay on the existing base-rebuild path.
+           "base_policy_held": bool((m.get("base") or {}).get("policy_held")) or
+           (isinstance((m.get("base") or {}).get("days_behind"), int)
+            and (m.get("base") or {})["days_behind"] > (m.get("base") or {}).get("behind_threshold_days", 30))}
     rows = []; would = []; h_count = 0; m_count = 0
     for c, grp in sorted(groups.items()):
         # 1) trusted log FP closes ONLY the PACKAGES the log names (R11 rank 1) — every
@@ -1300,7 +1366,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                  "owner_issue": r.get("owner_issue"), "expiry": r.get("expiry", exp),
                  "vex_id": r.get("vex_id"),                       # the governing statement id
                  "product": policy.VEX_PRODUCT,                   # the FULL canonical scope, so
-                 "scope_purls": r.get("scope_purls") or []}       # inventory keys on scope, not a hash
+                 "scope_purls": r.get("scope_purls") or [],       # inventory keys on scope, not a hash
+                 "not_pullable": r.get("not_pullable")}           # REQ-AUD-14: the §2B hold kind, if any
                 for r in sections[2]]
     # findings_without_action is computed AFTER delivery (below), once every §1/§3 row's action
     # is final and the dry-run `would` list is populated (decision 2 moved fix delivery there).

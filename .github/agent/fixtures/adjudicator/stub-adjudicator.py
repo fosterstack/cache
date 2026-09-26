@@ -68,6 +68,8 @@ CANNED = {
         "candidate_release": "nodejs 20.11.0", "bump_attempted": True,
         "bump_result": "carrier now embeds the fix; pullable",
         "evidence": {"how": "statically linked", "carrier": "nodejs", "carrier_version": "20.11.0"}},
+    # an INCOMPLETE not-pullable verdict (no lift trigger) -> must not create a §2B acceptance
+    ("CVE-2099-VAGUE", "pullability"): {"refused": False, "pullable": False},
 }
 
 def _answer(req):

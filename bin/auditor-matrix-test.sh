@@ -2403,8 +2403,8 @@ purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
 env=mkenv('$WORK/req14-4',carriers=CARRIERS,carried_scopes={('CVE-2099-LIFT',sc)},carried_status={('CVE-2099-LIFT',sc):'affected'})
 row,_=R._dispose('CVE-2099-LIFT',[mkf('CVE-2099-LIFT')],['CVE-2099-LIFT'],env,[])
 R.cli.close_adjudicators()
-good=row['section']==1 and 'lifted' in (row.get('disposition') or '') and row.get('not_pullable') is None
-print('OK' if good else 'BAD sec=%s disp=%s np=%s'%(row['section'],row.get('disposition'),row.get('not_pullable')))" 2>/dev/null | tail -1)"
+good=row['section']==1 and 'lifted' in (row.get('disposition') or '') and row.get('not_pullable') is None and 'nodejs 20.11.0' in (row.get('action') or '')
+print('OK' if good else 'BAD sec=%s disp=%s np=%s act=%r'%(row['section'],row.get('disposition'),row.get('not_pullable'),row.get('action')))" 2>/dev/null | tail -1)"
 { eq "$a4" "OK"; } && ok || no "lift trigger met -> §1 lifted, no human step" "$a4"
 
 begin "req14-ac5-row-states-the-case" "the §2 row states the exact case: 'fix exists in <component> ≥ Y; not pullable: carried by <carrier> at Y′' (upstream-held) and the policy-held variant"
@@ -2418,6 +2418,81 @@ up=('fix exists in openssl >= 3.0.13' in r1['reason'] and 'carried by nodejs at 
 po=('policy-held' in r2['reason'] and 'lifts on base release >= debian 12.6' in r2['reason'] and r2.get('not_pullable')=='policy-held')
 print('OK' if up and po else 'BAD up=%r po=%r'%(r1['reason'],r2['reason']))" 2>/dev/null | tail -1)"
 { eq "$a5" "OK"; } && ok || no "row states the exact case (upstream + policy)" "$a5"
+
+begin "req14-production-client-answers-pullability" "the PRODUCTION adjudicator client (not just the stub) answers a pullability request with a parsed verdict (pullable/hold/lift_trigger) — the not-pullable class is reachable through the real model client (Codex round-1 blocker)"
+pc="$("$PY" -c "
+import importlib.util,os
+os.environ['AUDITOR_MODEL_PRIMARY']='m'
+spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+class B: text='Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", \"lift_trigger\": \"nodejs >= 20.11.0 embeds openssl >= 3.0.13\", \"candidate_release\": null}'
+class Msg: content=[B()]; usage=None
+class _M:
+    @staticmethod
+    def create(**k): return Msg()
+class Client: messages=_M()
+req={'kind':'pullability','finding_id':'CVE-X','component':'openssl','component_fixed':'3.0.13','carrier':{'carrier':'nodejs','carrier_version':'18.19.0'}}
+ans=C._handle(req,Client())
+good=ans.get('pullable') is False and ans.get('hold')=='upstream-held' and 'nodejs' in (ans.get('lift_trigger') or '')
+print('OK' if good else 'BAD:%r'%ans)" 2>/dev/null | tail -1)"
+{ eq "$pc" "OK"; } && ok || no "production client answers pullability" "$pc"
+
+begin "req14-ac6b-builder-lifecycle-from-endoflife" "the manifest builder computes the eol maintenance flags (base + carriers on LTS/EOL lines) and the base pin-lag block from endoflife.date data (best-effort producer wired, not just consumed)"
+a6b="$("$PY" -c "
+import importlib.util
+spec=importlib.util.spec_from_file_location('m','.github/agent/bin/auditor-manifest.py'); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+DATA={'debian':[{'cycle':'12','eol':'2028-06-10','lts':'2026-06-10','latest':'12.6','latestReleaseDate':'2024-06-15'}],
+      'nodejs':[{'cycle':'18','eol':'2025-04-30','lts':'2022-10-25','latest':'18.20.0','latestReleaseDate':'2024-03-26'}]}
+eol,base=M._lifecycle('debian 12.0',[{'carrier':'nodejs','carrier_version':'18.19.0'}],lambda p:DATA.get(p),'2026-09-25')
+st={e['carrier']:e['status'] for e in eol}
+good=st.get('debian')=='maintenance' and st.get('nodejs')=='eol' and base.get('days_behind',0)>30
+print('OK' if good else 'BAD eol=%r base=%r'%(eol,base))" 2>/dev/null | tail -1)"
+{ eq "$a6b" "OK"; } && ok || no "builder computes eol/base from endoflife" "$a6b"
+
+begin "req14-incomplete-verdict-no-acceptance" "a not-pullable verdict WITHOUT a machine-checkable lift trigger does NOT create a §2B accepted-risk suppression — it falls through to normal routing (Codex round-1 residual: incomplete answers must not suppress)"
+iv="$("$PY" -c "$(_req14_env)
+env=mkenv('$WORK/req14-vague',carriers=[{'component':'openssl','component_purl':OSPURL,'component_version':'1.1.1','carrier':'nodejs','carrier_purl':'p','carrier_version':'18','how':'x'}])
+row,_=R._dispose('CVE-2099-VAGUE',[mkf('CVE-2099-VAGUE')],['CVE-2099-VAGUE'],env,[])
+R.cli.close_adjudicators()
+print('OK' if row.get('not_pullable') is None and row['section']!=2 else 'BAD sec=%s np=%s'%(row['section'],row.get('not_pullable')))" 2>/dev/null | tail -1)"
+{ eq "$iv" "OK"; } && ok || no "incomplete not-pullable verdict does not suppress" "$iv"
+
+begin "req14-expired-not-pullable-reopens" "an expired carried not-pullable acceptance reopens to §3 (time box lapsed), never silently re-accepted just because the fix is still not pullable (Codex round-1 residual: expiry parity)"
+er="$("$PY" -c "$(_req14_env)
+purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
+env=mkenv('$WORK/req14-exp',carriers=CARRIERS,carried_expiry={('CVE-2099-CARRIED',sc):'2026-09-01'},today='2026-09-25')
+row,_=R._dispose('CVE-2099-CARRIED',[mkf('CVE-2099-CARRIED')],['CVE-2099-CARRIED'],env,[])
+R.cli.close_adjudicators()
+good=row['section']==3 and row.get('reopened_expired')=='2026-09-01' and row.get('not_pullable') is None
+print('OK' if good else 'BAD sec=%s reopened=%s np=%s'%(row['section'],row.get('reopened_expired'),row.get('not_pullable')))" 2>/dev/null | tail -1)"
+{ eq "$er" "OK"; } && ok || no "expired not-pullable acceptance reopens to §3" "$er"
+
+begin "req14-carrier-extraction-ignores-dependency-of" "the builder does NOT treat 'dependency-of' (ordinary independently-upgradable deps) or 'ownership-by-file-overlap' as carrier relationships — only 'contains' (parent bundles child); this avoids the inverted mapping that flagged every apt dep (Sonnet round-1 blocker 2)"
+cext="$("$PY" -c "
+import importlib.util
+spec=importlib.util.spec_from_file_location('m','.github/agent/bin/auditor-manifest.py'); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+import json,tempfile,os
+d={'artifacts':[{'id':'a1','name':'dpkg','version':'1','type':'deb','purl':'pkg:deb/debian/dpkg@1'},
+                {'id':'a2','name':'zlib1g','version':'1','type':'deb','purl':'pkg:deb/debian/zlib1g@1'},
+                {'id':'a3','name':'openssl','version':'1.1.1','type':'deb','purl':'pkg:deb/debian/openssl@1.1.1'},
+                {'id':'a4','name':'nodejs','version':'18','type':'binary','purl':'pkg:generic/node@18'}],
+   'artifactRelationships':[{'parent':'a2','child':'a1','type':'dependency-of'},
+                            {'parent':'a2','child':'a1','type':'ownership-by-file-overlap'},
+                            {'parent':'a4','child':'a3','type':'contains'}]}
+p=tempfile.mktemp(suffix='.json'); json.dump(d,open(p,'w'))
+cs=M._carriers(p)
+good=len(cs)==1 and cs[0]['carrier']=='nodejs' and cs[0]['component']=='openssl'
+print('OK' if good else 'BAD:%r'%cs)" 2>/dev/null | tail -1)"
+{ eq "$cext" "OK"; } && ok || no "only 'contains' is a carrier relationship" "$cext"
+
+begin "req14-carried-notpullable-no-false-lift" "a scope carried as §2B not-pullable does NOT lift when the recheck cannot confirm the fix became pullable (model outage / carrier signal gone) — it re-carries the suppression, never fabricates 'lifted (fix now pullable)' (Sonnet round-1 blocker 1)"
+nfl="$("$PY" -c "$(_req14_env)
+purl=OSPURL; sc=((policy.VEX_PRODUCT,),(purl,))
+env=mkenv('$WORK/req14-nofalselift',carriers=[],carried_scopes={('CVE-2099-CARRIED',sc)},carried_status={('CVE-2099-CARRIED',sc):'affected'},carried_not_pullable={('CVE-2099-CARRIED',sc)})
+row,_=R._dispose('CVE-2099-CARRIED',[mkf('CVE-2099-CARRIED')],['CVE-2099-CARRIED'],env,[])
+R.cli.close_adjudicators()
+good=row['section']==2 and row.get('not_pullable') in ('upstream-held','policy-held') and 'lifted' not in (row.get('disposition') or '') and 'deferred' in (row.get('disposition') or '')
+print('OK' if good else 'BAD sec=%s disp=%s'%(row['section'],row.get('disposition')))" 2>/dev/null | tail -1)"
+{ eq "$nfl" "OK"; } && ok || no "carried §2B does not false-lift when unconfirmed" "$nfl"
 
 begin "req14-ac6-header-flags-lts-eol-carrier" "the header flags any carrier on a maintenance-LTS or end-of-life line (endoflife.date), independent of any CVE"
 a6="$("$PY" -c "
