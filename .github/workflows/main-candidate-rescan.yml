@@ -361,7 +361,7 @@ jobs:
           trivy image --quiet --format json "${ref}" > /tmp/reports/trivy.json 2>/dev/null || true
           osv-scanner scan image --format json "${ref}" > /tmp/reports/osv-image.json 2>/dev/null || true
           osv-scanner scan source --format json ./go.mod > /tmp/reports/osv-gomod.json 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ always() }}
         with:
           name: rescan-scanner-reports
