@@ -531,16 +531,16 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   { eq "$idt" "write" && eq "$cont" "read" && eq "$aud" "https://api.anthropic.com" && eq "$ghs" "true" && eq "$tf" "true" && eq "$apik" "false"; } \
     && ok || no "OIDC wired via github-script, no API key" "id-token=$idt contents=$cont audience=$aud github-script=$ghs token-file=$tf api-key=$apik"; fi
 
-begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers + tokens come from secrets.* (GitHub masks them); the ONLY vars.* is the non-secret AUDITOR_SCHEDULE_MODE toggle — no secret identifier is ever a vars.*"
+begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers + tokens come from secrets.* (GitHub masks them); the ONLY vars.* are the non-secret AUDITOR_SCHEDULE_MODE and AUDITOR_AUTOMERGE toggles — no secret identifier is ever a vars.*"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","SNYK_TOKEN"]'
   fromsecrets="$(pj "$WORK/sh.json" 'str(sorted(d.get("secret_refs",[]))=='"$want"')')"
   # the only permitted variable is the non-secret schedule toggle; none of the secret
   # identifiers may appear as vars.* (they would not be masked)
-  onlytoggle="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))==["AUDITOR_SCHEDULE_MODE"])')"
+  onlytoggle="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))==["AUDITOR_AUTOMERGE","AUDITOR_SCHEDULE_MODE"])')"
   { eq "$fromsecrets" "True" && eq "$onlytoggle" "True"; } \
-    && ok || no "identifiers+SNYK_TOKEN via secrets.*; only vars.* is AUDITOR_SCHEDULE_MODE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
+    && ok || no "identifiers+SNYK_TOKEN via secrets.*; only vars.* are AUDITOR_SCHEDULE_MODE + AUDITOR_AUTOMERGE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
 
 begin "req6-ac2-token-budget-in-workflow" "driving usage to the budget stops the run with tokens_used>0 up to the cap"
 o="$WORK/budget"; rm -rf "$o"
@@ -646,7 +646,7 @@ run "$PY" "$BIN/auditor-notify.py" --github "$GH" --state "$ghs" --finding "$F/p
   title="$(pj "$ghs" 'd["issues"][0]["title"]')"
   titleok="$("$PY" -c 'import re,sys
 t=sys.argv[1]
-print("yes" if re.match(r"^owner-decision: CVE-2023-4911 — libc6 — \S", t) else "no")' "$title")"
+print("yes" if re.match(r"^auditor: owner-decision: CVE-2023-4911 — libc6 — \S", t) else "no")' "$title")"
   bodyok="$("$PY" -c 'import json,sys
 try:
     d=json.load(open(sys.argv[1])); i=d["issues"][0]
@@ -2567,6 +2567,98 @@ rep=R._render(m,[],{n:[] for n in range(1,8)},[],'AUDIT COMPLETE',True,'stub',{}
 hdr_ok=any('base pin debian 12.0 is 61 days behind' in l for l in rep.splitlines())
 print('OK' if np_ok and hdr_ok else 'BAD np=%s hdr=%s'%(np_ok,hdr_ok))" 2>/dev/null | tail -1)"
 { eq "$a7" "OK"; } && ok || no "policy-held distinguished + base-pin-behind header flag" "$a7"
+
+echo "=== REQ-AUD-17 — alerts and the auto-merge ramp ==="
+
+# a crafted source producing one Critical no-fix OS finding (grype+snyk, 2 lineages) -> §2
+# at-or-above POA&M -> an owner-decision issue and a non-empty §0.
+_req17_src() { local d="$1"; rm -rf "$d"; mkdir -p "$d"
+"$PY" - "$d" <<'PP'
+import json,sys
+d=sys.argv[1]
+json.dump({"matches":[{"vulnerability":{"id":"CVE-2099-CRIT","severity":"Critical","fix":{"state":"not-fixed"}},"artifact":{"purl":"pkg:deb/debian/libcrit@1.0","name":"libcrit"}}]},open(d+"/grype.json","w"))
+json.dump({"vulnerabilities":[{"id":"SNYK-CRIT","packageName":"libcrit","purl":"pkg:deb/debian/libcrit@1.0","severity":"critical","identifiers":{"CVE":["CVE-2099-CRIT"]}}]},open(d+"/snyk.json","w"))
+st={s:{"ran":True,"os_package_count":1,"package_count":1,"findings":1,"version":"x","db_date":"d"} for s in ("grype","snyk")}
+for s in ("trivy","osv-scanner","osv-scanner-gomod"): st[s]={"ran":False,"reason":"nr","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+json.dump({"defects":[]},open(d+"/log.json","w"))
+json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,"known_defect_log":d+"/log.json","scanner_reports":{"grype":d+"/grype.json","snyk":d+"/snyk.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None},"scanner_status":st},open(d+"/manifest.json","w"))
+PP
+}
+
+begin "req17-ac1-fixed-subject-prefix-family" "every PR and issue the auditor opens leads with one fixed subject-prefix family so a single mail filter catches them all; owner-decision issues keep their 'owner-decision:' sub-prefix"
+a1="$("$PY" -c "
+import sys; sys.path.insert(0,'.github/agent/bin')
+from auditorlib import policy
+oi=policy.owner_issue_title('CVE-1','pkg','critical-severity')
+good=(oi.startswith('auditor:') and 'owner-decision:' in oi
+      and policy.subject('x')=='auditor: x' and policy.subject('auditor: x')=='auditor: x'
+      and policy.STANDING_ISSUE_TITLE.startswith('auditor:'))
+print('OK' if good else 'BAD oi=%r'%oi)" 2>/dev/null | tail -1)"
+{ eq "$a1" "OK"; } && ok || no "fixed subject-prefix family on issues + PRs" "$a1"
+
+begin "req17-ac2-standing-needs-a-human-issue" "a single standing 'needs a human' issue is commented (find-or-create) on a run whose §0 is non-empty, and closed on a run whose §0 is empty"
+o="$WORK/req17-ac2"; rm -rf "$o"; sh1="$WORK/req17-ac2a.shim"; sh2="$WORK/req17-ac2b.shim"; rm -f "$sh1" "$sh2"; _req17_src "$WORK/req17-ac2-src"
+# non-empty §0 (Critical owner item) -> standing issue commented/created
+env AUDITOR_GIT_SHIM_LOG="$sh1" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/req17-ac2-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+open1="$(grep -c "issue create --title 'auditor: needs a human'" "$sh1" 2>/dev/null)"; open1="${open1:-0}"
+# empty §0 (a clean run: no findings, quorum OK -> AUDIT COMPLETE, §0 empty) -> standing issue closed
+o2="$WORK/req17-ac2c"; rm -rf "$o2"; dc="$WORK/req17-ac2-clean"; rm -rf "$dc"; mkdir -p "$dc"
+"$PY" - "$dc" <<'PP'
+import json,sys
+d=sys.argv[1]
+json.dump({"matches":[]},open(d+"/grype.json","w"))                          # zero findings
+json.dump({"Results":[]},open(d+"/trivy.json","w"))
+json.dump({"vulnerabilities":[],"dependencyCount":3},open(d+"/snyk.json","w"))
+st={s:{"ran":True,"os_package_count":3,"package_count":3,"findings":0,"version":"x","db_date":"d"} for s in ("grype","trivy","snyk")}
+for s in ("osv-scanner","osv-scanner-gomod"): st[s]={"ran":False,"reason":"nr","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+json.dump({"defects":[]},open(d+"/log.json","w"))
+json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,"known_defect_log":d+"/log.json","scanner_reports":{"grype":d+"/grype.json","trivy":d+"/trivy.json","snyk":d+"/snyk.json","osv-scanner":None,"osv-scanner-gomod":None},"scanner_status":st},open(d+"/manifest.json","w"))
+PP
+env AUDITOR_GIT_SHIM_LOG="$sh2" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$dc/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1 || true
+close2="$(grep -c "issue close --title 'auditor: needs a human'" "$sh2" 2>/dev/null)"; close2="${close2:-0}"
+{ [ "$open1" -ge 1 ] 2>/dev/null && [ "$close2" -ge 1 ] 2>/dev/null; } \
+  && ok || no "standing issue commented when §0 non-empty, closed when empty" "open=$open1 close=$close2"
+
+begin "req17-ac3-repo-var-draft-to-automerge" "the AUDITOR_AUTOMERGE repo variable flips the suppression PR from draft to auto-merge (squash); unset keeps it a draft"
+o="$WORK/req17-ac3"; rm -rf "$o"; shd="$WORK/req17-ac3-draft.shim"; sha="$WORK/req17-ac3-auto.shim"; rm -f "$shd" "$sha"; _req17_src "$WORK/req17-ac3-src"
+env AUDITOR_GIT_SHIM_LOG="$shd" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/req17-ac3-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+draft_draft="$(grep -c 'pr create --draft' "$shd" 2>/dev/null)"; draft_draft="${draft_draft:-0}"
+draft_auto="$(grep -c 'pr merge --auto --squash' "$shd" 2>/dev/null)"; draft_auto="${draft_auto:-0}"
+o2="$WORK/req17-ac3b"; rm -rf "$o2"
+env AUDITOR_AUTOMERGE=on AUDITOR_GIT_SHIM_LOG="$sha" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/req17-ac3-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1 || true
+auto_draft="$(grep -c 'pr create --draft' "$sha" 2>/dev/null)"; auto_draft="${auto_draft:-0}"
+auto_auto="$(grep -c 'pr merge --auto --squash' "$sha" 2>/dev/null)"; auto_auto="${auto_auto:-0}"
+{ [ "$draft_draft" -ge 1 ] 2>/dev/null && [ "$draft_auto" -eq 0 ] 2>/dev/null && [ "$auto_draft" -eq 0 ] 2>/dev/null && [ "$auto_auto" -ge 1 ] 2>/dev/null; } \
+  && ok || no "unset=draft/no-automerge; on=non-draft+automerge" "unset(draft=$draft_draft auto=$draft_auto) on(draft=$auto_draft auto=$auto_auto)"
+
+begin "req17-ac4-records-automerge-prompt-human-only" "records the auditor delivers auto-merge when the variable is on; a change touching the versioned prompt file NEVER auto-merges (human-merged always)"
+a4="$("$PY" -c "
+import os,importlib.util
+spec=importlib.util.spec_from_file_location('r','.github/agent/bin/auditor-run.py'); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+os.environ['AUDITOR_AUTOMERGE']='on'
+records=R._automerge_allowed(['.vex/fosterstack-cache.openvex.json','.snyk','.auditor/accepted-items.json','.auditor/proposals/adjudicator-proposals.json'])
+prompt=R._automerge_allowed(['.vex/fosterstack-cache.openvex.json','.github/agent/prompts/adjudicator.md'])
+os.environ['AUDITOR_AUTOMERGE']='off'
+off=R._automerge_allowed(['.snyk'])
+print('OK' if (records is True and prompt is False and off is False) else 'BAD records=%s prompt=%s off=%s'%(records,prompt,off))" 2>/dev/null | tail -1)"
+{ eq "$a4" "OK"; } && ok || no "records auto-merge; prompt file never does" "$a4"
+
+begin "req17-ac5-owner-items-hold-release-not-merge" "an owner-decision item (Critical/KEV acceptance) holds RELEASE authorization only; it never blocks the suppression PR from being delivered/merged"
+o="$WORK/req17-ac5"; rm -rf "$o"; sh="$WORK/req17-ac5.shim"; rm -f "$sh"; _req17_src "$WORK/req17-ac5-src"
+env AUDITOR_AUTOMERGE=on AUDITOR_GIT_SHIM_LOG="$sh" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/req17-ac5-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+# the merge is NOT blocked by the pending owner decision: the PR is delivered + auto-merge armed
+delivered="$(grep -c 'pr create' "$sh" 2>/dev/null)"; delivered="${delivered:-0}"
+armed="$(grep -c 'pr merge --auto --squash' "$sh" 2>/dev/null)"; armed="${armed:-0}"
+# but the RELEASE gate holds on the unaccepted at-or-above item.
+az="$WORK/req17-ac5-authz"; rm -rf "$az"; mkdir -p "$az"
+cp "$o/.auditor/accepted-items.json" "$az/cand.json" 2>/dev/null
+hold="$("$PY" -c "
+import json,sys
+d=json.load(open('$az/cand.json'))
+at=[i for i in d['accepted_items'] if i.get('threshold')=='at_or_above']
+print('yes' if at else 'no')" 2>/dev/null)"; hold="${hold:-no}"
+{ [ "$delivered" -ge 1 ] 2>/dev/null && [ "$armed" -ge 1 ] 2>/dev/null && eq "$hold" "yes"; } \
+  && ok || no "PR delivered/armed; owner item recorded for release-hold (not a merge block)" "delivered=$delivered armed=$armed at_threshold_item=$hold"
 
 echo "=== REQ-AUD-16 — auditor knowledge ==="
 

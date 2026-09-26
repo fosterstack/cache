@@ -221,6 +221,10 @@ jobs:
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           AUDITOR_ALLOW_REAL_GH: '1'   # this workflow is the ONLY context allowed to run real git/gh
+          # REQ-AUD-17 AC3: the owner's repo variable flips auditor PRs from draft to auto-merge
+          # (squash). Unset/anything-but-on keeps drafts (the dry week + the first live week). The
+          # merge still waits on all required checks + the main rulesets — the App has no bypass.
+          AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -uo pipefail
