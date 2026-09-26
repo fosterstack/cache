@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
 from auditorlib import vex
+from auditorlib import knowledge as K
 
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
 C = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(C)
@@ -208,6 +209,10 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     branch = "auditor/%s-%s" % (today, short)          # <date>-<short-sha>, off main, non-stacked
     title = "auditor: update suppressions (%d statements)" % nstmt
     body = "Automated suppression update from the daily CVE auditor. Draft for audit-lane review."
+    # REQ-AUD-16 AC4/AC3: carry model PROPOSALS and the generated knowledge doc in the same draft
+    # PR (proposals take effect only after the owner merges + an audit-lane reviewer promotes them).
+    extra = [p for p in (".auditor/proposals/adjudicator-proposals.json", ".auditor/knowledge.md")
+             if os.path.exists(os.path.join(out, p))]
     if dry:
         would.append("gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title)))
         print("dry-run would open draft PR on %s" % branch)
@@ -215,7 +220,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         seq = ["git checkout -B %s origin/main" % branch,
-               "git add .vex/fosterstack-cache.openvex.json .snyk osv-scanner.toml .auditor/accepted-items.json",
+               "git add .vex/fosterstack-cache.openvex.json .snyk osv-scanner.toml .auditor/accepted-items.json"
+               + ("" if not extra else " " + " ".join(extra)),
                "git commit -m %s" % shlex.quote(title),
                "git push -u origin %s" % branch,
                "gh pr create --draft --base main --head %s --title %s" % (branch, shlex.quote(title))]
@@ -246,9 +252,14 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         # coupled .auditor/accepted-items.json (retained affected statements keep their
         # inventory entry, R1 outer round-5 #2) — no wholesale copy of the run's inventory.
         _merge_suppressions(ws, supp)
+        # copy the run's proposals + generated knowledge into the checkout so they ride the PR.
+        for p in extra:
+            s = os.path.join(out, p); d = os.path.join(ws, p)
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            shutil.copyfile(s, d)
     except Exception as e:
         return None, "stage files: %s" % e
-    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml", ".auditor/accepted-items.json")
+    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml", ".auditor/accepted-items.json", *extra)
     r = _git("commit", "-m", title)
     if r.returncode != 0:
         return None, ("git commit: " + (r.stderr or "").strip())
@@ -682,6 +693,12 @@ def adjudicate(adjudicator, ctx, state):
             continue
         state["tokens"] += int(ans.get("token_usage") or 0)
         state.setdefault("roles_used", set()).add(role)
+        # REQ-AUD-16 AC4: a model-proposed defect-log/knowledge entry is collected (with its
+        # finding + evidence) for delivery in the draft PR; it is NEVER applied to the live records
+        # this run — it takes effect only after the owner merges the audit-lane PR.
+        if isinstance(ans.get("propose"), dict):
+            state.setdefault("proposals", []).append(
+                {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": ans["propose"]})
         return ans.get("category") or "unknown"
     return "adjudicator_error" if (errored and not refused) else "refused"
 
@@ -963,7 +980,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
         ctx = {"finding_id": c, "aliases": aliases, "package": gf["package"],
                "purl": findings[0].get("purl"), "installed_version": gf["installed"],
                "fixed_version": gf["fixed"], "scanners": sorted({f["scanner"] for f in findings}),
-               "severity": gf["severity"], "reachability": row["reachability"], "candidate_digest": env["digest"]}
+               "severity": gf["severity"], "reachability": row["reachability"], "candidate_digest": env["digest"],
+               "knowledge": env.get("knowledge")}   # REQ-AUD-16 AC3: generated patterns, for judgment
         cat = adjudicate(env["adjudicator"], ctx, env["state"]); m_inc = 1
         if cat == "false_positive":
             fev = C.fp_verified(ids, env["logpath"], findings)
@@ -1235,6 +1253,17 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     gvc, module, gvc_usable = C.manifest_gvc(m)
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
     idx = log_index(logpath)
+    # REQ-AUD-16 AC3: generate the knowledge document the model reads for pattern judgment from the
+    # structured records (the known-defect log), deterministically and with no model call, and
+    # carry it in the run output. Only TRUSTED rows contribute (a model-proposed row is excluded).
+    _klog = {}
+    if logpath and os.path.exists(logpath):
+        try:
+            _klog = json.load(open(logpath))
+        except Exception:
+            _klog = {}
+    knowledge_doc = K.generate(_klog)
+    cli.writef(os.path.join(out, ".auditor", "knowledge.md"), knowledge_doc)
     adjudicator = adjudicator or cli.opt("--adjudicator", os.path.join(HERE, "auditor-adjudicator-client.py"))
     # KEV availability is threshold EVIDENCE: an unavailable/malformed catalog is NOT the same
     # as "checked, not a member" (R1 outer round-3 #1). kev_ok=False fails threshold closed
@@ -1305,7 +1334,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
            "carried_expiry": carried_expiry, "carried_scopes": carried_scopes,
-           "carried_status": carried_status, "today": today,
+           "carried_status": carried_status, "today": today, "knowledge": knowledge_doc,
            # REQ-AUD-14: SBOM carrier relationships and base-pin evidence for the pullability class.
            "carriers": m.get("carriers") or [], "base": m.get("base") or {},
            "carried_not_pullable": carried_not_pullable, "carried_lift_trigger": carried_lift_trigger,
@@ -1480,6 +1509,17 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # release gate reads .auditor/accepted-items.json from the checkout (R1 outer round-1 #7).
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
                {"accepted_items": accepted, "run_date": today, "candidate_commit": m.get("commit")})
+    # REQ-AUD-16 AC4: model-proposed defect-log/knowledge entries are delivered in the draft PR as
+    # PROPOSALS only — never applied to the live known-defect log or knowledge doc this run. They
+    # take effect only after the owner merges the audit-lane PR that reviews them.
+    if state.get("proposals"):
+        cli.writej(os.path.join(out, ".auditor", "proposals", "adjudicator-proposals.json"),
+                   {"proposals": state["proposals"], "run_date": today,
+                    "candidate_commit": m.get("commit"),
+                    "note": ("MODEL PROPOSALS — not applied. Each entry is a model suggestion for a "
+                             "new known-defect-log entry or knowledge note; it takes effect only "
+                             "after this PR is merged and an audit-lane reviewer promotes it to a "
+                             "trusted row. The auditor never applies these itself (REQ-AUD-16 AC4).")})
     # Scopes whose carried acceptance expired and were reopened this run — delivery drops those
     # exact statements/ignores by canonical SCOPE (never CVE-wide), never renewing them
     # (REQ-AUD-13 AC6). Serialized as [[products], [purls]] pairs.

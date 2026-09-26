@@ -2568,6 +2568,93 @@ hdr_ok=any('base pin debian 12.0 is 61 days behind' in l for l in rep.splitlines
 print('OK' if np_ok and hdr_ok else 'BAD np=%s hdr=%s'%(np_ok,hdr_ok))" 2>/dev/null | tail -1)"
 { eq "$a7" "OK"; } && ok || no "policy-held distinguished + base-pin-behind header flag" "$a7"
 
+echo "=== REQ-AUD-16 — auditor knowledge ==="
+
+# shared crafted source: one PURE log-hit FP (CVE-2099-KNOWN) and one NEW unique-lineage no-fix
+# finding (CVE-2099-NEW, grype-only, not in the log) — the only case that consults the model.
+_req16_src() { local d="$1"; rm -rf "$d"; mkdir -p "$d"
+"$PY" - "$d" <<'PP'
+import json,sys
+d=sys.argv[1]
+json.dump({"matches":[
+  {"vulnerability":{"id":"CVE-2099-KNOWN","severity":"Medium","fix":{"state":"not-fixed"}},"artifact":{"purl":"pkg:deb/debian/libknown@1.0","name":"libknown"}},
+  {"vulnerability":{"id":"CVE-2099-NEW","severity":"Medium","fix":{"state":"not-fixed"}},"artifact":{"purl":"pkg:deb/debian/libnew@1.0","name":"libnew"}}
+]},open(d+"/grype.json","w"))
+st={"grype":{"ran":True,"os_package_count":2,"package_count":2,"findings":2,"version":"x","db_date":"d"}}
+for s in ("trivy","osv-scanner","osv-scanner-gomod","snyk"): st[s]={"ran":False,"reason":"nr","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+json.dump({"defects":[{"package":"libknown","disposition":"false_positive","evidence":"debian no-DSA (minor)",
+                       "keys":[{"scanner":"grype","finding_id":"CVE-2099-KNOWN","purl":"pkg:deb/debian/libknown@1.0"}]}]},open(d+"/log.json","w"))
+json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,
+           "known_defect_log":d+"/log.json",
+           "scanner_reports":{"grype":d+"/grype.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},"scanner_status":st},open(d+"/manifest.json","w"))
+PP
+}
+
+begin "req16-ac1-structured-deterministic-memory" "the run's memory is the STRUCTURED records (known-defect log + VEX), not model recall: a pure log-covered finding closes with NO model call"
+o="$WORK/req16-ac1"; rm -rf "$o"; : > "$LEDGER"; _req16_src "$WORK/req16-ac1-src"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/req16-ac1-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+calls="$(grep -c 'CVE-2099-KNOWN' "$LEDGER" 2>/dev/null)"; calls="${calls:-0}"
+closed="$(sed -n '/^## 5\./,/^## /p' "$o/report.md" 2>/dev/null | grep -c 'CVE-2099-KNOWN')"; closed="${closed:-0}"
+{ [ "$calls" -eq 0 ] 2>/dev/null && [ "$closed" -ge 1 ] 2>/dev/null; } \
+  && ok || no "pure log-covered finding closes with no model call" "ledger_calls=$calls closed_in_s5=$closed"
+
+begin "req16-ac2-versioned-prompt-file" "the model's standing instructions are a versioned prompt FILE (public; names no vendor/model); the adjudicator client loads them from the file, not an inline string"
+a2="$("$PY" -c "
+import importlib.util
+spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+d=C._load_prompt('disposition'); p=C._load_prompt('pullability'); n=C._load_prompt('narrative')
+loaded=bool(d and p and n)
+filled=C._fill(d, ask='answer', knowledge='K', context='C')
+novendor=not any(w in (d+p+n).lower() for w in ('claude','anthropic','openai','gpt','gemini','bedrock'))
+print('OK' if loaded and novendor and 'false_positive' in filled and '{context}' not in filled else 'BAD loaded=%s novendor=%s'%(loaded,novendor))" 2>/dev/null | tail -1)"
+inline="$(grep -c 'adjudicator for our own container image. Given this' .github/agent/bin/auditor-adjudicator-client.py 2>/dev/null)"; inline="${inline:-1}"
+{ eq "$a2" "OK" && [ -f ".github/agent/prompts/adjudicator.md" ] && [ "$inline" -eq 0 ] 2>/dev/null; } \
+  && ok || no "prompts loaded from the versioned file; no inline copy" "$a2 inline=$inline"
+
+begin "req16-ac3-knowledge-doc-generated" "the knowledge document is GENERATED from the structured records (deterministic; a model-proposed row is excluded), never free-written"
+a3="$("$PY" -c "
+import sys; sys.path.insert(0,'.github/agent/bin')
+from auditorlib import knowledge as K
+log={'defects':[{'package':'apt','disposition':'false_positive','keys':[{'scanner':'grype','finding_id':'CVE-2011-3374','purl':'pkg:deb/debian/apt@2.6.1'}],'evidence':'apt hardening'},
+                {'package':'x','disposition':'proposed','keys':[{'scanner':'grype','finding_id':'CVE-9999-0000','purl':'p'}],'evidence':'model guess'}]}
+d1=K.generate(log); d2=K.generate(log)
+good=(d1==d2) and ('CVE-2011-3374' in d1) and ('apt' in d1) and ('CVE-9999-0000' not in d1)
+print('OK' if good else 'BAD det=%s trusted=%s excl=%s'%(d1==d2,'CVE-2011-3374' in d1,'CVE-9999-0000' not in d1))" 2>/dev/null | tail -1)"
+{ eq "$a3" "OK"; } && ok || no "knowledge doc generated, deterministic, excludes proposed rows" "$a3"
+
+begin "req16-ac4-proposals-merge-gated" "a model-proposed defect-log entry is delivered as a PROPOSAL (with evidence), NOT applied: the live known-defect log is byte-unchanged this run and the versioned prompt file is untouched"
+o="$WORK/req16-ac4"; rm -rf "$o"; : > "$LEDGER"; d4="$WORK/req16-ac4-src"; rm -rf "$d4"; mkdir -p "$d4"
+"$PY" - "$d4" <<'PP'
+import json,sys
+d=sys.argv[1]
+json.dump({"matches":[{"vulnerability":{"id":"CVE-2099-PROPOSE","severity":"Medium","fix":{"state":"not-fixed"}},"artifact":{"purl":"pkg:deb/debian/libpropose@1.0","name":"libpropose"}}]},open(d+"/grype.json","w"))
+st={"grype":{"ran":True,"os_package_count":1,"package_count":1,"findings":1,"version":"x","db_date":"d"}}
+for s in ("trivy","osv-scanner","osv-scanner-gomod","snyk"): st[s]={"ran":False,"reason":"nr","os_package_count":0,"package_count":0,"findings":0,"version":None,"db_date":None}
+json.dump({"defects":[]},open(d+"/log.json","w"))
+json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,
+           "known_defect_log":d+"/log.json",
+           "scanner_reports":{"grype":d+"/grype.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},"scanner_status":st},open(d+"/manifest.json","w"))
+PP
+cp "$d4/log.json" "$d4/log.before"
+cp .github/agent/prompts/adjudicator.md "$d4/prompt.before"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$d4/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+prop="$(have "$o/.auditor/proposals/adjudicator-proposals.json" && echo yes || echo no)"
+ev="$("$PY" -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print("yes" if d.get("proposals") and d["proposals"][0]["propose"].get("evidence") else "no")' "$o/.auditor/proposals/adjudicator-proposals.json" 2>/dev/null)"; ev="${ev:-no}"
+logsame="$(cmp -s "$d4/log.json" "$d4/log.before" && echo yes || echo no)"
+promptsame="$(cmp -s .github/agent/prompts/adjudicator.md "$d4/prompt.before" && echo yes || echo no)"
+{ eq "$prop" "yes" && eq "$ev" "yes" && eq "$logsame" "yes" && eq "$promptsame" "yes"; } \
+  && ok || no "proposal delivered w/ evidence; live log + prompt file unchanged" "prop=$prop ev=$ev log=$logsame prompt=$promptsame"
+
+begin "req16-ac5-python-known-model-generalises" "cost split: a KNOWN finding (defect-log hit) makes ZERO model calls; the model is consulted ONLY to generalise the new unique-lineage no-fix suspected FP"
+o="$WORK/req16-ac5"; rm -rf "$o"; : > "$LEDGER"; _req16_src "$WORK/req16-ac5-src"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/req16-ac5-src/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
+known="$(grep -c 'CVE-2099-KNOWN' "$LEDGER" 2>/dev/null)"; known="${known:-0}"     # Python decides -> 0 calls
+newc="$(grep -c 'CVE-2099-NEW' "$LEDGER" 2>/dev/null)"; newc="${newc:-0}"           # model generalises -> called
+{ [ "$known" -eq 0 ] 2>/dev/null && [ "$newc" -ge 1 ] 2>/dev/null; } \
+  && ok || no "known costs 0 model calls; the new suspected FP is the only one consulted" "known=$known new=$newc"
+
 echo "=== REQ-AUD-15 — report structure v2 ==="
 
 begin "req15-ac1-pr-list-at-top" "after the header and before the sections, a 'PRs and issues this run' block lists what was/would be opened"

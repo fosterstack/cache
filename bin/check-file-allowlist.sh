@@ -94,6 +94,9 @@ ALLOW_PATTERNS=(
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   '^\.github/agent/bin/tests/[A-Za-z0-9._-]+\.py$'
+  # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
+  # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
+  '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
   # The production known-defect log the auditor reads (Round 11): trusted
   # dispositions authored only through the audit-lane PR review; starts empty.
   '^\.github/agent/known-defect-log\.json$'
