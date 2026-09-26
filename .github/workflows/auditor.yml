@@ -132,7 +132,7 @@ jobs:
       - name: Mint the federated OIDC identity token (real adjudicator only, after scans)
         id: oidc
         if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const token = await core.getIDToken('https://api.anthropic.com')
@@ -157,7 +157,7 @@ jobs:
 
       - name: Refresh the identity token in the background (runs longer than four minutes)
         if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs')
