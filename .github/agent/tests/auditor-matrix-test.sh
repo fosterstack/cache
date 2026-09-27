@@ -3229,6 +3229,66 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
+begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both vendors are clear; no record, a stale record (content changed after review) or an open blocker fails; a change outside .github/agent/ needs none"
+RG="$repo/$BIN/auditor-review-gate.py"; rg="$WORK/req18-ac3"; rm -rf "$rg"; mkdir -p "$rg/.github/agent/bin" "$rg/src"
+gt(){ git -C "$rg" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+gate(){ ( cd "$rg" && "$PY" "$RG" --base "$1" >/dev/null 2>&1 ); echo $?; }
+mkrec(){ ( cd "$rg" && t="$("$PY" "$RG" --print-tree)" && mkdir -p .github/agent/reviews && "$PY" - "$t" "$1" <<'RR'
+import json,sys
+t,blk=sys.argv[1],int(sys.argv[2]); ev="ab"*32
+rv={"codex":{"vendor":"openai","blockers_open":0,"evidence_sha256":ev},
+    "sonnet":{"vendor":"anthropic","blockers_open":blk,"evidence_sha256":ev}}
+json.dump({"schema":"auditor-review-record/v1","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
+           "stop":{"codex":"clear","sonnet":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
+RR
+) && gt add -A && gt commit -qm rec; }
+echo a > "$rg/.github/agent/bin/x.py"; echo s > "$rg/src/y"; gt init -q; gt add -A; gt commit -qm base; base="$(git -C "$rg" rev-parse HEAD)"
+echo b > "$rg/src/y"; gt commit -qam outside; outside="$(gate "$base")"
+echo b > "$rg/.github/agent/bin/x.py"; gt commit -qam change; norec="$(gate "$base")"
+mkrec 1; blocked="$(gate "$base")"
+mkrec 0; clear="$(gate "$base")"
+echo c > "$rg/.github/agent/bin/x.py"; gt commit -qam fixup; stale="$(gate "$base")"
+# an unchanged-content rename OUT of .github/agent/ is still an auditor change (rename detection
+# would otherwise report only the new, outside path)
+mkrec 0; base2="$(git -C "$rg" rev-parse HEAD)"; gt mv .github/agent/bin/x.py src/x.py; gt commit -qm moveout; moved="$(gate "$base2")"
+mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/reviews"; echo "print(1)" > "$rg/.github/agent/reviews/not-a-record.py"; gt add -A; gt commit -qm smuggle; smuggled="$(gate "$base3")"
+{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1"; } \
+  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled"
+
+
+begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a separate PUBLISHER holds only a review-gate App token (checks:write, branch-restricted environment) and never touches PR data; only PRs into the default branch are judged"
+wg="$(python3 - <<'WG'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+src=open(".github/workflows/agent-review-gate.yml").read(); d=yaml.safe_load(src)
+on=d.get("on") or d.get(True) or {}
+J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{})
+jr="\n".join(x.get("run","") for x in j.get("steps",[])); pr="\n".join(x.get("run","") for x in p.get("steps",[]))
+co=[x for x in j.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
+tok=[x for x in p.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
+main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
+ok=(list(on)==["pull_request_target"] and "edited" in on["pull_request_target"]["types"]
+    and d.get("permissions")=={} and set(J)=={"judge","publish"}
+    # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
+    and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j)
+    and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
+    and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
+    and 'git merge-base HEAD "$HEAD_SHA"' in jr and "base.sha" not in yaml.safe_dump(j)
+    and "python3 .github/agent/bin/auditor-review-gate.py --base" in jr
+    and "checkout" not in jr and "pip install" not in jr
+    # publisher: env-scoped App token, checks:write only, no PR data, not on cancellation
+    and p.get("needs")=="judge" and p.get("environment")=="review-gate" and p.get("permissions")=={}
+    and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and main_only in str(j.get("if"))
+    and len(tok)==1 and (tok[0].get("with") or {}).get("permission-checks")=="write"
+    and "actions/checkout" not in yaml.safe_dump(p) and "refs/pull" not in pr and "git " not in pr
+    and "-f name=auditor-review-gate" in pr and '-f head_sha="$HEAD_SHA"' in pr and "statuses" not in src)
+print("OK" if ok else "BAD")
+WG
+)"
+# (the required-checks.json entry lands in a follow-up PR once the gate is proven on main:
+#  pull_request_target always runs the DEFAULT branch's workflow, so it cannot be proven earlier)
+eq "$wg" "OK" && ok || no "protected judge/publish pull_request_target gate" "workflow=$wg"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
