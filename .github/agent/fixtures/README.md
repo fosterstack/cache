@@ -1,7 +1,7 @@
 # Auditor test fixtures
 
-Checked-in INPUTS for the matrix-first suite (`bin/auditor-matrix-test.sh`, backing
-`docs/quality/cve-auditor-matrix.md`). The auditor does not exist yet; these are the
+Checked-in INPUTS for the matrix-first suite (`.github/agent/tests/auditor-matrix-test.sh`, backing
+`.github/agent/docs/cve-auditor-matrix.md`). The auditor does not exist yet; these are the
 native inputs each case drives, and the case then inspects the effect the auditor
 would produce. **No fixture contains an expectation** — every expected value lives in
 the test file next to its assertion. This is the change the second-gate review required:
@@ -42,7 +42,7 @@ changing field structure:
   `imported-not-called.json`. Non-Go reachability (the libssl case) is a **separate evidence
   type**, `reachability/libssl-not-reachable.evidence.json`, never dressed as govulncheck.
   Those modules' manifests are stored as `go.mod.fixture` (not `go.mod`) so the dependency
-  graph never indexes their deliberate vulnerable pin; `bin/govulncheck-fixtures-test.sh`
+  graph never indexes their deliberate vulnerable pin; `.github/agent/tests/govulncheck-fixtures-test.sh`
   materializes them into a throwaway temp module at test time (and, to regenerate the streams,
   materialize the same way, then run govulncheck over the temp module).
 - `kev/known-exploited-vulnerabilities.json` — real **CISA KEV** catalog (version 2026.09.21),

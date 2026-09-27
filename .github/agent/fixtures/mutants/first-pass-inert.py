@@ -1,5 +1,5 @@
 # Source: independent second-gate review, audits/2026-09-22/cve-auditor-matrix-second-gatefirst-pass-inert/evidence/first-pass-inert.py
-# Checked in verbatim as a TEST INPUT (adversary) for bin/auditor-matrix-mutants.sh. Not auditor code.
+# Checked in verbatim as a TEST INPUT (adversary) for .github/agent/tests/auditor-matrix-mutants.sh. Not auditor code.
 import json,sys
 from pathlib import Path
 name=Path(sys.argv[0]).stem

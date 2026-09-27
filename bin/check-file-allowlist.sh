@@ -71,7 +71,6 @@ ALLOW_PATTERNS=(
   '^\.githooks/pre-commit$'
   '^bin/check-file-allowlist\.sh$'
   '^bin/check-file-allowlist-test\.sh$'
-  '^bin/govulncheck-fixtures-test\.sh$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
@@ -86,14 +85,15 @@ ALLOW_PATTERNS=(
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
   '^bin/go-bump-open-pr-test\.sh$'
-  '^bin/auditor-matrix-test\.sh$'
-  '^bin/auditor-matrix-mutants\.sh$'
-  '^bin/auditor-parser-tests\.sh$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   '^\.github/agent/bin/tests/[A-Za-z0-9._-]+\.py$'
+  # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
+  # materializer) and its requirements matrix live under .github/agent/ with the code.
+  '^\.github/agent/tests/[A-Za-z0-9._-]+\.sh$'
+  '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
@@ -105,7 +105,7 @@ ALLOW_PATTERNS=(
   '^\.github/agent/adjudicator-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
-  # docs/quality/cve-auditor-matrix.md and bin/auditor-matrix-test.sh: real
+  # docs/cve-auditor-matrix.md and tests/auditor-matrix-test.sh (both under .github/agent/): real
   # captured scanner output, native-schema samples, and canned test doubles
   # (no secrets, no private-side content).
   '^\.github/agent/fixtures/README\.md$'
@@ -122,7 +122,7 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/mutants/[A-Za-z0-9._-]+\.py$'
   # The fixture modules are stored ENTIRELY as .fixture files — go.mod.fixture / go.sum.fixture
   # AND the sources as *.go.fixture — and materialized into a throwaway temp module at test time
-  # (bin/govulncheck-fixtures-test.sh). Storing go.mod/go.sum would re-index the deliberate
+  # (.github/agent/tests/govulncheck-fixtures-test.sh). Storing go.mod/go.sum would re-index the deliberate
   # vulnerable pin (golang.org/x/text v0.3.0) in the dependency graph; storing a plain *.go with
   # no manifest would fold these package-main sources into the parent module and break
   # `go ./...` / gosec. So a plain go.mod / go.sum / *.go here is intentionally NOT allowed.

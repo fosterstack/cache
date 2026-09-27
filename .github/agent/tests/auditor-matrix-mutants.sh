@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mutation harness for the CVE-auditor matrix suite. It installs, in a temp copy of
 # the repo, each adversarial stand-in class from the two independent second-gate
-# reviews, runs bin/auditor-matrix-test.sh against it, and asserts the class buys no
+# reviews, runs .github/agent/tests/auditor-matrix-test.sh against it, and asserts the class buys no
 # undue passes. This is what makes "nothing false-passes" a permanent, on-demand
 # property. The stand-ins are the reviewers' own, checked in verbatim under
 # .github/agent/fixtures/mutants/ as TEST INPUTS (adversaries), not auditor code.
@@ -25,7 +25,7 @@
 # suite with fixtures/README.md moved away and requires an identical result (no
 # command under test reads the README).
 set -uo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/.." && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/../../.." && pwd)"
 MUT="$repo/.github/agent/fixtures/mutants"
 EFFECT="$MUT/effect-standin.py"; INERT="$MUT/first-pass-inert.py"; PROBE="$MUT/probe-standin.py"
 PY=python3
@@ -33,12 +33,14 @@ fails=0
 # Static cases parse the workflow file and exported policy fixtures only — they call
 # no auditor command, so any command-mutant replacement passes them legitimately once
 # a valid workflow exists. Command mutants are graded on the cases they can affect.
-STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-conditional-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry dadj-5-grype-counts-apk-and-rpm-os-packages req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env req16-ac4-malformed-proposal-dropped"
+STATIC="req1-ac1-workflow-path req1-ac1-triggers-exactly-schedule-and-dispatch req1-ac1-no-push-pr-triggers req1-ac1-schedule-cron-offset req1-ac1-dispatch-dryrun-default-true req5-ac2-token-scope req6-ac1-env-agent-conditional-main-no-prtarget req6-ac1-oidc-federation-no-api-key req6-ac1-identifiers-are-env-secrets req12-ac3-workflow-invokes-the-entrypoint-with-dryrun req12-schedule-mode-unset-is-dry dadj-5-grype-counts-apk-and-rpm-os-packages req15-ac8-section6-7-removed r16-exactly-one-gh-token-key-in-driver-env req16-ac4-malformed-proposal-dropped req18-ac1-suites-wired-into-required-allowlist-job req18-suite-leaves-checkout-untouched"
 is_static(){ case " $STATIC " in *" $1 "*) return 0;; *) return 1;; esac; }
 MK="$(mktemp -d)"; trap 'rm -rf "$MK"' EXIT
-cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/bin/auditor-matrix-test.sh" | sort -u; }
+cmds() { grep -oE 'auditor-[a-z0-9-]+\.py' "$repo/.github/agent/tests/auditor-matrix-test.sh" | sort -u; }
+# copies are git repositories (the layout case lists tracked files), never the real checkout's .git
+gitify() { ( cd "$1" && git init -q && git add -A && git -c user.name=m -c user.email=m@m -c commit.gpgsign=false commit -qm copy ) >/dev/null 2>&1; }
 passes_of() {   # passes_of <workdir>  -> prints the pass case names (one per line)
-  ( cd "$1" && bash bin/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
+  ( cd "$1" && bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
 }
 
 # run_mutant <label> <mode> <standin> [workflow-variant]
@@ -46,22 +48,22 @@ passes_of() {   # passes_of <workdir>  -> prints the pass case names (one per li
 run_mutant() {
   local label="$1" mode="$2" standin="$3" wf="${4:-}"
   local w; w="$(mktemp -d)"
-  rsync -a --exclude .git "$repo/" "$w/"
+  rsync -a --exclude .git "$repo/" "$w/"; gitify "$w"
   rm -rf "$w/.github/agent/bin"; mkdir -p "$w/.github/agent/bin"
   local c
   for c in $(cmds); do cp "$standin" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
   if [ -n "$wf" ]; then printf '%s' "$wf" > "$w/.github/workflows/auditor.yml"; fi
-  ( cd "$w" && AUDIT_MUTANT="$mode" AUDIT_MARKER="$MK/$label.marker" bash bin/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
+  ( cd "$w" && AUDIT_MUTANT="$mode" AUDIT_MARKER="$MK/$label.marker" bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
 }
 
 run_probe() {  # run_probe <label> <probemode> : install probe-standin in that mode, print passes
   local label="$1" pm="$2"; local w; w="$(mktemp -d)"
-  rsync -a --exclude .git "$repo/" "$w/"
+  rsync -a --exclude .git "$repo/" "$w/"; gitify "$w"
   rm -rf "$w/.github/agent/bin"; mkdir -p "$w/.github/agent/bin"
   local c
   for c in $(cmds); do cp "$PROBE" "$w/.github/agent/bin/$c"; chmod +x "$w/.github/agent/bin/$c"; done
-  ( cd "$w" && AUDIT_PROBE="$pm" AUDIT_MARKER="$MK/$label.marker" bash bin/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
+  ( cd "$w" && AUDIT_PROBE="$pm" AUDIT_MARKER="$MK/$label.marker" bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null ) | sed -n 's/^ok:   //p'
   rm -rf "$w"
 }
 marker_ok() {  # marker_ok <label> : the class must have reached a faulty branch
@@ -167,11 +169,13 @@ probe entrypoint-noop                req12-ac1-dryrun-produces-report-vex-accept
 
 echo "=== README independence (no command under test reads fixtures/README.md) ==="
 A="$(mktemp -d)"; B="$(mktemp -d)"; rsync -a --exclude .git "$repo/" "$A/"; rsync -a --exclude .git "$repo/" "$B/"
-mv "$B/.github/agent/fixtures/README.md" "$B/README-moved.txt" 2>/dev/null || true
-ra="$(cd "$A" && bash bin/auditor-matrix-test.sh 2>/dev/null | grep 'auditor-matrix:')"
-rb="$(cd "$B" && bash bin/auditor-matrix-test.sh 2>/dev/null | grep 'auditor-matrix:')"
+mv "$B/.github/agent/fixtures/README.md" "$MK/README-moved.txt" 2>/dev/null || true   # out of the tree
+gitify "$A"; gitify "$B"
+ra="$(cd "$A" && bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null | grep 'auditor-matrix:')"
+rb="$(cd "$B" && bash .github/agent/tests/auditor-matrix-test.sh 2>/dev/null | grep 'auditor-matrix:')"
 rm -rf "$A" "$B"
-if [ "$ra" = "$rb" ] && [ -n "$ra" ]; then echo "PASS  readme-independence: identical ($ra)"; else
+# identical AND green: two equally-failing baselines prove nothing (Codex round-1 residual)
+if [ "$ra" = "$rb" ] && [ -n "$ra" ] && printf '%s' "$ra" | grep -q ', 0 failed'; then echo "PASS  readme-independence: identical ($ra)"; else
   echo "FAIL  readme-independence: with=$ra without=$rb"; fails=$((fails+1)); fi
 
 echo "----"

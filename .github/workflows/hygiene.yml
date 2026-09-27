@@ -25,7 +25,7 @@ jobs:
         run: bash bin/check-file-allowlist-test.sh
 
       - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
-        run: bash bin/govulncheck-fixtures-test.sh
+        run: bash .github/agent/tests/govulncheck-fixtures-test.sh
 
       - name: set up Python for the workflow-permission check
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -35,6 +35,14 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           python3 bin/check-workflow-permissions.py
+
+      - name: auditor layout — everything auditor-related under .github/agent/ (REQ-AUD-18 AC1)
+        run: git ls-files | python3 .github/agent/bin/auditor-layout-check.py
+
+      - name: auditor suites — parser unit tests and the requirements-matrix suite
+        run: |
+          bash .github/agent/tests/auditor-parser-tests.sh
+          bash .github/agent/tests/auditor-matrix-test.sh
 
       - name: privacy candidate-trace analyzer regressions (B03)
         run: bash bin/analyze-egress-trace-test.sh
