@@ -9,8 +9,9 @@ library at runtime. It accepts exactly that block shape:
             <key>: <value>
 
 (and an empty `ignore:` / `ignore: {}`, and `patch: {}`). Scalars are exactly what the writer
-emits: a single-quoted string with no quote inside, or a plain token of [A-Za-z0-9._:+-] (a version,
-a timestamp); selectors are single-quoted. No YAML feature is interpreted — a trailing comment, an
+emits: a single-quoted string with no quote inside, or — the writer's only plain forms — an ISO
+timestamp value (`expires`) or a version token; selectors are single-quoted, ids a plain
+[A-Za-z0-9._-] token. No YAML feature is interpreted — a trailing comment, an
 anchor/alias/tag, a double-quoted or escaped string, a flow collection — so none is "read as text"
 with a meaning YAML would not give it: anything else raises ValueError, and the caller treats an
 unreadable policy as a failed check (fail closed), never as "no ignores". Whole-line `#` comments
@@ -18,12 +19,15 @@ and blank lines are skipped (YAML ignores them too).
 """
 import re
 
-_PLAIN = r"[A-Za-z0-9._:+-]+"
+_VERSION = r"[A-Za-z0-9._-]+"
+_TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z"
 _QUOTED = r"'[^']*'"
 _TOP = re.compile(r"^(version|ignore|patch):(?: (.*))?$")
-_ID = re.compile(r"^  (?P<id>[A-Za-z0-9._:-]+):$")
+_ID = re.compile(r"^  (?P<id>[A-Za-z0-9._-]+):$")
 _SEL = re.compile(r"^    - (?P<sel>" + _QUOTED + r"):$")
-_KV = re.compile(r"^        (?P<k>[A-Za-z_][A-Za-z0-9_-]*): (?P<v>" + _QUOTED + "|" + _PLAIN + r")$")
+# a value is single-quoted, or a bare timestamp — never any other plain scalar (whose YAML meaning,
+# e.g. a trailing `:` that makes it invalid, this reader would otherwise have to reproduce)
+_KV = re.compile(r"^        (?P<k>[A-Za-z_][A-Za-z0-9_-]*): (?P<v>" + _QUOTED + "|" + _TIMESTAMP + r")$")
 
 
 def _scalar(v):
@@ -44,7 +48,7 @@ def load(text):
                 raise ValueError(".snyk line %d: `ignore:` must open a block" % n)
             if section == "patch" and rest != "{}":
                 raise ValueError(".snyk line %d: only an empty `patch: {}` is accepted" % n)
-            if section == "version" and not re.fullmatch(_PLAIN, rest):
+            if section == "version" and not re.fullmatch(_VERSION, rest):
                 raise ValueError(".snyk line %d: version must be a plain token" % n)
             cur_id = cur_props = None
             continue

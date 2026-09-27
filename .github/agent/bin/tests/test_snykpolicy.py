@@ -52,7 +52,7 @@ class StrictReader(unittest.TestCase):
             {"@id": "https://x/vex#stmt-cve-2099-2", "status": "not_affected",
              "vulnerability": {"name": "CVE-2099-2"}, "products": [{"@id": "p"}]},
         ]
-        expiry = {("CVE-2099-1", "pkg:deb/debian/openssl@3"): "2026-12-01T00:00:00.000Z"}
+        expiry = {("CVE-2099-1", "pkg:deb/debian/openssl@3"): "2026-12-01"}   # a date, as every real source gives
         snyk_text, _ = R._ignores_from_statements(stmts, expiry)
         self.assert_agrees(snyk_text)
         got = snykpolicy.load(snyk_text)["ignore"]
@@ -62,7 +62,7 @@ class StrictReader(unittest.TestCase):
 
     def test_empty_and_accepted_top_level_forms(self):
         for text in ("version: v1.5.0\nignore:\n", "version: v1.5.0\nignore: {}\npatch: {}\n",
-                     "# comment\n\nversion: v1\nignore:\n  ID-1:\n    - 'pkg:x@1':\n        reason: r\n"
+                     "# comment\n\nversion: v1\nignore:\n  ID-1:\n    - 'pkg:x@1':\n        reason: 'r'\n"
                      "        expires: 2026-10-01T00:00:00.000Z\n        vex: 'https://x#stmt-id-1'\n"):
             self.assert_agrees(text)
 
@@ -89,6 +89,13 @@ class StrictReader(unittest.TestCase):
             body % '"https://x#\\x73tmt-cve-1"': "not in the auditor's ignore shape",
             body % "'a' 'b'": "not in the auditor's ignore shape",
             body % "!!str x": "not in the auditor's ignore shape",
+            # any plain value other than a timestamp: a trailing colon is invalid YAML (Codex AC2
+            # round-6 blocker), and a bare word has YAML semantics this reader will not reproduce
+            body % "stmt-cve-2011-3374:": "not in the auditor's ignore shape",
+            body % "none": "not in the auditor's ignore shape",
+            body % "2026-10-01T00:00:00.000Z:": "not in the auditor's ignore shape",
+            "version: v1:\n": "version must be a plain token",
+            "version: v1\nignore:\n  CVE-1::\n": "not in the auditor's ignore shape",
             "  ID-1:\n": "unexpected content",
         }
         for text, why in bad.items():
