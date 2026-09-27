@@ -25,6 +25,21 @@ def _pkg_of(purl):
     return m.group(1) if m else None
 
 
+def _fullname_of(purl):
+    """The purl's namespace/name (e.g. golang.org/x/text), without type, version or qualifiers."""
+    m = re.match(r"pkg:[^/]+/([^@?#]+)", purl or "")
+    return m.group(1) if m else None
+
+
+def _row_names_package(rowpkg, purl):
+    """A log row's package names THIS purl only on path-segment boundaries: its short name, its
+    full name, or a package path inside its module (golang.org/x/text/language on the
+    golang.org/x/text module). Never a substring — a row for `ssl` must not clear `openssl`."""
+    full = _fullname_of(purl)
+    return bool(rowpkg) and (rowpkg == _pkg_of(purl) or rowpkg == full
+                             or (full is not None and rowpkg.startswith(full + "/")))
+
+
 def _verify(cve, aliases, purls, ev):
     src = ev.get("source_file")
     if not src or not os.path.exists(src):
@@ -43,7 +58,7 @@ def _verify(cve, aliases, purls, ev):
             if not any(k.get("finding_id") in ids for k in row.get("keys", [])):
                 continue
             rowpkg = row.get("package")
-            if rowpkg and (rowpkg in pkgs or any(rowpkg in v for v in purls.values())):
+            if any(_row_names_package(rowpkg, v) for v in purls.values()):
                 return   # the log names a false_positive for THIS package -> verified
         sys.exit("suppress: no false_positive log row for %s on package(s) %s — refusing"
                  % (cve, sorted(pkgs)))

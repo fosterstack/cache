@@ -1,0 +1,49 @@
+# REQ-AUD-18 AC2 — coverage exclusions for the auditor's Python (.github/agent/bin/), mirroring
+# the Go gate's .github/policy/coverage-exclusions.txt. Checked by
+# .github/agent/tests/coverage-check.py.
+#
+# One range per line:  <path>:<first>-<last>  <one-line reason>
+# A range must exclude at least one unexecuted statement and NO executed one (the gate fails a
+# stale or over-wide range). Only code that genuinely needs Anthropic's endpoint or a real
+# GitHub token / API may be excluded; everything else is tested. "An exclusion that hides
+# testable code" is on the review loop's merge-blocker list.
+#
+# Measured scope: .github/agent/bin/ minus .github/agent/bin/tests/ (the tests themselves).
+# fixtures/ holds test inputs, doubles and vendored PyYAML — test code, not auditor code.
+#
+# Whole-file entries: tracked .py under .github/agent/ that is NOT auditor code — one exact path per
+# line (no globs), so every new excluded file is its own reviewed line. The checker inventories every
+# tracked .py there from the git index, independently of the coverage config; each must be measured
+# or named here.
+.github/agent/bin/tests/test_cov_adjudicator_client.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_cov_decisions.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_cov_manifest.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_cov_run.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_cov_small.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_parsers.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_snykpolicy.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/fixtures/adjudicator/fail-on-call.py  test double (stub adjudicator / fail-on-call / fake GitHub API) the suites drive the auditor with
+.github/agent/fixtures/adjudicator/fake-github-api.py  test double (stub adjudicator / fail-on-call / fake GitHub API) the suites drive the auditor with
+.github/agent/fixtures/adjudicator/stub-adjudicator.py  test double (stub adjudicator / fail-on-call / fake GitHub API) the suites drive the auditor with
+.github/agent/fixtures/mutants/effect-standin.py  adversarial stand-in the mutants harness installs in place of the auditor
+.github/agent/fixtures/mutants/first-pass-inert.py  adversarial stand-in the mutants harness installs in place of the auditor
+.github/agent/fixtures/mutants/probe-standin.py  adversarial stand-in the mutants harness installs in place of the auditor
+.github/agent/fixtures/testlib/pyyaml/__init__.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/composer.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/constructor.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/cyaml.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/dumper.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/emitter.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/error.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/events.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/loader.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/nodes.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/parser.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/reader.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/representer.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/resolver.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/scanner.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/serializer.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/pyyaml/tokens.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
+.github/agent/fixtures/testlib/yamlshape.py  test-owned workflow-shape reader used only by the matrix suite
+.github/agent/tests/coverage-check.py  the gate's own checker (test infrastructure), exercised by the matrix suite's req18-ac2 case

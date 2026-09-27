@@ -1,0 +1,7 @@
+# Hash-pinned coverage measurement for the auditor's Python (REQ-AUD-18 AC2), installed by CI
+# with `pip install --require-hashes --only-binary=:all:`. No transitive dependencies. Bump via
+# the pip ecosystem in dependabot.yml (directory /.github/agent), like adjudicator-requirements.txt.
+
+coverage==7.16.2 \
+    --hash=sha256:5375ebd99038021b35e99dc88255022912c06565d316212f4a576e4b08d30f5d \
+    --hash=sha256:11d28e9123a9156cb405d8d27b44256c9a58fb5decc2073a8f17862057e3aa0f

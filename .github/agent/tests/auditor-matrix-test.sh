@@ -3116,6 +3116,103 @@ HH
 )"
 eq "$hy" "OK" && ok || no "layout check + suites, unconditional, in the required allowlist job" "$hy"
 
+begin "req18-ac2-python-100pct-coverage-gate" "the required 'coverage' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
+cg="$(python3 - <<'CC'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["coverage"]
+g=[x for x in j["steps"] if ".github/agent/tests/coverage-gate.sh" in x.get("run","")]
+ok=(j.get("name")=="coverage" and len(g)==1 and "--require-hashes" in g[0]["run"]
+    and ".github/agent/coverage-requirements.txt" in g[0]["run"]
+    and "if" not in g[0] and "continue-on-error" not in g[0])
+print("OK" if ok else "BAD")
+CC
+)"
+cd2="$WORK/req18-ac2"; rm -rf "$cd2"; mkdir -p "$cd2"
+"$PY" - "$cd2" <<'CJ'
+import json,os,sys
+d=sys.argv[1]
+def cov(name,ex,miss): json.dump({"files":{"m.py":{"executed_lines":ex,"missing_lines":miss}}},open(os.path.join(d,name),"w"))
+cov("full.json",[1,2,3],[]); cov("gap.json",[1,2],[3]); cov("empty.json",[],[])
+json.dump({"files":{"m.py":{"executed_lines":[1,2],"missing_lines":[],"excluded_lines":[3]}}},open(os.path.join(d,"pragma.json"),"w"))
+for n,t in {"none.txt":"# none\n","ok.txt":"m.py:3-3  needs the real endpoint\n","wide.txt":"m.py:2-3  too wide\n",
+            "stale.txt":"m.py:1-1  nothing missing here\n","noreason.txt":"m.py:3-3\n",
+            "globok.txt":".github/agent/x/hidden.py  test double\n","globwide.txt":".github/agent/x/meas.py  test double\n",
+            "globbed.txt":".github/agent/x/*.py  test double\n"}.items():
+    open(os.path.join(d,n),"w").write(t)
+open(os.path.join(d,"inv.txt"),"w").write("m.py\n")
+open(os.path.join(d,"inv-omit.txt"),"w").write("m.py\n.github/agent/x/hidden.py\n")
+json.dump({"files":{"m.py":{"executed_lines":[1],"missing_lines":[]},".github/agent/x/meas.py":{"executed_lines":[1],"missing_lines":[]}}},open(os.path.join(d,"measured.json"),"w"))
+open(os.path.join(d,"inv-meas.txt"),"w").write("m.py\n.github/agent/x/meas.py\n")
+CJ
+CK="$repo/.github/agent/tests/coverage-check.py"
+cc(){ ( cd "$cd2" && "$PY" "$CK" "$1" "$2" --inventory "${3:-inv.txt}" >/dev/null 2>&1 ); echo $?; }
+full="$(cc full.json none.txt)"; gap="$(cc gap.json none.txt)"; excl="$(cc gap.json ok.txt)"; wide="$(cc gap.json wide.txt)"
+stale="$(cc full.json stale.txt)"; noreason="$(cc gap.json noreason.txt)"; empty="$(cc empty.json none.txt)"; pragma="$(cc pragma.json none.txt)"
+# a tracked file the report never mentions (e.g. dropped by a widened `omit`) fails unless a reasoned
+# whole-file entry names it; an entry over a MEASURED file fails (Codex + Sonnet AC2 round-3 blocker)
+omitted="$(cc full.json none.txt inv-omit.txt)"; globok="$(cc full.json globok.txt inv-omit.txt)"; globwide="$(cc measured.json globwide.txt inv-meas.txt)"
+globbed="$(cc full.json globbed.txt inv-omit.txt)"   # a directory glob is refused: each file its own line (Sonnet AC2 round-4 blocker)
+# end to end: the real gate config must not honour an inline "pragma: no cover" (Codex AC2 round-2 blocker)
+pg="$WORK/req18-ac2-pragma"; rm -rf "$pg"; mkdir -p "$pg/bin"
+printf 'def f(x):\n    if x:\n        return 1  # pragma: no cover\n    return 0\nf(0)\n' > "$pg/bin/m.py"
+sed -n '/^\[run\]/,/^EOF$/p' "$repo/.github/agent/tests/coverage-gate.sh" | sed '$d' | sed "s#\$PWD/.github/agent/bin#$pg/bin#; s#\$W/.coverage#$pg/.coverage#; /^omit/d" > "$pg/rc"
+if "$PY" -c 'import coverage' 2>/dev/null; then   # the gate's own job has it; the plain suite job may not
+  e2e="$( cd "$pg" && export -n COVERAGE_PROCESS_START COVERAGE_RCFILE; unset COVERAGE_PROCESS_START
+    COVERAGE_RCFILE="$pg/rc" "$PY" -m coverage run bin/m.py >/dev/null 2>&1 \
+    && COVERAGE_RCFILE="$pg/rc" "$PY" -m coverage json -q -o "$pg/c.json" >/dev/null 2>&1 \
+    && "$PY" -c 'import json,sys; f=list(json.load(open(sys.argv[1]))["files"].values())[0]; print("counted" if 3 in f["missing_lines"] and not f["excluded_lines"] else "honoured")' "$pg/c.json" \
+    || echo "error")"
+else e2e="no-coverage-module"; fi
+{ eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1" && eq "$pragma" "1" && eq "$omitted" "1" && eq "$globok" "0" && eq "$globwide" "1" && eq "$globbed" "1" \
+  && { eq "$e2e" "counted" || eq "$e2e" "no-coverage-module"; }; } \
+  && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1 pragma=1 omitted=1 glob-ok=0 entry-over-measured=1 glob-refused=1 gate-config-counts-pragma" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty pragma=$pragma omitted=$omitted glob_ok=$globok glob_wide=$globwide globbed=$globbed e2e=$e2e"
+
+begin "req18-ac2-identity-claims-logging-stubbed" "the workflow's OIDC step (run under node with a stub core + crafted token) logs EXACTLY the seven federation-rule claims — never the token, never another claim — masks and writes the token; a malformed token warns and does not throw"
+ic="$WORK/req18-idc"; rm -rf "$ic"; mkdir -p "$ic/rt" "$ic/rt-bad"
+python3 - "$ic/oidc.js" <<'IC'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+st=[s for j in yaml.safe_load(open(".github/workflows/auditor.yml"))["jobs"].values() for s in j.get("steps",[]) if s.get("id")=="oidc"]
+open(sys.argv[1],"w").write(st[0]["with"]["script"] if len(st)==1 else "")
+IC
+cat > "$ic/run.js" <<'JS'
+const fs = require('fs'); const src = fs.readFileSync(process.argv[2], 'utf8'); const tok = process.argv[3];
+const log = {aud: null, info: [], warning: [], secret: [], exported: {}};
+const core = {getIDToken: async a => { log.aud = a; return tok }, setSecret: t => log.secret.push(t),
+  exportVariable: (k, v) => { log.exported[k] = v }, info: m => log.info.push(m), warning: m => log.warning.push(String(m))};
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+(async () => { await new AsyncFunction('core', 'require', src)(core, require); console.log(JSON.stringify(log)) })()
+  .catch(e => { console.error(String(e)); process.exit(1) });
+JS
+b64(){ printf '%s' "$1" | base64 | tr -d '=\n' | tr '/+' '_-'; }
+claims='{"sub":"repo:o/r:environment:agent","aud":"https://api.anthropic.com","ref":"refs/heads/main","job_workflow_ref":"o/r/.github/workflows/auditor.yml@refs/heads/main","environment":"agent","repository":"o/r","repository_owner_id":"42","jti":"XNEVERLOGX","iss":"https://token.actions.githubusercontent.com"}'
+tok="$(b64 '{"alg":"RS256"}').$(b64 "$claims").SIGNATUREXYZ"
+good="$(RUNNER_TEMP="$ic/rt" node "$ic/run.js" "$ic/oidc.js" "$tok" 2>&1)"; rcg=$?
+bad="$(RUNNER_TEMP="$ic/rt-bad" node "$ic/run.js" "$ic/oidc.js" "not-a-jwt" 2>&1)"; rcb=$?
+idv="$(python3 - "$good" "$bad" "$tok" "$ic/rt" <<'IV'
+import json,sys
+try:
+    g=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); tok=sys.argv[3]; rt=sys.argv[4]
+except Exception as e:
+    print("BAD parse %s"%e); sys.exit()
+want={"sub":"repo:o/r:environment:agent","aud":"https://api.anthropic.com","ref":"refs/heads/main","job_workflow_ref":"o/r/.github/workflows/auditor.yml@refs/heads/main","environment":"agent","repository":"o/r","repository_owner_id":"42"}
+pre="OIDC identity claims (federation-rule inputs): "
+info=[m for m in g["info"] if m.startswith(pre)]
+# the COMPLETE info log is exactly that one line — nothing else may be logged (Codex AC2 round-2 residual)
+logged=json.loads(info[0][len(pre):]) if len(info)==1 and len(g["info"])==1 else None
+alltext=json.dumps(g["info"]+g["warning"])
+fp=g["exported"].get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+ok=(g["aud"]=="https://api.anthropic.com" and logged==want and tok not in alltext and "SIGNATUREXYZ" not in alltext
+    and "XNEVERLOGX" not in alltext and g["secret"]==[tok] and fp==rt+"/anthropic-identity-token"
+    and open(fp).read()==tok and not g["warning"]
+    and b["info"]==[] and len(b["warning"])==1 and "could not decode OIDC claims" in b["warning"][0] and b["secret"]==["not-a-jwt"])
+print("OK" if ok else "BAD logged=%r warnings=%r bad=%r"%(logged,g["warning"],b))
+IV
+)"
+{ eq "$rcg" "0" && eq "$rcb" "0" && eq "$idv" "OK"; } \
+  && ok || no "claims logged exactly, token never; malformed token warns" "rc_good=$rcg rc_bad=$rcb verdict=$idv"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"

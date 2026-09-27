@@ -78,26 +78,6 @@ def _real_gh_allowed():
     return os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
 
 
-def _emit_create(cmd, dry, would):
-    """A create action. dry-run records it in the §6 would-open list and PRINTS it; a real
-    run writes to the test-only shim ledger when AUDITOR_GIT_SHIM_LOG is set (the suite),
-    else runs real `gh`."""
-    if dry:
-        would.append(cmd)
-        print("dry-run would create: " + cmd)
-        return
-    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
-    if log:
-        open(log, "a").write(cmd + "\n")
-    elif not _real_gh_allowed():
-        print("would (real gh disabled): " + cmd)
-    else:
-        try:
-            subprocess.run(shlex.split(cmd), check=False)
-        except Exception as e:
-            print("create failed (%s): %s" % (cmd, e))
-
-
 def _issue_pending_note(ref):
     """Honest action wording when an owner issue was NOT actually delivered but did not fail:
     a dry-run preview ("dry") or a real run with gh delivery disabled ("skipped"). Never say
@@ -105,38 +85,31 @@ def _issue_pending_note(ref):
     return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
 
 
-def log_index(logpath):
+class DefectLogInvalid(Exception):
+    """The known-defect log exists but is not a JSON object — a log problem, never reported as
+    a manifest problem, and never a traceback."""
+
+
+def load_defect_log(logpath):
+    """The known-defect log as a dict ({} when there is none); DefectLogInvalid when unreadable."""
+    if not (logpath and os.path.exists(logpath)):
+        return {}
+    try:
+        with open(logpath) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise DefectLogInvalid("%s: %s" % (logpath, e))
+    if not isinstance(d, dict):
+        raise DefectLogInvalid("%s: top level is %s, want an object" % (logpath, type(d).__name__))
+    return d
+
+
+def log_index(log):
     idx = {}
-    if logpath and os.path.exists(logpath):
-        for row in json.load(open(logpath)).get("defects", []):
-            for k in row.get("keys", []):
-                idx[(k["scanner"], k["finding_id"], k["purl"])] = row
+    for row in log.get("defects", []):
+        for k in row.get("keys", []):
+            idx[(k["scanner"], k["finding_id"], k["purl"])] = row
     return idx
-
-
-def _open_pr(branch, title, lane, dry, would, commit_msg):
-    """Open a branch PR the RIGHT way: create the branch, commit, push, THEN gh pr create —
-    so the PR never targets a branch that was never made (R1 round-4). dry records only the
-    pr-create in the §6 would-open list; a real run (or the test shim) records/executes the
-    full git sequence. NOTE: a real push needs contents:write on the job — see the report
-    header when that is absent."""
-    seq = ["git checkout -b %s" % branch, "git add -A",
-           "git commit --allow-empty -m %s" % shlex.quote(commit_msg),
-           "git push -u origin %s" % branch,
-           "gh pr create --head %s --base main --label %s --title %s" % (branch, lane, shlex.quote(title))]
-    if dry:
-        would.append(seq[-1]); print("dry-run would open PR on %s: %s" % (branch, title)); return
-    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
-    if log:
-        open(log, "a").write("\n".join(seq) + "\n")
-        return
-    # The driver does NOT shell out to git/gh to open a PR. It cannot: the job holds
-    # contents:read, so a push fails; and a driver that ran real git is what oscillated
-    # across rounds 3-5 (silent push failure + a lying "opened" line, files written outside
-    # the checkout so the commit was empty, branches stacking). Instead it RECORDS the
-    # proposal (the branch, the commit, the exact PR) into out/pr-proposals.jsonl; an
-    # authorized delivery step (owner decision: a contents:write job or a PAT) opens it.
-    print("PR proposed (driver does not deliver; needs an authorized step): %s" % seq[-1])
 
 
 def _emit_owner_issue(title, body, dry, would):
@@ -1321,16 +1294,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         dry = True
     gvc, module, gvc_usable = C.manifest_gvc(m)
     logpath = m.get("known_defect_log"); ts = today + "T00:00:00Z"
-    idx = log_index(logpath)
+    _klog = load_defect_log(logpath)
+    idx = log_index(_klog)
     # REQ-AUD-16 AC3: generate the knowledge document the model reads for pattern judgment from the
     # structured records (the known-defect log), deterministically and with no model call, and
     # carry it in the run output. Only TRUSTED rows contribute (a model-proposed row is excluded).
-    _klog = {}
-    if logpath and os.path.exists(logpath):
-        try:
-            _klog = json.load(open(logpath))
-        except Exception:
-            _klog = {}
     knowledge_doc = K.generate(_klog)
     cli.writef(os.path.join(out, ".auditor", "knowledge.md"), knowledge_doc)
     adjudicator = adjudicator or cli.opt("--adjudicator", os.path.join(HERE, "auditor-adjudicator-client.py"))
@@ -2211,6 +2179,9 @@ def main():
         print("daily CVE auditor: no manifest supplied"); return 2
     try:
         complete = run(manifest, dry, out, today, kevpath=kev)
+    except DefectLogInvalid as e:
+        print("daily CVE auditor: known-defect log invalid — %s" % e)
+        return 3
     except ValueError as e:
         print("daily CVE auditor: manifest invalid — %s" % e)
         return 3

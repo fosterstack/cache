@@ -92,7 +92,10 @@ ALLOW_PATTERNS=(
   '^\.github/agent/bin/tests/[A-Za-z0-9._-]+\.py$'
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
-  '^\.github/agent/tests/[A-Za-z0-9._-]+\.sh$'
+  '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
+  # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
+  '^\.github/agent/coverage-requirements\.txt$'
+  '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
