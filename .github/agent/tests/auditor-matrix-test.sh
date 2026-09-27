@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
-# (docs/quality/cve-auditor-matrix.md). Round-7 hardening after the second review
+# (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
 # pass. Fixtures are inputs only, in neutral files with no prose; the mapping from
 # neutral name to scenario lives ONLY here and in fixtures/README.md (which no
 # command under test may read — the mutants harness proves the suite is identical
@@ -24,9 +24,9 @@
 #   suppression/disp-01 disposition ; set-01/ deliberately inconsistent set
 #   policy/env-01 good-env env-02 non-main ; rule-01 no-bypass rule-02 bypass
 #   adjudicator/scenario-01 refusal scenario ; stub/fail-on-call/fake-github doubles
-# Run on demand:  bash bin/auditor-matrix-test.sh   (never wired into CI)
+# Run:  bash .github/agent/tests/auditor-matrix-test.sh   (CI: hygiene.yml, required 'allowlist' job)
 set -uo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/.." && pwd)"; cd "$repo"
+here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/../../.." && pwd)"; cd "$repo"
 PY=python3
 F=".github/agent/fixtures"
 BIN=".github/agent/bin"
@@ -37,8 +37,14 @@ GH="$F/adjudicator/fake-github-api.py"
 YAML="$PY $F/testlib/yamlshape.py"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 LEDGER="$WORK/model.ledger"; export AUDITOR_MODEL_LEDGER="$LEDGER"
+# The live delivery path merges suppressions into GITHUB_WORKSPACE (default: cwd = this checkout).
+# Every case runs against a throwaway workspace instead, so the suite never rewrites the real
+# .vex/.snyk/osv-scanner.toml/.auditor (REQ-AUD-18); a case needing its own sets it explicitly.
+export GITHUB_WORKSPACE="$WORK/workspace"; mkdir -p "$GITHUB_WORKSPACE"; cp -R .vex "$GITHUB_WORKSPACE/" 2>/dev/null || true
 MISS="__MISSING__"
 pass=0; fail=0
+# snapshot of the checkout: the suite must leave it exactly as it found it (final case).
+REPO_STATE0="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 CASE=""; DESC=""
 begin(){ CASE="$1"; DESC="$2"; : > "$LEDGER"; }
 ok(){ echo "ok:   $CASE"; pass=$((pass+1)); }
@@ -556,7 +562,7 @@ run "$PY" "$BIN/auditor-loop-guard.py" --max 5 --scenario would-loop --adjudicat
   { eq "$stop" "true" && eq "$n" "5"; } && ok || no "exactly 5 ledger attempts and a stop report" "attempts=$n stop=$stop"; }
 
 begin "req6-ac4-no-key-leak" "a canary is never printed to stdout OR stderr, nor written anywhere under the output tree"
-o="$WORK/leak"; rm -rf "$o"; canary="sk-ant-oat01-CANARY-$$"
+o="$WORK/leak"; rm -rf "$o"; canary="sk-""ant-oat01-CANARY-$$"   # split: this suite lives under the scanned .github/agent/
 run env AUDITOR_TEST_CANARY="$canary" "$PY" "$BIN/auditor-no-key-leak.py" --scan .github/agent --out "$o" && {
   inout="$(printf '%s' "$OUT" | grep -cF "$canary")"
   inerr="$(grep -cF "$canary" "$WORK/stderr" 2>/dev/null)"; inerr="${inerr:-0}"
@@ -1244,7 +1250,10 @@ cat > "$fb/git" <<'EOF'
 exit 0
 EOF
 chmod +x "$fb/gh" "$fb/git"
-env PATH="$fb:$PATH" AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
+# the real-gh path merges suppressions into GITHUB_WORKSPACE (default: cwd = this repo) — point
+# it at a throwaway copy so the suite never rewrites the real .vex/.snyk/.auditor (REQ-AUD-18).
+ws="$WORK/r16t-ws"; rm -rf "$ws"; mkdir -p "$ws"; cp -R .vex "$ws/"
+env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
   "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 issuejob="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=JOB_TOKEN_456')"; issuejob="${issuejob:-0}"
 issueapp="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; issueapp="${issueapp:-0}"
@@ -3073,6 +3082,43 @@ rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,Non
 pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
 print("OK" if ("CVE-AAA (skipped)" in pl and "CVE-BBB (skipped)" in pl) else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
 { eq "$csr" "OK"; } && ok || no "distinct skipped owner items each listed" "$csr"
+
+echo "=== REQ-AUD-18 engineering hygiene ==="
+begin "req18-ac1-everything-under-agent" "the layout check passes the real tree and FAILS an auditor-named path or a file referring to .github/agent/ outside it; workflows, the allowlist and the generated outputs are the only exemptions"
+LC="$repo/$BIN/auditor-layout-check.py"
+git ls-files 2>/dev/null | "$PY" "$LC" >/dev/null 2>&1; real=$?
+lr="$WORK/req18-ac1"; rm -rf "$lr"; mkdir -p "$lr/docs"; printf 'see .github/agent/bin/auditor-run.py\n' > "$lr/docs/notes.md"; printf 'plain\n' > "$lr/docs/other.md"
+printf 'bin/auditor-new.sh\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; named=$?
+printf 'docs/notes.md\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; refers=$?
+mkdir -p "$lr/.auditor/proposals" "$lr/.vex"; printf '{}' > "$lr/.auditor/accepted-items.json"; printf '{"id":1}' > "$lr/.auditor/proposals/p1.json"
+printf '.github/workflows/auditor.yml\nbin/check-file-allowlist.sh\n.auditor/accepted-items.json\n.auditor/proposals/p1.json\n.github/agent/tests/x.sh\ndocs/other.md\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; exempt=$?
+# auditor code smuggled into the output locations (Codex round-1 blocker): a non-contract name
+# under .vex/ or .auditor/, or a contract .json path that is not JSON, fails.
+cp "$repo/$BIN/auditor-report.py" "$lr/.vex/auditor-helper.md"; cp "$repo/$BIN/auditor-report.py" "$lr/.auditor/proposals/p2.json"
+printf '.vex/auditor-helper.md\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; smug1=$?
+printf '.auditor/proposals/p2.json\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; smug2=$?
+old="$(git ls-files 'bin/auditor-*' 'docs/quality/cve-auditor-*' 2>/dev/null | wc -l | tr -d ' ')"
+{ eq "$real" "0" && eq "$named" "1" && eq "$refers" "1" && eq "$exempt" "0" && eq "$smug1" "1" && eq "$smug2" "1" && eq "$old" "0"; } \
+  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old"
+
+begin "req18-ac1-suites-wired-into-required-allowlist-job" "hygiene.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
+hy="$(python3 - <<'HH'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml  # the vendored reader — never whatever PyYAML the host happens to have
+d=yaml.safe_load(open(".github/workflows/hygiene.yml")); j=d["jobs"]["allowlist"]
+st=j["steps"]; runs=[x.get("run","") for x in st]
+ok=(j.get("name")=="allowlist" and any("auditor-layout-check.py" in r for r in runs)
+    and any(".github/agent/tests/auditor-matrix-test.sh" in r for r in runs)
+    and any(".github/agent/tests/auditor-parser-tests.sh" in r for r in runs)
+    and not any(("continue-on-error" in x) or ("if" in x) for x in st if "auditor-" in x.get("run","")))
+print("OK" if ok else "BAD")
+HH
+)"
+eq "$hy" "OK" && ok || no "layout check + suites, unconditional, in the required allowlist job" "$hy"
+
+begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
+REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
 echo "auditor-matrix: ${pass} passed, ${fail} failed"

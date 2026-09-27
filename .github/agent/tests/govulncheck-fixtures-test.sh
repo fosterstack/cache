@@ -12,7 +12,7 @@
 # harness only proves the fixtures stay materializable and well-formed, and that no plain
 # go.mod / go.sum is tracked under src/ (which would re-index them).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../../.."
 SRC=.github/agent/fixtures/govulncheck/src
 
 pass=0; fail=0
