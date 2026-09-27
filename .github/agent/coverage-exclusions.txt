@@ -10,3 +10,13 @@
 #
 # Measured scope: .github/agent/bin/ minus .github/agent/bin/tests/ (the tests themselves).
 # fixtures/ holds test inputs, doubles and vendored PyYAML — test code, not auditor code.
+#
+# Whole-file entries: tracked .py under .github/agent/ that is NOT auditor code. The checker
+# inventories every tracked .py there independently of the coverage config; each must be measured
+# or listed here. `*` never crosses a `/`.
+.github/agent/bin/tests/test_*.py  the unit tests themselves (test code — the Go gate does not measure _test.go either)
+.github/agent/tests/*.py  the gate's own test infrastructure (coverage-check.py), exercised by the matrix suite's req18-ac2 case
+.github/agent/fixtures/adjudicator/*.py  test doubles: stub adjudicator, fail-on-call adjudicator, fake GitHub API
+.github/agent/fixtures/mutants/*.py  adversarial stand-ins the mutants harness installs in place of the auditor
+.github/agent/fixtures/testlib/yamlshape.py  test-owned workflow-shape reader used only by the matrix suite
+.github/agent/fixtures/testlib/pyyaml/*.py  vendored third-party PyYAML (upstream code, pinned copy, not auditor code) — also imported by auditor-consistency.py

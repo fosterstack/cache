@@ -1,41 +1,61 @@
 #!/usr/bin/env python3
 """REQ-AUD-18 AC2 — the zero-uncovered check over a `coverage json` report.
 
-usage: coverage-check.py <coverage.json> <exclusions.txt> [<report-out>]
+usage: coverage-check.py <coverage.json> <exclusions.txt> [<report-out>] [--inventory <file>]
 
-Exclusions file: one range per line, `<path relative to the repo>:<first>-<last>  <reason>`
-(`#` comments and blank lines ignored). Every range must carry a reason, must cover at least one
-statement that is actually unexecuted, and must cover NO executed statement — a range that
-hides code the suite already runs is stale or too wide and fails the gate (the review loop's
-merge-blocker list separately includes "an exclusion that hides testable code").
+Exclusions file, one entry per line (`#` comments and blank lines ignored), each with a reason:
+  <path>:<first>-<last>  <reason>   a line range in a measured file
+  <glob>  <reason>                  whole files that are not auditor code (tests, doubles, vendored
+                                    third-party code); `*` never crosses a `/`
+A range must cover at least one unexecuted statement and NO executed one; a glob must match at
+least one inventory file and no file the report measured. (The review loop's merge-blocker list
+separately includes "an exclusion that hides testable code".)
 
-Fails on: any uncovered, non-excluded statement; an empty measurement; any malformed, stale,
-or over-wide exclusion; any line coverage.py excluded on its own (an inline `pragma: no cover`). Writes a per-file table to <report-out> when given.
+The INVENTORY is every tracked .py under .github/agent/ (`git ls-files`, or --inventory: one path
+per line) — independent of the coverage config. Every inventory file must be measured in the report
+or matched by a glob entry, so no `omit`/`include`/`source` setting can drop a file silently. A
+tracked symlink under .github/agent/ fails (it could alias measured code into an excluded path).
+
+Fails on: any uncovered, non-excluded statement; an empty measurement; any malformed, stale or
+over-wide entry; any line coverage.py excluded on its own (an inline `pragma: no cover`); any
+inventory file neither measured nor excluded; any tracked symlink.
+Writes a per-file table to <report-out> when given.
 """
-import json, os, re, sys
+import json, os, re, subprocess, sys
 
-_LINE = re.compile(r"^(?P<path>[^\s:]+):(?P<a>\d+)-(?P<b>\d+)\s+(?P<reason>\S.*)$")
+AGENT = ".github/agent/"
+_RANGE = re.compile(r"^(?P<path>[^\s:]+):(?P<a>\d+)-(?P<b>\d+)\s+(?P<reason>\S.*)$")
+_GLOB = re.compile(r"^(?P<glob>[^\s:]+)\s+(?P<reason>\S.*)$")
+
+
+def _glob_re(g):
+    return re.compile("^" + "".join("[^/]*" if c == "*" else re.escape(c) for c in g) + "$")
 
 
 def load_exclusions(path):
-    ranges, errs = [], []
+    ranges, globs, errs = [], [], []
     for n, raw in enumerate(open(path), 1):
         s = raw.strip()
         if not s or s.startswith("#"):
             continue
-        m = _LINE.match(s)
-        if not m:
-            errs.append("exclusions line %d: want '<path>:<first>-<last>  <reason>', got %r" % (n, s))
+        m = _RANGE.match(s)
+        if m:
+            a, b = int(m["a"]), int(m["b"])
+            if a > b:
+                errs.append("exclusions line %d: range %d-%d is backwards" % (n, a, b))
+            else:
+                ranges.append((n, m["path"], a, b, m["reason"]))
             continue
-        a, b = int(m["a"]), int(m["b"])
-        if a > b:
-            errs.append("exclusions line %d: range %d-%d is backwards" % (n, a, b))
+        m = _GLOB.match(s)
+        if m and m["glob"].startswith(AGENT) and m["glob"].endswith(".py"):
+            globs.append((n, m["glob"], _glob_re(m["glob"]), m["reason"]))
             continue
-        ranges.append((n, m["path"], a, b, m["reason"]))
-    return ranges, errs
+        errs.append("exclusions line %d: want '<path>:<first>-<last>  <reason>' or "
+                    "'<.github/agent/...py glob>  <reason>', got %r" % (n, s))
+    return ranges, globs, errs
 
 
-def check(cov, ranges, root):
+def check(cov, ranges, root, globs=(), inventory=None):
     files = {os.path.relpath(k, root) if os.path.isabs(k) else k: v for k, v in cov["files"].items()}
     errs, table = [], []
     excluded = {}
@@ -54,6 +74,17 @@ def check(cov, ranges, root):
             errs.append("exclusions line %d: %s:%d-%d excludes no unexecuted statement — remove it"
                         % (n, path, a, b))
         excluded.setdefault(path, set()).update(hit)
+    if inventory is not None:
+        for n, g, rx, _ in globs:
+            if not any(rx.match(p) for p in inventory):
+                errs.append("exclusions line %d: %s matches no tracked file — remove it" % (n, g))
+            for p in sorted(p for p in files if rx.match(p)):
+                errs.append("exclusions line %d: %s excludes %s, which the report MEASURES — "
+                            "a whole-file entry may not hide measured code" % (n, g, p))
+        for p in sorted(inventory):
+            if p not in files and not any(rx.match(p) for _, _, rx, _ in globs):
+                errs.append("%s: not measured and not excluded — every tracked .py under %s is "
+                            "either covered or a reasoned whole-file entry" % (p, AGENT))
     total = cov_n = exc_n = 0
     for path in sorted(files):
         f = files[path]
@@ -86,18 +117,46 @@ def _ranges(lines):
     return ",".join(out)
 
 
+def _tracked(root):
+    """(tracked .py paths under .github/agent/, tracked symlinks there) from the git index."""
+    out = subprocess.run(["git", "ls-files", "-s", "--", AGENT], cwd=root, capture_output=True,
+                         text=True, check=True).stdout
+    py, links = [], []
+    for ln in out.splitlines():
+        meta, path = ln.split("\t", 1)
+        if meta.split()[0] == "120000":
+            links.append(path)
+        if path.endswith(".py"):
+            py.append(path)
+    return py, links
+
+
 def main(argv):
+    inv_file = None
+    if "--inventory" in argv:
+        i = argv.index("--inventory"); inv_file = argv[i + 1]; argv = argv[:i] + argv[i + 2:]
     cov = json.load(open(argv[0]))
-    ranges, errs = load_exclusions(argv[1])
-    more, table, (cov_n, total, exc_n) = check(cov, ranges, os.getcwd())
+    ranges, globs, errs = load_exclusions(argv[1])
+    root = os.getcwd()
+    if inv_file:
+        inventory, links = [ln.strip() for ln in open(inv_file) if ln.strip()], []
+    else:
+        inventory, links = _tracked(root)
+    errs += ["%s: tracked symlink under %s — not allowed (it could alias measured code into an "
+             "excluded path)" % (p, AGENT) for p in links]
+    more, table, (cov_n, total, exc_n) = check(cov, ranges, root, globs, inventory)
     errs += more
     if len(argv) > 2:
         with open(argv[2], "w") as fh:
             fh.write("\n".join(table) + "\n")
     for e in errs:
         print("::error::auditor python coverage: %s" % e)
-    print("auditor python: %d/%d eligible statements covered, %d excluded in %d range(s)"
-          % (cov_n, total, exc_n, len(ranges)))
+    print("auditor python: %d/%d eligible statements covered, %d excluded in %d range(s); "
+          "%d file(s) outside the gate by %d reasoned whole-file entr%s"
+          % (cov_n, total, exc_n, len(ranges),
+             sum(1 for p in inventory if p not in {os.path.relpath(k, root) if os.path.isabs(k) else k
+                                                   for k in cov["files"]}),
+             len(globs), "y" if len(globs) == 1 else "ies"))
     return 1 if errs else 0
 
 
