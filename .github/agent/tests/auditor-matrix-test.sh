@@ -3229,6 +3229,57 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
+begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both vendors are clear; no record, a stale record (content changed after review) or an open blocker fails; a change outside .github/agent/ needs none"
+RG="$repo/$BIN/auditor-review-gate.py"; rg="$WORK/req18-ac3"; rm -rf "$rg"; mkdir -p "$rg/.github/agent/bin" "$rg/src"
+gt(){ git -C "$rg" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+gate(){ ( cd "$rg" && "$PY" "$RG" --base "$1" >/dev/null 2>&1 ); echo $?; }
+mkrec(){ ( cd "$rg" && t="$("$PY" "$RG" --print-tree)" && mkdir -p .github/agent/reviews && "$PY" - "$t" "$1" <<'RR'
+import json,sys
+t,blk=sys.argv[1],int(sys.argv[2]); ev="ab"*32
+rv={"codex":{"vendor":"openai","blockers_open":0,"evidence_sha256":ev},
+    "sonnet":{"vendor":"anthropic","blockers_open":blk,"evidence_sha256":ev}}
+json.dump({"schema":"auditor-review-record/v1","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
+           "stop":{"codex":"clear","sonnet":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
+RR
+) && gt add -A && gt commit -qm rec; }
+echo a > "$rg/.github/agent/bin/x.py"; echo s > "$rg/src/y"; gt init -q; gt add -A; gt commit -qm base; base="$(git -C "$rg" rev-parse HEAD)"
+echo b > "$rg/src/y"; gt commit -qam outside; outside="$(gate "$base")"
+echo b > "$rg/.github/agent/bin/x.py"; gt commit -qam change; norec="$(gate "$base")"
+mkrec 1; blocked="$(gate "$base")"
+mkrec 0; clear="$(gate "$base")"
+echo c > "$rg/.github/agent/bin/x.py"; gt commit -qam fixup; stale="$(gate "$base")"
+# an unchanged-content rename OUT of .github/agent/ is still an auditor change (rename detection
+# would otherwise report only the new, outside path)
+mkrec 0; base2="$(git -C "$rg" rev-parse HEAD)"; gt mv .github/agent/bin/x.py src/x.py; gt commit -qm moveout; moved="$(gate "$base2")"
+mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/reviews"; echo "print(1)" > "$rg/.github/agent/reviews/not-a-record.py"; gt add -A; gt commit -qm smuggle; smuggled="$(gate "$base3")"
+{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1"; } \
+  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled"
+
+
+begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target from the BASE branch (never the PR's own gate), fetches the PR head as data only (no PR checkout, no persisted credentials), holds only contents:read + checks:write, and completes an auditor-review-gate CHECK RUN (app-pinned, never a commit status) on the PR head"
+wg="$(python3 - <<'WG'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+d=yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
+on=d.get("on") or d.get(True) or {}
+jobs=list(d["jobs"].values()); st=jobs[0]["steps"] if len(jobs)==1 else []
+co=[x for x in st if str(x.get("uses","")).startswith("actions/checkout@")]
+runs="\n".join(x.get("run","") for x in st)
+ok=(list(on)==["pull_request_target"] and d.get("permissions")=={"contents":"read","checks":"write"}
+    and len(co)==1 and set((co[0].get("with") or {}))=={"persist-credentials","fetch-depth"}
+    and (co[0]["with"]).get("persist-credentials") is False
+    and "refs/pull/${PR}/head:refs/remotes/pr/head" in runs
+    and "python3 .github/agent/bin/auditor-review-gate.py --base" in runs
+    and "check-runs\" -f name=auditor-review-gate" in runs and "-f head_sha=\"$HEAD_SHA\"" in runs
+    and "statuses" not in runs
+    and "checkout" not in runs and "pip install" not in runs and "secrets." not in open(".github/workflows/agent-review-gate.yml").read()
+    and any(str(x.get("if","")).startswith("always()") and "conclusion=\"$conclusion\"" in x.get("run","") for x in st))
+print("OK" if ok else "BAD")
+WG
+)"
+rc="$(python3 -c 'import json; d=json.load(open(".github/policy/required-checks.json")); print("OK" if {"context":"auditor-review-gate","integration_id":15368,"scope":"pull_request"} in d["required_checks"] else "BAD")')"
+{ eq "$wg" "OK" && eq "$rc" "OK"; } && ok || no "protected pull_request_target gate + required-checks entry" "workflow=$wg required_checks=$rc"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"

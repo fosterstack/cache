@@ -92,6 +92,11 @@
       "context": "scan",
       "integration_id": 15368,
       "scope": "push"
+    },
+    {
+      "context": "auditor-review-gate",
+      "integration_id": 15368,
+      "scope": "pull_request"
     }
   ]
 }

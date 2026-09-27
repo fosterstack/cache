@@ -21,6 +21,7 @@
 .github/agent/bin/tests/test_cov_run.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_small.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_parsers.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_review_gate.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_snykpolicy.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/fixtures/adjudicator/fail-on-call.py  test double (stub adjudicator / fail-on-call / fake GitHub API) the suites drive the auditor with
 .github/agent/fixtures/adjudicator/fake-github-api.py  test double (stub adjudicator / fail-on-call / fake GitHub API) the suites drive the auditor with

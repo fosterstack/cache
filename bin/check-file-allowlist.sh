@@ -97,6 +97,9 @@ ALLOW_PATTERNS=(
   '^\.github/agent/coverage-requirements\.txt$'
   '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
+  # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
+  # .github/agent/bin/auditor-review-gate.py (run from main by .github/workflows/agent-review-gate.yml).
+  '^\.github/agent/reviews/[0-9a-f]{64}\.json$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
