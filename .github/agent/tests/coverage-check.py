@@ -10,7 +10,7 @@ hides code the suite already runs is stale or too wide and fails the gate (the r
 merge-blocker list separately includes "an exclusion that hides testable code").
 
 Fails on: any uncovered, non-excluded statement; an empty measurement; any malformed, stale,
-or over-wide exclusion. Writes a per-file table to <report-out> when given.
+or over-wide exclusion; any line coverage.py excluded on its own (an inline `pragma: no cover`). Writes a per-file table to <report-out> when given.
 """
 import json, os, re, sys
 
@@ -57,6 +57,10 @@ def check(cov, ranges, root):
     total = cov_n = exc_n = 0
     for path in sorted(files):
         f = files[path]
+        if f.get("excluded_lines"):
+            errs.append("%s: line(s) %s excluded by an inline pragma / implicit rule — no inline "
+                        "exclusions; use coverage-exclusions.txt with a reason"
+                        % (path, _ranges(sorted(f["excluded_lines"]))))
         stmts = len(f["executed_lines"]) + len(f["missing_lines"])
         exc = excluded.get(path, set())
         unc = sorted(set(f["missing_lines"]) - exc)

@@ -3134,6 +3134,7 @@ import json,os,sys
 d=sys.argv[1]
 def cov(name,ex,miss): json.dump({"files":{"m.py":{"executed_lines":ex,"missing_lines":miss}}},open(os.path.join(d,name),"w"))
 cov("full.json",[1,2,3],[]); cov("gap.json",[1,2],[3]); cov("empty.json",[],[])
+json.dump({"files":{"m.py":{"executed_lines":[1,2],"missing_lines":[],"excluded_lines":[3]}}},open(os.path.join(d,"pragma.json"),"w"))
 for n,t in {"none.txt":"# none\n","ok.txt":"m.py:3-3  needs the real endpoint\n","wide.txt":"m.py:2-3  too wide\n",
             "stale.txt":"m.py:1-1  nothing missing here\n","noreason.txt":"m.py:3-3\n"}.items():
     open(os.path.join(d,n),"w").write(t)
@@ -3141,9 +3142,21 @@ CJ
 CK="$repo/.github/agent/tests/coverage-check.py"
 cc(){ ( cd "$cd2" && "$PY" "$CK" "$1" "$2" >/dev/null 2>&1 ); echo $?; }
 full="$(cc full.json none.txt)"; gap="$(cc gap.json none.txt)"; excl="$(cc gap.json ok.txt)"; wide="$(cc gap.json wide.txt)"
-stale="$(cc full.json stale.txt)"; noreason="$(cc gap.json noreason.txt)"; empty="$(cc empty.json none.txt)"
-{ eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1"; } \
-  && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty"
+stale="$(cc full.json stale.txt)"; noreason="$(cc gap.json noreason.txt)"; empty="$(cc empty.json none.txt)"; pragma="$(cc pragma.json none.txt)"
+# end to end: the real gate config must not honour an inline "pragma: no cover" (Codex AC2 round-2 blocker)
+pg="$WORK/req18-ac2-pragma"; rm -rf "$pg"; mkdir -p "$pg/bin"
+printf 'def f(x):\n    if x:\n        return 1  # pragma: no cover\n    return 0\nf(0)\n' > "$pg/bin/m.py"
+sed -n '/^\[run\]/,/^EOF$/p' "$repo/.github/agent/tests/coverage-gate.sh" | sed '$d' | sed "s#\$PWD/.github/agent/bin#$pg/bin#; s#\$W/.coverage#$pg/.coverage#; /^omit/d" > "$pg/rc"
+if "$PY" -c 'import coverage' 2>/dev/null; then   # the gate's own job has it; the plain suite job may not
+  e2e="$( cd "$pg" && export -n COVERAGE_PROCESS_START COVERAGE_RCFILE; unset COVERAGE_PROCESS_START
+    COVERAGE_RCFILE="$pg/rc" "$PY" -m coverage run bin/m.py >/dev/null 2>&1 \
+    && COVERAGE_RCFILE="$pg/rc" "$PY" -m coverage json -q -o "$pg/c.json" >/dev/null 2>&1 \
+    && "$PY" -c 'import json,sys; f=list(json.load(open(sys.argv[1]))["files"].values())[0]; print("counted" if 3 in f["missing_lines"] and not f["excluded_lines"] else "honoured")' "$pg/c.json" \
+    || echo "error")"
+else e2e="no-coverage-module"; fi
+{ eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1" && eq "$pragma" "1" \
+  && { eq "$e2e" "counted" || eq "$e2e" "no-coverage-module"; }; } \
+  && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1 pragma=1 gate-config-counts-pragma" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty pragma=$pragma e2e=$e2e"
 
 begin "req18-ac2-identity-claims-logging-stubbed" "the workflow's OIDC step (run under node with a stub core + crafted token) logs EXACTLY the seven federation-rule claims — never the token, never another claim — masks and writes the token; a malformed token warns and does not throw"
 ic="$WORK/req18-idc"; rm -rf "$ic"; mkdir -p "$ic/rt" "$ic/rt-bad"
@@ -3176,7 +3189,8 @@ except Exception as e:
 want={"sub":"repo:o/r:environment:agent","aud":"https://api.anthropic.com","ref":"refs/heads/main","job_workflow_ref":"o/r/.github/workflows/auditor.yml@refs/heads/main","environment":"agent","repository":"o/r","repository_owner_id":"42"}
 pre="OIDC identity claims (federation-rule inputs): "
 info=[m for m in g["info"] if m.startswith(pre)]
-logged=json.loads(info[0][len(pre):]) if len(info)==1 else None
+# the COMPLETE info log is exactly that one line — nothing else may be logged (Codex AC2 round-2 residual)
+logged=json.loads(info[0][len(pre):]) if len(info)==1 and len(g["info"])==1 else None
 alltext=json.dumps(g["info"]+g["warning"])
 fp=g["exported"].get("ANTHROPIC_IDENTITY_TOKEN_FILE")
 ok=(g["aud"]=="https://api.anthropic.com" and logged==want and tok not in alltext and "SIGNATUREXYZ" not in alltext

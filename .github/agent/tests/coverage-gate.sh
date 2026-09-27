@@ -19,6 +19,12 @@ omit = $PWD/.github/agent/bin/tests/*
 parallel = true
 patch = subprocess
 data_file = $W/.coverage
+[report]
+# NO implicit exclusions: coverage's default rule honours "# pragma: no cover", which would hide
+# testable code with no reason. The only exclusions are coverage-exclusions.txt's reasoned ranges;
+# this pattern never matches, and coverage-check.py also fails on any implicitly excluded line.
+exclude_lines =
+    (?!)
 EOF
 export COVERAGE_RCFILE="$W/rc" COVERAGE_PROCESS_START="$W/rc"
 python3 -m coverage run -m unittest discover -s .github/agent/bin/tests -p 'test_*.py' 2> "$W/unit.log" \
