@@ -57,6 +57,16 @@ def scope(purls):
 
 
 class Base(unittest.TestCase):
+    def assert_branch_off_main(self, fr):
+        """A delivered branch is cut from a FRESH origin/main (fetch, then checkout -B <b>
+        origin/main) — never from HEAD, so branches never stack (Codex AC2 round-1 residual)."""
+        a = fr.argvs()
+        co = [x for x in a if x[:3] == ["git", "checkout", "-B"]]
+        self.assertTrue(co, "no branch checkout issued")
+        for x in co:
+            self.assertEqual(len(x), 5); self.assertEqual(x[4], "origin/main")
+        self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(co[0]))
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="covrun-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -432,6 +442,7 @@ class SuppressionPR(Base):
     def test_create_draft_vs_automerge(self):
         fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/9", None))
+        self.assert_branch_off_main(fr)
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertNotIn("--draft", create)
         self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
@@ -506,6 +517,7 @@ class FixPR(Base):
         self.assertEqual(res, (None, "gh pr create: HTTP 422", "error"))
         res, fr = self.real({**chg, ("gh", "pr", "create"): (0, "https://x/pull/3\n", "")})
         self.assertEqual(res, ("https://x/pull/3", None, "delivered"))
+        self.assert_branch_off_main(fr)
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertEqual(create[:4], ["gh", "pr", "create", "--draft"])
         self.assertIn("Run report: the daily CVE auditor run report", create[-1])

@@ -222,10 +222,14 @@ class KnowledgeScript(Tmp):
 
     def test_generate_to_stdout_and_missing_log(self):
         lp = self.wj("log.json", self.LOG)
-        self.assertEqual(self.run_main("generate", "--log", lp), K.generate(self.LOG))
+        # concrete content, not K.generate() as its own oracle (Codex AC2 round-1 residual)
+        full = self.run_main("generate", "--log", lp)
+        self.assertIn("`CVE-1` on `zlib`", full)
+        self.assertNotIn("CVE-2", full)
+        self.assertNotIn("None recorded yet.", full)
         empty = self.run_main("generate", "--log", self.p("absent.json"))
-        self.assertEqual(empty, K.generate({"defects": []}))
         self.assertIn("None recorded yet.", empty)
+        self.assertNotIn("CVE-1", empty)
 
     def test_unknown_op(self):
         with self.assertRaises(SystemExit) as cm:

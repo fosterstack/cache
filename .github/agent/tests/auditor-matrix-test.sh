@@ -3145,6 +3145,50 @@ stale="$(cc full.json stale.txt)"; noreason="$(cc gap.json noreason.txt)"; empty
 { eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1"; } \
   && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty"
 
+begin "req18-ac2-identity-claims-logging-stubbed" "the workflow's OIDC step (run under node with a stub core + crafted token) logs EXACTLY the seven federation-rule claims — never the token, never another claim — masks and writes the token; a malformed token warns and does not throw"
+ic="$WORK/req18-idc"; rm -rf "$ic"; mkdir -p "$ic/rt" "$ic/rt-bad"
+python3 - "$ic/oidc.js" <<'IC'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+st=[s for j in yaml.safe_load(open(".github/workflows/auditor.yml"))["jobs"].values() for s in j.get("steps",[]) if s.get("id")=="oidc"]
+open(sys.argv[1],"w").write(st[0]["with"]["script"] if len(st)==1 else "")
+IC
+cat > "$ic/run.js" <<'JS'
+const fs = require('fs'); const src = fs.readFileSync(process.argv[2], 'utf8'); const tok = process.argv[3];
+const log = {aud: null, info: [], warning: [], secret: [], exported: {}};
+const core = {getIDToken: async a => { log.aud = a; return tok }, setSecret: t => log.secret.push(t),
+  exportVariable: (k, v) => { log.exported[k] = v }, info: m => log.info.push(m), warning: m => log.warning.push(String(m))};
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+(async () => { await new AsyncFunction('core', 'require', src)(core, require); console.log(JSON.stringify(log)) })()
+  .catch(e => { console.error(String(e)); process.exit(1) });
+JS
+b64(){ printf '%s' "$1" | base64 | tr -d '=\n' | tr '/+' '_-'; }
+claims='{"sub":"repo:o/r:environment:agent","aud":"https://api.anthropic.com","ref":"refs/heads/main","job_workflow_ref":"o/r/.github/workflows/auditor.yml@refs/heads/main","environment":"agent","repository":"o/r","repository_owner_id":"42","jti":"XNEVERLOGX","iss":"https://token.actions.githubusercontent.com"}'
+tok="$(b64 '{"alg":"RS256"}').$(b64 "$claims").SIGNATUREXYZ"
+good="$(RUNNER_TEMP="$ic/rt" node "$ic/run.js" "$ic/oidc.js" "$tok" 2>&1)"; rcg=$?
+bad="$(RUNNER_TEMP="$ic/rt-bad" node "$ic/run.js" "$ic/oidc.js" "not-a-jwt" 2>&1)"; rcb=$?
+idv="$(python3 - "$good" "$bad" "$tok" "$ic/rt" <<'IV'
+import json,sys
+try:
+    g=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); tok=sys.argv[3]; rt=sys.argv[4]
+except Exception as e:
+    print("BAD parse %s"%e); sys.exit()
+want={"sub":"repo:o/r:environment:agent","aud":"https://api.anthropic.com","ref":"refs/heads/main","job_workflow_ref":"o/r/.github/workflows/auditor.yml@refs/heads/main","environment":"agent","repository":"o/r","repository_owner_id":"42"}
+pre="OIDC identity claims (federation-rule inputs): "
+info=[m for m in g["info"] if m.startswith(pre)]
+logged=json.loads(info[0][len(pre):]) if len(info)==1 else None
+alltext=json.dumps(g["info"]+g["warning"])
+fp=g["exported"].get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+ok=(g["aud"]=="https://api.anthropic.com" and logged==want and tok not in alltext and "SIGNATUREXYZ" not in alltext
+    and "XNEVERLOGX" not in alltext and g["secret"]==[tok] and fp==rt+"/anthropic-identity-token"
+    and open(fp).read()==tok and not g["warning"]
+    and b["info"]==[] and len(b["warning"])==1 and "could not decode OIDC claims" in b["warning"][0] and b["secret"]==["not-a-jwt"])
+print("OK" if ok else "BAD logged=%r warnings=%r bad=%r"%(logged,g["warning"],b))
+IV
+)"
+{ eq "$rcg" "0" && eq "$rcb" "0" && eq "$idv" "OK"; } \
+  && ok || no "claims logged exactly, token never; malformed token warns" "rc_good=$rcg rc_bad=$rcb verdict=$idv"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
