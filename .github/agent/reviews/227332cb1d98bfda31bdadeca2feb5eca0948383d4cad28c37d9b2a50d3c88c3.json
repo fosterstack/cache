@@ -1,0 +1,35 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "227332cb1d98bfda31bdadeca2feb5eca0948383d4cad28c37d9b2a50d3c88c3",
+ "change": "REQ-AUD-18 AC3: publish the review gate as fosterstack-automation; sweep for Dependabot PRs (PR #127)",
+ "reviewed_commit": "0a4aa79e016944f84d9c5687233cc1d28653055a",
+ "rounds": [
+  {
+   "round": 1,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "25f5385a21ffcf4d080156b3c3f9db4782b275578633bd41e066e1f544afa85b"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "e4b992656e2f4be2be009ab1d023da983d228805de1461f248d625ebf46b0943"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "evidence_location": "private audit tree: audits/2026-09-27/req18-ac3-app/round1/{codex,sonnet}/review.md",
+ "residuals": [
+  "sweep/PR-publish duplicate checks on one SHA",
+  "PR-controlled paths can emit workflow commands into logs",
+  "no same-SHA verdict refresh",
+  "sweep enumerates at most 200 PRs",
+  "agent environment still allows matrix/cve-auditor (owner)"
+ ]
+}

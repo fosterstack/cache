@@ -3256,38 +3256,49 @@ mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/rev
   && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled"
 
 
-begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a separate PUBLISHER holds only a review-gate App token (checks:write, branch-restricted environment) and never touches PR data; only PRs into the default branch are judged"
+begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
 src=open(".github/workflows/agent-review-gate.yml").read(); d=yaml.safe_load(src)
 on=d.get("on") or d.get(True) or {}
-J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{})
-jr="\n".join(x.get("run","") for x in j.get("steps",[])); pr="\n".join(x.get("run","") for x in p.get("steps",[]))
+J=d["jobs"]; j=J.get("judge",{}); p=J.get("publish",{}); w=J.get("sweep",{})
+runs=lambda job: "\n".join(x.get("run","") for x in job.get("steps",[]))
+jr, pr, wr = runs(j), runs(p), runs(w)
 co=[x for x in j.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
-tok=[x for x in p.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
+wco=[x for x in w.get("steps",[]) if str(x.get("uses","")).startswith("actions/checkout@")]
+tok=lambda job: [x for x in job.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
 main_only="github.event.pull_request.base.ref == github.event.repository.default_branch"
-ok=(list(on)==["pull_request_target"] and "edited" in on["pull_request_target"]["types"]
-    and d.get("permissions")=={} and set(J)=={"judge","publish"}
+def scoped(t): return len(t)==1 and {k for k in (t[0].get("with") or {}) if k.startswith("permission-")}=={"permission-checks"} and t[0]["with"]["permission-checks"]=="write"
+ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited" in on["pull_request_target"]["types"]
+    and d.get("permissions")=={} and set(J)=={"judge","publish","sweep"}
     # judge: no secrets, read-only, base checkout, data-only fetch, moved-head rejection, HEAD merge-base
-    and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j)
+    and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
     and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
     and 'git merge-base HEAD "$HEAD_SHA"' in jr and "base.sha" not in yaml.safe_dump(j)
-    and "python3 .github/agent/bin/auditor-review-gate.py --base" in jr
-    and "checkout" not in jr and "pip install" not in jr
-    # publisher: env-scoped App token, checks:write only, no PR data, not on cancellation
-    and p.get("needs")=="judge" and p.get("environment")=="review-gate" and p.get("permissions")=={}
-    and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and main_only in str(j.get("if"))
-    and len(tok)==1 and (tok[0].get("with") or {}).get("permission-checks")=="write"
+    and "python3 .github/agent/bin/auditor-review-gate.py --base" in jr and "checkout" not in jr and "pip install" not in jr
+    # publisher: agent-env App token (checks only), no PR data, not on cancellation
+    and p.get("needs")=="judge" and p.get("environment")=="agent" and p.get("permissions")=={}
+    and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and scoped(tok(p))
     and "actions/checkout" not in yaml.safe_dump(p) and "refs/pull" not in pr and "git " not in pr
-    and "-f name=auditor-review-gate" in pr and '-f head_sha="$HEAD_SHA"' in pr and "statuses" not in src)
+    and "-f name=auditor-review-gate" in pr and '-f head_sha="$HEAD_SHA"' in pr
+    # sweep: schedule/dispatch only, base checkout, data-only fetch + sha check, only App-authored checks count
+    and w.get("environment")=="agent" and "pull_request_target" not in str(w.get("if")) and "schedule" in str(w.get("if"))
+    and len(wco)==1 and (wco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (wco[0].get("with") or {})
+    and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
+    and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and 'git merge-base HEAD "$sha"' in wr
+    and "python3 .github/agent/bin/auditor-review-gate.py --base" in wr and "checkout" not in wr and "statuses" not in src)
+# the auditor's own mint of the same App never includes checks
+a=yaml.safe_load(open(".github/workflows/auditor.yml"))
+mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
+ok = ok and len(mints)==1 and {k for k in mints[0]["with"] if k.startswith("permission-")}=={"permission-contents","permission-pull-requests"}
 print("OK" if ok else "BAD")
 WG
 )"
 # (the required-checks.json entry lands in a follow-up PR once the gate is proven on main:
 #  pull_request_target always runs the DEFAULT branch's workflow, so it cannot be proven earlier)
-eq "$wg" "OK" && ok || no "protected judge/publish pull_request_target gate" "workflow=$wg"
+eq "$wg" "OK" && ok || no "protected judge/publish/sweep gate; auditor token without checks" "workflow=$wg"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

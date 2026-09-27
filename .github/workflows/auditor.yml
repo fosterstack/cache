@@ -187,6 +187,10 @@ jobs:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
           repositories: cache
+          # exactly what delivery uses — never `checks`: the same App publishes the review gate's
+          # verdict (agent-review-gate.yml), and the auditor must not be able to mint one
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Install the pinned adjudicator SDK (real adjudicator only, before the driver)
         # The real adjudicator client imports the anthropic SDK; it was never installed, so every

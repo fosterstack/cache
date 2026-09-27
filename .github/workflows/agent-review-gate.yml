@@ -4,39 +4,46 @@ name: Agent review gate
 # independent second review's stop rule before merge — as a CHECK. A PR touching .github/agent/
 # must carry .github/agent/reviews/<tree>.json bound to its exact content (see the gate script).
 #
-# Protected by construction (review round 1, both vendors):
+# Protected by construction (review loop, both vendors):
 # - pull_request_target: GitHub always runs the DEFAULT branch's copy of this file, so a PR can
 #   neither edit nor skip its own gate; the judge checks out the base branch only, so the gate
 #   script is main's too. The baseline (ops/docs/cicd-security-baseline.md) forbids
-#   pull_request_target WITH CHECKOUT OF PR CODE — never done here: the PR head is fetched as git
+#   pull_request_target WITH CHECKOUT OF PR CODE — never done here: PR heads are fetched as git
 #   objects and read only through `git ls-tree` / `git diff` / `git show`; nothing is checked out,
 #   installed or executed.
-# - The verdict is published as the check run `auditor-review-gate` by a DEDICATED GitHub App
-#   (Checks: write only) whose credentials live in the `review-gate` environment, restricted to
-#   the default branch. A PR's own `pull_request` workflow runs on refs/pull/N/merge, cannot reach
-#   those secrets, and so cannot mint a check from that App; the ruleset pins the required check
-#   to the App, so a same-named check from any Actions job does not satisfy it.
-# - Judge and publish are separate jobs: the judge reads PR data and holds no secret; the
-#   publisher holds the App token and never touches PR data (it sees only the verdict and the
-#   event's head SHA).
-# - Only PRs into the default branch are judged, and against the checked-out default branch —
-#   never the event's base, so a pass earned against another base cannot be carried over; `edited`
-#   (a retarget) re-runs the gate.
+# - The verdict is the check run `auditor-review-gate`, created by the `fosterstack-automation`
+#   App (register row 56: one generic App, no sprawl) with a token scoped to checks:write. Its
+#   credentials are secrets of the `agent` environment, restricted to the default branch: a PR's
+#   own `pull_request` workflow runs on refs/pull/N/merge and cannot reach them. The ruleset pins
+#   the required check to that App, so a same-named check from any Actions job does not satisfy
+#   it. The auditor's own use of the App is downscoped to contents + pull-requests (auditor.yml).
+# - Judge and publish are separate jobs on PR events: the judge reads PR data and holds no
+#   secret; the publisher holds the App token and never touches PR data.
+# - Only PRs into the default branch are judged, against the checked-out default branch (never the
+#   event's base), and `edited` (a retarget) re-runs the gate.
+# - Dependabot-triggered runs get no environment secrets, so a Dependabot PR's publish finds no
+#   App credentials. The scheduled SWEEP (not Dependabot-triggered) judges every open PR into the
+#   default branch whose head has no auditor-review-gate check from the App yet, and publishes.
+#   The sweep holds the App token while reading PR data — still as git objects only, never
+#   executed; it runs only the default branch's gate script.
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, edited]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: agent-review-gate-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: agent-review-gate-${{ github.event.pull_request.number || 'sweep' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
   judge:
     name: agent review gate — judge
-    if: github.event.pull_request.base.ref == github.event.repository.default_branch
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,26 +84,26 @@ jobs:
     name: agent review gate — publish
     needs: judge
     # not on cancellation (a superseded run must not overwrite a newer verdict on the same head)
-    if: ${{ !cancelled() && github.event.pull_request.base.ref == github.event.repository.default_branch }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == github.event.repository.default_branch }}
     runs-on: ubuntu-latest
-    environment: review-gate
+    environment: agent
     permissions: {}
     steps:
-      - name: is the review-gate App configured?
+      - name: are the App credentials available to this run?
         id: cfg
         env:
-          APP_ID: ${{ secrets.REVIEW_GATE_APP_ID }}
+          APP_ID: ${{ secrets.AUDITOR_APP_ID }}
         run: |
           if [ -n "$APP_ID" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
-          else echo "::warning::review-gate App not configured (environment review-gate: REVIEW_GATE_APP_ID / REVIEW_GATE_APP_PRIVATE_KEY) — no check published"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+          else echo "::notice::no App credentials in this run (a Dependabot-triggered run gets none) — the scheduled sweep publishes this PR's check"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi
 
-      - name: mint the review-gate App token (checks:write only)
+      - name: mint the App token (checks:write only)
         id: app
         if: steps.cfg.outputs.ok == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.REVIEW_GATE_APP_ID }}
-          private-key: ${{ secrets.REVIEW_GATE_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
           repositories: cache
           permission-checks: write
 
@@ -114,3 +121,57 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
             -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
             -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null
+
+  sweep:
+    name: agent review gate — sweep
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: mint the App token (checks:write only)
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-checks: write
+
+      - name: judge and publish every open PR into the default branch that has no verdict yet
+        env:
+          LIST_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          GH_TOKEN="$LIST_TOKEN" gh pr list --base "$DEFAULT" --state open --limit 200 \
+            --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' > "$RUNNER_TEMP/prs.txt"
+          fail=0
+          while read -r n sha; do
+            case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue ;; esac
+            have="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
+              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | length")" || { fail=1; continue; }
+            [ "$have" = "0" ] || continue
+            git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
+            [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
+            conclusion=failure
+            if base="$(git merge-base HEAD "$sha")" && python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$sha"; then
+              conclusion=success
+            fi
+            GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \
+              -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
+              -f "output[title]=auditor review gate: ${conclusion}" \
+              -f "output[summary]=Judged by the scheduled sweep (the PR's own run had no App credentials)." >/dev/null || fail=1
+            echo "PR #${n} ${sha:0:7}: ${conclusion}"
+          done < "$RUNNER_TEMP/prs.txt"
+          exit "$fail"
