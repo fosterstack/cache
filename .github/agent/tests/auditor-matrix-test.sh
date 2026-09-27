@@ -3137,7 +3137,8 @@ cov("full.json",[1,2,3],[]); cov("gap.json",[1,2],[3]); cov("empty.json",[],[])
 json.dump({"files":{"m.py":{"executed_lines":[1,2],"missing_lines":[],"excluded_lines":[3]}}},open(os.path.join(d,"pragma.json"),"w"))
 for n,t in {"none.txt":"# none\n","ok.txt":"m.py:3-3  needs the real endpoint\n","wide.txt":"m.py:2-3  too wide\n",
             "stale.txt":"m.py:1-1  nothing missing here\n","noreason.txt":"m.py:3-3\n",
-            "globok.txt":".github/agent/x/*.py  test double\n","globwide.txt":".github/agent/x/*.py  test double\n"}.items():
+            "globok.txt":".github/agent/x/hidden.py  test double\n","globwide.txt":".github/agent/x/meas.py  test double\n",
+            "globbed.txt":".github/agent/x/*.py  test double\n"}.items():
     open(os.path.join(d,n),"w").write(t)
 open(os.path.join(d,"inv.txt"),"w").write("m.py\n")
 open(os.path.join(d,"inv-omit.txt"),"w").write("m.py\n.github/agent/x/hidden.py\n")
@@ -3151,6 +3152,7 @@ stale="$(cc full.json stale.txt)"; noreason="$(cc gap.json noreason.txt)"; empty
 # a tracked file the report never mentions (e.g. dropped by a widened `omit`) fails unless a reasoned
 # whole-file entry names it; an entry over a MEASURED file fails (Codex + Sonnet AC2 round-3 blocker)
 omitted="$(cc full.json none.txt inv-omit.txt)"; globok="$(cc full.json globok.txt inv-omit.txt)"; globwide="$(cc measured.json globwide.txt inv-meas.txt)"
+globbed="$(cc full.json globbed.txt inv-omit.txt)"   # a directory glob is refused: each file its own line (Sonnet AC2 round-4 blocker)
 # end to end: the real gate config must not honour an inline "pragma: no cover" (Codex AC2 round-2 blocker)
 pg="$WORK/req18-ac2-pragma"; rm -rf "$pg"; mkdir -p "$pg/bin"
 printf 'def f(x):\n    if x:\n        return 1  # pragma: no cover\n    return 0\nf(0)\n' > "$pg/bin/m.py"
@@ -3162,9 +3164,9 @@ if "$PY" -c 'import coverage' 2>/dev/null; then   # the gate's own job has it; t
     && "$PY" -c 'import json,sys; f=list(json.load(open(sys.argv[1]))["files"].values())[0]; print("counted" if 3 in f["missing_lines"] and not f["excluded_lines"] else "honoured")' "$pg/c.json" \
     || echo "error")"
 else e2e="no-coverage-module"; fi
-{ eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1" && eq "$pragma" "1" && eq "$omitted" "1" && eq "$globok" "0" && eq "$globwide" "1" \
+{ eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1" && eq "$pragma" "1" && eq "$omitted" "1" && eq "$globok" "0" && eq "$globwide" "1" && eq "$globbed" "1" \
   && { eq "$e2e" "counted" || eq "$e2e" "no-coverage-module"; }; } \
-  && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1 pragma=1 omitted=1 glob-ok=0 glob-over-measured=1 gate-config-counts-pragma" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty pragma=$pragma omitted=$omitted glob_ok=$globok glob_wide=$globwide e2e=$e2e"
+  && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1 pragma=1 omitted=1 glob-ok=0 entry-over-measured=1 glob-refused=1 gate-config-counts-pragma" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty pragma=$pragma omitted=$omitted glob_ok=$globok glob_wide=$globwide globbed=$globbed e2e=$e2e"
 
 begin "req18-ac2-identity-claims-logging-stubbed" "the workflow's OIDC step (run under node with a stub core + crafted token) logs EXACTLY the seven federation-rule claims — never the token, never another claim — masks and writes the token; a malformed token warns and does not throw"
 ic="$WORK/req18-idc"; rm -rf "$ic"; mkdir -p "$ic/rt" "$ic/rt-bad"

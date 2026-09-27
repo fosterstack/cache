@@ -5,15 +5,16 @@ usage: coverage-check.py <coverage.json> <exclusions.txt> [<report-out>] [--inve
 
 Exclusions file, one entry per line (`#` comments and blank lines ignored), each with a reason:
   <path>:<first>-<last>  <reason>   a line range in a measured file
-  <glob>  <reason>                  whole files that are not auditor code (tests, doubles, vendored
-                                    third-party code); `*` never crosses a `/`
-A range must cover at least one unexecuted statement and NO executed one; a glob must match at
-least one inventory file and no file the report measured. (The review loop's merge-blocker list
+  <path>  <reason>                  ONE whole file that is not auditor code (a test, a double,
+                                    vendored third-party code) — exact paths only, never a glob,
+                                    so every new excluded file is its own reviewed line
+A range must cover at least one unexecuted statement and NO executed one; a whole-file entry must
+name a tracked file that the report does not measure. (The review loop's merge-blocker list
 separately includes "an exclusion that hides testable code".)
 
 The INVENTORY is every tracked .py under .github/agent/ (`git ls-files`, or --inventory: one path
 per line) — independent of the coverage config. Every inventory file must be measured in the report
-or matched by a glob entry, so no `omit`/`include`/`source` setting can drop a file silently. A
+or named by its own whole-file entry, so no `omit`/`include`/`source` setting can drop a file silently. A
 tracked symlink under .github/agent/ fails (it could alias measured code into an excluded path).
 
 Fails on: any uncovered, non-excluded statement; an empty measurement; any malformed, stale or
@@ -25,11 +26,7 @@ import json, os, re, subprocess, sys
 
 AGENT = ".github/agent/"
 _RANGE = re.compile(r"^(?P<path>[^\s:]+):(?P<a>\d+)-(?P<b>\d+)\s+(?P<reason>\S.*)$")
-_GLOB = re.compile(r"^(?P<glob>[^\s:]+)\s+(?P<reason>\S.*)$")
-
-
-def _glob_re(g):
-    return re.compile("^" + "".join("[^/]*" if c == "*" else re.escape(c) for c in g) + "$")
+_FILE = re.compile(r"^(?P<path>[^\s:]+)\s+(?P<reason>\S.*)$")
 
 
 def load_exclusions(path):
@@ -46,12 +43,13 @@ def load_exclusions(path):
             else:
                 ranges.append((n, m["path"], a, b, m["reason"]))
             continue
-        m = _GLOB.match(s)
-        if m and m["glob"].startswith(AGENT) and m["glob"].endswith(".py"):
-            globs.append((n, m["glob"], _glob_re(m["glob"]), m["reason"]))
+        m = _FILE.match(s)
+        if m and m["path"].startswith(AGENT) and m["path"].endswith(".py") \
+                and not any(c in m["path"] for c in "*?["):
+            globs.append((n, m["path"], m["reason"]))
             continue
         errs.append("exclusions line %d: want '<path>:<first>-<last>  <reason>' or "
-                    "'<.github/agent/...py glob>  <reason>', got %r" % (n, s))
+                    "'<exact .github/agent/...py path>  <reason>' (no globs), got %r" % (n, s))
     return ranges, globs, errs
 
 
@@ -75,16 +73,20 @@ def check(cov, ranges, root, globs=(), inventory=None):
                         % (n, path, a, b))
         excluded.setdefault(path, set()).update(hit)
     if inventory is not None:
-        for n, g, rx, _ in globs:
-            if not any(rx.match(p) for p in inventory):
-                errs.append("exclusions line %d: %s matches no tracked file — remove it" % (n, g))
-            for p in sorted(p for p in files if rx.match(p)):
-                errs.append("exclusions line %d: %s excludes %s, which the report MEASURES — "
-                            "a whole-file entry may not hide measured code" % (n, g, p))
+        named = set()
+        for n, g, _ in globs:
+            if g in named:
+                errs.append("exclusions line %d: %s is listed twice" % (n, g))
+            named.add(g)
+            if g not in inventory:
+                errs.append("exclusions line %d: %s is not a tracked file — remove it" % (n, g))
+            if g in files:
+                errs.append("exclusions line %d: %s is MEASURED by the report — a whole-file "
+                            "entry may not hide measured code" % (n, g))
         for p in sorted(inventory):
-            if p not in files and not any(rx.match(p) for _, _, rx, _ in globs):
+            if p not in files and p not in named:
                 errs.append("%s: not measured and not excluded — every tracked .py under %s is "
-                            "either covered or a reasoned whole-file entry" % (p, AGENT))
+                            "either covered or its own reasoned whole-file entry" % (p, AGENT))
     total = cov_n = exc_n = 0
     for path in sorted(files):
         f = files[path]
@@ -119,10 +121,11 @@ def _ranges(lines):
 
 def _tracked(root):
     """(tracked .py paths under .github/agent/, tracked symlinks there) from the git index."""
-    out = subprocess.run(["git", "ls-files", "-s", "--", AGENT], cwd=root, capture_output=True,
+    # -z: NUL-delimited and unquoted — a non-ASCII name is never C-quoted out of the inventory
+    out = subprocess.run(["git", "ls-files", "-s", "-z", "--", AGENT], cwd=root, capture_output=True,
                          text=True, check=True).stdout
     py, links = [], []
-    for ln in out.splitlines():
+    for ln in filter(None, out.split("\0")):
         meta, path = ln.split("\t", 1)
         if meta.split()[0] == "120000":
             links.append(path)
@@ -152,11 +155,11 @@ def main(argv):
     for e in errs:
         print("::error::auditor python coverage: %s" % e)
     print("auditor python: %d/%d eligible statements covered, %d excluded in %d range(s); "
-          "%d file(s) outside the gate by %d reasoned whole-file entr%s"
+          "%d file(s) outside the gate, each its own reasoned entry (%d entries)"
           % (cov_n, total, exc_n, len(ranges),
              sum(1 for p in inventory if p not in {os.path.relpath(k, root) if os.path.isabs(k) else k
                                                    for k in cov["files"]}),
-             len(globs), "y" if len(globs) == 1 else "ies"))
+             len(globs)))
     return 1 if errs else 0
 
 

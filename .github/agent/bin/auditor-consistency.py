@@ -4,9 +4,9 @@ governing VEX; every VEX must answer a live finding; nothing suppressed in one
 scanner and unhandled in another."""
 import os, re, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "testlib"))
 from auditorlib import cli
 from auditorlib import parsers as P
+from auditorlib import snykpolicy
 
 
 def live_cves(manifest):
@@ -39,9 +39,14 @@ def main():
                 problems.append({"type": "stale_vex", "cve": cve})
     snykf = os.path.join(d, ".snyk")
     if os.path.exists(snykf):
-        import pyyaml as yaml
-        y = yaml.safe_load(open(snykf).read()) or {}
-        for k, entries in (y.get("ignore") or {}).items():
+        with open(snykf) as fh:
+            text = fh.read()
+        try:
+            y = snykpolicy.load(text)
+        except ValueError as e:            # fail closed: an unreadable policy is a problem
+            y = {"ignore": {}}
+            problems.append({"type": "unparseable_snyk", "detail": str(e)})
+        for k, entries in y["ignore"].items():
             cites = any("stmt-" in str(e.get(sel, {}).get("vex", "")) for e in entries for sel in e)
             if not cites:
                 problems.append({"type": "tool_only_ignore", "id": k})
