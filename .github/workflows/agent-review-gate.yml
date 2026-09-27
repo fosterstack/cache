@@ -4,50 +4,46 @@ name: Agent review gate
 # independent second review's stop rule before merge — as a CHECK. A PR touching .github/agent/
 # must carry .github/agent/reviews/<tree>.json bound to its exact content (see the gate script).
 #
-# Why pull_request_target, and why it is safe here. On `pull_request` the workflow AND the gate
-# script come from the PR itself, so a PR could switch its own gate off (review round 1, both
-# vendors). pull_request_target runs this file and the gate from the BASE branch instead. The
-# baseline (ops/docs/cicd-security-baseline.md) forbids pull_request_target WITH CHECKOUT OF PR
-# CODE; this workflow never does that:
-#   - actions/checkout checks out the base branch only, with no persisted credentials;
-#   - the PR head is fetched as git OBJECTS (`git fetch refs/pull/N/head`) and only ever read
-#     through `git ls-tree` / `git diff` / `git show` — never checked out, installed, or executed;
-#   - no secrets; the token can only read contents and write check runs.
-# The verdict is a CHECK RUN named `auditor-review-gate` created through the Checks API on the PR
-# HEAD commit (a pull_request_target job's own check run attaches to the base commit). Created
-# with this job's token it belongs to the GitHub Actions app (integration 15368) — what the
-# `main-protection` ruleset and release admission (stage-admission.yml: app-pinned check runs,
-# never legacy commit statuses) both require.
+# Protected by construction (review round 1, both vendors):
+# - pull_request_target: GitHub always runs the DEFAULT branch's copy of this file, so a PR can
+#   neither edit nor skip its own gate; the judge checks out the base branch only, so the gate
+#   script is main's too. The baseline (ops/docs/cicd-security-baseline.md) forbids
+#   pull_request_target WITH CHECKOUT OF PR CODE — never done here: the PR head is fetched as git
+#   objects and read only through `git ls-tree` / `git diff` / `git show`; nothing is checked out,
+#   installed or executed.
+# - The verdict is published as the check run `auditor-review-gate` by a DEDICATED GitHub App
+#   (Checks: write only) whose credentials live in the `review-gate` environment, restricted to
+#   the default branch. A PR's own `pull_request` workflow runs on refs/pull/N/merge, cannot reach
+#   those secrets, and so cannot mint a check from that App; the ruleset pins the required check
+#   to the App, so a same-named check from any Actions job does not satisfy it.
+# - Judge and publish are separate jobs: the judge reads PR data and holds no secret; the
+#   publisher holds the App token and never touches PR data (it sees only the verdict and the
+#   event's head SHA).
+# - Only PRs into the default branch are judged, and against the checked-out default branch —
+#   never the event's base, so a pass earned against another base cannot be carried over; `edited`
+#   (a retarget) re-runs the gate.
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
-permissions:
-  contents: read
-  checks: write
+permissions: {}
 
 concurrency:
-  group: auditor-review-gate-${{ github.event.pull_request.number }}
+  group: agent-review-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  gate:
-    name: auditor review gate (runner)
+  judge:
+    name: agent review gate — judge
+    if: github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.gate.outputs.verdict }}
     steps:
-      - name: open the auditor-review-gate check run on the PR head
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          id="$(gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate \
-            -f head_sha="$HEAD_SHA" -f status=in_progress -f details_url="$RUN_URL" --jq .id)"
-          echo "id=${id}" >> "$GITHUB_OUTPUT"
-
-      # the BASE branch: the gate code that judges the PR is never the PR's own
+      # the DEFAULT branch: the gate code that judges the PR is never the PR's own
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -63,25 +59,58 @@ jobs:
           got="$(git rev-parse refs/remotes/pr/head)"
           [ "$got" = "$HEAD_SHA" ] || { echo "::error::PR head moved (${got} != ${HEAD_SHA}); a newer run judges it" >&2; exit 1; }
 
-      - name: run main's review gate over the PR head
+      - name: run the default branch's review gate over the PR head
         id: gate
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          # judged against the checked-out default branch (HEAD), never the event's base
+          base="$(git merge-base HEAD "$HEAD_SHA")" || { echo "verdict=failure" >> "$GITHUB_OUTPUT"; exit 1; }
+          if python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$HEAD_SHA"; then
+            echo "verdict=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=failure" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+
+  publish:
+    name: agent review gate — publish
+    needs: judge
+    # not on cancellation (a superseded run must not overwrite a newer verdict on the same head)
+    if: ${{ !cancelled() && github.event.pull_request.base.ref == github.event.repository.default_branch }}
+    runs-on: ubuntu-latest
+    environment: review-gate
+    permissions: {}
+    steps:
+      - name: is the review-gate App configured?
+        id: cfg
+        env:
+          APP_ID: ${{ secrets.REVIEW_GATE_APP_ID }}
+        run: |
+          if [ -n "$APP_ID" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::warning::review-gate App not configured (environment review-gate: REVIEW_GATE_APP_ID / REVIEW_GATE_APP_PRIVATE_KEY) — no check published"; echo "ok=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: mint the review-gate App token (checks:write only)
+        id: app
+        if: steps.cfg.outputs.ok == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.REVIEW_GATE_APP_ID }}
+          private-key: ${{ secrets.REVIEW_GATE_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-checks: write
+
+      - name: publish the auditor-review-gate check run on the PR head
+        if: steps.cfg.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VERDICT: ${{ needs.judge.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
-          python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$HEAD_SHA"
-
-      - name: complete the check run with the verdict
-        if: always() && steps.check.outputs.id != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CHECK_ID: ${{ steps.check.outputs.id }}
-          OUTCOME: ${{ steps.gate.outcome }}
-        run: |
-          if [ "$OUTCOME" = "success" ]; then conclusion=success; summary="The review-loop record clears the stop rule, or the PR changes nothing under .github/agent/."
-          else conclusion=failure; summary="No valid review-loop record for this .github/agent/ content — see the run log."; fi
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}" -f status=completed \
-            -f conclusion="$conclusion" -f "output[title]=auditor review gate: ${conclusion}" \
-            -f "output[summary]=${summary}" >/dev/null
+          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="The review-loop record clears the stop rule, or the PR changes nothing under .github/agent/."
+          else conclusion=failure; summary="No valid review-loop record for this .github/agent/ content (or the judge did not finish) — see the run log."; fi
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
+            -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
+            -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null

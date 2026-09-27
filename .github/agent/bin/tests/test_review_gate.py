@@ -97,6 +97,11 @@ class Cli(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("--base is required", err)
 
+    def test_a_flag_without_a_value_is_missing_not_a_crash(self):
+        rc, out, err = self.run_main("--head", "HEAD", "--base")
+        self.assertEqual(rc, 2)
+        self.assertIn("--base is required", err)
+
     def test_print_tree_is_stable_and_ignores_records_only(self):
         rc, t1, _ = self.run_main("--print-tree")
         self.assertEqual(rc, 0); t1 = t1.strip()

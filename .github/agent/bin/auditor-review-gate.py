@@ -97,7 +97,10 @@ def record_problems(rec, tree):
 
 def main(argv):
     def opt(k, d=None):
-        return argv[argv.index(k) + 1] if k in argv else d
+        if k not in argv:
+            return d
+        i = argv.index(k) + 1
+        return argv[i] if i < len(argv) else None      # a flag without a value is missing
     head = opt("--head", "HEAD")
     tree = tree_hash(head)
     if "--print-tree" in argv:
