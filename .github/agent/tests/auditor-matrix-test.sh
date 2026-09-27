@@ -3116,6 +3116,35 @@ HH
 )"
 eq "$hy" "OK" && ok || no "layout check + suites, unconditional, in the required allowlist job" "$hy"
 
+begin "req18-ac2-python-100pct-coverage-gate" "the required 'coverage' job runs the auditor Python gate unconditionally with the hash-pinned tool; the checker fails any uncovered statement, and any exclusion that is reasonless, stale, or hides executed code"
+cg="$(python3 - <<'CC'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["coverage"]
+g=[x for x in j["steps"] if ".github/agent/tests/coverage-gate.sh" in x.get("run","")]
+ok=(j.get("name")=="coverage" and len(g)==1 and "--require-hashes" in g[0]["run"]
+    and ".github/agent/coverage-requirements.txt" in g[0]["run"]
+    and "if" not in g[0] and "continue-on-error" not in g[0])
+print("OK" if ok else "BAD")
+CC
+)"
+cd2="$WORK/req18-ac2"; rm -rf "$cd2"; mkdir -p "$cd2"
+"$PY" - "$cd2" <<'CJ'
+import json,os,sys
+d=sys.argv[1]
+def cov(name,ex,miss): json.dump({"files":{"m.py":{"executed_lines":ex,"missing_lines":miss}}},open(os.path.join(d,name),"w"))
+cov("full.json",[1,2,3],[]); cov("gap.json",[1,2],[3]); cov("empty.json",[],[])
+for n,t in {"none.txt":"# none\n","ok.txt":"m.py:3-3  needs the real endpoint\n","wide.txt":"m.py:2-3  too wide\n",
+            "stale.txt":"m.py:1-1  nothing missing here\n","noreason.txt":"m.py:3-3\n"}.items():
+    open(os.path.join(d,n),"w").write(t)
+CJ
+CK="$repo/.github/agent/tests/coverage-check.py"
+cc(){ ( cd "$cd2" && "$PY" "$CK" "$1" "$2" >/dev/null 2>&1 ); echo $?; }
+full="$(cc full.json none.txt)"; gap="$(cc gap.json none.txt)"; excl="$(cc gap.json ok.txt)"; wide="$(cc gap.json wide.txt)"
+stale="$(cc full.json stale.txt)"; noreason="$(cc gap.json noreason.txt)"; empty="$(cc empty.json none.txt)"
+{ eq "$cg" "OK" && eq "$full" "0" && eq "$gap" "1" && eq "$excl" "0" && eq "$wide" "1" && eq "$stale" "1" && eq "$noreason" "1" && eq "$empty" "1"; } \
+  && ok || no "wired + full=0 gap=1 excluded=0 wide=1 stale=1 reasonless=1 empty=1" "wiring=$cg full=$full gap=$gap excluded=$excl wide=$wide stale=$stale reasonless=$noreason empty=$empty"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"

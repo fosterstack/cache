@@ -1,0 +1,12 @@
+# REQ-AUD-18 AC2 — coverage exclusions for the auditor's Python (.github/agent/bin/), mirroring
+# the Go gate's .github/policy/coverage-exclusions.txt. Checked by
+# .github/agent/tests/coverage-check.py.
+#
+# One range per line:  <path>:<first>-<last>  <one-line reason>
+# A range must exclude at least one unexecuted statement and NO executed one (the gate fails a
+# stale or over-wide range). Only code that genuinely needs Anthropic's endpoint or a real
+# GitHub token / API may be excluded; everything else is tested. "An exclusion that hides
+# testable code" is on the review loop's merge-blocker list.
+#
+# Measured scope: .github/agent/bin/ minus .github/agent/bin/tests/ (the tests themselves).
+# fixtures/ holds test inputs, doubles and vendored PyYAML — test code, not auditor code.
