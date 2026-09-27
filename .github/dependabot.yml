@@ -47,9 +47,10 @@ updates:
     directory: "/.github/agent"
     schedule:
       interval: "weekly"
-    # pydantic pins pydantic-core EXACTLY: they move together in one PR, never apart (a lone
-    # pydantic-core bump broke the auditor's SDK install twice — #106, #111). hygiene.yml's
-    # resolve step fails any PR whose pins do not resolve.
+    # pydantic pins pydantic-core EXACTLY. The group bundles them when both update; it does NOT
+    # stop a lone pydantic-core bump (the #106/#111 case that broke the auditor's SDK install).
+    # The guard is hygiene.yml's resolve step: a PR whose pins do not resolve fails the
+    # required `allowlist` check and never auto-merges.
     groups:
       pydantic:
         patterns:
