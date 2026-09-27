@@ -8,46 +8,51 @@ library at runtime. It accepts exactly that block shape:
         - '<selector>':
             <key>: <value>
 
-(and an empty `ignore:` / `ignore: {}`, and `patch: {}`). Anything else raises ValueError:
-the caller treats an unreadable policy as a problem (fail closed), never as "no ignores".
+(and an empty `ignore:` / `ignore: {}`, and `patch: {}`). Scalars are exactly what the writer
+emits: a single-quoted string with no quote inside, or a plain token of [A-Za-z0-9._:+-] (a version,
+a timestamp); selectors are single-quoted. No YAML feature is interpreted — a trailing comment, an
+anchor/alias/tag, a double-quoted or escaped string, a flow collection — so none is "read as text"
+with a meaning YAML would not give it: anything else raises ValueError, and the caller treats an
+unreadable policy as a failed check (fail closed), never as "no ignores". Whole-line `#` comments
+and blank lines are skipped (YAML ignores them too).
 """
 import re
 
-_TOP = re.compile(r"^(version|ignore|patch):\s*(.*)$")
-_ID = re.compile(r"^  (\S+?):\s*$")
-_SEL = re.compile(r"^    - (?P<sel>'[^']*'|\"[^\"]*\"|[^'\"\s]\S*?):\s*$")
-_KV = re.compile(r"^        (?P<k>[A-Za-z_][A-Za-z0-9_-]*):\s*(?P<v>.*?)\s*$")
+_PLAIN = r"[A-Za-z0-9._:+-]+"
+_QUOTED = r"'[^']*'"
+_TOP = re.compile(r"^(version|ignore|patch):(?: (.*))?$")
+_ID = re.compile(r"^  (?P<id>[A-Za-z0-9._:-]+):$")
+_SEL = re.compile(r"^    - (?P<sel>" + _QUOTED + r"):$")
+_KV = re.compile(r"^        (?P<k>[A-Za-z_][A-Za-z0-9_-]*): (?P<v>" + _QUOTED + "|" + _PLAIN + r")$")
 
 
 def _scalar(v):
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
-        return v[1:-1]
-    return v
+    return v[1:-1] if v.startswith("'") else v
 
 
 def load(text):
     """{ignore-id: [{selector: {key: value}}]} for a policy in the auditor's shape."""
     ignore, section, cur_id, cur_props = {}, None, None, None
     for n, raw in enumerate(text.splitlines(), 1):
-        line = raw.rstrip()
+        line = raw.rstrip("\r\n")
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         m = _TOP.match(line)
         if m:
-            section, rest = m.group(1), m.group(2).strip()
+            section, rest = m.group(1), (m.group(2) or "")
             if section == "ignore" and rest not in ("", "{}"):
                 raise ValueError(".snyk line %d: `ignore:` must open a block" % n)
             if section == "patch" and rest != "{}":
                 raise ValueError(".snyk line %d: only an empty `patch: {}` is accepted" % n)
-            if section == "version" and not rest:
-                raise ValueError(".snyk line %d: empty version" % n)
+            if section == "version" and not re.fullmatch(_PLAIN, rest):
+                raise ValueError(".snyk line %d: version must be a plain token" % n)
             cur_id = cur_props = None
             continue
         if section != "ignore":
             raise ValueError(".snyk line %d: unexpected content %r" % (n, line))
         m = _ID.match(line)
         if m:
-            cur_id, cur_props = m.group(1), None
+            cur_id, cur_props = m.group("id"), None
             if cur_id in ignore:
                 raise ValueError(".snyk line %d: duplicate ignore id %s" % (n, cur_id))
             ignore[cur_id] = []

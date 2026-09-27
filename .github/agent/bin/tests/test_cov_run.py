@@ -656,14 +656,15 @@ class Run(Base):
             e["findings"].append(f)
         return g
 
-    def go(self, groups, dry=True, adjudicator="/x/stub-adjudicator.py", kevpath=None, m_extra=None, ask=None):
+    def go(self, groups, dry=True, adjudicator="/x/stub-adjudicator.py", kevpath=None, m_extra=None, ask=None,
+           consistency=None):
         m = {"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"},
              "scanner_status": QUORUM, "scanner_reports": {}}
         m.update(m_extra or {})
         out = self.d("out")
         ask = ask or mock.Mock(side_effect=AssertionError("no model call expected"))
         with mock.patch.object(R.C, "manifest_findings", return_value=(m, groups)), \
-                mock.patch.object(R, "_consistency", return_value={"problems": []}), \
+                mock.patch.object(R, "_consistency", return_value=consistency or {"problems": []}), \
                 mock.patch.object(R.cli, "ask_model", ask):
             complete, printed = self.quiet(R.run, os.path.join(self.tmp, "manifest.json"), dry, out, "2026-09-22",
                                            kevpath=kevpath, adjudicator=adjudicator)
@@ -697,6 +698,17 @@ class Run(Base):
         self.assertEqual([(i["cve"], i["threshold"], i["lift_trigger"]) for i in items],
                          [("CVE-2099-60", "at_or_above", "nodejs >= 20.2")])   # KEV unparseable -> fail closed
         self.assertTrue(os.path.exists(os.path.join(out, ".auditor", "knowledge.md")))
+
+    def test_unparseable_snyk_makes_the_run_incomplete(self):
+        # an unreadable .snyk means the consistency check did not complete -> AUDIT INCOMPLETE,
+        # never a clean run (Codex AC2 round-5 residual); the same empty run is complete without it
+        clean, _p, _o, _c, whole = self.go({})
+        self.assertTrue(clean)
+        bad = {"consistent": False, "problems": [{"type": "consistency-check-unparseable-snyk",
+                                                  "detail": ".snyk line 5: not in the auditor's ignore shape"}]}
+        complete, printed, _o, _c, whole = self.go({}, consistency=bad)
+        self.assertFalse(complete)
+        self.assertIn("consistency check did not complete", whole["status"])
 
     def test_dry_unassessed_issue_would_open(self):
         c = "CVE-2099-63"

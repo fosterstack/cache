@@ -62,28 +62,39 @@ class StrictReader(unittest.TestCase):
 
     def test_empty_and_accepted_top_level_forms(self):
         for text in ("version: v1.5.0\nignore:\n", "version: v1.5.0\nignore: {}\npatch: {}\n",
-                     "# comment\n\nversion: v1\nignore:\n  ID-1:\n    - \"pkg:x\":\n        reason: r\n"):
+                     "# comment\n\nversion: v1\nignore:\n  ID-1:\n    - 'pkg:x@1':\n        reason: r\n"
+                     "        expires: 2026-10-01T00:00:00.000Z\n        vex: 'https://x#stmt-id-1'\n"):
             self.assert_agrees(text)
-        plain = "version: v1\nignore:\n  ID-1:\n    - pkg:x@1:\n        reason: plain\n"
-        self.assert_agrees(plain)
-        self.assertEqual(snykpolicy.load(plain)["ignore"], {"ID-1": [{"pkg:x@1": {"reason": "plain"}}]})
 
     def test_anything_outside_the_shape_raises(self):
+        # every YAML feature the writer never emits is REFUSED, not read as raw text with a meaning
+        # YAML would not give it (Codex AC2 round-5 blocker: a comment/anchor "citing" a statement)
+        body = "version: v1\nignore:\n  ID-1:\n    - '*':\n        vex: %s\n"
         bad = {
             "ignore: {ID: []}\n": "must open a block",
             "patch:\n  x: y\n": "only an empty",
-            "version:\n": "empty version",
+            "version:\n": "version must be a plain token",
+            "version: 'v1' # c\n": "version must be a plain token",
             "version: v1\nexclude:\n  - x\n": "unexpected content",
             "version: v1\nignore:\n  ID-1:\n  ID-1:\n": "duplicate ignore id",
             "version: v1\nignore:\n    - '*':\n": "not in the auditor's ignore shape",
             "version: v1\nignore:\n  ID-1:\n        reason: x\n": "not in the auditor's ignore shape",
             "version: v1\nignore:\n  ID-1: [a, b]\n": "not in the auditor's ignore shape",
+            "version: v1\nignore:\n  &a ID-1:\n": "not in the auditor's ignore shape",
+            "version: v1\nignore:\n  ID-1:\n    - pkg:x@1:\n": "not in the auditor's ignore shape",
+            "version: v1\nignore:\n  ID-1:\n    - \"pkg:x\":\n": "not in the auditor's ignore shape",
+            body % "none # previously stmt-cve-2099-1234": "not in the auditor's ignore shape",
+            body % "&stmt-unused none": "not in the auditor's ignore shape",
+            body % "'https://x#stmt-cve-1": "not in the auditor's ignore shape",
+            body % '"https://x#\\x73tmt-cve-1"': "not in the auditor's ignore shape",
+            body % "'a' 'b'": "not in the auditor's ignore shape",
+            body % "!!str x": "not in the auditor's ignore shape",
             "  ID-1:\n": "unexpected content",
         }
         for text, why in bad.items():
             with self.assertRaises(ValueError, msg=text) as cm:
                 snykpolicy.load(text)
-            self.assertIn(why, str(cm.exception))
+            self.assertIn(why, str(cm.exception), text)
 
 
 class ConsistencyReadsSnykStrictly(unittest.TestCase):
@@ -113,8 +124,16 @@ class ConsistencyReadsSnykStrictly(unittest.TestCase):
     def test_unparseable_policy_fails_closed(self):
         res = self.run_check("version: v1\nignore: {CVE-3: [{'*': {reason: muted}}]}\n")
         self.assertFalse(res["consistent"])
-        self.assertEqual([p["type"] for p in res["problems"]], ["unparseable_snyk"])
+        self.assertEqual([p["type"] for p in res["problems"]], ["consistency-check-unparseable-snyk"])
         self.assertIn("must open a block", res["problems"][0]["detail"])
+
+    def test_commented_citation_is_never_consistent(self):
+        # YAML reads `vex: none # ... stmt-...` as "none" — uncited. The old PyYAML path flagged
+        # it; the strict reader must never call it consistent (Codex AC2 round-5 blocker).
+        res = self.run_check("version: v1\nignore:\n  CVE-4:\n    - '*':\n        reason: 'muted'\n"
+                             "        vex: none # previously stmt-cve-2099-1234\n")
+        self.assertFalse(res["consistent"])
+        self.assertEqual([p["type"] for p in res["problems"]], ["consistency-check-unparseable-snyk"])
 
     def test_consistency_imports_no_yaml_library(self):
         with open(os.path.join(BIN, "auditor-consistency.py")) as fh:

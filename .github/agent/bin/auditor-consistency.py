@@ -45,7 +45,8 @@ def main():
             y = snykpolicy.load(text)
         except ValueError as e:            # fail closed: an unreadable policy is a problem
             y = {"ignore": {}}
-            problems.append({"type": "unparseable_snyk", "detail": str(e)})
+            # a "consistency-check-*" problem: the run is INCOMPLETE, not merely inconsistent
+            problems.append({"type": "consistency-check-unparseable-snyk", "detail": str(e)})
         for k, entries in y["ignore"].items():
             cites = any("stmt-" in str(e.get(sel, {}).get("vex", "")) for e in entries for sel in e)
             if not cites:
