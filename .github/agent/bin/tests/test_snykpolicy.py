@@ -60,48 +60,67 @@ class StrictReader(unittest.TestCase):
         self.assertEqual(list(got["CVE-2099-2"][0]), ["*"])       # no package -> CVE-wide
         self.assertIn("stmt-cve-2099-1", json.dumps(got["CVE-2099-1"]))
 
-    def test_empty_and_accepted_top_level_forms(self):
-        for text in ("version: v1.5.0\nignore:\n", "version: v1.5.0\nignore: {}\npatch: {}\n",
-                     "# comment\n\nversion: v1\nignore:\n  ID-1:\n    - 'pkg:x@1':\n        reason: 'r'\n"
-                     "        expires: 2026-10-01T00:00:00.000Z\n        vex: 'https://x#stmt-id-1'\n"):
-            self.assert_agrees(text)
+    def test_empty_policy_is_the_writers(self):
+        text, _ = R._ignores_from_statements([], {})
+        self.assertEqual(text, "version: v1.5.0\nignore:\n")
+        self.assert_agrees(text)
+        self.assertEqual(snykpolicy.load(text)["ignore"], {})
 
-    def test_anything_outside_the_shape_raises(self):
-        # every YAML feature the writer never emits is REFUSED, not read as raw text with a meaning
-        # YAML would not give it (Codex AC2 round-5 blocker: a comment/anchor "citing" a statement)
-        body = "version: v1\nignore:\n  ID-1:\n    - '*':\n        vex: %s\n"
-        bad = {
-            "ignore: {ID: []}\n": "must open a block",
-            "patch:\n  x: y\n": "only an empty",
-            "version:\n": "version must be a plain token",
-            "version: 'v1' # c\n": "version must be a plain token",
-            "version: v1\nexclude:\n  - x\n": "unexpected content",
-            "version: v1\nignore:\n  ID-1:\n  ID-1:\n": "duplicate ignore id",
-            "version: v1\nignore:\n    - '*':\n": "not in the auditor's ignore shape",
-            "version: v1\nignore:\n  ID-1:\n        reason: x\n": "not in the auditor's ignore shape",
-            "version: v1\nignore:\n  ID-1: [a, b]\n": "not in the auditor's ignore shape",
-            "version: v1\nignore:\n  &a ID-1:\n": "not in the auditor's ignore shape",
-            "version: v1\nignore:\n  ID-1:\n    - pkg:x@1:\n": "not in the auditor's ignore shape",
-            "version: v1\nignore:\n  ID-1:\n    - \"pkg:x\":\n": "not in the auditor's ignore shape",
-            body % "none # previously stmt-cve-2099-1234": "not in the auditor's ignore shape",
-            body % "&stmt-unused none": "not in the auditor's ignore shape",
-            body % "'https://x#stmt-cve-1": "not in the auditor's ignore shape",
-            body % '"https://x#\\x73tmt-cve-1"': "not in the auditor's ignore shape",
-            body % "'a' 'b'": "not in the auditor's ignore shape",
-            body % "!!str x": "not in the auditor's ignore shape",
-            # any plain value other than a timestamp: a trailing colon is invalid YAML (Codex AC2
-            # round-6 blocker), and a bare word has YAML semantics this reader will not reproduce
-            body % "stmt-cve-2011-3374:": "not in the auditor's ignore shape",
-            body % "none": "not in the auditor's ignore shape",
-            body % "2026-10-01T00:00:00.000Z:": "not in the auditor's ignore shape",
-            "version: v1:\n": "version must be a plain token",
-            "version: v1\nignore:\n  CVE-1::\n": "not in the auditor's ignore shape",
-            "  ID-1:\n": "unexpected content",
-        }
-        for text, why in bad.items():
-            with self.assertRaises(ValueError, msg=text) as cm:
+    def test_anything_but_the_writers_canonical_bytes_raises(self):
+        # every form a review round found YAML reads differently (or rejects) — and every YAML
+        # feature the writer never emits — is REFUSED, never given a meaning (rounds 5-7)
+        good = "version: v1.5.0\nignore:\n  CVE-1:\n    - '*':\n        reason: 'r'\n        vex: 'x#stmt-cve-1'\n"
+        self.assert_agrees(good)
+        body = "version: v1.5.0\nignore:\n  CVE-1:\n    - '*':\n        vex: %s\n"
+        bad = [
+            "version: v1.5.0\nignore: {}\n", "version: v1.5.0\nignore:\npatch: {}\n",
+            "ignore: {ID: []}\n", "version: -\nignore:\n", "version: v1\nversion: v2\nignore:\n",
+            "# c\n" + good, good + "\n", good + "# c\n", good.replace("\n", "\r\n"), good[:-1],
+            "\ufeff" + good, good.replace("  CVE-1:", "\tCVE-1:"), "---\n" + good,
+            good + "ignore:\n", good + "  CVE-1:\n    - '*':\n        vex: 'y'\n",
+            "version: v1.5.0\nignore:\n  CVE-1:\n", "version: v1.5.0\nignore:\n  CVE-1:\n    - '*':\n",
+            "version: v1.5.0\nignore:\n  CVE-1:\n    - '*':\n    - 'p':\n        vex: 'x'\n",
+            "version: v1.5.0\nignore:\n  :\n    - '*':\n        vex: 'x'\n",
+            "version: v1.5.0\nignore:\n  &a CVE-1:\n    - '*':\n        vex: 'x'\n",
+            "version: v1.5.0\nignore:\n  CVE-1:\n    - pkg:x@1:\n        vex: 'x'\n",
+            "version: v1.5.0\nignore:\n  CVE-1:\n    - \"pkg:x\":\n        vex: 'x'\n",
+            "version: v1.5.0\nignore:\n  CVE-1:\n    - '%s':\n        vex: 'x'\n" % ("p" * 1023),
+            body % "none # previously stmt-cve-2099-1234", body % "&stmt-unused none",
+            body % "'https://x#stmt-cve-1", body % '"https://x#\\x73tmt-cve-1"', body % "'a' 'b'",
+            body % "!!str x", body % "stmt-cve-2011-3374:", body % "none",
+            body % "2026-10-01T00:00:00.000Z:", body % "2026-10-01T00:00:00.000Z ",
+            body % "'a\x01b'", body % "'a\u2028b'", body % "'a\x85b'", body % "'it''s'",
+            body % "'x'\n        vex: 'y'",
+            "version: v1.5.0\nignore:\n  %s:\n    - '*':\n        vex: 'x'\n" % ("C" * 1001),  # over-long id
+            body % "'2026-10-01T00:00:00.000Z'",   # line-valid, but the writer never quotes a timestamp
+        ]
+        for text in bad:
+            with self.assertRaises(ValueError, msg=repr(text)):
                 snykpolicy.load(text)
-            self.assertIn(why, str(cm.exception), text)
+
+    def test_every_accepted_mutant_reads_the_same_in_yaml(self):
+        # property: whatever the reader ACCEPTS, YAML reads to the same value. A deterministic
+        # sweep of single-character edits of real writer output — a mutant the reader accepts
+        # must parse identically under PyYAML (BaseLoader); anything else must raise.
+        import random
+        stmts = [{"@id": "https://x/vex#stmt-cve-2099-%d" % i, "status": "not_affected",
+                  "vulnerability": {"name": "CVE-2099-%d" % i},
+                  "products": [{"@id": "p", "subcomponents": [{"@id": "pkg:deb/debian/lib%d@1" % i}]}]}
+                 for i in range(3)]
+        base, _ = R._ignores_from_statements(stmts, {("CVE-2099-1", "pkg:deb/debian/lib1@1"): "2026-12-01"})
+        rng = random.Random(1804)
+        alphabet = " \t\n:'\"#&*!|>-{}[],?%@`\\~0aZ\x00\x85\u2028\ufeff"
+        accepted = 0
+        for _ in range(4000):
+            i = rng.randrange(len(base)); op = rng.randrange(3); c = rng.choice(alphabet)
+            mut = base[:i] + (c if op != 2 else "") + base[i + (op != 1):]
+            try:
+                got = snykpolicy.load(mut)["ignore"]
+            except ValueError:
+                continue
+            accepted += 1
+            self.assertEqual(got, reference(mut), repr(mut))
+        self.assertGreater(accepted, 0)      # the sweep did reach accepted mutants
 
 
 class ConsistencyReadsSnykStrictly(unittest.TestCase):
@@ -132,7 +151,7 @@ class ConsistencyReadsSnykStrictly(unittest.TestCase):
         res = self.run_check("version: v1\nignore: {CVE-3: [{'*': {reason: muted}}]}\n")
         self.assertFalse(res["consistent"])
         self.assertEqual([p["type"] for p in res["problems"]], ["consistency-check-unparseable-snyk"])
-        self.assertIn("must open a block", res["problems"][0]["detail"])
+        self.assertIn("want `ignore:`", res["problems"][0]["detail"])
 
     def test_commented_citation_is_never_consistent(self):
         # YAML reads `vex: none # ... stmt-...` as "none" — uncited. The old PyYAML path flagged
