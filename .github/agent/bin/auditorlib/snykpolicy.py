@@ -12,22 +12,25 @@ It accepts ONLY the writer's canonical output, byte for byte:
 
 After parsing, the policy is re-serialised in exactly that form and must reproduce the input
 byte for byte — so the accepted language IS the writer's language, a subset of YAML that YAML
-reads identically (verified against PyYAML in the tests). No YAML feature is interpreted: a
-comment, a blank line, an anchor/alias/tag, a flow collection, a duplicate key, a null value,
-another quoting or plain form, a control/line-separator character, or a key over YAML's
-1024-character implicit-key limit all raise ValueError. The caller treats an unreadable policy
-as a failed check (fail closed), never as "no ignores".
+reads identically. The character set and key lengths are YAML's own (PyYAML's printable set and
+its 1024-character implicit-key limit), so the reader neither accepts what YAML rejects nor
+rejects writer output that YAML accepts — the tests sweep both boundaries against PyYAML. No YAML
+feature is interpreted: a comment, a blank line, an anchor/alias/tag, a flow collection, a
+duplicate key, a null value, another quoting or plain form all raise ValueError. The caller
+treats an unreadable policy as a failed check (fail closed), never as "no ignores".
 """
 import re
 
 _VERSION = r"v\d+(?:\.\d+)*"
 _TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z"
-# quoted text: printable, no quote, no C0/C1 control, no DEL, no Unicode line/paragraph
-# separator or BOM — characters YAML treats specially or forbids
-_TEXT = r"[^'\x00-\x1f\x7f-\x9f  ﻿]*"
+# quoted text: YAML's printable set (the complement of PyYAML's reader.NON_PRINTABLE) minus the
+# quote, and minus YAML 1.1's line breaks inside it — NEL (\x85), LS (\u2028), PS (\u2029) — which a
+# YAML reader folds together with adjacent spaces, changing the value.
+_TEXT = "[\\t\\x20-\\x26\\x28-\\x7e\\xa0-\\u2027\\u202a-\\ud7ff\\ue000-\\ufffd\\U00010000-\\U0010ffff]*"
 _QUOTED = "'" + _TEXT + "'"
-_MAX_KEY = 1000                      # YAML: an implicit key is at most 1024 characters
-_ID = re.compile(r"^  (?P<id>[A-Za-z0-9][A-Za-z0-9._-]*):$")
+_MAX_KEY = 1024                      # PyYAML: an implicit (simple) key spans at most 1024 chars
+# ids: advisory-id tokens (CVE-, GHSA-, GO-, DLA-, RHSA-2024:1234, ...) — never ending in ':'
+_ID = re.compile(r"^  (?P<id>[A-Za-z0-9](?:[A-Za-z0-9._:-]*[A-Za-z0-9._-])?):$")
 _SEL = re.compile(r"^    - (?P<sel>" + _QUOTED + r"):$")
 _KV = re.compile(r"^        (?P<k>[A-Za-z_][A-Za-z0-9_-]*): (?P<v>" + _QUOTED + "|" + _TIMESTAMP + r")$")
 
@@ -77,6 +80,8 @@ def load(text):
             continue
         m = _KV.match(line)
         if m and cur_props is not None:
+            if len(m.group("k")) > _MAX_KEY:
+                raise ValueError(".snyk line %d: key longer than %d characters" % (n, _MAX_KEY))
             if m.group("k") in cur_props:
                 raise ValueError(".snyk line %d: duplicate key %s" % (n, m.group("k")))
             cur_props[m.group("k")] = _scalar(m.group("v"))

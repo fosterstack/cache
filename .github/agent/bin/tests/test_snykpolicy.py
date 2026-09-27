@@ -89,14 +89,56 @@ class StrictReader(unittest.TestCase):
             body % "'https://x#stmt-cve-1", body % '"https://x#\\x73tmt-cve-1"', body % "'a' 'b'",
             body % "!!str x", body % "stmt-cve-2011-3374:", body % "none",
             body % "2026-10-01T00:00:00.000Z:", body % "2026-10-01T00:00:00.000Z ",
-            body % "'a\x01b'", body % "'a\u2028b'", body % "'a\x85b'", body % "'it''s'",
+            body % "'a\x01b'", body % "'a\x85b'", body % "'a\ufffe'", body % "'it''s'",
             body % "'x'\n        vex: 'y'",
-            "version: v1.5.0\nignore:\n  %s:\n    - '*':\n        vex: 'x'\n" % ("C" * 1001),  # over-long id
+            "version: v1.5.0\nignore:\n  %s:\n    - '*':\n        vex: 'x'\n" % ("C" * 1025),  # over-long id
             body % "'2026-10-01T00:00:00.000Z'",   # line-valid, but the writer never quotes a timestamp
         ]
         for text in bad:
             with self.assertRaises(ValueError, msg=repr(text)):
                 snykpolicy.load(text)
+
+    def test_character_and_length_boundaries_are_yamls_own(self):
+        # both directions, against PyYAML: the reader accepts a character / key length exactly
+        # when YAML reads it to the same value — never what YAML rejects (U+FFFE, surrogates,
+        # NEL folding), never refusing writer output YAML accepts (a 999-1022-char purl, LS/PS,
+        # BOM, astral) (Codex AC2 round-8 blockers)
+        def ours(t):
+            try:
+                return snykpolicy.load(t)["ignore"]
+            except ValueError:
+                return None
+        def yamls(t):
+            try:
+                return reference(t)
+            except Exception:
+                return None
+        # a character is accepted only if YAML reads it identically in EVERY context — bare and
+        # between spaces (YAML 1.1 folds spaces around its line breaks NEL/LS/PS)
+        value = "version: v1.5.0\nignore:\n  CVE-1:\n    - '*':\n        vex: 'a%sb a %s b'\n"
+        points = list(range(0x3000)) + [0xd7ff, 0xd800, 0xdfff, 0xe000, 0xfeff, 0xfffd, 0xfffe,
+                                        0xffff, 0x10000, 0x1f600, 0x10ffff]
+        for cp in points:
+            if cp == 0x27:                     # the quote itself: YAML's '' escape, never emitted
+                continue
+            t = value % (chr(cp), chr(cp))
+            y = yamls(t)
+            same = y is not None and y["CVE-1"][0]["*"]["vex"] == "a%sb a %s b" % (chr(cp), chr(cp))
+            self.assertEqual(ours(t) is not None, same, hex(cp))
+        for tpl in ("version: v1.5.0\nignore:\n  CVE-1:\n    - '%s':\n        vex: 'x'\n",
+                    "version: v1.5.0\nignore:\n  %s:\n    - '*':\n        vex: 'x'\n",
+                    "version: v1.5.0\nignore:\n  CVE-1:\n    - '*':\n        %s: 'x'\n"):
+            for n in range(1015, 1032):
+                t = tpl % ("a" * n)
+                self.assertEqual(ours(t), yamls(t), (tpl[:40], n))
+        ids = "version: v1.5.0\nignore:\n  %s:\n    - '*':\n        vex: 'x'\n"
+        for i in ("RHSA-2024:1234", "GHSA-abcd-efgh-ijkl", "GO-2024-1234", "DLA-1234-1", "TEMP-0000000-ABC"):
+            self.assertEqual(ours(ids % i), yamls(ids % i), i)
+        long_purl = "pkg:deb/debian/coreutils@9.1-1?distro=" + "a" * 961          # 999 chars
+        writer, _ = R._ignores_from_statements([{"@id": "https://x/vex#stmt-cve-1", "status": "affected",
+            "vulnerability": {"name": "CVE-1"}, "products": [{"@id": "p", "subcomponents": [{"@id": long_purl}]}]}], {})
+        self.assertEqual(ours(writer), yamls(writer))
+        self.assertIsNotNone(ours(writer))
 
     def test_every_accepted_mutant_reads_the_same_in_yaml(self):
         # property: whatever the reader ACCEPTS, YAML reads to the same value. A deterministic
