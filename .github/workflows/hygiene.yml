@@ -36,6 +36,16 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 bin/check-workflow-permissions.py
 
+      # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
+      # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
+      # auditor run at install. Resolving here makes such a bump fail the required check instead.
+      - name: auditor Python requirements resolve (hash-pinned SDK + coverage tool)
+        run: |
+          for r in .github/agent/adjudicator-requirements.txt .github/agent/coverage-requirements.txt; do
+            python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: \
+              --target "$RUNNER_TEMP/resolve-check" -r "$r"
+          done
+
       - name: auditor layout — everything auditor-related under .github/agent/ (REQ-AUD-18 AC1)
         run: git ls-files | python3 .github/agent/bin/auditor-layout-check.py
 

@@ -3213,6 +3213,22 @@ IV
 { eq "$rcg" "0" && eq "$rcb" "0" && eq "$idv" "OK"; } \
   && ok || no "claims logged exactly, token never; malformed token warns" "rc_good=$rcg rc_bad=$rcb verdict=$idv"
 
+begin "req18-requirements-resolve-in-required-job" "the required allowlist job resolves both hash-pinned auditor requirement files (a lone pydantic-core bump broke the SDK install twice), and Dependabot moves pydantic + pydantic-core together"
+rq="$(python3 - <<'RQ'
+import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
+import pyyaml as yaml
+j=yaml.safe_load(open(".github/workflows/hygiene.yml"))["jobs"]["allowlist"]
+st=[x for x in j["steps"] if "--dry-run" in x.get("run","") and "--require-hashes" in x.get("run","")]
+d=yaml.safe_load(open(".github/dependabot.yml"))
+pip=[u for u in d["updates"] if u.get("package-ecosystem")=="pip" and u.get("directory")=="/.github/agent"]
+grp=(pip[0].get("groups") or {}).get("pydantic",{}).get("patterns",[]) if len(pip)==1 else []
+ok=(len(st)==1 and "adjudicator-requirements.txt" in st[0]["run"] and "coverage-requirements.txt" in st[0]["run"]
+    and "if" not in st[0] and "continue-on-error" not in st[0] and sorted(grp)==["pydantic","pydantic-core"])
+print("OK" if ok else "BAD")
+RQ
+)"
+eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
