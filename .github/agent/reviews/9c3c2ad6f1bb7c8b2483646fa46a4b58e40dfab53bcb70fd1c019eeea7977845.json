@@ -1,0 +1,109 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "9c3c2ad6f1bb7c8b2483646fa46a4b58e40dfab53bcb70fd1c019eeea7977845",
+ "change": "report: one line per PR/issue, never per finding; render-safe identifiers (handoff 0004, PR #130)",
+ "reviewed_commit": "d9880f4058c1961c11ac121e00c80f04deaf8f77",
+ "rounds": [
+  {
+   "round": 1,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "34ea8c8899017307f648dff38c852e87c544b864e8c90c548a222514144a7b6b"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "f4e1fbf43c1cab4801859e977d64f003a8ade54e27bb2e5a6cbce207b1d13439"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "1244ee7f9b3e42cd7dc7066af4ae80a9ef2bfe648730695008d8bfd0f7217537"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "ef87d51a989cfd83de2d661acc23d5845945ceffff0358634cc33c5e903cc0ed"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "1e0d37f7d653084b1a9650dfd9cde368b8b08959ae886d174fac7fd6326be4a3"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "c3447c26ce261ceb19b78d186ac4341690e68525fe098b2c39a64e738f2b4e1e"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "207efdefccbdeb121dab5687518ee7f292ef3a54453078d11d2a6d07b02d1249"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "5a46421e64ef2804906d48c3726ccadb710f164745056ee07c7075ba2f125e85"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "0bd2bd2e775d840e492dceb3b38fd6de8db31ab185dfd5309b419914c58589e4"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "f95721e5ee0a0d9d18bfb39fe6d0687999fdf852ecc87748edcae63d342e5406"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "77d5bd00c1d7c8a445d41b5bdad1e1c6e2190f98cc1f6a9c1f476b537e19d6f3"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "125a44fcf60d86157b39c68facc2072a805d901238117d1baf10fbf4efc52143"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "evidence_location": "private audit tree: audits/2026-09-28/report-dup/round1..6/{codex,sonnet}/review.md",
+ "residuals": [
+  "lint does not catch raw HTML in header scanner metadata",
+  "lint accepts pipe-split table cells",
+  "_text leaves literal HTML entities unescaped",
+  "one bump branch per CVE: two modules for one CVE share a branch (a live run would overwrite)"
+ ]
+}
