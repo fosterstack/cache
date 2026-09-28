@@ -3354,7 +3354,7 @@ dup="$(printf '%s\n' "$c1" | sort | uniq -d | grep -c .)"
 begin "rpt-ac2-test-image-single-line-with-counts" "a test-image run lists ONE line: nothing opened, why, and how many findings would have produced how many PRs; a run with nothing to open says so in one line"
 t1="$(pl "$rpt/testimage.md")"; e1="$(pl "$rpt/empty.md")"
 { eq "$(printf '%s\n' "$t1" | grep -c .)" "1" \
-  && eq "$t1" "- Test image — nothing opened (not a shipped image); on a shipped image 33 finding(s) would have produced 31 PR(s) and 1 owner-decision issue(s)." \
+  && eq "$t1" "- Test image — nothing opened (not a shipped image); on a shipped image 33 finding(s) would have produced 31 PR(s) (30 bump target(s), 1 suppression) and 1 owner-decision issue(s)." \
   && eq "$e1" "- Nothing opened this run — dry run with no actionable findings; 0 finding(s) would have produced a PR."; } \
   && ok || no "single summary lines" "test=$t1 | empty=$e1"
 
@@ -3501,7 +3501,7 @@ res=R._deliver_fix_pr(row,"2026-09-28","abcdef1234567890",False,w)
 R._standing_issue(["x"],False,w,["CVE-5"])
 pl=R._pr_list(w,[],{n:[] for n in range(1,8)},False,None,None,False,{"ref":"skipped","needs":1})
 want=["NOT delivered (delivery disabled — no authorized delivery step): suppression PR — suppressions (1 statements, 1 scope(s) removed) — CVEs: CVE-3, CVE-4",
-      "NOT delivered (delivery disabled — no authorized delivery step): bump PR — m 1 -> 2 — CVEs: CVE-5",
+      "NOT delivered (delivery disabled — no authorized delivery step): bump PR — m v1 -> v2 — CVEs: CVE-5",
       "NOT delivered (delivery disabled — no authorized delivery step): standing issue — auditor: needs a human — comment (1 item(s)) — CVEs: CVE-5"]
 print("OK" if (pl==want and res[2]=="pending") else "BAD %r %r"%(pl,res))
 R5
@@ -3521,6 +3521,44 @@ print("OK" if pl==want else "BAD %r"%pl)
 R6
 )"
 eq "$r6" "OK" && ok || no "undelivered issues keyed by issue identity" "$r6"
+
+echo "=== LR-32: one bump PR per (module, version) target (handoff 0007, owner-ratified Sep 28) ==="
+begin "lr32-one-pr-per-target-idempotent" "live-mode probe (shim, no real delivery): one CVE needing two modules -> TWO branches; two CVEs on one target -> ONE PR carrying both; 0.22.0 and v0.22.0 are one target; a second identical run changes nothing; a new CVE on a known target updates the SAME PR; the PR list lists each PR once with all its CVEs"
+lr="$(rm -rf "$WORK/lr32" && mkdir -p "$WORK/lr32" && env AUDITOR_GIT_SHIM_LOG="$WORK/lr32/shim.log" "$PY" - "$WORK/lr32" <<'LR'
+import importlib.util,os,sys
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+log=os.environ["AUDITOR_GIT_SHIM_LOG"]
+def row(cve,mod,frm,to,sec=3): return {"id":cve,"section":sec,"action":"","fix_bump":{"cve":cve,"module":mod,"from":frm,"to":to}}
+def run(rs):
+    w=[]; errs=R._deliver_bumps(rs,"2026-09-28","abcdef1234567890",False,w)
+    return errs
+rows=[row("CVE-1","example.org/a","0.16.0","0.22.0"), row("CVE-1","example.org/b","1.0.0","1.2.0"),   # one CVE, two modules
+      row("CVE-2","example.org/a","v0.17.3","v0.22.0")]                                             # same target as CVE-1/a
+e1=run(rows)
+L=open(log).read().splitlines()
+creates=[l for l in L if l.startswith("gh pr create")]; pushes=[l for l in L if l.startswith("git push")]
+branches=sorted({l.split(" --head ")[1].split()[0] for l in creates})
+first_ok=(e1==[] and branches==["auditor/bump-example.org-a-0.22.0","auditor/bump-example.org-b-1.2.0"] and len(creates)==2 and len(pushes)==2
+          and any("CVE-1, CVE-2" in l for l in creates if "example.org-a" in l)
+          and rows[0]["fix_pr_url"]==rows[2]["fix_pr_url"]!=rows[1]["fix_pr_url"])
+n0=len(L)
+e2=run([dict(r, fix_pr_url=None, action="") for r in rows])                        # identical second run
+L2=open(log).read().splitlines()[n0:]
+second_ok=(e2==[] and not any(l.startswith(("git push","gh pr create","gh pr edit")) for l in L2)
+           and sorted(l for l in L2 if l.startswith("UNCHANGED"))==["UNCHANGED auditor/bump-example.org-a-0.22.0","UNCHANGED auditor/bump-example.org-b-1.2.0"])
+n1=n0+len(L2)
+e3=run([dict(r, fix_pr_url=None, action="") for r in rows]+[row("CVE-3","example.org/b","1.1.0","1.2.0")])   # new CVE, known target
+L3=open(log).read().splitlines()[n1:]
+third_ok=(not any(l.startswith("gh pr create") for l in L3) and any(l.startswith("gh pr edit auditor/bump-example.org-b-1.2.0") for l in L3)
+          and "UNCHANGED auditor/bump-example.org-a-0.22.0" in L3)
+secs={n:[] for n in range(1,8)}; secs[3]=rows
+pl=R._pr_list([],rows,secs,False,None,None,False)
+list_ok=(len(pl)==2 and any("CVEs: CVE-1, CVE-2" in l and "SHIM-bump-example.org-a-0.22.0" in l for l in pl)
+         and any(l.endswith("SHIM-bump-example.org-b-1.2.0") and "CVEs: CVE-1 " in l for l in pl))
+print("OK" if (first_ok and second_ok and third_ok and list_ok) else "BAD first=%s second=%s third=%s list=%s pl=%r creates=%r"%(first_ok,second_ok,third_ok,list_ok,pl,creates))
+LR
+)"; lr="$(printf '%s\n' "$lr" | tail -1)"
+eq "$lr" "OK" && ok || no "one PR per target, idempotent re-run, same PR updated" "$lr"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

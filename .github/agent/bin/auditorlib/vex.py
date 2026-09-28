@@ -5,8 +5,7 @@ document with any non-schema statement key."""
 import json, os
 from . import policy
 
-SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "fixtures",
-                      "testlib", "openvex-schema.json")
+SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "openvex-schema.json")
 _ALLOWED = None
 _TOP = None
 
