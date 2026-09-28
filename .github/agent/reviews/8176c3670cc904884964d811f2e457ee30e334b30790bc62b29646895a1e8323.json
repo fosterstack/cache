@@ -1,0 +1,46 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "8176c3670cc904884964d811f2e457ee30e334b30790bc62b29646895a1e8323",
+ "change": "LR-32: one bump PR per (module, version) target, idempotent re-runs; LR-27 (a)-(d) (handoff 0007, PR #131)",
+ "reviewed_commit": "3fac3e447a325dd8594d81e3b305b9a734b0a2aa",
+ "rounds": [
+  {
+   "round": 1,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "5b0cf1014eff843d8ac7b0f33c27396d7a7fcfa182c464b59395c76ba2804c5d"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "869c1d24aa07f51be663a2d5fcdfc2dd75da5d1d973ccb4b6739937ba31c2628"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "1e8f8996f739041d0c2bfef2f9b1a106c7cf724a58293b18081d5391b2f96b2d"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "69a18c8885204b535a4a6c8d205e1061ee174ac45c97081a7e34edd6beea9821"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "evidence_location": "private audit tree: audits/2026-09-28/lr32/round1/{codex,sonnet}/review.md, round2/sonnet/review.md, round2/review.md (codex round 2 full text; round2/codex/review.md is its pointer)",
+ "residuals": [
+  "LR-27 (e): unclosed-file ResourceWarnings across the auditor — not swept in this change"
+ ]
+}
