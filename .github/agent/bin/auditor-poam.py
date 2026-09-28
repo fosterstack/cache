@@ -72,7 +72,7 @@ def _remove_ignores(root, aliases):
                     d = json.load(open(p))
                 except Exception:
                     continue
-                if d.get("id") in aliases:          # a per-finding ignore for this id
+                if isinstance(d, dict) and d.get("id") in aliases:   # a per-finding ignore for this id
                     os.remove(p); removed.append(p)
             elif fn == ".snyk":
                 _edit_snyk(p, aliases)

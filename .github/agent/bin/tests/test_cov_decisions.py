@@ -153,8 +153,17 @@ class ClassifyManifestValidation(unittest.TestCase):
         m = {"scanner_reports": dict(self.FULL), "scanner_status": {"grype": {"reason": None}}}
         with self.assertRaisesRegex(ValueError, "grype is null with no scanner_status reason"):
             classify.validate_manifest(m)
-        ok = {"scanner_reports": dict(self.FULL), "scanner_status": {"grype": {"reason": "timeout"}}}
+        reasons = {k: {"reason": "timeout"} for k in self.FULL}
+        ok = {"scanner_reports": dict(self.FULL), "scanner_status": reasons}
         self.assertIs(classify.validate_manifest(ok), ok)
+
+    def test_null_needs_reason_even_without_scanner_status(self):
+        # LR-27 (c): a null report with no scanner_status at all used to pass validation
+        with self.assertRaisesRegex(ValueError, "grype is null with no scanner_status reason"):
+            classify.validate_manifest({"scanner_reports": dict(self.FULL)})
+        r = dict(self.FULL, grype="/g.json", trivy="/t.json", **{"osv-scanner": "/o.json", "osv-scanner-gomod": "/og.json"})
+        with self.assertRaisesRegex(ValueError, "snyk is null with no scanner_status reason"):
+            classify.validate_manifest({"scanner_reports": r, "scanner_status": {"grype": {"reason": "x"}}})
 
 
 class ClassifyManifestGvc(unittest.TestCase):

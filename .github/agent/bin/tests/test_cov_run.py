@@ -457,7 +457,7 @@ class SuppressionPR(Base):
 
 class FixPR(Base):
     ROW = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v1.0.0", "to": "v1.1.0"}}
-    BR = "auditor/bump-CVE-2099-40-abcdef123456"
+    BR = "auditor/bump-example.com-m-1.1.0"       # keyed by TARGET, never by CVE or commit (LR-32)
 
     def real(self, rules, automerge=False):
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
@@ -478,7 +478,7 @@ class FixPR(Base):
         self.assertNotIn("--draft", would[0]["cmd"])
         log = os.path.join(self.tmp, "shim.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
         res = R._deliver_fix_pr(self.ROW, "2026-09-22", "abcdef1234567890", False, [])
-        self.assertEqual(res, ("https://github.com/OWNER/REPO/pull/SHIM-bump-CVE-2099-40-abcdef123456", None, "delivered"))
+        self.assertEqual(res, ("https://github.com/OWNER/REPO/pull/SHIM-bump-example.com-m-1.1.0", None, "delivered"))
         lines = open(log).read().splitlines()
         self.assertIn("gh pr merge --auto --squash %s" % self.BR, lines)
         self.assertIn("go get example.com/m@v1.1.0", lines)

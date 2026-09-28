@@ -112,10 +112,13 @@ def validate_manifest(m):
     if not isinstance(r, dict):
         raise ValueError("manifest: scanner_reports object is missing")
     status = m.get("scanner_status") or {}
-    for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk"):
+    keys = ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk")
+    for k in keys:
         if k not in r:
             raise ValueError("manifest: scanner_reports missing key %r (use null for 'did not run')" % k)
-        if r[k] is None and status and k in status and status[k].get("reason") is None:
+    for k in keys:
+        # a null report ALWAYS carries its reason — also when scanner_status is absent (LR-27 c)
+        if r[k] is None and ((status.get(k) or {}).get("reason") is None):
             raise ValueError("manifest: %s is null with no scanner_status reason" % k)
     return m
 

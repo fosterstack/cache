@@ -347,62 +347,128 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     return url, None
 
 
-def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
-    """Deliver ONE Go-module bump as a DRAFT PR on a fresh auditor/ branch by the App bot
-    (decision 2): `go get <module>@<fixed>` + `go mod tidy`, committing ONLY go.mod and go.sum
-    — no source edits, no vendor directory, no version guessing. The PR body names the CVE,
-    the module, the from/to versions, and links the run's report; CI on the draft proves the
-    bump compiles, which is what the draft is for. Base rebuilds are NOT delivered here (an OS
-    fix defers to Dependabot's docker PR, REQ-AUD-2 AC3).
+def _bump_target(fb):
+    """The delivery TARGET of a bump: (module, version) — one PR per target, never per CVE
+    (LR-32; owner, Sep 28: "one PR per bump, listing every CVE it fixes"). `0.22.0` and `v0.22.0`
+    are the same target; Go resolves the `v` form."""
+    to = str(fb.get("to") or "")
+    return (fb.get("module"), to[1:] if to.startswith("v") else to)
 
-    Returns (pr_url, err, status). status is one of: 'delivered' (draft PR opened/reused),
-    'would' (dry run), 'unresolvable' (the fixed version does not resolve from the module
-    proxy, or the bump is a no-op — the row stays in §3, never a broken PR), 'pending' (no
-    authorized delivery step this run), 'skipped-test' (test image), 'error'
-    (a git/gh/tidy failure — the caller marks the run INCOMPLETE). No vendor/model name
-    appears in the branch, commit, or PR text."""
-    fb = row.get("fix_bump") or {}
-    module = fb.get("module"); to = fb.get("to"); frm = fb.get("from"); cve = fb.get("cve") or row["id"]
-    short = (commit or "unknown")[:12]
-    branch = "auditor/bump-%s-%s" % (cve, short)
-    title = policy.subject("bump %s %s -> %s (%s)" % (module, frm, to, cve))
+
+def _branch_slug(s):
+    s = re.sub(r"[^A-Za-z0-9._-]+", "-", str(s)).strip("-.")
+    return re.sub(r"\.{2,}", ".", s) or "x"
+
+
+def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
+    """Deliver every §1/§3 bump: ONE delivery per (module, version) target carrying all its CVEs
+    (LR-32), then set each row's honest action from its target's delivery status. Returns the
+    delivery errors (each makes the run INCOMPLETE)."""
+    fix_errs = []
+    targets = {}                                   # LR-32: ONE delivery per (module, version) target
+    for r in rows:
+        if r.get("fix_bump"):
+            targets.setdefault(_bump_target(r["fix_bump"]), []).append(r)
+    delivered = {}
+    for tk, group in targets.items():
+        delivered[tk] = _deliver_fix_pr(group, today, commit, dry, would, is_test=is_test)
+    for r in rows:
+        if not r.get("fix_bump"):
+            continue
+        fb = r["fix_bump"]; lift = r.get("lift_note", "")
+        furl, ferr, fstatus = delivered[_bump_target(fb)]
+        if fstatus == "delivered":
+            r["action"] = ("opened draft bump PR: %s" % (furl or "(App bot)")) + lift
+            r["fix_pr_url"] = furl
+        elif fstatus == "would":
+            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"], fb["to"])) + lift
+        elif fstatus == "unresolvable":
+            r["action"] = ("fix not resolvable: %s@%s did not resolve from the module proxy — stays in section 3" % (fb["module"], fb["to"])) + lift
+        elif fstatus == "skipped-test":
+            r["action"] = "test-image run: no bump PR (not a shipped image)" + lift
+        elif fstatus == "pending":
+            r["action"] = "bump PR pending: no authorized delivery step this run" + lift
+            r["pending_delivery"] = True
+        else:  # 'error'
+            r["action"] = ("bump PR delivery FAILED (run INCOMPLETE): %s" % ferr) + lift
+            r["pending_delivery"] = True
+            if ferr not in fix_errs:
+                fix_errs.append(ferr)
+    return fix_errs
+
+
+def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
+    """Deliver ONE Go-module bump TARGET (module, version) as one PR carrying every CVE it fixes
+    (LR-32), on a stable branch named after the target — never after a CVE or a commit — so a
+    later run updates that PR (or leaves it alone when nothing changed) instead of opening a
+    duplicate or overwriting another target's branch. `go get <module>@<version>` + `go mod tidy`,
+    committing ONLY go.mod and go.sum. `rows` are the §1/§3 rows sharing the target (a single row
+    dict is accepted). Base rebuilds are NOT delivered here (REQ-AUD-2 AC3).
+
+    Returns (pr_url, err, status). status is one of: 'delivered' (PR opened, updated or already
+    current), 'would' (dry run), 'unresolvable' (the version does not resolve, or the bump is a
+    no-op — rows stay in §3, never a broken PR), 'pending' (no authorized delivery step),
+    'skipped-test' (test image), 'error' (a git/gh/tidy failure — the run is INCOMPLETE)."""
+    rows = [rows] if isinstance(rows, dict) else list(rows)
+    fbs = [r.get("fix_bump") or {} for r in rows]
+    module, tkey = _bump_target(fbs[0])
+    to = "v" + tkey if (tkey[:1].isdigit()) else tkey            # Go resolves the v form
+    _v = lambda x: ("v" + x) if x[:1].isdigit() else x              # one spelling per version
+    frms = sorted({_v(str(f.get("from"))) for f in fbs if f.get("from")})
+    frm = ", ".join(frms)
+    cves = sorted({f.get("cve") or r["id"] for f, r in zip(fbs, rows)})
+    cvs = ", ".join(cves) if len(cves) <= 3 else "%s, +%d more" % (", ".join(cves[:3]), len(cves) - 3)
+    branch = "auditor/bump-%s-%s" % (_branch_slug(module), _branch_slug(tkey))
+    title = policy.subject("bump %s -> %s (%s)" % (module, to, cvs))
     server = os.environ.get("GITHUB_SERVER_URL"); repo = os.environ.get("GITHUB_REPOSITORY"); rid = os.environ.get("GITHUB_RUN_ID")
     runlink = ("%s/%s/actions/runs/%s" % (server, repo, rid)) if (server and repo and rid) else "the daily CVE auditor run report"
-    body = ("Automated dependency bump from the daily CVE auditor. Draft for review; auto-merge is a later switch.\n\n"
-            "- Vulnerability: %s\n- Module: %s\n- From: %s\n- To: %s\n\nRun report: %s" % (cve, module, frm, to, runlink))
+    body = ("Automated dependency bump from the daily CVE auditor. One PR per bump target, listing every "
+            "vulnerability it fixes.\n\n- Module: %s\n- From: %s\n- To: %s\n- Vulnerabilities (%d): %s\n\n"
+            "Run report: %s" % (module, frm, to, len(cves), ", ".join(cves), runlink))
+    target = "%s %s -> %s" % (module, frm, to)
     if is_test:                                 # a test image is not shipped and always dry (AC9)
-        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve], note="skipped: test image", key=branch)
+        _plan(would, "bump PR", target, cves, note="skipped: test image", key=branch)
         return None, None, "skipped-test"
     # AC3/AC4: a bump PR touches only go.mod/go.sum (no prompt file), so it auto-merges when the
     # owner turned auto-merge on; otherwise draft.
     automerge = _automerge_allowed(["go.mod", "go.sum"])
     draft = "" if automerge else "--draft "
     if dry:
-        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve],
+        _plan(would, "bump PR", target, cves,
               cmd="gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)),
               note="auto-merge" if automerge else "draft", key=branch)
         print("dry-run would open %sbump PR on %s" % ("auto-merge " if automerge else "draft ", branch))
         return None, None, "would"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
+        # test shim: the log is the remote. A target already delivered with the same CVE set is
+        # left alone; a changed CVE set updates the SAME PR (AC2); a new target gets its own branch.
+        prior = open(log).read() if os.path.exists(log) else ""
+        url = "https://github.com/OWNER/REPO/pull/SHIM-%s" % branch.split("/", 1)[1]
+        mark = "SHIM_TARGET %s %s" % (branch, ",".join(cves))
+        if mark in prior.splitlines():
+            open(log, "a").write("UNCHANGED %s\n" % branch)
+            return url, None, "delivered"
         seq = ["git checkout -B %s origin/main" % branch,
                "go get %s@%s" % (module, to),
                "go mod tidy",
                "git add go.mod go.sum",
                "git commit -m %s" % shlex.quote(title),
-               "git push -u origin %s" % branch,
-               "gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title))]
-        if automerge:
-            seq.append("gh pr merge --auto --squash %s" % branch)
+               "git push -u origin %s --force-with-lease" % branch]
+        if ("SHIM_TARGET %s " % branch) in prior:
+            seq.append("gh pr edit %s --title %s" % (branch, shlex.quote(title)))       # same PR, updated
+        else:
+            seq.append("gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)))
+            if automerge:
+                seq.append("gh pr merge --auto --squash %s" % branch)
         open(log, "a").write("\n".join(seq) + "\n")
         if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
             return None, "simulated: push to origin/%s rejected" % branch, "error"
-        url = "https://github.com/OWNER/REPO/pull/SHIM-bump-%s-%s" % (cve, short)   # one per branch, like real gh
-        open(log, "a").write("PR_URL %s\n" % url)
+        open(log, "a").write("%s\nPR_URL %s\n" % (mark, url))
         return url, None, "delivered"
     if not _real_gh_allowed():
         print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
-        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve], note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
+        _plan(would, "bump PR", target, cves, note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
         return None, None, "pending"
     ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
 
@@ -435,9 +501,14 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
     r = _git("commit", "-m", title)
     if r.returncode != 0:
         return None, ("git commit: " + (r.stderr or "").strip()), "error"
-    r = _git("push", "-u", "origin", branch, "--force-with-lease")
-    if r.returncode != 0:
-        return None, ("git push: " + (r.stderr or "").strip()), "error"
+    # AC2: the target's branch may already carry an open PR from an earlier run. Unchanged
+    # go.mod/go.sum -> no push (the PR is left alone); changed -> push to the SAME branch.
+    remote_same = (_git("fetch", "origin", branch).returncode == 0
+                   and _git("diff", "--quiet", "FETCH_HEAD", "HEAD", "--", "go.mod", "go.sum").returncode == 0)
+    if not remote_same:
+        r = _git("push", "-u", "origin", branch, "--force-with-lease")
+        if r.returncode != 0:
+            return None, ("git push: " + (r.stderr or "").strip()), "error"
 
     def _existing():
         q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
@@ -448,6 +519,7 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
             _arm_automerge(u, ws)
     ex = _existing()
     if ex:
+        subprocess.run(["gh", "pr", "edit", ex, "--title", title, "--body", body], cwd=ws, capture_output=True, text=True)
         _arm(ex); return ex, None, "delivered"
     create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
     if not automerge:
@@ -999,8 +1071,10 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
         prs = {str(p.get("key") or (p["kind"], p["target"])) for p in plans if p["kind"].endswith("PR")}
         ncve = len({c for p in plans if p["kind"].endswith("PR") for c in p["cves"]})
         iss = {(p["kind"], p["target"]) for p in plans if p["kind"] == "owner-decision issue"}
+        nb = len({str(p.get("key")) for p in plans if p["kind"] == "bump PR"})
+        ns = len(prs) - nb
         line = ("Test image — nothing opened (not a shipped image); on a shipped image %d finding(s) "
-                "would have produced %d PR(s)" % (ncve, len(prs)))
+                "would have produced %d PR(s) (%d bump target(s), %d suppression)" % (ncve, len(prs), nb, ns))
         if iss:
             line += " and %d owner-decision issue(s)" % len(iss)
         return [line + "."]
@@ -1789,28 +1863,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # failure marks the run INCOMPLETE. Base rebuilds are NOT delivered here — they defer to
     # Dependabot's daily docker PR (REQ-AUD-2 AC3). The honest action text is set from the
     # delivery status, replacing the pre-delivery placeholder.
-    fix_errs = []
-    for r in rows:
-        if not r.get("fix_bump"):
-            continue
-        fb = r["fix_bump"]; lift = r.get("lift_note", "")
-        furl, ferr, fstatus = _deliver_fix_pr(r, today, m.get("commit"), dry, would, is_test=is_test)
-        if fstatus == "delivered":
-            r["action"] = ("opened draft bump PR: %s" % (furl or "(App bot)")) + lift
-            r["fix_pr_url"] = furl
-        elif fstatus == "would":
-            r["action"] = ("dry run: would open draft bump PR %s %s -> %s" % (fb["module"], fb["from"], fb["to"])) + lift
-        elif fstatus == "unresolvable":
-            r["action"] = ("fix not resolvable: %s@%s did not resolve from the module proxy — stays in section 3" % (fb["module"], fb["to"])) + lift
-        elif fstatus == "skipped-test":
-            r["action"] = "test-image run: no bump PR (not a shipped image)" + lift
-        elif fstatus == "pending":
-            r["action"] = "bump PR pending: no authorized delivery step this run" + lift
-            r["pending_delivery"] = True
-        else:  # 'error'
-            r["action"] = ("bump PR delivery FAILED (run INCOMPLETE): %s" % ferr) + lift
-            r["pending_delivery"] = True
-            fix_errs.append(ferr)
+    fix_errs = _deliver_bumps(rows, today, m.get("commit"), dry, would, is_test=is_test)
     # Now every §1/§3 row action is final: a §2/§3 row still lacking an action is a real gap. In
     # a dry run that surfaced NO would-open work at all for its §3 rows, count them as unactioned.
     findings_without_action = sum(1 for r in rows if r["section"] in (2, 3) and (not r["action"] or r["action"] == "none"))

@@ -300,8 +300,9 @@ def _norm_ref(ref):
     form is not universally accepted, and the digest is a multi-arch index)."""
     if "@sha256:" in ref:
         name, digest = ref.split("@", 1)
-        name = name.split(":", 1)[0]
-        return "%s@%s" % (name, digest)
+        head, _, last = name.rpartition("/")        # a registry port (host:5000/...) is not a tag
+        last = last.split(":", 1)[0]
+        return "%s@%s" % ((head + "/" + last) if head else last, digest)
     return ref
 
 

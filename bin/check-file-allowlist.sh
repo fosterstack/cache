@@ -89,6 +89,8 @@ ALLOW_PATTERNS=(
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
+  # the published OpenVEX schema the writer validates against (production data, beside its code)
+  '^\.github/agent/bin/auditorlib/openvex-schema\.json$'
   '^\.github/agent/bin/tests/[A-Za-z0-9._-]+\.py$'
   # REQ-AUD-18 AC1: the auditor's suites (matrix, mutants, parser runner, govulncheck fixture
   # materializer) and its requirements matrix live under .github/agent/ with the code.
