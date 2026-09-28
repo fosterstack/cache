@@ -129,6 +129,22 @@ def _supp_cves(supp):
     return sorted({(s.get("vulnerability") or {}).get("name") for s in doc.get("statements", [])} - {None})
 
 
+def _supp_removed(supp):
+    """The expired scopes the suppression PR REMOVES this run: (cve ids, scope count)."""
+    try:
+        sc = json.load(open(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))).get("reopened", [])
+    except Exception:
+        return [], 0
+    return sorted({x[0] for x in sc if x}), len(sc)
+
+
+def _supp_target(supp, nstmt):
+    """What the suppression PR carries, named: its statements and the expired scopes it removes."""
+    rm_ids, rm_n = _supp_removed(supp)
+    t = "suppressions (%d statements" % nstmt + (", %d expired scope(s) removed" % rm_n if rm_n else "") + ")"
+    return t, sorted(set(_supp_cves(supp)) | set(rm_ids))
+
+
 def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
     """Open OR update the single owner-decision issue (REQ-AUD-9). Returns (ok, ref): ok is
     False on a create/update FAILURE so the caller marks the run INCOMPLETE — never a false
@@ -226,8 +242,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if nstmt == 0 and not has_removals and not has_proposals:
         return None, None
     if is_test:
-        _plan(would, "suppression PR", "suppressions (%d statements)" % nstmt, _supp_cves(supp),
-              note="skipped: test image")
+        _plan(would, "suppression PR", *_supp_target(supp, nstmt), note="skipped: test image")
         print("test-image run: no suppression PR (not a shipped image)")
         return None, None
     short = (commit or "unknown")[:12]
@@ -244,7 +259,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     automerge = _automerge_allowed(staged)
     draft = "" if automerge else "--draft "
     if dry:
-        _plan(would, "suppression PR", "suppressions (%d statements)" % nstmt, _supp_cves(supp),
+        _plan(would, "suppression PR", *_supp_target(supp, nstmt),
               cmd="gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)),
               note="auto-merge" if automerge else "draft")
         print("dry-run would open %sPR on %s" % ("auto-merge " if automerge else "draft ", branch))
@@ -925,7 +940,8 @@ def _text(s):
     # `_` only at a word boundary: intraword underscores (not_affected) never emphasise in GFM
     s = re.sub(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])", r"\\_", s)
     # a free-text line that STARTS a line could open a heading/quote/list/rule: escape the marker
-    return re.sub(r"^([#>+=-])", r"\\\1", s)
+    s = re.sub(r"^([#>+=-])", r"\\\1", s)
+    return re.sub(r"^(\d+)([.)])(?=\s|$)", r"\1\\\2", s)
 
 
 def _row_line(r):
@@ -987,7 +1003,8 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
         return [line + "."]
     out = []
     if pr_url:
-        out.append("suppression PR (App): %s — %s" % (pr_url, cv([r["id"] for r in rows if r.get("vex_id")])))
+        out.append("suppression PR (App): %s — %s" % (pr_url, cv((standing or {}).get("supp_cves")
+                                                                  or [r["id"] for r in rows if r.get("vex_id")])))
     elif pr_err:
         out.append("suppression PR delivery FAILED (run INCOMPLETE): %s" % _text(pr_err))
     bumps = {}
@@ -1026,8 +1043,8 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
             extra = (" — " + _text(note)) if note and note != "draft" else ""
             out.append("would open (dry run): %s — %s — %s%s" % (p["kind"], _text(p["target"]), cv(p["cves"]), extra))
     if not out:
-        return ["Nothing opened this run — %s." % ("dry run with no actionable findings" if dry
-                                                  else "no actionable findings")]
+        return ["Nothing opened this run — %s; 0 finding(s) would have produced a PR." % (
+            "dry run with no actionable findings" if dry else "no actionable findings")]
     return _unique(out)
 
 
@@ -1821,7 +1838,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # REQ-AUD-17 AC2: drive the single standing "needs a human" issue from the same §0 list the
     # report shows — comment it (find-or-create) while §0 is non-empty; close it when §0 is empty.
     needs = _needs_human(rows, sections, dry, pr_url, status)
-    _standing_ok, _standing_ref = _standing_issue(needs, dry, would)
+    _supp_ids = (sorted(set(_supp_cves(supp)) | set(_supp_removed(supp)[0])) if pr_url else [])
+    _nids = _needs_ids(rows, sections, dry, _supp_ids)
+    _standing_ok, _standing_ref = _standing_issue(needs, dry, would, _nids)
     # A failed standing-issue update is a real gap (the daily re-email did not go out): mark the
     # run INCOMPLETE rather than reporting a false success (Codex round-1 P2 blocker).
     if not _standing_ok:
@@ -1829,7 +1848,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         status = ("AUDIT INCOMPLETE: " + _sf) if "INCOMPLETE" not in status else (status + "; " + _sf)
         complete = False                                  # fail the job, not a false success
     state = dict(state or {}); state["standing_issue"] = {"ref": _standing_ref, "needs": len(needs),
-                                                          "cves": _needs_ids(rows, sections, dry)}
+                                                          "cves": _nids, "supp_cves": _supp_ids}
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info, state)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
@@ -2009,7 +2028,7 @@ def _scanner_tables(m, rows, out):
     cli.writef(os.path.join(out, "reports", "scanner-tables.txt"), text)
 
 
-def _needs_ids(rows, sections, dry):
+def _needs_ids(rows, sections, dry, supp_ids=()):
     """The advisory ids behind §0 (same row conditions as _needs_human): the CVEs the standing
     'needs a human' issue carries."""
     ids = set()
@@ -2019,6 +2038,7 @@ def _needs_ids(rows, sections, dry):
             ids.add(r["id"])
     if not dry:
         ids |= {r["id"] for r in (sections[1] + sections[3]) if r.get("fix_pr_url")}
+        ids |= set(supp_ids)                  # §0 names the suppression draft PR awaiting merge
     return sorted(ids)
 
 
@@ -2045,7 +2065,7 @@ def _needs_human(rows, sections, dry, pr_url, status):
     return list(dict.fromkeys(needs))
 
 
-def _standing_issue(needs, dry, would):
+def _standing_issue(needs, dry, would, cves=()):
     """The single standing 'needs a human' issue (REQ-AUD-17 AC2): created once and commented
     every run whose §0 is non-empty (listing §0, so an unanswered item re-emails daily); closed
     by the first run that finds §0 empty. Uses the JOB token (issues:write), the same shim/dry/
@@ -2056,7 +2076,7 @@ def _standing_issue(needs, dry, would):
             "run with nothing waiting." % (len(needs), "\n- ".join(_text(x) for x in needs))) if needs else None
     if dry:
         _plan(would, "standing issue", ("%s — comment (%d item(s))" % (title, len(needs))) if needs
-              else ("%s — close if open" % title),
+              else ("%s — close if open" % title), cves,
               cmd=("gh issue comment/create --title %s" if needs else "gh issue close --title %s (if open)")
               % shlex.quote(title))
         return True, "dry"

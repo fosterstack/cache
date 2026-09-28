@@ -3355,7 +3355,7 @@ begin "rpt-ac2-test-image-single-line-with-counts" "a test-image run lists ONE l
 t1="$(pl "$rpt/testimage.md")"; e1="$(pl "$rpt/empty.md")"
 { eq "$(printf '%s\n' "$t1" | grep -c .)" "1" \
   && eq "$t1" "- Test image — nothing opened (not a shipped image); on a shipped image 33 finding(s) would have produced 31 PR(s) and 1 owner-decision issue(s)." \
-  && eq "$e1" "- Nothing opened this run — dry run with no actionable findings."; } \
+  && eq "$e1" "- Nothing opened this run — dry run with no actionable findings; 0 finding(s) would have produced a PR."; } \
   && ok || no "single summary lines" "test=$t1 | empty=$e1"
 
 begin "rpt-ac3-ac5-every-section-unique-and-render-safe" "no list section repeats a line (identical rows collapse, marked ×n) and, rendered with GitHub's cmark-gfm, no report has strikethrough, emphasis or stray bold — over the crafted reports and a real-capture run"
@@ -3399,7 +3399,7 @@ ok=(dry==["would open (dry run): bump PR — mod 0.16.0 -> 0.22.0; mod 0.17.3 ->
     and "owner-decision issue: https://x/issues/10 — zlib; zlib1g — CVEs: CVE-50" in live
     and "bump PR (App): m 1 -> 2 — CVEs: CVE-7, CVE-8 — https://x/pull/3" in live
     and any(l.startswith("standing issue: auditor: needs a human — https://x/issues/1 — 3 item(s)") for l in live)
-    and closed==["Nothing opened this run — no actionable findings."])
+    and closed==["Nothing opened this run — no actionable findings; 0 finding(s) would have produced a PR."])
 print("OK" if ok else "BAD dry=%r live=%r closed=%r"%(dry,live,closed))
 R1
 )"
@@ -3459,6 +3459,33 @@ if "$PY" -c 'import cmarkgfm' 2>/dev/null; then
 else lr="$([ -n "${CI:-}" ] && echo 9 || echo 0)"; hid=0; fi
 { eq "$r3" "OK" && eq "$lr" "0" && eq "$hid" "0"; } \
   && ok || no "escaped + named, lint clean, nothing hidden" "$r3 lint=$lr hidden_html=$hid"
+
+begin "rpt-r3-standing-and-removals-name-their-cves" "the standing issue carries EVERY §0 id (dry plan and live, incl. the suppression PR's CVEs); a removal-only suppression PR names the expired scopes and their CVEs; a leading '1.' never opens a list; the lint accepts an escaped '*' inside the bold status (review round 3)"
+r4="$(rm -rf "$WORK/rpt-r3" && mkdir -p "$WORK/rpt-r3/.auditor" "$WORK/rpt-r3/suppressions" && "$PY" - "$WORK/rpt-r3" <<'R4'
+import importlib.util,json,os,sys
+d=sys.argv[1]
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+json.dump({"reopened":[["CVE-9",["p"],["pkg:a"]],["CVE-9",["p"],["pkg:b"]],["CVE-8",["p"],["pkg:c"]]]},open(os.path.join(d,".auditor","reopened-expired.json"),"w"))
+supp=os.path.join(d,"suppressions")
+t,c=R._supp_target(supp,0)
+w=[]; ok_std,ref=R._standing_issue(["owner-decision needed: CVE-1"],True,w,["CVE-1","CVE-9"])
+dryline=R._pr_list(w,[],{n:[] for n in range(1,8)},True,None,None,False)
+rows=[{"id":"CVE-1","owner_issue":"https://x/issues/2","package":"z"}]
+ids=R._needs_ids(rows,{n:[] for n in range(1,8)},False,["CVE-8","CVE-9"])
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+rep=R._render(m,[],{n:[] for n in range(1,8)},[],"AUDIT INCOMPLETE: git fetch: * branch main -> FETCH_HEAD",False,"stub",{},"h",
+              "1. first point","",None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+open(os.path.join(d,"r.md"),"w").write(rep)
+ok=(t=="suppressions (0 statements, 3 expired scope(s) removed)" and c==["CVE-8","CVE-9"]
+    and dryline==["would open (dry run): standing issue — auditor: needs a human — comment (1 item(s)) — CVEs: CVE-1, CVE-9"]
+    and ids==["CVE-1","CVE-8","CVE-9"] and "1\\. first point" in rep)
+print("OK" if ok else "BAD t=%r c=%r dry=%r ids=%r"%(t,c,dryline,ids))
+R4
+)"
+if "$PY" -c 'import cmarkgfm' 2>/dev/null; then "$PY" .github/agent/tests/report-lint.py "$WORK/rpt-r3/r.md" >/dev/null 2>&1; l4=$?
+else l4="$([ -n "${CI:-}" ] && echo 9 || echo 0)"; fi
+{ eq "$r4" "OK" && eq "$l4" "0"; } && ok || no "standing/removal CVEs named; no ordered list; escaped-star bold accepted" "$r4 lint=$l4"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

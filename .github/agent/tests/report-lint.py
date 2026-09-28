@@ -62,7 +62,7 @@ def render_problems(text):
         return H.unescape(re.sub(r"<[^>]+>", "", frag)).strip()
     # what each INTENDED `**…**` span renders to (escapes and entities resolved the same way)
     intended = {plain(re.sub(r"</?p>", "", cmarkgfm.github_flavored_markdown_to_html("**%s**" % x)))
-                for x in re.findall(r"\*\*([^*\n]+?)\*\*", text)}
+                for x in re.findall(r"\*\*((?:\\.|[^*\\\n])+?)\*\*", text)}   # escaped chars (\*) allowed inside
     for m in re.finditer(r"<strong>(.*?)</strong>", html, re.S):
         inner = plain(m.group(1))
         if inner not in intended:
