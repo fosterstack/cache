@@ -1,0 +1,11 @@
+name: PROOF impostor (do not merge)
+# Throwaway: a PR-authored Actions job with the same name as the required App check. It must NOT
+# satisfy main-protection's auditor-review-gate requirement (pinned to fosterstack-automation).
+on: pull_request
+permissions: {}
+jobs:
+  impostor:
+    name: auditor-review-gate
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "impostor passes"
