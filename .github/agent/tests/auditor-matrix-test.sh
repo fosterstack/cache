@@ -3008,7 +3008,7 @@ st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"ver
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
 pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
-print("OK" if "owner-decision issue: CVE-SKIP (skipped)" in pl else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
+print("OK" if "owner-decision issue: skipped — lib — CVEs: CVE-SKIP" in pl else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
 { eq "$skr" "OK"; } && ok || no "PR list keeps the skipped sentinel" "$skr"
 
 begin "req15-tag-carried-in-force-even-in-dry" "an already-in-force (carried) statement is tagged 'in force (main)' even on a dry run — a dry run changes nothing on main, so carried is checked before dry (Sonnet round-2 residual D)"
@@ -3080,7 +3080,7 @@ st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"ver
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",False,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
 pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
-print("OK" if ("CVE-AAA (skipped)" in pl and "CVE-BBB (skipped)" in pl) else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
+print("OK" if ("owner-decision issue: skipped — a — CVEs: CVE-AAA" in pl and "owner-decision issue: skipped — b — CVEs: CVE-BBB" in pl) else "BAD:%r"%pl)' 2>/dev/null | tail -1)"
 { eq "$csr" "OK"; } && ok || no "distinct skipped owner items each listed" "$csr"
 
 echo "=== REQ-AUD-18 engineering hygiene ==="
@@ -3377,6 +3377,62 @@ printf '## 2. Accepted\n\nCVE-2005-2541 — tar@1.34 — vex: #stmt-cve-2005-254
 "$PY" .github/agent/tests/report-lint.py --no-render "$WORK/rpt-dup.md" >/dev/null 2>&1; d1=$?
 if "$PY" -c 'import cmarkgfm' 2>/dev/null; then "$PY" .github/agent/tests/report-lint.py "$WORK/rpt-tilde.md" >/dev/null 2>&1; d2=$?; else d2="$([ -n "${CI:-}" ] && echo 9 || echo 1)"; fi
 { eq "$d1" "1" && eq "$d2" "1"; } && ok || no "lint rejects both old defects" "dup=$d1 tilde=$d2"
+
+begin "rpt-r1-one-line-per-delivery-and-issue" "several rows feeding ONE bump branch are one line (targets and CVEs merged); a live owner issue lists EVERY CVE and target it covers; a live standing issue is listed; closing the standing issue is not an 'opening' (review round 1)"
+r1="$("$PY" - <<'R1'
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+secs={n:[] for n in range(1,8)}
+w=[]
+for inst in ("0.16.0","0.17.3"):     # two installed versions, ONE branch
+    R._plan(w,"bump PR","mod %s -> 0.22.0"%inst,["CVE-1"],note="draft",key="auditor/bump-CVE-1-abc")
+R._plan(w,"standing issue","auditor: needs a human — close if open")
+dry=R._pr_list(w,[],secs,True,None,None,False)
+rows=[{"id":"CVE-%d"%i,"owner_issue":"https://x/issues/9","adjudicator_error":True,"package":"p%d"%i} for i in range(5)]
+rows+=[{"id":"CVE-50","owner_issue":"https://x/issues/10","package":"zlib"},{"id":"CVE-50","owner_issue":"https://x/issues/10","package":"zlib1g"}]
+secs[3]=[{"id":"CVE-7","fix_pr_url":"https://x/pull/3","fix_bump":{"module":"m","from":"1","to":"2"}},
+         {"id":"CVE-8","fix_pr_url":"https://x/pull/3","fix_bump":{"module":"m","from":"1","to":"2"}}]
+live=R._pr_list([],rows,secs,False,None,None,False,{"ref":"https://x/issues/1","needs":3})
+closed=R._pr_list([],[],{n:[] for n in range(1,8)},False,None,None,False,{"ref":"https://x/issues/1","needs":0})
+ok=(dry==["would open (dry run): bump PR — mod 0.16.0 -> 0.22.0; mod 0.17.3 -> 0.22.0 — CVEs: CVE-1"]
+    and "owner-decision issue: https://x/issues/9 — adjudicator unavailable — CVEs: CVE-0, CVE-1, CVE-2, CVE-3, CVE-4" in live
+    and "owner-decision issue: https://x/issues/10 — zlib; zlib1g — CVEs: CVE-50" in live
+    and "bump PR (App): m 1 -> 2 — CVEs: CVE-7, CVE-8 — https://x/pull/3" in live
+    and any(l.startswith("standing issue: auditor: needs a human — https://x/issues/1 — 3 item(s)") for l in live)
+    and closed==["Nothing opened this run — no actionable findings."])
+print("OK" if ok else "BAD dry=%r live=%r closed=%r"%(dry,live,closed))
+R1
+)"
+eq "$r1" "OK" && ok || no "one line per delivery/issue with every CVE; standing listed; close not an opening" "$r1"
+
+begin "rpt-r1-free-text-stays-one-line-and-visible" "multi-line tool stderr in a delivery error stays ONE list line (no injected heading), and a masked <model-id> in the status/conclusion stays visible (review round 1)"
+r2="$(rm -rf "$WORK/rpt-r1" && mkdir -p "$WORK/rpt-r1" && "$PY" - "$WORK/rpt-r1" <<'R2'
+import importlib.util,os,sys
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+err="git push: To https://github.com/o/r\n ! [rejected] a -> a (non-fast-forward)\n# a hash-led line\nhint: pull first"
+rep=R._render(m,[],{n:[] for n in range(1,8)},[],"AUDIT INCOMPLETE: model call failed for <model-id>",False,"stub",{},"h",
+              "Model <model-id> unavailable ~ retry","",err,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
+open(os.path.join(sys.argv[1],"r.md"),"w").write(rep)
+pl=rep.split("## PRs and issues this run")[1].split("## 0.")[0]
+lines=[l for l in pl.splitlines() if l.strip()]
+ok=(len(lines)==1 and lines[0].startswith("- suppression PR delivery FAILED") and " ↵ " in lines[0]
+    and "\\<model-id>" in rep and "Model \\<model-id> unavailable \\~ retry" in rep)
+print("OK" if ok else "BAD lines=%r"%lines)
+R2
+)"
+if "$PY" -c 'import cmarkgfm' 2>/dev/null; then
+  html="$("$PY" -c 'import cmarkgfm,sys; print(cmarkgfm.github_flavored_markdown_to_html(open(sys.argv[1]).read()))' "$WORK/rpt-r1/r.md")"
+  vis="$(printf '%s' "$html" | grep -c '&lt;model-id&gt;')"; heads="$(printf '%s' "$html" | grep -c '<h1>a hash-led')"
+else vis="$([ -n "${CI:-}" ] && echo 0 || echo 2)"; heads=0; fi
+{ eq "$r2" "OK" && [ "$vis" -ge 2 ] 2>/dev/null && eq "$heads" "0"; } \
+  && ok || no "stderr one line; <model-id> visible in status + conclusion" "$r2 visible=$vis injected_heading=$heads"
+
+begin "rpt-r1-lint-catches-spilled-list-lines" "the lint FAILS a report whose list item continues onto a second physical line (the multi-line stderr shape), even when source and render agree"
+printf '## PRs and issues this run\n\n- delivery FAILED: git push: To x\n# injected\nhint: y\n\n## 0. Needs a human\n' > "$WORK/rpt-spill.md"
+"$PY" .github/agent/tests/report-lint.py --no-render "$WORK/rpt-spill.md" >/dev/null 2>&1; sp=$?
+eq "$sp" "1" && ok || no "lint rejects a spilled list line" "rc=$sp"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

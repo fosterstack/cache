@@ -380,7 +380,7 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
         open(log, "a").write("\n".join(seq) + "\n")
         if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
             return None, "simulated: push to origin/%s rejected" % branch, "error"
-        url = "https://github.com/OWNER/REPO/pull/SHIM-bump-%s" % short
+        url = "https://github.com/OWNER/REPO/pull/SHIM-bump-%s-%s" % (cve, short)   # one per branch, like real gh
         open(log, "a").write("PR_URL %s\n" % url)
         return url, None, "delivered"
     if not _real_gh_allowed():
@@ -901,19 +901,25 @@ def _group_facts(c, grp):
 _MD_SPECIAL = re.compile(r"[~*_<>|`\\\[\]#]")
 
 
+def _one_line(s):
+    """A report line is ONE line: tool stderr (git/gh) spans several — join them (round-1 blocker:
+    a `#`-led stderr line rendered as a heading in the middle of the report)."""
+    return re.sub(r"\s*[\r\n]+\s*", " ↵ ", "" if s is None else str(s)).strip()
+
+
 def _ident(s):
     """An identifier/path, verbatim: bare when it has nothing Markdown could read, else a code span."""
-    s = "" if s is None else str(s)
+    s = _one_line(s)
     if not _MD_SPECIAL.search(s):
         return s
-    fence = "``" if "`" in s else "`"
+    fence = "`" * (max((len(m) for m in re.findall(r"`+", s)), default=0) + 1)
     pad = " " if (s.startswith("`") or s.endswith("`")) else ""
     return "%s%s%s%s%s" % (fence, pad, s, pad, fence)
 
 
 def _text(s):
     """Free text with every inline-significant character escaped (renders as the same text)."""
-    s = "" if s is None else str(s)
+    s = _one_line(s)
     for ch in ("\\", "`", "~", "*", "<", "|", "[", "]"):
         s = s.replace(ch, "\\" + ch)
     # `_` only at a word boundary: intraword underscores (not_affected) never emphasise in GFM
@@ -944,14 +950,30 @@ def _unique(lines):
     return [x if counts[x] == 1 else "%s (×%d identical rows)" % (x, counts[x]) for x in dict.fromkeys(lines)]
 
 
-def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test):
+def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None):
     """'PRs and issues this run': one line per PR or issue opened or that would open — never one
     per finding — each naming its kind, its target and the CVE IDs it carries (owner's rule)."""
     def cv(ids):
         ids = sorted({i for i in ids if i})
         return ("CVEs: " + ", ".join(_ident(i) for i in ids)) if ids else "no CVE"
-    plans = [w if isinstance(w, dict) else {"kind": "other", "target": str(w), "cves": [], "cmd": "", "note": ""}
-             for w in would]
+    raw = [w if isinstance(w, dict) else {"kind": "other", "target": str(w), "cves": [], "cmd": "", "note": ""}
+           for w in would]
+    # closing the standing issue opens nothing — it is not a line in "PRs and issues opened"
+    raw = [p for p in raw if not (p["kind"] == "standing issue" and "close if open" in p["target"])]
+    # ONE entry per delivery (its branch / its issue), however many rows fed it (round-1 blocker:
+    # several installed versions of one CVE share one bump branch)
+    plans, byk = [], {}
+    for p in raw:
+        k = str(p.get("key") or (p["kind"], p["target"]))
+        if k in byk:
+            q = byk[k]
+            if p["target"] not in q["_targets"]:
+                q["_targets"].append(p["target"])
+            q["cves"] = sorted(set(q["cves"]) | set(p["cves"]))
+        else:
+            q = dict(p); q["_targets"] = [p["target"]]; byk[k] = q; plans.append(q)
+    for q in plans:
+        q["target"] = "; ".join(q["_targets"])
     if is_test:
         prs = {str(p.get("key") or (p["kind"], p["target"])) for p in plans if p["kind"].endswith("PR")}
         ncve = len({c for p in plans if p["kind"].endswith("PR") for c in p["cves"]})
@@ -966,19 +988,36 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test):
         out.append("suppression PR (App): %s — %s" % (pr_url, cv([r["id"] for r in rows if r.get("vex_id")])))
     elif pr_err:
         out.append("suppression PR delivery FAILED (run INCOMPLETE): %s" % _text(pr_err))
+    bumps = {}
     for r in (sections[1] + sections[3]):
         if r.get("fix_pr_url"):
             fb = r.get("fix_bump") or {}
-            out.append("bump PR (App): %s %s -> %s — %s — %s" % (_ident(fb.get("module")), _ident(fb.get("from")),
-                                                                  _ident(fb.get("to")), cv([r["id"]]), r["fix_pr_url"]))
-    seen = set()
+            b = bumps.setdefault(r["fix_pr_url"], {"targets": [], "cves": set()})
+            t = "%s %s -> %s" % (_ident(fb.get("module")), _ident(fb.get("from")), _ident(fb.get("to")))
+            if t not in b["targets"]:
+                b["targets"].append(t)
+            b["cves"].add(r["id"])
+    for url, b in bumps.items():                       # one line per bump PR, every CVE it carries
+        out.append("bump PR (App): %s — %s — %s" % ("; ".join(b["targets"]), cv(b["cves"]), url))
+    issues = {}
     for r in rows:
         oi = r.get("owner_issue")
         # the dry sentinel is represented by the 'would open' entries below; a real ref is shared by
-        # the rows of one issue (one line); "skipped" (gh disabled) is per CVE (Codex R3 P3).
+        # the rows of one issue (one line, EVERY CVE and target it covers — round-1 blocker);
+        # "skipped" (gh disabled) is per CVE (Codex R3 P3).
+        if not oi or oi == "dry":
+            continue
         key = (r["id"], oi) if oi == "skipped" else oi
-        if oi and oi != "dry" and key not in seen:
-            seen.add(key); out.append("owner-decision issue: %s (%s)" % (_ident(r["id"]), oi))
+        it = issues.setdefault(key, {"ref": oi, "cves": set(), "targets": []})
+        it["cves"].add(r["id"])
+        t = ("adjudicator unavailable" if r.get("adjudicator_error") else _ident(r.get("package")))
+        if t and t not in it["targets"]:
+            it["targets"].append(t)
+    for it in issues.values():
+        out.append("owner-decision issue: %s — %s — %s" % (it["ref"], "; ".join(it["targets"]) or "—", cv(it["cves"])))
+    if standing and standing.get("ref") not in (None, "dry", "skipped") and standing.get("needs"):
+        out.append("standing issue: %s — %s — %d item(s) needing a human" % (_text(policy.STANDING_ISSUE_TITLE),
+                                                                            standing["ref"], standing["needs"]))
     if dry:
         for p in plans:
             note = p.get("note") or ""
@@ -1787,6 +1826,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         _sf = "standing needs-a-human issue update failed (%s)" % _standing_ref
         status = ("AUDIT INCOMPLETE: " + _sf) if "INCOMPLETE" not in status else (status + "; " + _sf)
         complete = False                                  # fail the job, not a false success
+    state = dict(state or {}); state["standing_issue"] = {"ref": _standing_ref, "needs": len(needs)}
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info, state)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
@@ -1997,7 +2037,7 @@ def _standing_issue(needs, dry, would):
     title = policy.STANDING_ISSUE_TITLE
     body = ("The daily CVE auditor needs a human on %d item(s) this run:\n- %s\n\nThis issue "
             "re-comments every run while any item is open, and closes automatically on the first "
-            "run with nothing waiting." % (len(needs), "\n- ".join(needs))) if needs else None
+            "run with nothing waiting." % (len(needs), "\n- ".join(_text(x) for x in needs))) if needs else None
     if dry:
         _plan(would, "standing issue", ("%s — comment (%d item(s))" % (title, len(needs))) if needs
               else ("%s — close if open" % title),
@@ -2085,7 +2125,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L = []
     if down_ac2:
         L += ["> SCANNER DID NOT RUN — assessment is NOT clean: " + "; ".join(down_ac2), ""]
-    L += ["# Daily CVE auditor report", "", "## Conclusion", "", conclusion, "",
+    L += ["# Daily CVE auditor report", "", "## Conclusion", "", _text(conclusion), "",
           "## Run header", "", "**Audited:** %s" % what]
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
@@ -2140,7 +2180,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     probs = (consistency or {}).get("problems", [])
     L.append("**Consistency:** %s   **Finding-set hash:** `%s`" % ("clean" if not probs else "%d problems" % len(probs), fs_hash))
     L.append("")
-    L.append("**%s**" % status)
+    L.append("**%s**" % _text(status))
     L.append("")
     ctx = {"n": 0, "p": max([(st.get(s) or {}).get("package_count") or 0 for s in IMAGE_SCANNERS] + [0]),
            "k": sum(1 for s in ("grype", "trivy", "osv-scanner", "snyk") if (st.get(s) or {}).get("ran")),
@@ -2206,7 +2246,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     # PRs and issues this run — above the sections (AC1): one line per PR/issue, never per finding.
     L.append("## PRs and issues this run"); L.append("")
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
-    for x in _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test):
+    for x in _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, (state or {}).get("standing_issue")):
         L.append("- " + x)
     L.append("")
 

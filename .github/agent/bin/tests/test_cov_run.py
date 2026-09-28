@@ -478,7 +478,7 @@ class FixPR(Base):
         self.assertNotIn("--draft", would[0]["cmd"])
         log = os.path.join(self.tmp, "shim.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
         res = R._deliver_fix_pr(self.ROW, "2026-09-22", "abcdef1234567890", False, [])
-        self.assertEqual(res, ("https://github.com/OWNER/REPO/pull/SHIM-bump-abcdef123456", None, "delivered"))
+        self.assertEqual(res, ("https://github.com/OWNER/REPO/pull/SHIM-bump-CVE-2099-40-abcdef123456", None, "delivered"))
         lines = open(log).read().splitlines()
         self.assertIn("gh pr merge --auto --squash %s" % self.BR, lines)
         self.assertIn("go get example.com/m@v1.1.0", lines)

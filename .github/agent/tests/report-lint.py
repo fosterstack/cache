@@ -4,10 +4,13 @@
 usage: report-lint.py [--no-render] <report.md> [...]
 
 1. Uniqueness: within every list section (a `## ` heading or a `**…**` sub-heading), no two list
-   lines (`- …`) are identical — "a list section lists one line per thing".
+   lines (`- …`) are identical — "a list section lists one line per thing" — and every list line is
+   one physical line (no item spills onto the next line).
 2. Render safety: rendered with GitHub's own cmark-gfm (cmarkgfm), the report has no
    strikethrough (<del>), no emphasis (<em>), bold only where the source intends it (`**…**`
-   labels), and every table-looking line really is a table.
+   labels), every table-looking line really is a table, and the STRUCTURE is the source's: as many
+   list items, headings and blockquotes as the source writes — never one smuggled in by text
+   (e.g. a `#`-led line of tool stderr becoming a heading).
 --no-render skips (2) when cmarkgfm is unavailable (it never silently passes: it says so).
 """
 import re, sys
@@ -21,6 +24,17 @@ def sections(text):
         if line.startswith("- "):
             out.setdefault(cur, []).append(line)
     return out
+
+
+def one_line_problems(text):
+    """Every list line is ONE physical line: a non-blank line directly after a list line that is not
+    itself a list line is that item spilling over (multi-line tool stderr) — and a `#`/`>` line there
+    would render as a heading/quote in the middle of the report."""
+    probs, lines = [], text.splitlines()
+    for i in range(1, len(lines)):
+        if lines[i - 1].startswith("- ") and lines[i].strip() and not lines[i].startswith("- "):
+            probs.append("list item continues onto another line: %r" % lines[i][:120])
+    return probs
 
 
 def uniqueness_problems(text):
@@ -49,6 +63,16 @@ def render_problems(text):
             probs.append("unintended bold: %r" % inner[:120])
     if any(l.lstrip().startswith("|") for l in text.splitlines()) and "<table>" not in html:
         probs.append("a table-looking line did not render as a table")
+    lines = text.splitlines()
+    want = {"list items": sum(1 for l in lines if l.startswith("- ")),
+            "headings": sum(1 for l in lines if re.match(r"#{1,6} ", l)),
+            "blockquotes": sum(1 for i, l in enumerate(lines) if l.startswith("> ") and (i == 0 or not lines[i - 1].startswith("> ")))}
+    got = {"list items": len(re.findall(r"<li>", html)), "headings": len(re.findall(r"<h[1-6]>", html)),
+           "blockquotes": len(re.findall(r"<blockquote>", html))}
+    for k in want:
+        if want[k] != got[k]:
+            probs.append("structure: the source writes %d %s, GitHub renders %d (text changed the document's shape)"
+                         % (want[k], k, got[k]))
     return probs
 
 
@@ -65,7 +89,7 @@ def main(argv):
     bad = 0
     for f in files:
         text = open(f, encoding="utf-8").read()
-        probs = uniqueness_problems(text) + (render_problems(text) if render else [])
+        probs = uniqueness_problems(text) + one_line_problems(text) + (render_problems(text) if render else [])
         for p in probs:
             print("%s: %s" % (f, p))
         bad += len(probs)
