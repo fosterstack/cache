@@ -112,7 +112,41 @@ def log_index(log):
     return idx
 
 
-def _emit_owner_issue(title, body, dry, would):
+def _plan(would, kind, target, cves=(), cmd="", note="", key=None):
+    """Record one PR or issue this run would open (dry run) or skipped (test image) — one entry
+    per PR/issue, never per finding, carrying what makes it unique: its kind, its target and the
+    CVE IDs it covers (REQ-AUD-18 follow-up, owner's test Sep 27). The report renders from these."""
+    would.append({"kind": kind, "target": target, "cves": sorted({c for c in cves if c}),
+                  "cmd": cmd, "note": note, "key": key or (kind, target)})
+
+
+def _supp_cves(supp):
+    """The CVE IDs the consolidated suppression package carries (its VEX statements)."""
+    try:
+        doc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
+    except Exception:
+        return []
+    return sorted({(s.get("vulnerability") or {}).get("name") for s in doc.get("statements", [])} - {None})
+
+
+def _supp_removed(supp):
+    """The scopes the suppression PR REMOVES this run — expired, or lifted because a fix became
+    pullable (the record does not say which): (cve ids, scope count)."""
+    try:
+        sc = json.load(open(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))).get("reopened", [])
+    except Exception:
+        return [], 0
+    return sorted({x[0] for x in sc if x}), len(sc)
+
+
+def _supp_target(supp, nstmt):
+    """What the suppression PR carries, named: its statements and the scopes it removes."""
+    rm_ids, rm_n = _supp_removed(supp)
+    t = "suppressions (%d statements" % nstmt + (", %d scope(s) removed" % rm_n if rm_n else "") + ")"
+    return t, sorted(set(_supp_cves(supp)) | set(rm_ids))
+
+
+def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
     """Open OR update the single owner-decision issue (REQ-AUD-9). Returns (ok, ref): ok is
     False on a create/update FAILURE so the caller marks the run INCOMPLETE — never a false
     'opened' (R1 outer round-1 #5); ref is the issue number/url when known (R1 outer round-1
@@ -120,7 +154,8 @@ def _emit_owner_issue(title, body, dry, would):
     JOB token (issues:write), never the App delivery token (Contents + PRs only)."""
     cmd = "gh issue create --title %s --label %s --assignee %s" % (shlex.quote(title), policy.OWNER_LABEL, policy.OWNER_LOGIN)
     if dry:
-        would.append(cmd); print("dry-run would create: " + cmd); return True, "dry"
+        _plan(would, "owner-decision issue", target or title, cves, cmd)
+        print("dry-run would create: " + cmd); return True, "dry"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         prior = open(log).read() if os.path.exists(log) else ""
@@ -208,7 +243,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if nstmt == 0 and not has_removals and not has_proposals:
         return None, None
     if is_test:
-        would.append("test-image run: no PR (not a shipped image)")
+        _plan(would, "suppression PR", *_supp_target(supp, nstmt), note="skipped: test image")
         print("test-image run: no suppression PR (not a shipped image)")
         return None, None
     short = (commit or "unknown")[:12]
@@ -225,9 +260,9 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     automerge = _automerge_allowed(staged)
     draft = "" if automerge else "--draft "
     if dry:
-        would.append("gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)))
-        if automerge:
-            would.append("gh pr merge --auto --squash %s" % branch)
+        _plan(would, "suppression PR", *_supp_target(supp, nstmt),
+              cmd="gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)),
+              note="auto-merge" if automerge else "draft")
         print("dry-run would open %sPR on %s" % ("auto-merge " if automerge else "draft ", branch))
         return None, None
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
@@ -246,6 +281,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         open(log, "a").write("PR_URL %s\n" % url)
         return url, None
     if not _real_gh_allowed():
+        _plan(would, "suppression PR", *_supp_target(supp, nstmt), note="not delivered: delivery disabled (no authorized delivery step)")
         return None, None
     import shutil
     ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
@@ -335,16 +371,16 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
     body = ("Automated dependency bump from the daily CVE auditor. Draft for review; auto-merge is a later switch.\n\n"
             "- Vulnerability: %s\n- Module: %s\n- From: %s\n- To: %s\n\nRun report: %s" % (cve, module, frm, to, runlink))
     if is_test:                                 # a test image is not shipped and always dry (AC9)
-        would.append("test-image run: no bump PR (not a shipped image)")
+        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve], note="skipped: test image", key=branch)
         return None, None, "skipped-test"
     # AC3/AC4: a bump PR touches only go.mod/go.sum (no prompt file), so it auto-merges when the
     # owner turned auto-merge on; otherwise draft.
     automerge = _automerge_allowed(["go.mod", "go.sum"])
     draft = "" if automerge else "--draft "
     if dry:
-        would.append("gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)))
-        if automerge:
-            would.append("gh pr merge --auto --squash %s" % branch)
+        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve],
+              cmd="gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)),
+              note="auto-merge" if automerge else "draft", key=branch)
         print("dry-run would open %sbump PR on %s" % ("auto-merge " if automerge else "draft ", branch))
         return None, None, "would"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
@@ -361,11 +397,12 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
         open(log, "a").write("\n".join(seq) + "\n")
         if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
             return None, "simulated: push to origin/%s rejected" % branch, "error"
-        url = "https://github.com/OWNER/REPO/pull/SHIM-bump-%s" % short
+        url = "https://github.com/OWNER/REPO/pull/SHIM-bump-%s-%s" % (cve, short)   # one per branch, like real gh
         open(log, "a").write("PR_URL %s\n" % url)
         return url, None, "delivered"
     if not _real_gh_allowed():
         print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
+        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve], note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
         return None, None, "pending"
     ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
 
@@ -876,18 +913,154 @@ def _group_facts(c, grp):
     }
 
 
+# Markdown safety (owner's test, Sep 27): GitHub pairs stray `~` into strikethrough ACROSS lines,
+# and `*`/`_`/`<`/`|` can turn into emphasis, HTML or table cells. An identifier or path that can
+# carry such a character goes into a code span; free text is backslash-escaped.
+_MD_SPECIAL = re.compile(r"[~*_<>|`\\\[\]#]")
+
+
+def _one_line(s):
+    """A report line is ONE line: tool stderr (git/gh) spans several — join them (round-1 blocker:
+    a `#`-led stderr line rendered as a heading in the middle of the report)."""
+    return re.sub(r"\s*[\r\n]+\s*", " ↵ ", "" if s is None else str(s)).strip()
+
+
+def _ident(s):
+    """An identifier/path, verbatim: bare when it has nothing Markdown could read, else a code span."""
+    s = _one_line(s)
+    if not _MD_SPECIAL.search(s):
+        return s
+    fence = "`" * (max((len(m) for m in re.findall(r"`+", s)), default=0) + 1)
+    pad = " " if (s.startswith("`") or s.endswith("`")) else ""
+    return "%s%s%s%s%s" % (fence, pad, s, pad, fence)
+
+
+def _text(s):
+    """Free text with every inline-significant character escaped (renders as the same text)."""
+    s = _one_line(s)
+    for ch in ("\\", "`", "~", "*", "<", "|", "[", "]"):
+        s = s.replace(ch, "\\" + ch)
+    # `_` only at a word boundary: intraword underscores (not_affected) never emphasise in GFM
+    s = re.sub(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])", r"\\_", s)
+    # a free-text line that STARTS a line could open a heading/quote/list/rule: escape the marker
+    s = re.sub(r"^([#>+=-])", r"\\\1", s)
+    return re.sub(r"^(\d+)([.)])(?=\s|$)", r"\1\\\2", s)
+
+
 def _row_line(r):
-    """One self-explaining line per row (R13 item 2)."""
+    """One self-explaining line per row (R13 item 2), Markdown-safe."""
     reach = r.get("reachability") or "n/a (OS package)"
     fix = r.get("fixed") or "none"
-    line = ("%s — %s@%s — %s — fix: %s — reachability: %s — %s — action: %s — %s"
-            % (r["id"], r["package"], r["installed"], r["severity"], fix, reach,
-               r["disposition"], r["action"], r["reason"]))
+    line = ("%s — %s — %s — fix: %s — reachability: %s — %s — action: %s — %s"
+            % (_ident(r["id"]), _ident("%s@%s" % (r["package"], r["installed"])), _text(r["severity"]),
+               _ident(fix), _text(reach), _text(r["disposition"]), _text(r["action"]), _text(r["reason"])))
     if r["section"] in (2, 5) and r.get("vex_id"):
-        line += " — vex: %s — ignores: %s" % (r["vex_id"], ",".join(r.get("ignore_files", [])) or "none")
+        line += " — vex: %s — ignores: %s" % (_ident(r["vex_id"]),
+                                               ",".join(_ident(f) for f in r.get("ignore_files", [])) or "none")
     if r["section"] == 4 and r.get("cause"):
-        line += " — cause: %s" % r["cause"]
+        line += " — cause: %s" % _text(r["cause"])
     return line
+
+
+def _unique(lines):
+    """A list section never repeats a line (owner's rule): identical lines collapse to one, marked
+    with how many rows it stands for — two indistinguishable rows are one thing to read."""
+    counts = {}
+    for x in lines:
+        counts[x] = counts.get(x, 0) + 1
+    return [x if counts[x] == 1 else "%s (×%d identical rows)" % (x, counts[x]) for x in dict.fromkeys(lines)]
+
+
+def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None):
+    """'PRs and issues this run': one line per PR or issue opened or that would open — never one
+    per finding — each naming its kind, its target and the CVE IDs it carries (owner's rule)."""
+    def cv(ids):
+        ids = sorted({i for i in ids if i})
+        return ("CVEs: " + ", ".join(_ident(i) for i in ids)) if ids else "no CVE"
+    raw = [w if isinstance(w, dict) else {"kind": "other", "target": str(w), "cves": [], "cmd": "", "note": ""}
+           for w in would]
+    # closing the standing issue opens nothing — it is not a line in "PRs and issues opened"
+    raw = [p for p in raw if not (p["kind"] == "standing issue" and "close if open" in p["target"])]
+    # ONE entry per delivery (its branch / its issue), however many rows fed it (round-1 blocker:
+    # several installed versions of one CVE share one bump branch)
+    plans, byk = [], {}
+    for p in raw:
+        k = str(p.get("key") or (p["kind"], p["target"]))
+        if k in byk:
+            q = byk[k]
+            if p["target"] not in q["_targets"]:
+                q["_targets"].append(p["target"])
+            q["cves"] = sorted(set(q["cves"]) | set(p["cves"]))
+        else:
+            q = dict(p); q["_targets"] = [p["target"]]; byk[k] = q; plans.append(q)
+    for q in plans:
+        q["target"] = "; ".join(q["_targets"])
+    if is_test:
+        prs = {str(p.get("key") or (p["kind"], p["target"])) for p in plans if p["kind"].endswith("PR")}
+        ncve = len({c for p in plans if p["kind"].endswith("PR") for c in p["cves"]})
+        iss = {(p["kind"], p["target"]) for p in plans if p["kind"] == "owner-decision issue"}
+        line = ("Test image — nothing opened (not a shipped image); on a shipped image %d finding(s) "
+                "would have produced %d PR(s)" % (ncve, len(prs)))
+        if iss:
+            line += " and %d owner-decision issue(s)" % len(iss)
+        return [line + "."]
+    out = []
+    if pr_url:
+        out.append("suppression PR (App): %s — %s" % (pr_url, cv((standing or {}).get("supp_cves")
+                                                                  or [r["id"] for r in rows if r.get("vex_id")])))
+    elif pr_err:
+        out.append("suppression PR delivery FAILED (run INCOMPLETE): %s" % _text(pr_err))
+    bumps = {}
+    for r in (sections[1] + sections[3]):
+        if r.get("fix_pr_url"):
+            fb = r.get("fix_bump") or {}
+            b = bumps.setdefault(r["fix_pr_url"], {"targets": [], "cves": set()})
+            t = "%s %s -> %s" % (_ident(fb.get("module")), _ident(fb.get("from")), _ident(fb.get("to")))
+            if t not in b["targets"]:
+                b["targets"].append(t)
+            b["cves"].add(r["id"])
+    for url, b in bumps.items():                       # one line per bump PR, every CVE it carries
+        out.append("bump PR (App): %s — %s — %s" % ("; ".join(b["targets"]), cv(b["cves"]), url))
+    issues = {}
+    for r in rows:
+        oi = r.get("owner_issue")
+        # the dry sentinel is represented by the 'would open' entries below; a real ref is shared by
+        # the rows of one issue (one line, EVERY CVE and target it covers — round-1 blocker);
+        # "skipped" (gh disabled) is per CVE (Codex R3 P3).
+        if not oi or oi == "dry":
+            continue
+        # an undelivered ("skipped") issue is keyed by ITS identity — the one adjudicator-outage
+        # issue, or one issue per (CVE, package) — never per row (review round 5)
+        if oi == "skipped":
+            key = ("skipped", "outage") if r.get("adjudicator_error") else ("skipped", r["id"], r.get("package"))
+        else:
+            key = oi
+        it = issues.setdefault(key, {"ref": oi, "cves": set(), "targets": []})
+        it["cves"].add(r["id"])
+        t = ("adjudicator unavailable" if r.get("adjudicator_error") else _ident(r.get("package")))
+        if t and t not in it["targets"]:
+            it["targets"].append(t)
+    for it in issues.values():
+        out.append("owner-decision issue: %s — %s — %s" % (it["ref"], "; ".join(it["targets"]) or "—", cv(it["cves"])))
+    if standing and standing.get("ref") not in (None, "dry", "skipped") and standing.get("needs"):
+        out.append("standing issue: %s — %s — %d item(s) needing a human — %s" % (
+            _text(policy.STANDING_ISSUE_TITLE), _text(standing["ref"]), standing["needs"], cv(standing.get("cves") or [])))
+    if not dry:
+        # a live run whose delivery step is disabled: say what was NOT delivered and why — never
+        # "no actionable findings" (review round 4)
+        for p in plans:
+            if (p.get("note") or "").startswith("not delivered"):
+                out.append("NOT delivered (delivery disabled — no authorized delivery step): %s — %s — %s"
+                           % (p["kind"], _text(p["target"]), cv(p["cves"])))
+    if dry:
+        for p in plans:
+            note = p.get("note") or ""
+            extra = (" — " + _text(note)) if note and note != "draft" else ""
+            out.append("would open (dry run): %s — %s — %s%s" % (p["kind"], _text(p["target"]), cv(p["cves"]), extra))
+    if not out:
+        return ["Nothing opened this run — %s; 0 finding(s) would have produced a PR." % (
+            "dry run with no actionable findings" if dry else "no actionable findings")]
+    return _unique(out)
 
 
 def _dispose_split(c, findings, aliases, env, would, base=None):
@@ -1473,7 +1646,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 "(primary/rephrase/fallback all failed). Cause: %s. The run is INCOMPLETE; no "
                 "disposition was inferred for these findings. Findings: %s"
                 % (n, adj_cause, ids[:1500]))
-        ok, ref = _emit_owner_issue(title, body, dry, would)
+        ok, ref = _emit_owner_issue(title, body, dry, would, cves=[r["id"] for r in adj_unavailable],
+                                    target="adjudicator unavailable — %d findings unassessed" % n)
         _delivered = ok and ref not in ("dry", "skipped")
         for r in adj_unavailable:
             r["owner_issue"] = ref if ok else None
@@ -1505,7 +1679,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             body = ("Finding %s in %s could not be assessed after the primary/rephrase/fallback "
                     "chain. Owner decision needed. Scope(s) (%d):\n- %s\n\nAccept, reject, or "
                     "provide guidance." % (cve, pkg, len(scopes), "\n- ".join(scopes)))
-        ok, ref = _emit_owner_issue(title, body, dry, would)
+        ok, ref = _emit_owner_issue(title, body, dry, would, cves=[cve], target="%s — %s" % (cve, pkg))
         _delivered = ok and ref not in ("dry", "skipped")
         for r, _it in group:
             r["owner_issue"] = ref if ok else None
@@ -1679,13 +1853,17 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # REQ-AUD-17 AC2: drive the single standing "needs a human" issue from the same §0 list the
     # report shows — comment it (find-or-create) while §0 is non-empty; close it when §0 is empty.
     needs = _needs_human(rows, sections, dry, pr_url, status)
-    _standing_ok, _standing_ref = _standing_issue(needs, dry, would)
+    _supp_ids = (sorted(set(_supp_cves(supp)) | set(_supp_removed(supp)[0])) if pr_url else [])
+    _nids = _needs_ids(rows, sections, dry, _supp_ids)
+    _standing_ok, _standing_ref = _standing_issue(needs, dry, would, _nids)
     # A failed standing-issue update is a real gap (the daily re-email did not go out): mark the
     # run INCOMPLETE rather than reporting a false success (Codex round-1 P2 blocker).
     if not _standing_ok:
         _sf = "standing needs-a-human issue update failed (%s)" % _standing_ref
         status = ("AUDIT INCOMPLETE: " + _sf) if "INCOMPLETE" not in status else (status + "; " + _sf)
         complete = False                                  # fail the job, not a false success
+    state = dict(state or {}); state["standing_issue"] = {"ref": _standing_ref, "needs": len(needs),
+                                                          "cves": _nids, "supp_cves": _supp_ids}
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info, state)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
@@ -1865,6 +2043,20 @@ def _scanner_tables(m, rows, out):
     cli.writef(os.path.join(out, "reports", "scanner-tables.txt"), text)
 
 
+def _needs_ids(rows, sections, dry, supp_ids=()):
+    """The advisory ids behind §0 (same row conditions as _needs_human): the CVEs the standing
+    'needs a human' issue carries."""
+    ids = set()
+    for r in rows:
+        if (r.get("owner_issue") and r.get("owner_issue") not in ("dry", "skipped")) or r.get("issue_failed") \
+                or r.get("adjudicator_error"):
+            ids.add(r["id"])
+    if not dry:
+        ids |= {r["id"] for r in (sections[1] + sections[3]) if r.get("fix_pr_url")}
+        ids |= set(supp_ids)                  # §0 names the suppression draft PR awaiting merge
+    return sorted(ids)
+
+
 def _needs_human(rows, sections, dry, pr_url, status):
     """The §0 'Needs a human' item list — owner-decision items awaiting acceptance, draft PRs
     awaiting merge, and failures that made the run INCOMPLETE. Shared by the report's §0 and the
@@ -1888,7 +2080,7 @@ def _needs_human(rows, sections, dry, pr_url, status):
     return list(dict.fromkeys(needs))
 
 
-def _standing_issue(needs, dry, would):
+def _standing_issue(needs, dry, would, cves=()):
     """The single standing 'needs a human' issue (REQ-AUD-17 AC2): created once and commented
     every run whose §0 is non-empty (listing §0, so an unanswered item re-emails daily); closed
     by the first run that finds §0 empty. Uses the JOB token (issues:write), the same shim/dry/
@@ -1896,10 +2088,12 @@ def _standing_issue(needs, dry, would):
     title = policy.STANDING_ISSUE_TITLE
     body = ("The daily CVE auditor needs a human on %d item(s) this run:\n- %s\n\nThis issue "
             "re-comments every run while any item is open, and closes automatically on the first "
-            "run with nothing waiting." % (len(needs), "\n- ".join(needs))) if needs else None
+            "run with nothing waiting." % (len(needs), "\n- ".join(_text(x) for x in needs))) if needs else None
     if dry:
-        would.append(("gh issue comment/create --title %s (standing needs-a-human)" if needs
-                      else "gh issue close --title %s (if open)") % shlex.quote(title))
+        _plan(would, "standing issue", ("%s — comment (%d item(s))" % (title, len(needs))) if needs
+              else ("%s — close if open" % title), cves,
+              cmd=("gh issue comment/create --title %s" if needs else "gh issue close --title %s (if open)")
+              % shlex.quote(title))
         return True, "dry"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
@@ -1915,6 +2109,8 @@ def _standing_issue(needs, dry, would):
         return True, "shim-closed"
     if not _real_gh_allowed():
         print("would %s standing issue (real gh disabled): %s" % ("update" if needs else "close", title))
+        if needs:
+            _plan(would, "standing issue", "%s — comment (%d item(s))" % (title, len(needs)), cves, note="not delivered: delivery disabled (no authorized delivery step)")
         return True, "skipped"
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
@@ -1982,7 +2178,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L = []
     if down_ac2:
         L += ["> SCANNER DID NOT RUN — assessment is NOT clean: " + "; ".join(down_ac2), ""]
-    L += ["# Daily CVE auditor report", "", "## Conclusion", "", conclusion, "",
+    L += ["# Daily CVE auditor report", "", "## Conclusion", "", _text(conclusion), "",
           "## Run header", "", "**Audited:** %s" % what]
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
@@ -2033,11 +2229,11 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     if adj_errs and not is_stub:
         adj_field = "real (UNAVAILABLE: %s)" % "; ".join(adj_errs)
     L.append("**dry_run:** %s   **adjudicator:** %s   **model:** %s   **token cost:** %d" %
-             ("yes" if dry else "no", adj_field, model_ran, tok))
+             ("yes" if dry else "no", _text(adj_field), _text(model_ran), tok))
     probs = (consistency or {}).get("problems", [])
     L.append("**Consistency:** %s   **Finding-set hash:** `%s`" % ("clean" if not probs else "%d problems" % len(probs), fs_hash))
     L.append("")
-    L.append("**%s**" % status)
+    L.append("**%s**" % _text(status))
     L.append("")
     ctx = {"n": 0, "p": max([(st.get(s) or {}).get("package_count") or 0 for s in IMAGE_SCANNERS] + [0]),
            "k": sum(1 for s in ("grype", "trivy", "osv-scanner", "snyk") if (st.get(s) or {}).get("ran")),
@@ -2074,6 +2270,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             # AC9: the fosterstack.com VEX link is printed ONLY for in-force (published) statements.
             # A proposed / not-yet-delivered statement shows its id (the #stmt fragment) without the
             # published link, so a reader is never pointed at a link that does not resolve yet.
+            line = re.sub(r"vex: `https?://[^`]*?(#stmt-[^`]+)`", r"vex: `\1`", line)
             line = re.sub(r"vex: https?://[^\s]*?(#stmt-[^\s]+)", r"vex: \1", line)
         return line + " — status: " + tag
 
@@ -2081,17 +2278,17 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         L.append("## " + title); L.append("")
         if sub is not None:
             for subtitle, subrows in sub:
-                L.append("**%s**" % subtitle)
+                L.append("**%s**" % subtitle); L.append("")
                 if subrows:
-                    for r in subrows:
-                        L.append(_tagged(r) if tagged else _row_line(r))
+                    for x in _unique([_tagged(r) if tagged else _row_line(r) for r in subrows]):
+                        L.append("- " + x)
                 else:
                     L.append("None.")
                 L.append("")
             return
         if rows_:
-            for r in rows_:
-                L.append(_tagged(r) if tagged else _row_line(r))
+            for x in _unique([_tagged(r) if tagged else _row_line(r) for r in rows_]):
+                L.append("- " + x)
         else:
             sentence = empty
             if downnote and ctx.get("down"):
@@ -2099,32 +2296,10 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
             L.append(sentence)
         L.append("")
 
-    # PRs and issues this run — above the sections (AC1).
+    # PRs and issues this run — above the sections (AC1): one line per PR/issue, never per finding.
     L.append("## PRs and issues this run"); L.append("")
-    prlist = []
-    if pr_url:
-        prlist.append("Suppression draft PR (App): %s" % pr_url)
-    elif pr_err:
-        prlist.append("Suppression PR delivery FAILED (run INCOMPLETE): %s" % pr_err)
-    for r in (sections[1] + sections[3]):
-        if r.get("fix_pr_url"):
-            prlist.append("Bump draft PR (App): %s — %s" % (r["id"], r["fix_pr_url"]))
-    _seen_iss = set()
-    for r in rows:
-        oi = r.get("owner_issue")
-        # the dry sentinel is already represented by the "would open (dry run)" entries below —
-        # listing it here too double-counts it (AC1). "skipped" (a real run with gh disabled) has
-        # NO would-open line, so keep it visible here rather than dropping the issue (Sonnet B).
-        # A real issue ref is shared across the rows of one issue -> dedup by ref (one line); the
-        # "skipped" sentinel is shared across DISTINCT would-be issues -> dedup by (id, ref) so two
-        # different CVEs are not collapsed into one line (Codex R3 P3).
-        _isskey = (r["id"], oi) if oi == "skipped" else oi
-        if oi and oi != "dry" and _isskey not in _seen_iss:
-            _seen_iss.add(_isskey); prlist.append("owner-decision issue: %s (%s)" % (r["id"], oi))
-    if dry:
-        for w in would:
-            prlist.append("would open (dry run): `%s`" % w)
-    for x in (prlist or ["No PRs or issues this run."]):
+    is_test = (m.get("provenance") or {}).get("source") == "test-image"
+    for x in _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, (state or {}).get("standing_issue")):
         L.append("- " + x)
     L.append("")
 
@@ -2132,7 +2307,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     # failures that made the run INCOMPLETE — duplicated from the sections below.
     needs = _needs_human(rows, sections, dry, pr_url, status)
     L.append("## 0. Needs a human"); L.append("")
-    for x in (needs or ["Nothing needs a human this run."]):
+    for x in (_unique([_text(n) for n in needs]) or ["Nothing needs a human this run."]):
         L.append("- " + x if needs else x)
     L.append("")
 

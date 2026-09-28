@@ -95,6 +95,8 @@ ALLOW_PATTERNS=(
   '^\.github/agent/tests/[A-Za-z0-9._-]+\.(sh|py)$'
   # REQ-AUD-18 AC2: the hash-pinned coverage tool and the reasoned exclusion ranges.
   '^\.github/agent/coverage-requirements\.txt$'
+  # the report lint's hash-pinned, test-only renderer (GitHub's cmark-gfm)
+  '^\.github/agent/test-requirements\.txt$'
   '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
   # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
