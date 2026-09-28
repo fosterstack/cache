@@ -22,7 +22,15 @@
     "sources', and scanner disagreement is an investigation signal, never",
     "proof of a false positive. The future daily auditor's four-tool set",
     "(Grype, Trivy, OSV-Scanner, Snyk) is recorded, deferred, and NOT part of",
-    "this gate list."
+    "this gate list.",
+    "Row 57 (owner, Sep 24; part B, Sep 28): the PR GATE (scan.yml) is its own",
+    "list, `pr_gate`: Grype + Amazon Inspector (inspector-sbomgen SBOM sent to",
+    "inspector-scan:ScanSbom by OIDC role assumption; no stored secret). Trivy",
+    "and OSV-Scanner leave the PR gate; govulncheck stays the Go authority.",
+    "`scanners` above is unchanged: it still drives the release chain",
+    "(stage-verify/stage-authorize), the rescans and the daily auditor's",
+    "candidate, until the candidate-panel handoff moves them."
   ],
-  "scanners": [ "grype", "osv-scanner" ]
+  "scanners": [ "grype", "osv-scanner" ],
+  "pr_gate": [ "grype", "inspector" ]
 }

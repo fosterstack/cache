@@ -6,7 +6,11 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|snyk|osv-scanner> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|snyk|osv-scanner|inspector-sbomgen> [dest-dir]
+# inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
+# second scanner sends its SBOM to inspector-scan:ScanSbom). It is pinned
+# here rather than downloaded by the vendor action at run time, so its
+# bytes are verified like every other scanner's.
 # On any failure (bad arg, unsupported arch, download error, checksum
 # mismatch, extract error) it exits non-zero with a ::error:: that names
 # it a PIPELINE failure. The caller must treat that as red, never clean.
@@ -20,15 +24,16 @@ TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
 SNYK_VER=1.1307.0
 OSV_VER=2.6.0
+SBOMGEN_VER=1.16.0
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|snyk|osv-scanner) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner)" ;; esac
+case "$TOOL" in trivy|grype|snyk|osv-scanner|inspector-sbomgen) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -41,6 +46,8 @@ case "${TOOL}:${arch}" in
   snyk:x86_64|snyk:amd64) SUM=65fc01c378bd71f08cff214f7f8f91be907a27aa18b9649296cd8606adce245e ;;
   osv-scanner:x86_64|osv-scanner:amd64) SUM=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108 ;;
   osv-scanner:aarch64|osv-scanner:arm64) SUM=2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4 ;;
+  inspector-sbomgen:x86_64|inspector-sbomgen:amd64) SUM=2aff31bd5f7f426020a5cdda7a58aaebde72e7dae9bc78f687978ad19ef487b4 ;;
+  inspector-sbomgen:aarch64|inspector-sbomgen:arm64) SUM=c0ee096fe6e25123b8420bdd09a14d0dbd15333c017825c6cc815ce68e465d0d ;;
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -48,6 +55,7 @@ TRIVY_BASE="${TRIVY_BASE_URL:-https://github.com/aquasecurity/trivy/releases/dow
 GRYPE_BASE="${GRYPE_BASE_URL:-https://github.com/anchore/grype/releases/download}"
 SNYK_BASE="${SNYK_BASE_URL:-https://github.com/snyk/cli/releases/download}"
 OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/download}"
+SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -89,8 +97,16 @@ case "$TOOL" in
     install -m 0755 "$tmp/osv-scanner" "${DEST}/osv-scanner" || pipeline_fail "install failed for osv-scanner"
     "${DEST}/osv-scanner" --version >/dev/null || pipeline_fail "osv-scanner does not run after install"
     ;;
+  inspector-sbomgen)
+    url="${SBOMGEN_BASE}/${SBOMGEN_VER}/linux/${A_SBOMGEN}/inspector-sbomgen.zip"
+    curl -fsSL -o "$tmp/s.zip" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/s.zip"
+    unzip -q -j "$tmp/s.zip" "inspector-sbomgen-${SBOMGEN_VER}/linux/${A_SBOMGEN}/inspector-sbomgen" -d "$tmp" || pipeline_fail "extract failed for inspector-sbomgen"
+    install -m 0755 "$tmp/inspector-sbomgen" "${DEST}/inspector-sbomgen" || pipeline_fail "install failed for inspector-sbomgen"
+    "${DEST}/inspector-sbomgen" --version >/dev/null || pipeline_fail "inspector-sbomgen does not run after install"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

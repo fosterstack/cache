@@ -82,6 +82,8 @@ ALLOW_PATTERNS=(
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
   '^bin/install-scanner-test\.sh$'
+  '^bin/inspector-gate\.py$'
+  '^bin/inspector-gate-test\.sh$'
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
   '^bin/go-bump-open-pr-test\.sh$'

@@ -52,6 +52,16 @@ check "osv-scanner checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE fa
 check "osv-scanner download failure rejected" 1 "download failed.*PIPELINE failure" \
   env INSTALL_SCANNER_ARCH=x86_64 OSV_BASE_URL="file://$work/nope" bash "$sut" osv-scanner "$work/bin"
 
+# 4d. inspector-sbomgen checksum mismatch is a labeled pipeline failure.
+mkdir -p "$work/sg/1.16.0/linux/amd64"
+echo "not the real inspector-sbomgen zip" > "$work/sg/1.16.0/linux/amd64/inspector-sbomgen.zip"
+check "inspector-sbomgen checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=x86_64 SBOMGEN_BASE_URL="file://$work/sg" bash "$sut" inspector-sbomgen "$work/bin"
+
+# 4e. inspector-sbomgen download failure is a labeled pipeline failure.
+check "inspector-sbomgen download failure rejected" 1 "download failed.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=arm64 SBOMGEN_BASE_URL="file://$work/nope" bash "$sut" inspector-sbomgen "$work/bin"
+
 # 5. No arg is a labeled pipeline failure (empty tool).
 check "missing scanner arg rejected" 1 "unknown scanner.*PIPELINE failure" \
   bash "$sut"
