@@ -923,7 +923,9 @@ def _text(s):
     for ch in ("\\", "`", "~", "*", "<", "|", "[", "]"):
         s = s.replace(ch, "\\" + ch)
     # `_` only at a word boundary: intraword underscores (not_affected) never emphasise in GFM
-    return re.sub(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])", r"\\_", s)
+    s = re.sub(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])", r"\\_", s)
+    # a free-text line that STARTS a line could open a heading/quote/list/rule: escape the marker
+    return re.sub(r"^([#>+=-])", r"\\\1", s)
 
 
 def _row_line(r):
@@ -1016,8 +1018,8 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
     for it in issues.values():
         out.append("owner-decision issue: %s — %s — %s" % (it["ref"], "; ".join(it["targets"]) or "—", cv(it["cves"])))
     if standing and standing.get("ref") not in (None, "dry", "skipped") and standing.get("needs"):
-        out.append("standing issue: %s — %s — %d item(s) needing a human" % (_text(policy.STANDING_ISSUE_TITLE),
-                                                                            standing["ref"], standing["needs"]))
+        out.append("standing issue: %s — %s — %d item(s) needing a human — %s" % (
+            _text(policy.STANDING_ISSUE_TITLE), _text(standing["ref"]), standing["needs"], cv(standing.get("cves") or [])))
     if dry:
         for p in plans:
             note = p.get("note") or ""
@@ -1826,7 +1828,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         _sf = "standing needs-a-human issue update failed (%s)" % _standing_ref
         status = ("AUDIT INCOMPLETE: " + _sf) if "INCOMPLETE" not in status else (status + "; " + _sf)
         complete = False                                  # fail the job, not a false success
-    state = dict(state or {}); state["standing_issue"] = {"ref": _standing_ref, "needs": len(needs)}
+    state = dict(state or {}); state["standing_issue"] = {"ref": _standing_ref, "needs": len(needs),
+                                                          "cves": _needs_ids(rows, sections, dry)}
     report = _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_hash, conclusion, pr_url, pr_err, quorum_info, state)
     cli.writef(os.path.join(out, "report.md"), report)
     cli.writej(os.path.join(out, ".auditor", "accepted-items.json"),
@@ -2006,6 +2009,19 @@ def _scanner_tables(m, rows, out):
     cli.writef(os.path.join(out, "reports", "scanner-tables.txt"), text)
 
 
+def _needs_ids(rows, sections, dry):
+    """The advisory ids behind §0 (same row conditions as _needs_human): the CVEs the standing
+    'needs a human' issue carries."""
+    ids = set()
+    for r in rows:
+        if (r.get("owner_issue") and r.get("owner_issue") not in ("dry", "skipped")) or r.get("issue_failed") \
+                or r.get("adjudicator_error"):
+            ids.add(r["id"])
+    if not dry:
+        ids |= {r["id"] for r in (sections[1] + sections[3]) if r.get("fix_pr_url")}
+    return sorted(ids)
+
+
 def _needs_human(rows, sections, dry, pr_url, status):
     """The §0 'Needs a human' item list — owner-decision items awaiting acceptance, draft PRs
     awaiting merge, and failures that made the run INCOMPLETE. Shared by the report's §0 and the
@@ -2176,7 +2192,7 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     if adj_errs and not is_stub:
         adj_field = "real (UNAVAILABLE: %s)" % "; ".join(adj_errs)
     L.append("**dry_run:** %s   **adjudicator:** %s   **model:** %s   **token cost:** %d" %
-             ("yes" if dry else "no", adj_field, model_ran, tok))
+             ("yes" if dry else "no", _text(adj_field), _text(model_ran), tok))
     probs = (consistency or {}).get("problems", [])
     L.append("**Consistency:** %s   **Finding-set hash:** `%s`" % ("clean" if not probs else "%d problems" % len(probs), fs_hash))
     L.append("")

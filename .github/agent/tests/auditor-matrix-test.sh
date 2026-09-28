@@ -3434,6 +3434,32 @@ printf '## PRs and issues this run\n\n- delivery FAILED: git push: To x\n# injec
 "$PY" .github/agent/tests/report-lint.py --no-render "$WORK/rpt-spill.md" >/dev/null 2>&1; sp=$?
 eq "$sp" "1" && ok || no "lint rejects a spilled list line" "rc=$sp"
 
+begin "rpt-r2-every-surface-escaped-and-named" "the header's adjudicator field, a FAILED standing-issue ref and a conclusion opening with a block marker stay one visible escaped line; the standing issue line names its CVEs; the lint accepts a correctly rendered escaped bold status (review round 2)"
+r3="$(rm -rf "$WORK/rpt-r2" && mkdir -p "$WORK/rpt-r2" && "$PY" - "$WORK/rpt-r2" <<'R3'
+import importlib.util,os,sys
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
+q={"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]}
+state={"adj_errors":{"x":"404 model: <model-id> not found"},
+       "standing_issue":{"ref":"standing comment failed: To x\n# a hash line *stars*","needs":2,"cves":["CVE-1","GHSA-aaaa-bbbb-cccc"]}}
+rep=R._render(m,[],{n:[] for n in range(1,8)},[],"AUDIT INCOMPLETE: standing failed: <model-id>",False,"real",{},"h",
+              "# not a heading","",None,q,state)
+open(os.path.join(sys.argv[1],"r.md"),"w").write(rep)
+pl=[l for l in rep.split("## PRs and issues this run")[1].split("## 0.")[0].splitlines() if l.strip()]
+st_line=[l for l in pl if l.startswith("- standing issue:")]
+ok=(len(st_line)==1 and st_line[0].endswith("— 2 item(s) needing a human — CVEs: CVE-1, GHSA-aaaa-bbbb-cccc")
+    and "↵ # a hash line \\*stars\\*" in st_line[0] and "\\# not a heading" in rep)   # mid-line # is inert
+print("OK" if ok else "BAD %r"%pl)
+R3
+)"
+if "$PY" -c 'import cmarkgfm' 2>/dev/null; then
+  "$PY" .github/agent/tests/report-lint.py "$WORK/rpt-r2/r.md" >/dev/null 2>&1; lr=$?
+  hid="$("$PY" -c 'import cmarkgfm,sys; h=cmarkgfm.github_flavored_markdown_to_html(open(sys.argv[1]).read()); print(h.count("raw HTML omitted"))' "$WORK/rpt-r2/r.md")"
+else lr="$([ -n "${CI:-}" ] && echo 9 || echo 0)"; hid=0; fi
+{ eq "$r3" "OK" && eq "$lr" "0" && eq "$hid" "0"; } \
+  && ok || no "escaped + named, lint clean, nothing hidden" "$r3 lint=$lr hidden_html=$hid"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"

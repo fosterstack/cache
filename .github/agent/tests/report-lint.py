@@ -56,10 +56,16 @@ def render_problems(text):
             probs.append("strikethrough: %r" % m.group(1)[:120])
     for m in re.finditer(r"<em>(.*?)</em>", html, re.S):
         probs.append("unintended emphasis: %r" % m.group(1)[:120])
-    intended = set(re.findall(r"\*\*([^*\n]+?)\*\*", text))
+    import html as H
+
+    def plain(frag):
+        return H.unescape(re.sub(r"<[^>]+>", "", frag)).strip()
+    # what each INTENDED `**…**` span renders to (escapes and entities resolved the same way)
+    intended = {plain(re.sub(r"</?p>", "", cmarkgfm.github_flavored_markdown_to_html("**%s**" % x)))
+                for x in re.findall(r"\*\*([^*\n]+?)\*\*", text)}
     for m in re.finditer(r"<strong>(.*?)</strong>", html, re.S):
-        inner = re.sub(r"<[^>]+>", "", m.group(1))
-        if inner not in intended and not any(inner in i or i in inner for i in intended):
+        inner = plain(m.group(1))
+        if inner not in intended:
             probs.append("unintended bold: %r" % inner[:120])
     if any(l.lstrip().startswith("|") for l in text.splitlines()) and "<table>" not in html:
         probs.append("a table-looking line did not render as a table")
