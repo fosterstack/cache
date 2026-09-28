@@ -1029,7 +1029,12 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
         # "skipped" (gh disabled) is per CVE (Codex R3 P3).
         if not oi or oi == "dry":
             continue
-        key = (r["id"], oi) if oi == "skipped" else oi
+        # an undelivered ("skipped") issue is keyed by ITS identity — the one adjudicator-outage
+        # issue, or one issue per (CVE, package) — never per row (review round 5)
+        if oi == "skipped":
+            key = ("skipped", "outage") if r.get("adjudicator_error") else ("skipped", r["id"], r.get("package"))
+        else:
+            key = oi
         it = issues.setdefault(key, {"ref": oi, "cves": set(), "targets": []})
         it["cves"].add(r["id"])
         t = ("adjudicator unavailable" if r.get("adjudicator_error") else _ident(r.get("package")))

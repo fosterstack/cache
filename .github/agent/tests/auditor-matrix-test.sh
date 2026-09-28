@@ -3508,6 +3508,20 @@ R5
 )"; r5="$(printf '%s\n' "$r5" | tail -1)"
 eq "$r5" "OK" && ok || no "disabled delivery listed as NOT delivered" "$r5"
 
+begin "rpt-r5-undelivered-issues-keyed-by-issue" "with delivery disabled, the ONE adjudicator-outage issue is one line carrying every CVE, and two issues for one CVE on different packages (zlib, zlib1g) stay two lines (review round 5)"
+r6="$("$PY" - <<'R6'
+import importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+rows=[{"id":"CVE-%d"%i,"owner_issue":"skipped","adjudicator_error":True,"package":"p%d"%i} for i in range(4)]
+rows+=[{"id":"CVE-50","owner_issue":"skipped","package":"zlib"},{"id":"CVE-50","owner_issue":"skipped","package":"zlib1g"}]
+pl=R._pr_list([],rows,{n:[] for n in range(1,8)},False,None,None,False)
+want=["owner-decision issue: skipped — adjudicator unavailable — CVEs: CVE-0, CVE-1, CVE-2, CVE-3",
+      "owner-decision issue: skipped — zlib — CVEs: CVE-50","owner-decision issue: skipped — zlib1g — CVEs: CVE-50"]
+print("OK" if pl==want else "BAD %r"%pl)
+R6
+)"
+eq "$r6" "OK" && ok || no "undelivered issues keyed by issue identity" "$r6"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
