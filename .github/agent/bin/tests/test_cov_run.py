@@ -517,6 +517,8 @@ class FixPR(Base):
                                          ("gh", "pr", "create"): (1, "", "already exists")})
         self.assertEqual(res, ("https://x/pull/2", None, "delivered"))
         self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] for a in fr.argvs()))   # automerge off: not armed
+        # the race-recovered PR is updated to this run's CVE list too (round-1 blocker 2)
+        self.assertIn("https://x/pull/2", [a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "edit"]])
         res, fr = self.real({**chg, ("gh", "pr", "create"): (1, "", "HTTP 422")})
         self.assertEqual(res, (None, "gh pr create: HTTP 422", "error"))
         res, fr = self.real({**chg, ("gh", "pr", "create"): (0, "https://x/pull/3\n", "")})
@@ -527,6 +529,28 @@ class FixPR(Base):
         self.assertIn("Run report: the daily CVE auditor run report", create[-1])
         res, fr = self.real({**chg, ("gh", "pr", "create"): (0, "https://x/pull/4\n", "")}, automerge=True)
         self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/4"])
+
+    def test_failed_edit_is_a_failed_delivery(self):
+        """A reused PR whose edit fails is an error on BOTH discovery paths and is never armed
+        (round-1 blocker 1: the old CVE list would stand while the run said delivered)."""
+        chg = {("git", "diff"): (1, "", ""), ("gh", "pr", "edit"): (1, "", "HTTP 403")}
+        for lst, extra in (((0, "https://x/pull/1", ""), {}),
+                           ([(0, "", ""), (0, "https://x/pull/1", "")], {("gh", "pr", "create"): (1, "", "already exists")})):
+            res, fr = self.real({**chg, **extra, ("gh", "pr", "list"): lst}, automerge=True)
+            self.assertEqual(res, (None, "gh pr edit: HTTP 403", "error"))
+            self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] for a in fr.argvs()))
+
+    def test_unchanged_target_is_not_pushed(self):
+        """AC2 on the real path: go.mod/go.sum identical to the target branch -> no push; the open
+        PR is found and only its title/body are refreshed (no duplicate, no overwrite)."""
+        rules = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""),
+                 ("gh", "pr", "list"): (0, "https://x/pull/1", "")}
+        res, fr = self.real(rules)
+        self.assertEqual(res, ("https://x/pull/1", None, "delivered"))
+        self.assertIn(["git", "fetch", "origin", self.BR], fr.argvs())
+        self.assertFalse(any(a[:2] == ["git", "push"] for a in fr.argvs()))
+        self.assertFalse(any(a[:3] == ["gh", "pr", "create"] for a in fr.argvs()))
+        self.assertTrue(any(a[:4] == ["gh", "pr", "edit", "https://x/pull/1"] for a in fr.argvs()))
 
 
 class OwnerIssue(Base):

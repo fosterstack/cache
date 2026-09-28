@@ -517,10 +517,17 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     def _arm(u):
         if automerge and u:
             _arm_automerge(u, ws)
+    def _reuse(u):
+        # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never
+        # armed, never reported delivered) — whichever discovery path found the PR
+        e = subprocess.run(["gh", "pr", "edit", u, "--title", title, "--body", body], cwd=ws,
+                           capture_output=True, text=True)
+        if e.returncode != 0:
+            return None, ("gh pr edit: " + (e.stderr or "").strip()), "error"
+        _arm(u); return u, None, "delivered"
     ex = _existing()
     if ex:
-        subprocess.run(["gh", "pr", "edit", ex, "--title", title, "--body", body], cwd=ws, capture_output=True, text=True)
-        _arm(ex); return ex, None, "delivered"
+        return _reuse(ex)
     create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
     if not automerge:
         create.insert(3, "--draft")
@@ -529,7 +536,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         if "already exists" in (r.stderr or "").lower():
             ex = _existing()
             if ex:
-                _arm(ex); return ex, None, "delivered"
+                return _reuse(ex)
         return None, ("gh pr create: " + (r.stderr or "").strip()), "error"
     url = r.stdout.strip(); _arm(url)
     return url, None, "delivered"
