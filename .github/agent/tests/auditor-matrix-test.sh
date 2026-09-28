@@ -3477,7 +3477,7 @@ m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"g
 rep=R._render(m,[],{n:[] for n in range(1,8)},[],"AUDIT INCOMPLETE: git fetch: * branch main -> FETCH_HEAD",False,"stub",{},"h",
               "1. first point","",None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
 open(os.path.join(d,"r.md"),"w").write(rep)
-ok=(t=="suppressions (0 statements, 3 expired scope(s) removed)" and c==["CVE-8","CVE-9"]
+ok=(t=="suppressions (0 statements, 3 scope(s) removed)" and c==["CVE-8","CVE-9"]
     and dryline==["would open (dry run): standing issue — auditor: needs a human — comment (1 item(s)) — CVEs: CVE-1, CVE-9"]
     and ids==["CVE-1","CVE-8","CVE-9"] and "1\\. first point" in rep)
 print("OK" if ok else "BAD t=%r c=%r dry=%r ids=%r"%(t,c,dryline,ids))
@@ -3486,6 +3486,27 @@ R4
 if "$PY" -c 'import cmarkgfm' 2>/dev/null; then "$PY" .github/agent/tests/report-lint.py "$WORK/rpt-r3/r.md" >/dev/null 2>&1; l4=$?
 else l4="$([ -n "${CI:-}" ] && echo 9 || echo 0)"; fi
 { eq "$r4" "OK" && eq "$l4" "0"; } && ok || no "standing/removal CVEs named; no ordered list; escaped-star bold accepted" "$r4 lint=$l4"
+
+begin "rpt-r4-disabled-delivery-says-not-delivered" "a live run whose delivery step is disabled lists every suppression/bump PR as NOT delivered (with why and its CVEs) — never 'no actionable findings'; a removed scope is worded neutrally (expired or lifted) (review round 4)"
+r5="$(rm -rf "$WORK/rpt-r4" && mkdir -p "$WORK/rpt-r4/suppressions" "$WORK/rpt-r4/.auditor" && env -u AUDITOR_GIT_SHIM_LOG -u AUDITOR_ALLOW_REAL_GH "$PY" - "$WORK/rpt-r4" <<'R5'
+import importlib.util,json,os,sys
+d=sys.argv[1]
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+json.dump({"statements":[{"vulnerability":{"name":"CVE-3"}}]},open(os.path.join(d,"suppressions","fosterstack-cache.openvex.json"),"w"))
+json.dump({"reopened":[["CVE-4",["p"],["pkg:x"]]]},open(os.path.join(d,".auditor","reopened-expired.json"),"w"))
+w=[]
+R._deliver_suppression_pr(d,os.path.join(d,"suppressions"),1,"2026-09-28","abcdef1234567890",False,w)
+row={"id":"CVE-5","fix_bump":{"cve":"CVE-5","module":"m","from":"1","to":"2"}}
+res=R._deliver_fix_pr(row,"2026-09-28","abcdef1234567890",False,w)
+R._standing_issue(["x"],False,w,["CVE-5"])
+pl=R._pr_list(w,[],{n:[] for n in range(1,8)},False,None,None,False,{"ref":"skipped","needs":1})
+want=["NOT delivered (delivery disabled — no authorized delivery step): suppression PR — suppressions (1 statements, 1 scope(s) removed) — CVEs: CVE-3, CVE-4",
+      "NOT delivered (delivery disabled — no authorized delivery step): bump PR — m 1 -> 2 — CVEs: CVE-5",
+      "NOT delivered (delivery disabled — no authorized delivery step): standing issue — auditor: needs a human — comment (1 item(s)) — CVEs: CVE-5"]
+print("OK" if (pl==want and res[2]=="pending") else "BAD %r %r"%(pl,res))
+R5
+)"; r5="$(printf '%s\n' "$r5" | tail -1)"
+eq "$r5" "OK" && ok || no "disabled delivery listed as NOT delivered" "$r5"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

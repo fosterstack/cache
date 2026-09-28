@@ -130,7 +130,8 @@ def _supp_cves(supp):
 
 
 def _supp_removed(supp):
-    """The expired scopes the suppression PR REMOVES this run: (cve ids, scope count)."""
+    """The scopes the suppression PR REMOVES this run — expired, or lifted because a fix became
+    pullable (the record does not say which): (cve ids, scope count)."""
     try:
         sc = json.load(open(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))).get("reopened", [])
     except Exception:
@@ -139,9 +140,9 @@ def _supp_removed(supp):
 
 
 def _supp_target(supp, nstmt):
-    """What the suppression PR carries, named: its statements and the expired scopes it removes."""
+    """What the suppression PR carries, named: its statements and the scopes it removes."""
     rm_ids, rm_n = _supp_removed(supp)
-    t = "suppressions (%d statements" % nstmt + (", %d expired scope(s) removed" % rm_n if rm_n else "") + ")"
+    t = "suppressions (%d statements" % nstmt + (", %d scope(s) removed" % rm_n if rm_n else "") + ")"
     return t, sorted(set(_supp_cves(supp)) | set(rm_ids))
 
 
@@ -280,6 +281,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         open(log, "a").write("PR_URL %s\n" % url)
         return url, None
     if not _real_gh_allowed():
+        _plan(would, "suppression PR", *_supp_target(supp, nstmt), note="not delivered: delivery disabled (no authorized delivery step)")
         return None, None
     import shutil
     ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
@@ -400,6 +402,7 @@ def _deliver_fix_pr(row, today, commit, dry, would, is_test=False):
         return url, None, "delivered"
     if not _real_gh_allowed():
         print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
+        _plan(would, "bump PR", "%s %s -> %s" % (module, frm, to), [cve], note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
         return None, None, "pending"
     ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
 
@@ -1037,6 +1040,13 @@ def _pr_list(would, rows, sections, dry, pr_url, pr_err, is_test, standing=None)
     if standing and standing.get("ref") not in (None, "dry", "skipped") and standing.get("needs"):
         out.append("standing issue: %s — %s — %d item(s) needing a human — %s" % (
             _text(policy.STANDING_ISSUE_TITLE), _text(standing["ref"]), standing["needs"], cv(standing.get("cves") or [])))
+    if not dry:
+        # a live run whose delivery step is disabled: say what was NOT delivered and why — never
+        # "no actionable findings" (review round 4)
+        for p in plans:
+            if (p.get("note") or "").startswith("not delivered"):
+                out.append("NOT delivered (delivery disabled — no authorized delivery step): %s — %s — %s"
+                           % (p["kind"], _text(p["target"]), cv(p["cves"])))
     if dry:
         for p in plans:
             note = p.get("note") or ""
@@ -2094,6 +2104,8 @@ def _standing_issue(needs, dry, would, cves=()):
         return True, "shim-closed"
     if not _real_gh_allowed():
         print("would %s standing issue (real gh disabled): %s" % ("update" if needs else "close", title))
+        if needs:
+            _plan(would, "standing issue", "%s — comment (%d item(s))" % (title, len(needs)), cves, note="not delivered: delivery disabled (no authorized delivery step)")
         return True, "skipped"
     ienv = dict(os.environ)
     ienv["GH_TOKEN"] = os.environ.get("AUDITOR_ISSUES_TOKEN") or os.environ.get("GH_TOKEN", "")
