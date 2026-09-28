@@ -18,6 +18,10 @@
 # ignored — the generator may call busybox pkg:generic or pkg:apk; a
 # namespaced name such as a Go module path must match in full).
 #
+# ScanSbom answers {"sbom": <CycloneDX document>}; the document is unwrapped
+# here, and a response that is neither that envelope nor a CycloneDX
+# document is "did not run" — never read as zero findings.
+#
 # Exit 0 = clean, 1 = findings, 2 = did not run (zero packages or unreadable
 # input). The summary line always carries the counts.
 #
@@ -28,8 +32,9 @@ import re
 import sys
 
 OUR_PRODUCTS = re.compile(
-    r"^pkg:(oci/cache(-candidates)?\?repository_url=ghcr\.io/fosterstack/cache(-candidates)?"
-    r"|golang/github\.com/fosterstack/cache)(@|$|\?)")
+    r"^pkg:(oci/cache\?repository_url=ghcr\.io/fosterstack/cache"
+    r"|oci/cache-candidates\?repository_url=ghcr\.io/fosterstack/cache-candidates"
+    r"|golang/github\.com/fosterstack/cache)(@|$|&|\?)")
 SUPPRESSING = {"not_affected", "fixed"}
 
 
@@ -96,6 +101,12 @@ def main(argv):
         sbom, findings, vex = load(sbom_p), load(find_p), load(vex_p)
     except (OSError, ValueError) as e:
         print(f"::error::inspector {label}: could not read its output ({e}) — did not run, not a clean pass")
+        return 2
+    if isinstance(findings, dict) and isinstance(findings.get("sbom"), dict):
+        findings = findings["sbom"]
+    if not isinstance(findings, dict) or findings.get("bomFormat") != "CycloneDX":
+        print(f"::error::inspector {label}: the ScanSbom response is not a CycloneDX document "
+              '(expected {"sbom": {"bomFormat": "CycloneDX", ...}}) — did not run, not a clean pass')
         return 2
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
     if not comps:

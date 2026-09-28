@@ -37,27 +37,36 @@ on:
     branches: [main]
     tags: ['v*']
 
-# The caller's grant must COVER what the reusable stages REQUEST, or the
-# run is a startup_failure with zero jobs (release-chain-pr.yml learned
-# this the hard way). id-token/attestations/packages are unused in
-# snapshot/pr mode but must be grantable for the shared stage files. Fork
-# and Dependabot events have write scopes silently downgraded to read by
-# GitHub; the snapshot/pr path needs none of them, so those events still
-# build and scan.
+# Workflow default: read only. Each job states what it needs. The two
+# reusable-stage callers (build, assemble) grant what the shared stage files
+# REQUEST, or the run is a startup_failure with zero jobs
+# (release-chain-pr.yml learned this the hard way); id-token/attestations/
+# packages are unused in snapshot/pr mode. The scanner job requests
+# id-token: write for the Inspector leg's role assumption. Dependabot-
+# triggered runs get a read-only token that the permissions key can raise
+# (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
+# events are downgraded and need none of this to build and scan.
 permissions:
   contents: read
-  id-token: write
-  attestations: write
-  packages: write
 
 jobs:
   build:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
 
   assemble:
     needs: build
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
     uses: ./.github/workflows/stage-image.yml
     with:
       mode: pr
@@ -207,6 +216,17 @@ jobs:
             echo "::error::Amazon Inspector did not run on every image — a pipeline failure, not a finding and not a clean pass." >&2
           fi
           exit "$rc"
+
+      # The SBOMs and the raw ScanSbom responses, as evidence of what was
+      # inventoried and what came back (kept even when the leg is red).
+      - name: keep the Inspector SBOMs and responses
+        if: always() && matrix.scanner == 'inspector' && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: inspector-evidence
+          path: /tmp/insp/
+          if-no-files-found: warn
+          retention-days: 30
 
   scan:
     name: scan

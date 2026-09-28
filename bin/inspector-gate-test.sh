@@ -32,8 +32,9 @@ cat > "$w/sbom.json" <<'EOF'
  {"bom-ref":"c3","type":"library","name":"tzdata","purl":"pkg:deb/debian/tzdata@2025b-0+deb12u1?distro=debian-12"}]}
 EOF
 echo '{"bomFormat":"CycloneDX","components":[]}' > "$w/empty.json"
-echo '{"vulnerabilities":[]}' > "$w/clean.json"
-f() { printf '{"vulnerabilities":[%s]}' "$1" > "$w/$2"; }
+# ScanSbom's real response shape: the CycloneDX document under "sbom".
+echo '{"sbom":{"bomFormat":"CycloneDX","specVersion":"1.5"}}' > "$w/clean.json"
+f() { printf '{"sbom":{"bomFormat":"CycloneDX","specVersion":"1.5","vulnerabilities":[%s]}}' "$1" > "$w/$2"; }
 f '{"id":"CVE-2025-60876","ratings":[{"severity":"medium"}],"affects":[{"ref":"c1"}]}' vexed.json
 f '{"id":"CVE-2099-0001","ratings":[{"severity":"low"}],"affects":[{"ref":"c3"}]}' novex.json
 f '{"id":"CVE-2025-60876","ratings":[{"severity":"medium"}],"affects":[{"ref":"x9"}]}' otherver.json
@@ -66,7 +67,21 @@ check "product-level VEX statement covers"  0 "1 covered"                       
 check "another product's VEX does not suppress" 1 "1 finding"                   t "$w/sbom.json" "$w/novex.json" "$w/foreign-vex.json"
 check "status affected does not suppress"   1 "1 finding"                       t "$w/sbom.json" "$w/novex.json" "$w/affected-vex.json"
 check "different Go module path does not suppress" 1 "golang-jwt/jwt/v4"        t "$w/sbom.json" "$w/gomod.json" "$w/gomod-vex.json"
-check "bad usage is did-not-run"            2 "usage"                           t "$w/sbom.json"
+# The envelope: a finding under "sbom" must block (round-1 blocker: a
+# top-level read saw zero findings); an unwrapped document is also read;
+# anything else is did-not-run, never zero findings.
+printf '{"bomFormat":"CycloneDX","vulnerabilities":[{"id":"CVE-2099-0001","ratings":[{"severity":"critical"}],"affects":[{"ref":"c3"}]}]}' > "$w/bare.json"
+echo '{"vulnerabilities":[]}' > "$w/noenv.json"
+echo '{"sbom":{"components":[]}}' > "$w/notcdx.json"
+echo '[]' > "$w/array.json"
+printf '%s' '{"statements":[{"vulnerability":{"name":"CVE-2099-0001"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache-candidates"}]}]}' > "$w/mixed-vex.json"
+check "finding inside the sbom envelope blocks" 1 "CVE-2099-0001 debian/tzdata.*low" t "$w/sbom.json" "$w/novex.json" "$vex"
+check "bare CycloneDX response is read"     1 "1 finding.*|CVE-2099-0001.*critical" t "$w/sbom.json" "$w/bare.json" "$vex"
+check "response without CycloneDX = did not run" 2 "not a CycloneDX document"  t "$w/sbom.json" "$w/noenv.json" "$vex"
+check "envelope without bomFormat = did not run" 2 "not a CycloneDX document"  t "$w/sbom.json" "$w/notcdx.json" "$vex"
+check "non-object response = did not run"   2 "not a CycloneDX document"        t "$w/sbom.json" "$w/array.json" "$vex"
+check "mismatched name/url purl does not suppress" 1 "1 finding"               t "$w/sbom.json" "$w/novex.json" "$w/mixed-vex.json"
+check "bad usage is did-not-run"           2 "usage"                           t "$w/sbom.json"
 
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
