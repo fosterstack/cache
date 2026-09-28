@@ -83,6 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/coverage-requirements.txt
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           COVERAGE_REPORT_OUT=/tmp/auditor-python-coverage.txt bash .github/agent/tests/coverage-gate.sh
           { echo "## Auditor Python coverage (REQ-AUD-18 AC2)"; echo; echo '```'; cat /tmp/auditor-python-coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: publish both profiles as evidence

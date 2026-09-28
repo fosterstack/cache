@@ -1155,7 +1155,7 @@ begin "d2-1-gobump-draft-delivered-and-reported" "decision 2: with a delivery ch
 o="$WORK/d2-1"; shim="$WORK/d2-1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
   opened="$(grep -c 'action: opened draft bump PR' "$o/report.md" 2>/dev/null)"; opened="${opened:-0}"
-  sec6="$(grep -c 'Bump draft PR (App):' "$o/report.md")"; sec6="${sec6:-0}"
+  sec6="$(grep -c 'bump PR (App):' "$o/report.md")"; sec6="${sec6:-0}"
   stale="$(grep -c 'delivery pending' "$o/report.md" 2>/dev/null)"; stale="${stale:-0}"
   { [ "$opened" -ge 1 ] 2>/dev/null && [ "$sec6" -ge 1 ] 2>/dev/null && eq "$stale" "0"; } \
     && ok || no "Go bump delivered as draft PR, listed in the PR list, no stale 'delivery pending'" "opened=$opened prlist=$sec6 stale=$stale"; }
@@ -1270,7 +1270,7 @@ o="$WORK/r16ti"; shim="$WORK/r16ti.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDG
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1; rc=$?
 draftpr="$(grep -c 'gh pr create --draft' "$shim" 2>/dev/null)"; draftpr="${draftpr:-0}"
 forced="$(grep -c '\*\*dry_run:\*\* yes' "$o/report.md" 2>/dev/null)"; forced="${forced:-0}"
-noted="$(grep -qi 'test-image run: no PR' "$o/report.md" && echo yes || echo no)"
+noted="$(grep -qi 'Test image — nothing opened (not a shipped image)' "$o/report.md" && echo yes || echo no)"
 { eq "$draftpr" "0" && eq "$noted" "yes" && [ "$forced" -ge 1 ] 2>/dev/null && [ "$rc" -eq 0 ] 2>/dev/null; } \
   && ok || no "test image forces dry (AC9): no draft PR, noted, run not failed" "draft_prs=$draftpr forced_dry=$forced noted=$noted exit=$rc"
 
@@ -2859,8 +2859,8 @@ tags="$(grep -c 'proposed, not delivered (dry run)' "$o/report.md" 2>/dev/null)"
 begin "req15-ac9-vex-link-only-for-in-force" "the fosterstack.com VEX link is printed ONLY for in-force rows; a proposed/not-delivered row shows the statement id without the published link (AC9)"
 o2b="$WORK/r15link"; rm -rf "$o2b"
 "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2b" >/dev/null 2>&1 || true
-liveurl="$(grep -c 'vex: https://fosterstack.com' "$o2b/report.md" 2>/dev/null)"; liveurl="${liveurl:-0}"
-idfrag="$(grep -c 'vex: #stmt-' "$o2b/report.md" 2>/dev/null)"; idfrag="${idfrag:-0}"
+liveurl="$(grep -c 'vex: `https://fosterstack.com' "$o2b/report.md" 2>/dev/null)"; liveurl="${liveurl:-0}"
+idfrag="$(grep -c 'vex: `#stmt-' "$o2b/report.md" 2>/dev/null)"; idfrag="${idfrag:-0}"
 { eq "$liveurl" "0" && [ "$idfrag" -ge 1 ] 2>/dev/null; } \
   && ok || no "no published link on proposed rows; statement id shown" "live_links=$liveurl id_fragments=$idfrag"
 
@@ -2897,7 +2897,7 @@ st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"ver
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,[],sections,[],"AUDIT INCOMPLETE",False,"stub",{},"h","c",None,"git push failed",{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
 s5=rep.split("## 5.")[1]
-good=("proposed, not delivered" in s5) and ("in force (main)" not in s5) and ("vex: https://fosterstack.com" not in s5) and ("vex: #stmt-abc" in s5)
+good=("proposed, not delivered" in s5) and ("in force (main)" not in s5) and ("fosterstack.com" not in s5) and ("vex: `#stmt-abc`" in s5)
 print("OK" if good else "BAD:%r"%s5)' 2>/dev/null | tail -1)"
 { eq "$fdr" "OK"; } && ok || no "failed delivery is not in force and drops the published link" "$fdr"
 
@@ -3022,7 +3022,7 @@ st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"ver
 m={"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None}
 rep=R._render(m,rr,sections,[],"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,{"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]})
 s5=rep.split("## 5.")[1]
-good=("in force (main)" in s5) and ("proposed, not delivered (dry run)" not in s5) and ("vex: https://fosterstack.com" in s5)
+good=("in force (main)" in s5) and ("proposed, not delivered (dry run)" not in s5) and ("vex: `https://fosterstack.com" in s5)
 print("OK" if good else "BAD:%r"%s5)' 2>/dev/null | tail -1)"
 { eq "$cdr" "OK"; } && ok || no "carried row is in-force even in a dry run" "$cdr"
 
@@ -3299,6 +3299,84 @@ WG
 # (the required-checks.json entry lands in a follow-up PR once the gate is proven on main:
 #  pull_request_target always runs the DEFAULT branch's workflow, so it cannot be proven earlier)
 eq "$wg" "OK" && ok || no "protected judge/publish/sweep gate; auditor token without checks" "workflow=$wg"
+
+echo "=== report: one line per thing, render-safe (owner's test Sep 27, handoff 0004) ==="
+rpt="$WORK/rpt"; rm -rf "$rpt"; mkdir -p "$rpt"
+"$PY" - "$rpt" <<'RP'
+import importlib.util,json,os,sys
+d=sys.argv[1]
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+st={"grype":{"ran":True,"os_package_count":6,"package_count":6,"findings":0,"version":"x","db_date":"d"}}
+q={"agreed":["grype"],"disagreed":[],"not_ran":[],"excluded":[]}
+def m(test): return {"scanner_status":st,"scanner_reports":{"grype":"x"},"candidate_digests":{},"govulncheck":None,
+                     "provenance":({"source":"test-image"} if test else {})}
+# MANY findings, ONE action each: 30 CVEs all needing the same module bump, plus tricky identifiers
+rows=[]
+for i in range(30):
+    rows.append({"id":"CVE-2099-%04d"%i,"section":3,"disposition":"real, fixable","action":"bump draft PR","reason":"fix exists",
+                 "package":"example.org/lib","installed":"1.0","fixed":"1.1","severity":"High",
+                 "fix_bump":{"module":"example.org/lib","from":"1.0","to":"1.1","cve":"CVE-2099-%04d"%i}})
+rows.append({"id":"CVE-2099-9999","section":2,"disposition":"carried (POA&M)","action":"POA&M: vex #stmt-cve-2099-9999~ab12 * not_affected _x_","reason":"no fix <yet> | a~b",
+             "package":"py_lib","installed":"1*2","fixed":None,"severity":"Low","vex_id":"#stmt-cve-2099-9999~ab12",
+             "ignore_files":["ignores/grype/CVE-2099-9999~x.json",".snyk"]})
+rows.append(dict(rows[-1], id="CVE-2099-9998", vex_id="#stmt-cve-2099-9998~cd34"))
+rows.append({"id":"CVE-2099-7777","section":5,"disposition":"not_affected (unreachable)","action":"closed","reason":"unreachable",
+             "package":"lib","installed":"1","fixed":None,"severity":"Low","vex_id":"#stmt-cve-2099-7777~ee","carried":True})
+rows+= [dict(rows[-1]) for _ in range(2)]          # three identical rows: must collapse to one
+sections={n:[] for n in range(1,8)}
+for r in rows: sections[r["section"]].append(r)
+def plans(test):
+    w=[]
+    for r in rows:
+        if r.get("fix_bump"):
+            fb=r["fix_bump"]
+            R._plan(w,"bump PR","%s %s -> %s"%(fb["module"],fb["from"],fb["to"]),[r["id"]],note=("skipped: test image" if test else "draft"),key="auditor/bump-%s-abc"%r["id"])
+    R._plan(w,"suppression PR","suppressions (3 statements)",["CVE-2099-9999","CVE-2099-9998","CVE-2099-7777"],note=("skipped: test image" if test else "draft"))
+    R._plan(w,"owner-decision issue","CVE-2099-9999 — py_lib",["CVE-2099-9999"])
+    R._plan(w,"owner-decision issue","CVE-2099-9999 — py_lib",["CVE-2099-9999"])   # the same issue twice: one line
+    return w
+for name,test in (("candidate",False),("testimage",True)):
+    open(os.path.join(d,name+".md"),"w").write(R._render(m(test),rows,sections,plans(test),"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,q))
+# nothing actionable
+open(os.path.join(d,"empty.md"),"w").write(R._render(m(False),[],{n:[] for n in range(1,8)},[],"AUDIT COMPLETE",True,"stub",{},"h","c",None,None,q))
+RP
+pl(){ sed -n '/^## PRs and issues this run/,/^## 0\./p' "$1" | grep '^- '; }
+
+begin "rpt-ac1-pr-list-one-line-per-pr" "the PR list has one line per PR/issue, never one per finding; each line names its kind, its target and its CVE IDs"
+c1="$(pl "$rpt/candidate.md")"
+nl="$(printf '%s\n' "$c1" | grep -c .)"; bumps="$(printf '%s\n' "$c1" | grep -c 'would open (dry run): bump PR — example.org/lib 1.0 -> 1.1 — CVEs: CVE-2099-')"
+supp="$(printf '%s\n' "$c1" | grep -c 'suppression PR — suppressions (3 statements) — CVEs: CVE-2099-7777, CVE-2099-9998, CVE-2099-9999')"
+iss="$(printf '%s\n' "$c1" | grep -c 'owner-decision issue — CVE-2099-9999 — py_lib — CVEs: CVE-2099-9999')"
+dup="$(printf '%s\n' "$c1" | sort | uniq -d | grep -c .)"
+{ eq "$bumps" "30" && eq "$supp" "1" && eq "$iss" "1" && eq "$dup" "0" && eq "$nl" "32"; } \
+  && ok || no "30 bump PR lines (one per branch) + 1 suppression + 1 issue, all unique" "lines=$nl bumps=$bumps supp=$supp issue=$iss dup=$dup"
+
+begin "rpt-ac2-test-image-single-line-with-counts" "a test-image run lists ONE line: nothing opened, why, and how many findings would have produced how many PRs; a run with nothing to open says so in one line"
+t1="$(pl "$rpt/testimage.md")"; e1="$(pl "$rpt/empty.md")"
+{ eq "$(printf '%s\n' "$t1" | grep -c .)" "1" \
+  && eq "$t1" "- Test image — nothing opened (not a shipped image); on a shipped image 33 finding(s) would have produced 31 PR(s) and 1 owner-decision issue(s)." \
+  && eq "$e1" "- Nothing opened this run — dry run with no actionable findings."; } \
+  && ok || no "single summary lines" "test=$t1 | empty=$e1"
+
+begin "rpt-ac3-ac5-every-section-unique-and-render-safe" "no list section repeats a line (identical rows collapse, marked ×n) and, rendered with GitHub's cmark-gfm, no report has strikethrough, emphasis or stray bold — over the crafted reports and a real-capture run"
+o="$WORK/rpt-run"; rm -rf "$o"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
+o2="$WORK/rpt-ti"; rm -rf "$o2"
+"$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-testimage.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o2" >/dev/null 2>&1
+collapsed="$(grep -c 'CVE-2099-7777 .*(×3 identical rows)' "$rpt/candidate.md")"
+mode=""; "$PY" -c 'import cmarkgfm' 2>/dev/null || { [ -n "${CI:-}" ] && mode="MISSING" || mode="--no-render"; }
+if [ "$mode" = "MISSING" ]; then lint="cmarkgfm missing in CI"; lrc=9
+else lint="$("$PY" .github/agent/tests/report-lint.py $mode "$rpt/candidate.md" "$rpt/testimage.md" "$rpt/empty.md" "$o/report.md" "$o2/report.md" 2>&1)"; lrc=$?; fi
+[ "$mode" = "--no-render" ] && echo "   (render check skipped locally: cmarkgfm not installed; CI installs .github/agent/test-requirements.txt)"
+{ eq "$lrc" "0" && eq "$collapsed" "1" && [ -s "$o/report.md" ] && [ -s "$o2/report.md" ]; } \
+  && ok || no "unique + render-clean reports" "lint_rc=$lrc collapsed=$collapsed :: $(printf '%s' "$lint" | grep -v ': ok' | head -3 | tr '\n' ' ')"
+
+begin "rpt-ac5-lint-catches-the-old-defects" "the lint FAILS a report with a repeated PR-list line and one with bare tildes that GitHub strikes through (so the passing case above is meaningful)"
+printf '## PRs and issues this run\n\n- would open (dry run): `x`\n- would open (dry run): `x`\n' > "$WORK/rpt-dup.md"
+printf '## 2. Accepted\n\nCVE-2005-2541 — tar@1.34 — vex: #stmt-cve-2005-2541~4ccc7df8bb0a7c62 — ignores: .snyk\nCVE-2007-5686 — login@1 — vex: #stmt-cve-2007-5686~c70f72f3b350d760 — ignores: .snyk\n' > "$WORK/rpt-tilde.md"
+"$PY" .github/agent/tests/report-lint.py --no-render "$WORK/rpt-dup.md" >/dev/null 2>&1; d1=$?
+if "$PY" -c 'import cmarkgfm' 2>/dev/null; then "$PY" .github/agent/tests/report-lint.py "$WORK/rpt-tilde.md" >/dev/null 2>&1; d2=$?; else d2="$([ -n "${CI:-}" ] && echo 9 || echo 1)"; fi
+{ eq "$d1" "1" && eq "$d2" "1"; } && ok || no "lint rejects both old defects" "dup=$d1 tilde=$d2"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

@@ -41,7 +41,7 @@ jobs:
       # auditor run at install. Resolving here makes such a bump fail the required check instead.
       - name: auditor Python requirements resolve (hash-pinned SDK + coverage tool)
         run: |
-          for r in .github/agent/adjudicator-requirements.txt .github/agent/coverage-requirements.txt; do
+          for r in .github/agent/adjudicator-requirements.txt .github/agent/coverage-requirements.txt .github/agent/test-requirements.txt; do
             python3 -m pip install --quiet --dry-run --ignore-installed --require-hashes --only-binary=:all: \
               --target "$RUNNER_TEMP/resolve-check" -r "$r"
           done
@@ -51,6 +51,8 @@ jobs:
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
         run: |
+          # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
           bash .github/agent/tests/auditor-matrix-test.sh
 

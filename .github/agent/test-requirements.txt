@@ -1,0 +1,13 @@
+# Hash-pinned TEST-ONLY tools for the auditor's report lint (.github/agent/tests/report-lint.py):
+# cmarkgfm is GitHub's own cmark-gfm renderer, so the lint sees reports exactly as GitHub renders
+# them. Installed by CI with `pip install --require-hashes --only-binary=:all:`; bumped by the pip
+# ecosystem in dependabot.yml (directory /.github/agent). Never imported by auditor code.
+
+cmarkgfm==2025.10.22 \
+    --hash=sha256:115fd0feaf93806b3a7c980615649b3c76a49c9dd89d5ea0c6240e10c6c71cee \
+    --hash=sha256:974eb8a69d6835eeaf11cb8f7ed0ad4cb4ddda9223693ad02aeb56cb0c036afb
+cffi==2.1.1 \
+    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf \
+    --hash=sha256:661c298b4821edebead0c91edd2b00374d67ad7c5a1f7a91d4442633b79d6a72
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

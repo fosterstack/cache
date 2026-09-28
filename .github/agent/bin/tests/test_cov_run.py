@@ -395,8 +395,10 @@ class SuppressionPR(Base):
         os.environ["AUDITOR_AUTOMERGE"] = "on"; would = []
         res, out = self.quiet(R._deliver_suppression_pr, self.out, self.supp, 1, "2026-09-22", "abcdef1234567890", True, would)
         self.assertEqual(res, (None, None))
-        self.assertTrue(would[0].startswith("gh pr create --base main --head %s" % self.BR))  # no --draft
-        self.assertEqual(would[1], "gh pr merge --auto --squash %s" % self.BR)
+        # ONE plan entry for the one PR (never a second line for the merge), no --draft, auto-merge noted
+        self.assertEqual(len(would), 1)
+        self.assertTrue(would[0]["cmd"].startswith("gh pr create --base main --head %s" % self.BR))
+        self.assertEqual((would[0]["kind"], would[0]["note"]), ("suppression PR", "auto-merge"))
         self.assertIn("dry-run would open auto-merge PR", out)
 
     def test_git_failures_stop_delivery(self):
@@ -471,7 +473,9 @@ class FixPR(Base):
         os.environ["AUDITOR_AUTOMERGE"] = "yes"; would = []
         res, _ = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", True, would)
         self.assertEqual(res, (None, None, "would"))
-        self.assertEqual(would[-1], "gh pr merge --auto --squash %s" % self.BR)
+        self.assertEqual(len(would), 1)                                   # one entry per PR
+        self.assertEqual((would[0]["kind"], would[0]["note"], would[0]["key"]), ("bump PR", "auto-merge", self.BR))
+        self.assertNotIn("--draft", would[0]["cmd"])
         log = os.path.join(self.tmp, "shim.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
         res = R._deliver_fix_pr(self.ROW, "2026-09-22", "abcdef1234567890", False, [])
         self.assertEqual(res, ("https://github.com/OWNER/REPO/pull/SHIM-bump-abcdef123456", None, "delivered"))
@@ -758,6 +762,17 @@ class Run(Base):
         self.assertEqual(cls[c]["section"], 3)
         self.assertEqual(cls[c]["action"], "fix not resolvable: example.com/m@v9.9.9 did not resolve from the module proxy — stays in section 3")
         self.assertIn(["go", "get", "example.com/m@v9.9.9"], fr.argvs())
+
+
+class SupplyCves(unittest.TestCase):
+    """The suppression PR's plan entry names the CVEs its VEX package carries."""
+    def test_names_from_the_package_and_none_without_one(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
+        self.assertEqual(R._supp_cves(d), [])
+        with open(os.path.join(d, "fosterstack-cache.openvex.json"), "w") as fh:
+            json.dump({"statements": [{"vulnerability": {"name": "CVE-2"}}, {"vulnerability": {"name": "CVE-1"}},
+                                      {"vulnerability": {"name": "CVE-2"}}, {"vulnerability": {}}]}, fh)
+        self.assertEqual(R._supp_cves(d), ["CVE-1", "CVE-2"])
 
 
 class DefectLogLoading(unittest.TestCase):

@@ -48,3 +48,4 @@
 .github/agent/fixtures/testlib/pyyaml/tokens.py  vendored third-party PyYAML, test-only (no auditor code imports it — test_snykpolicy asserts that)
 .github/agent/fixtures/testlib/yamlshape.py  test-owned workflow-shape reader used only by the matrix suite
 .github/agent/tests/coverage-check.py  the gate's own checker (test infrastructure), exercised by the matrix suite's req18-ac2 case
+.github/agent/tests/report-lint.py  test infrastructure: the report lint (uniqueness + GFM render), exercised by the matrix suite's rpt-* cases
