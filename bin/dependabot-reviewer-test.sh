@@ -319,6 +319,21 @@ up = [s for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"] if
 sys.exit(0 if ok and up.get("continue-on-error") is True else 1)
 PY3
 
+A="$CLEAN" B="$CLEAN" act
+[ ! -s "$w/run/work/armed-unpublished.txt" ] && { echo "ok: act: after arm + published check the cancellation ledger is empty"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: ledger not cleared"; cat "$w/run/work/armed-unpublished.txt"; fail=$((fail+1)); }
+python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cancel.sh" <<'PY4'
+import sys, yaml
+st = [s for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"] if s.get("name", "").startswith("on cancellation")]
+assert len(st) == 1 and st[0]["if"] == "cancelled()"
+open(sys.argv[2], "w").write(st[0]["run"])
+PY4
+mkdir -p "$w/cx/work"; printf '99\n100\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
+(env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" RUNNER_TEMP="$w/cx" bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1
+grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q "pr merge --disable-auto 100" "$w/gh.log" \
+  && { echo "ok: cancellation: every PR armed without a published check is disarmed (round-5 P1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: cancellation cleanup"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
+
 # ============================================================================ candidates step
 python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" <<'PY2'
 import sys, yaml
