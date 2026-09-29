@@ -248,6 +248,13 @@ class _Messages:
         if model == "cut":
             m.stop_reason = "max_tokens"
         return m
+    def stream(self, model, max_tokens, messages):   # the reader streams (no non-streaming ceiling)
+        outer = self
+        class _S:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get_final_message(self): return outer.create(model, max_tokens, messages)
+        return _S()
 class Anthropic:
     def __init__(self): self.messages = _Messages()
 EOF

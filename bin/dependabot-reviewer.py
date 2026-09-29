@@ -25,7 +25,8 @@ import argparse, json, os, re, subprocess, sys
 SEVERITIES = ("breaks-us", "check", "noise")
 # The reader's whole budget: any reasoning it does before answering counts against it too. 2048
 # cut every answer of one reader mid-JSON and left the other's answer empty (first live run,
-# 36640316796). 16000 stays under the SDK's non-streaming ceiling.
+# 36640316796). The call streams, so no per-model non-streaming ceiling (8192 for some model
+# families in the pinned SDK) can reject it; get_final_message() returns the same Message.
 MAX_TOKENS = 16000
 _FINDING_KEYS = {"severity", "title", "release_note", "our_line", "why"}
 CAP_DIFF, CAP_NOTES, CAP_USAGE = 20000, 60000, 20000
@@ -376,8 +377,9 @@ def cmd_read(a):
         try:
             import anthropic  # the SDK exchanges the federated identity token for a scoped access token
             client = anthropic.Anthropic()
-            msg = client.messages.create(model=model, max_tokens=MAX_TOKENS,
-                                         messages=[{"role": "user", "content": prompt}])
+            with client.messages.stream(model=model, max_tokens=MAX_TOKENS,
+                                        messages=[{"role": "user", "content": prompt}]) as stream:
+                msg = stream.get_final_message()
             text, meta, err = answer_of(msg)
             result["raw"], result["meta"] = mask(text), meta
             if err:
