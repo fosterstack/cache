@@ -2,8 +2,9 @@ name: Dependabot auto-merge
 
 # Brief §0.2(a) autonomous lane, mechanised: dependency bumps to
 # upstream-published versions ship after the full CI gate and do not wait on
-# the owner. Patch and minor only — a major bump is an API-break risk that
-# gets a human, which is the §0.2(b) instinct applied to our own deps.
+# the owner. This file arms patch and minor. A major is an API-break risk, so
+# it gets a READER instead of a human: the hourly dependabot-reviewer.yml
+# (register row 75) judges it against upstream release notes and our usage.
 #
 # Two deliberate safety properties:
 #
@@ -44,15 +45,18 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: hold majors for owner review
+      - name: majors are the hourly reviewer's, not a human's (register row 75)
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
         run: |
           {
-            echo "### Held for owner review"
+            echo "### Major bump — judged by the Dependabot reviewer"
             echo
             echo "\`${{ steps.meta.outputs.dependency-names }}\` is a **major** version bump"
             echo "(\`${{ steps.meta.outputs.previous-version }}\` → \`${{ steps.meta.outputs.new-version }}\`)."
-            echo "The autonomous lane covers patch and minor only; this one waits for a human."
+            echo "Majors are read against upstream release notes and our usage by the hourly"
+            echo "\`dependabot-reviewer\` workflow (it cannot run here: a Dependabot-triggered run holds"
+            echo "no repository secrets). It arms auto-merge when nothing breaks a line of ours, or"
+            echo "holds with an issue. Nothing waits on a person."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: require that main enforces the exact expected check set

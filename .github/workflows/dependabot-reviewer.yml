@@ -1,0 +1,408 @@
+name: Dependabot reviewer
+
+# Register row 75: three dependency lanes. The auditor (cron) opens CVE bumps; Dependabot opens
+# "latest" bumps; THIS workflow judges Dependabot MAJORS so the owner never reads a major again.
+# Patch and minor bumps are untouched (dependabot-auto-merge.yml arms them on green).
+#
+# Why hourly-from-main and never on a PR event: GitHub gives a Dependabot-triggered run no
+# repository secrets, so a job that fires when Dependabot opens a PR can never hold the
+# federated model identity. Same wall as the review gate, same answer: a scheduled sweep that
+# runs main's copy of this file, checks out main only, and reads PR data through the API.
+#
+# What it does for each open Dependabot PR into main that contains a major and has no
+# `dependabot-reviewer` check from the App on its head yet:
+#   1. gathers, with no model involved: the PR diff, the upstream release notes for every
+#      version between old and new, and every line of ours that names the dependency
+#      (bin/dependabot-reviewer.py gather);
+#   2. sends that bundle to TWO readers through the same federation the auditor uses, and gets
+#      ranked findings tagged breaks-us / check / noise — never a verdict (row 51);
+#   3. decides MECHANICALLY (bin/dependabot-reviewer.py decide): no breaks-us from either
+#      reader AND main's required-check guard passes => arm squash auto-merge, then publish the
+#      check as success (the required checks still gate the actual merge; the App has no
+#      bypass); any breaks-us => disarm any earlier auto-merge, open or update ONE issue with
+#      both readers' findings for the ccode queue, then publish the check as failure; a reader
+#      error, an unparseable answer, a missing diff, or any action that did not happen => no
+#      check, so the next hourly run retries; three unfinished runs in a row => one issue.
+#      The check goes up LAST: a head that carries it is never looked at again.
+#
+# It scans nothing, opens no PRs, edits nothing. Two App tokens with disjoint permissions:
+# checks:write (publish the check) and contents+pull-requests (arm auto-merge), mirroring the
+# split between agent-review-gate.yml and auditor.yml. The job token opens the held issue
+# (the App has no Issues permission). No vendor or model name appears anywhere here, in the
+# check, or in the issue (row 48); model ids live only in the `agent` environment's secrets.
+#
+# `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on majors, and a
+# required check would block every human PR.
+
+on:
+  schedule:
+    - cron: '23 * * * *'   # hourly (owner: not every ten minutes)
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Review only this PR number (blank = every eligible open Dependabot PR)'
+        required: false
+        default: ''
+      force:
+        description: 'Re-review even if the head already carries a dependabot-reviewer check'
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: dependabot-reviewer
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: dependabot reviewer
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      id-token: write        # mint the federated identity token
+      contents: read
+      pull-requests: read    # list PRs, read diffs
+      issues: write          # the held / reader-failure issues
+      actions: read          # read this workflow's run history (the failure streak)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: mint the App token for the check run (checks:write only)
+        id: app-checks
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-checks: write
+
+      - name: mint the App token for arming / disarming auto-merge (contents + pull-requests)
+        id: app-merge
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: find open Dependabot PRs into main that contain a major and have no verdict yet
+        id: candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-checks.outputs.token }}
+          APP_SLUG: ${{ steps.app-checks.outputs.app-slug }}
+          MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ONLY_PR: ${{ inputs.pr }}
+          FORCE: ${{ inputs.force }}
+        # A verdict is the LATEST dependabot-reviewer check from the App on the head: success or
+        # failure. `neutral` (a re-review that did not finish) or none means review this hour.
+        # Before a PR is reviewed, no auto-merge may be armed that its CURRENT verdict does not
+        # support: a head without a success verdict that is armed (a cancelled run between arming
+        # and publishing) is disarmed HERE, before any later setup step can fail. A FORCED
+        # re-review invalidates the old verdict here too: auto-merge off, then a `neutral` check.
+        # If any of that cannot be done the PR is skipped this hour and the step fails. A success
+        # verdict whose PR someone disarmed is left alone: a human's disarm is not re-armed.
+        # A lookup that fails is never "nothing to do": the PR is skipped this hour and the step
+        # fails, so the run counts as unfinished (the failure streak sees it).
+        run: |
+          set +e -uo pipefail
+          mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
+          gh pr list --base main --state open --author 'app/dependabot' --limit 100 \
+            --json number,title,body,headRefOid > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
+          : > "$RUNNER_TEMP/work/candidates.txt"
+          while read -r pr; do
+            n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
+            [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
+            jq -r '.body // ""' <<<"$pr" > "$RUNNER_TEMP/work/body-$n.txt"
+            if ! python3 bin/dependabot-reviewer.py updates --title "$(jq -r .title <<<"$pr")" \
+                   --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
+              echo "::error::PR #$n: could not read its updates"; lookup_failed=1; continue
+            fi
+            majors=$(jq '[.[]|select(.major)]|length' "$RUNNER_TEMP/work/updates-$n.json") || { lookup_failed=1; continue; }
+            [ "$majors" != "0" ] || { echo "PR #$n: no major — the patch/minor lane's"; continue; }
+            if ! prior=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
+                      --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || [ -z "$prior" ]; then
+              echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue
+            fi
+            if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
+              echo "PR #$n ${sha:0:7}: verdict already $prior"; continue
+            elif [ "$prior" = none ] || [ "$prior" = neutral ]; then
+              # no verdict supports an armed merge on this head: turn it off before anything else
+              if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
+                echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
+              fi
+              if [ "$armed" != false ]; then
+                if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
+                  echo "::error::PR #$n: armed with no verdict and could not be disarmed — skipped this hour"; lookup_failed=1; continue
+                fi
+                echo "PR #$n: armed with no current verdict — auto-merge turned off before review"
+              fi
+            elif [ "$FORCE" = "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
+              if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null 2>&1 \
+                   && [ "$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null')" != false ]; then
+                echo "::error::PR #$n: forced re-review could not turn auto-merge off — skipped, old verdict kept"; lookup_failed=1; continue
+              fi
+              if ! GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
+                     -f head_sha="$sha" -f status=completed -f conclusion=neutral -f details_url="$RUN_URL" \
+                     -f "output[title]=dependabot reviewer: neutral" \
+                     -f "output[summary]=Forced re-review in progress; the earlier '$prior' verdict no longer stands. Auto-merge is off." >/dev/null; then
+                echo "::error::PR #$n: forced re-review could not supersede its '$prior' verdict — skipped (auto-merge is off)"; lookup_failed=1; continue
+              fi
+              prior=neutral
+            fi
+            echo "$n $sha $prior" >> "$RUNNER_TEMP/work/candidates.txt"
+            echo "PR #$n ${sha:0:7}: major, latest verdict '$prior' — will review"
+          done < <(jq -c '.[]' "$RUNNER_TEMP/work/prs.json")
+          count=$(wc -l < "$RUNNER_TEMP/work/candidates.txt" | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          [ "$count" != "0" ] || echo "::notice::nothing to review this hour"
+          [ "$lookup_failed" = 0 ] || { echo "::error::one or more PRs could not be looked up (see above)"; exit 1; }
+
+      - name: mint the federated identity token
+        id: mint
+        if: ${{ !cancelled() && steps.candidates.outputs.count != '0' && steps.candidates.outputs.count != '' }}
+        # Straight from the runner's OIDC endpoint: no third-party action holds the token.
+        run: |
+          set -euo pipefail
+          tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value)
+          [ -n "$tok" ] && [ "$tok" != "null" ] || { echo "::error::no identity token"; exit 1; }
+          echo "::add-mask::$tok"
+          printf '%s' "$tok" > "$RUNNER_TEMP/identity-token"
+          echo "ANTHROPIC_IDENTITY_TOKEN_FILE=$RUNNER_TEMP/identity-token" >> "$GITHUB_ENV"
+          # Print ONLY the claims the federation rule matches on (never the token) so a 401 at
+          # exchange time is diagnosable against the rule.
+          python3 - "$tok" <<'PY'
+          import base64, json, sys
+          seg = sys.argv[1].split('.')[1]
+          claims = json.loads(base64.urlsafe_b64decode(seg + '=' * (-len(seg) % 4)))
+          print('OIDC identity claims (federation-rule inputs):', json.dumps({k: claims.get(k) for k in
+                ('sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id')}))
+          PY
+
+      - name: install the pinned SDK (the auditor's hash-pinned set)
+        id: sdk
+        if: ${{ !cancelled() && steps.mint.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
+          python3 -c 'from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile; print("sdk ready")'
+
+      - name: gather, read twice, decide, act — one PR at a time
+        if: ${{ !cancelled() && steps.sdk.outcome == 'success' && steps.app-merge.outcome == 'success' }}
+        id: act
+        env:
+          # the reviewer's own federation rule; the other identifiers are shared with the auditor
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.REVIEWER_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
+          AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}
+          MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # The runner starts bash with -e. Here every failure is handled explicitly, per PR, so
+          # one PR's failure never abandons the rest of the hour or skips the outputs below.
+          set +e -uo pipefail
+          W="$RUNNER_TEMP/work"; fail=0; merged=0; held=0; errored=0
+          # A FRESH identity token for every reader call. Each `read` is its own process and its
+          # own SDK exchange; exchanging one token twice fails (jti_reused — the auditor hit it),
+          # and a token lives about five minutes. The runner endpoint is available to every step
+          # of a job with id-token: write.
+          mint() {
+            local tok
+            tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || return 1
+            [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
+            echo "::add-mask::$tok"
+            printf '%s' "$tok" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
+          publish() { # <sha> <conclusion> <summary>
+            GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
+              -f head_sha="$1" -f status=completed -f conclusion="$2" -f details_url="$RUN_URL" \
+              -f "output[title]=dependabot reviewer: $2" -f "output[summary]=$3" >/dev/null
+          }
+          # One open issue per title, updated in place. Returns non-zero if it could not look up,
+          # create or update — the caller then posts NO check, so the next hour retries.
+          issue_upsert() { # <title> <body-file>
+            local list existing
+            list=$(gh issue list --state open --search "\"$1\" in:title" --json number,title) || return 1
+            existing=$(jq -r --arg t "$1" '[.[] | select(.title == $t)][0].number // empty' <<<"$list") || return 1
+            if [ -n "$existing" ]; then gh issue edit "$existing" --body-file "$2" >/dev/null || return 1; echo "#$existing updated"
+            else gh issue create --title "$1" --body-file "$2" || return 1; fi
+          }
+          # A PR whose review did not finish this hour. Safe direction first: auto-merge OFF if
+          # anything armed it. If the head already carries a verdict (a forced re-review), a
+          # `neutral` check supersedes it, so the next hour retries instead of trusting the old
+          # verdict. With no prior verdict nothing is posted (row 75: an error posts no check).
+          unfinished() { # <n> <sha> <prior> <why>
+            local armed
+            errored=$((errored+1))
+            echo "::warning::PR #$1: $4 — retry next hour"
+            armed=$(gh pr view "$1" --json autoMergeRequest --jq '.autoMergeRequest != null') || armed=unknown
+            if [ "$armed" != false ]; then
+              GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$1" \
+                || echo "::error::PR #$1: auto-merge may still be armed and could not be turned off"
+            fi
+            # a verdict on the head (forced) or one that may have landed despite an error response
+            if [ "$3" = success ] || [ "$3" = failure ] || [ "$3" = attempted ]; then
+              publish "$2" neutral "The re-review did not finish ($4). Auto-merge is off; the next hourly run retries. Evidence: this run's artifact." \
+                || echo "::error::PR #$1: could not supersede its earlier '$3' verdict"
+            fi
+          }
+          # main's list and main's ruleset must agree before a major is armed: the same guard as the
+          # patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
+          # --auto would merge at once; the guard fails closed.
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
+               | base64 -d > "$W/main-required-checks.json" \
+             && bash bin/required-check-guard.sh "$W/main-required-checks.json"; then guard_ok=1
+          else guard_ok=0; echo "::error::required-check guard refused: no major is armed this hour (every merge decision below becomes an error)"; fi
+          while read -r n sha prior; do
+            prior=${prior:-none}
+            d="$W/pr-$n"; mkdir -p "$d"
+            echo "::group::PR #$n ${sha:0:7}"
+            # 1. gather (no model); a missing diff or unreadable input is an error, never an empty bundle
+            if ! python3 bin/dependabot-reviewer.py gather --pr "$n" --updates "$W/updates-$n.json" --out "$d"; then
+              unfinished "$n" "$sha" "$prior" "gather failed"; echo "::endgroup::"; continue
+            fi
+            # 2. two readers, independently, each with a fresh identity token
+            for reader in AUDITOR_MODEL_PRIMARY AUDITOR_MODEL_FALLBACK; do
+              mint || echo "::warning::PR #$n: could not mint a fresh identity token for $reader"
+              python3 bin/dependabot-reviewer.py read --bundle "$d/bundle.md" \
+                --prompt .github/policy/dependabot-reviewer-prompt.txt --model-env "$reader" --out "$d/reader-$reader.json" \
+                || echo "::warning::PR #$n: reader $reader did not complete"
+            done
+            # 3. mechanical decision
+            if ! python3 bin/dependabot-reviewer.py decide --reader "$d/reader-AUDITOR_MODEL_PRIMARY.json" \
+                   --reader "$d/reader-AUDITOR_MODEL_FALLBACK.json" --out "$d/decision.json"; then
+              unfinished "$n" "$sha" "$prior" "decide failed"; echo "::endgroup::"; continue
+            fi
+            decision=$(jq -r .decision "$d/decision.json") || decision=error
+            names=$(jq -r '[.[]|select(.major)|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json") || names="PR #$n"
+            if [ "$decision" = merge ] && [ "$guard_ok" != 1 ]; then decision=guard; fi
+            # 4. act FIRST, then publish the check: a head with a check is never looked at again, so
+            #    the check goes up only once the action it reports has actually happened.
+            case "$decision" in
+              merge)
+                # ledger: armed but not yet published — the cancellation cleanup step disarms these
+                echo "$n $sha" >> "$W/armed-unpublished.txt"
+                if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$n"; then
+                  if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
+                    merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed, check published)"
+                    grep -vx "$n $sha" "$W/armed-unpublished.txt" > "$W/armed-unpublished.tmp"; mv "$W/armed-unpublished.tmp" "$W/armed-unpublished.txt"
+                  else unfinished "$n" "$sha" attempted "the success check could not be published (auto-merge turned back off)"; fi
+                else unfinished "$n" "$sha" "$prior" "auto-merge could not be armed"; fi ;;
+              hold)
+                title="major bump held: $names"
+                {
+                  echo "Dependabot PR #$n (\`${sha:0:7}\`) is a major bump that a reader says breaks a line of ours."
+                  echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
+                  echo; echo "Run: $RUN_URL"; echo
+                  echo "## breaks-us findings"; echo
+                  jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
+                  echo; echo "## every finding, both readers, verbatim"
+                  jq -r '.readers[] | "\n### \(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B"))\n", (if (.findings|length)==0 then "_(no findings)_" else (.findings[] | "- [\(.severity)] **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)") end)' "$d/decision.json"
+                  echo; echo "## fix on our side"; echo; echo "_(ccode fills this in: the change to our line, or why the finding is wrong, then re-runs the reviewer with force=true)_"
+                } > "$d/issue.md"
+                # disarm any auto-merge a previous verdict armed (the check is not required, so it cannot hold the PR by itself)
+                armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null') || armed=unknown
+                if [ "$armed" = true ]; then GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" || armed=stuck; fi
+                if [ "$armed" = unknown ] || [ "$armed" = stuck ]; then
+                  unfinished "$n" "$sha" "$prior" "could not confirm auto-merge is off"
+                elif ! issue_upsert "$title" "$d/issue.md"; then
+                  unfinished "$n" "$sha" "$prior" "could not open/update the held issue"
+                elif publish "$sha" failure "A reader found a documented change that breaks a line of ours ($names). Held (auto-merge off); see the issue. Evidence: this run's artifact."; then
+                  held=$((held+1)); echo "PR #$n: hold (issue open, check published)"
+                else unfinished "$n" "$sha" "$prior" "held, issue open, but the failure check could not be published"; fi ;;
+              guard)
+                unfinished "$n" "$sha" "$prior" "readers found nothing that breaks us, but the required-check guard refused" ;;
+              *)
+                unfinished "$n" "$sha" "$prior" "$(jq -r '.reason // "reader error"' "$d/decision.json" 2>/dev/null || echo "reader error")" ;;
+            esac
+            echo "::endgroup::"
+          done < "$W/candidates.txt"
+          {
+            echo "### Dependabot reviewer"; echo
+            echo "- reviewed: $(wc -l < "$W/candidates.txt" | tr -d ' ') PR(s); merge armed: $merged; held: $held; not finished (retry next hour): $errored"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "errored=$errored" >> "$GITHUB_OUTPUT"
+          [ "$errored" = "0" ] || fail=1
+          exit "$fail"
+
+      # A run cancelled between arming a PR and publishing its success check would leave an arm
+      # that no check records until the next hourly sweep disarms it. This runs on cancellation:
+      # for each PR in that window (the ledger) it asks GitHub for the head's LATEST reviewer
+      # check. `success` means the verdict landed (the cancellation came after publishing) and
+      # the arm stands; none/neutral means the arm is not recorded and it is turned off. If the
+      # lookup FAILS, a success may or may not have landed: a `neutral` check goes up first (it
+      # supersedes whatever is there, so the head is retried next hour), then the arm comes off.
+      - name: on cancellation, turn off any auto-merge armed without a published check
+        if: cancelled()
+        env:
+          GH_TOKEN: ${{ steps.app-merge.outputs.token }}
+          APP_TOKEN: ${{ steps.app-checks.outputs.token }}
+          APP_SLUG: ${{ steps.app-checks.outputs.app-slug }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e -uo pipefail
+          f="$RUNNER_TEMP/work/armed-unpublished.txt"
+          [ -s "$f" ] || { echo "nothing armed without a check"; exit 0; }
+          while read -r n sha; do
+            [ -n "$n" ] && [ -n "${sha:-}" ] || continue
+            latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
+                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || latest=unknown
+            if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
+            if [ "$latest" = unknown ]; then
+              GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
+                -f head_sha="$sha" -f status=completed -f conclusion=neutral -f details_url="$RUN_URL" \
+                -f "output[title]=dependabot reviewer: neutral" \
+                -f "output[summary]=The run was cancelled before its verdict could be confirmed. Auto-merge is off; the next hourly run reviews again." >/dev/null \
+                || echo "::error::PR #$n: could not post the superseding neutral check; if a success landed this head needs a forced re-review"
+            fi
+            if gh pr merge --disable-auto "$n"; then echo "PR #$n: auto-merge turned off (cancelled before its check; latest: $latest)"
+            else echo "::error::PR #$n: could not turn auto-merge off; the next hourly sweep disarms it"; fi
+          done < "$f"
+
+      # The failure streak is the run history itself. This job fails if and only if a review did
+      # not finish (a lookup, the identity token, the SDK, gather, a reader, the guard, or an
+      # action — every one of those paths ends in `unfinished` or a failed step), and a run with
+      # nothing to review succeeds. So "three failed runs in a row" is exactly "three unfinished
+      # runs in a row": no state of our own to lose or misread. If the history cannot be read,
+      # nothing is decided this hour; the next failed run reads it again.
+      - name: three unfinished runs in a row => one issue for the ccode queue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e -uo pipefail
+          if ! prior=$(gh run list --workflow dependabot-reviewer.yml --status completed --limit 5 --json databaseId,conclusion \
+                         --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})] | .[0:2] | map(.conclusion)") || [ -z "$prior" ]; then
+            echo "::warning::could not read the run history — the streak is checked again next failed run"; exit 0
+          fi
+          echo "this run: failure; the two before it: ${prior}"
+          [ "$(jq -r 'length == 2 and all(. == "failure")' <<<"$prior")" = true ] || exit 0
+          title="dependabot reviewer: reader failures"
+          printf 'The reviewer could not finish its Dependabot majors on three consecutive runs; majors are not being judged.\n\nLatest: %s\n\nCheck the run log: the "OIDC identity claims" line against the federation rule, the SDK step, and each PR group.\n' \
+            "$RUN_URL" > "$RUNNER_TEMP/streak-issue.md"
+          list=$(gh issue list --state open --search "\"$title\" in:title" --json number,title) || exit 0
+          existing=$(jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty' <<<"$list")
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null
+          else gh issue create --title "$title" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null; fi
+
+      - name: upload the evidence (bundles, both readers' answers, decisions)
+        if: ${{ always() && steps.candidates.outputs.count != '0' }}
+        continue-on-error: true   # evidence is best effort; it must not make a finished review look unfinished
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependabot-reviewer-${{ github.run_id }}
+          path: ${{ runner.temp }}/work
+          if-no-files-found: ignore
