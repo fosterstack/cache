@@ -118,6 +118,12 @@ f, e = r.normalize_findings({"findings": [{"severity": "SECRET-MODEL-X", "title"
 check("a configured identifier in a transformed severity never reaches the error", f is None and "secret-model-x" not in e.lower(), e)
 f, e = r.normalize_findings({"findings": [{"severity": 3, "title": "x"}]})
 check("a non-string severity is an error", f is None and e, (f, e))
+f, e = r.normalize_findings(r.parse_answer('{"findings": [], "error": "I could not complete this review: the bundle was too long."}'))
+check("an extra top-level field (a declared failure) is an error, never a clean answer (round-3 P1)", f is None and e, (f, e))
+f, e = r.normalize_findings(r.parse_answer('{"findings": [], "more_findings": [{"severity": "breaks-us", "title": "x"}]}'))
+check("a second findings-like list is an error (round-3 P1)", f is None and e, (f, e))
+f, e = r.normalize_findings({"findings": [{"severity": "check", "title": "t", "verdict": "safe to merge"}]})
+check("a finding with a field outside the schema is an error", f is None and e, (f, e))
 f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "title": "x"}], "findings": []}'))
 check("duplicate findings key is an error, never the later empty list (round-2 P1)", f is None and e, (f, e))
 f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "severity": "noise", "title": "x"}]}'))
@@ -295,6 +301,19 @@ A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" PRIOR=success act; expect "force
 grep -q -- "-f conclusion=neutral" "$w/gh.log" && ! grep -q -- "-f conclusion=failure" "$w/gh.log" \
   && { echo "ok: act: only a neutral check after a failed disarm"; pass=$((pass+1)); } || { echo "FAIL: act: neutral-only"; fail=$((fail+1)); }
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "first-time reader error -> NO check at all (row 75)" "-check-runs" ERRORED=1
+A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act
+grep -c "check-runs" "$w/gh.log" | grep -qx 2 && grep -q -- "-f conclusion=neutral" "$w/gh.log" \
+  && { echo "ok: act: a success write that errored is superseded by neutral (lost response, round-3 P1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: lost-response neutral"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
+A="$CLEAN" B='{"findings": [], "error": "I could not complete this review."}' act; expect "a reader declaring failure in an extra field -> no merge, no check (round-3 P1)" "-pr merge" "-check-runs" ERRORED=1
+python3 - "$repo/.github/workflows/dependabot-reviewer.yml" <<'PY3' && { echo "ok: conditions: productive steps are cancellation-aware; act needs the merge token; evidence cannot fail the job (round 3)"; pass=$((pass+1)); } || { echo "FAIL: conditions"; fail=$((fail+1)); }
+import sys, yaml
+st = {s.get("id"): s for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"]}
+ok = all("!cancelled()" in st[i]["if"] and "always()" not in st[i]["if"] for i in ("mint", "sdk", "act"))
+ok = ok and "steps.app-merge.outcome == 'success'" in st["act"]["if"]
+up = [s for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"] if s.get("name", "").startswith("upload the evidence")][0]
+sys.exit(0 if ok and up.get("continue-on-error") is True else 1)
+PY3
 
 # ============================================================================ candidates step
 python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" <<'PY2'
@@ -314,6 +333,9 @@ case "$1 $2" in
   "pr list") cat "$PRS_JSON" ;;
   "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
+  "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
+  "pr view") echo "${ARMED99:-true}" ;;
+  "pr merge") [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;;
   "run list") [ "${RUNLIST:-}" = fail ] && exit 1
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
               jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
@@ -325,7 +347,8 @@ chmod +x "$w/bin/gh"
 cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
   (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="$w/prs.json" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
-     GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
+     GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
+     ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
   local got; got=$(cut -d' ' -f1,3 "$W/work/candidates.txt" 2>/dev/null | tr '\n' ',')
   if [ "$got" = "$1" ] && [ "$rc" = "$2" ]; then echo "ok: candidates: $3"; pass=$((pass+1))
@@ -334,7 +357,12 @@ cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
 cand "99 none,91 none," 0 "real bodies: majors #99 and #91 selected, patch #90 not"
 PRIOR99=success cand "91 none," 0 "a success verdict is not reviewed again"
 PRIOR99=failure PRIOR91=neutral cand "91 neutral," 0 "failure is a verdict; neutral means retry"
-PRIOR99=success FORCE=true cand "99 success,91 none," 0 "force re-reviews a verdict and records it as prior"
+PRIOR99=success FORCE=true cand "99 neutral,91 none," 0 "force: old verdict invalidated up front (disarm + neutral), reviewed from neutral (round-3 P1)"
+grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q -- "-f conclusion=neutral" "$w/gh.log" \
+  && { echo "ok: candidates: the forced invalidation happened before any later step"; pass=$((pass+1)); } || { echo "FAIL: candidates: forced invalidation calls"; fail=$((fail+1)); }
+PRIOR99=success FORCE=true NEUTRALFAIL=1 cand "91 none," 1 "force: neutral cannot be posted -> skipped, step fails (round-3 P1)"
+PRIOR99=success FORCE=true DISARMFAIL=1 ARMED99=true cand "91 none," 1 "force: auto-merge cannot be turned off -> skipped, step fails"
+PRIOR99=success ARMED99=false cand "99 success,91 none," 0 "a success verdict with auto-merge OFF is reviewed again (self-heal, round-3 P1)"
 LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
 ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
 

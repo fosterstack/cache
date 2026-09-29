@@ -23,6 +23,7 @@ posted; the next hourly run retries). Readers return RANKED FINDINGS, never a ve
 import argparse, json, os, re, subprocess, sys
 
 SEVERITIES = ("breaks-us", "check", "noise")
+_FINDING_KEYS = {"severity", "title", "release_note", "our_line", "why"}
 CAP_DIFF, CAP_NOTES, CAP_USAGE = 20000, 60000, 20000
 
 _SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
@@ -317,10 +318,16 @@ def normalize_findings(obj):
     (findings, error). Unknown severity or a missing list is an ERROR, never a pass."""
     if not isinstance(obj, dict) or not isinstance(obj.get("findings"), list):
         return None, "answer has no findings list"
+    # The schema is exact: an extra field ("error": "I could not finish", a second findings-like
+    # list, a verdict) is something the mechanical decision would silently drop, so it is an error.
+    if set(obj) != {"findings"}:
+        return None, "answer has fields other than `findings`"
     out = []
     for f in obj["findings"]:
         if not isinstance(f, dict):
             return None, "finding is not an object"
+        if not set(f) <= _FINDING_KEYS:
+            return None, "a finding has fields outside the schema"
         sev = f.get("severity")
         if not isinstance(sev, str) or sev.strip().lower() not in SEVERITIES:
             return None, "a finding has no known severity (breaks-us, check, noise)"   # never echo it
