@@ -285,8 +285,13 @@ def parse_answer(text):
     m = re.fullmatch(r"```[A-Za-z]*\s*\n(.*?)\n?```", s, re.S)
     if m:
         s = m.group(1).strip()
+    def no_duplicates(pairs):
+        keys = [k for k, _v in pairs]
+        if len(keys) != len(set(keys)):     # a second "findings"/"severity" must never override the first
+            raise ValueError("duplicate key")
+        return dict(pairs)
     try:
-        obj = json.loads(s)
+        obj = json.loads(s, object_pairs_hook=no_duplicates)
     except ValueError:
         return None
     return obj if isinstance(obj, dict) else None
@@ -316,9 +321,10 @@ def normalize_findings(obj):
     for f in obj["findings"]:
         if not isinstance(f, dict):
             return None, "finding is not an object"
-        sev = str(f.get("severity", "")).strip().lower()
-        if sev not in SEVERITIES:
-            return None, mask("unknown severity %r" % sev[:40])
+        sev = f.get("severity")
+        if not isinstance(sev, str) or sev.strip().lower() not in SEVERITIES:
+            return None, "a finding has no known severity (breaks-us, check, noise)"   # never echo it
+        sev = sev.strip().lower()
         out.append({"severity": sev,
                     "title": mask(f.get("title", ""))[:200],
                     "release_note": mask(f.get("release_note", ""))[:1000],

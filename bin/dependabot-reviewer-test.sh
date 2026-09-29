@@ -90,7 +90,7 @@ check("release_notes: non-GitHub dependency is said, count 0", n == 0 and "not a
 
 # --- normalize_findings: errors, never a pass
 f, e = r.normalize_findings({"findings": [{"severity": "critical", "title": "x"}]})
-check("unknown severity is an error", f is None and "unknown severity" in e, (f, e))
+check("unknown severity is an error", f is None and "no known severity" in e, (f, e))
 f, e = r.normalize_findings({"verdict": "fine"})
 check("missing findings list is an error", f is None and e, (f, e))
 f, e = r.normalize_findings(None)
@@ -112,7 +112,16 @@ check("two objects is an error, never the first one only", f is None and e, (f, 
 f, e = r.normalize_findings(r.parse_answer('Here you go:\n{"findings": []}'))
 check("prose around the object is an error", f is None and e, (f, e))
 f, e = r.normalize_findings({"findings": [{"severity": "claude-opus-9 says critical", "title": "x"}]})
-check("the unknown-severity error text is masked", f is None and "claude-" not in e, e)
+check("the unknown-severity error never echoes the value", f is None and "claude" not in e.lower() and "opus" not in e.lower(), e)
+os.environ["AUDITOR_MODEL_FALLBACK"] = "Secret-Model-X"
+f, e = r.normalize_findings({"findings": [{"severity": "SECRET-MODEL-X", "title": "x"}]})
+check("a configured identifier in a transformed severity never reaches the error", f is None and "secret-model-x" not in e.lower(), e)
+f, e = r.normalize_findings({"findings": [{"severity": 3, "title": "x"}]})
+check("a non-string severity is an error", f is None and e, (f, e))
+f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "title": "x"}], "findings": []}'))
+check("duplicate findings key is an error, never the later empty list (round-2 P1)", f is None and e, (f, e))
+f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "severity": "noise", "title": "x"}]}'))
+check("duplicate severity key is an error (round-2 P1)", f is None and e, (f, e))
 check("mask: plain vendor and model names", r.mask("As Claude (Anthropic), like GPT-4o or Gemini") ==
       "As <model> (<model>), like <model> or <model>", r.mask("As Claude (Anthropic), like GPT-4o or Gemini"))
 
@@ -221,7 +230,7 @@ act() { # name; env: A B (answers), PRS, FAIL, ARMED, RULES
   local W="$w/run"; rm -rf "$W"; mkdir -p "$W/work"; : > "$w/gh.log"
   : > "$W/work/candidates.txt"
   for n in ${PRS:-99}; do
-    echo "$n abcdef1234567$n" >> "$W/work/candidates.txt"
+    echo "$n abcdef1234567$n ${PRIOR:-none}" >> "$W/work/candidates.txt"
     echo '[{"name":"a/b","from":"4","to":"7","major":true}]' > "$W/work/updates-$n.json"
   done
   (cd "$repo" && env PATH="$w/bin:$PATH" PYTHONPATH="$w/py" GH_LOG="$w/gh.log" LIST="$repo/.github/policy/required-checks.json" \
@@ -273,6 +282,75 @@ else echo "ok: act: no model/vendor name in the issue or the evidence"; pass=$((
 grep -q "reader A" "$w/run/work/pr-99/issue.md" && grep -q "reader B" "$w/run/work/pr-99/issue.md" && grep -q "release note: n" "$w/run/work/pr-99/issue.md" \
   && { echo "ok: act: the issue carries both readers' findings, attributed, with release notes"; pass=$((pass+1)); } \
   || { echo "FAIL: act: issue content"; sed 's/^/    /' "$w/run/work/pr-99/issue.md"; fail=$((fail+1)); }
+
+# --- round 2
+A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \
+  "+pr merge --auto --squash 99" "+pr merge --disable-auto 99" ERRORED=1
+A="$CLEAN" B="$BREAKS" FAIL="check" act; expect "held but the failure check fails -> counted unfinished (round-2)" "+issue create" ERRORED=1
+A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act; expect "forced re-review errors over an old success -> disarm + neutral check (round-2 P1)" \
+  "+pr merge --disable-auto 99" "+check-runs" "-pr merge --auto" ERRORED=1
+grep -q -- "-f conclusion=neutral" "$w/gh.log" && { echo "ok: act: the superseding check is neutral"; pass=$((pass+1)); } || { echo "FAIL: act: neutral check"; fail=$((fail+1)); }
+A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" PRIOR=success act; expect "forced re-hold whose disarm fails -> neutral check, no failure verdict (round-2 P1)" \
+  "+check-runs" "-issue create" ERRORED=1
+grep -q -- "-f conclusion=neutral" "$w/gh.log" && ! grep -q -- "-f conclusion=failure" "$w/gh.log" \
+  && { echo "ok: act: only a neutral check after a failed disarm"; pass=$((pass+1)); } || { echo "FAIL: act: neutral-only"; fail=$((fail+1)); }
+A="$CLEAN" B="$CLEAN" MB=boom act; expect "first-time reader error -> NO check at all (row 75)" "-check-runs" ERRORED=1
+
+# ============================================================================ candidates step
+python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" <<'PY2'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"]
+c = [s["run"] for s in steps if s.get("id") == "candidates"]
+k = [s["run"] for s in steps if s.get("name", "").startswith("three unfinished runs in a row")]
+assert len(c) == 1 and len(k) == 1
+open(sys.argv[2], "w").write(c[0]); open(sys.argv[3], "w").write(k[0])
+PY2
+jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile b "$FIX/pr-90.json" --slurpfile c "$FIX/pr-91.json" \
+  '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"})]' > "$w/prs.json"
+cat > "$w/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr list") cat "$PRS_JSON" ;;
+  "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
+  "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
+  "run list") [ "${RUNLIST:-}" = fail ] && exit 1
+              f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
+              jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
+  "issue list") echo '[]' ;;
+  "issue create"|"issue comment") ;;
+esac
+EOF
+chmod +x "$w/bin/gh"
+cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
+  local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="$w/prs.json" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
+     GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
+     bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
+  local got; got=$(cut -d' ' -f1,3 "$W/work/candidates.txt" 2>/dev/null | tr '\n' ',')
+  if [ "$got" = "$1" ] && [ "$rc" = "$2" ]; then echo "ok: candidates: $3"; pass=$((pass+1))
+  else echo "FAIL: candidates: $3 (got '$got' rc $rc)"; sed 's/^/    /' "$w/cand.out" | tail -8; fail=$((fail+1)); fi
+}
+cand "99 none,91 none," 0 "real bodies: majors #99 and #91 selected, patch #90 not"
+PRIOR99=success cand "91 none," 0 "a success verdict is not reviewed again"
+PRIOR99=failure PRIOR91=neutral cand "91 neutral," 0 "failure is a verdict; neutral means retry"
+PRIOR99=success FORCE=true cand "99 success,91 none," 0 "force re-reviews a verdict and records it as prior"
+LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
+ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
+
+# ============================================================================ streak step
+streak() { # history rc-expect want-issue name
+  : > "$w/gh.log"
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" HISTORY="$1" RUNLIST="${RUNLIST:-}" GITHUB_RUN_ID=500 \
+     RUNNER_TEMP="$w" RUN_URL=https://example.invalid/run bash --noprofile --norc -e -o pipefail "$w/streak.sh") > "$w/streak.out" 2>&1; local rc=$?
+  local issued=no; grep -q "^gh issue create" "$w/gh.log" && issued=yes
+  if [ "$rc" = 0 ] && [ "$issued" = "$2" ]; then echo "ok: streak: $3"; pass=$((pass+1))
+  else echo "FAIL: streak: $3 (rc $rc, issued $issued)"; sed 's/^/    /' "$w/streak.out"; fail=$((fail+1)); fi
+}
+streak '[{"databaseId":500,"conclusion":"failure"},{"databaseId":499,"conclusion":"failure"},{"databaseId":498,"conclusion":"failure"}]' yes "third failure in a row opens the issue"
+streak '[{"databaseId":499,"conclusion":"failure"},{"databaseId":498,"conclusion":"success"}]' no "a success in between resets it"
+streak '[{"databaseId":499,"conclusion":"failure"}]' no "only two runs so far: no issue"
+RUNLIST=fail streak '[]' no "history unreadable: nothing decided, step does not fail"
 
 echo "----"
 echo "dependabot-reviewer act step: ${pass} passed, ${fail} failed"
