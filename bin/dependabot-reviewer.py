@@ -23,6 +23,10 @@ posted; the next hourly run retries). Readers return RANKED FINDINGS, never a ve
 import argparse, json, os, re, subprocess, sys
 
 SEVERITIES = ("breaks-us", "check", "noise")
+# The reader's whole budget: any reasoning it does before answering counts against it too. 2048
+# cut every answer of one reader mid-JSON and left the other's answer empty (first live run,
+# 36640316796). 16000 stays under the SDK's non-streaming ceiling.
+MAX_TOKENS = 16000
 _FINDING_KEYS = {"severity", "title", "release_note", "our_line", "why"}
 CAP_DIFF, CAP_NOTES, CAP_USAGE = 20000, 60000, 20000
 
@@ -344,6 +348,23 @@ def normalize_findings(obj):
     return out, None
 
 
+def answer_of(msg):
+    """(text, meta, error) from a model response. meta records how the answer ended (stop reason,
+    content block types, token usage) for the evidence; a response cut off at the token limit or
+    carrying no text is an explicit error, never a parse of whatever arrived."""
+    blocks = list(getattr(msg, "content", None) or [])
+    text = "".join(getattr(b, "text", "") or "" for b in blocks if getattr(b, "type", "text") == "text")
+    usage = getattr(msg, "usage", None)
+    meta = {"stop_reason": getattr(msg, "stop_reason", None),
+            "blocks": [getattr(b, "type", "?") for b in blocks],
+            "output_tokens": getattr(usage, "output_tokens", None) if usage else None}
+    if meta["stop_reason"] == "max_tokens":
+        return text, meta, "answer cut off at the token limit (%s output tokens)" % meta["output_tokens"]
+    if not text.strip():
+        return text, meta, "answer has no text (blocks: %s)" % ",".join(map(str, meta["blocks"])) 
+    return text, meta, None
+
+
 def cmd_read(a):
     bundle = open(a.bundle).read()
     prompt = open(a.prompt).read().replace("{bundle}", bundle)
@@ -355,12 +376,19 @@ def cmd_read(a):
         try:
             import anthropic  # the SDK exchanges the federated identity token for a scoped access token
             client = anthropic.Anthropic()
-            msg = client.messages.create(model=model, max_tokens=2048,
+            msg = client.messages.create(model=model, max_tokens=MAX_TOKENS,
                                          messages=[{"role": "user", "content": prompt}])
-            text = "".join(getattr(b, "text", "") for b in msg.content)
-            result["raw"] = mask(text)
-            findings, err = normalize_findings(parse_answer(text))
-            result["findings"], result["error"] = findings, (mask(err) if err else None)
+            text, meta, err = answer_of(msg)
+            result["raw"], result["meta"] = mask(text), meta
+            if err:
+                result["error"] = err
+            else:
+                obj = parse_answer(text)
+                if obj is None:
+                    result["error"] = "answer is not exactly one JSON object"
+                else:
+                    findings, err = normalize_findings(obj)
+                    result["findings"], result["error"] = findings, (mask(err) if err else None)
         except Exception as e:  # federation, network, SDK — all "error", never a pass
             status = getattr(e, "status_code", None) or getattr(e, "status", None)
             step = "identity/federation" if status in (401, 403) else "model-call"
