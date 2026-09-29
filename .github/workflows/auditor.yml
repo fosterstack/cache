@@ -93,7 +93,7 @@ jobs:
             || echo "::warning::selected run has no rescan-scanner-reports artifact; the auditor will scan on the runner and cannot assert the recorded digest"
 
       - name: Set up Go for govulncheck and the source scan
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         continue-on-error: true
         with:
           go-version-file: go.mod
