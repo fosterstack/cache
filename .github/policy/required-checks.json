@@ -95,7 +95,7 @@
     },
     {
       "context": "auditor-review-gate",
-      "integration_id": 0,
+      "integration_id": 5054756,
       "scope": "pull_request"
     }
   ]
