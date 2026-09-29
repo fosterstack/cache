@@ -39,6 +39,9 @@ def mask(s):
             s = s.replace(v, "<%s>" % k)
     s = re.sub(r"claude-[A-Za-z0-9._-]+", "<model-id>", s)
     s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._-]{6,}", "Bearer <redacted>", s)
+    # a reader naming itself or its maker (row 48): no vendor or model name on a public surface
+    s = re.sub(r"(?i)\b(?:anthropic|claude|openai|chatgpt|gpt-?[0-9][A-Za-z0-9.-]*|gemini|opus|sonnet|haiku)\b",
+               "<model>", s)
     return s
 
 
@@ -187,19 +190,70 @@ def release_notes(name, old, new):
     return text, len(picked)
 
 
+def step_context(lines, i):
+    """(start, end) of the YAML list item (a workflow step) holding line i: up to the `- ` that
+    opens it, down to the next line at or left of that indent. Lets the reader see a step's
+    `with:` inputs (fetch-depth, persist-credentials, ...), not just its `uses:` line."""
+    def indent(l):
+        return len(l) - len(l.lstrip(" "))
+    start = i
+    while start > 0 and not lines[start].lstrip().startswith("- "):
+        start -= 1
+    if not lines[start].lstrip().startswith("- "):
+        return i, i
+    dash = indent(lines[start])
+    end = i
+    while end + 1 < len(lines) and (not lines[end + 1].strip() or indent(lines[end + 1]) > dash):
+        end += 1
+    while end > i and not lines[end].strip():
+        end -= 1
+    return start, end
+
+
+def usage_blocks(hits, read_file):
+    """git-grep hits ("path:line:text") -> text with each workflow hit expanded to its whole
+    step (numbered), each other hit as is; overlapping steps printed once."""
+    out, seen = [], set()
+    for h in hits:
+        path, _, rest = h.partition(":")
+        ln, _, text = rest.partition(":")
+        if not ln.isdigit():
+            continue
+        i = int(ln) - 1
+        if path.startswith(".github/") and path.endswith((".yml", ".yaml")):
+            lines = read_file(path)
+            a, b = step_context(lines, i) if 0 <= i < len(lines) else (i, i)
+            if (path, a) in seen:
+                continue
+            seen.add((path, a))
+            out.append("\n".join("%s:%d: %s" % (path, k + 1, lines[k]) for k in range(a, b + 1)))
+        else:
+            out.append(h)
+    return "\n".join(out) + ("\n" if out else "")
+
+
 def our_usage(name):
-    """Every line of ours that names the dependency (workflows, go.mod, Dockerfiles, scripts)."""
+    """Every line of ours that names the dependency (workflows, go.mod, Dockerfiles, scripts);
+    a workflow hit comes with its whole step, inputs included."""
     short = name.split("/")
-    out, _rc = _run(["git", "grep", "-n", "-I", "--", name], cap=CAP_USAGE)
+    out, _rc = _run(["git", "grep", "-n", "-I", "--", name])
     if not out and len(short) >= 2 and "." not in short[0]:
-        out, _rc = _run(["git", "grep", "-n", "-I", "--", "%s/%s" % (short[0], short[1])], cap=CAP_USAGE)
-    return out or "(no line in this repository names %s)\n" % name
+        out, _rc = _run(["git", "grep", "-n", "-I", "--", "%s/%s" % (short[0], short[1])])
+    if not out:
+        return "(no line in this repository names %s)\n" % name
+    text = usage_blocks(out.splitlines(), lambda p: open(p, encoding="utf-8", errors="replace").read().splitlines())
+    if len(text) > CAP_USAGE:
+        text = text[:CAP_USAGE] + "\n[... usage truncated at %d characters ...]\n" % CAP_USAGE
+    return text
 
 
 def cmd_gather(a):
     updates = json.load(open(a.updates))
     os.makedirs(a.out, exist_ok=True)
-    diff, _rc = _run(["gh", "pr", "diff", str(a.pr)], cap=CAP_DIFF)
+    diff, rc = _run(["gh", "pr", "diff", str(a.pr)], cap=CAP_DIFF)
+    if rc != 0 or not diff.strip():
+        sys.stderr.write("gather: could not fetch the diff of PR #%s (rc %s) — no bundle, no review\n" % (a.pr, rc))
+        sys.exit(3)
     parts = ["# Bundle for Dependabot PR #%s\n" % a.pr,
              "## Updates in this PR\n",
              "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "not major")
@@ -221,6 +275,22 @@ def cmd_gather(a):
 
 
 # ----------------------------------------------------------------------------- read
+
+def parse_answer(text):
+    """The reader's answer must be exactly ONE JSON object, optionally wrapped in a single code
+    fence, and nothing else. No searching inside prose or a truncated answer for some object
+    that happens to parse (round 1: `{"findings": [], "x": {"findings": []}` truncated read as a
+    clean answer). Returns the dict or None."""
+    s = str(text or "").strip()
+    m = re.fullmatch(r"```[A-Za-z]*\s*\n(.*?)\n?```", s, re.S)
+    if m:
+        s = m.group(1).strip()
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
 
 def _extract_json(text):
     s = str(text or "")
@@ -248,7 +318,7 @@ def normalize_findings(obj):
             return None, "finding is not an object"
         sev = str(f.get("severity", "")).strip().lower()
         if sev not in SEVERITIES:
-            return None, "unknown severity %r" % sev
+            return None, mask("unknown severity %r" % sev[:40])
         out.append({"severity": sev,
                     "title": mask(f.get("title", ""))[:200],
                     "release_note": mask(f.get("release_note", ""))[:1000],
@@ -274,8 +344,8 @@ def cmd_read(a):
                                          messages=[{"role": "user", "content": prompt}])
             text = "".join(getattr(b, "text", "") for b in msg.content)
             result["raw"] = mask(text)
-            findings, err = normalize_findings(_extract_json(text))
-            result["findings"], result["error"] = findings, err
+            findings, err = normalize_findings(parse_answer(text))
+            result["findings"], result["error"] = findings, (mask(err) if err else None)
         except Exception as e:  # federation, network, SDK — all "error", never a pass
             status = getattr(e, "status_code", None) or getattr(e, "status", None)
             step = "identity/federation" if status in (401, 403) else "model-call"
@@ -294,7 +364,7 @@ def decide(readers):
         return {"decision": "error", "reason": "no readers"}
     errors = [r for r in readers if r.get("error") or r.get("findings") is None]
     if errors:
-        return {"decision": "error", "reason": "; ".join("%s: %s" % (r.get("reader"), r.get("error")) for r in errors)}
+        return {"decision": "error", "reason": mask("; ".join("%s: %s" % (r.get("reader"), r.get("error")) for r in errors))}
     breaks = [dict(f, reader=r.get("reader")) for r in readers for f in r["findings"] if f["severity"] == "breaks-us"]
     return {"decision": "hold" if breaks else "merge",
             "breaks_us": breaks,

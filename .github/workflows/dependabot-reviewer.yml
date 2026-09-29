@@ -17,10 +17,13 @@ name: Dependabot reviewer
 #   2. sends that bundle to TWO readers through the same federation the auditor uses, and gets
 #      ranked findings tagged breaks-us / check / noise — never a verdict (row 51);
 #   3. decides MECHANICALLY (bin/dependabot-reviewer.py decide): no breaks-us from either
-#      reader => publish the check as success and arm squash auto-merge (the required checks
-#      still gate the actual merge; the App has no bypass); any breaks-us => publish the check
-#      as failure, hold, and open ONE issue with both readers' findings for the ccode queue;
-#      a reader error => no check, retry next hour, an issue after three failed runs in a row.
+#      reader AND main's required-check guard passes => arm squash auto-merge, then publish the
+#      check as success (the required checks still gate the actual merge; the App has no
+#      bypass); any breaks-us => disarm any earlier auto-merge, open or update ONE issue with
+#      both readers' findings for the ccode queue, then publish the check as failure; a reader
+#      error, an unparseable answer, a missing diff, or any action that did not happen => no
+#      check, so the next hourly run retries; three unfinished runs in a row => one issue.
+#      The check goes up LAST: a head that carries it is never looked at again.
 #
 # It scans nothing, opens no PRs, edits nothing. Two App tokens with disjoint permissions:
 # checks:write (publish the check) and contents+pull-requests (arm auto-merge), mirroring the
@@ -61,6 +64,7 @@ jobs:
       contents: read
       pull-requests: read    # list PRs, read diffs
       issues: write          # the held / reader-failure issues
+      actions: read          # read the previous run's failure-streak artifact
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,6 +113,7 @@ jobs:
           [ "$count" != "0" ] || echo "::notice::nothing to review this hour"
 
       - name: mint the federated identity token
+        id: mint
         if: steps.candidates.outputs.count != '0'
         # Straight from the runner's OIDC endpoint: no third-party action holds the token.
         run: |
@@ -130,14 +135,15 @@ jobs:
           PY
 
       - name: install the pinned SDK (the auditor's hash-pinned set)
-        if: steps.candidates.outputs.count != '0'
+        id: sdk
+        if: steps.candidates.outputs.count != '0' && steps.mint.outcome == 'success'
         run: |
           set -euo pipefail
           python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
           python3 -c 'from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile; print("sdk ready")'
 
-      - name: mint the App token for arming auto-merge (contents + pull-requests)
-        if: steps.candidates.outputs.count != '0'
+      - name: mint the App token for arming / disarming auto-merge (contents + pull-requests)
+        if: steps.candidates.outputs.count != '0' && steps.sdk.outcome == 'success'
         id: app-merge
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -148,7 +154,7 @@ jobs:
           permission-pull-requests: write
 
       - name: gather, read twice, decide, act — one PR at a time
-        if: steps.candidates.outputs.count != '0'
+        if: steps.candidates.outputs.count != '0' && steps.sdk.outcome == 'success'
         id: act
         env:
           # the reviewer's own federation rule; the other identifiers are shared with the auditor
@@ -163,7 +169,9 @@ jobs:
           MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -uo pipefail
+          # The runner starts bash with -e. Here every failure is handled explicitly, per PR, so
+          # one PR's failure never abandons the rest of the hour or skips the outputs below.
+          set +e -uo pipefail
           W="$RUNNER_TEMP/work"; fail=0; merged=0; held=0; errored=0
           # A FRESH identity token for every reader call. Each `read` is its own process and its
           # own SDK exchange; exchanging one token twice fails (jti_reused — the auditor hit it),
@@ -182,14 +190,30 @@ jobs:
               -f head_sha="$1" -f status=completed -f conclusion="$2" -f details_url="$RUN_URL" \
               -f "output[title]=dependabot reviewer: $2" -f "output[summary]=$3" >/dev/null
           }
+          # One open issue per title, updated in place. Returns non-zero if it could not look up,
+          # create or update — the caller then posts NO check, so the next hour retries.
+          issue_upsert() { # <title> <body-file>
+            local list existing
+            list=$(gh issue list --state open --search "\"$1\" in:title" --json number,title) || return 1
+            existing=$(jq -r --arg t "$1" '[.[] | select(.title == $t)][0].number // empty' <<<"$list") || return 1
+            if [ -n "$existing" ]; then gh issue edit "$existing" --body-file "$2" >/dev/null || return 1; echo "#$existing updated"
+            else gh issue create --title "$1" --body-file "$2" || return 1; fi
+          }
+          # main's list and main's ruleset must agree before a major is armed: the same guard as the
+          # patch/minor lane (bin/required-check-guard.sh, row 75). If main enforced no checks,
+          # --auto would merge at once; the guard fails closed.
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
+               | base64 -d > "$W/main-required-checks.json" \
+             && bash bin/required-check-guard.sh "$W/main-required-checks.json"; then guard_ok=1
+          else guard_ok=0; echo "::error::required-check guard refused: no major is armed this hour (every merge decision below becomes an error)"; fi
           while read -r n sha; do
             d="$W/pr-$n"; mkdir -p "$d"
             echo "::group::PR #$n ${sha:0:7}"
-            # 1. gather (no model)
+            # 1. gather (no model); a missing diff or unreadable input is an error, never an empty bundle
             if ! python3 bin/dependabot-reviewer.py gather --pr "$n" --updates "$W/updates-$n.json" --out "$d"; then
               echo "::warning::PR #$n: gather failed; retry next hour"; errored=$((errored+1)); echo "::endgroup::"; continue
             fi
-            # 2. two readers, independently
+            # 2. two readers, independently, each with a fresh identity token
             for reader in AUDITOR_MODEL_PRIMARY AUDITOR_MODEL_FALLBACK; do
               mint || echo "::warning::PR #$n: could not mint a fresh identity token for $reader"
               python3 bin/dependabot-reviewer.py read --bundle "$d/bundle.md" \
@@ -197,63 +221,100 @@ jobs:
                 || echo "::warning::PR #$n: reader $reader did not complete"
             done
             # 3. mechanical decision
-            python3 bin/dependabot-reviewer.py decide --reader "$d/reader-AUDITOR_MODEL_PRIMARY.json" \
-              --reader "$d/reader-AUDITOR_MODEL_FALLBACK.json" --out "$d/decision.json" || { echo "::warning::PR #$n: decide failed"; errored=$((errored+1)); echo "::endgroup::"; continue; }
-            decision=$(jq -r .decision "$d/decision.json")
-            names=$(jq -r '[.[]|select(.major)|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json")
-            # 4. act
+            if ! python3 bin/dependabot-reviewer.py decide --reader "$d/reader-AUDITOR_MODEL_PRIMARY.json" \
+                   --reader "$d/reader-AUDITOR_MODEL_FALLBACK.json" --out "$d/decision.json"; then
+              echo "::warning::PR #$n: decide failed"; errored=$((errored+1)); echo "::endgroup::"; continue
+            fi
+            decision=$(jq -r .decision "$d/decision.json") || decision=error
+            names=$(jq -r '[.[]|select(.major)|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json") || names="PR #$n"
+            if [ "$decision" = merge ] && [ "$guard_ok" != 1 ]; then decision=guard; fi
+            # 4. act FIRST, then publish the check: a head with a check is never looked at again, so
+            #    the check goes up only once the action it reports has actually happened.
             case "$decision" in
               merge)
-                if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
-                  if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$n"; then merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed)"
-                  else echo "::error::PR #$n: check published but auto-merge could not be armed"; fail=1; fi
-                else echo "::error::PR #$n: could not publish the check"; fail=1; fi ;;
+                if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$n"; then
+                  if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
+                    merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed, check published)"
+                  else echo "::error::PR #$n: auto-merge armed but the check could not be published"; fail=1; fi
+                else echo "::warning::PR #$n: auto-merge could not be armed — no check; retry next hour"; errored=$((errored+1)); fi ;;
               hold)
-                publish "$sha" failure "A reader found a documented change that breaks a line of ours ($names). Held; see the issue. Evidence: this run's artifact." || fail=1
                 title="major bump held: $names"
                 {
                   echo "Dependabot PR #$n (\`${sha:0:7}\`) is a major bump that a reader says breaks a line of ours."
-                  echo "This is the ccode queue's, not the owner's: fix our side, then the bump merges on its own."
+                  echo "This is the ccode queue's, not the owner's: fix our side, then re-run the reviewer with force=true."
                   echo; echo "Run: $RUN_URL"; echo
                   echo "## breaks-us findings"; echo
-                  jq -r '.breaks_us[] | "- **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
-                  echo; echo "## every finding, both readers"; echo
-                  jq -r '.readers[] | .findings[] | "- [\(.severity)] \(.title) — `\(.our_line)`"' "$d/decision.json"
+                  jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
+                  echo; echo "## every finding, both readers, verbatim"
+                  jq -r '.readers[] | "\n### \(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B"))\n", (if (.findings|length)==0 then "_(no findings)_" else (.findings[] | "- [\(.severity)] **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)") end)' "$d/decision.json"
                   echo; echo "## fix on our side"; echo; echo "_(ccode fills this in: the change to our line, or why the finding is wrong, then re-runs the reviewer with force=true)_"
                 } > "$d/issue.md"
-                existing=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
-                             --jq ".[] | select(.title == \"$title\") | .number" | head -1)
-                if [ -n "$existing" ]; then gh issue edit "$existing" --body-file "$d/issue.md" >/dev/null && echo "PR #$n: hold (issue #$existing updated)" || fail=1
-                else gh issue create --title "$title" --body-file "$d/issue.md" >/dev/null && echo "PR #$n: hold (issue opened)" || fail=1; fi
-                held=$((held+1)) ;;
+                # disarm any auto-merge a previous verdict armed (the check is not required, so it cannot hold the PR by itself)
+                armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null') || armed=unknown
+                if [ "$armed" = true ]; then GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" || armed=stuck; fi
+                if [ "$armed" = unknown ] || [ "$armed" = stuck ]; then
+                  echo "::warning::PR #$n: could not confirm auto-merge is off — no check; retry next hour"; errored=$((errored+1))
+                elif ! issue_upsert "$title" "$d/issue.md"; then
+                  echo "::warning::PR #$n: could not open/update the held issue — no check; retry next hour"; errored=$((errored+1))
+                elif publish "$sha" failure "A reader found a documented change that breaks a line of ours ($names). Held (auto-merge off); see the issue. Evidence: this run's artifact."; then
+                  held=$((held+1)); echo "PR #$n: hold (issue open, check published)"
+                else echo "::error::PR #$n: held but the check could not be published"; fail=1; fi ;;
+              guard)
+                echo "::warning::PR #$n: readers found nothing that breaks us, but the required-check guard refused — not armed, no check; retry next hour"
+                errored=$((errored+1)) ;;
               *)
-                echo "::warning::PR #$n: $(jq -r '.reason // "reader error"' "$d/decision.json") — no check posted; retry next hour"
+                echo "::warning::PR #$n: $(jq -r '.reason // "reader error"' "$d/decision.json" 2>/dev/null) — no check posted; retry next hour"
                 errored=$((errored+1)) ;;
             esac
             echo "::endgroup::"
           done < "$W/candidates.txt"
           {
             echo "### Dependabot reviewer"; echo
-            echo "- reviewed: $(wc -l < "$W/candidates.txt" | tr -d ' ') PR(s); merge armed: $merged; held: $held; reader errors: $errored"
+            echo "- reviewed: $(wc -l < "$W/candidates.txt" | tr -d ' ') PR(s); merge armed: $merged; held: $held; not finished (retry next hour): $errored"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "errored=$errored" >> "$GITHUB_OUTPUT"
           [ "$errored" = "0" ] || fail=1
           exit "$fail"
 
-      - name: reader failures three runs in a row => one issue for the ccode queue
-        if: ${{ failure() && steps.act.outputs.errored != '0' && steps.act.outputs.errored != '' }}
+      # The failure streak lives in a small artifact carried from run to run: +1 for a run that
+      # had PRs to review and could not finish them (identity, SDK, gather, reader, guard, or an
+      # action), reset to 0 by a run that finished every PR, unchanged by a run with nothing to do.
+      # Three in a row => one issue for the ccode queue.
+      - name: failure streak — three unfinished runs in a row => one issue
+        if: always() && steps.candidates.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          UNFINISHED: ${{ steps.mint.outcome != 'success' || steps.sdk.outcome != 'success' || steps.act.outputs.errored != '0' }}
         run: |
-          set -uo pipefail
-          prior=$(gh run list --workflow dependabot-reviewer.yml --limit 3 --json conclusion,databaseId \
-                    --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID}) | .conclusion] | .[0:2]")
-          [ "$(jq -r 'length' <<<"$prior")" = "2" ] && [ "$(jq -r 'all(. == "failure")' <<<"$prior")" = "true" ] || { echo "not three in a row yet"; exit 0; }
+          set +e -uo pipefail
+          mkdir -p "$RUNNER_TEMP/state"; prev=0
+          for id in $(gh run list --workflow dependabot-reviewer.yml --status completed --limit 20 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -n dependabot-reviewer-state -D "$RUNNER_TEMP/prev-state" >/dev/null 2>&1; then
+              prev=$(cat "$RUNNER_TEMP/prev-state/streak" 2>/dev/null || echo 0); break
+            fi
+          done
+          [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+          if [ "$UNFINISHED" = true ]; then streak=$((prev+1)); else streak=0; fi
+          echo "$streak" > "$RUNNER_TEMP/state/streak"
+          echo "failure streak: ${prev} -> ${streak}"
+          [ "$streak" -ge 3 ] || exit 0
           title="dependabot reviewer: reader failures"
-          body="The reviewer's readers failed on three consecutive hourly runs; majors are not being judged. Latest: $RUN_URL. Check the run log's 'OIDC identity claims' line against the federation rule and the SDK step."
-          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)
-          if [ -n "$existing" ]; then gh issue comment "$existing" --body "$body" >/dev/null; else gh issue create --title "$title" --body "$body" >/dev/null; fi
+          printf 'The reviewer could not finish its Dependabot majors on %s consecutive runs; majors are not being judged.\n\nLatest: %s\n\nCheck the run log: the "OIDC identity claims" line against the federation rule, the SDK step, and each PR group.\n' \
+            "$streak" "$RUN_URL" > "$RUNNER_TEMP/streak-issue.md"
+          list=$(gh issue list --state open --search "\"$title\" in:title" --json number,title) || exit 0
+          existing=$(jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty' <<<"$list")
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null
+          else gh issue create --title "$title" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null; fi
+
+      - name: keep the failure streak for the next run
+        if: always() && steps.candidates.outputs.count != '0'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependabot-reviewer-state
+          path: ${{ runner.temp }}/state
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: upload the evidence (bundles, both readers' answers, decisions)
         if: ${{ always() && steps.candidates.outputs.count != '0' }}
