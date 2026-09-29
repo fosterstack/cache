@@ -105,3 +105,62 @@ jobs:
             exit 1
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
+
+  # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
+  # Dependabot). The ruleset on main and .github/policy/required-checks.json must
+  # match exactly — contexts and integration IDs — on EVERY PR and every push to
+  # main, so drift is red the day it happens, not when a bot PR quietly stalls.
+  required-check-guard:
+    name: required-check guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: guard regressions (offline fixtures)
+        run: bash bin/required-check-guard-test.sh
+
+      # The verdict uses THIS tree's list, so a PR that fixes a stale list goes green on
+      # its own run; on push to main the tree is main.
+      - name: the ruleset on main vs this tree's required-checks.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/required-check-guard.sh .github/policy/required-checks.json
+
+      # The issue tracks drift ON MAIN (main's list vs the ruleset), whichever run sees it
+      # first; one open issue, updated in place, never duplicated. Best effort: a
+      # Dependabot or fork run has no issues:write, and the red check above still stands.
+      - name: open or update the `required-check drift` issue when main's list has drifted
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
+          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
+            --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
+          out=$(bash bin/required-check-guard.sh "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
+          # Drift (1), or a ruleset that enforces nothing at all (a refusal, not a read error).
+          if [ "$rc" -ne 1 ] && ! grep -q "NO required status checks" <<<"$out"; then
+            echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0
+          fi
+          title="required-check drift"
+          # shellcheck disable=SC2016  # literal Markdown backticks, not expansions
+          {
+            echo 'The ruleset on `main` and `.github/policy/required-checks.json` on `main` differ (contexts and integration IDs must both match, exactly). Until they agree the Dependabot auto-merge guard refuses every patch/minor PR and every PR hygiene run is red.'
+            echo
+            echo 'Fix whichever is wrong: the ruleset (owner, GitHub UI) or the list (a PR).'
+            echo
+            echo "Seen by ${RUN_URL}"
+            echo
+            echo '```'
+            printf '%s\n' "${out}"
+            echo '```'
+          } > "${RUNNER_TEMP}/drift-body.md"
+          n=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
+                | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          if [ -n "$n" ]; then gh issue edit "$n" --body-file "${RUNNER_TEMP}/drift-body.md" >/dev/null && echo "updated #${n}"
+          else gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md"; fi
