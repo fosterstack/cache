@@ -23,10 +23,9 @@ name: scan
 # (red), never a silent clean pass (bin/install-scanner.sh).
 #
 # Inspector needs no stored secret: the scanner job alone requests
-# id-token: write and assumes a ScanSbom-only role by OIDC. The role trusts
-# pull_request runs (Dependabot's included), so Inspector runs on pull
-# requests; push and tag runs are covered by grype here and by the full
-# release scanner set in stage-verify.
+# id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
+# (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
+# ratified Sep 29, decision row 73; the role's trust names those subjects).
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
@@ -127,7 +126,6 @@ jobs:
           (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
 
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
-        if: matrix.scanner != 'inspector' || github.event_name == 'pull_request'
         run: ./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'
 
       # Load every (variant, platform) child into the docker daemon. buildx
@@ -135,7 +133,6 @@ jobs:
       # single-arch child is loaded by ref. Both gate scanners scan these
       # six children by ref.
       - name: load every variant/platform child into the docker daemon
-        if: matrix.scanner != 'inspector' || github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
@@ -156,27 +153,13 @@ jobs:
           set -euo pipefail
           grype db update >/dev/null 2>&1 || true
           echo "## Grype" >> "$GITHUB_STEP_SUMMARY"
-          # One pass per target: the table to the log, CycloneDX to a file for
-          # the package count (row 53: zero packages = did not run, red).
-          g() { # target label
-            grype "$1" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json \
-              -o table -o cyclonedx-json=/tmp/grype.cdx.json
-            n=$(jq '[.components[]?] | length' /tmp/grype.cdx.json)
-            f=$(jq '[.vulnerabilities[]?] | length' /tmp/grype.cdx.json)
-            echo "grype $2: ${n} packages, ${f} finding(s)"
-            echo "- $2: ${n} packages, ${f} finding(s)" >> "$GITHUB_STEP_SUMMARY"
-            [ "${n}" -gt 0 ] || { echo "::error::grype inventoried 0 packages in $2 — did not run (row 53), not a clean pass" >&2; exit 1; }
-          }
+          # bin/grype-scan.sh: one pass per target, counts, VEX, zero packages = red.
+          g() { ./bin/grype-scan.sh "$1" "$2"; }
           while read -r ref; do g "docker:${ref}" "${ref##*:}"; done < /tmp/refs.txt
           for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}"; done
 
-      - name: Amazon Inspector — push/tag runs
-        if: matrix.scanner == 'inspector' && github.event_name != 'pull_request'
-        run: |
-          echo "Inspector runs on pull requests (its role trusts pull_request runs only). This ${{ github.event_name }} run is covered by grype here and by the release scanner set in stage-verify." | tee -a "$GITHUB_STEP_SUMMARY"
-
       - name: Amazon Inspector — assume the ScanSbom-only role (OIDC; no stored secret)
-        if: matrix.scanner == 'inspector' && github.event_name == 'pull_request'
+        if: matrix.scanner == 'inspector'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.INSPECTOR_ROLE }}
@@ -184,7 +167,7 @@ jobs:
           role-session-name: cache-pr-scan-${{ github.run_id }}
 
       - name: Amazon Inspector scan every loaded image
-        if: matrix.scanner == 'inspector' && github.event_name == 'pull_request'
+        if: matrix.scanner == 'inspector'
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
           # inspector-sbomgen inventories each child on the runner; only the
@@ -220,7 +203,7 @@ jobs:
       # The SBOMs and the raw ScanSbom responses, as evidence of what was
       # inventoried and what came back (kept even when the leg is red).
       - name: keep the Inspector SBOMs and responses
-        if: always() && matrix.scanner == 'inspector' && github.event_name == 'pull_request'
+        if: always() && matrix.scanner == 'inspector'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: inspector-evidence

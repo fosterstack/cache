@@ -70,6 +70,9 @@ jobs:
           ./bin/install-scanner.sh grype
           bash bin/vex-scope-test.sh
 
+      - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
+        run: bash bin/vex-both-scanners-test.sh
+
       - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
         run: bash bin/go-bump-open-pr-test.sh
 
