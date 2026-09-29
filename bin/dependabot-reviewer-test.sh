@@ -331,11 +331,16 @@ assert len(st) == 1 and st[0]["if"] == "cancelled()"
 open(sys.argv[2], "w").write(st[0]["run"])
 PY4
 mkdir -p "$w/cx/work"; printf '99 shaA\n100 shaB\n101 shaC\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
-(env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s \
+(env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s RUN_URL=https://example.invalid/run \
    bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1
 ! grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q "pr merge --disable-auto 100" "$w/gh.log" && grep -q "pr merge --disable-auto 101" "$w/gh.log" \
   && { echo "ok: cancellation: disarms arms with no success on the head (none, lookup failed); keeps one whose success landed (rounds 5-6)"; pass=$((pass+1)); } \
   || { echo "FAIL: cancellation cleanup"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
+grep -q -- "check-runs -f name=dependabot-reviewer -f head_sha=shaC .*conclusion=neutral" "$w/gh.log" \
+  && ! grep -q -- "head_sha=shaB" "$w/gh.log" \
+  && [ "$(grep -n 'head_sha=shaC' "$w/gh.log" | cut -d: -f1)" -lt "$(grep -n 'disable-auto 101' "$w/gh.log" | cut -d: -f1)" ] \
+  && { echo "ok: cancellation: a failed lookup posts neutral FIRST, then disarms, so the head is retried (round-7 P1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: cancellation: neutral on unknown"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 
 # ============================================================================ candidates step
 python3 - "$repo/.github/workflows/dependabot-reviewer.yml" "$w/cand.sh" "$w/streak.sh" <<'PY2'

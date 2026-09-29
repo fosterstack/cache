@@ -341,14 +341,16 @@ jobs:
       # that no check records until the next hourly sweep disarms it. This runs on cancellation:
       # for each PR in that window (the ledger) it asks GitHub for the head's LATEST reviewer
       # check. `success` means the verdict landed (the cancellation came after publishing) and
-      # the arm stands; anything else, or a lookup that fails, means the arm is not recorded and
-      # it is turned off.
+      # the arm stands; none/neutral means the arm is not recorded and it is turned off. If the
+      # lookup FAILS, a success may or may not have landed: a `neutral` check goes up first (it
+      # supersedes whatever is there, so the head is retried next hour), then the arm comes off.
       - name: on cancellation, turn off any auto-merge armed without a published check
         if: cancelled()
         env:
           GH_TOKEN: ${{ steps.app-merge.outputs.token }}
           APP_TOKEN: ${{ steps.app-checks.outputs.token }}
           APP_SLUG: ${{ steps.app-checks.outputs.app-slug }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set +e -uo pipefail
           f="$RUNNER_TEMP/work/armed-unpublished.txt"
@@ -358,6 +360,13 @@ jobs:
             latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
                        --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || latest=unknown
             if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
+            if [ "$latest" = unknown ]; then
+              GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
+                -f head_sha="$sha" -f status=completed -f conclusion=neutral -f details_url="$RUN_URL" \
+                -f "output[title]=dependabot reviewer: neutral" \
+                -f "output[summary]=The run was cancelled before its verdict could be confirmed. Auto-merge is off; the next hourly run reviews again." >/dev/null \
+                || echo "::error::PR #$n: could not post the superseding neutral check; if a success landed this head needs a forced re-review"
+            fi
             if gh pr merge --disable-auto "$n"; then echo "PR #$n: auto-merge turned off (cancelled before its check; latest: $latest)"
             else echo "::error::PR #$n: could not turn auto-merge off; the next hourly sweep disarms it"; fi
           done < "$f"
