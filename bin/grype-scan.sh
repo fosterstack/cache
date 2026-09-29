@@ -17,8 +17,10 @@ grype="${GRYPE:-grype}"
 cdx="$(mktemp)"; trap 'rm -f "$cdx"' EXIT
 
 "$grype" "$target" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}"; rc=$?
-n=$(jq '[.components[]?] | length' "$cdx" 2>/dev/null || echo 0)
-f=$(jq '[.vulnerabilities[]?] | length' "$cdx" 2>/dev/null || echo "?")
+# A grype that failed before writing leaves the file empty, and jq exits 0
+# with no output on empty input: anything but a number is 0 packages.
+n=$(jq '[.components[]?] | length' "$cdx" 2>/dev/null); [[ "$n" =~ ^[0-9]+$ ]] || n=0
+f=$(jq '[.vulnerabilities[]?] | length' "$cdx" 2>/dev/null); [[ "$f" =~ ^[0-9]+$ ]] || f="?"
 echo "grype ${label}: ${n} packages, ${f} finding(s)"
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- ${label}: ${n} packages, ${f} finding(s)" >> "$GITHUB_STEP_SUMMARY"
 if [ "${n}" -eq 0 ]; then

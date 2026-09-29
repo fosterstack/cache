@@ -68,6 +68,10 @@ done
 grype_sbom 1.37.0 "$w/g-empty.json" empty
 out="$(GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/g-empty.json" empty 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && grep -q "0 packages.*did not run" <<<"$out" && ok "grype: zero packages fails (exit 2)" || bad "grype: zero packages (rc $rc)" "$out"
+# grype that cannot catalog at all (no output written) is also 0 packages, exit 2 (round-4 blocker).
+out="$(GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/does-not-exist.json" crashed 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] && grep -q "crashed: 0 packages" <<<"$out" && grep -q "0 packages in crashed.*did not run" <<<"$out" \
+  && ok "grype: a catalog failure is 0 packages, exit 2" || bad "grype: catalog failure (rc $rc)" "$out"
 insp_inputs 1.37.0 i-empty empty
 out="$(python3 "$here/inspector-gate.py" empty "$w/i-empty.sbom.json" "$w/i-empty.resp.json" "$vex" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && grep -q "0 packages.*did not run" <<<"$out" && ok "inspector: zero packages fails (exit 2)" || bad "inspector: zero packages (rc $rc)" "$out"
