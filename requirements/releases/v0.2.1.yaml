@@ -2,8 +2,8 @@
 # Do not hand-edit except to set approved/approved_on after owner review.
 version: v0.2.1
 approved: true
-approved_on: 2026-09-21
-requirements_sha256: fc38407cddf2f7b00e6fb3403c869dae7f9e01d067ada6c9761998c07a0b6fef
+approved_on: 2026-09-29
+requirements_sha256: b234e2302e74fdc674b88590d007ef45018cd281389030fd0a667fe33a537cea
 frozen_from: requirements/requirements.yaml
 release_blocking_acs:
     - id: REQ-AUTH-001-AC1
