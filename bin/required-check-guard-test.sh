@@ -43,6 +43,45 @@ check "unreadable ruleset response = exit 2"      2 "not the expected JSON"     
 check "missing ruleset file = exit 2"             2 "cannot read"                              "$w/absent.json"  "$list"
 check "list without required_checks = exit 2"     2 "no required_checks array"                 "$w/match.json"   "$w/nolist.json"
 
+# The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
+# committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
+# -e ended the step at the guard's refusal, before any issue call).
+python3 - "$repo/.github/workflows/hygiene.yml" "$w/step.sh" <<'PY'
+import sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+steps = wf["jobs"]["required-check-guard"]["steps"]
+run = [s["run"] for s in steps if s.get("name", "").startswith("open or update the `required-check drift` issue")]
+assert len(run) == 1, "drift-issue step not found"
+open(sys.argv[2], "w").write(run[0])
+PY
+mkdir -p "$w/stub"
+cat > "$w/stub/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >> "$GH_LOG"
+case "$1 $2" in
+  "api repos/"*) printf '%s' "$(base64 < "$MAIN_LIST" | tr -d '\n')" ;;   # --jq .content
+  "issue list")  cat "$ISSUES_JSON" ;;
+  "issue edit"|"issue create") echo "https://example.invalid/issues/9" ;;
+esac
+EOF
+chmod +x "$w/stub/gh"
+step() { # name rules issues_json want_regex [dont_want_regex]
+  : > "$w/gh.log"
+  (cd "$repo" && env PATH="$w/stub:$PATH" GH_LOG="$w/gh.log" MAIN_LIST="$list" ISSUES_JSON="$3" \
+     GUARD_RULES_JSON="$2" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$w" RUN_URL=https://example.invalid/run \
+     bash --noprofile --norc -e -o pipefail "$w/step.sh") >"$w/step.out" 2>&1; local rc=$?
+  if [ "$rc" -ne 0 ] || ! grep -qE "$4" "$w/gh.log" || { [ -n "${5:-}" ] && grep -qE "$5" "$w/gh.log"; }; then
+    echo "FAIL: $1 (rc ${rc})"; sed 's/^/    log: /' "$w/gh.log"; sed 's/^/    out: /' "$w/step.out"; fail=$((fail+1)); return
+  fi
+  echo "ok: $1"; pass=$((pass+1))
+}
+echo '[]' > "$w/no-issues.json"
+echo '[{"number":7,"title":"required-check drift"},{"number":8,"title":"required-check drift (old)"}]' > "$w/open-issue.json"
+step "drift under bash -e opens the issue"            "$w/missing.json" "$w/no-issues.json"  '^gh issue create --title required-check drift'
+step "drift with the issue open updates it, no dup"   "$w/missing.json" "$w/open-issue.json" '^gh issue edit 7 ' '^gh issue create'
+step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'
+step "match opens nothing"                            "$w/match.json"   "$w/no-issues.json"  '^gh api ' '^gh issue (create|edit)'
+
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

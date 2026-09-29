@@ -139,11 +139,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail   # the runner starts bash with -e; the guard's refusal is data here
           gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" \
             --jq '.content' | base64 -d > "${RUNNER_TEMP}/main-required-checks.json" || exit 0
-          out=$(bash bin/required-check-guard.sh "${RUNNER_TEMP}/main-required-checks.json" 2>&1); rc=$?
-          [ "$rc" -eq 1 ] || { echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0; }
+          out=$(bash bin/required-check-guard.sh "${RUNNER_TEMP}/main-required-checks.json" 2>&1) && rc=0 || rc=$?
+          # Drift (1), or a ruleset that enforces nothing at all (a refusal, not a read error).
+          if [ "$rc" -ne 1 ] && ! grep -q "NO required status checks" <<<"$out"; then
+            echo "main's list vs the ruleset: rc ${rc} — no drift issue to open"; exit 0
+          fi
           title="required-check drift"
           # shellcheck disable=SC2016  # literal Markdown backticks, not expansions
           {
