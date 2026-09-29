@@ -201,6 +201,8 @@ fails() { case " ${FAIL:-} " in *" $1 "*) exit 1 ;; esac; }
 case "$1 $2" in
   "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$LIST" | tr -d '\n' ;;
   "api repos/o/r/check-runs") fails check ;;
+  "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer") echo success ;;   # cancellation cleanup lookups
+  "api repos/o/r/commits/shaB/check-runs?check_name=dependabot-reviewer") echo none ;;
   "api "*) exit 1 ;;                                   # upstream releases: none available
   "pr diff") fails diff; printf -- '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;;
   "pr merge") if [ "$3" = "--disable-auto" ]; then fails disarm; else fails merge; fi ;;
@@ -328,10 +330,11 @@ st = [s for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["review"]["steps"] if
 assert len(st) == 1 and st[0]["if"] == "cancelled()"
 open(sys.argv[2], "w").write(st[0]["run"])
 PY4
-mkdir -p "$w/cx/work"; printf '99\n100\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
-(env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" RUNNER_TEMP="$w/cx" bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1
-grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q "pr merge --disable-auto 100" "$w/gh.log" \
-  && { echo "ok: cancellation: every PR armed without a published check is disarmed (round-5 P1)"; pass=$((pass+1)); } \
+mkdir -p "$w/cx/work"; printf '99 shaA\n100 shaB\n101 shaC\n' > "$w/cx/work/armed-unpublished.txt"; : > "$w/gh.log"
+(env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" RUNNER_TEMP="$w/cx" GITHUB_REPOSITORY=o/r APP_TOKEN=a APP_SLUG=s \
+   bash --noprofile --norc -e -o pipefail "$w/cancel.sh") >/dev/null 2>&1
+! grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q "pr merge --disable-auto 100" "$w/gh.log" && grep -q "pr merge --disable-auto 101" "$w/gh.log" \
+  && { echo "ok: cancellation: disarms arms with no success on the head (none, lookup failed); keeps one whose success landed (rounds 5-6)"; pass=$((pass+1)); } \
   || { echo "FAIL: cancellation cleanup"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 
 # ============================================================================ candidates step

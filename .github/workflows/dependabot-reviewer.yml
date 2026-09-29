@@ -293,11 +293,11 @@ jobs:
             case "$decision" in
               merge)
                 # ledger: armed but not yet published — the cancellation cleanup step disarms these
-                echo "$n" >> "$W/armed-unpublished.txt"
+                echo "$n $sha" >> "$W/armed-unpublished.txt"
                 if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$n"; then
                   if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
                     merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed, check published)"
-                    grep -vx "$n" "$W/armed-unpublished.txt" > "$W/armed-unpublished.tmp"; mv "$W/armed-unpublished.tmp" "$W/armed-unpublished.txt"
+                    grep -vx "$n $sha" "$W/armed-unpublished.txt" > "$W/armed-unpublished.tmp"; mv "$W/armed-unpublished.tmp" "$W/armed-unpublished.txt"
                   else unfinished "$n" "$sha" attempted "the success check could not be published (auto-merge turned back off)"; fi
                 else unfinished "$n" "$sha" "$prior" "auto-merge could not be armed"; fi ;;
               hold)
@@ -338,19 +338,27 @@ jobs:
           exit "$fail"
 
       # A run cancelled between arming a PR and publishing its success check would leave an arm
-      # that no check records until the next hourly sweep disarms it. This runs on cancellation
-      # and turns those arms off now (the ledger lists exactly the PRs in that window).
+      # that no check records until the next hourly sweep disarms it. This runs on cancellation:
+      # for each PR in that window (the ledger) it asks GitHub for the head's LATEST reviewer
+      # check. `success` means the verdict landed (the cancellation came after publishing) and
+      # the arm stands; anything else, or a lookup that fails, means the arm is not recorded and
+      # it is turned off.
       - name: on cancellation, turn off any auto-merge armed without a published check
         if: cancelled()
         env:
           GH_TOKEN: ${{ steps.app-merge.outputs.token }}
+          APP_TOKEN: ${{ steps.app-checks.outputs.token }}
+          APP_SLUG: ${{ steps.app-checks.outputs.app-slug }}
         run: |
           set +e -uo pipefail
           f="$RUNNER_TEMP/work/armed-unpublished.txt"
           [ -s "$f" ] || { echo "nothing armed without a check"; exit 0; }
-          while read -r n; do
-            [ -n "$n" ] || continue
-            if gh pr merge --disable-auto "$n"; then echo "PR #$n: auto-merge turned off (cancelled before its check)"
+          while read -r n sha; do
+            [ -n "$n" ] && [ -n "${sha:-}" ] || continue
+            latest=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
+                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || latest=unknown
+            if [ "$latest" = success ]; then echo "PR #$n: success check is on the head — the arm is recorded, left as is"; continue; fi
+            if gh pr merge --disable-auto "$n"; then echo "PR #$n: auto-merge turned off (cancelled before its check; latest: $latest)"
             else echo "::error::PR #$n: could not turn auto-merge off; the next hourly sweep disarms it"; fi
           done < "$f"
 
