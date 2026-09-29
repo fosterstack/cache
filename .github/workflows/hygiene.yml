@@ -116,6 +116,8 @@ jobs:
   required-check-guard:
     name: required-check guard
     runs-on: ubuntu-latest
+    outputs:
+      drift_issue: ${{ steps.drift-issue.outputs.issue }}
     permissions:
       contents: read
       issues: write        # the `required-check drift` issue (downgraded on fork/Dependabot runs)
@@ -136,6 +138,7 @@ jobs:
       # first; one open issue, updated in place, never duplicated. Best effort: a
       # Dependabot or fork run has no issues:write, and the red check above still stands.
       - name: open or update the `required-check drift` issue when main's list has drifted
+        id: drift-issue
         if: always()
         continue-on-error: true
         env:
@@ -166,4 +169,36 @@ jobs:
           n=$(gh issue list --state open --search "\"${title}\" in:title" --json number,title \
                 | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
           if [ -n "$n" ]; then gh issue edit "$n" --body-file "${RUNNER_TEMP}/drift-body.md" >/dev/null && echo "updated #${n}"
-          else gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md"; fi
+          else url=$(gh issue create --title "$title" --body-file "${RUNNER_TEMP}/drift-body.md") && n="${url##*/}" && echo "$url"; fi
+          if [ -n "$n" ]; then echo "issue=$n" >> "$GITHUB_OUTPUT"; fi
+
+  # Row 76: a drift issue dispatches the fixer in the ops repository. Only on push to main: the
+  # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
+  # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
+  # a failed call is a warning; the issue is the record.
+  drift-fixer-dispatch:
+    name: dispatch the fixer for required-check drift
+    needs: required-check-guard
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: mint the App token for dispatching the fixer (ops, contents:write only)
+        id: app-ops
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: ops
+          permission-contents: write
+      - name: dispatch
+        env:
+          DISPATCH_TOKEN: ${{ steps.app-ops.outputs.token }}
+          ISSUE: ${{ needs.required-check-guard.outputs.drift_issue }}
+        run: bash bin/dispatch-fixer.sh fix-required-check-drift "$ISSUE" || true
