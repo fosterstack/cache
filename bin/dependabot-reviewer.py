@@ -45,11 +45,19 @@ def mask(s):
 # ----------------------------------------------------------------------------- updates
 
 _VER = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?")
-_BUMPS = re.compile(r"(?:Bumps?|Updates)\s+\[?`?([A-Za-z0-9._/@-]+)`?\]?(?:\([^)]*\))?\s+from\s+`?([^\s`]+)`?\s+to\s+`?([^\s`.]+(?:\.[^\s`.]+)*?)`?\.?(?:\s|$)")
+_BUMPS = re.compile(r"(?:[Bb]umps?|[Uu]pdates)\s+\[?`?([A-Za-z0-9._/@-]+)`?\]?(?:\([^)]*\))?\s+from\s+`?([^\s`]+)`?\s+to\s+`?([^\s`.]+(?:\.[^\s`.]+)*?)`?\.?(?:\s|$)")
+
+
+_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{7,64}$")
 
 
 def _major(v):
-    m = _VER.match(str(v).strip())
+    """The major of a version string; None for a digest or anything that is not a version.
+    A docker digest such as `3f3c01a` starts with digits but is not a version."""
+    v = str(v).strip()
+    if _DIGEST.match(v) and not re.fullmatch(r"\d+", v):
+        return None
+    m = _VER.match(v)
     return int(m.group(1)) if m else None
 
 
@@ -61,11 +69,26 @@ def is_major(old, new):
     return a is not None and b is not None and a != b
 
 
+_DETAILS = re.compile(r"<details>(?:(?!<details>).)*?</details>", re.S | re.I)
+
+
+def dependabot_summary(body):
+    """The body without its <details> blocks. Dependabot writes its own "Bumps X from A to B" /
+    "Updates `X` from A to B" lines OUTSIDE them; inside are the upstream release notes and
+    commit lists, which quote upstream's own bumps (actions/checkout's notes name
+    docker/login-action 3->4) and must never be read as updates of this PR."""
+    s, prev = str(body or ""), None
+    while prev != s:                      # innermost first, so nested blocks go too
+        prev, s = s, _DETAILS.sub("", s)
+    return s
+
+
 def parse_updates(title, body):
-    """Every (name, from, to) Dependabot names in the PR body ("Bumps X from A to B." or, for a
-    group, one "Updates `X` from A to B" line per member), falling back to the title."""
+    """Every (name, from, to) Dependabot names in the PR body's own summary ("Bumps X from A
+    to B." or, for a group, one "Updates `X` from A to B" line per member), falling back to
+    the title."""
     found, seen = [], set()
-    for src in (body or "", title or ""):
+    for src in (dependabot_summary(body), title or ""):
         for m in _BUMPS.finditer(src):
             name, old, new = m.group(1), m.group(2), m.group(3).rstrip(".")
             key = (name, old, new)
@@ -104,8 +127,18 @@ def _gh_json(args):
 
 
 def _vertuple(v):
+    """The components a version actually states: `4` -> (4,), `4.2` -> (4, 2), `v7.0.1` -> (7, 0, 1)."""
     m = _VER.match(str(v).strip())
-    return tuple(int(x or 0) for x in m.groups()) if m else None
+    return tuple(int(x) for x in m.groups() if x is not None) if m else None
+
+
+def in_range(t, old, new):
+    """Is release `t` after `old` and at most `new`, comparing only the components each bound
+    states? A floating major pin `4` means every 4.x (so 4.x releases are NOT after it) and `7`
+    means every 7.x (so 7.0.1 IS within it)."""
+    if not t or not old or not new:
+        return False
+    return t[:len(old)] > old and t[:len(new)] <= new
 
 
 def _upstream_repo(name):
@@ -121,11 +154,12 @@ def _upstream_repo(name):
 
 
 def release_notes(name, old, new):
-    """Upstream release notes for every release strictly after `old` and up to `new`,
-    oldest first; a plain statement when none are available (never a guess)."""
+    """(text, count): upstream release notes for every release after `old` and up to `new`
+    (in_range), oldest first; a plain statement and count 0 when none are available (never a
+    guess)."""
     repo = _upstream_repo(name)
     if not repo:
-        return "(no upstream release notes available for %s: not a GitHub-hosted dependency)\n" % name
+        return "(no upstream release notes available for %s: not a GitHub-hosted dependency)\n" % name, 0
     lo, hi = _vertuple(old), _vertuple(new)
     rels = []
     for page in (1, 2, 3):
@@ -138,11 +172,11 @@ def release_notes(name, old, new):
     picked = []
     for r in rels:
         t = _vertuple(r.get("tag_name", ""))
-        if t and lo and hi and lo < t <= hi:
+        if in_range(t, lo, hi):
             picked.append((t, r))
     if not picked:
         return ("(no upstream release notes found for %s between %s and %s on %s; "
-                "the reader must say so and judge from the diff and our usage only)\n" % (name, old, new, repo))
+                "the reader must say so and judge from the diff and our usage only)\n" % (name, old, new, repo)), 0
     picked.sort(key=lambda x: x[0])
     out = []
     for _t, r in picked:
@@ -150,7 +184,7 @@ def release_notes(name, old, new):
     text = "\n".join(out)
     if len(text) > CAP_NOTES:
         text = text[:CAP_NOTES] + "\n[... release notes truncated at %d characters ...]\n" % CAP_NOTES
-    return text
+    return text, len(picked)
 
 
 def our_usage(name):
@@ -171,15 +205,19 @@ def cmd_gather(a):
              "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "not major")
                        for u in updates) + "\n",
              "## The PR diff\n\n```diff\n%s```\n" % (diff or "(empty diff)\n")]
+    notes = 0
     for u in updates:
         if not u["major"]:
             continue
-        parts.append("## Upstream release notes: %s %s -> %s\n\n%s" % (u["name"], u["from"], u["to"],
-                                                                        release_notes(u["name"], u["from"], u["to"])))
+        text, count = release_notes(u["name"], u["from"], u["to"])
+        notes += count
+        parts.append("## Upstream release notes: %s %s -> %s\n\n%s" % (u["name"], u["from"], u["to"], text))
         parts.append("## Every line of ours that uses %s\n\n```\n%s```\n" % (u["name"], our_usage(u["name"])))
     text = "\n".join(parts)
     open(os.path.join(a.out, "bundle.md"), "w").write(text)
-    print("bundle: %d characters, %d update(s), %d major" % (len(text), len(updates), sum(1 for u in updates if u["major"])))
+    print("bundle: %d characters, %d update(s), %d major, %d upstream release note(s)%s"
+          % (len(text), len(updates), sum(1 for u in updates if u["major"]), notes,
+             "" if notes else " — NONE found; the readers judge from the diff and our usage only"))
 
 
 # ----------------------------------------------------------------------------- read

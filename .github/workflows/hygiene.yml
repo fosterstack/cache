@@ -62,6 +62,9 @@ jobs:
       - name: scanner installer failure-path regressions (pinned-checksum contract)
         run: bash bin/install-scanner-test.sh
 
+      - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
+        run: bash bin/dependabot-reviewer-test.sh
+
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: bash bin/inspector-gate-test.sh
 

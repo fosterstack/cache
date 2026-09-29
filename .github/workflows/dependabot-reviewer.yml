@@ -165,6 +165,18 @@ jobs:
         run: |
           set -uo pipefail
           W="$RUNNER_TEMP/work"; fail=0; merged=0; held=0; errored=0
+          # A FRESH identity token for every reader call. Each `read` is its own process and its
+          # own SDK exchange; exchanging one token twice fails (jti_reused — the auditor hit it),
+          # and a token lives about five minutes. The runner endpoint is available to every step
+          # of a job with id-token: write.
+          mint() {
+            local tok
+            tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || return 1
+            [ -n "$tok" ] && [ "$tok" != "null" ] || return 1
+            echo "::add-mask::$tok"
+            printf '%s' "$tok" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          }
           publish() { # <sha> <conclusion> <summary>
             GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
               -f head_sha="$1" -f status=completed -f conclusion="$2" -f details_url="$RUN_URL" \
@@ -179,6 +191,7 @@ jobs:
             fi
             # 2. two readers, independently
             for reader in AUDITOR_MODEL_PRIMARY AUDITOR_MODEL_FALLBACK; do
+              mint || echo "::warning::PR #$n: could not mint a fresh identity token for $reader"
               python3 bin/dependabot-reviewer.py read --bundle "$d/bundle.md" \
                 --prompt .github/policy/dependabot-reviewer-prompt.txt --model-env "$reader" --out "$d/reader-$reader.json" \
                 || echo "::warning::PR #$n: reader $reader did not complete"
