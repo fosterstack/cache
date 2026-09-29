@@ -328,6 +328,8 @@ def normalize_findings(obj):
             return None, "finding is not an object"
         if not set(f) <= _FINDING_KEYS:
             return None, "a finding has fields outside the schema"
+        if not all(isinstance(f.get(k, ""), str) for k in _FINDING_KEYS):
+            return None, "a finding has a field that is not text"
         sev = f.get("severity")
         if not isinstance(sev, str) or sev.strip().lower() not in SEVERITIES:
             return None, "a finding has no known severity (breaks-us, check, noise)"   # never echo it

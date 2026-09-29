@@ -124,6 +124,10 @@ f, e = r.normalize_findings(r.parse_answer('{"findings": [], "more_findings": [{
 check("a second findings-like list is an error (round-3 P1)", f is None and e, (f, e))
 f, e = r.normalize_findings({"findings": [{"severity": "check", "title": "t", "verdict": "safe to merge"}]})
 check("a finding with a field outside the schema is an error", f is None and e, (f, e))
+f, e = r.normalize_findings({"findings": [{"severity": "check", "title": "t", "why": {"error": "I could not complete the review"}}]})
+check("a non-text field value is an error, never stringified (round-4 P1)", f is None and e, (f, e))
+f, e = r.normalize_findings({"findings": [{"severity": "noise", "title": ["a"]}]})
+check("a list-valued field is an error", f is None and e, (f, e))
 f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "title": "x"}], "findings": []}'))
 check("duplicate findings key is an error, never the later empty list (round-2 P1)", f is None and e, (f, e))
 f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "severity": "noise", "title": "x"}]}'))
@@ -334,7 +338,7 @@ case "$1 $2" in
   "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
-  "pr view") echo "${ARMED99:-true}" ;;
+  "pr view") echo "${ARMED99:-false}" ;;
   "pr merge") [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;;
   "run list") [ "${RUNLIST:-}" = fail ] && exit 1
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
@@ -361,8 +365,13 @@ PRIOR99=success FORCE=true cand "99 neutral,91 none," 0 "force: old verdict inva
 grep -q "pr merge --disable-auto 99" "$w/gh.log" && grep -q -- "-f conclusion=neutral" "$w/gh.log" \
   && { echo "ok: candidates: the forced invalidation happened before any later step"; pass=$((pass+1)); } || { echo "FAIL: candidates: forced invalidation calls"; fail=$((fail+1)); }
 PRIOR99=success FORCE=true NEUTRALFAIL=1 cand "91 none," 1 "force: neutral cannot be posted -> skipped, step fails (round-3 P1)"
-PRIOR99=success FORCE=true DISARMFAIL=1 ARMED99=true cand "91 none," 1 "force: auto-merge cannot be turned off -> skipped, step fails"
-PRIOR99=success ARMED99=false cand "99 success,91 none," 0 "a success verdict with auto-merge OFF is reviewed again (self-heal, round-3 P1)"
+PRIOR99=success FORCE=true DISARMFAIL=1 ARMED99=true cand "" 1 "force: auto-merge cannot be turned off -> skipped, step fails (the stub shows #91 armed too: skipped as well)"
+PRIOR99=success ARMED99=false cand "91 none," 0 "a success verdict whose PR someone disarmed is left alone (no re-arm, round-4 P1)"
+ARMED99=true cand "99 none,91 none," 0 "armed with no verdict (cancelled mid-act) -> disarmed BEFORE review (round-4 P1)"
+grep -q "pr merge --disable-auto 99" "$w/gh.log" && { echo "ok: candidates: the unsupported arm was turned off up front"; pass=$((pass+1)); } || { echo "FAIL: candidates: up-front disarm"; fail=$((fail+1)); }
+cand "99 none,91 none," 0 "not armed, no verdict -> no disarm call"
+grep -q "disable-auto" "$w/gh.log" && { echo "FAIL: candidates: needless disarm"; fail=$((fail+1)); } || { echo "ok: candidates: no needless disarm"; pass=$((pass+1)); }
+ARMED99=true DISARMFAIL=1 cand "" 1 "armed with no verdict and the disarm fails -> skipped, step fails"
 LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
 ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
 

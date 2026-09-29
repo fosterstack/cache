@@ -100,11 +100,13 @@ jobs:
           ONLY_PR: ${{ inputs.pr }}
           FORCE: ${{ inputs.force }}
         # A verdict is the LATEST dependabot-reviewer check from the App on the head: success or
-        # failure. `neutral` (a re-review that did not finish) or none means review this hour, and
-        # so does a `success` whose PR is not armed (success must mean armed; a lost write can
-        # break that, and this heals it). A FORCED re-review invalidates the old verdict HERE,
-        # before any later setup step can fail: auto-merge off, then a `neutral` check; if either
-        # cannot be done the PR is skipped this hour with its old verdict intact.
+        # failure. `neutral` (a re-review that did not finish) or none means review this hour.
+        # Before a PR is reviewed, no auto-merge may be armed that its CURRENT verdict does not
+        # support: a head without a success verdict that is armed (a cancelled run between arming
+        # and publishing) is disarmed HERE, before any later setup step can fail. A FORCED
+        # re-review invalidates the old verdict here too: auto-merge off, then a `neutral` check.
+        # If any of that cannot be done the PR is skipped this hour and the step fails. A success
+        # verdict whose PR someone disarmed is left alone: a human's disarm is not re-armed.
         # A lookup that fails is never "nothing to do": the PR is skipped this hour and the step
         # fails, so the run counts as unfinished (the failure streak sees it).
         run: |
@@ -127,14 +129,19 @@ jobs:
                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || [ -z "$prior" ]; then
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue
             fi
-            if [ "$prior" = success ] && [ "$FORCE" != "true" ]; then
+            if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
+              echo "PR #$n ${sha:0:7}: verdict already $prior"; continue
+            elif [ "$prior" = none ] || [ "$prior" = neutral ]; then
+              # no verdict supports an armed merge on this head: turn it off before anything else
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                 echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
               fi
-              [ "$armed" = false ] || { echo "PR #$n ${sha:0:7}: verdict success, auto-merge armed"; continue; }
-              echo "PR #$n ${sha:0:7}: verdict success but NOT armed — reviewing again"
-            elif [ "$prior" = failure ] && [ "$FORCE" != "true" ]; then
-              echo "PR #$n ${sha:0:7}: verdict failure (held)"; continue
+              if [ "$armed" != false ]; then
+                if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
+                  echo "::error::PR #$n: armed with no verdict and could not be disarmed — skipped this hour"; lookup_failed=1; continue
+                fi
+                echo "PR #$n: armed with no current verdict — auto-merge turned off before review"
+              fi
             elif [ "$FORCE" = "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
               if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null 2>&1 \
                    && [ "$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null')" != false ]; then
