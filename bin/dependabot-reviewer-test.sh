@@ -155,6 +155,24 @@ check("mask: model ids and bearer tokens redacted in findings",
       e is None and "claude-" not in json.dumps(f) and "some-private-model-7" not in json.dumps(f)
       and "abcdefghij" not in json.dumps(f) and "<model-id>" in f[0]["title"], f)
 
+# --- answer_of: how the answer ended (first live run: every primary answer cut off mid-JSON)
+class B:
+    def __init__(self, t, x=""): self.type, self.text = t, x
+class U:
+    output_tokens = 2048
+class M:
+    def __init__(self, blocks, stop, usage=True): self.content, self.stop_reason, self.usage = blocks, stop, (U() if usage else None)
+t, m, e = r.answer_of(M([B("text", '{"findings": [{"severity": "check", "title": "Action internals upgraded to ')], "max_tokens"))
+check("answer_of: cut off at the token limit is an explicit error (live run 36640316796)",
+      e and "token limit" in e and m["stop_reason"] == "max_tokens" and m["output_tokens"] == 2048, (e, m))
+t, m, e = r.answer_of(M([B("thinking")], "max_tokens"))
+check("answer_of: reasoning only, no text, at the limit -> the token-limit error", e and "token limit" in e, (e, m))
+t, m, e = r.answer_of(M([B("thinking")], "end_turn"))
+check("answer_of: no text block -> 'no text', block types recorded", e and "no text" in e and m["blocks"] == ["thinking"], (e, m))
+t, m, e = r.answer_of(M([B("thinking"), B("text", '{"findings": []}')], "end_turn", usage=False))
+check("answer_of: reasoning then a complete answer -> the text only, no error", e is None and t == '{"findings": []}', (t, e))
+check("the reader budget is well above the 2048 that cut every answer", r.MAX_TOKENS >= 16000, r.MAX_TOKENS)
+
 # --- decide: mechanical
 clean = lambda n: {"reader": n, "findings": [{"severity": "check", "title": "t"}], "error": None}
 brk = {"reader": "B", "findings": [{"severity": "breaks-us", "title": "removed foo"}], "error": None}
@@ -226,7 +244,17 @@ class _Messages:
     def create(self, model, max_tokens, messages):
         if model == "boom":
             raise RuntimeError("connection reset")
-        return _Msg(os.environ["ANSWER_" + model])
+        m = _Msg(os.environ["ANSWER_" + model])
+        if model == "cut":
+            m.stop_reason = "max_tokens"
+        return m
+    def stream(self, model, max_tokens, messages):   # the reader streams (no non-streaming ceiling)
+        outer = self
+        class _S:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get_final_message(self): return outer.create(model, max_tokens, messages)
+        return _S()
 class Anthropic:
     def __init__(self): self.messages = _Messages()
 EOF
@@ -307,6 +335,9 @@ A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" PRIOR=success act; expect "force
 grep -q -- "-f conclusion=neutral" "$w/gh.log" && ! grep -q -- "-f conclusion=failure" "$w/gh.log" \
   && { echo "ok: act: only a neutral check after a failed disarm"; pass=$((pass+1)); } || { echo "FAIL: act: neutral-only"; fail=$((fail+1)); }
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "first-time reader error -> NO check at all (row 75)" "-check-runs" ERRORED=1
+ANSWER_cut="$CLEAN" A="$CLEAN" B="$CLEAN" MB=cut act; expect "a complete-looking answer that stopped at the token limit -> error, no merge (live run)" "-pr merge" "-check-runs" ERRORED=1
+grep -q '"stop_reason": "max_tokens"' "$w/run/work/pr-99/reader-AUDITOR_MODEL_FALLBACK.json" && grep -q "token limit" "$w/run/work/pr-99/reader-AUDITOR_MODEL_FALLBACK.json" \
+  && { echo "ok: act: the evidence records the stop reason and says 'token limit'"; pass=$((pass+1)); } || { echo "FAIL: act: stop reason in evidence"; fail=$((fail+1)); }
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act
 grep -c "check-runs" "$w/gh.log" | grep -qx 2 && grep -q -- "-f conclusion=neutral" "$w/gh.log" \
   && { echo "ok: act: a success write that errored is superseded by neutral (lost response, round-3 P1)"; pass=$((pass+1)); } \
