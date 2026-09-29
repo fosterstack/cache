@@ -7,16 +7,25 @@ name: scan
 # scanner set runs. It builds the candidate through the EXACT same build +
 # image-assembly stages the release chain uses (mode: snapshot/pr), so the
 # bytes scanned here are the bytes the chain would ship, then runs every
-# scanner in .github/policy/scanners.json. Decision row 45: the CI gate is
-# TWO scanners with DIFFERENT DATABASES (different aggregations, overlapping
-# upstream sources) — grype (Anchore's own DB) scans both platform children
-# of every OCI variant AND every dist archive; osv-scanner (OSV.dev via
-# osv-scalibr) scans the three variants on both architectures (six children)
-# AND the Go modules. Findings block at ANY severity with the published VEX
-# document as grype's only exception; a scanner that cannot be installed or
-# run is a PIPELINE failure (red), never a silent clean pass (see
-# bin/install-scanner.sh). Trivy left this gate (row 45) for the daily
-# main-candidate rescan; Snyk (row 44) runs there too.
+# scanner in the `pr_gate` list of .github/policy/scanners.json.
+#
+# Decision row 57 (supersedes row 45 for this gate): TWO scanners with
+# DIFFERENT DATABASES (different aggregations, overlapping upstream
+# sources) — grype (Anchore's own database) scans both platform children of
+# every OCI variant AND every dist archive; Amazon Inspector scans the same
+# six children (inspector-sbomgen inventories each image on the runner;
+# only the SBOM goes to inspector-scan:ScanSbom). Go code: govulncheck
+# (its own job), the symbol-level authority. Trivy and OSV-Scanner left
+# this gate. Findings block at ANY severity with the published VEX document
+# as the only exception (grype via --vex; Inspector via bin/inspector-gate.py,
+# which applies the same document). A scanner that cannot be installed or
+# run, or that inventories zero packages (row 53), is a PIPELINE failure
+# (red), never a silent clean pass (bin/install-scanner.sh).
+#
+# Inspector needs no stored secret: the scanner job alone requests
+# id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
+# (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
+# ratified Sep 29, decision row 73; the role's trust names those subjects).
 #
 # The aggregation job at the bottom is named `scan`; that is the one
 # context to add to the main-protection ruleset as a required check.
@@ -27,27 +36,36 @@ on:
     branches: [main]
     tags: ['v*']
 
-# The caller's grant must COVER what the reusable stages REQUEST, or the
-# run is a startup_failure with zero jobs (release-chain-pr.yml learned
-# this the hard way). id-token/attestations/packages are unused in
-# snapshot/pr mode but must be grantable for the shared stage files. Fork
-# and Dependabot events have write scopes silently downgraded to read by
-# GitHub; the snapshot/pr path needs none of them, so those events still
-# build and scan.
+# Workflow default: read only. Each job states what it needs. The two
+# reusable-stage callers (build, assemble) grant what the shared stage files
+# REQUEST, or the run is a startup_failure with zero jobs
+# (release-chain-pr.yml learned this the hard way); id-token/attestations/
+# packages are unused in snapshot/pr mode. The scanner job requests
+# id-token: write for the Inspector leg's role assumption. Dependabot-
+# triggered runs get a read-only token that the permissions key can raise
+# (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
+# events are downgraded and need none of this to build and scan.
 permissions:
   contents: read
-  id-token: write
-  attestations: write
-  packages: write
 
 jobs:
   build:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
 
   assemble:
     needs: build
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
     uses: ./.github/workflows/stage-image.yml
     with:
       mode: pr
@@ -63,25 +81,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: read
-        run: echo "list=$(jq -c '.scanners' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
+        run: echo "list=$(jq -c '.pr_gate' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
 
   scanner:
     name: scan (${{ matrix.scanner }})
     needs: [build, assemble, scanners]
     runs-on: ubuntu-latest
+    # id-token: write is for the Inspector leg's role assumption and is the
+    # only place in this workflow's own jobs that requests it.
     permissions:
       contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
+    env:
+      INSPECTOR_ROLE: arn:aws:iam::821302803867:role/fosterstack-cache-inspector-scan
+      INSPECTOR_REGION: us-east-1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Both gate scanners read the OCI images; only grype scans the
-      # release archives. osv-scanner also scans the Go modules from the
-      # checkout. So: the image download + daemon load run for both; the
-      # archive download + verify run for grype only.
+      # release archives. So: the image download + daemon load run for
+      # both; the archive download + verify run for grype only.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: oci-candidate
@@ -103,12 +126,12 @@ jobs:
           (cd dist && sha256sum -c /tmp/expected-checksums.txt --ignore-missing --strict)
 
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
-        run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
+        run: ./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'
 
       # Load every (variant, platform) child into the docker daemon. buildx
       # writes an OCI-layout tar the scanners do not read directly, so each
-      # single-arch child is loaded by ref. Both gate scanners scan these six
-      # children (grype by ref; osv-scanner by `scan image`).
+      # single-arch child is loaded by ref. Both gate scanners scan these
+      # six children by ref.
       - name: load every variant/platform child into the docker daemon
         run: |
           set -euo pipefail
@@ -129,46 +152,64 @@ jobs:
         run: |
           set -euo pipefail
           grype db update >/dev/null 2>&1 || true
-          while read -r ref; do
-            echo "grype: ${ref}"
-            grype "docker:${ref}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
-          done < /tmp/refs.txt
-          for a in dist/*.tar.gz; do
-            echo "grype archive: $a"
-            grype "file:${a}" --fail-on negligible --vex .vex/fosterstack-cache.openvex.json
-          done
+          echo "## Grype" >> "$GITHUB_STEP_SUMMARY"
+          # bin/grype-scan.sh: one pass per target, counts, VEX, zero packages = red.
+          g() { ./bin/grype-scan.sh "$1" "$2"; }
+          while read -r ref; do g "docker:${ref}" "${ref##*:}"; done < /tmp/refs.txt
+          for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}"; done
 
-      - name: OSV-Scanner (all six image children + the Go modules — OSV.dev)
-        if: matrix.scanner == 'osv-scanner'
+      - name: Amazon Inspector — assume the ScanSbom-only role (OIDC; no stored secret)
+        if: matrix.scanner == 'inspector'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.INSPECTOR_ROLE }}
+          aws-region: ${{ env.INSPECTOR_REGION }}
+          role-session-name: cache-pr-scan-${{ github.run_id }}
+
+      - name: Amazon Inspector scan every loaded image
+        if: matrix.scanner == 'inspector'
         run: |
-          set -uo pipefail
-          # osv-scanner is the second vote, on a DIFFERENT database (OSV.dev
-          # via osv-scalibr/deps.dev; grype uses Anchore's own aggregation).
-          # Per decision row 45 it scans the three OCI variants on both
-          # architectures (the six loaded children) via `scan image` AND the Go
-          # modules via `scan source`; grype covers the release archives.
-          # Exit 0 = clean, 1 = vulnerabilities found (block), anything else =
-          # could-not-run (also red, never a clean pass). A finding grype did
-          # not also raise goes to the audit lane's VEX review. osv-scanner has
-          # no OpenVEX flag; it reports no VEX-adjudicated image package today
-          # (the distroless base carries none), and if it ever did, that would
-          # go to the audit lane too.
-          rc=0
+          set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
+          # inspector-sbomgen inventories each child on the runner; only the
+          # SBOM leaves the runner. Identical inventories (a variant's two
+          # platform children usually match) are sent once and their verdict
+          # reused. bin/inspector-gate.py prints the package count, applies
+          # the published VEX, and returns 0 clean / 1 findings / 2 did not run.
+          mkdir -p /tmp/insp; rc=0; sent=0
+          echo "## Amazon Inspector" >> "$GITHUB_STEP_SUMMARY"
           while read -r ref; do
-            echo "osv-scanner image: ${ref}"
-            osv-scanner scan image "${ref}" || { c=$?; [ "$c" -gt "$rc" ] && rc=$c; }
+            tag="${ref##*:}"
+            if ! inspector-sbomgen container --image "${ref}" --outfile "/tmp/insp/${tag}.sbom.json" --disable-progress-bar; then
+              echo "::error::inspector-sbomgen could not inventory ${ref} — did not run, not a clean pass" >&2; rc=2; continue
+            fi
+            key=$(jq -S '[.components[]? | .purl // (.name + "@" + (.version // ""))] | sort' "/tmp/insp/${tag}.sbom.json" | sha256sum | cut -c1-16)
+            if [ ! -f "/tmp/insp/${key}.findings.json" ]; then
+              aws inspector-scan scan-sbom --sbom "file:///tmp/insp/${tag}.sbom.json" --output-format CYCLONE_DX_1_5 \
+                > "/tmp/insp/${key}.findings.json" || { echo "::error::inspector-scan:ScanSbom failed for ${ref} — did not run, not a clean pass" >&2; rm -f "/tmp/insp/${key}.findings.json"; rc=2; continue; }
+              sent=$((sent+1))
+            fi
+            out=$(python3 bin/inspector-gate.py "${tag}" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json" .vex/fosterstack-cache.openvex.json) && c=0 || c=$?
+            echo "${out}"; echo "- ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
+            [ "$c" -gt "$rc" ] && rc=$c
           done < /tmp/refs.txt
-          echo "osv-scanner source: go.mod tools/requirements/go.mod"
-          osv-scanner scan source go.mod tools/requirements/go.mod || { c=$?; [ "$c" -gt "$rc" ] && rc=$c; }
-          if [ "$rc" -eq 0 ]; then
-            echo "osv-scanner: no known vulnerabilities in the six image children or the Go modules"
-          elif [ "$rc" -eq 1 ]; then
-            echo "::error::OSV-Scanner found vulnerabilities. Fix the dependency, or (for a finding grype did not raise) publish a VEX statement via the audit-lane review." >&2
-            exit 1
-          else
-            echo "::error::OSV-Scanner could not run (exit ${rc}) — scanner-could-not-run is a pipeline failure, not a finding and not a clean pass." >&2
-            exit 1
+          echo "- SBOMs assessed: ${sent} (identical inventories assessed once)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::Amazon Inspector found vulnerabilities. Fix the dependency, or publish a VEX statement via the audit-lane review." >&2
+          elif [ "$rc" -ge 2 ]; then
+            echo "::error::Amazon Inspector did not run on every image — a pipeline failure, not a finding and not a clean pass." >&2
           fi
+          exit "$rc"
+
+      # The SBOMs and the raw ScanSbom responses, as evidence of what was
+      # inventoried and what came back (kept even when the leg is red).
+      - name: keep the Inspector SBOMs and responses
+        if: always() && matrix.scanner == 'inspector'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: inspector-evidence
+          path: /tmp/insp/
+          if-no-files-found: warn
+          retention-days: 30
 
   scan:
     name: scan
@@ -180,4 +221,4 @@ jobs:
         run: |
           r='${{ needs.scanner.result }}'
           echo "aggregate scanner result: ${r}"
-          [ "${r}" = "success" ] || { echo "::error::one or more scanners failed, were cancelled, or were skipped (result=${r}). Per policy nothing is clean unless every scanner in scanners.json runs and passes." >&2; exit 1; }
+          [ "${r}" = "success" ] || { echo "::error::one or more scanners failed, were cancelled, or were skipped (result=${r}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }
