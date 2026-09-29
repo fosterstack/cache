@@ -1,0 +1,251 @@
+name: Dependabot reviewer
+
+# Register row 75: three dependency lanes. The auditor (cron) opens CVE bumps; Dependabot opens
+# "latest" bumps; THIS workflow judges Dependabot MAJORS so the owner never reads a major again.
+# Patch and minor bumps are untouched (dependabot-auto-merge.yml arms them on green).
+#
+# Why hourly-from-main and never on a PR event: GitHub gives a Dependabot-triggered run no
+# repository secrets, so a job that fires when Dependabot opens a PR can never hold the
+# federated model identity. Same wall as the review gate, same answer: a scheduled sweep that
+# runs main's copy of this file, checks out main only, and reads PR data through the API.
+#
+# What it does for each open Dependabot PR into main that contains a major and has no
+# `dependabot-reviewer` check from the App on its head yet:
+#   1. gathers, with no model involved: the PR diff, the upstream release notes for every
+#      version between old and new, and every line of ours that names the dependency
+#      (bin/dependabot-reviewer.py gather);
+#   2. sends that bundle to TWO readers through the same federation the auditor uses, and gets
+#      ranked findings tagged breaks-us / check / noise — never a verdict (row 51);
+#   3. decides MECHANICALLY (bin/dependabot-reviewer.py decide): no breaks-us from either
+#      reader => publish the check as success and arm squash auto-merge (the required checks
+#      still gate the actual merge; the App has no bypass); any breaks-us => publish the check
+#      as failure, hold, and open ONE issue with both readers' findings for the ccode queue;
+#      a reader error => no check, retry next hour, an issue after three failed runs in a row.
+#
+# It scans nothing, opens no PRs, edits nothing. Two App tokens with disjoint permissions:
+# checks:write (publish the check) and contents+pull-requests (arm auto-merge), mirroring the
+# split between agent-review-gate.yml and auditor.yml. The job token opens the held issue
+# (the App has no Issues permission). No vendor or model name appears anywhere here, in the
+# check, or in the issue (row 48); model ids live only in the `agent` environment's secrets.
+#
+# `dependabot-reviewer` is deliberately NOT a required check: it only ever runs on majors, and a
+# required check would block every human PR.
+
+on:
+  schedule:
+    - cron: '23 * * * *'   # hourly (owner: not every ten minutes)
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Review only this PR number (blank = every eligible open Dependabot PR)'
+        required: false
+        default: ''
+      force:
+        description: 'Re-review even if the head already carries a dependabot-reviewer check'
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: dependabot-reviewer
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: dependabot reviewer
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      id-token: write        # mint the federated identity token
+      contents: read
+      pull-requests: read    # list PRs, read diffs
+      issues: write          # the held / reader-failure issues
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: mint the App token for the check run (checks:write only)
+        id: app-checks
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-checks: write
+
+      - name: find open Dependabot PRs into main that contain a major and have no verdict yet
+        id: candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-checks.outputs.token }}
+          APP_SLUG: ${{ steps.app-checks.outputs.app-slug }}
+          ONLY_PR: ${{ inputs.pr }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/work"
+          gh pr list --base main --state open --author 'app/dependabot' --limit 100 \
+            --json number,title,body,headRefOid > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
+          : > "$RUNNER_TEMP/work/candidates.txt"
+          jq -c '.[]' "$RUNNER_TEMP/work/prs.json" | while read -r pr; do
+            n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
+            [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
+            jq -r .body <<<"$pr" > "$RUNNER_TEMP/work/body-$n.txt"
+            python3 bin/dependabot-reviewer.py updates --title "$(jq -r .title <<<"$pr")" \
+              --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json" || continue
+            [ "$(jq '[.[]|select(.major)]|length' "$RUNNER_TEMP/work/updates-$n.json")" != "0" ] || { echo "PR #$n: no major — the patch/minor lane's"; continue; }
+            if [ "$FORCE" != "true" ]; then
+              have=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
+                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | length") || have=x
+              [ "$have" = "0" ] || { echo "PR #$n ${sha:0:7}: already has a verdict (or unreadable: $have)"; continue; }
+            fi
+            echo "$n $sha" >> "$RUNNER_TEMP/work/candidates.txt"
+            echo "PR #$n ${sha:0:7}: major, no verdict — will review"
+          done
+          count=$(wc -l < "$RUNNER_TEMP/work/candidates.txt" | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          [ "$count" != "0" ] || echo "::notice::nothing to review this hour"
+
+      - name: mint the federated identity token
+        if: steps.candidates.outputs.count != '0'
+        # Straight from the runner's OIDC endpoint: no third-party action holds the token.
+        run: |
+          set -euo pipefail
+          tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value)
+          [ -n "$tok" ] && [ "$tok" != "null" ] || { echo "::error::no identity token"; exit 1; }
+          echo "::add-mask::$tok"
+          printf '%s' "$tok" > "$RUNNER_TEMP/identity-token"
+          echo "ANTHROPIC_IDENTITY_TOKEN_FILE=$RUNNER_TEMP/identity-token" >> "$GITHUB_ENV"
+          # Print ONLY the claims the federation rule matches on (never the token) so a 401 at
+          # exchange time is diagnosable against the rule.
+          python3 - "$tok" <<'PY'
+          import base64, json, sys
+          seg = sys.argv[1].split('.')[1]
+          claims = json.loads(base64.urlsafe_b64decode(seg + '=' * (-len(seg) % 4)))
+          print('OIDC identity claims (federation-rule inputs):', json.dumps({k: claims.get(k) for k in
+                ('sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id')}))
+          PY
+
+      - name: install the pinned SDK (the auditor's hash-pinned set)
+        if: steps.candidates.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
+          python3 -c 'from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile; print("sdk ready")'
+
+      - name: mint the App token for arming auto-merge (contents + pull-requests)
+        if: steps.candidates.outputs.count != '0'
+        id: app-merge
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: gather, read twice, decide, act — one PR at a time
+        if: steps.candidates.outputs.count != '0'
+        id: act
+        env:
+          # the reviewer's own federation rule; the other identifiers are shared with the auditor
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.REVIEWER_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
+          AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_TOKEN: ${{ steps.app-checks.outputs.token }}
+          MERGE_TOKEN: ${{ steps.app-merge.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          W="$RUNNER_TEMP/work"; fail=0; merged=0; held=0; errored=0
+          publish() { # <sha> <conclusion> <summary>
+            GH_TOKEN="$CHECKS_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=dependabot-reviewer \
+              -f head_sha="$1" -f status=completed -f conclusion="$2" -f details_url="$RUN_URL" \
+              -f "output[title]=dependabot reviewer: $2" -f "output[summary]=$3" >/dev/null
+          }
+          while read -r n sha; do
+            d="$W/pr-$n"; mkdir -p "$d"
+            echo "::group::PR #$n ${sha:0:7}"
+            # 1. gather (no model)
+            if ! python3 bin/dependabot-reviewer.py gather --pr "$n" --updates "$W/updates-$n.json" --out "$d"; then
+              echo "::warning::PR #$n: gather failed; retry next hour"; errored=$((errored+1)); echo "::endgroup::"; continue
+            fi
+            # 2. two readers, independently
+            for reader in AUDITOR_MODEL_PRIMARY AUDITOR_MODEL_FALLBACK; do
+              python3 bin/dependabot-reviewer.py read --bundle "$d/bundle.md" \
+                --prompt .github/policy/dependabot-reviewer-prompt.txt --model-env "$reader" --out "$d/reader-$reader.json" \
+                || echo "::warning::PR #$n: reader $reader did not complete"
+            done
+            # 3. mechanical decision
+            python3 bin/dependabot-reviewer.py decide --reader "$d/reader-AUDITOR_MODEL_PRIMARY.json" \
+              --reader "$d/reader-AUDITOR_MODEL_FALLBACK.json" --out "$d/decision.json" || { echo "::warning::PR #$n: decide failed"; errored=$((errored+1)); echo "::endgroup::"; continue; }
+            decision=$(jq -r .decision "$d/decision.json")
+            names=$(jq -r '[.[]|select(.major)|"\(.name) \(.from)→\(.to)"]|join(", ")' "$W/updates-$n.json")
+            # 4. act
+            case "$decision" in
+              merge)
+                if publish "$sha" success "Two independent readers found no documented change that breaks a line of ours ($names). Auto-merge armed; the required checks still gate the merge. Evidence: this run's artifact."; then
+                  if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$n"; then merged=$((merged+1)); echo "PR #$n: merge (auto-merge armed)"
+                  else echo "::error::PR #$n: check published but auto-merge could not be armed"; fail=1; fi
+                else echo "::error::PR #$n: could not publish the check"; fail=1; fi ;;
+              hold)
+                publish "$sha" failure "A reader found a documented change that breaks a line of ours ($names). Held; see the issue. Evidence: this run's artifact." || fail=1
+                title="major bump held: $names"
+                {
+                  echo "Dependabot PR #$n (\`${sha:0:7}\`) is a major bump that a reader says breaks a line of ours."
+                  echo "This is the ccode queue's, not the owner's: fix our side, then the bump merges on its own."
+                  echo; echo "Run: $RUN_URL"; echo
+                  echo "## breaks-us findings"; echo
+                  jq -r '.breaks_us[] | "- **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
+                  echo; echo "## every finding, both readers"; echo
+                  jq -r '.readers[] | .findings[] | "- [\(.severity)] \(.title) — `\(.our_line)`"' "$d/decision.json"
+                  echo; echo "## fix on our side"; echo; echo "_(ccode fills this in: the change to our line, or why the finding is wrong, then re-runs the reviewer with force=true)_"
+                } > "$d/issue.md"
+                existing=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+                             --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+                if [ -n "$existing" ]; then gh issue edit "$existing" --body-file "$d/issue.md" >/dev/null && echo "PR #$n: hold (issue #$existing updated)" || fail=1
+                else gh issue create --title "$title" --body-file "$d/issue.md" >/dev/null && echo "PR #$n: hold (issue opened)" || fail=1; fi
+                held=$((held+1)) ;;
+              *)
+                echo "::warning::PR #$n: $(jq -r '.reason // "reader error"' "$d/decision.json") — no check posted; retry next hour"
+                errored=$((errored+1)) ;;
+            esac
+            echo "::endgroup::"
+          done < "$W/candidates.txt"
+          {
+            echo "### Dependabot reviewer"; echo
+            echo "- reviewed: $(wc -l < "$W/candidates.txt" | tr -d ' ') PR(s); merge armed: $merged; held: $held; reader errors: $errored"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "errored=$errored" >> "$GITHUB_OUTPUT"
+          [ "$errored" = "0" ] || fail=1
+          exit "$fail"
+
+      - name: reader failures three runs in a row => one issue for the ccode queue
+        if: ${{ failure() && steps.act.outputs.errored != '0' && steps.act.outputs.errored != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          prior=$(gh run list --workflow dependabot-reviewer.yml --limit 3 --json conclusion,databaseId \
+                    --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID}) | .conclusion] | .[0:2]")
+          [ "$(jq -r 'length' <<<"$prior")" = "2" ] && [ "$(jq -r 'all(. == "failure")' <<<"$prior")" = "true" ] || { echo "not three in a row yet"; exit 0; }
+          title="dependabot reviewer: reader failures"
+          body="The reviewer's readers failed on three consecutive hourly runs; majors are not being judged. Latest: $RUN_URL. Check the run log's 'OIDC identity claims' line against the federation rule and the SDK step."
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body "$body" >/dev/null; else gh issue create --title "$title" --body "$body" >/dev/null; fi
+
+      - name: upload the evidence (bundles, both readers' answers, decisions)
+        if: ${{ always() && steps.candidates.outputs.count != '0' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependabot-reviewer-${{ github.run_id }}
+          path: ${{ runner.temp }}/work
+          if-no-files-found: ignore

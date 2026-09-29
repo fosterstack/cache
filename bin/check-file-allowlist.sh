@@ -84,6 +84,8 @@ ALLOW_PATTERNS=(
   '^bin/install-scanner-test\.sh$'
   '^bin/required-check-guard\.sh$'
   '^bin/required-check-guard-test\.sh$'
+  '^bin/dependabot-reviewer\.py$'
+  '^bin/dependabot-reviewer-test\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
   '^bin/grype-scan\.sh$'
