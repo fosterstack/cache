@@ -20,6 +20,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -29,10 +31,11 @@ import (
 )
 
 const (
-	reqFile    = "requirements/requirements.yaml"
-	schemaFile = "requirements/schema.json"
-	mapFile    = "test-evidence/mappings.yaml"
-	outFile    = "docs/quality/traceability.md"
+	reqFile      = "requirements/requirements.yaml"
+	schemaFile   = "requirements/schema.json"
+	mapFile      = "test-evidence/mappings.yaml"
+	unmappedFile = "test-evidence/unmapped.yaml"
+	outFile      = "docs/quality/traceability.md"
 )
 
 type AC struct {
@@ -71,6 +74,15 @@ type File struct {
 		Note          string `yaml:"note"`
 	} `yaml:"baseline"`
 	Requirements []Requirement `yaml:"requirements"`
+}
+
+// Unmapped is test-evidence/unmapped.yaml: acceptance criteria with no test, each a residual with its
+// reason for the owner's decision (REQ-REL-007-AC1). The file is optional; absent means none.
+type Unmapped struct {
+	Unmapped []struct {
+		AC     string `yaml:"ac"`
+		Reason string `yaml:"reason"`
+	} `yaml:"unmapped"`
 }
 
 type Mappings struct {
@@ -134,14 +146,16 @@ func runCLI(args []string) (code int) {
 		if len(args) != 3 {
 			fatal("usage: requirements verify-freeze <version>")
 		}
-		if reason := verifyFreeze(args[2]); reason != "" {
+		fixedAt, reason := verifyFreeze(args[2])
+		if reason != "" {
 			fatal("frozen baseline inconsistent: %s", reason)
 		}
-		fmt.Printf("frozen baseline %s is consistent with requirements.yaml\n", args[2])
+		fmt.Printf("frozen baseline %s is consistent with %s at %s\n", args[2], reqFile, fixedAt)
 		return 0
 	case "check":
 		f, m := mustLoad()
 		mustBeValid(f, m)
+		mustTrace(f, m)
 		want := render(f, m)
 		got, err := os.ReadFile(outFile)
 		if err != nil {
@@ -202,57 +216,75 @@ type frozenBaseline struct {
 	Version         string     `yaml:"version"`
 	Approved        bool       `yaml:"approved"`
 	ApprovedOn      string     `yaml:"approved_on"`
+	FixedAt         string     `yaml:"fixed_at"`
 	RequirementsSHA string     `yaml:"requirements_sha256"`
 	FrozenFrom      string     `yaml:"frozen_from"`
 	BlockingACs     []frozenAC `yaml:"release_blocking_acs"`
 	Note            string     `yaml:"note"`
 }
 
-// verifyFreeze re-derives the hash and blocking set from requirements.yaml
-// and asserts the frozen baseline for the version matches EXACTLY - stale
-// hash, dropped/added/re-phased/wrong-method entry, or an empty set all
-// fail. Approval is NOT checked here: this runs in PR CI where the
-// baseline is legitimately unapproved (R07). Returns the reason on
-// mismatch, empty string on success.
-func verifyFreeze(version string) string {
-	raw, err := os.ReadFile(reqFile)
-	if err != nil {
-		return fmt.Sprintf("read %s: %v", reqFile, err)
-	}
-	sum := fmt.Sprintf("%x", sha256.Sum256(raw))
-	var f File
-	if err := yaml.Unmarshal(raw, &f); err != nil {
-		return fmt.Sprintf("parse %s: %v", reqFile, err)
-	}
+// gitOutput runs git and returns its stdout: a seam, so tests can stand in a failing git.
+var gitOutput = func(args ...string) ([]byte, error) {
+	return exec.Command("git", args...).Output()
+}
+
+var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// requirementsAt reads the requirements file as of a commit, never from the working tree.
+func requirementsAt(commit string) ([]byte, error) {
+	return gitOutput("show", commit+":"+reqFile)
+}
+
+// verifyFreeze checks a frozen baseline against the requirements file AS OF THE COMMIT THE BASELINE
+// IS FIXED AT (register row 80, REQ-REL-006): never against main's current file, so editing the
+// requirements on main never turns a frozen baseline red. The baseline must name a full commit id
+// (fixed_at) that is a commit and holds the requirements file; the recorded hash and the complete
+// release-blocking set must match that file exactly. Approval is NOT checked here: this runs in PR CI
+// where a baseline may be legitimately unapproved (R07). Returns the reason on mismatch, "" on success.
+func verifyFreeze(version string) (fixedAt, reason string) {
 	path := "requirements/releases/" + version + ".yaml"
 	fraw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Sprintf("read %s: %v", path, err)
+		return "", fmt.Sprintf("read %s: %v", path, err)
 	}
 	var fb frozenBaseline
 	if err := yaml.Unmarshal(fraw, &fb); err != nil {
-		return fmt.Sprintf("parse %s: %v", path, err)
+		return "", fmt.Sprintf("parse %s: %v", path, err)
 	}
 	if fb.Version != version {
-		return fmt.Sprintf("%s: version is %q, want %q", path, fb.Version, version)
+		return fb.FixedAt, fmt.Sprintf("%s: version is %q, want %q", path, fb.Version, version)
 	}
-	if fb.RequirementsSHA != sum {
-		return fmt.Sprintf("%s: requirements_sha256 %s does not match the current requirements.yaml (%s) - re-freeze after the change", path, fb.RequirementsSHA, sum)
+	if !fullCommit.MatchString(fb.FixedAt) {
+		return fb.FixedAt, fmt.Sprintf("%s: fixed_at %q is not a full commit id - a frozen baseline must name the commit it is fixed at", path, fb.FixedAt)
+	}
+	if kind, err := gitOutput("cat-file", "-t", fb.FixedAt); err != nil || strings.TrimSpace(string(kind)) != "commit" {
+		return fb.FixedAt, fmt.Sprintf("%s: fixed_at %s is not a commit in this repository", path, fb.FixedAt)
+	}
+	raw, err := requirementsAt(fb.FixedAt)
+	if err != nil {
+		return fb.FixedAt, fmt.Sprintf("cannot read %s at %s: %v", reqFile, fb.FixedAt, err)
+	}
+	var f File
+	if err := yaml.Unmarshal(raw, &f); err != nil {
+		return fb.FixedAt, fmt.Sprintf("parse %s at %s: %v", reqFile, fb.FixedAt, err)
+	}
+	if sum := fmt.Sprintf("%x", sha256.Sum256(raw)); fb.RequirementsSHA != sum {
+		return fb.FixedAt, fmt.Sprintf("%s: requirements_sha256 %s does not match %s at %s (%s)", path, fb.RequirementsSHA, reqFile, fb.FixedAt, sum)
 	}
 	want := blockingSet(f)
 	if len(want) == 0 {
-		return "requirements.yaml declares no release-blocking ACs - refusing an empty required set"
+		return fb.FixedAt, reqFile + " at " + fb.FixedAt + " declares no release-blocking ACs - refusing an empty required set"
 	}
 	if len(fb.BlockingACs) != len(want) {
-		return fmt.Sprintf("%s: release_blocking_acs has %d entries, the requirements derive %d", path, len(fb.BlockingACs), len(want))
+		return fb.FixedAt, fmt.Sprintf("%s: release_blocking_acs has %d entries, the requirements derive %d", path, len(fb.BlockingACs), len(want))
 	}
 	for i, w := range want {
 		g := fb.BlockingACs[i]
 		if g.ID != w.ID || g.Method != w.Method || g.Phase != w.Phase {
-			return fmt.Sprintf("%s: release_blocking_acs[%d] is {%s %s %s}, the requirements derive {%s %s %s}", path, i, g.ID, g.Method, g.Phase, w.ID, w.Method, w.Phase)
+			return fb.FixedAt, fmt.Sprintf("%s: release_blocking_acs[%d] is {%s %s %s}, the requirements derive {%s %s %s}", path, i, g.ID, g.Method, g.Phase, w.ID, w.Method, w.Phase)
 		}
 	}
-	return ""
+	return fb.FixedAt, ""
 }
 
 // yamlMarshal is yaml.Marshal behind a seam: marshaling freeze's fixed
@@ -279,9 +311,15 @@ func freeze(args []string) {
 			fatal("chdir repo root: %v", err)
 		}
 	}
-	raw, err := os.ReadFile(reqFile)
+	// the baseline is fixed at HEAD and freezes HEAD's committed file, never the working tree (row 80)
+	headOut, err := gitOutput("rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
-		fatal("read %s: %v", reqFile, err)
+		fatal("resolve the commit to fix (a frozen baseline names one): %v", err)
+	}
+	head := strings.TrimSpace(string(headOut))
+	raw, err := requirementsAt(head)
+	if err != nil {
+		fatal("read %s at %s: %v", reqFile, head, err)
 	}
 	sum := sha256.Sum256(raw)
 	var f File
@@ -293,6 +331,7 @@ func freeze(args []string) {
 		Version:         version,
 		Approved:        false,
 		ApprovedOn:      "",
+		FixedAt:         head,
 		RequirementsSHA: fmt.Sprintf("%x", sum),
 		FrozenFrom:      reqFile,
 		BlockingACs:     blocking,
@@ -312,7 +351,7 @@ func freeze(args []string) {
 	if err := os.WriteFile(path, []byte(header+string(body)), 0o644); err != nil {
 		fatal("write %s: %v", path, err)
 	}
-	fmt.Printf("wrote %s (%d release-blocking ACs, UNAPPROVED)\n", path, len(blocking))
+	fmt.Printf("wrote %s (%d release-blocking ACs, fixed at %s, UNAPPROVED)\n", path, len(blocking), head)
 }
 
 // goTestExists reports whether a Go test function with the given name is
@@ -487,12 +526,62 @@ func validate(f File, m Mappings) []string {
 				if !goTestExists(dir, name) {
 					fail("mapping for %s references go-test %s in %s, which does not exist", mp.AC, name, dir)
 				}
+			case "shell-test":
+				if msg := shellTestProblem(ev.Ref, mp.AC); msg != "" {
+					fail("mapping for %s: %s", mp.AC, msg)
+				}
 			case "workflow-job", "manual", "inspection", "red-run":
 				if strings.TrimSpace(ev.Ref) == "" {
 					fail("mapping for %s: empty %s ref", mp.AC, ev.Type)
 				}
 			default:
 				fail("mapping for %s: unknown evidence type %q", mp.AC, ev.Type)
+			}
+		}
+	}
+
+	// 3b. Every test file in the repository that declares acceptance criteria (`# proves:`, `//` in Go)
+	// names real ones, each mapped back to that file (REQ-REL-007-AC2): a shell-test mapping naming the
+	// file, or for a Go test a go-test mapping in its package directory.
+	shellMapped := map[string]map[string]bool{} // file -> ACs
+	goMapped := map[string]map[string]bool{}    // package dir -> ACs
+	for _, mp := range m.Mappings {
+		for _, ev := range mp.Evidence {
+			key, into := ev.Ref, shellMapped
+			if ev.Type == "go-test" {
+				key, _, _ = strings.Cut(ev.Ref, ":")
+				into = goMapped
+			} else if ev.Type != "shell-test" {
+				continue
+			}
+			if into[key] == nil {
+				into[key] = map[string]bool{}
+			}
+			into[key][mp.AC] = true
+		}
+	}
+	files, walkErrs := testFiles()
+	for _, e := range walkErrs {
+		fail("%s", e)
+	}
+	for _, file := range files {
+		declared, problems, err := declaredACs(file)
+		if err != nil {
+			fail("%s cannot be read: %v", file, err)
+		}
+		for _, p := range problems {
+			fail("%s", p)
+		}
+		for _, ac := range declared {
+			switch {
+			case !seenAC[ac]:
+				fail("%s declares %s, which is not an AC", file, ac)
+			case strings.HasSuffix(file, "_test.go"):
+				if !goMapped[filepath.Dir(file)][ac] {
+					fail("%s declares %s but no go-test mapping names a test in %s", file, ac, filepath.Dir(file))
+				}
+			case !shellMapped[file][ac]:
+				fail("%s declares %s but no shell-test mapping names it", file, ac)
 			}
 		}
 	}
@@ -540,6 +629,143 @@ func validate(f File, m Mappings) []string {
 		}
 	}
 
+	return errs
+}
+
+// testFileRe is what a test file is named (anywhere in the repository): *-test.sh, test_*.py, *_test.go.
+var testFileRe = regexp.MustCompile(`(^|/)([A-Za-z0-9._-]+-test\.sh|test_[A-Za-z0-9._-]+\.py|[A-Za-z0-9._-]+_test\.go)$`)
+
+// declRe finds a declaration line: a comment (`#`, or `//` in Go) whose first word is `proves`.
+var declRe = regexp.MustCompile(`^\s*(#|//)\s*proves\b(.*)$`)
+
+// acIDRe is one acceptance-criterion id.
+var acIDRe = regexp.MustCompile(`^REQ-[A-Z0-9]+-[0-9]{3}-AC[0-9]+$`)
+
+// testFiles lists every regular file in the repository named like a test (never inside .git); a
+// directory that cannot be read is an error, never "holds no tests".
+func testFiles() (files, errs []string) {
+	_ = filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s cannot be read while looking for test files: %v", path, err))
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if d.Type().IsRegular() && testFileRe.MatchString(path) {
+			files = append(files, filepath.ToSlash(path))
+		}
+		return nil
+	})
+	return files, errs // WalkDir visits in lexical order
+}
+
+// declaredACs reads a test file's declarations: `proves: <AC>[, <AC>...]`, optionally followed by an em
+// dash and prose. A `proves` comment in any other shape is a problem, never ignored; a file that cannot
+// be read is an error, never "declares nothing".
+func declaredACs(file string) (acs, problems []string, err error) {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, line := range strings.Split(string(b), "\n") {
+		m := declRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		rest, ok := strings.CutPrefix(m[2], ":")
+		ids, _, _ := strings.Cut(rest, "—")
+		tokens := strings.FieldsFunc(ids, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+		valid := ok && len(tokens) > 0
+		for _, tok := range tokens {
+			valid = valid && acIDRe.MatchString(tok)
+		}
+		if !valid {
+			problems = append(problems, fmt.Sprintf("%s:%d: a malformed `proves` declaration (want `proves: <AC>[, <AC>]`, optional prose after —): %q", file, i+1, strings.TrimSpace(line)))
+			continue
+		}
+		acs = append(acs, tokens...)
+	}
+	return acs, problems, nil
+}
+
+// shellTestProblem is why a shell-test ref cannot prove ac, or "" when it can.
+func shellTestProblem(ref, ac string) string {
+	if !testFileRe.MatchString(ref) || filepath.Clean(ref) != ref || strings.HasPrefix(ref, "..") || filepath.IsAbs(ref) {
+		return fmt.Sprintf("shell-test %s is not a test file in this repository", ref)
+	}
+	if st, err := os.Lstat(ref); err != nil || !st.Mode().IsRegular() {
+		return fmt.Sprintf("shell-test %s does not exist", ref)
+	}
+	declared, _, err := declaredACs(ref)
+	if err != nil {
+		return fmt.Sprintf("shell-test %s cannot be read: %v", ref, err)
+	}
+	for _, d := range declared {
+		if d == ac {
+			return ""
+		}
+	}
+	return fmt.Sprintf("%s does not declare %s (a `# proves: %s` line)", ref, ac, ac)
+}
+
+// mustTrace fails `check` unless every acceptance criterion has a test mapping or is a residual
+// listed with its reason (REQ-REL-007-AC1); the residuals are printed for the owner.
+func mustTrace(f File, m Mappings) {
+	var u Unmapped
+	if _, err := os.Stat(unmappedFile); err == nil {
+		if err := unmarshalStrict(unmappedFile, &u); err != nil {
+			fatal("%v", err)
+		}
+	}
+	errs := traceGaps(f, m, u)
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "requirements:", e)
+		}
+		panic(exitCode(1))
+	}
+	for _, r := range u.Unmapped {
+		fmt.Printf("requirements: residual %s (no test) — %s\n", r.AC, strings.TrimSpace(r.Reason))
+	}
+}
+
+func traceGaps(f File, m Mappings, u Unmapped) []string {
+	var errs []string
+	known, mapped, listed := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, r := range f.Requirements {
+		for _, ac := range r.ACs {
+			known[ac.ID] = true
+		}
+	}
+	for _, mp := range m.Mappings {
+		if len(mp.Evidence) > 0 {
+			mapped[mp.AC] = true
+		}
+	}
+	for _, r := range u.Unmapped {
+		switch {
+		case !known[r.AC]:
+			errs = append(errs, fmt.Sprintf("residual %s is not an AC", r.AC))
+		case listed[r.AC]:
+			errs = append(errs, fmt.Sprintf("residual %s is listed twice", r.AC))
+		case mapped[r.AC]:
+			errs = append(errs, fmt.Sprintf("residual %s is also mapped - remove it from %s", r.AC, unmappedFile))
+		case strings.TrimSpace(r.Reason) == "":
+			errs = append(errs, fmt.Sprintf("residual %s gives no reason", r.AC))
+		}
+		listed[r.AC] = true
+	}
+	for _, r := range f.Requirements {
+		if r.Deprecated {
+			continue
+		}
+		for _, ac := range r.ACs {
+			if !mapped[ac.ID] && !listed[ac.ID] {
+				errs = append(errs, fmt.Sprintf("%s has no test mapping and is not a listed residual (%s)", ac.ID, unmappedFile))
+			}
+		}
+	}
 	return errs
 }
 

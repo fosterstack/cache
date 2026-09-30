@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 48 |
-| Acceptance criteria | 71 |
+| Active requirements | 51 |
+| Acceptance criteria | 77 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 67 |
+| ACs with mapped evidence | 73 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 5 |
+| Confidence: implementation-only | 8 |
 
 ## Cache protocol
 
@@ -559,6 +559,39 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC2 | Given the scanner installer; when it installs any scanner; then the download is pinned to a specific version and verified against a repo-pinned sha256, and a scanner that cannot be installed or verified exits as a labeled pipeline failure rather than a finding or a silent clean pass | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set, and any finding opens a tracking issue within 24 hours | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC4 | Given a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor); when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that release | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-REL-005 — Every CI action pinned to a commit digest
+
+Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/agent/bin/check-action-pins.py; .github/workflows/agent-review-gate.yml; .github/workflows/hygiene.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 4 item(s) |
+
+### REQ-REL-006 — Frozen release baselines stay fixed
+
+A frozen release baseline shall be fixed at a named commit, and the freeze check shall compare it with the requirements file as of that commit, never with main's current file; editing the requirements on main shall never turn a frozen baseline red; a frozen baseline shall change only by an owner-ratified amendment recorded in the register, applied as a new fixed commit.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: tools/requirements/main.go; requirements/releases/; .github/workflows/requirements.yml; .github/workflows/stage-admission.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-006-AC1 | Given a frozen release baseline; when the freeze check runs; then the baseline names the commit it is fixed at, and it is compared with the requirements file as of that commit; a baseline that names no commit, names a commit that cannot be read, or does not match the file at that commit fails. For v0.2.1 that commit is 326c459. | unit |  | approved | 7 item(s) |
+| REQ-REL-006-AC2 | Given a requirement or AC added or edited on main after a version is frozen; when the freeze check runs for that version; then it passes and the frozen baseline is unchanged; the new requirement or AC is introduced in the next version and appears when that version is frozen | unit |  | approved | 3 item(s) |
+| REQ-REL-006-AC3 | Given a frozen release baseline; when it is changed; then the change is an owner-ratified amendment recorded in the register, applied as a new fixed commit (as PR | inspection |  | approved | 1 item(s) |
+
+### REQ-REL-007 — Every acceptance criterion traces to a test
+
+Every acceptance criterion shall name the test that proves it, and every test that declares an acceptance criterion shall name one that exists; an acceptance criterion with no test shall fail the requirements check unless it is listed as a residual with its reason for the owner's decision.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: tools/requirements/main.go; test-evidence/mappings.yaml; test-evidence/unmapped.yaml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-007-AC1 | Given the requirements and their mappings; when the requirements check runs; then every acceptance criterion has a mapping to evidence, or is listed as a residual with a reason; an unlisted acceptance criterion with no mapping, a residual without a reason, a residual for an unknown or already-mapped criterion all fail | unit |  | approved | 5 item(s) |
+| REQ-REL-007-AC2 | Given a test file anywhere in the repository (named *-test.sh, test_*.py or *_test.go) that declares acceptance criteria on a comment line `# proves: <AC>[, <AC>]` (`//` in Go, optional prose after an em dash), or a shell-test mapping to such a file; when the requirements check runs; then every declared criterion exists and is mapped back to that file (a shell-test mapping naming the file, or for Go a go-test mapping in its package), every shell-test mapping names an existing test file that declares the criterion, and a malformed declaration fails; anything else fails | unit |  | approved | 4 item(s) |
 
 ## Licensing
 
