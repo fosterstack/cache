@@ -15,6 +15,8 @@ case_() {
   if python3 "$here/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
   else failn=$((failn+1)); echo "FAIL $name → $got (want $expect)"; fi
+  # VERBOSE=1: show why each case was judged (the first finding), to prove a red is the intended red
+  if [ -n "${VERBOSE:-}" ]; then python3 "$here/check-action-pins.py" "$d" 2>&1 | head -1 | sed "s#^#     #" || true; fi
 }
 head='on: push
 jobs:
@@ -39,9 +41,6 @@ case_ local-reusable       ok  "on: push
 jobs:
   j:
     uses: ./.github/workflows/w.yml"
-case_ local-action         ok  "$head
-    steps:
-      - uses: ./.github/actions/x" "mkdir -p .github/actions/x; printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@$SHA # v7.0.1\n' > .github/actions/x/action.yml"
 case_ docker-digest        ok  "$head
     steps:
       - uses: docker://alpine@$DIG"
@@ -60,6 +59,23 @@ case_ with-image-is-data   ok  "$head
       - uses: actions/checkout@$SHA # v7.0.1
         with:
           image: ghcr.io/x/y@\${{ env.D }}"
+
+case_ job-named-image      ok  "on: push
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA # v7.0.1"
+case_ env-image-is-data    ok  "$head
+    env:
+      image: alpine:3.20
+    steps:
+      - run: true"
+case_ service-scalar-digest ok "$head
+    services:
+      db: postgres@$DIG
+    steps:
+      - run: true"
 
 # --- the handoff's four: all red
 case_ tag                  bad "$head
@@ -173,6 +189,94 @@ case_ unparsable           bad "$head
     steps:
       - uses: actions/checkout@$SHA # v7.0.1
      bad: [indent"
+
+
+# --- adversarial round 1 (audits/2026-09-30/pins/round1): all red
+case_ local-action-refused bad "$head
+    steps:
+      - uses: ./.github/actions/x" "mkdir -p .github/actions/x; printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@$SHA # v7.0.1\n' > .github/actions/x/action.yml"
+case_ local-action-upper   bad "$head
+    steps:
+      - uses: ./.github/actions/x" "mkdir -p .github/actions/x; printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n' > .github/actions/x/ACTION.YML"
+case_ upper-manifest-found bad "$head
+    steps:
+      - run: true" "mkdir -p tools/a; printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v7\n' > tools/a/Action.Yml"
+case_ local-workflow-step  bad "$head
+    steps:
+      - uses: ./.github/workflows/w.yml"
+case_ job-named-with-cont  bad "on: push
+jobs:
+  with:
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    steps:
+      - run: true"
+case_ job-named-with-uses  bad "on: push
+jobs:
+  with:
+    uses: octo/repo/.github/workflows/x.yml@main"
+case_ job-named-env-cont   bad "on: push
+jobs:
+  env:
+    runs-on: ubuntu-latest
+    container: alpine:3.20
+    steps:
+      - run: true"
+case_ service-named-with   bad "$head
+    services:
+      with:
+        image: redis:7
+    steps:
+      - run: true"
+case_ service-scalar-tag   bad "$head
+    services:
+      db: redis:7
+    steps:
+      - run: true"
+case_ service-expression   bad "$head
+    services:
+      db: \${{ matrix.svc }}
+    steps:
+      - run: true"
+case_ services-expression  bad "$head
+    services: \${{ fromJSON('{\"db\":{\"image\":\"redis:7\"}}') }}
+    steps:
+      - run: true"
+case_ service-no-image     bad "$head
+    services:
+      db:
+        ports: ['5432']
+    steps:
+      - run: true"
+case_ expression-key       bad "$head
+    steps:
+      - \"\${{ 'uses' }}\": actions/checkout@v7"
+case_ expression-key-action bad "$head
+    steps:
+      - run: true" "mkdir -p tools/a; printf 'runs:\n  using: composite\n  steps:\n    - \"\${{ '\\''uses'\\'' }}\": actions/checkout@v7\n' > tools/a/action.yaml"
+case_ comment-in-string    bad "$head
+    steps:
+      - {uses: actions/checkout@$SHA, name: \"hello # v7.0.1 \"} # v0.0.0"
+case_ comment-after-other  bad "$head
+    steps:
+      - uses: actions/checkout@$SHA
+        name: x # v7.0.1"
+case_ anchor-only-pinned   bad "$head
+    steps:
+      - &s uses: actions/checkout@$SHA # v7.0.1"
+case_ uses-odd-position    bad "on: push
+uses: actions/checkout@v7
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true"
+case_ symlinked-workflow   bad "$head
+    steps:
+      - run: true" "printf 'on: push\n' > ../elsewhere-\$\$.yml; ln -s \"\$(cd .. && pwd)/elsewhere-\$\$.yml\" .github/workflows/s.yml"
+case_ docker-action-image  bad "$head
+    steps:
+      - run: true" "mkdir -p tools/d; printf 'runs:\n  using: docker\n  image: docker://alpine:3.20\n' > tools/d/action.yml"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
