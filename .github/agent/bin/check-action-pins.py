@@ -27,13 +27,16 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              no local action (./path at step level): its action.yml is read from the workspace at
              run time, where a script can rewrite it after this check has passed.
   services:  a mapping; each service is an image string or a mapping with an image.
+  container:/service `options:` is refused: the runner passes it to docker before the image, where
+             it can name a different image (this repo uses none).
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
              image is still a mutable reference. Action identity is case-folded (GitHub resolves
-             owner/repo case-insensitively); input names are matched as the runner exports them
-             (INPUT_<name upper-cased, spaces to underscores>, never trimmed), and two inputs that
-             export to the same variable are a finding (the later would win); buildx runs only its
+             owner/repo case-insensitively). Such an action's `with:` must be a mapping whose every
+             input name is on EXECUTOR_ALLOWED, written exactly (so no Unicode, spacing or case
+             variant can export to the same INPUT_ variable, and inputs like buildx `endpoint`,
+             `append` or kind `config` that can re-set the image are refused); buildx runs only its
              default docker-container driver or the docker driver (kubernetes and remote bring
              images of their own, e.g. qemu.image); its driver-opts is read one option per line, as
              the action reads it — and each line as CSV, as buildx reads it, so exactly one image=
@@ -45,20 +48,18 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Exempt by position only: the other inputs under a step's or a job's `with:` and the variables under
   a workflow's, job's or step's `env:` are data passed along (the image a scanner scans), not
   something the runner resolves as an action or a container.
-  --verify-tags  each `# vX` comment must resolve, through the GitHub API, to the pinned commit;
-             and each pinned action's own action.yml at that commit is read: node is fine, a Docker
-             action must name its image docker://…@sha256 (never a Dockerfile), and a composite
-             action's steps are held to these same rules, recursively (no expression keys, no
-             `./` action: GitHub resolves that in the CALLER's workspace, where a script can write
-             it). action.yaml is read only when action.yml is definitively absent (HTTP 404); any
-             other API error is a finding. The only exclusion is TRANSITIVE_EXCLUSIONS below.
+  --verify-tags  each `# vX` comment must resolve, through the GitHub API, to the pinned commit.
+
+The boundary (owner, Sep 30): we pin every reference WE write — every `uses:`, every image we name,
+every image input we pass. What a pinned commit references on its own (e.g. the container image
+inside ossf/scorecard-action's action.yaml) is fixed by our pin to that commit and is that action's
+supply chain, not ours; it is not read here, and no action is excepted by name.
 
 Outside this check (the review pass covers it): images a `run:` script pulls through a shell variable,
 and binaries a pinned action downloads by version.
 
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
-import base64
 import csv
 import json
 import os
@@ -66,7 +67,6 @@ import pathlib
 import re
 import subprocess
 import sys
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -83,17 +83,20 @@ DOCKER_USES = re.compile(rf"docker://{REF}{DIGEST}")
 IMAGE = re.compile(rf"(docker://)?{REF}{DIGEST}")
 LOCAL_WORKFLOW = re.compile(r"\./\.github/workflows/([A-Za-z0-9._-]+\.ya?ml)")
 COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
+# executor actions (owner/repo, lower case) -> the only input names they may be given (positively
+# classified; anything else fails closed)
+EXECUTOR_ALLOWED = {
+    "docker/setup-qemu-action": {"image", "platforms"},
+    "docker/setup-buildx-action": {"driver", "driver-opts", "name", "platforms", "use", "install",
+                                   "version", "buildkitd-flags", "cleanup", "keep-state"},
+    "helm/kind-action": {"version", "node_image", "cluster_name", "wait", "verbosity", "kubectl_version",
+                         "registry", "registry_image", "registry_name", "registry_port",
+                         "registry_enable_delete", "install_only", "ignore_failed_clean", "kubeconfig"},
+}
 # action (owner/repo, lower case) -> how it must be given its container image: (input, prefix)
 EXECUTOR_INPUTS = {
     "docker/setup-qemu-action": ("image", ""),
     "docker/setup-buildx-action": ("driver-opts", "image="),
-}
-# pinned actions whose own action.yml names a container image by tag — the only exclusions, each
-# with its reason (register row 78: "a documented exclusion in the check's own allowlist").
-TRANSITIVE_EXCLUSIONS = {
-    "ossf/scorecard-action": "its action.yaml names docker://ghcr.io/ossf/scorecard-action:<tag>, and "
-    "the Scorecard API accepts published results (the README badge) only from the official action, "
-    "so it cannot be replaced by a docker:// digest without dropping publish_results — the owner's call",
 }
 
 
@@ -221,15 +224,19 @@ def check_image(where, node, bad):
         bad.append(f"{where}: image not pinned by digest: {v!r}")
 
 
-def inputs_of(step):
-    """The step's `with:` inputs as {name: [value nodes]}, each name as the runner exports it
-    (INPUT_<upper-cased, spaces to underscores>): "node image" and node_image are one input."""
-    got = {}
-    for k, w in step.value if isinstance(step, yaml.MappingNode) else []:
-        if key_of(k) == "with" and isinstance(w, yaml.MappingNode):
-            for kk, v in w.value:
-                if isinstance(kk, yaml.ScalarNode):
-                    got.setdefault(kk.value.replace(" ", "_").lower(), []).append(v)
+def executor_inputs(where, action, step, bad):
+    """The executor action's inputs, or None (and a finding) when any is not positively classified."""
+    withs = [w for k, w in (step.value if isinstance(step, yaml.MappingNode) else []) if key_of(k) == "with"]
+    if any(not isinstance(w, yaml.MappingNode) for w in withs) or len(withs) > 1:
+        bad.append(f"{where}: {action} `with:` must be one plain mapping")
+        return None
+    got, allowed = {}, EXECUTOR_ALLOWED[action]
+    for k, v in withs[0].value if withs else []:
+        name = k.value if isinstance(k, yaml.ScalarNode) else None
+        if name not in allowed or name in got:
+            bad.append(f"{where}: {action} input {name!r} is not one this check classifies (or is repeated)")
+            return None
+        got[name] = [v]
     return got
 
 
@@ -242,28 +249,21 @@ def check_kind(where, got, bad):
     if "registry" in got and (one("registry") or "").lower() != "false":
         if not IMAGE.fullmatch(one("registry_image") or ""):
             bad.append(f"{where}: helm/kind-action with a registry needs registry_image by digest")
-    if "config" in got:
-        bad.append(f"{where}: helm/kind-action `config` is refused (a kind config file can name node images)")
-    if "cloud_provider" in got and (one("cloud_provider") or "").lower() != "false":
-        bad.append(f"{where}: helm/kind-action `cloud_provider` is refused (it runs a component of its own)")
+    # `config` (a kind config file can name node images) and `cloud_provider` (a component of its own)
+    # are not on EXECUTOR_ALLOWED, so executor_inputs() has already refused them
 
 
 def check_executor(where, action, step, bad):
     action = action.lower()
-    got = inputs_of(step)
-    if action in EXECUTOR_INPUTS or action == "helm/kind-action":
-        dup = sorted(n for n, vs in got.items() if len(vs) > 1)
-        if dup:
-            return bad.append(f"{where}: {action} inputs that the runner exports to one variable: {', '.join(dup)}")
+    if action not in EXECUTOR_ALLOWED:
+        return
+    got = executor_inputs(where, action, step, bad)
+    if got is None:
+        return
     if action == "helm/kind-action":
         return check_kind(where, got, bad)
-    need = EXECUTOR_INPUTS.get(action)
-    if not need:
-        return
-    inp, prefix = need
+    inp, prefix = EXECUTOR_INPUTS[action]  # every other executor action names its image input here
     if action == "docker/setup-buildx-action":
-        if "append" in got:
-            return bad.append(f"{where}: {action} with `append` (it can re-set a node's image) is refused")
         drivers = [v.value if isinstance(v, yaml.ScalarNode) else None for v in got.get("driver", [])]
         if drivers == ["docker"]:
             return  # the docker driver runs no BuildKit container of its own
@@ -322,12 +322,11 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
 
 
 def verify_pins(pins):
-    """--verify-tags: each `# vX` comment is the pinned commit, and what each pinned action runs is
-    itself pinned (its action.yml at that commit, recursively through composite actions)."""
+    """--verify-tags: each `# vX` comment names the pinned commit."""
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
         return ["--verify-tags: GH_TOKEN is not set"]
-    found, tags, seen = [], {}, set()
+    found, tags = [], {}
 
     def api(path):
         req = urllib.request.Request(f"https://api.github.com/{path}",
@@ -351,73 +350,6 @@ def verify_pins(pins):
                 tags[(slug, tag)] = f"unresolvable ({e.__class__.__name__})"
         if tags[(slug, tag)] != sha:
             found.append(f"{where}: {slug} {tag} is {tags[(slug, tag)]}, not the pinned {sha}")
-        found += transitive(api, where, repo, sha, seen, 0)
-    return found
-
-
-def transitive(api, where, repo, sha, seen, depth):
-    """What the pinned action at `repo`@`sha` runs, read from its own action.yml."""
-    parts = repo.split("/")
-    slug, sub = "/".join(parts[:2]), "/".join(parts[2:])
-    if (slug.lower(), sub, sha) in seen:
-        return []
-    seen.add((slug.lower(), sub, sha))
-    at = f"{where} -> {repo}@{sha[:12]}"
-    if depth > 8:
-        return [f"{at}: composite actions nested more than 8 deep"]
-    text = None
-    for name in ("action.yml", "action.yaml"):  # the runner's own precedence
-        path = urllib.parse.quote(f"{sub}/{name}" if sub else name)
-        try:
-            doc = api(f"repos/{slug}/contents/{path}?ref={sha}")
-            text = base64.b64decode(doc["content"]).decode("utf-8", "replace")
-            break
-        except urllib.error.HTTPError as e:
-            if e.code != 404:  # only a definitive absence moves on to the next name
-                return [f"{at}: {name} unreadable (HTTP {e.code})"]
-        except Exception as e:  # fail closed
-            return [f"{at}: {name} unreadable ({e.__class__.__name__})"]
-    if text is None:
-        return [f"{at}: no action.yml/action.yaml at the pinned commit"]
-    try:
-        runs = yaml.load(text, Loader=StrLoader)["runs"]
-        using = runs["using"]
-    except Exception as e:
-        return [f"{at}: its action.yml does not parse ({e.__class__.__name__})"]
-    if isinstance(using, str) and re.fullmatch(r"node[0-9]+", using):
-        return []
-    if using == "docker":
-        image = runs.get("image")
-        if isinstance(image, str) and DOCKER_USES.fullmatch(image):
-            return []
-        if slug.lower() in TRANSITIVE_EXCLUSIONS:
-            return []  # the documented exclusion (see TRANSITIVE_EXCLUSIONS for why)
-        return [f"{at}: a Docker action whose image is not a docker://…@sha256 digest: {image!r}"]
-    if using != "composite":
-        return [f"{at}: runs.using {using!r} is not node, docker or composite"]
-    found = []
-    try:
-        nodes = yaml.compose(text, Loader=StrLoader)
-        steps = next(v for k, v in nodes.value if key_of(k) == "runs")
-        steps = next(v for k, v in steps.value if key_of(k) == "steps").value
-    except Exception as e:
-        return [f"{at}: composite steps unreadable ({e.__class__.__name__})"]
-    walk(nodes, [], [], found, at)  # every key in the fetched manifest, at any depth (no expressions)
-    for i, step in enumerate(steps):
-        keys = step.value if isinstance(step, yaml.MappingNode) else []
-        for k, u in keys:
-            if key_of(k) != "uses":
-                continue
-            v = u.value if isinstance(u, yaml.ScalarNode) else None
-            sw = f"{at}.runs.steps[{i}].uses"
-            m = ACTION.fullmatch(v or "")
-            if m:
-                check_executor(sw, "/".join(v.split("@")[0].split("/")[:2]), step, found)
-                found += transitive(api, sw, v.rsplit("@", 1)[0], m.group(2), seen, depth + 1)
-            elif v and v.startswith("./"):
-                found.append(f"{sw}: a local action, resolved in the caller's workspace at run time: {v!r}")
-            elif not (v and DOCKER_USES.fullmatch(v)) or "${{" in (v or ""):
-                found.append(f"{sw}: not a full commit digest: {v!r}")
     return found
 
 
@@ -442,8 +374,11 @@ def check_file(tree, rel, pins, bad):
         elif key == "container":
             if not isinstance(node, yaml.MappingNode):
                 check_image(where, node, bad)
-            elif not any(key_of(k) == "image" for k, _ in node.value):
-                bad.append(f"{where}: container mapping without an image")  # its image: is checked by position
+            else:
+                if not any(key_of(k) == "image" for k, _ in node.value):
+                    bad.append(f"{where}: container mapping without an image")  # its image: is checked by position
+                if any(key_of(k) == "options" for k, _ in node.value):
+                    bad.append(f"{where}.options: refused (docker options can name another image)")
         elif key == "services":
             if not isinstance(node, yaml.MappingNode):
                 bad.append(f"{where}: services is not a mapping")
@@ -454,6 +389,8 @@ def check_file(tree, rel, pins, bad):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
                         bad.append(f"{sw}: service without an image")
+                    if any(key_of(kk) == "options" for kk, _ in v.value):
+                        bad.append(f"{sw}.options: refused (docker options can name another image)")
                     for vv in imgs:
                         check_image(f"{sw}.image", vv, bad)
                 else:

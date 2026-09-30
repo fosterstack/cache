@@ -466,6 +466,37 @@ case_ buildx-container-ok  ok  "$head
           driver: docker-container
           driver-opts: image=moby/buildkit@$DIG"
 
+# --- adversarial round 7 (audits/2026-09-30/pins/round7): anything not positively classified fails
+case_ buildx-unicode-input bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@$DIG
+          driver-optſ: image=moby/buildkit:latest"
+case_ buildx-endpoint      bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@$DIG
+          endpoint: --driver-opt=image=moby/buildkit:latest"
+case_ qemu-with-expression bad "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0
+        with: \${{ fromJSON(vars.X) }}"
+case_ service-options      bad "$head
+    services:
+      db:
+        image: alpine@$DIG
+        options: --entrypoint /bin/sh alpine:latest
+    steps:
+      - run: true"
+case_ container-options    bad "$head
+    container:
+      image: alpine@$DIG
+      options: --cpus 1
+    steps:
+      - run: true"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"

@@ -104,7 +104,7 @@ class VerifyTags(unittest.TestCase):
                        {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}, **CHECKOUT})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(M.urllib.request, "urlopen", f):
             self.assertEqual(M.verify_pins(self.PIN * 2), [])
-        self.assertEqual(len(seen), 2)  # one tag lookup and one manifest read per pinned action
+        self.assertEqual(len(seen), 1)  # one lookup per (repo, tag)
 
     def test_annotated_tag_is_followed_to_its_commit(self):
         f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "tag", "sha": TAGOBJ}},
@@ -134,98 +134,6 @@ class VerifyTags(unittest.TestCase):
             (msg,) = M.verify_pins(pin)
         self.assertIn("unresolvable (HTTPError)", msg)
         self.assertTrue(seen[0].endswith("/git/ref/tags/v7.0.1%2Bx"), seen)
-
-
-class Transitive(unittest.TestCase):
-    """What a pinned action runs, read from its own action.yml at the pinned commit."""
-
-    def judge(self, table, repo="o/a", sha=SHA):
-        f, seen = api(table)
-        out = M.transitive(lambda path: json.loads(f(type("R", (), {"full_url": "https://api.github.com/" + path})())
-                                                   .read()), "w", repo, sha, set(), 0)
-        return out, seen
-
-    def test_node_action(self):
-        self.assertEqual(self.judge(manifest("o/a", SHA, NODE))[0], [])
-
-    def test_action_yaml_name_and_subpath(self):
-        out, _ = self.judge(manifest("o/a", SHA, NODE, name="action.yaml", sub="x/y"), repo="o/a/x/y")
-        self.assertEqual(out, [])
-
-    def test_docker_by_digest(self):
-        t = manifest("o/a", SHA, "runs:\n  using: docker\n  image: docker://alpine@sha256:" + "a" * 64 + "\n")
-        self.assertEqual(self.judge(t)[0], [])
-
-    def test_docker_by_tag(self):
-        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: docker\n  image: docker://alpine:3.20\n"))[0]
-        self.assertIn("a Docker action whose image is not a docker://…@sha256 digest: 'docker://alpine:3.20'", msg)
-
-    def test_docker_from_a_dockerfile(self):
-        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: docker\n  image: Dockerfile\n"))[0]
-        self.assertIn("'Dockerfile'", msg)
-
-    def test_documented_exclusion(self):
-        t = manifest("OSSF/scorecard-action", SHA, "runs:\n  using: docker\n  image: docker://ghcr.io/ossf/scorecard-action:v2\n")
-        self.assertEqual(self.judge(t, repo="OSSF/scorecard-action")[0], [])
-
-    def test_unknown_runtime(self):
-        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: wasm\n"))[0]
-        self.assertIn("runs.using 'wasm' is not node, docker or composite", msg)
-
-    def test_no_manifest(self):
-        (msg,) = self.judge({})[0]
-        self.assertIn("no action.yml/action.yaml at the pinned commit", msg)
-
-    def test_an_api_error_is_not_an_absence(self):
-        err = urllib_error().HTTPError("u", 503, "Unavailable", {}, None)
-        t = {f"/repos/o/a/contents/action.yml?ref={SHA}": err, **manifest("o/a", SHA, NODE, name="action.yaml")}
-        (msg,) = self.judge(t)[0]
-        self.assertIn("action.yml unreadable (HTTP 503)", msg)
-        t = {f"/repos/o/a/contents/action.yml?ref={SHA}": OSError("reset")}
-        (msg,) = self.judge(t)[0]
-        self.assertIn("action.yml unreadable (OSError)", msg)
-
-    def test_manifest_without_runs(self):
-        (msg,) = self.judge(manifest("o/a", SHA, "name: x\n"))[0]
-        self.assertIn("its action.yml does not parse (KeyError)", msg)
-
-    def test_composite_recurses_and_checks_every_step(self):
-        comp = ("runs:\n  using: composite\n  steps:\n"
-                f"    - uses: o/b@{OTHER}\n"
-                "    - uses: ./sub\n"
-                "    - \"${{ 'uses' }}\": docker://alpine:latest\n"
-                "    - uses: docker://alpine@sha256:" + "b" * 64 + "\n"
-                "    - uses: o/c@v1\n"
-                "    - uses: ../escape\n"
-                f"    - uses: docker/setup-qemu-action@{OTHER}\n"
-                "    - run: true\n      shell: bash\n")
-        t = {**manifest("o/a", SHA, comp), **manifest("o/b", OTHER, NODE),
-             **manifest("docker/setup-qemu-action", OTHER, NODE)}
-        out, _ = self.judge(t)
-        self.assertEqual(len(out), 5, out)
-        self.assertIn(".runs.steps[2]: a mapping key holding an expression", out[0])  # the whole-manifest walk
-        self.assertIn("runs.steps[1].uses: a local action, resolved in the caller's workspace at run time: './sub'", out[1])
-        self.assertIn("runs.steps[4].uses: not a full commit digest: 'o/c@v1'", out[2])
-        self.assertIn("runs.steps[5].uses: not a full commit digest: '../escape'", out[3])
-        self.assertIn("docker/setup-qemu-action runs a container image of its own", out[4])
-
-    def test_expression_key_anywhere_in_a_fetched_manifest(self):
-        comp = ("runs:\n  using: composite\n  steps:\n"
-                f"    - uses: o/b@{OTHER}\n      with:\n        \"${{{{ 'append' }}}}\": x\n")
-        out, _ = self.judge({**manifest("o/a", SHA, comp), **manifest("o/b", OTHER, NODE)})
-        self.assertEqual(len(out), 1, out)
-        self.assertIn(".runs.steps[0].with: a mapping key holding an expression", out[0])
-
-    def test_composite_seen_once_and_depth_bounded(self):
-        loop = f"runs:\n  using: composite\n  steps:\n    - uses: o/a@{SHA}\n"
-        self.assertEqual(self.judge(manifest("o/a", SHA, loop))[0], [])  # a cycle is read once
-        f, _ = api({})
-        (msg,) = M.transitive(f, "w", "o/a", SHA, set(), 9)
-        self.assertIn("composite actions nested more than 8 deep", msg)
-
-    def test_composite_steps_unreadable(self):
-        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: composite\n"))[0]
-        self.assertIn("composite steps unreadable (StopIteration)", msg)
 
 
 class Main(unittest.TestCase):
