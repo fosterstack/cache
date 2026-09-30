@@ -35,6 +35,10 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              (case-insensitive, never trimmed); buildx's driver-opts is read one option per line, as
              the action reads it — and each line as CSV, as buildx reads it, so exactly one image=
              may appear across them all — and its `append` (which can re-set a node's image) is refused.
+             helm/kind-action: node_image, if given, by digest (unset, kind's own default for the
+             pinned kind version is digest-pinned in the kind binary); `registry: true` needs a
+             registry_image by digest (its default is registry:2); `config` (a kind config file can
+             name node images) and `cloud_provider: true` (an extra component) are refused.
   Exempt by position only: the other inputs under a step's or a job's `with:` and the variables under
   a workflow's, job's or step's `env:` are data passed along (the image a scanner scans), not
   something the runner resolves as an action or a container.
@@ -225,13 +229,30 @@ def inputs_of(step):
     return got
 
 
+def check_kind(where, got, bad):
+    def one(name):
+        vals = got.get(name, [])
+        return vals[0].value if len(vals) == 1 and isinstance(vals[0], yaml.ScalarNode) else None
+    if "node_image" in got and not IMAGE.fullmatch(one("node_image") or ""):
+        bad.append(f"{where}: helm/kind-action node_image not pinned by digest")
+    if "registry" in got and (one("registry") or "").lower() != "false":
+        if not IMAGE.fullmatch(one("registry_image") or ""):
+            bad.append(f"{where}: helm/kind-action with a registry needs registry_image by digest")
+    if "config" in got:
+        bad.append(f"{where}: helm/kind-action `config` is refused (a kind config file can name node images)")
+    if "cloud_provider" in got and (one("cloud_provider") or "").lower() != "false":
+        bad.append(f"{where}: helm/kind-action `cloud_provider` is refused (it runs a component of its own)")
+
+
 def check_executor(where, action, step, bad):
     action = action.lower()
+    got = inputs_of(step)
+    if action == "helm/kind-action":
+        return check_kind(where, got, bad)
     need = EXECUTOR_INPUTS.get(action)
     if not need:
         return
     inp, prefix = need
-    got = inputs_of(step)
     if action == "docker/setup-buildx-action":
         if "append" in got:
             return bad.append(f"{where}: {action} with `append` (it can re-set a node's image) is refused")

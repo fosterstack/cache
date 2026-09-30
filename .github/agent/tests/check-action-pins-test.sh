@@ -403,6 +403,41 @@ case_ buildx-csv-broken    bad "$head
         with:
           driver-opts: '\"image=moby/buildkit@$DIG'"
 
+# --- adversarial round 5 (audits/2026-09-30/pins/round5)
+case_ kind-default-ok      ok  "$head
+    steps:
+      - uses: helm/kind-action@$SHA # v1.15.0
+        with:
+          cluster_name: x
+          registry: 'false'"
+case_ kind-pinned-ok       ok  "$head
+    steps:
+      - uses: helm/kind-action@$SHA # v1.15.0
+        with:
+          node_image: kindest/node@$DIG
+          registry: 'true'
+          registry_image: registry@$DIG"
+case_ kind-node-tag        bad "$head
+    steps:
+      - uses: Helm/Kind-Action@$SHA # v1.15.0
+        with:
+          node_image: kindest/node:v1.33.0"
+case_ kind-registry-default bad "$head
+    steps:
+      - uses: helm/kind-action@$SHA # v1.15.0
+        with:
+          registry: 'true'"
+case_ kind-config          bad "$head
+    steps:
+      - uses: helm/kind-action@$SHA # v1.15.0
+        with:
+          config: kind.yaml"
+case_ kind-cloud-provider  bad "$head
+    steps:
+      - uses: helm/kind-action@$SHA # v1.15.0
+        with:
+          cloud_provider: 'true'"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
