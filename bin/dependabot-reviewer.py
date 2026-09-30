@@ -361,6 +361,8 @@ def answer_of(msg):
             "output_tokens": getattr(usage, "output_tokens", None) if usage else None}
     if meta["stop_reason"] == "max_tokens":
         return text, meta, "answer cut off at the token limit (%s output tokens)" % meta["output_tokens"]
+    if meta["stop_reason"] != "end_turn":  # a refusal, a pause, anything unknown: never a clean read
+        return text, meta, "answer did not finish normally (stop reason %r)" % (meta["stop_reason"],)
     if not text.strip():
         return text, meta, "answer has no text (blocks: %s)" % ",".join(map(str, meta["blocks"])) 
     return text, meta, None

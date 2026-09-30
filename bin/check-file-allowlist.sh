@@ -87,6 +87,8 @@ ALLOW_PATTERNS=(
   '^bin/required-check-guard-test\.sh$'
   '^bin/dependabot-reviewer\.py$'
   '^bin/dependabot-reviewer-test\.sh$'
+  '^bin/dependency-lanes-test\.sh$'
+  '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'

@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 51 |
-| Acceptance criteria | 77 |
+| Active requirements | 55 |
+| Acceptance criteria | 90 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 73 |
+| ACs with mapped evidence | 86 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 8 |
+| Confidence: implementation-only | 12 |
 
 ## Cache protocol
 
@@ -555,7 +555,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-004-AC1 | Given any pull request, push to main, or tag; when the required scan check runs; then The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck. | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-004-AC1 | Given any pull request, push to main, or tag; when the required scan check runs; then The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck. | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-004-AC2 | Given the scanner installer; when it installs any scanner; then the download is pinned to a specific version and verified against a repo-pinned sha256, and a scanner that cannot be installed or verified exits as a labeled pipeline failure rather than a finding or a silent clean pass | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set, and any finding opens a tracking issue within 24 hours | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC4 | Given a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor); when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that release | ci-workflow |  | approved | 1 item(s) |
@@ -592,6 +592,57 @@ Every acceptance criterion shall name the test that proves it, and every test th
 |---|---|---|---|---|---|
 | REQ-REL-007-AC1 | Given the requirements and their mappings; when the requirements check runs; then every acceptance criterion has a mapping to evidence, or is listed as a residual with a reason; an unlisted acceptance criterion with no mapping, a residual without a reason, a residual for an unknown or already-mapped criterion all fail | unit |  | approved | 5 item(s) |
 | REQ-REL-007-AC2 | Given a test file anywhere in the repository (named *-test.sh, test_*.py or *_test.go) that declares acceptance criteria on a comment line `# proves: <AC>[, <AC>]` (`//` in Go, optional prose after an em dash), or a shell-test mapping to such a file; when the requirements check runs; then every declared criterion exists and is mapped back to that file (a shell-test mapping naming the file, or for Go a go-test mapping in its package), every shell-test mapping names an existing test file that declares the criterion, and a malformed declaration fails; anything else fails | unit |  | approved | 10 item(s) |
+
+## DEP
+
+### REQ-DEP-001 — Dependabot majors are judged by a machine
+
+A Dependabot major version bump shall be judged by the Dependabot reviewer, not by a person: from main, hourly, it gathers the evidence with no model involved, has two readers rank findings without a verdict, and decides mechanically to merge or to hold with an issue; it posts its result as a check and edits nothing.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/dependabot-reviewer.yml; bin/dependabot-reviewer.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEP-001-AC1 | Given the Dependabot reviewer workflow; when it is triggered; then it runs hourly from main and on manual dispatch, never on a pull-request event | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-001-AC2 | Given an open Dependabot major with no verdict yet; when the reviewer runs; then it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC3 | Given the gathered evidence for one major; when the two readers answer; then the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked "breaks us", "check" or "noise", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier reaches a finding, issue or evidence | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC4 | Given both readers' findings; when the reviewer decides; then the decision is mechanical: no "breaks us" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any "breaks us" holds the PR with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no "breaks us" leaves no verdict and is retried next hour | unit |  | approved | 1 item(s) |
+| REQ-DEP-001-AC5 | Given a finished review; when the reviewer reports it; then it posts its result as a check through the automation App; it scans nothing, opens no pull request and edits nothing | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC6 | Given any reviewer run; when it ends; then its evidence (the bundles, both readers' answers, the decisions) is kept as a run artifact, and keeping it never fails the run | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-001-AC7 | Given the reviewer's readers failing three hourly runs in a row; when the third run ends; then it opens one issue for the ccode queue and posts nothing else | unit |  | approved | 1 item(s) |
+| REQ-DEP-001-AC8 | Given a reviewer run that is cancelled or superseded; when it ends; then it never posts a verdict over a newer one | unit |  | approved | 2 item(s) |
+
+### REQ-DEP-002 — The required-check guard runs everywhere
+
+The ruleset on main and the committed required-check list shall be compared on every pull request and every push to main, so drift is red the day it happens, and a refusal shall open one issue.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/workflows/hygiene.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEP-002-AC1 | Given any pull request and any push to main; when hygiene runs; then the required-check guard compares main's ruleset with .github/policy/required-checks.json, contexts and integration IDs; any difference fails, and an unreadable side fails, never passes | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-002-AC2 | Given the guard refusing main's list; when hygiene runs; then it opens, or updates, one "required-check drift" issue | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-DEP-003 — Patch and minor bumps merge on green
+
+A Dependabot patch or minor bump shall merge on its own once every required check is green; a major shall be left to the reviewer.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/dependabot-auto-merge.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEP-003-AC1 | Given a Dependabot patch or minor pull request; when the auto-merge lane runs; then it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-DEP-004 — A held bump or drift dispatches the fixer
+
+A held Dependabot major, or a required-check drift issue, shall send one generic dispatch to the ops repository so an agent fixes our side; a failed dispatch shall be a warning and never undo the hold.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/dispatch-fixer.sh; .github/workflows/dependabot-reviewer.yml; .github/workflows/hygiene.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEP-004-AC1 | Given a completed hold; when the reviewer finishes it; then it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands | unit |  | approved | 1 item(s) |
+| REQ-DEP-004-AC2 | Given a required-check drift issue opened by the guard; when hygiene has seen it; then the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job | unit |  | approved | 1 item(s) |
 
 ## Licensing
 

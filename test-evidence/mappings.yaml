@@ -238,7 +238,8 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the standard binary embeds NO GOFIPS140 selection - the module check distinguishes a mode-enabled impostor from the validated-module build" }
   - ac: REQ-REL-004-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/scan.yml: the aggregation job 'scan' requires every scanner leg (one per entry in .github/policy/scanners.json) to have run and passed with a scanner-by-artifact scope (grype: all three variants, both platform children, AND every dist archive incl. Darwin; osv-scanner: the six image children AND the Go modules via the OSV.dev database — two scanners with different databases, overlapping upstream sources), block-at-any-severity with the published VEX as the only exception, on pull_request, push to main, and tags; listed in .github/policy/required-checks.json" }
+      - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
       - { type: workflow-job, ref: ".github/workflows/hygiene.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
@@ -290,3 +291,48 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestOddTestFileNamesAreFound" }
       - { type: go-test, ref: "tools/requirements:TestGoIsParsedAndSymlinkedTestsAreRefused" }
       - { type: go-test, ref: "tools/requirements:TestNothingHidesFromTheScan" }
+  - ac: REQ-DEP-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependabot-reviewer-gather-test.sh" }
+  - ac: REQ-DEP-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+  - ac: REQ-DEP-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+  - ac: REQ-DEP-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+  - ac: REQ-DEP-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-004-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+  - ac: REQ-DEP-004-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
