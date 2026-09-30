@@ -48,7 +48,10 @@ jobs:
       # Small image with a shell + curl for the documented runner client
       # pod. Only the image is our substitution; the env wiring is the
       # doc's verbatim block.
-      CLIENT_IMAGE: curlimages/curl:8.11.1
+      # pulled by digest (row 78), then loaded under a local tag, as the candidate is: kind loads
+      # and the kubelet (imagePullPolicy: Never) finds a local tag, not a digest reference.
+      CLIENT_IMAGE: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+      CLIENT_LOCAL: fscache-client:accept
     outputs:
       results: ${{ steps.results.outputs.results }}
     steps:
@@ -148,7 +151,7 @@ jobs:
               "  restartPolicy: Never\n"
               "  containers:\n"
               "    - name: runner\n"
-              "      image: " + os.environ["CLIENT_IMAGE"] + "\n"
+              "      image: " + os.environ["CLIENT_LOCAL"] + "\n"
               "      imagePullPolicy: Never\n"
               '      command: ["sleep", "3600"]\n'
               + env_block + "\n"
@@ -191,7 +194,8 @@ jobs:
         run: |
           set -euo pipefail
           docker pull -q "$CLIENT_IMAGE"
-          kind load docker-image "$CLIENT_IMAGE" --name fscache-accept
+          docker tag "$CLIENT_IMAGE" "$CLIENT_LOCAL"
+          kind load docker-image "$CLIENT_LOCAL" --name fscache-accept
 
       - name: create the documented runner client pod and wait for Ready
         run: |

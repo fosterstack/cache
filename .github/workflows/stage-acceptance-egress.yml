@@ -129,11 +129,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          NETSHOOT=nicolaka/netshoot:v0.13
+          NETSHOOT=nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
           # Builder for the static strace and a libc-less image used to PROVE
-          # the tracer is truly static (pin by digest in production hardening).
-          ALPINE=alpine:3.20
-          DISTROLESS=gcr.io/distroless/static-debian12:nonroot
+          # the tracer is truly static (pinned by digest, row 78).
+          ALPINE=alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+          DISTROLESS=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
           # strace release built from source, statically linked, so it can be
           # the entrypoint of the distroless (no libc) candidate image.
           STRACE_VER=6.9

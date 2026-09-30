@@ -1,0 +1,186 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "a8f101f81587e7c45eebec96f552813a0ee174ad5513aa2035441ddc14886c19",
+ "change": "row 78: every GitHub Action and image pinned by digest, enforced in the review gate (handoff 0023, PR #143)",
+ "reviewed_commit": "c07b5cf90f5aafc89f4c90089ffb51848ce31bff",
+ "rounds": [
+  {
+   "round": 1,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 6,
+     "evidence_sha256": "86582f23b8156ee89a00cf4f2cb66763d8c6fc642d0c12d54c78c910ea26936b"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "f94ca79e5a91bb47bacc8208c552e40404bce003a651d9e7c4a6bfa7fba2ba56"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "a03e694229184928bcb47bc0267d241325c8fca98c993a36b42498aa9a90dccb"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "933da6d851653d03c3516921a2d1784c116b14488bd49a2513651e0a26d2eaba"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 6,
+     "evidence_sha256": "eba5ab33493269ab2bcd48cfe43f099fb1346af46106bed2bd020bc04cf08e7a"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "c2f57661473700338508a619eb76ca6035fe282cb0da4d85b331a3614bef4e05"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "94af24e02e99e61caadc80e819322d9ae58f1aa92c1dc267d74fba792297dc6a"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "82b96d75f291f94b4aa764406e0b8ea2ac4da441e9df75e2f9ff782f8df9ba75"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": null,
+     "evidence_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "note": "no output: the vendor's content filter refused the run"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "8f20a69bbde32c3e9dd51118e9cdf10b6075f087fafc09e719b87be3b64dffee"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "c38f1179f5f57cf9ce01dd6f12d1b3c70b67f26b4f1807ff4872b9ec61d5a9af"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "98427004c2e00a903201887d2dd6caf44b775442cd74f2f5186158fa224ed516"
+    }
+   }
+  },
+  {
+   "round": 7,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "06ff6104b123cd21fa324752da47de543f6889535c787d7ff3f0993598ac4232"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "fd9eb09acbb7c0b77ea9e567ab9dfe5e26683597c88377757ab034c17e5ea27c"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "eff048288deb0ee8432312c0cd7f9ffab4adf3fe698348a7c8e5ea9f19e898a2"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "fbd6b6cfa4ed14f90e3b735f13c295e4562023b2d99bc32ff716ea33d9f75603"
+    }
+   }
+  },
+  {
+   "round": 9,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "0ae008544b37d651421e40ea903f5ebe00055abe0ded371fb28a5ae257622fa4"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "80dc563a38bff12512c5df38d85a0aa11320084443869bb38a66320f0cdcb895"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "063f7ae75ed6c84dd0e86688861036e427ba79ac4ee8419c2ae6e514a2aae523"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "dcd114b2b0ef597b09786ba475defd7a2a233e765b6eb3a7c03836c3676d869f"
+    }
+   }
+  },
+  {
+   "round": 11,
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "4db611aaae321c43412fe7aa0ef377cdc8a896b032c0c241ae8d743ce13a4ea5"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ae662aff232bcaa21a7f8e2574fe3f8cbcd833b0587810b6967eda05496b9d14"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "evidence_location": "private audit tree: audits/2026-09-30/pins/round1..11/{codex,sonnet}/review.md",
+ "residuals": [
+  "inactive image inputs are not validated: helm/kind-action registry_image when registry is false; setup-buildx-action driver-opts image= under driver: docker (neither image is run in that configuration)",
+  "classification is per owner/repo: a subpath of a classified repository (e.g. actions/checkout/<subdir>) inherits the repository's classification",
+  "digests held in shell variables and action inputs (helper and executor images) are not bumped by Dependabot",
+  "script-text inputs (run:, github-script script, golangci-lint-action args, goreleaser-action args) are outside the checker by scope; the review pass covers them",
+  "a pinned action's own internals (e.g. ossf/scorecard-action's image) are that action's supply chain (owner decision, Sep 30)"
+ ]
+}
