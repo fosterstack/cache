@@ -57,7 +57,7 @@ jobs:
       issues: write
       actions: read        # to list/download the rescan run's artifacts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # no saved job token at all: from checkout v6 it lives in a separate credential file
           # that `git config --unset-all ...extraheader` no longer clears, so it would win over
