@@ -75,8 +75,6 @@ ALLOW_PATTERNS=(
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
-  '^bin/check-action-pins\.py$'
-  '^bin/check-action-pins-test\.sh$'
   '^bin/authorize-acceptance-check\.py$'
   '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
@@ -100,6 +98,7 @@ ALLOW_PATTERNS=(
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
+  '^\.github/agent/bin/check-action-pins\.py$'
   '^\.github/agent/bin/auditorlib/[A-Za-z0-9._-]+\.py$'
   # the published OpenVEX schema the writer validates against (production data, beside its code)
   '^\.github/agent/bin/auditorlib/openvex-schema\.json$'

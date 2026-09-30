@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Proves bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
+# Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
+# the vendored pure-Python PyYAML (fixtures/testlib/pyyaml) as `yaml`, so every CI job — with or
+# without a PyYAML of its own — runs these cases against the same parser
+mkdir -p "$work/pylib"; ln -s "$here/../fixtures/testlib/pyyaml" "$work/pylib/yaml"
+export PYTHONPATH="$work/pylib${PYTHONPATH:+:$PYTHONPATH}"
 SHA=3d3c42e5aac5ba805825da76410c181273ba90b1
 DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 
@@ -12,11 +16,11 @@ case_() {
   local name=$1 expect=$2 d="$work/$1"
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
-  if python3 "$here/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
+  if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
   else failn=$((failn+1)); echo "FAIL $name → $got (want $expect)"; fi
   # VERBOSE=1: show why each case was judged (the first finding), to prove a red is the intended red
-  if [ -n "${VERBOSE:-}" ]; then python3 "$here/check-action-pins.py" "$d" 2>&1 | head -1 | sed "s#^#     #" || true; fi
+  if [ -n "${VERBOSE:-}" ]; then python3 "$here/../bin/check-action-pins.py" "$d" 2>&1 | head -1 | sed "s#^#     #" || true; fi
 }
 head='on: push
 jobs:
@@ -277,6 +281,77 @@ case_ symlinked-workflow   bad "$head
 case_ docker-action-image  bad "$head
     steps:
       - run: true" "mkdir -p tools/d; printf 'runs:\n  using: docker\n  image: docker://alpine:3.20\n' > tools/d/action.yml"
+
+
+# --- adversarial round 2 (audits/2026-09-30/pins/round2)
+case_ qemu-pinned          ok  "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0
+        with:
+          image: tonistiigi/binfmt:latest@$DIG"
+case_ buildx-pinned        ok  "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:buildx-stable-1@$DIG"
+case_ buildx-docker-driver ok  "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver: docker"
+case_ unicode-nbsp-ref     bad "$head
+    steps:
+      - uses: \"actions/checkout@$SHA\\u00a0\" # v7.0.1"
+case_ trailing-newline-ref bad "$head
+    steps:
+      - uses: \"actions/checkout@$SHA\\n\" # v7.0.1"
+case_ tag-with-fragment    bad "$head
+    steps:
+      - uses: actions/checkout@$SHA # v7.0.1#not-a-real-tag"
+case_ qemu-default-image   bad "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0"
+case_ qemu-tag-image       bad "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0
+        with:
+          image: tonistiigi/binfmt:latest"
+case_ buildx-default-image bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1"
+case_ buildx-tag-image     bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:buildx-stable-1"
+case_ buildx-two-images    bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@$DIG,image=moby/buildkit:latest"
+case_ image-trailing-space bad "$head
+    container: \"alpine@$DIG \"
+    steps:
+      - run: true"
+
+# --- the gate's mode: a commit read as git objects (--git), never checked out
+gitcase() {
+  local name=$1 expect=$2 d="$work/git-$1"
+  mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
+  if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
+  else failn=$((failn+1)); echo "FAIL git-$name → $got (want $expect)"; fi
+}
+gitcase pinned   ok  "$head
+    steps:
+      - uses: actions/checkout@$SHA # v7.0.1"
+gitcase tag      bad "$head
+    steps:
+      - uses: actions/checkout@v7"
+gitcase symlink  bad "$head
+    steps:
+      - run: true" "ln -s w.yml .github/workflows/s.yml"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

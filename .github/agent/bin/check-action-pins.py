@@ -3,17 +3,22 @@
 (register row 78). A tag or branch reference fails. Fails closed: a file it cannot parse, or a
 reference it cannot classify, is a finding.
 
+It lives under .github/agent/ so that changing it needs the two-vendor review record
+(auditor-review-gate.py): the enforcement cannot be loosened by an ordinary merge. The gate runs the
+DEFAULT branch's copy over a PR head read as git objects (--git), never checked out.
+
 What is read: every file under .github/workflows/ (a non-.yml/.yaml file there is itself a finding),
-every other .yml/.yaml under .github/, and every action.yml/action.yaml (any case) anywhere in the
-repo. A symlink among them is a finding, never followed. Each file is parsed as YAML (every document,
-every scalar read as a string) and every node is walked, so flow style and quoting cannot hide a key.
-YAML anchors and aliases are refused outright: an alias would carry one line's version comment to
-another use (and this repo uses none). A mapping key that is not a plain string, or that holds a
-${{ }} expression (GitHub folds `${{ 'uses' }}` into `uses`), is a finding.
+every other .yml/.yaml under .github/, and every action.yml/action.yaml (any case) anywhere. A
+symlink or submodule among them is a finding, never followed. Each file is parsed as YAML (every
+document, every scalar read as a string) and every node is walked, so flow style and quoting cannot
+hide a key. YAML anchors and aliases are refused (an alias would carry one line's version comment to
+another use; this repo uses none). A mapping key that is not a plain string, or that holds a ${{ }}
+expression (GitHub folds `${{ 'uses' }}` into `uses`), is a finding. Values are judged exactly as
+written — never trimmed — so a trailing non-breaking space (legal in a git tag name) cannot pass.
 
   uses:      owner/repo[/path]@<40 lowercase hex> followed on the same line, directly after the
              value, by `# v<version>` (a remote reusable workflow is the same form);
-             ./.github/workflows/<file>.yml as a job's `uses` (a local reusable workflow — GitHub
+             ./.github/workflows/<file>.yml as a job's `uses` (a local reusable workflow: GitHub
              reads it from the commit, and it is checked here as a file of its own);
              docker://<image>@sha256:<64 hex>.
              Nothing else: no tag, branch, short or uppercase SHA, ${{ }} expression, non-string, and
@@ -21,20 +26,26 @@ ${{ }} expression (GitHub folds `${{ 'uses' }}` into `uses`), is a finding.
              run time, where a script can rewrite it after this check has passed.
   services:  a mapping; each service is an image string or a mapping with an image.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
-  Exempt by position only: the inputs under a step's or a job's `with:` and the variables under a
-  workflow's, job's or step's `env:` are data passed along (the image a scanner scans), not
+  Executor images: a pinned action that runs a container image of its own must be given that image
+             by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
+             image is still a mutable reference.
+  Exempt by position only: the other inputs under a step's or a job's `with:` and the variables under
+  a workflow's, job's or step's `env:` are data passed along (the image a scanner scans), not
   something the runner resolves as an action or a container.
   --verify-tags  each `# vX` comment must resolve, through the GitHub API, to the pinned commit.
 
-Outside this check (the review pass covers it): images a `run:` script pulls through a shell variable.
+Outside this check (the review pass covers it): images a `run:` script pulls through a shell variable,
+and binaries a pinned action downloads by version.
 
-usage: check-action-pins.py [--verify-tags] [repo-root]
+usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
 try:
@@ -43,12 +54,18 @@ except ImportError:
     sys.exit("check-action-pins: PyYAML is required")
 
 SHA = r"[0-9a-f]{40}"
-ACTION = re.compile(rf"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@({SHA})$")
+ACTION = re.compile(rf"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@({SHA})")
 DIGEST = r"@sha256:[0-9a-f]{64}"
-DOCKER_USES = re.compile(rf"^docker://[^@\s]+{DIGEST}$")
-IMAGE = re.compile(rf"^(docker://)?[^@\s]+{DIGEST}$")
-LOCAL_WORKFLOW = re.compile(r"^\./\.github/workflows/([^/]+\.ya?ml)$")
-COMMENT = re.compile(r"^\s+#\s*(v[0-9]\S*)\s*$")
+REF = r"[A-Za-z0-9][A-Za-z0-9._/:-]*"
+DOCKER_USES = re.compile(rf"docker://{REF}{DIGEST}")
+IMAGE = re.compile(rf"(docker://)?{REF}{DIGEST}")
+LOCAL_WORKFLOW = re.compile(r"\./\.github/workflows/([A-Za-z0-9._-]+\.ya?ml)")
+COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
+# action (owner/repo) -> how it must be given its container image: (input, prefix inside the input)
+EXECUTOR_INPUTS = {
+    "docker/setup-qemu-action": ("image", ""),
+    "docker/setup-buildx-action": ("driver-opts", "image="),
+}
 
 
 class StrLoader(yaml.SafeLoader):
@@ -57,6 +74,53 @@ class StrLoader(yaml.SafeLoader):
 
 StrLoader.yaml_implicit_resolvers = {}
 
+
+# ---------------------------------------------------------------------------- the tree read
+
+class FsTree:
+    def __init__(self, root):
+        self.root = pathlib.Path(root).resolve()
+        self.entries = {}  # rel -> "file" | "symlink"
+        for d, dirs, names in os.walk(self.root, followlinks=False):
+            rd = pathlib.Path(d).relative_to(self.root)
+            for n in dirs + names:
+                p = pathlib.Path(d) / n
+                rel = (rd / n).as_posix()
+                if p.is_symlink():
+                    self.entries[rel] = "symlink"
+                elif n in names:
+                    self.entries[rel] = "file"
+            # never descend into .git or through a symlinked directory
+            dirs[:] = [x for x in dirs if x != ".git" and not (pathlib.Path(d) / x).is_symlink()]
+
+    def read(self, rel):
+        return (self.root / rel).read_text(encoding="utf-8", errors="replace")
+
+
+class GitTree:
+    """A commit's tree read as git objects: nothing is checked out, nothing is executed."""
+
+    def __init__(self, commit):
+        out = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", commit],
+                             capture_output=True, check=True).stdout.decode("utf-8", "replace")
+        self.entries, self.blobs = {}, {}
+        for rec in filter(None, out.split("\0")):
+            meta, path = rec.split("\t", 1)
+            mode, kind, obj = meta.split()
+            if mode == "120000":
+                self.entries[path] = "symlink"
+            elif kind == "commit":
+                self.entries[path] = "submodule"
+            else:
+                self.entries[path] = "file"
+                self.blobs[path] = obj
+
+    def read(self, rel):
+        return subprocess.run(["git", "cat-file", "blob", self.blobs[rel]], capture_output=True,
+                              check=True).stdout.decode("utf-8", "replace")
+
+
+# ---------------------------------------------------------------------------- the walk
 
 def data_block(path):
     """True when the path runs through a structural `with:` or `env:` (inputs/variables, not refs)."""
@@ -90,6 +154,10 @@ def show(path):
     return "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in path)
 
 
+def key_of(k):
+    return k.value.strip().lower() if isinstance(k, yaml.ScalarNode) else None
+
+
 def walk(node, path, out, bad, where):
     if isinstance(node, yaml.MappingNode):
         for k, v in node.value:
@@ -99,11 +167,11 @@ def walk(node, path, out, bad, where):
             if "${{" in k.value:
                 bad.append(f"{where}{show(path)}: a mapping key holding an expression: {k.value!r}")
                 continue
-            key = k.value.strip().lower()
+            key = key_of(k)
             p = path + [key]
             if key in ("uses", "image", "container", "services") and not data_block(p):
                 if position(p):
-                    out.append((key, p, v))
+                    out.append((key, p, v, node))
                 elif key == "uses":
                     bad.append(f"{where}{show(p)}: uses at a position GitHub does not read as an action")
             walk(v, p, out, bad, where)
@@ -112,42 +180,67 @@ def walk(node, path, out, bad, where):
             walk(v, path + [i], out, bad, where)
 
 
+# ---------------------------------------------------------------------------- the rules
+
 def check_image(where, node, bad):
     if not isinstance(node, yaml.ScalarNode):
         return bad.append(f"{where}: image is not a plain string")
-    v = node.value.strip()
+    v = node.value
     if "${{" in v:
         bad.append(f"{where}: image is an expression, not a pin: {v!r}")
-    elif not IMAGE.match(v):
+    elif not IMAGE.fullmatch(v):
         bad.append(f"{where}: image not pinned by digest: {v!r}")
 
 
-def check_uses(root, where, path, node, lines, pins, bad):
+def check_executor(where, action, step, bad):
+    need = EXECUTOR_INPUTS.get(action)
+    if not need or not isinstance(step, yaml.MappingNode):
+        return
+    inp, prefix = need
+    withs = [v for k, v in step.value if key_of(k) == "with"]
+    vals = [v for w in withs if isinstance(w, yaml.MappingNode) for k, v in w.value if key_of(k) == inp]
+    if action == "docker/setup-buildx-action":
+        drivers = [v.value for w in withs if isinstance(w, yaml.MappingNode) for k, v in w.value
+                   if key_of(k) == "driver" and isinstance(v, yaml.ScalarNode)]
+        if drivers == ["docker"]:
+            return  # the docker driver runs no BuildKit container of its own
+    ok = False
+    for v in vals:
+        if isinstance(v, yaml.ScalarNode) and "${{" not in v.value:
+            parts = [x for x in re.split(r"[\s,]+", v.value) if x.startswith(prefix)] if prefix else [v.value]
+            ok = len(parts) == 1 and IMAGE.fullmatch(parts[0][len(prefix):]) is not None
+    if not ok:
+        bad.append(f"{where}: {action} runs a container image of its own; give it by digest "
+                   f"in with.{inp}{' (' + prefix + '<image>@sha256:…)' if prefix else ''}")
+
+
+def check_uses(tree, where, path, node, parent, lines, pins, bad):
     if not isinstance(node, yaml.ScalarNode):
         return bad.append(f"{where}: uses is not a plain string")
-    v = node.value.strip()
+    v = node.value
     if "${{" in v:
         return bad.append(f"{where}: uses is an expression, not a pin: {v!r}")
     if v.startswith("./"):
-        m = LOCAL_WORKFLOW.match(v)
+        m = LOCAL_WORKFLOW.fullmatch(v)
         job_level = len(path) == 3 and path[0] == "jobs"
-        if m and job_level and m.group(1) in os.listdir(root / ".github" / "workflows"):
+        if m and job_level and tree.entries.get(f".github/workflows/{m.group(1)}") == "file":
             return  # a local reusable workflow, read from the commit and checked as a file of its own
         return bad.append(f"{where}: local reference is not a job-level call of a workflow file in "
                           f".github/workflows/ (local actions are not allowed): {v!r}")
-    m = ACTION.match(v)
+    m = ACTION.fullmatch(v)
     if m:
         sha = m.group(2)
         tag = None
         if node.start_mark.line == node.end_mark.line and node.end_mark.line < len(lines):
-            c = COMMENT.match(lines[node.end_mark.line][node.end_mark.column:])
+            c = COMMENT.fullmatch(lines[node.end_mark.line][node.end_mark.column:])
             tag = c.group(1) if c else None
         if tag is None:
             bad.append(f"{where}: {v!r} is not followed directly by a `# vX` comment on its line")
         else:
             pins.append((where, v.rsplit("@", 1)[0], sha, tag))
+        check_executor(where, "/".join(v.split("@")[0].split("/")[:2]), parent, bad)
         return
-    if DOCKER_USES.match(v):
+    if DOCKER_USES.fullmatch(v):
         return
     bad.append(f"{where}: not a full commit digest: {v!r}")
 
@@ -169,7 +262,10 @@ def verify_tags(pins):
         slug = "/".join(repo.split("/")[:2])
         if (slug, tag) not in cache:
             try:
-                obj = api(f"repos/{slug}/git/ref/tags/{tag}")["object"]
+                ref = api(f"repos/{slug}/git/ref/tags/{urllib.parse.quote(tag, safe='')}")
+                if ref.get("ref") != f"refs/tags/{tag}":  # the API answered for a different ref
+                    raise LookupError(ref.get("ref"))
+                obj = ref["object"]
                 while obj["type"] == "tag":  # annotated tag -> its commit
                     obj = api(f"repos/{slug}/git/tags/{obj['sha']}")["object"]
                 cache[(slug, tag)] = obj["sha"]
@@ -180,9 +276,8 @@ def verify_tags(pins):
     return found
 
 
-def check_file(root, f, pins, bad):
-    rel = f.relative_to(root).as_posix()
-    text = f.read_text(encoding="utf-8", errors="replace")
+def check_file(tree, rel, pins, bad):
+    text = tree.read(rel)
     lines = text.splitlines()
     try:
         if any(isinstance(e, yaml.AliasEvent) or getattr(e, "anchor", None)
@@ -195,60 +290,63 @@ def check_file(root, f, pins, bad):
     for i, d in enumerate(docs):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
-    for key, path, node in refs:
+    for key, path, node, parent in refs:
         where = f"{rel}{show(path)}"
         if key == "uses":
-            check_uses(root, where, path, node, lines, pins, bad)
+            check_uses(tree, where, path, node, parent, lines, pins, bad)
         elif key == "container":
             if not isinstance(node, yaml.MappingNode):
                 check_image(where, node, bad)
-            elif not any(isinstance(k, yaml.ScalarNode) and k.value.strip().lower() == "image" for k, _ in node.value):
+            elif not any(key_of(k) == "image" for k, _ in node.value):
                 bad.append(f"{where}: container mapping without an image")  # its image: is checked by position
         elif key == "services":
             if not isinstance(node, yaml.MappingNode):
                 bad.append(f"{where}: services is not a mapping")
                 continue
             for k, v in node.value:
+                sw = f"{where}.{getattr(k, 'value', '?')}"
                 if isinstance(v, yaml.MappingNode):
-                    imgs = [vv for kk, vv in v.value
-                            if isinstance(kk, yaml.ScalarNode) and kk.value.strip().lower() == "image"]
+                    imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
-                        bad.append(f"{where}.{getattr(k, 'value', '?')}: service without an image")
+                        bad.append(f"{sw}: service without an image")
                     for vv in imgs:
-                        check_image(f"{where}.{getattr(k, 'value', '?')}.image", vv, bad)
+                        check_image(f"{sw}.image", vv, bad)
                 else:
-                    check_image(f"{where}.{getattr(k, 'value', '?')}", v, bad)
+                    check_image(sw, v, bad)
         elif key == "image":
             check_image(where, node, bad)
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "--verify-tags"]
-    verify = "--verify-tags" in sys.argv[1:]
-    root = pathlib.Path(args[0] if args else ".").resolve()
-    wf_dir = root / ".github" / "workflows"
-    if not wf_dir.is_dir():
+    argv = sys.argv[1:]
+    verify = "--verify-tags" in argv
+    argv = [a for a in argv if a != "--verify-tags"]
+    if argv[:1] == ["--git"]:
+        if len(argv) != 2:
+            sys.exit("usage: check-action-pins.py [--verify-tags] --git <commit>")
+        tree = GitTree(argv[1])
+    else:
+        tree = FsTree(argv[0] if argv else ".")
+    if not any(r.startswith(".github/workflows/") for r in tree.entries):
         sys.exit("check-action-pins: no .github/workflows/ — nothing checked")
-    bad, pins, files = [], [], set()
-    for p in root.rglob("*"):
-        parts = p.relative_to(root).parts
-        if ".git" in parts or p.is_dir():
-            continue
-        in_wf = parts[:2] == (".github", "workflows")
-        wanted = in_wf or p.name.lower() in ("action.yml", "action.yaml") or \
-            (parts[0] == ".github" and p.suffix.lower() in (".yml", ".yaml"))
+    bad, pins, files = [], [], []
+    for rel, kind in sorted(tree.entries.items()):
+        parts = rel.split("/")
+        in_wf = parts[:2] == [".github", "workflows"]
+        name = parts[-1]
+        wanted = in_wf or name.lower() in ("action.yml", "action.yaml") or \
+            (parts[0] == ".github" and name.lower().endswith((".yml", ".yaml")))
         if not wanted:
             continue
-        rel = p.relative_to(root).as_posix()
-        if p.is_symlink():
-            bad.append(f"{rel}: a symlink where a workflow or action file is read (not followed)")
-        elif in_wf and p.suffix not in (".yml", ".yaml"):
+        if kind != "file":
+            bad.append(f"{rel}: a {kind} where a workflow or action file is read (not followed)")
+        elif in_wf and not name.endswith((".yml", ".yaml")):
             bad.append(f"{rel}: a file under .github/workflows/ that is not .yml/.yaml")
-        elif p.is_file():
-            files.add(p)
+        else:
+            files.append(rel)
 
-    for f in sorted(files):
-        check_file(root, f, pins, bad)
+    for rel in files:
+        check_file(tree, rel, pins, bad)
     if verify:
         bad += verify_tags(pins)
     for b in bad:
