@@ -13,7 +13,7 @@ pass=0 failn=0
 judge() { python3 - "$1" "$2" <<'PY'
 import re, sys, yaml
 kind, path = sys.argv[1], sys.argv[2]
-d = yaml.load(open(path), Loader=yaml.BaseLoader)
+d = {} if kind == "reviewer-py" else yaml.load(open(path), Loader=yaml.BaseLoader)
 on = d.get("on", {})
 bad = []
 def runs(job):
@@ -25,8 +25,8 @@ if kind == "reviewer":
     if len(crons) != 1 or not re.fullmatch(r"[0-9]{1,2} \* \* \* \*", crons[0] if crons else ""):
         bad.append(f"schedule {crons} is not once an hour")
     c = d.get("concurrency", {})
-    if not isinstance(c, dict) or not c.get("group") or c.get("cancel-in-progress") != "false":
-        bad.append("runs are not serialised (concurrency group, cancel-in-progress: false)")
+    if not isinstance(c, dict) or not c.get("group") or "${{" in c.get("group", "") or c.get("cancel-in-progress") != "false":
+        bad.append("runs are not serialised (one constant concurrency group, cancel-in-progress: false)")
     job = d.get("jobs", {}).get("review", {})
     perms = job.get("permissions", {})
     if isinstance(perms, dict) and perms.get("contents") not in (None, "read"):
@@ -46,6 +46,37 @@ if kind == "reviewer":
         u = up[0]
         if "always()" not in u.get("if", "") or u.get("continue-on-error") != "true":
             bad.append("the evidence upload is not always() + continue-on-error")
+        if (u.get("with") or {}).get("path") != "${{ runner.temp }}/work" or "$RUNNER_TEMP/work" not in text:
+            bad.append("the evidence upload does not keep the run's work directory (bundles, answers, decisions)")
+elif kind == "reviewer-py":
+    # the reviewer's own code: no call that opens, edits or pushes anything, however it is spelled
+    import ast
+    tree = ast.parse(open(path).read())
+    seqs, strings = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            seqs.append([e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)])
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            strings.append(node.value)
+    forbidden = [("gh", "pr", "create"), ("gh", "pr", "edit"), ("gh", "pr", "close"), ("gh", "release"),
+                 ("git", "push"), ("git", "commit")]
+    for sq in seqs:
+        # the reviewer's own code only ever READS the API: a write method or a field in a gh api call is refused
+        if True:  # any sequence: _gh_json prepends `gh api` at run time, so its callers' lists count too
+            for i, a in enumerate(sq):
+                if a in ("-X", "--method") and i + 1 < len(sq) and sq[i + 1].upper() != "GET":
+                    bad.append("the reviewer writes through the API (" + " ".join(sq[i:i + 2]) + ")")
+                if a in ("-f", "-F", "--field", "--raw-field", "--input"):
+                    bad.append("the reviewer sends fields through the API (" + a + ")")
+        for f in forbidden:
+            for i in range(len(sq) - len(f) + 1):
+                if tuple(sq[i:i + len(f)]) == f:
+                    bad.append("the reviewer calls " + " ".join(f))
+    for st in strings:
+        for pat in (r"\bgh\s+pr\s+(create|edit|close)\b", r"\bgh\s+release\b", r"\bgit\s+(push|commit)\b",
+                    r"/contents/\S*.*-X\s*(PUT|DELETE)", r"-X\s*(PUT|DELETE)\b.*/contents/"):
+            if re.search(pat, st):
+                bad.append("the reviewer runs: " + st[:60])
 elif kind == "guard":
     if "pull_request" not in on or (isinstance(on.get("pull_request"), dict) and on.get("pull_request")):
         bad.append("not on every pull request")
@@ -83,6 +114,15 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+pycase() {  # pycase <name> <expect> <python source line appended to a copy of the reviewer, or empty>
+  local f="$work/$1.py"
+  cp "$root/bin/dependabot-reviewer.py" "$f"
+  [ -n "$3" ] && printf '\n%s\n' "$3" >> "$f"
+  if out=$(judge reviewer-py "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
+}
+
 case_() {  # case_ <kind> <file> <name> <expect ok|bad> <python edit of the parsed copy, or empty>
   local f="$work/$3.yml"
   cp "$root/.github/workflows/$2" "$f"
@@ -112,6 +152,15 @@ case_ reviewer $R reviewer-contents-write  bad "d['jobs']['review'].setdefault('
 case_ reviewer $R reviewer-no-checks-app   bad "[s.get('with', {}).pop('permission-checks', None) for s in $rs if isinstance(s.get('with'), dict)]"
 case_ reviewer $R reviewer-evidence-fails  bad "[s.pop('continue-on-error', None) for s in $rs if str(s.get('uses','')).startswith('actions/upload-artifact@')]"
 case_ reviewer $R reviewer-no-evidence     bad "$rs[:] = [s for s in $rs if not str(s.get('uses','')).startswith('actions/upload-artifact@')]"
+case_ reviewer $R reviewer-group-per-run  bad "d['concurrency']['group'] = '\${{ github.run_id }}'"
+case_ reviewer $R reviewer-evidence-path   bad "[s['with'].__setitem__('path', '/nonexistent') for s in $rs if str(s.get('uses','')).startswith('actions/upload-artifact@')]"
+pycase reviewer-py-real        ok  ""
+pycase reviewer-py-pr-create   bad 'subprocess.run(["gh", "pr", "create", "--fill"])'
+pycase reviewer-py-push        bad '_run(["git", "push", "origin", "HEAD"])'
+pycase reviewer-py-shell       bad 'os.system("gh pr edit 99 --add-label x")'
+pycase reviewer-py-contents    bad '_run(["gh", "api", "-X", "PUT", "repos/o/r/contents/x"])'
+pycase reviewer-py-field-post  bad '_run(["gh", "api", "repos/o/r/issues", "-f", "title=x"])'
+pycase reviewer-py-via-helper  bad '_gh_json(["repos/o/r/contents/x", "-X", "DELETE"])'
 case_ guard    $H guard-real               ok  ""
 case_ guard    $H guard-pr-filtered        bad "d['on']['pull_request'] = {'paths': ['bin/**']}"
 case_ guard    $H guard-job-if             bad "d['jobs']['required-check-guard']['if'] = 'false'"

@@ -239,7 +239,7 @@ mappings:
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/scan.yml: the aggregation job 'scan' requires every scanner leg (Grype over the six image children and every archive; Amazon Inspector over the six image children from an SBOM made on the runner; govulncheck for the Go modules) on pull_request, push to main and tags, block-at-any-severity with the published VEX as the only exception (row 73)" }
+      - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
       - { type: workflow-job, ref: ".github/workflows/hygiene.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
@@ -297,6 +297,7 @@ mappings:
   - ac: REQ-DEP-001-AC2
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependabot-reviewer-gather-test.sh" }
   - ac: REQ-DEP-001-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }

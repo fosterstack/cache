@@ -1284,13 +1284,13 @@ requirements:
       - id: REQ-DEP-001-AC3
         given: the gathered evidence for one major
         when: the two readers answer
-        then: "each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier reaches a finding, issue or evidence"
+        then: "the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier reaches a finding, issue or evidence"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader and the required-check guard matching arms squash auto-merge; any \"breaks us\" holds the PR with one issue carrying both readers' findings; any reader error leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" holds the PR with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
