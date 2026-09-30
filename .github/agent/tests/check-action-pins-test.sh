@@ -37,7 +37,7 @@ case_ pinned-quoted        ok  "$head
 case_ pinned-subpath       ok  "$head
     steps:
       - uses: github/codeql-action/init@$SHA # v4.1.0"
-case_ remote-reusable      ok  "on: push
+case_ remote-reusable      bad "on: push
 jobs:
   j:
     uses: octo/repo/.github/workflows/x.yml@$SHA # v1.2.3"
@@ -378,6 +378,30 @@ case_ qemu-input-twice     bad "$head
         with:
           image: tonistiigi/binfmt@$DIG
           IMAGE: tonistiigi/binfmt:latest"
+
+# --- adversarial round 4 (audits/2026-09-30/pins/round4)
+case_ buildx-csv-quoted-ok ok  "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: network=host,\"image=moby/buildkit@$DIG\""
+case_ buildx-csv-override  bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: |
+            image=moby/buildkit@$DIG
+            network=host,image=moby/buildkit:latest"
+case_ buildx-csv-upper     bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@$DIG,IMAGE=moby/buildkit:latest"
+case_ buildx-csv-broken    bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: '\"image=moby/buildkit@$DIG'"
 
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {

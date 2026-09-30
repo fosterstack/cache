@@ -17,9 +17,11 @@ expression (GitHub folds `${{ 'uses' }}` into `uses`), is a finding. Values are 
 written — never trimmed — so a trailing non-breaking space (legal in a git tag name) cannot pass.
 
   uses:      owner/repo[/path]@<40 lowercase hex> followed on the same line, directly after the
-             value, by `# v<version>` (a remote reusable workflow is the same form);
+             value, by `# v<version>`;
              ./.github/workflows/<file>.yml as a job's `uses` (a local reusable workflow: GitHub
-             reads it from the commit, and it is checked here as a file of its own);
+             reads it from the commit, and it is checked here as a file of its own). A REMOTE
+             reusable workflow is refused: its jobs would run actions this check never reads
+             (this repo calls none; vendor one locally to use it);
              docker://<image>@sha256:<64 hex>.
              Nothing else: no tag, branch, short or uppercase SHA, ${{ }} expression, non-string, and
              no local action (./path at step level): its action.yml is read from the workspace at
@@ -31,15 +33,18 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              image is still a mutable reference. Action identity is case-folded (GitHub resolves
              owner/repo case-insensitively); input names are matched exactly as the runner does
              (case-insensitive, never trimmed); buildx's driver-opts is read one option per line, as
-             the action reads it, and its `append` (which can re-set a node's image) is refused.
+             the action reads it — and each line as CSV, as buildx reads it, so exactly one image=
+             may appear across them all — and its `append` (which can re-set a node's image) is refused.
   Exempt by position only: the other inputs under a step's or a job's `with:` and the variables under
   a workflow's, job's or step's `env:` are data passed along (the image a scanner scans), not
   something the runner resolves as an action or a container.
   --verify-tags  each `# vX` comment must resolve, through the GitHub API, to the pinned commit;
              and each pinned action's own action.yml at that commit is read: node is fine, a Docker
              action must name its image docker://…@sha256 (never a Dockerfile), and a composite
-             action's steps are held to these same rules, recursively. The only exclusion is
-             TRANSITIVE_EXCLUSIONS below, each with its reason.
+             action's steps are held to these same rules, recursively (no expression keys, no
+             `./` action: GitHub resolves that in the CALLER's workspace, where a script can write
+             it). action.yaml is read only when action.yml is definitively absent (HTTP 404); any
+             other API error is a finding. The only exclusion is TRANSITIVE_EXCLUSIONS below.
 
 Outside this check (the review pass covers it): images a `run:` script pulls through a shell variable,
 and binaries a pinned action downloads by version.
@@ -47,12 +52,14 @@ and binaries a pinned action downloads by version.
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import base64
+import csv
 import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -234,10 +241,14 @@ def check_executor(where, action, step, bad):
     ok = False
     vals = got.get(inp, [])
     if len(vals) == 1 and isinstance(vals[0], yaml.ScalarNode) and "${{" not in vals[0].value:
-        if prefix:  # one option per line, trimmed, as the action's getInputList reads it
-            opts = [o.strip() for o in vals[0].value.split("\n") if o.strip()]
-            imgs = [o[len(prefix):] for o in opts if o.startswith(prefix)]
-            ok = len(imgs) == 1 and IMAGE.fullmatch(imgs[0]) is not None
+        if prefix:  # one option per line (the action's getInputList), each line CSV (buildx)
+            lines = [o.strip() for o in vals[0].value.split("\n") if o.strip()]
+            try:
+                fields = [f.strip() for row in csv.reader(lines, strict=True) for f in row]
+            except csv.Error:
+                fields = None
+            imgs = [f[len(prefix):] for f in fields or [] if f.lower().startswith(prefix)]
+            ok = fields is not None and len(imgs) == 1 and IMAGE.fullmatch(imgs[0]) is not None
         else:
             ok = IMAGE.fullmatch(vals[0].value) is not None
     if not ok:
@@ -259,6 +270,9 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
         return bad.append(f"{where}: local reference is not a job-level call of a workflow file in "
                           f".github/workflows/ (local actions are not allowed): {v!r}")
     m = ACTION.fullmatch(v)
+    if m and len(path) == 3 and path[0] == "jobs":
+        return bad.append(f"{where}: a remote reusable workflow is refused (its jobs run actions this check "
+                          f"never reads; vendor it under .github/workflows/): {v!r}")
     if m:
         sha = m.group(2)
         tag = None
@@ -321,16 +335,19 @@ def transitive(api, where, repo, sha, seen, depth):
     if depth > 8:
         return [f"{at}: composite actions nested more than 8 deep"]
     text = None
-    for name in ("action.yml", "action.yaml"):
+    for name in ("action.yml", "action.yaml"):  # the runner's own precedence
         path = urllib.parse.quote(f"{sub}/{name}" if sub else name)
         try:
             doc = api(f"repos/{slug}/contents/{path}?ref={sha}")
             text = base64.b64decode(doc["content"]).decode("utf-8", "replace")
             break
-        except Exception:  # try the other name; neither is a finding below
-            continue
+        except urllib.error.HTTPError as e:
+            if e.code != 404:  # only a definitive absence moves on to the next name
+                return [f"{at}: {name} unreadable (HTTP {e.code})"]
+        except Exception as e:  # fail closed
+            return [f"{at}: {name} unreadable ({e.__class__.__name__})"]
     if text is None:
-        return [f"{at}: no action.yml/action.yaml readable at the pinned commit"]
+        return [f"{at}: no action.yml/action.yaml at the pinned commit"]
     try:
         runs = yaml.load(text, Loader=StrLoader)["runs"]
         using = runs["using"]
@@ -355,17 +372,21 @@ def transitive(api, where, repo, sha, seen, depth):
     except Exception as e:
         return [f"{at}: composite steps unreadable ({e.__class__.__name__})"]
     for i, step in enumerate(steps):
-        uses = [v for k, v in step.value if key_of(k) == "uses"] if isinstance(step, yaml.MappingNode) else []
-        for u in uses:
+        keys = step.value if isinstance(step, yaml.MappingNode) else []
+        if any(not isinstance(k, yaml.ScalarNode) or "${{" in k.value for k, _ in keys):
+            found.append(f"{at}.runs.steps[{i}]: a mapping key that is not a plain string or holds an expression")
+        for k, u in keys:
+            if key_of(k) != "uses":
+                continue
             v = u.value if isinstance(u, yaml.ScalarNode) else None
             sw = f"{at}.runs.steps[{i}].uses"
             m = ACTION.fullmatch(v or "")
             if m:
                 check_executor(sw, "/".join(v.split("@")[0].split("/")[:2]), step, found)
                 found += transitive(api, sw, v.rsplit("@", 1)[0], m.group(2), seen, depth + 1)
-            elif v and v.startswith("./") and ".." not in v.split("/"):
-                found += transitive(api, sw, f"{slug}/{v[2:].rstrip('/')}".rstrip("/"), sha, seen, depth + 1)
-            elif not (v and DOCKER_USES.fullmatch(v)):
+            elif v and v.startswith("./"):
+                found.append(f"{sw}: a local action, resolved in the caller's workspace at run time: {v!r}")
+            elif not (v and DOCKER_USES.fullmatch(v)) or "${{" in (v or ""):
                 found.append(f"{sw}: not a full commit digest: {v!r}")
     return found
 

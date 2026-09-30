@@ -85,8 +85,10 @@ def api(table):
         seen.append(url)
         for suffix, body in table.items():
             if url.endswith(suffix):
+                if isinstance(body, Exception):
+                    raise body
                 return Resp(body)
-        raise OSError("404 " + url)
+        raise urllib_error().HTTPError(url, 404, "Not Found", {}, None)
     return urlopen, seen
 
 
@@ -130,7 +132,7 @@ class VerifyTags(unittest.TestCase):
         pin = [("w", "actions/checkout", SHA, "v7.0.1+x")]
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(M.urllib.request, "urlopen", f):
             (msg,) = M.verify_pins(pin)
-        self.assertIn("unresolvable (OSError)", msg)
+        self.assertIn("unresolvable (HTTPError)", msg)
         self.assertTrue(seen[0].endswith("/git/ref/tags/v7.0.1%2Bx"), seen)
 
 
@@ -172,7 +174,16 @@ class Transitive(unittest.TestCase):
 
     def test_no_manifest(self):
         (msg,) = self.judge({})[0]
-        self.assertIn("no action.yml/action.yaml readable at the pinned commit", msg)
+        self.assertIn("no action.yml/action.yaml at the pinned commit", msg)
+
+    def test_an_api_error_is_not_an_absence(self):
+        err = urllib_error().HTTPError("u", 503, "Unavailable", {}, None)
+        t = {f"/repos/o/a/contents/action.yml?ref={SHA}": err, **manifest("o/a", SHA, NODE, name="action.yaml")}
+        (msg,) = self.judge(t)[0]
+        self.assertIn("action.yml unreadable (HTTP 503)", msg)
+        t = {f"/repos/o/a/contents/action.yml?ref={SHA}": OSError("reset")}
+        (msg,) = self.judge(t)[0]
+        self.assertIn("action.yml unreadable (OSError)", msg)
 
     def test_manifest_without_runs(self):
         (msg,) = self.judge(manifest("o/a", SHA, "name: x\n"))[0]
@@ -182,18 +193,21 @@ class Transitive(unittest.TestCase):
         comp = ("runs:\n  using: composite\n  steps:\n"
                 f"    - uses: o/b@{OTHER}\n"
                 "    - uses: ./sub\n"
+                "    - \"${{ 'uses' }}\": docker://alpine:latest\n"
                 "    - uses: docker://alpine@sha256:" + "b" * 64 + "\n"
                 "    - uses: o/c@v1\n"
                 "    - uses: ../escape\n"
                 f"    - uses: docker/setup-qemu-action@{OTHER}\n"
                 "    - run: true\n      shell: bash\n")
         t = {**manifest("o/a", SHA, comp), **manifest("o/b", OTHER, NODE),
-             **manifest("o/a", SHA, NODE, sub="sub"), **manifest("docker/setup-qemu-action", OTHER, NODE)}
+             **manifest("docker/setup-qemu-action", OTHER, NODE)}
         out, _ = self.judge(t)
-        self.assertEqual(len(out), 3, out)
-        self.assertIn("runs.steps[3].uses: not a full commit digest: 'o/c@v1'", out[0])
-        self.assertIn("runs.steps[4].uses: not a full commit digest: '../escape'", out[1])
-        self.assertIn("docker/setup-qemu-action runs a container image of its own", out[2])
+        self.assertEqual(len(out), 5, out)
+        self.assertIn("runs.steps[1].uses: a local action, resolved in the caller's workspace at run time: './sub'", out[0])
+        self.assertIn("runs.steps[2]: a mapping key that is not a plain string or holds an expression", out[1])
+        self.assertIn("runs.steps[4].uses: not a full commit digest: 'o/c@v1'", out[2])
+        self.assertIn("runs.steps[5].uses: not a full commit digest: '../escape'", out[3])
+        self.assertIn("docker/setup-qemu-action runs a container image of its own", out[4])
 
     def test_composite_seen_once_and_depth_bounded(self):
         loop = f"runs:\n  using: composite\n  steps:\n    - uses: o/a@{SHA}\n"
@@ -255,6 +269,11 @@ class Main(unittest.TestCase):
         code, out = run(["--git", "HEAD"], cwd=d)
         self.assertEqual(code, 1)
         self.assertIn(".github/workflows/sub: a submodule where a workflow or action file is read", out)
+
+
+def urllib_error():
+    import urllib.error
+    return urllib.error
 
 
 def urllib_request():
