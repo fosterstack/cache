@@ -1224,7 +1224,7 @@ requirements:
       - id: REQ-REL-006-AC3
         given: a frozen release baseline
         when: it is changed
-        then: the change is an owner-ratified amendment recorded in the register, applied as a new fixed commit (as PR #139 was for row 73)
+        then: "the change is an owner-ratified amendment recorded in the register, applied as a new fixed commit (as PR #139 was for row 73)"
         verification: { method: inspection, release_blocking: false }
         status: approved
 

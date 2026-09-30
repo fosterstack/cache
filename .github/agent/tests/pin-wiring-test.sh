@@ -15,9 +15,14 @@ bad = []
 on = d.get("on", {})
 if "pull_request" not in on:
     bad.append("not triggered on pull_request")
+pr = on.get("pull_request") if isinstance(on, dict) else None
+if isinstance(pr, dict) and pr:
+    bad.append("pull_request is filtered: " + ", ".join(sorted(pr)))
 push = on.get("push") if isinstance(on, dict) else None
 if not isinstance(push, dict) or push.get("branches") != ["main"]:
     bad.append("not triggered on push to main")
+elif set(push) != {"branches"}:
+    bad.append("push is filtered: " + ", ".join(sorted(set(push) - {"branches"})))
 job = d.get("jobs", {}).get("allowlist", {})
 for k in ("if", "continue-on-error"):
     if k in job:
@@ -64,6 +69,10 @@ case_ step-weakened         bad "$pick['run'] = 'python3 .github/agent/bin/check
 case_ job-if-false          bad "d['jobs']['allowlist']['if'] = 'false'"
 case_ no-pull-request       bad "d['on'].pop('pull_request')"
 case_ push-not-main         bad "d['on']['push']['branches'] = ['release']"
+case_ pr-paths-filter       bad "d['on']['pull_request'] = {'paths': ['README.md']}"
+case_ pr-branches-filter    bad "d['on']['pull_request'] = {'branches': ['release']}"
+case_ push-paths-filter     bad "d['on']['push']['paths'] = ['README.md']"
+case_ push-paths-ignore     bad "d['on']['push']['paths-ignore'] = ['**']"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
 
 echo "pin-wiring: $pass passed, $failn failed"

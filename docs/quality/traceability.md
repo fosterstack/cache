@@ -578,9 +578,9 @@ A frozen release baseline shall be fixed at a named commit, and the freeze check
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-006-AC1 | Given a frozen release baseline; when the freeze check runs; then the baseline names the commit it is fixed at, and it is compared with the requirements file as of that commit; a baseline that names no commit, names a commit that cannot be read, or does not match the file at that commit fails. For v0.2.1 that commit is 326c459. | unit |  | approved | 7 item(s) |
+| REQ-REL-006-AC1 | Given a frozen release baseline; when the freeze check runs; then the baseline names the commit it is fixed at, and it is compared with the requirements file as of that commit; a baseline that names no commit, names a commit that cannot be read, or does not match the file at that commit fails. For v0.2.1 that commit is 326c459. | unit |  | approved | 8 item(s) |
 | REQ-REL-006-AC2 | Given a requirement or AC added or edited on main after a version is frozen; when the freeze check runs for that version; then it passes and the frozen baseline is unchanged; the new requirement or AC is introduced in the next version and appears when that version is frozen | unit |  | approved | 3 item(s) |
-| REQ-REL-006-AC3 | Given a frozen release baseline; when it is changed; then the change is an owner-ratified amendment recorded in the register, applied as a new fixed commit (as PR | inspection |  | approved | 1 item(s) |
+| REQ-REL-006-AC3 | Given a frozen release baseline; when it is changed; then the change is an owner-ratified amendment recorded in the register, applied as a new fixed commit (as PR #139 was for row 73) | inspection |  | approved | 1 item(s) |
 
 ### REQ-REL-007 — Every acceptance criterion traces to a test
 
@@ -591,7 +591,7 @@ Every acceptance criterion shall name the test that proves it, and every test th
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-REL-007-AC1 | Given the requirements and their mappings; when the requirements check runs; then every acceptance criterion has a mapping to evidence, or is listed as a residual with a reason; an unlisted acceptance criterion with no mapping, a residual without a reason, a residual for an unknown or already-mapped criterion all fail | unit |  | approved | 5 item(s) |
-| REQ-REL-007-AC2 | Given a test file anywhere in the repository (named *-test.sh, test_*.py or *_test.go) that declares acceptance criteria on a comment line `# proves: <AC>[, <AC>]` (`//` in Go, optional prose after an em dash), or a shell-test mapping to such a file; when the requirements check runs; then every declared criterion exists and is mapped back to that file (a shell-test mapping naming the file, or for Go a go-test mapping in its package), every shell-test mapping names an existing test file that declares the criterion, and a malformed declaration fails; anything else fails | unit |  | approved | 4 item(s) |
+| REQ-REL-007-AC2 | Given a test file anywhere in the repository (named *-test.sh, test_*.py or *_test.go) that declares acceptance criteria on a comment line `# proves: <AC>[, <AC>]` (`//` in Go, optional prose after an em dash), or a shell-test mapping to such a file; when the requirements check runs; then every declared criterion exists and is mapped back to that file (a shell-test mapping naming the file, or for Go a go-test mapping in its package), every shell-test mapping names an existing test file that declares the criterion, and a malformed declaration fails; anything else fails | unit |  | approved | 8 item(s) |
 
 ## Licensing
 

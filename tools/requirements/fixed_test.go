@@ -280,3 +280,23 @@ func TestTheNextVersionCarriesTheNewAC(t *testing.T) {
 		t.Fatalf("v0.3.0: %q", stderr)
 	}
 }
+
+// proves: REQ-REL-006-AC1 — fixed_at must name a commit: an annotated tag's object id is refused even
+// though git would peel it to one.
+func TestVerifyFreezeRejectsATagObjectAsFixedCommit(t *testing.T) {
+	richFixture(t)
+	commitFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	if out, err := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m", "t", "vtag").CombinedOutput(); err != nil {
+		t.Fatalf("git tag: %v (%s)", err, out)
+	}
+	out, _ := exec.Command("git", "rev-parse", "vtag").Output()
+	tagObj := strings.TrimSpace(string(out))
+	setFixedAt(t, "v0.2.0", tagObj)
+	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "fixed_at "+tagObj+" is not a commit") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}

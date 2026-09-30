@@ -632,14 +632,18 @@ func validate(f File, m Mappings) []string {
 	return errs
 }
 
-// testFileRe is what a test file is named (anywhere in the repository): *-test.sh, test_*.py, *_test.go.
-var testFileRe = regexp.MustCompile(`(^|/)([A-Za-z0-9._-]+-test\.sh|test_[A-Za-z0-9._-]+\.py|[A-Za-z0-9._-]+_test\.go)$`)
+// testFileRe is what a test file is named (anywhere in the repository): any basename ending in
+// -test.sh, starting test_ and ending .py, or ending _test.go.
+var testFileRe = regexp.MustCompile(`(^|/)([^/]*-test\.sh|test_[^/]*\.py|[^/]*_test\.go)$`)
 
-// declRe finds a declaration line: a comment (`#`, or `//` in Go) whose first word is `proves`.
-var declRe = regexp.MustCompile(`^\s*(#|//)\s*proves\b(.*)$`)
+// anyProves finds every comment line whose first word is `proves`, in either comment style.
+var anyProves = regexp.MustCompile(`^\s*(#|//)\s*proves\b(.*)$`)
 
-// acIDRe is one acceptance-criterion id.
-var acIDRe = regexp.MustCompile(`^REQ-[A-Z0-9]+-[0-9]{3}-AC[0-9]+$`)
+// declGrammar is the one accepted shape after the marker: `proves: <AC>[, <AC>...]`, optionally followed
+// by ` — ` and prose.
+var declGrammar = regexp.MustCompile(`^: (REQ-[A-Z0-9]+-[0-9]{3}-AC[0-9]+(?:, REQ-[A-Z0-9]+-[0-9]{3}-AC[0-9]+)*)(?: — .*)?$`)
+
+var goTestFunc = regexp.MustCompile(`^func Test[A-Za-z0-9_]*\(`)
 
 // testFiles lists every regular file in the repository named like a test (never inside .git); a
 // directory that cannot be read is an error, never "holds no tests".
@@ -660,31 +664,63 @@ func testFiles() (files, errs []string) {
 	return files, errs // WalkDir visits in lexical order
 }
 
-// declaredACs reads a test file's declarations: `proves: <AC>[, <AC>...]`, optionally followed by an em
-// dash and prose. A `proves` comment in any other shape is a problem, never ignored; a file that cannot
-// be read is an error, never "declares nothing".
+// headerLines marks the lines where a declaration may stand: the file's leading comment block (after
+// a shebang) and, in Go, the doc comment directly above each `func Test`. Anywhere else — a heredoc, a
+// string, a docstring — a `proves` line is never a declaration.
+func headerLines(lines []string, marker string) map[int]bool {
+	ok := map[int]bool{}
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if i == 0 && strings.HasPrefix(t, "#!") {
+			continue
+		}
+		if t != "" && !strings.HasPrefix(t, "#") && !strings.HasPrefix(t, "//") {
+			break // a comment in either style extends the header; the marker itself is judged per line
+		}
+		ok[i] = true
+	}
+	if marker == "//" {
+		for i, line := range lines {
+			if goTestFunc.MatchString(line) {
+				for j := i - 1; j >= 0 && strings.HasPrefix(strings.TrimSpace(lines[j]), "//"); j-- {
+					ok[j] = true
+				}
+			}
+		}
+	}
+	return ok
+}
+
+// declaredACs reads a test file's declarations. A `proves` comment that is misplaced, uses the other
+// language's comment marker, or breaks the grammar is a problem, never ignored; a file that cannot be
+// read is an error, never "declares nothing".
 func declaredACs(file string) (acs, problems []string, err error) {
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, nil, err
 	}
-	for i, line := range strings.Split(string(b), "\n") {
-		m := declRe.FindStringSubmatch(line)
+	marker := "#"
+	if strings.HasSuffix(file, ".go") {
+		marker = "//"
+	}
+	lines := strings.Split(string(b), "\n")
+	header := headerLines(lines, marker)
+	for i, line := range lines {
+		m := anyProves.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
-		rest, ok := strings.CutPrefix(m[2], ":")
-		ids, _, _ := strings.Cut(rest, "—")
-		tokens := strings.FieldsFunc(ids, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
-		valid := ok && len(tokens) > 0
-		for _, tok := range tokens {
-			valid = valid && acIDRe.MatchString(tok)
+		where := fmt.Sprintf("%s:%d", file, i+1)
+		switch g := declGrammar.FindStringSubmatch(m[2]); {
+		case !header[i]:
+			problems = append(problems, where+": a `proves` line outside the file's header (a heredoc, string or docstring is never a declaration)")
+		case m[1] != marker:
+			problems = append(problems, fmt.Sprintf("%s: a `proves` declaration must be a %q comment in this file", where, marker))
+		case g == nil:
+			problems = append(problems, fmt.Sprintf("%s: a malformed `proves` declaration (want `proves: <AC>[, <AC>]`, optional ` — prose`): %q", where, strings.TrimSpace(line)))
+		default:
+			acs = append(acs, strings.Split(g[1], ", ")...)
 		}
-		if !valid {
-			problems = append(problems, fmt.Sprintf("%s:%d: a malformed `proves` declaration (want `proves: <AC>[, <AC>]`, optional prose after —): %q", file, i+1, strings.TrimSpace(line)))
-			continue
-		}
-		acs = append(acs, tokens...)
 	}
 	return acs, problems, nil
 }
@@ -697,9 +733,18 @@ func shellTestProblem(ref, ac string) string {
 	if st, err := os.Lstat(ref); err != nil || !st.Mode().IsRegular() {
 		return fmt.Sprintf("shell-test %s does not exist", ref)
 	}
-	declared, _, err := declaredACs(ref)
+	// no symlink anywhere on the path: the file proved must be the file in this repository
+	root, rerr := filepath.EvalSymlinks(".")
+	real, ferr := filepath.EvalSymlinks(ref)
+	if rerr != nil || ferr != nil || filepath.Join(root, ref) != filepath.Join(root, real) {
+		return fmt.Sprintf("shell-test %s runs through a symlink", ref)
+	}
+	declared, problems, err := declaredACs(ref)
 	if err != nil {
 		return fmt.Sprintf("shell-test %s cannot be read: %v", ref, err)
+	}
+	if len(problems) > 0 {
+		return problems[0]
 	}
 	for _, d := range declared {
 		if d == ac {
@@ -756,10 +801,7 @@ func traceGaps(f File, m Mappings, u Unmapped) []string {
 		}
 		listed[r.AC] = true
 	}
-	for _, r := range f.Requirements {
-		if r.Deprecated {
-			continue
-		}
+	for _, r := range f.Requirements { // every AC, deprecated or not (row 79 makes no exception)
 		for _, ac := range r.ACs {
 			if !mapped[ac.ID] && !listed[ac.ID] {
 				errs = append(errs, fmt.Sprintf("%s has no test mapping and is not a listed residual (%s)", ac.ID, unmappedFile))

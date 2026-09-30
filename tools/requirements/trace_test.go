@@ -153,10 +153,12 @@ func TestEveryDeclaredACExistsAndMapsBack(t *testing.T) {
 	}
 }
 
-// proves: REQ-REL-007-AC1 — a deprecated requirement needs no test; its ACs are not gaps.
-func TestCheckSkipsDeprecatedRequirements(t *testing.T) {
+// proves: REQ-REL-007-AC1 — a deprecated requirement's AC still needs a test or a named residual (row 79
+// makes no exception).
+func TestCheckCoversDeprecatedRequirementsToo(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", "    deprecated: true\n    deprecated_reason: gone"))
-	if code, stderr := checkAfterGenerate(t); code != 0 {
+	code, stderr := checkAfterGenerate(t)
+	if code != 1 || !strings.Contains(stderr, "REQ-TEST-001-AC1 has no test mapping") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }
@@ -203,5 +205,81 @@ func TestADeclarationMayCarryProse(t *testing.T) {
 	writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1 — the one fixture AC\n")
 	if code, stderr := checkAfterGenerate(t); code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+// proves: REQ-REL-007-AC2 — only a header comment declares: a `proves` line in a heredoc, a docstring or
+// after code is a problem (never a declaration), the marker must be the file's own, and the grammar is exact.
+func TestDeclarationsOnlyInTheHeaderAndInGrammar(t *testing.T) {
+	cases := map[string]struct{ rel, content, want string }{
+		"heredoc":         {"bin/gen-test.sh", "#!/usr/bin/env bash\ncat <<EOF\n# proves: REQ-TEST-001-AC1\nEOF\n", "bin/gen-test.sh:3: a `proves` line outside the file's header"},
+		"docstring":       {"py/test_doc.py", "\"\"\"Example:\n# proves: REQ-TEST-001-AC1\n\"\"\"\n", "py/test_doc.py:2: a `proves` line outside the file's header"},
+		"after code":      {"bin/late-test.sh", "set -e\n# proves: REQ-TEST-001-AC1\n", "bin/late-test.sh:2: a `proves` line outside the file's header"},
+		"wrong marker":    {"py/test_mark.py", "// proves: REQ-TEST-001-AC1\n", "py/test_mark.py:1: a `proves` declaration must be a \"#\" comment"},
+		"trailing comma":  {"bin/comma-test.sh", "# proves: REQ-TEST-001-AC1,\n", "a malformed `proves` declaration"},
+		"space separated": {"bin/space-test.sh", "# proves: REQ-TEST-001-AC1 REQ-TEST-001-AC1\n", "a malformed `proves` declaration"},
+		"Go body":         {"internal/y/y_test.go", "package y\n\nvar s = `\n// proves: REQ-TEST-001-AC1\n`\n", "internal/y/y_test.go:4: a `proves` line outside the file's header"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			fixtureWithMappings(t, oneMapped)
+			writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n")
+			writeFile(t, c.rel, c.content)
+			code, _, stderr := runCommand(t, "check")
+			if code != 1 || !strings.Contains(stderr, c.want) {
+				t.Fatalf("code=%d stderr=%q, want %q", code, stderr, c.want)
+			}
+		})
+	}
+}
+
+// proves: REQ-REL-007-AC2 — a Go test declares in the doc comment directly above its func, or the header.
+func TestGoDeclarationAboveTheTestFunc(t *testing.T) {
+	fixtureWithMappings(t, "mappings:\n  - ac: REQ-TEST-001-AC1\n    evidence:\n      - type: go-test\n        ref: internal/z:TestZ\n")
+	writeFile(t, "internal/z/z_test.go", "package z\n\nimport \"testing\"\n\n// proves: REQ-TEST-001-AC1 — the one\nfunc TestZ(t *testing.T) {}\n")
+	if code, stderr := checkAfterGenerate(t); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+// proves: REQ-REL-007-AC2 — a mapped file reached through a symlinked directory is not this repository's
+// file; a malformed declaration in a mapped file is reported, not skipped.
+func TestShellTestThroughASymlinkOrWithAProblemFails(t *testing.T) {
+	t.Run("symlinked parent", func(t *testing.T) {
+		outside := t.TempDir()
+		fixtureWithMappings(t, strings.Replace(oneMapped, "bin/thing-test.sh", "linked/x-test.sh", 1))
+		if err := os.WriteFile(filepath.Join(outside, "x-test.sh"), []byte("# proves: REQ-TEST-001-AC1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, "linked"); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "shell-test linked/x-test.sh runs through a symlink") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+	t.Run("malformed in the mapped file", func(t *testing.T) {
+		fixtureWithMappings(t, oneMapped)
+		writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n# proves everything\n")
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "a malformed `proves` declaration") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+}
+
+// proves: REQ-REL-007-AC2 — any name matching *-test.sh / test_*.py / *_test.go is a test file.
+func TestOddTestFileNamesAreFound(t *testing.T) {
+	for _, rel := range []string{"bin/other name-test.sh", "bin/é-test.sh", "bin/-test.sh", "x/test_.py"} {
+		t.Run(rel, func(t *testing.T) {
+			fixtureWithMappings(t, oneMapped)
+			writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n")
+			writeFile(t, rel, "# proves: REQ-GHOST-009-AC1\n")
+			code, _, stderr := runCommand(t, "check")
+			if code != 1 || !strings.Contains(stderr, rel+" declares REQ-GHOST-009-AC1, which is not an AC") {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+		})
 	}
 }
