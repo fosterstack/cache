@@ -497,6 +497,65 @@ case_ container-options    bad "$head
     steps:
       - run: true"
 
+# --- adversarial round 8 (audits/2026-09-30/pins/round8): only positively classified shapes pass
+case_ container-env-ok     ok  "$head
+    container:
+      image: alpine@$DIG
+      env:
+        FOO: bar
+      credentials:
+        username: u
+        password: p
+    steps:
+      - run: true"
+case_ service-ports        bad "$head
+    services:
+      db:
+        image: alpine@$DIG
+        ports:
+          - '8080:80 --entrypoint /bin/sh alpine:latest'
+    steps:
+      - run: true"
+case_ container-ports      bad "$head
+    container:
+      image: alpine@$DIG
+      ports: ['80']
+    steps:
+      - run: true"
+case_ container-volumes    bad "$head
+    container:
+      image: alpine@$DIG
+      volumes: ['/x:/y']
+    steps:
+      - run: true"
+case_ container-env-name   bad "$head
+    container:
+      image: alpine@$DIG
+      env:
+        'A B': x
+    steps:
+      - run: true"
+case_ docker-entrypoint    bad "$head
+    steps:
+      - uses: docker://alpine@$DIG
+        with:
+          entrypoint: '/bin/echo\" alpine:latest \"x'"
+case_ docker-args          bad "$head
+    steps:
+      - uses: docker://alpine@$DIG
+        with:
+          args: x"
+case_ docker-plain-input   ok  "$head
+    steps:
+      - uses: docker://alpine@$DIG
+        with:
+          some_input: x"
+case_ unclassified-action  bad "$head
+    steps:
+      - uses: addnab/docker-run-action@$SHA # v3
+        with:
+          image: alpine:latest"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"

@@ -27,8 +27,14 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              no local action (./path at step level): its action.yml is read from the workspace at
              run time, where a script can rewrite it after this check has passed.
   services:  a mapping; each service is an image string or a mapping with an image.
-  container:/service `options:` is refused: the runner passes it to docker before the image, where
-             it can name a different image (this repo uses none).
+  container:/service mappings may carry only image, credentials and env (plainly named variables):
+             the runner splices `options`, `ports` and `volumes` unquoted into `docker create` ahead
+             of the image, where any of them can name another image (this repo uses none).
+  Every action must be CLASSIFIED (ACTIONS below, or EXECUTOR_ALLOWED): an action we have not
+             classified may run an image we hand it through an input, so it fails closed until a
+             reviewed change to this file says what it runs.
+  docker://  steps take no `entrypoint` or `args` input (the runner quotes them into the docker
+             command unsafely) and only plain ASCII input names.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -83,6 +89,30 @@ DOCKER_USES = re.compile(rf"docker://{REF}{DIGEST}")
 IMAGE = re.compile(rf"(docker://)?{REF}{DIGEST}")
 LOCAL_WORKFLOW = re.compile(r"\./\.github/workflows/([A-Za-z0-9._-]+\.ya?ml)")
 COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
+# every non-executor action this repo uses (owner/repo, lower case) -> why no input we pass it names
+# an image it runs. Positively classified: an action missing here fails closed.
+ACTIONS = {
+    "actions/attest": "node: signs attestations; no image run",
+    "actions/attest-build-provenance": "composite over actions/attest; no image run",
+    "actions/checkout": "node: git checkout",
+    "actions/create-github-app-token": "node: mints a token",
+    "actions/dependency-review-action": "node: GitHub API diff review",
+    "actions/download-artifact": "node: artifact download",
+    "actions/github-script": "node: runs our inline script (itself reviewed as workflow text)",
+    "actions/setup-go": "node: installs the Go toolchain by version (a binary, outside this check)",
+    "actions/setup-java": "node: installs a JDK by version (a binary, outside this check)",
+    "actions/setup-python": "node: installs Python by version (a binary, outside this check)",
+    "actions/upload-artifact": "node: artifact upload",
+    "anchore/sbom-action": "node: syft catalogs an image as DATA (its `image` input is read, never run)",
+    "anchore/scan-action": "node: grype scans an image as DATA (its `image` input is read, never run)",
+    "aws-actions/configure-aws-credentials": "node: OIDC credentials",
+    "dependabot/fetch-metadata": "node: PR metadata",
+    "github/codeql-action": "node: CodeQL init/autobuild/analyze/upload-sarif",
+    "golangci/golangci-lint-action": "node: installs golangci-lint by version (a binary)",
+    "goreleaser/goreleaser-action": "node: installs goreleaser by version (a binary)",
+    "ossf/scorecard-action": "docker: its own image, fixed inside the pinned commit (owner, Sep 30)",
+    "sigstore/cosign-installer": "composite: installs cosign by version with checksum (a binary)",
+}
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -214,6 +244,19 @@ def walk(node, path, out, bad, where):
 
 # ---------------------------------------------------------------------------- the rules
 
+def container_keys(where, node, bad):
+    """A job container or service mapping: only image, credentials, and env with plain names."""
+    for k, v in node.value:
+        name = k.value if isinstance(k, yaml.ScalarNode) else None
+        if name == "env" and isinstance(v, yaml.MappingNode):
+            for kk, _ in v.value:
+                if not (isinstance(kk, yaml.ScalarNode) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", kk.value)):
+                    bad.append(f"{where}.env: a variable name that is not plain: {getattr(kk, 'value', None)!r}")
+        elif name not in ("image", "credentials"):
+            bad.append(f"{where}.{name}: refused (only image, credentials and env; the runner splices "
+                       f"the rest into the docker command ahead of the image)")
+
+
 def check_image(where, node, bad):
     if not isinstance(node, yaml.ScalarNode):
         return bad.append(f"{where}: image is not a plain string")
@@ -301,6 +344,10 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
         return bad.append(f"{where}: local reference is not a job-level call of a workflow file in "
                           f".github/workflows/ (local actions are not allowed): {v!r}")
     m = ACTION.fullmatch(v)
+    ident = "/".join(v.split("@")[0].split("/")[:2]).lower() if m else ""
+    if m and ident not in ACTIONS and ident not in EXECUTOR_ALLOWED and not (len(path) == 3 and path[0] == "jobs"):
+        bad.append(f"{where}: {ident} is not a classified action (add it to ACTIONS with what it runs, "
+                   f"or to EXECUTOR_ALLOWED): {v!r}")
     if m and len(path) == 3 and path[0] == "jobs":
         return bad.append(f"{where}: a remote reusable workflow is refused (its jobs run actions this check "
                           f"never reads; vendor it under .github/workflows/): {v!r}")
@@ -317,6 +364,14 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
         check_executor(where, "/".join(v.split("@")[0].split("/")[:2]), parent, bad)
         return
     if DOCKER_USES.fullmatch(v):
+        for k, w in parent.value if isinstance(parent, yaml.MappingNode) else []:
+            if key_of(k) != "with":
+                continue
+            names = [kk.value if isinstance(kk, yaml.ScalarNode) else None
+                     for kk, _ in (w.value if isinstance(w, yaml.MappingNode) else [(None, None)])]
+            for n in names:
+                if n is None or not re.fullmatch(r"[a-z0-9_-]+", n) or n in ("entrypoint", "args"):
+                    bad.append(f"{where}: docker:// input {n!r} is refused (entrypoint/args, or not a plain name)")
         return
     bad.append(f"{where}: not a full commit digest: {v!r}")
 
@@ -377,8 +432,7 @@ def check_file(tree, rel, pins, bad):
             else:
                 if not any(key_of(k) == "image" for k, _ in node.value):
                     bad.append(f"{where}: container mapping without an image")  # its image: is checked by position
-                if any(key_of(k) == "options" for k, _ in node.value):
-                    bad.append(f"{where}.options: refused (docker options can name another image)")
+                container_keys(where, node, bad)
         elif key == "services":
             if not isinstance(node, yaml.MappingNode):
                 bad.append(f"{where}: services is not a mapping")
@@ -389,8 +443,7 @@ def check_file(tree, rel, pins, bad):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
                         bad.append(f"{sw}: service without an image")
-                    if any(key_of(kk) == "options" for kk, _ in v.value):
-                        bad.append(f"{sw}.options: refused (docker options can name another image)")
+                    container_keys(sw, v, bad)
                     for vv in imgs:
                         check_image(f"{sw}.image", vv, bad)
                 else:
