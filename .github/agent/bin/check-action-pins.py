@@ -26,7 +26,9 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              Nothing else: no tag, branch, short or uppercase SHA, ${{ }} expression, non-string, and
              no local action (./path at step level): its action.yml is read from the workspace at
              run time, where a script can rewrite it after this check has passed.
-  services:  a mapping; each service is an image string or a mapping with an image.
+  services:  a mapping of plain identifiers (the runner passes the name unquoted to docker); each
+             service is an image string or a mapping with an image.
+  An action path with a `.`, `..` or empty segment is refused (it could reach another action).
   container:/service mappings may carry only image, credentials and env (plainly named variables):
              the runner splices `options`, `ports` and `volumes` unquoted into `docker create` ahead
              of the image, where any of them can name another image (this repo uses none).
@@ -377,6 +379,8 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
         return bad.append(f"{where}: local reference is not a job-level call of a workflow file in "
                           f".github/workflows/ (local actions are not allowed): {v!r}")
     m = ACTION.fullmatch(v)
+    if m and any(seg in (".", "..", "") for seg in v.split("@")[0].split("/")):
+        return bad.append(f"{where}: an action path with a `.`/`..`/empty segment is refused: {v!r}")
     ident = "/".join(v.split("@")[0].split("/")[:2]).lower() if m else ""
     if m and ident not in ACTIONS and ident not in EXECUTOR_ALLOWED and not (len(path) == 3 and path[0] == "jobs"):
         bad.append(f"{where}: {ident} is not a classified action (add it to ACTIONS with what it runs, "
@@ -466,6 +470,9 @@ def check_file(tree, rel, pins, bad):
                 continue
             for k, v in node.value:
                 sw = f"{where}.{getattr(k, 'value', '?')}"
+                if not (isinstance(k, yaml.ScalarNode) and re.fullmatch(r"[A-Za-z0-9_-]+", k.value)):
+                    bad.append(f"{sw}: a service name that is not a plain identifier (the runner "
+                               f"passes it unquoted to docker)")
                 if isinstance(v, yaml.MappingNode):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:

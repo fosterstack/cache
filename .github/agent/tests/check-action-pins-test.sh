@@ -575,6 +575,19 @@ case_ gate-pin-bumped-ok   ok  "$head
     steps:
       - run: true" "sed -i.bak -E 's/@[0-9a-f]{40} # v7.0.1/@$SHA # v7.0.2/' .github/workflows/agent-review-gate.yml && rm .github/workflows/*.bak"
 
+# --- adversarial round 10 (audits/2026-09-30/pins/round10)
+case_ action-path-traversal bad "$head
+    steps:
+      - uses: actions/checkout/../../../docker/setup-qemu-action/$SHA@$SHA # v7.0.1
+        with:
+          image: tonistiigi/binfmt:latest"
+case_ service-name-inject  bad "$head
+    services:
+      'db --entrypoint /bin/sh alpine:latest --':
+        image: alpine@$DIG
+    steps:
+      - run: true"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
