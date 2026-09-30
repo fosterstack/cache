@@ -1216,9 +1216,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-006-AC2
-        given: a new or edited requirement on main after a version is frozen
+        given: a requirement or AC added or edited on main after a version is frozen
         when: the freeze check runs for that version
-        then: it passes; the change appears in a baseline only when its own version is frozen
+        then: it passes and the frozen baseline is unchanged; the new requirement or AC is introduced in the next version and appears when that version is frozen
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-006-AC3
@@ -1249,9 +1249,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-007-AC2
-        given: a script test mapped to an acceptance criterion, or a test file declaring one (`# proves:`)
+        given: "a test file anywhere in the repository (named *-test.sh, test_*.py or *_test.go) that declares acceptance criteria on a comment line `# proves: <AC>[, <AC>]` (`//` in Go, optional prose after an em dash), or a shell-test mapping to such a file"
         when: the requirements check runs
-        then: the mapped file exists under a test directory and declares that criterion, and every declared criterion exists and is mapped back to the file that declares it; anything else fails
+        then: "every declared criterion exists and is mapped back to that file (a shell-test mapping naming the file, or for Go a go-test mapping in its package), every shell-test mapping names an existing test file that declares the criterion, and a malformed declaration fails; anything else fails"
         verification: { method: unit, release_blocking: false }
         status: approved
 

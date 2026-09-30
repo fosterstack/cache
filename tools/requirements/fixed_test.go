@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -153,7 +154,8 @@ func TestVerifyFreezeRejectsABaselineWithoutFixedCommit(t *testing.T) {
 	}
 }
 
-// proves: REQ-REL-006-AC1 — a fixed commit that cannot be read fails.
+// proves: REQ-REL-006-AC1 — a fixed commit that cannot be read fails: an id that is not a commit here,
+// and a commit whose tree holds no requirements file.
 func TestVerifyFreezeRejectsAnUnreadableFixedCommit(t *testing.T) {
 	richFixture(t)
 	commitFixture(t)
@@ -162,8 +164,23 @@ func TestVerifyFreezeRejectsAnUnreadableFixedCommit(t *testing.T) {
 	}
 	setFixedAt(t, "v0.2.0", strings.Repeat("0", 40))
 	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
-	if code != 1 || !strings.Contains(stderr, "cannot read requirements/requirements.yaml at "+strings.Repeat("0", 40)) {
-		t.Fatalf("code=%d stderr=%q", code, stderr)
+	if code != 1 || !strings.Contains(stderr, "fixed_at "+strings.Repeat("0", 40)+" is not a commit") {
+		t.Fatalf("absent commit: code=%d stderr=%q", code, stderr)
+	}
+	for _, args := range [][]string{
+		{"rm", "-q", "--cached", "requirements/requirements.yaml"},
+		{"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "no requirements file here"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	out, _ := exec.Command("git", "rev-parse", "HEAD").Output()
+	empty := strings.TrimSpace(string(out))
+	setFixedAt(t, "v0.2.0", empty)
+	code, _, stderr = runCommand(t, "verify-freeze", "v0.2.0")
+	if code != 1 || !strings.Contains(stderr, "cannot read requirements/requirements.yaml at "+empty) {
+		t.Fatalf("commit without the file: code=%d stderr=%q", code, stderr)
 	}
 }
 
@@ -194,5 +211,72 @@ func TestFreezeFailsWithoutACommit(t *testing.T) {
 	code, _, stderr := runCommand(t, "freeze", "v0.2.0")
 	if code != 1 || !strings.Contains(stderr, "resolve the commit to fix") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+// pkgDir is the package directory, captured before any test changes the working directory.
+var pkgDir, _ = os.Getwd()
+
+// proves: REQ-REL-006-AC1 — the repository's own v0.2.1 baseline names 326c459 itself (not merely a
+// commit with identical bytes).
+func TestTheRealV021BaselineIsFixedAt326c459(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(pkgDir, "..", "..", "requirements", "releases", "v0.2.1.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fb frozenBaseline
+	if err := yaml.Unmarshal(raw, &fb); err != nil {
+		t.Fatal(err)
+	}
+	if fb.FixedAt != "326c45965bae82b8ca749b84231a866518d9e5ea" {
+		t.Fatalf("v0.2.1 fixed_at = %q, want 326c45965bae82b8ca749b84231a866518d9e5ea (register row 80)", fb.FixedAt)
+	}
+}
+
+// proves: REQ-REL-006-AC2 — a new AC (on an existing requirement) and an edited criterion, committed on
+// main, leave the frozen version green and unchanged; the new AC appears when the NEXT version is frozen.
+func TestTheNextVersionCarriesTheNewAC(t *testing.T) {
+	richFixture(t)
+	commitFixture(t)
+	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("freeze failed: %s", stderr)
+	}
+	before, _ := os.ReadFile("requirements/releases/v0.2.0.yaml")
+	raw, _ := os.ReadFile("requirements/requirements.yaml")
+	grown := strings.Replace(string(raw), "        then: it still responds\n", `        then: it still responds, reworded
+        verification: { method: manual }
+        status: approved
+      - id: REQ-PROTO-001-AC3
+        given: a later context
+        when: a later action
+        then: a later outcome
+`, 1)
+	if grown == string(raw) {
+		t.Fatal("fixture edit did not apply")
+	}
+	grown = strings.Replace(grown, "        then: a later outcome\n        verification: { method: manual }\n", "        then: a later outcome\n        verification: { method: unit, release_blocking: true }\n", 1)
+	if err := os.WriteFile("requirements/requirements.yaml", []byte(grown), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitFixture(t)
+	if code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0"); code != 0 {
+		t.Fatalf("v0.2.0 turned red after a change on main: %q", stderr)
+	}
+	after, _ := os.ReadFile("requirements/releases/v0.2.0.yaml")
+	if string(after) != string(before) {
+		t.Fatal("the frozen v0.2.0 baseline file changed")
+	}
+	if strings.Contains(string(after), "REQ-PROTO-001-AC3") {
+		t.Fatal("the new AC leaked into v0.2.0")
+	}
+	if code, _, stderr := runCommand(t, "freeze", "v0.3.0"); code != 0 {
+		t.Fatalf("freeze v0.3.0 failed: %s", stderr)
+	}
+	next, _ := os.ReadFile("requirements/releases/v0.3.0.yaml")
+	if !strings.Contains(string(next), "REQ-PROTO-001-AC3") {
+		t.Fatalf("the new AC is missing from the next version's baseline:\n%s", next)
+	}
+	if code, _, stderr := runCommand(t, "verify-freeze", "v0.3.0"); code != 0 {
+		t.Fatalf("v0.3.0: %q", stderr)
 	}
 }

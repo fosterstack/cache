@@ -250,8 +250,9 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: script-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
-      - { type: script-test, ref: ".github/agent/bin/tests/test_check_action_pins.py" }
+      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_check_action_pins.py" }
+      - { type: shell-test, ref: "bin/pin-wiring-test.sh" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
   - ac: REQ-REL-006-AC1
     evidence:
@@ -260,21 +261,26 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsAnUnreadableFixedCommit" }
       - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsTheWrongFixedCommit" }
       - { type: go-test, ref: "tools/requirements:TestFreezeFailsWithoutACommit" }
+      - { type: go-test, ref: "tools/requirements:TestTheRealV021BaselineIsFixedAt326c459" }
       - { type: workflow-job, ref: ".github/workflows/requirements.yml:requirements (verify-freeze v0.2.1, fixed at 326c459)" }
   - ac: REQ-REL-006-AC2
     evidence:
       - { type: go-test, ref: "tools/requirements:TestVerifyFreezeIgnoresMainAfterTheFixedCommit" }
       - { type: go-test, ref: "tools/requirements:TestVerifyFreezeIgnoresTheWorkingTree" }
+      - { type: go-test, ref: "tools/requirements:TestTheNextVersionCarriesTheNewAC" }
   - ac: REQ-REL-006-AC3
     evidence:
-      - { type: inspection, ref: "register row 80 sentence 3; a baseline change is a reviewed PR citing its register row (PR #139 / row 73)" }
+      - { type: inspection, ref: "Inspected Sep 30 (git log v0.2.1..HEAD -- requirements/releases/v0.2.1.yaml): since the tag the baseline changed only in 326c459 (#139, re-freeze under row 73, ratified Sep 29) and in the row-80 PR (fixed_at, ratified Sep 30); each change is a PR citing its register row" }
   - ac: REQ-REL-007-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestCheckFailsForAnACWithNoTest" }
       - { type: go-test, ref: "tools/requirements:TestCheckPassesForAMappedAC" }
       - { type: go-test, ref: "tools/requirements:TestCheckAcceptsANamedResidual" }
       - { type: go-test, ref: "tools/requirements:TestCheckRejectsABadResidual" }
+      - { type: go-test, ref: "tools/requirements:TestCheckSkipsDeprecatedRequirements" }
   - ac: REQ-REL-007-AC2
     evidence:
       - { type: go-test, ref: "tools/requirements:TestScriptTestMappingMustPointAtADeclaringTestFile" }
       - { type: go-test, ref: "tools/requirements:TestEveryDeclaredACExistsAndMapsBack" }
+      - { type: go-test, ref: "tools/requirements:TestUnreadableTestFilesFail" }
+      - { type: go-test, ref: "tools/requirements:TestADeclarationMayCarryProse" }

@@ -326,6 +326,10 @@ func TestRunCLIGenerateFailsWhenOutputUnwritable(t *testing.T) {
 
 func TestRunCLICheckFreshStaleAndMissing(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
+	// this test is about matrix freshness: its one AC is a named residual (REQ-REL-007-AC1)
+	if err := os.WriteFile("test-evidence/unmapped.yaml", []byte("unmapped:\n  - ac: REQ-TEST-001-AC1\n    reason: fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if code, _, _ := runCommand(t, "generate"); code != 0 {
 		t.Fatal("generate failed")
 	}
@@ -401,7 +405,7 @@ func TestFreezeWritesUnapprovedBaseline(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr)
 	}
-	if !strings.Contains(stdout, "wrote requirements/releases/v0.2.0.yaml (2 release-blocking ACs, UNAPPROVED)") {
+	if !strings.Contains(stdout, "wrote requirements/releases/v0.2.0.yaml (2 release-blocking ACs, fixed at ") {
 		t.Fatalf("stdout %q lacks summary", stdout)
 	}
 	raw, err := os.ReadFile("requirements/releases/v0.2.0.yaml")
@@ -496,10 +500,14 @@ func TestFreezeFailsWhenRequirementsUnreadable(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
 	// the file exists in the working tree (so runCLI stays put) but not in the commit being frozen
 	commitFixture(t)
-	if out, err := exec.Command("git", "rm", "-q", "--cached", "requirements/requirements.yaml").CombinedOutput(); err != nil {
-		t.Fatalf("git rm: %v (%s)", err, out)
+	for _, args := range [][]string{
+		{"rm", "-q", "--cached", "requirements/requirements.yaml"},
+		{"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "drop it from the commit"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
 	}
-	commitFixture(t)
 	code, _, stderr := runCommand(t, "freeze", "v1.0.0")
 	if code != 1 || !strings.Contains(stderr, "read requirements/requirements.yaml at") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
