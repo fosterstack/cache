@@ -65,6 +65,17 @@ class Resp:
         return self.body
 
 
+def manifest(slug, sha, text, name="action.yml", sub=""):
+    """A contents-API answer for <slug>/<sub>/<name> at <sha>."""
+    import base64
+    path = f"{sub}/{name}" if sub else name
+    return {f"/repos/{slug}/contents/{path}?ref={sha}": {"content": base64.b64encode(text.encode()).decode()}}
+
+
+NODE = "runs:\n  using: node24\n  main: index.js\n"
+CHECKOUT = manifest("actions/checkout", SHA, NODE)
+
+
 def api(table):
     """urlopen stand-in: answers from {url-suffix: body}; anything else raises (like a 404)."""
     seen = []
@@ -84,48 +95,124 @@ class VerifyTags(unittest.TestCase):
 
     def test_no_token(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(M.verify_tags(self.PIN), ["--verify-tags: GH_TOKEN is not set"])
+            self.assertEqual(M.verify_pins(self.PIN), ["--verify-tags: GH_TOKEN is not set"])
 
     def test_lightweight_tag_matches(self):
         f, seen = api({"/repos/actions/checkout/git/ref/tags/v7.0.1":
-                       {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}})
+                       {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}, **CHECKOUT})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(M.urllib.request, "urlopen", f):
-            self.assertEqual(M.verify_tags(self.PIN * 2), [])
-        self.assertEqual(len(seen), 1)  # one lookup per (repo, tag)
+            self.assertEqual(M.verify_pins(self.PIN * 2), [])
+        self.assertEqual(len(seen), 2)  # one tag lookup and one manifest read per pinned action
 
     def test_annotated_tag_is_followed_to_its_commit(self):
         f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "tag", "sha": TAGOBJ}},
-                    f"/git/tags/{TAGOBJ}": {"object": {"type": "commit", "sha": SHA}}})
+                    f"/git/tags/{TAGOBJ}": {"object": {"type": "commit", "sha": SHA}}, **CHECKOUT})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(M.urllib.request, "urlopen", f):
-            self.assertEqual(M.verify_tags(self.PIN), [])
+            self.assertEqual(M.verify_pins(self.PIN), [])
 
     def test_tag_on_another_commit_is_a_finding(self):
-        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": OTHER}}})
+        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": OTHER}},
+                    **CHECKOUT})
         with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "t"}, clear=True), \
                 mock.patch.object(M.urllib.request, "urlopen", f):
-            (msg,) = M.verify_tags(self.PIN)
+            (msg,) = M.verify_pins(self.PIN)
         self.assertIn(f"v7.0.1 is {OTHER}, not the pinned {SHA}", msg)
 
     def test_api_answering_for_another_ref_fails_closed(self):
-        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.10", "object": {"type": "commit", "sha": SHA}}})
+        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.10", "object": {"type": "commit", "sha": SHA}},
+                    **CHECKOUT})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(M.urllib.request, "urlopen", f):
-            (msg,) = M.verify_tags(self.PIN)
+            (msg,) = M.verify_pins(self.PIN)
         self.assertIn("unresolvable (LookupError)", msg)
 
     def test_unresolvable_tag_fails_closed_and_the_tag_is_encoded(self):
-        f, seen = api({})
+        f, seen = api(CHECKOUT)
         pin = [("w", "actions/checkout", SHA, "v7.0.1+x")]
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(M.urllib.request, "urlopen", f):
-            (msg,) = M.verify_tags(pin)
+            (msg,) = M.verify_pins(pin)
         self.assertIn("unresolvable (OSError)", msg)
         self.assertTrue(seen[0].endswith("/git/ref/tags/v7.0.1%2Bx"), seen)
+
+
+class Transitive(unittest.TestCase):
+    """What a pinned action runs, read from its own action.yml at the pinned commit."""
+
+    def judge(self, table, repo="o/a", sha=SHA):
+        f, seen = api(table)
+        out = M.transitive(lambda path: json.loads(f(type("R", (), {"full_url": "https://api.github.com/" + path})())
+                                                   .read()), "w", repo, sha, set(), 0)
+        return out, seen
+
+    def test_node_action(self):
+        self.assertEqual(self.judge(manifest("o/a", SHA, NODE))[0], [])
+
+    def test_action_yaml_name_and_subpath(self):
+        out, _ = self.judge(manifest("o/a", SHA, NODE, name="action.yaml", sub="x/y"), repo="o/a/x/y")
+        self.assertEqual(out, [])
+
+    def test_docker_by_digest(self):
+        t = manifest("o/a", SHA, "runs:\n  using: docker\n  image: docker://alpine@sha256:" + "a" * 64 + "\n")
+        self.assertEqual(self.judge(t)[0], [])
+
+    def test_docker_by_tag(self):
+        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: docker\n  image: docker://alpine:3.20\n"))[0]
+        self.assertIn("a Docker action whose image is not a docker://…@sha256 digest: 'docker://alpine:3.20'", msg)
+
+    def test_docker_from_a_dockerfile(self):
+        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: docker\n  image: Dockerfile\n"))[0]
+        self.assertIn("'Dockerfile'", msg)
+
+    def test_documented_exclusion(self):
+        t = manifest("OSSF/scorecard-action", SHA, "runs:\n  using: docker\n  image: docker://ghcr.io/ossf/scorecard-action:v2\n")
+        self.assertEqual(self.judge(t, repo="OSSF/scorecard-action")[0], [])
+
+    def test_unknown_runtime(self):
+        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: wasm\n"))[0]
+        self.assertIn("runs.using 'wasm' is not node, docker or composite", msg)
+
+    def test_no_manifest(self):
+        (msg,) = self.judge({})[0]
+        self.assertIn("no action.yml/action.yaml readable at the pinned commit", msg)
+
+    def test_manifest_without_runs(self):
+        (msg,) = self.judge(manifest("o/a", SHA, "name: x\n"))[0]
+        self.assertIn("its action.yml does not parse (KeyError)", msg)
+
+    def test_composite_recurses_and_checks_every_step(self):
+        comp = ("runs:\n  using: composite\n  steps:\n"
+                f"    - uses: o/b@{OTHER}\n"
+                "    - uses: ./sub\n"
+                "    - uses: docker://alpine@sha256:" + "b" * 64 + "\n"
+                "    - uses: o/c@v1\n"
+                "    - uses: ../escape\n"
+                f"    - uses: docker/setup-qemu-action@{OTHER}\n"
+                "    - run: true\n      shell: bash\n")
+        t = {**manifest("o/a", SHA, comp), **manifest("o/b", OTHER, NODE),
+             **manifest("o/a", SHA, NODE, sub="sub"), **manifest("docker/setup-qemu-action", OTHER, NODE)}
+        out, _ = self.judge(t)
+        self.assertEqual(len(out), 3, out)
+        self.assertIn("runs.steps[3].uses: not a full commit digest: 'o/c@v1'", out[0])
+        self.assertIn("runs.steps[4].uses: not a full commit digest: '../escape'", out[1])
+        self.assertIn("docker/setup-qemu-action runs a container image of its own", out[2])
+
+    def test_composite_seen_once_and_depth_bounded(self):
+        loop = f"runs:\n  using: composite\n  steps:\n    - uses: o/a@{SHA}\n"
+        self.assertEqual(self.judge(manifest("o/a", SHA, loop))[0], [])  # a cycle is read once
+        f, _ = api({})
+        (msg,) = M.transitive(f, "w", "o/a", SHA, set(), 9)
+        self.assertIn("composite actions nested more than 8 deep", msg)
+
+    def test_composite_steps_unreadable(self):
+        (msg,) = self.judge(manifest("o/a", SHA, "runs:\n  using: composite\n"))[0]
+        self.assertIn("composite steps unreadable (StopIteration)", msg)
 
 
 class Main(unittest.TestCase):
     def test_verify_tags_through_main(self):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n"})
-        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}})
+        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}},
+                    **CHECKOUT})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(urllib_request(), "urlopen", f):
             code, out = run(["--verify-tags", d])
         self.assertEqual(code, 0, out)

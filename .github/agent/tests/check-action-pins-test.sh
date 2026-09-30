@@ -334,6 +334,51 @@ case_ image-trailing-space bad "$head
     steps:
       - run: true"
 
+# --- adversarial round 3 (audits/2026-09-30/pins/round3)
+case_ buildx-multiline-ok  ok  "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: |
+            network=host
+            image=moby/buildkit@$DIG"
+case_ qemu-owner-case      bad "$head
+    steps:
+      - uses: Docker/setup-qemu-action@$SHA # v4.4.0"
+case_ buildx-repo-case     bad "$head
+    steps:
+      - uses: DOCKER/Setup-Buildx-Action@$SHA # v4.4.1"
+case_ qemu-input-space     bad "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0
+        with:
+          \"image \": tonistiigi/binfmt@$DIG"
+case_ buildx-driver-space  bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          \"driver \": docker"
+case_ buildx-env-decoy     bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: env.NOTE=decoy image=moby/buildkit@$DIG"
+case_ buildx-append        bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@$DIG
+          append: |
+            - name: n0
+              driver-opts:
+                - image=moby/buildkit:latest"
+case_ qemu-input-twice     bad "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0
+        with:
+          image: tonistiigi/binfmt@$DIG
+          IMAGE: tonistiigi/binfmt:latest"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"

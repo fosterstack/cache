@@ -166,9 +166,16 @@ jobs:
           fail=0
           while read -r n sha; do
             case "$n$sha" in *[!0-9a-f]*) echo "::error::unexpected PR list line"; fail=1; continue ;; esac
-            have="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
-              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | length")" || { fail=1; continue; }
-            [ "$have" = "0" ] || continue
+            # the App's latest verdict on this head: none -> judge; success -> done; a failure from the
+            # last 6 hours -> judge again (a transient failure, e.g. the tag API, must not strand the
+            # head) and publish only if it has turned to success, so a head that still fails is not
+            # re-posted every sweep; an older failure waits for a push or a re-run (API budget)
+            last="$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=auditor-review-gate" \
+              --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.completed_at) | last
+                    | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
+                      elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end")" \
+              || { fail=1; continue; }
+            case "$last" in success|stale) continue ;; esac
             git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
             [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
             conclusion=failure
@@ -176,6 +183,7 @@ jobs:
                && GH_TOKEN="$LIST_TOKEN" python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$sha"; then
               conclusion=success   # the review record AND every action reference a digest (row 78)
             fi
+            if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \
               -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
               -f "output[title]=auditor review gate: ${conclusion}" \
