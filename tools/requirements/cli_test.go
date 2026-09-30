@@ -396,6 +396,7 @@ func TestRunCLIFailsWhenRepoRootIsNotChdirable(t *testing.T) {
 
 func TestFreezeWritesUnapprovedBaseline(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	code, stdout, stderr := runCommand(t, "freeze", "v0.2.0")
 	if code != 0 {
 		t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr)
@@ -468,7 +469,7 @@ func TestFreezeRequiresExactlyOneVersionArg(t *testing.T) {
 
 func TestFreezeDirectlyResolvesRepoRoot(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
-	gitInitHere(t)
+	commitFixture(t)
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -493,22 +494,21 @@ func TestFreezeDirectlyFailsWhenRepoRootUnresolvable(t *testing.T) {
 
 func TestFreezeFailsWhenRequirementsUnreadable(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
-	// A directory at the requirements path passes Stat but fails ReadFile,
-	// covering the read error without permission tricks that break as root.
-	if err := os.Remove("requirements/requirements.yaml"); err != nil {
-		t.Fatal(err)
+	// the file exists in the working tree (so runCLI stays put) but not in the commit being frozen
+	commitFixture(t)
+	if out, err := exec.Command("git", "rm", "-q", "--cached", "requirements/requirements.yaml").CombinedOutput(); err != nil {
+		t.Fatalf("git rm: %v (%s)", err, out)
 	}
-	if err := os.Mkdir("requirements/requirements.yaml", 0o755); err != nil {
-		t.Fatal(err)
-	}
+	commitFixture(t)
 	code, _, stderr := runCommand(t, "freeze", "v1.0.0")
-	if code != 1 || !strings.Contains(stderr, "read requirements/requirements.yaml") {
+	if code != 1 || !strings.Contains(stderr, "read requirements/requirements.yaml at") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }
 
 func TestFreezeFailsOnMalformedYAML(t *testing.T) {
 	fixture(t, "requirements: [unclosed\n")
+	commitFixture(t)
 	code, _, stderr := runCommand(t, "freeze", "v1.0.0")
 	if code != 1 || !strings.Contains(stderr, "parse requirements/requirements.yaml") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
@@ -517,6 +517,7 @@ func TestFreezeFailsOnMalformedYAML(t *testing.T) {
 
 func TestFreezeFailsWhenMarshalFails(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
+	commitFixture(t)
 	old := yamlMarshal
 	yamlMarshal = func(any) ([]byte, error) { return nil, errors.New("synthetic marshal failure") }
 	defer func() { yamlMarshal = old }()
@@ -528,6 +529,7 @@ func TestFreezeFailsWhenMarshalFails(t *testing.T) {
 
 func TestFreezeFailsWhenReleasesDirBlocked(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
+	commitFixture(t)
 	if err := os.WriteFile("requirements/releases", []byte("a file, not a dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -539,6 +541,7 @@ func TestFreezeFailsWhenReleasesDirBlocked(t *testing.T) {
 
 func TestFreezeFailsWhenOutputPathUnwritable(t *testing.T) {
 	fixture(t, minimal("false", "", "2026-09-08", "proposed", ""))
+	commitFixture(t)
 	if err := os.MkdirAll("requirements/releases/v1.0.0.yaml", 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -809,6 +812,7 @@ func TestRenderApprovedBaselineWithEvidenceAndGroups(t *testing.T) {
 
 func TestVerifyFreezeConsistent(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
@@ -816,7 +820,7 @@ func TestVerifyFreezeConsistent(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify-freeze code = %d, want 0 (stderr %q)", code, stderr)
 	}
-	if !strings.Contains(stdout, "consistent with requirements.yaml") {
+	if !strings.Contains(stdout, "is consistent with requirements/requirements.yaml at ") {
 		t.Fatalf("stdout %q lacks the consistency confirmation", stdout)
 	}
 }
@@ -837,24 +841,9 @@ func TestVerifyFreezeMissingFile(t *testing.T) {
 	}
 }
 
-func TestVerifyFreezeRejectsStaleHash(t *testing.T) {
-	richFixture(t)
-	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
-		t.Fatalf("freeze failed: %s", stderr)
-	}
-	// Mutate requirements.yaml after freezing: the recorded hash is now stale.
-	raw, _ := os.ReadFile("requirements/requirements.yaml")
-	if err := os.WriteFile("requirements/requirements.yaml", append(raw, []byte("\n# drift\n")...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
-	if code != 1 || !strings.Contains(stderr, "does not match the current requirements.yaml") {
-		t.Fatalf("stale hash not rejected: code=%d stderr=%q", code, stderr)
-	}
-}
-
 func TestVerifyFreezeRejectsWrongVersion(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
@@ -871,6 +860,7 @@ func TestVerifyFreezeRejectsWrongVersion(t *testing.T) {
 
 func TestVerifyFreezeRejectsDroppedRequiredEntry(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
@@ -897,6 +887,7 @@ func TestVerifyFreezeRejectsDroppedRequiredEntry(t *testing.T) {
 
 func TestVerifyFreezeRejectsRephrasedEntry(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
@@ -921,6 +912,7 @@ func TestVerifyFreezeRejectsRephrasedEntry(t *testing.T) {
 func TestVerifyFreezeRejectsEmptyRequiredSet(t *testing.T) {
 	// A requirements file with no release-blocking ACs.
 	fixture(t, minimal("false", "", "2026-09-08", "approved", ""))
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
@@ -932,20 +924,25 @@ func TestVerifyFreezeRejectsEmptyRequiredSet(t *testing.T) {
 
 func TestVerifyFreezeRejectsMalformedRequirements(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
+	// a baseline fixed at a commit whose requirements file does not parse
 	if err := os.WriteFile("requirements/requirements.yaml", []byte("::: not yaml :::\n  - ["), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	bad := commitFixture(t)
+	setFixedAt(t, "v0.2.0", bad)
 	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
-	if code != 1 || !strings.Contains(stderr, "parse requirements/requirements.yaml") {
+	if code != 1 || !strings.Contains(stderr, "parse requirements/requirements.yaml at "+bad) {
 		t.Fatalf("malformed requirements not rejected: code=%d stderr=%q", code, stderr)
 	}
 }
 
 func TestVerifyFreezeRejectsMalformedFrozenFile(t *testing.T) {
 	richFixture(t)
+	commitFixture(t)
 	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
 		t.Fatalf("freeze failed: %s", stderr)
 	}
@@ -955,24 +952,5 @@ func TestVerifyFreezeRejectsMalformedFrozenFile(t *testing.T) {
 	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
 	if code != 1 || !strings.Contains(stderr, "parse requirements/releases/v0.2.0.yaml") {
 		t.Fatalf("malformed frozen file not rejected: code=%d stderr=%q", code, stderr)
-	}
-}
-
-func TestVerifyFreezeSurfacesRequirementsReadError(t *testing.T) {
-	richFixture(t)
-	if code, _, stderr := runCommand(t, "freeze", "v0.2.0"); code != 0 {
-		t.Fatalf("freeze failed: %s", stderr)
-	}
-	// Replace requirements.yaml with a directory: os.Stat still succeeds
-	// (so runCLI does not chdir away), but ReadFile fails.
-	if err := os.Remove("requirements/requirements.yaml"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir("requirements/requirements.yaml", 0o755); err != nil {
-		t.Fatal(err)
-	}
-	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
-	if code != 1 || !strings.Contains(stderr, "read requirements/requirements.yaml") {
-		t.Fatalf("read error not surfaced: code=%d stderr=%q", code, stderr)
 	}
 }

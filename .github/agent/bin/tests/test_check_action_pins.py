@@ -5,6 +5,7 @@ reach the branches a fixture workflow cannot: the tag verifier (GitHub's API is 
 urllib.request.urlopen — no network), a submodule in a git tree, a missing PyYAML, and the
 command-line errors.
 """
+# proves: REQ-REL-005-AC1
 import contextlib, importlib.util, io, json, os, re, runpy, subprocess, sys, tempfile, unittest
 from unittest import mock
 
