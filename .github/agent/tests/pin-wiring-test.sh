@@ -23,17 +23,20 @@ if not isinstance(push, dict) or push.get("branches") != ["main"]:
     bad.append("not triggered on push to main")
 elif set(push) != {"branches"}:
     bad.append("push is filtered: " + ", ".join(sorted(set(push) - {"branches"})))
+if "defaults" in d:
+    bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
-for k in ("if", "continue-on-error"):
+for k in ("if", "continue-on-error", "defaults"):
     if k in job:
         bad.append(f"the allowlist job has `{k}`")
-want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags ."}
+want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
+        "bash .github/agent/tests/pin-wiring-test.sh"}  # this test's own step, too
 seen = set()
 for st in job.get("steps", []):
     run = (st.get("run") or "").strip()
     if run in want:
         seen.add(run)
-        for k in ("if", "continue-on-error"):
+        for k in ("if", "continue-on-error", "shell", "working-directory"):
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
 for w in sorted(want - seen):
@@ -73,6 +76,10 @@ case_ pr-paths-filter       bad "d['on']['pull_request'] = {'paths': ['README.md
 case_ pr-branches-filter    bad "d['on']['pull_request'] = {'branches': ['release']}"
 case_ push-paths-filter     bad "d['on']['push']['paths'] = ['README.md']"
 case_ push-paths-ignore     bad "d['on']['push']['paths-ignore'] = ['**']"
+case_ step-shell-override   bad "$pick['shell'] = \"bash -c 'true' {0}\""
+case_ job-defaults-shell    bad "d['jobs']['allowlist']['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
+case_ workflow-defaults     bad "d['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
+case_ wiring-step-removed   bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/pin-wiring-test.sh']"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
 
 echo "pin-wiring: $pass passed, $failn failed"

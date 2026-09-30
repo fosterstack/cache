@@ -17,6 +17,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -354,25 +357,26 @@ func freeze(args []string) {
 	fmt.Printf("wrote %s (%d release-blocking ACs, fixed at %s, UNAPPROVED)\n", path, len(blocking), head)
 }
 
-// goTestExists reports whether a Go test function with the given name is
-// declared in any _test.go file under dir (non-recursive — the ref names
-// the package directory).
+// goTestExists reports whether a Go test function with the given name is declared at the top level of
+// a _test.go file in dir (non-recursive — the ref names the package directory). The files are parsed,
+// so a name inside a string or a comment never counts.
 func goTestExists(dir, name string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
-	needle := "func " + name + "("
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		b, err := os.ReadFile(dir + "/" + e.Name())
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue
 		}
-		if strings.Contains(string(b), needle) {
-			return true
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+				return true
+			}
 		}
 	}
 	return false
@@ -643,8 +647,6 @@ var anyProves = regexp.MustCompile(`^\s*(#|//)\s*proves\b(.*)$`)
 // by ` — ` and prose.
 var declGrammar = regexp.MustCompile(`^: (REQ-[A-Z0-9]+-[0-9]{3}-AC[0-9]+(?:, REQ-[A-Z0-9]+-[0-9]{3}-AC[0-9]+)*)(?: — .*)?$`)
 
-var goTestFunc = regexp.MustCompile(`^func Test[A-Za-z0-9_]*\(`)
-
 // testFiles lists every regular file in the repository named like a test (never inside .git); a
 // directory that cannot be read is an error, never "holds no tests".
 func testFiles() (files, errs []string) {
@@ -656,7 +658,13 @@ func testFiles() (files, errs []string) {
 		if d.IsDir() && d.Name() == ".git" {
 			return filepath.SkipDir
 		}
-		if d.Type().IsRegular() && testFileRe.MatchString(path) {
+		if !testFileRe.MatchString(path) {
+			return nil
+		}
+		switch {
+		case d.Type()&os.ModeSymlink != 0:
+			errs = append(errs, fmt.Sprintf("%s is a test-named symlink (never followed; a test file must be a regular file)", path))
+		case d.Type().IsRegular():
 			files = append(files, filepath.ToSlash(path))
 		}
 		return nil
@@ -664,11 +672,37 @@ func testFiles() (files, errs []string) {
 	return files, errs // WalkDir visits in lexical order
 }
 
-// headerLines marks the lines where a declaration may stand: the file's leading comment block (after
-// a shebang) and, in Go, the doc comment directly above each `func Test`. Anywhere else — a heredoc, a
-// string, a docstring — a `proves` line is never a declaration.
-func headerLines(lines []string, marker string) map[int]bool {
+// headerLines marks the lines where a declaration may stand: the file's leading comment block (after a
+// shebang); in Go, parsed, the comments before the package clause and the doc comment of each real
+// top-level func Test. Anywhere else — a heredoc, a string, a docstring — a `proves` line is never a
+// declaration. A Go file that does not parse has no header (every `proves` line in it is a problem).
+func headerLines(file string, src []byte, lines []string) map[int]bool {
 	ok := map[int]bool{}
+	if strings.HasSuffix(file, ".go") {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, file, src, parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			return ok
+		}
+		mark := func(g *ast.CommentGroup) {
+			for _, c := range g.List {
+				for l := fset.Position(c.Pos()).Line; l <= fset.Position(c.End()).Line; l++ {
+					ok[l-1] = true
+				}
+			}
+		}
+		for _, g := range f.Comments {
+			if g.End() < f.Package {
+				mark(g)
+			}
+		}
+		for _, d := range f.Decls {
+			if fn, isFn := d.(*ast.FuncDecl); isFn && fn.Recv == nil && fn.Doc != nil && strings.HasPrefix(fn.Name.Name, "Test") {
+				mark(fn.Doc)
+			}
+		}
+		return ok
+	}
 	for i, line := range lines {
 		t := strings.TrimSpace(line)
 		if i == 0 && strings.HasPrefix(t, "#!") {
@@ -678,15 +712,6 @@ func headerLines(lines []string, marker string) map[int]bool {
 			break // a comment in either style extends the header; the marker itself is judged per line
 		}
 		ok[i] = true
-	}
-	if marker == "//" {
-		for i, line := range lines {
-			if goTestFunc.MatchString(line) {
-				for j := i - 1; j >= 0 && strings.HasPrefix(strings.TrimSpace(lines[j]), "//"); j-- {
-					ok[j] = true
-				}
-			}
-		}
 	}
 	return ok
 }
@@ -704,7 +729,7 @@ func declaredACs(file string) (acs, problems []string, err error) {
 		marker = "//"
 	}
 	lines := strings.Split(string(b), "\n")
-	header := headerLines(lines, marker)
+	header := headerLines(file, b, lines)
 	for i, line := range lines {
 		m := anyProves.FindStringSubmatch(line)
 		if m == nil {

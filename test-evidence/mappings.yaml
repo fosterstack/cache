@@ -250,7 +250,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/hygiene.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (13 cases: triggers unfiltered, steps unconditional)" }
+      - { type: workflow-job, ref: ".github/workflows/hygiene.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (17 cases: triggers unfiltered; steps, including its own, unconditional and in the default shell)" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
   - ac: REQ-REL-006-AC1
@@ -270,7 +270,7 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestTheNextVersionCarriesTheNewAC" }
   - ac: REQ-REL-006-AC3
     evidence:
-      - { type: inspection, ref: "Inspected Sep 30 (git log v0.2.1..HEAD -- requirements/releases/v0.2.1.yaml): since the tag the baseline changed only in 326c459 (#139, re-freeze under row 73, ratified Sep 29) and in the row-80 PR (fixed_at, ratified Sep 30); each change is a PR citing its register row" }
+      - { type: inspection, ref: "Inspected Sep 30 (git log v0.2.1..HEAD -- requirements/releases/v0.2.1.yaml, where v0.2.1 is the release tag, commit 0bfc498): since the release tag the baseline changed only in 326c459 (#139, re-freeze under row 73, ratified Sep 29) and in the row-80 PR (fixed_at, ratified Sep 30); each change is a PR citing its register row" }
   - ac: REQ-REL-007-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestCheckFailsForAnACWithNoTest" }
@@ -288,3 +288,4 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestGoDeclarationAboveTheTestFunc" }
       - { type: go-test, ref: "tools/requirements:TestShellTestThroughASymlinkOrWithAProblemFails" }
       - { type: go-test, ref: "tools/requirements:TestOddTestFileNamesAreFound" }
+      - { type: go-test, ref: "tools/requirements:TestGoIsParsedAndSymlinkedTestsAreRefused" }

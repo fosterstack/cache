@@ -135,8 +135,8 @@ func TestEveryDeclaredACExistsAndMapsBack(t *testing.T) {
 		"python unit test":     {"py/test_x.py", "# proves: REQ-GHOST-002-AC1\n", "test_x.py declares REQ-GHOST-002-AC1, which is not an AC"},
 		"one line, two ACs":    {"bin/other-test.sh", "# proves: REQ-TEST-001-AC1, REQ-GHOST-001-AC1\n", "declares REQ-GHOST-001-AC1, which is not an AC"},
 		"anywhere in the repo": {"docs/x-test.sh", "# proves: REQ-GHOST-003-AC1\n", "docs/x-test.sh declares REQ-GHOST-003-AC1, which is not an AC"},
-		"a Go test":            {"internal/x/x_test.go", "// proves: REQ-GHOST-004-AC1 — prose after the dash\n", "internal/x/x_test.go declares REQ-GHOST-004-AC1, which is not an AC"},
-		"a Go test unmapped":   {"internal/x/x_test.go", "// proves: REQ-TEST-001-AC1\n", "internal/x/x_test.go declares REQ-TEST-001-AC1 but no go-test mapping names a test in internal/x"},
+		"a Go test":            {"internal/x/x_test.go", "// proves: REQ-GHOST-004-AC1 — prose after the dash\npackage x\n", "internal/x/x_test.go declares REQ-GHOST-004-AC1, which is not an AC"},
+		"a Go test unmapped":   {"internal/x/x_test.go", "// proves: REQ-TEST-001-AC1\npackage x\n", "internal/x/x_test.go declares REQ-TEST-001-AC1 but no go-test mapping names a test in internal/x"},
 		"no colon":             {"bin/other-test.sh", "# proves REQ-TEST-001-AC1\n", "bin/other-test.sh:1: a malformed `proves` declaration"},
 		"not an AC id":         {"bin/other-test.sh", "# proves: everything\n", "bin/other-test.sh:1: a malformed `proves` declaration"},
 	}
@@ -282,4 +282,39 @@ func TestOddTestFileNamesAreFound(t *testing.T) {
 			}
 		})
 	}
+}
+
+// proves: REQ-REL-007-AC2 — Go is parsed: a raw string holding a fake declaration and a fake func Test is
+// neither a declaration nor a test; a test-named symlink is refused, never followed.
+func TestGoIsParsedAndSymlinkedTestsAreRefused(t *testing.T) {
+	t.Run("raw string", func(t *testing.T) {
+		fixtureWithMappings(t, "mappings:\n  - ac: REQ-TEST-001-AC1\n    evidence:\n      - type: go-test\n        ref: internal/x:TestGhost\n")
+		writeFile(t, "internal/x/x_test.go", "package x\n\nvar fixture = `\n// proves: REQ-TEST-001-AC1\nfunc TestGhost(t *testing.T) {}\n`\n")
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "references go-test TestGhost in internal/x, which does not exist") ||
+			!strings.Contains(stderr, "internal/x/x_test.go:4: a `proves` line outside the file's header") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+	t.Run("unparsable Go", func(t *testing.T) {
+		fixtureWithMappings(t, oneMapped)
+		writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n")
+		writeFile(t, "internal/x/x_test.go", "// proves: REQ-TEST-001-AC1\nthis is not Go\n")
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "internal/x/x_test.go:1: a `proves` line outside the file's header") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+	t.Run("test-named symlink", func(t *testing.T) {
+		fixtureWithMappings(t, oneMapped)
+		writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n")
+		writeFile(t, "src/source", "# proves: REQ-GHOST-001-AC1\n")
+		if err := os.Symlink("../src/source", "bin/x-test.sh"); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "bin/x-test.sh is a test-named symlink") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
 }
