@@ -1255,6 +1255,137 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-DEP-001
+    title: Dependabot majors are judged by a machine
+    statement: >
+      A Dependabot major version bump shall be judged by the Dependabot
+      reviewer, not by a person: from main, hourly, it gathers the evidence
+      with no model involved, has two readers rank findings without a verdict,
+      and decides mechanically to merge or to hold with an issue; it posts its
+      result as a check and edits nothing.
+    source: [.github/workflows/dependabot-reviewer.yml, bin/dependabot-reviewer.py]
+    tier: community
+    introduced: v0.3.0
+    origin: register row 75 (owner, Sep 29 2026); row 80 sentences 4-5 (owner, Sep 30 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-DEP-001-AC1
+        given: the Dependabot reviewer workflow
+        when: it is triggered
+        then: it runs hourly from main and on manual dispatch, never on a pull-request event
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC2
+        given: an open Dependabot major with no verdict yet
+        when: the reviewer runs
+        then: it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC3
+        given: the gathered evidence for one major
+        when: the two readers answer
+        then: "each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier reaches a finding, issue or evidence"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC4
+        given: both readers' findings
+        when: the reviewer decides
+        then: "the decision is mechanical: no \"breaks us\" from either reader and the required-check guard matching arms squash auto-merge; any \"breaks us\" holds the PR with one issue carrying both readers' findings; any reader error leaves no verdict and is retried next hour"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC5
+        given: a finished review
+        when: the reviewer reports it
+        then: it posts its result as a check through the automation App; it scans nothing, opens no pull request and edits nothing
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC6
+        given: any reviewer run
+        when: it ends
+        then: its evidence (the bundles, both readers' answers, the decisions) is kept as a run artifact, and keeping it never fails the run
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC7
+        given: the reviewer's readers failing three hourly runs in a row
+        when: the third run ends
+        then: it opens one issue for the ccode queue and posts nothing else
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC8
+        given: a reviewer run that is cancelled or superseded
+        when: it ends
+        then: it never posts a verdict over a newer one
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
+  - id: REQ-DEP-002
+    title: The required-check guard runs everywhere
+    statement: >
+      The ruleset on main and the committed required-check list shall be
+      compared on every pull request and every push to main, so drift is red
+      the day it happens, and a refusal shall open one issue.
+    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/workflows/hygiene.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: register row 75 (owner, Sep 29 2026), "also ratified"
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-DEP-002-AC1
+        given: any pull request and any push to main
+        when: hygiene runs
+        then: the required-check guard compares main's ruleset with .github/policy/required-checks.json, contexts and integration IDs; any difference fails, and an unreadable side fails, never passes
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-002-AC2
+        given: the guard refusing main's list
+        when: hygiene runs
+        then: it opens, or updates, one "required-check drift" issue
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-DEP-003
+    title: Patch and minor bumps merge on green
+    statement: >
+      A Dependabot patch or minor bump shall merge on its own once every
+      required check is green; a major shall be left to the reviewer.
+    source: [.github/workflows/dependabot-auto-merge.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: register row 75 (e) (owner, Sep 29 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-DEP-003-AC1
+        given: a Dependabot patch or minor pull request
+        when: the auto-merge lane runs
+        then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-DEP-004
+    title: A held bump or drift dispatches the fixer
+    statement: >
+      A held Dependabot major, or a required-check drift issue, shall send one
+      generic dispatch to the ops repository so an agent fixes our side; a
+      failed dispatch shall be a warning and never undo the hold.
+    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/hygiene.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: register row 76 (owner, Sep 29 2026), the cache side
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-DEP-004-AC1
+        given: a completed hold
+        when: the reviewer finishes it
+        then: it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-004-AC2
+        given: a required-check drift issue
+        when: main is pushed
+        then: it sends one fix-required-check-drift dispatch, and the step never fails the job
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   - id: REQ-LIC-001
     title: MIT core, nothing withheld
     statement: >

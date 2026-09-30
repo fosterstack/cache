@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-DEP-002-AC1, REQ-DEP-002-AC2
 # Offline suite for bin/required-check-guard.sh (register row 75). Fixtures stand
 # in for the ruleset API response; the list side uses the committed file and
 # edited copies. What must hold: an exact match passes; a missing check, an extra

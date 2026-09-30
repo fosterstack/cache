@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-REL-004-AC1
 # REQ-REL-004-AC1 (ratified Sep 29, row 73): "A test proves that a VEX-covered
 # finding is suppressed for both scanners and an uncovered one blocks."
 # One finding — BusyBox CVE-2025-60876 in FosterStack's image — is put through

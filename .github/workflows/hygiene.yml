@@ -75,6 +75,8 @@ jobs:
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh
+      - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
+        run: bash bin/dependency-lanes-test.sh
 
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: bash bin/inspector-gate-test.sh
