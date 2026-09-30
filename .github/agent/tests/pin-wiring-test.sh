@@ -39,6 +39,26 @@ for st in job.get("steps", []):
         for k in ("if", "continue-on-error", "shell", "working-directory"):
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
+# nothing may redirect how those steps execute (step 8 r3, residual 2): a shell startup file, an
+# environment or PATH written for later steps, interpreter search paths, or a checkout of another tree
+import json
+hooks = ("BASH_ENV", "GITHUB_ENV", "GITHUB_PATH")
+text = json.dumps(job)
+for h in hooks:
+    if h in text:
+        bad.append(f"the allowlist job mentions {h}")
+risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME"}
+for where, env in [("the workflow", d.get("env")), ("the allowlist job", job.get("env"))] + \
+        [(f"step {i}", st.get("env")) for i, st in enumerate(job.get("steps", []))]:
+    if isinstance(env, dict):
+        for k in sorted(set(env) & risky):
+            bad.append(f"{where} sets env {k}")
+for st in job.get("steps", []):
+    if str(st.get("uses", "")).startswith("actions/checkout@"):
+        w = st.get("with") or {}
+        for k in ("ref", "repository", "path"):
+            if k in w:
+                bad.append(f"the checkout selects another tree ({k})")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
 print("; ".join(bad) or "ok")
@@ -80,6 +100,12 @@ case_ step-shell-override   bad "$pick['shell'] = \"bash -c 'true' {0}\""
 case_ job-defaults-shell    bad "d['jobs']['allowlist']['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ workflow-defaults     bad "d['defaults'] = {'run': {'shell': \"bash -c 'true' {0}\"}}"
 case_ wiring-step-removed   bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/pin-wiring-test.sh']"
+case_ bash-env-on-step      bad "$pick['env'] = {'BASH_ENV': '/tmp/x.sh'}"
+case_ bash-env-on-job       bad "d['jobs']['allowlist']['env'] = {'BASH_ENV': '/tmp/x.sh'}"
+case_ path-on-workflow      bad "d['env'] = {'PATH': '/tmp/fake:/usr/bin'}"
+case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
+case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
+case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
 
 echo "pin-wiring: $pass passed, $failn failed"

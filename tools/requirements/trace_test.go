@@ -318,3 +318,50 @@ func TestGoIsParsedAndSymlinkedTestsAreRefused(t *testing.T) {
 		}
 	})
 }
+
+// proves: REQ-REL-007-AC2 — nothing hides from the scan: a symlinked directory is refused (a test file
+// behind it would go unseen), and a UTF-8 byte-order mark never hides a first-line declaration.
+func TestNothingHidesFromTheScan(t *testing.T) {
+	t.Run("symlinked directory", func(t *testing.T) {
+		outside := t.TempDir()
+		fixtureWithMappings(t, oneMapped)
+		writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n")
+		if err := os.WriteFile(filepath.Join(outside, "x-test.sh"), []byte("# proves: REQ-GHOST-001-AC1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, "hidden"); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "hidden is a symlinked directory") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+	for _, c := range []struct{ rel, content string }{
+		{"bin/bom-test.sh", "\uFEFF# proves: REQ-GHOST-009-AC1\n"},
+		{"py/test_bom.py", "\uFEFF# proves: REQ-GHOST-009-AC1\n"},
+		{"internal/b/b_test.go", "\uFEFF// proves: REQ-GHOST-009-AC1\npackage b\n"},
+	} {
+		t.Run("BOM "+c.rel, func(t *testing.T) {
+			fixtureWithMappings(t, oneMapped)
+			writeFile(t, "bin/thing-test.sh", "# proves: REQ-TEST-001-AC1\n")
+			writeFile(t, c.rel, c.content)
+			code, _, stderr := runCommand(t, "check")
+			if code != 1 || !strings.Contains(stderr, c.rel+" declares REQ-GHOST-009-AC1, which is not an AC") {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+		})
+	}
+	t.Run("a go-test mapping to a helper or through a symlink", func(t *testing.T) {
+		fixtureWithMappings(t, "mappings:\n  - ac: REQ-TEST-001-AC1\n    evidence:\n      - type: go-test\n        ref: internal/h:helper\n      - type: go-test\n        ref: linked:TestH\n")
+		writeFile(t, "internal/h/h_test.go", "package h\n\nimport \"testing\"\n\nfunc helper() {}\nfunc TestH(t *testing.T) {}\n")
+		if err := os.Symlink("internal/h", "linked"); err != nil {
+			t.Fatal(err)
+		}
+		code, _, stderr := runCommand(t, "check")
+		if code != 1 || !strings.Contains(stderr, "references go-test helper in internal/h, which does not exist") ||
+			!strings.Contains(stderr, "references go-test TestH in linked, which does not exist") {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+	})
+}

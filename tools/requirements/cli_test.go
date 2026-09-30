@@ -562,7 +562,11 @@ func TestFreezeFailsWhenOutputPathUnwritable(t *testing.T) {
 // ── goTestExists ─────────────────────────────────────────────────────
 
 func TestGoTestExistsSkipsAndErrors(t *testing.T) {
-	dir := t.TempDir()
+	chdirTemp(t)
+	dir := "pkg"
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	// A subdirectory whose name carries the test suffix must be skipped.
 	if err := os.Mkdir(filepath.Join(dir, "aaa_dir_test.go"), 0o755); err != nil {
 		t.Fatal(err)
@@ -571,21 +575,42 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "notatest.go"), []byte("func TestReal(t *testing.T) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A dangling symlink with the suffix exercises the ReadFile error path.
-	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "dangling_test.go")); err != nil {
+	// A dangling symlink with the suffix is not a regular file and is skipped.
+	if err := os.Symlink("missing", filepath.Join(dir, "dangling_test.go")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "real_test.go"), []byte("package p\n\nfunc TestReal(t *testing.T) {}\n"), 0o644); err != nil {
+	// An unparsable test file is skipped, never searched as text.
+	if err := os.WriteFile(filepath.Join(dir, "broken_test.go"), []byte("func TestBroken(t *testing.T) {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc helper() {}\nfunc Testhelper(t *testing.T) {}\nfunc TestTwo(a, b *testing.T) {}\nfunc TestB(b *testing.B) {}\nfunc TestRet(t *testing.T) error { return nil }\nfunc TestVal(t testing.T) {}\ntype T struct{}\nfunc TestLocal(t *T) {}\n"
+	if err := os.WriteFile(filepath.Join(dir, "real_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !goTestExists(dir, "TestReal") {
 		t.Error("TestReal exists in real_test.go but was not found")
 	}
-	if goTestExists(dir, "TestOnlyInNonTestFile") {
-		t.Error("found a test that exists nowhere")
+	// residual 3 (step 8 r3): only a function `go test` runs is a test
+	for _, name := range []string{"helper", "Testhelper", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal", "TestBroken", "TestOnlyInNonTestFile"} {
+		if goTestExists(dir, name) {
+			t.Errorf("%s is not a runnable test but was accepted", name)
+		}
 	}
 	if goTestExists(filepath.Join(dir, "absent"), "TestReal") {
 		t.Error("nonexistent directory reported a test")
+	}
+	if goTestExists(filepath.Join(dir, "real_test.go"), "TestReal") {
+		t.Error("a file named as the package directory reported a test")
+	}
+	// residual 4 (step 8 r3): the package must be this repository's, reached through no symlink
+	abs, _ := filepath.Abs(dir)
+	if err := os.Symlink(dir, "linked"); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{abs, "../pkg", "./pkg", "linked"} {
+		if goTestExists(d, "TestReal") {
+			t.Errorf("directory %q outside the repository or through a symlink was accepted", d)
+		}
 	}
 }
 

@@ -357,16 +357,23 @@ func freeze(args []string) {
 	fmt.Printf("wrote %s (%d release-blocking ACs, fixed at %s, UNAPPROVED)\n", path, len(blocking), head)
 }
 
-// goTestExists reports whether a Go test function with the given name is declared at the top level of
-// a _test.go file in dir (non-recursive — the ref names the package directory). The files are parsed,
-// so a name inside a string or a comment never counts.
+// goTestExists reports whether dir — a package directory inside this repository, reached through no
+// symlink — declares, at the top level of a _test.go file, a test named name with the signature
+// `func TestX(t *testing.T)`. The files are parsed, so a name inside a string or a comment never counts,
+// and a helper function is not a test.
 func goTestExists(dir, name string) bool {
+	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || !goTestName.MatchString(name) {
+		return false
+	}
+	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
+		return false
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
@@ -374,12 +381,33 @@ func goTestExists(dir, name string) bool {
 			continue
 		}
 		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name && isTestingT(fn) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// goTestName is what `go test` runs: Test, then nothing or a character that is not a lower-case letter.
+var goTestName = regexp.MustCompile(`^Test([^a-z].*)?$`)
+
+// isTestingT reports whether fn takes exactly one parameter of type *testing.T and returns nothing.
+func isTestingT(fn *ast.FuncDecl) bool {
+	p := fn.Type.Params.List
+	if len(p) != 1 || len(p[0].Names) > 1 || fn.Type.Results != nil {
+		return false
+	}
+	star, ok := p[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "testing" && sel.Sel.Name == "T"
 }
 
 func repoRoot() string {
@@ -658,13 +686,17 @@ func testFiles() (files, errs []string) {
 		if d.IsDir() && d.Name() == ".git" {
 			return filepath.SkipDir
 		}
-		if !testFileRe.MatchString(path) {
+		if d.Type()&os.ModeSymlink != 0 {
+			// the scan never follows a symlink, so anything behind one would go unseen: refuse it,
+			// whether it names a test file or a directory that could hold them
+			if testFileRe.MatchString(path) {
+				errs = append(errs, fmt.Sprintf("%s is a test-named symlink (never followed; a test file must be a regular file)", path))
+			} else if st, err := os.Stat(path); err == nil && st.IsDir() {
+				errs = append(errs, fmt.Sprintf("%s is a symlinked directory (never followed; test files behind it would go unseen)", path))
+			}
 			return nil
 		}
-		switch {
-		case d.Type()&os.ModeSymlink != 0:
-			errs = append(errs, fmt.Sprintf("%s is a test-named symlink (never followed; a test file must be a regular file)", path))
-		case d.Type().IsRegular():
+		if d.Type().IsRegular() && testFileRe.MatchString(path) {
 			files = append(files, filepath.ToSlash(path))
 		}
 		return nil
@@ -704,7 +736,7 @@ func headerLines(file string, src []byte, lines []string) map[int]bool {
 		return ok
 	}
 	for i, line := range lines {
-		t := strings.TrimSpace(line)
+		t := strings.TrimSpace(strings.TrimPrefix(line, "\uFEFF"))
 		if i == 0 && strings.HasPrefix(t, "#!") {
 			continue
 		}
@@ -728,7 +760,8 @@ func declaredACs(file string) (acs, problems []string, err error) {
 	if strings.HasSuffix(file, ".go") {
 		marker = "//"
 	}
-	lines := strings.Split(string(b), "\n")
+	// a UTF-8 byte-order mark never hides a first-line declaration
+	lines := strings.Split(strings.TrimPrefix(string(b), "\uFEFF"), "\n")
 	header := headerLines(file, b, lines)
 	for i, line := range lines {
 		m := anyProves.FindStringSubmatch(line)
