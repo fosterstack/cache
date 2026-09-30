@@ -1,0 +1,94 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "609359f746bd670fb865da95d980fb603599d33ff1fb71c29f146cee57eb9228",
+ "change": "rows 79/80: frozen baselines fixed at a named commit (v0.2.1 at 326c459); every AC traces to a test; REQ-REL-005..007; the hygiene pin-wiring test (handoff 0027, PR #144)",
+ "reviewed_commit": "e3585b0e88430f91a8ecd7167cdc278a69d040b2",
+ "closed_commit": "e5d77362c00d1bf9a19dced71072bb3a4a592fac",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "step 6 round 1 (tests)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 9,
+     "evidence_sha256": "6c6c6fb0243c9ebd770a9cec98c192123de10f90d58fcb662a0473322b43cd28"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "a29bc6af1223574bd3eb87561c782aa19b48b15ab034643122495f39a959591b"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "step 8 round 1",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "3b4b019d0f7cf9830badce48597b674a51b02224e22b8957d88afcc21cbbe91f"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "cc0f4afb690510f2e4c2235aff4b5ae5a281f2f4e4eff646c751b17487f07a60"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "step 8 round 2",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "961155ffbae5e9fb5f6620f28bb633aef3bb41ba9414e9e2460f187e65e8063e"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "345bf84876f25ed3de89da434b74a8f4b8e236eb4b584b52087f2bdb42a887e8"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "step 8 round 3 (row-79 cap)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "6540c69d274516a76c65f59414cc18deb905c80bb7420c5e8e3cadfb32fbd0d7"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "0c63756edea621f7bfd2cd1cfcdfdcb228fe6fbd049901738d7fd777027d4ee4",
+     "note": "the raw output reports 1 blocker, which the reviewer itself converted to a named residual under the row-79 round-3 cap ('per the row-79 round-3 cap, this blocker becomes a named residual for the owner'); the owner chose (a) Sep 30: fix all cap residuals now, no fourth round \u2014 fixed in e5d7736 with tests"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "Sep 30, (a): fix residuals 1-5 now, no fourth round; write the record; mark ready; enable auto-merge",
+ "evidence_location": "private audit tree: audits/2026-09-30/freeze/{step6-r1,step8-r1,step8-r2,step8-r3}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [
+  "the declaration scan now refuses symlinked directories (a test file behind one would go unseen)",
+  "the hygiene pin-wiring test refuses BASH_ENV/GITHUB_ENV/GITHUB_PATH, risky env keys and a checkout of another tree",
+  "go-test refs must name a runnable func TestX(t *testing.T)",
+  "go-test refs must be a clean repository-relative package directory reached through no symlink",
+  "a UTF-8 byte-order mark never hides a first-line declaration"
+ ],
+ "residuals": [
+  "these five fixes were not re-audited (owner decision: no fourth round); each has a test and the module is at 100% coverage",
+  "the v0.2.0 baseline has no fixed_at (row 80 names only v0.2.1)",
+  "REQ-REL-006-AC3's continuing control is inspection by design",
+  "REQ-REL-005-AC1 is mapped by workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of the product matrix (owner may amend its exemptions)",
+  "four pre-existing ACs without tests are named residuals in test-evidence/unmapped.yaml"
+ ]
+}

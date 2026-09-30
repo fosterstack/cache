@@ -248,3 +248,45 @@ mappings:
   - ac: REQ-REL-004-AC4
     evidence:
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
+  - ac: REQ-REL-005-AC1
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/hygiene.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
+      - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
+  - ac: REQ-REL-006-AC1
+    evidence:
+      - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
+      - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsABaselineWithoutFixedCommit" }
+      - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsAnUnreadableFixedCommit" }
+      - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsTheWrongFixedCommit" }
+      - { type: go-test, ref: "tools/requirements:TestFreezeFailsWithoutACommit" }
+      - { type: go-test, ref: "tools/requirements:TestTheRealV021BaselineIsFixedAt326c459" }
+      - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsATagObjectAsFixedCommit" }
+      - { type: workflow-job, ref: ".github/workflows/requirements.yml:requirements (verify-freeze v0.2.1, fixed at 326c459)" }
+  - ac: REQ-REL-006-AC2
+    evidence:
+      - { type: go-test, ref: "tools/requirements:TestVerifyFreezeIgnoresMainAfterTheFixedCommit" }
+      - { type: go-test, ref: "tools/requirements:TestVerifyFreezeIgnoresTheWorkingTree" }
+      - { type: go-test, ref: "tools/requirements:TestTheNextVersionCarriesTheNewAC" }
+  - ac: REQ-REL-006-AC3
+    evidence:
+      - { type: inspection, ref: "Inspected Sep 30 (git log v0.2.1..HEAD -- requirements/releases/v0.2.1.yaml, where v0.2.1 is the release tag, commit 0bfc498): since the release tag the baseline changed only in 326c459 (#139, re-freeze under row 73, ratified Sep 29) and in the row-80 PR (fixed_at, ratified Sep 30); each change is a PR citing its register row" }
+  - ac: REQ-REL-007-AC1
+    evidence:
+      - { type: go-test, ref: "tools/requirements:TestCheckFailsForAnACWithNoTest" }
+      - { type: go-test, ref: "tools/requirements:TestCheckPassesForAMappedAC" }
+      - { type: go-test, ref: "tools/requirements:TestCheckAcceptsANamedResidual" }
+      - { type: go-test, ref: "tools/requirements:TestCheckRejectsABadResidual" }
+      - { type: go-test, ref: "tools/requirements:TestCheckCoversDeprecatedRequirementsToo" }
+  - ac: REQ-REL-007-AC2
+    evidence:
+      - { type: go-test, ref: "tools/requirements:TestScriptTestMappingMustPointAtADeclaringTestFile" }
+      - { type: go-test, ref: "tools/requirements:TestEveryDeclaredACExistsAndMapsBack" }
+      - { type: go-test, ref: "tools/requirements:TestUnreadableTestFilesFail" }
+      - { type: go-test, ref: "tools/requirements:TestADeclarationMayCarryProse" }
+      - { type: go-test, ref: "tools/requirements:TestDeclarationsOnlyInTheHeaderAndInGrammar" }
+      - { type: go-test, ref: "tools/requirements:TestGoDeclarationAboveTheTestFunc" }
+      - { type: go-test, ref: "tools/requirements:TestShellTestThroughASymlinkOrWithAProblemFails" }
+      - { type: go-test, ref: "tools/requirements:TestOddTestFileNamesAreFound" }
+      - { type: go-test, ref: "tools/requirements:TestGoIsParsedAndSymlinkedTestsAreRefused" }
+      - { type: go-test, ref: "tools/requirements:TestNothingHidesFromTheScan" }

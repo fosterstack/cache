@@ -1,0 +1,12 @@
+# Acceptance criteria with no test mapping (REQ-REL-007-AC1, register row 79). Each is a residual for
+# the owner's decision — write the test, or accept the gap — never a silent exemption. `check` fails for
+# any acceptance criterion that is neither mapped in mappings.yaml nor listed here with a reason.
+unmapped:
+  - ac: REQ-PROTO-003-AC2
+    reason: no http-integration test for PUT / returning 400 has been mapped since the baseline (Sep 11); the owner decides
+  - ac: REQ-OBS-004-AC1
+    reason: no component test asserts the startup line's six fields; none mapped since the baseline (Sep 11); the owner decides
+  - ac: REQ-PLAT-004-AC1
+    reason: no acceptance-container run asserts uid 65532 and the data path; none mapped since the baseline (Sep 11); the owner decides
+  - ac: REQ-DEPLOY-001-AC1
+    reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides

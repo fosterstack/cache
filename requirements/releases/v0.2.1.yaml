@@ -3,6 +3,8 @@
 version: v0.2.1
 approved: true
 approved_on: 2026-09-29
+# row 80 sentence 1 (ratified Sep 30): v0.2.1 is fixed at this commit (PR #139).
+fixed_at: 326c45965bae82b8ca749b84231a866518d9e5ea
 requirements_sha256: b234e2302e74fdc674b88590d007ef45018cd281389030fd0a667fe33a537cea
 frozen_from: requirements/requirements.yaml
 release_blocking_acs:

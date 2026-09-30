@@ -24,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # full history: verify-freeze reads the requirements file AS OF each baseline's fixed
+          # commit (row 80), e.g. 326c459 for v0.2.1
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
@@ -39,11 +44,11 @@ jobs:
         run: go -C tools/requirements test -race -shuffle=on ./...
       - name: validate requirements and matrix freshness
         run: go -C tools/requirements run . check
-      # R07: the frozen release baseline must stay consistent with
-      # requirements.yaml (exact hash + complete blocking set) even while
-      # it is unapproved - a stale or hand-edited freeze that silently
-      # changes what admission enforces is caught here, in PR CI, not at
-      # release time. Approval is checked only at release admission.
+      # R07 + row 80: the frozen release baseline must stay consistent with
+      # the requirements file AS OF ITS FIXED COMMIT (exact hash + complete
+      # blocking set) - never main's current file, so editing requirements on
+      # main never turns it red, while a hand-edited freeze is still caught
+      # here, in PR CI. Approval is checked only at release admission.
       - name: frozen baseline consistency (approval-agnostic)
         run: go -C tools/requirements run . verify-freeze v0.2.1
       # Repeatable semantic regressions for the authorization stage's
