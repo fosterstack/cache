@@ -75,6 +75,8 @@ ALLOW_PATTERNS=(
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
+  '^bin/check-action-pins\.py$'
+  '^bin/check-action-pins-test\.sh$'
   '^bin/authorize-acceptance-check\.py$'
   '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'

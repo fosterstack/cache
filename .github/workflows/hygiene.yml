@@ -36,6 +36,15 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 bin/check-workflow-permissions.py
 
+      # Row 78: every action reference is a full commit digest with its version in
+      # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.
+      - name: the pin checker's own cases (row 78)
+        run: bash bin/check-action-pins-test.sh
+      - name: every GitHub Action is pinned to a commit digest (row 78)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 bin/check-action-pins.py --verify-tags .
+
       # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
       # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
       # auditor run at install. Resolving here makes such a bump fail the required check instead.
