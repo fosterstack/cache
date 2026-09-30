@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
-# proves: REQ-REL-005-AC1
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT

@@ -250,9 +250,8 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
-      - { type: shell-test, ref: ".github/agent/bin/tests/test_check_action_pins.py" }
-      - { type: shell-test, ref: "bin/pin-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/hygiene.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (9 cases)" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
   - ac: REQ-REL-006-AC1
     evidence:

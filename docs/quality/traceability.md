@@ -564,11 +564,11 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 
 Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/agent/bin/check-action-pins.py; .github/workflows/agent-review-gate.yml; .github/workflows/hygiene.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; .github/workflows/hygiene.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 4 item(s) |
+| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 3 item(s) |
 
 ### REQ-REL-006 — Frozen release baselines stay fixed
 

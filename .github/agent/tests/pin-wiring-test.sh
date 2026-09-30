@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-005-AC1 — the hygiene check runs the pin checker on every pull request and every push
-# to main, and nothing can skip it or swallow its failure (register row 78).
+# REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
+# every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
+# workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
 # The real hygiene.yml must pass; each mutated copy must be caught.
 set -euo pipefail
-here=$(cd "$(dirname "$0")/.." && pwd)
+here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 

@@ -131,8 +131,8 @@ func TestScriptTestMappingMustPointAtADeclaringTestFile(t *testing.T) {
 func TestEveryDeclaredACExistsAndMapsBack(t *testing.T) {
 	cases := map[string]struct{ rel, content, want string }{
 		"unknown AC":           {"bin/other-test.sh", "# proves: REQ-GHOST-001-AC1\n", "bin/other-test.sh declares REQ-GHOST-001-AC1, which is not an AC"},
-		"not mapped back":      {".github/agent/tests/x-test.sh", "# proves: REQ-TEST-001-AC1\n", ".github/agent/tests/x-test.sh declares REQ-TEST-001-AC1 but no shell-test mapping names it"},
-		"python unit test":     {".github/agent/bin/tests/test_x.py", "# proves: REQ-GHOST-002-AC1\n", "test_x.py declares REQ-GHOST-002-AC1, which is not an AC"},
+		"not mapped back":      {"tests/x-test.sh", "# proves: REQ-TEST-001-AC1\n", "tests/x-test.sh declares REQ-TEST-001-AC1 but no shell-test mapping names it"},
+		"python unit test":     {"py/test_x.py", "# proves: REQ-GHOST-002-AC1\n", "test_x.py declares REQ-GHOST-002-AC1, which is not an AC"},
 		"one line, two ACs":    {"bin/other-test.sh", "# proves: REQ-TEST-001-AC1, REQ-GHOST-001-AC1\n", "declares REQ-GHOST-001-AC1, which is not an AC"},
 		"anywhere in the repo": {"docs/x-test.sh", "# proves: REQ-GHOST-003-AC1\n", "docs/x-test.sh declares REQ-GHOST-003-AC1, which is not an AC"},
 		"a Go test":            {"internal/x/x_test.go", "// proves: REQ-GHOST-004-AC1 — prose after the dash\n", "internal/x/x_test.go declares REQ-GHOST-004-AC1, which is not an AC"},

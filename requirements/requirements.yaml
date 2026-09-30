@@ -1181,7 +1181,7 @@ requirements:
       digest with its version in a comment, and every container image the
       pipeline names or passes to an action shall be named by digest; a tag
       or branch reference shall fail the check that gates every pull request.
-    source: [.github/agent/bin/check-action-pins.py, .github/workflows/agent-review-gate.yml, .github/workflows/hygiene.yml]
+    source: [.github/workflows/agent-review-gate.yml, .github/workflows/hygiene.yml]
     tier: community
     introduced: v0.3.0
     origin: register row 78 (owner, Sep 30 2026)
