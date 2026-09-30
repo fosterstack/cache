@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-002-AC1, REQ-DEP-003-AC1
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-002-AC1, REQ-DEP-003-AC1
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
 # evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
@@ -39,12 +39,22 @@ if kind == "reviewer":
     if not any("permission-checks: write" in str(s.get("with", "")) or s.get("with", {}).get("permission-checks") == "write"
                for s in job.get("steps", [])):
         bad.append("no App token scoped to checks:write for the verdict check")
+    # AC3: the readers go through the federation, model identifiers only from environment secrets
+    act = [s for s in job.get("steps", []) if s.get("id") == "act"]
+    env = (act[0].get("env") or {}) if act else {}
+    for k, sec in (("ANTHROPIC_FEDERATION_RULE_ID", "REVIEWER_FEDERATION_RULE_ID"), ("ANTHROPIC_ORGANIZATION_ID", None),
+                   ("ANTHROPIC_SERVICE_ACCOUNT_ID", None), ("ANTHROPIC_WORKSPACE_ID", None),
+                   ("AUDITOR_MODEL_PRIMARY", None), ("AUDITOR_MODEL_FALLBACK", None)):
+        if env.get(k, "").strip() != "${{ secrets.%s }}" % (sec or k):
+            bad.append(f"{k} does not come from its environment secret")
+    if re.search(r"\bclaude-[a-z0-9]|ANTHROPIC_API_KEY", open(path).read()):
+        bad.append("a model id or an API key is written into the workflow")
     up = [s for s in job.get("steps", []) if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
     if len(up) != 1:
         bad.append("no single evidence upload")
     else:
         u = up[0]
-        if "always()" not in u.get("if", "") or u.get("continue-on-error") != "true":
+        if u.get("if", "").strip() != "${{ always() && steps.candidates.outputs.count != '0' }}" or u.get("continue-on-error") != "true":
             bad.append("the evidence upload is not always() + continue-on-error")
         if (u.get("with") or {}).get("path") != "${{ runner.temp }}/work" or "$RUNNER_TEMP/work" not in text:
             bad.append("the evidence upload does not keep the run's work directory (bundles, answers, decisions)")
@@ -53,19 +63,40 @@ elif kind == "reviewer-py":
     import ast
     tree = ast.parse(open(path).read())
     seqs, strings = [], []
+    def flat(n):
+        """a command list as written, concatenations joined; a non-literal element is None (unknown)"""
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+            return flat(n.left) + flat(n.right)
+        if isinstance(n, (ast.List, ast.Tuple)):
+            return [e.value if isinstance(e, ast.Constant) and isinstance(e.value, str) else None for e in n.elts]
+        return [None]
     for node in ast.walk(tree):
-        if isinstance(node, (ast.List, ast.Tuple)):
-            seqs.append([e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            seqs.append(flat(node))
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            seqs.append(flat(node))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             strings.append(node.value)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) > 1:
+            mode = node.args[1].value if isinstance(node.args[1], ast.Constant) else None
+            target = node.args[0]
+            # the reviewer writes only its own outputs (under the --out directory it is given)
+            if mode is None or any(c in str(mode) for c in "wax+"):
+                is_out = lambda n: isinstance(n, ast.Attribute) and n.attr == "out"
+                under_out = isinstance(target, ast.Call) and getattr(target.func, "attr", "") == "join" and target.args and is_out(target.args[0])
+                if not (is_out(target) or under_out):
+                    bad.append("the reviewer writes a file outside its output directory (open(..., %r))" % (mode,))
     forbidden = [("gh", "pr", "create"), ("gh", "pr", "edit"), ("gh", "pr", "close"), ("gh", "release"),
-                 ("git", "push"), ("git", "commit")]
+                 ("git", "push"), ("git", "commit"),
+                 ("grype",), ("trivy",), ("syft",), ("osv-scanner",), ("snyk",), ("docker",), ("govulncheck",)]
     for sq in seqs:
         # the reviewer's own code only ever READS the API: a write method or a field in a gh api call is refused
         if True:  # any sequence: _gh_json prepends `gh api` at run time, so its callers' lists count too
             for i, a in enumerate(sq):
-                if a in ("-X", "--method") and i + 1 < len(sq) and sq[i + 1].upper() != "GET":
-                    bad.append("the reviewer writes through the API (" + " ".join(sq[i:i + 2]) + ")")
+                if a in ("-X", "--method") and (i + 1 >= len(sq) or sq[i + 1] is None or sq[i + 1].upper() != "GET"):
+                    bad.append("the reviewer writes through the API (%s %s)" % (a, sq[i + 1] if i + 1 < len(sq) else ""))
+                if isinstance(a, str) and a.startswith(("--method=", "-X=")) and a.split("=", 1)[1].upper() != "GET":
+                    bad.append("the reviewer writes through the API (" + a + ")")
                 if a in ("-f", "-F", "--field", "--raw-field", "--input"):
                     bad.append("the reviewer sends fields through the API (" + a + ")")
         for f in forbidden:
@@ -73,7 +104,7 @@ elif kind == "reviewer-py":
                 if tuple(sq[i:i + len(f)]) == f:
                     bad.append("the reviewer calls " + " ".join(f))
     for st in strings:
-        for pat in (r"\bgh\s+pr\s+(create|edit|close)\b", r"\bgh\s+release\b", r"\bgit\s+(push|commit)\b",
+        for pat in (r"^(grype|trivy|syft|osv-scanner|snyk|docker|govulncheck)\b", r"\bgh\s+pr\s+(create|edit|close)\b", r"\bgh\s+release\b", r"\bgit\s+(push|commit)\b",
                     r"/contents/\S*.*-X\s*(PUT|DELETE)", r"-X\s*(PUT|DELETE)\b.*/contents/"):
             if re.search(pat, st):
                 bad.append("the reviewer runs: " + st[:60])
@@ -153,6 +184,9 @@ case_ reviewer $R reviewer-no-checks-app   bad "[s.get('with', {}).pop('permissi
 case_ reviewer $R reviewer-evidence-fails  bad "[s.pop('continue-on-error', None) for s in $rs if str(s.get('uses','')).startswith('actions/upload-artifact@')]"
 case_ reviewer $R reviewer-no-evidence     bad "$rs[:] = [s for s in $rs if not str(s.get('uses','')).startswith('actions/upload-artifact@')]"
 case_ reviewer $R reviewer-group-per-run  bad "d['concurrency']['group'] = '\${{ github.run_id }}'"
+case_ reviewer $R reviewer-evidence-narrow bad "[s.__setitem__('if', s['if'].replace('}}', \"&& steps.act.outcome == 'success' }}\")) for s in $rs if str(s.get('uses','')).startswith('actions/upload-artifact@')]"
+case_ reviewer $R reviewer-model-literal  bad "[s['env'].__setitem__('AUDITOR_MODEL_PRIMARY', 'claude-opus-9') for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-no-federation  bad "[s['env'].__setitem__('ANTHROPIC_FEDERATION_RULE_ID', 'invalid') for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-evidence-path   bad "[s['with'].__setitem__('path', '/nonexistent') for s in $rs if str(s.get('uses','')).startswith('actions/upload-artifact@')]"
 pycase reviewer-py-real        ok  ""
 pycase reviewer-py-pr-create   bad 'subprocess.run(["gh", "pr", "create", "--fill"])'
@@ -161,6 +195,11 @@ pycase reviewer-py-shell       bad 'os.system("gh pr edit 99 --add-label x")'
 pycase reviewer-py-contents    bad '_run(["gh", "api", "-X", "PUT", "repos/o/r/contents/x"])'
 pycase reviewer-py-field-post  bad '_run(["gh", "api", "repos/o/r/issues", "-f", "title=x"])'
 pycase reviewer-py-via-helper  bad '_gh_json(["repos/o/r/contents/x", "-X", "DELETE"])'
+pycase reviewer-py-concat      bad 'subprocess.run(["gh", "pr"] + ["create", "--fill"])'
+pycase reviewer-py-method-eq   bad '_gh_json(["repos/o/r/contents/x", "--method=DELETE"])'
+pycase reviewer-py-method-var  bad 'm = "PUT"; _gh_json(["repos/o/r/contents/x", "-X", m])'
+pycase reviewer-py-scans       bad '_run(["grype", "dir:."])'
+pycase reviewer-py-edits-file  bad 'open("go.mod", "w").write("module changed")'
 case_ guard    $H guard-real               ok  ""
 case_ guard    $H guard-pr-filtered        bad "d['on']['pull_request'] = {'paths': ['bin/**']}"
 case_ guard    $H guard-job-if             bad "d['jobs']['required-check-guard']['if'] = 'false'"

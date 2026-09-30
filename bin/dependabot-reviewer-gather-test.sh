@@ -50,6 +50,8 @@ for t in ("v4.3.1", "v5.0.0", "v6.0.0", "v6.2.0", "v7.0.0", "v7.0.1"):
 for t in ("v4.0.0", "v4.2.2", "v8.0.0"):
     check("notes of " + t not in b, "release notes of %s (outside the range) are not" % t)
 check(b.index("notes of v4.3.1") < b.index("notes of v5.0.0") < b.index("notes of v7.0.1"), "release notes are oldest first")
+check("uses: actions/checkout@0000000000000000000000000000000000000000 # v4.2.2" in b.split("Every line of ours that uses actions/checkout", 1)[-1],
+      "the usage line itself is in the bundle, under our-usage")
 check("Every line of ours that uses actions/checkout" in b and "fetch-depth: 0" in b and "name: fetch" in b,
       "our usage line is in the bundle with its whole step (inputs included)")
 check(all(c[0] in ("gh", "git") for c in calls), "only gh and git were called: no model is involved in gathering")

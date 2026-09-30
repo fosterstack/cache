@@ -1380,9 +1380,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-004-AC2
-        given: a required-check drift issue
-        when: main is pushed
-        then: it sends one fix-required-check-drift dispatch, and the step never fails the job
+        given: a required-check drift issue opened by the guard
+        when: hygiene has seen it
+        then: the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job
         verification: { method: unit, release_blocking: false }
         status: approved
 

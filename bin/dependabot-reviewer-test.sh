@@ -172,6 +172,10 @@ t, m, e = r.answer_of(M([B("thinking")], "end_turn"))
 check("answer_of: no text block -> 'no text', block types recorded", e and "no text" in e and m["blocks"] == ["thinking"], (e, m))
 t, m, e = r.answer_of(M([B("thinking"), B("text", '{"findings": []}')], "end_turn", usage=False))
 check("answer_of: reasoning then a complete answer -> the text only, no error", e is None and t == '{"findings": []}', (t, e))
+for stop in ("refusal", "stop_sequence", "pause_turn", None):
+    t, m, e = r.answer_of(M([B("text", '{"findings": []}')], stop))
+    check("answer_of: a clean-looking answer that ended %r is an error, never a clean read (backfill r2 B2)" % (stop,),
+          e and "did not finish normally" in e and m["stop_reason"] == stop, (e, m))
 check("the reader budget is well above the 2048 that cut every answer", r.MAX_TOKENS >= 16000, r.MAX_TOKENS)
 
 # --- decide: mechanical
@@ -241,7 +245,7 @@ import os
 class _Block:
     def __init__(self, t): self.text = t
 class _Msg:
-    def __init__(self, t): self.content = [_Block(t)]
+    def __init__(self, t): self.content, self.stop_reason = [_Block(t)], "end_turn"   # the real API always sets one
 class _Messages:
     def create(self, model, max_tokens, messages):
         if model == "boom":
