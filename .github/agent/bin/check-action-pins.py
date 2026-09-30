@@ -33,8 +33,16 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Every action must be CLASSIFIED (ACTIONS below, or EXECUTOR_ALLOWED): an action we have not
              classified may run an image we hand it through an input, so it fails closed until a
              reviewed change to this file says what it runs.
-  docker://  steps take no `entrypoint` or `args` input (the runner quotes them into the docker
-             command unsafely) and only plain ASCII input names.
+  docker://  steps, and classified Docker actions (DOCKER_ACTIONS), take no `entrypoint` or `args`
+             input (the runner quotes them into the docker command unsafely) and only plain ASCII
+             input names.
+  Script-text inputs: an input an action executes as a command (github-script `script`,
+             golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
+             a `run:` block — outside this check, covered by the review pass (see ACTIONS).
+  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256
+             (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
+             until this file is updated — a change under .github/agent/, so it needs the review record:
+             the enforcement cannot be removed from its caller by an ordinary merge either.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -67,6 +75,7 @@ and binaries a pinned action downloads by version.
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
 import csv
+import hashlib
 import json
 import os
 import pathlib
@@ -98,7 +107,7 @@ ACTIONS = {
     "actions/create-github-app-token": "node: mints a token",
     "actions/dependency-review-action": "node: GitHub API diff review",
     "actions/download-artifact": "node: artifact download",
-    "actions/github-script": "node: runs our inline script (itself reviewed as workflow text)",
+    "actions/github-script": "node: `script` is script text we write (the run: class; review pass)",
     "actions/setup-go": "node: installs the Go toolchain by version (a binary, outside this check)",
     "actions/setup-java": "node: installs a JDK by version (a binary, outside this check)",
     "actions/setup-python": "node: installs Python by version (a binary, outside this check)",
@@ -108,11 +117,17 @@ ACTIONS = {
     "aws-actions/configure-aws-credentials": "node: OIDC credentials",
     "dependabot/fetch-metadata": "node: PR metadata",
     "github/codeql-action": "node: CodeQL init/autobuild/analyze/upload-sarif",
-    "golangci/golangci-lint-action": "node: installs golangci-lint by version (a binary)",
-    "goreleaser/goreleaser-action": "node: installs goreleaser by version (a binary)",
+    "golangci/golangci-lint-action": "node: installs golangci-lint by version (a binary); `args` reaches "
+    "a shell — script text we write (the run: class; review pass)",
+    "goreleaser/goreleaser-action": "node: installs goreleaser by version (a binary); `args` is command "
+    "text we write (the run: class; review pass)",
     "ossf/scorecard-action": "docker: its own image, fixed inside the pinned commit (owner, Sep 30)",
     "sigstore/cosign-installer": "composite: installs cosign by version with checksum (a binary)",
 }
+# classified actions that are Docker actions: their step inputs follow the docker:// rules
+DOCKER_ACTIONS = {"ossf/scorecard-action"}
+GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
+GATE_WORKFLOW_SHA256 = "e2a5938e14aa50c3b1a14d04c0b6ef299d1d43117329476effd6486cdf652631"
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -330,6 +345,24 @@ def check_executor(where, action, step, bad):
                    f"in with.{inp}{' (' + prefix + '<image>@sha256:…, one per line)' if prefix else ''}")
 
 
+def docker_inputs(where, step, bad):
+    """A Docker action's inputs: plain ASCII names only, never entrypoint or args."""
+    for k, w in step.value if isinstance(step, yaml.MappingNode) else []:
+        if key_of(k) != "with":
+            continue
+        names = [kk.value if isinstance(kk, yaml.ScalarNode) else None
+                 for kk, _ in (w.value if isinstance(w, yaml.MappingNode) else [(None, None)])]
+        for n in names:
+            if n is None or not re.fullmatch(r"[a-z0-9_-]+", n) or n in ("entrypoint", "args"):
+                bad.append(f"{where}: Docker action input {n!r} is refused (entrypoint/args, or not a plain name)")
+
+
+def gate_digest(text):
+    """The gate workflow's sha256 with each action pin masked (a Dependabot bump moves only those)."""
+    masked = re.sub(rf"@{SHA}[ \t]+#[ \t]*v[0-9][0-9A-Za-z.+-]*", "@<pin>", text)
+    return hashlib.sha256(masked.encode("utf-8")).hexdigest()
+
+
 def check_uses(tree, where, path, node, parent, lines, pins, bad):
     if not isinstance(node, yaml.ScalarNode):
         return bad.append(f"{where}: uses is not a plain string")
@@ -361,18 +394,12 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
             bad.append(f"{where}: {v!r} is not followed directly by a `# vX` comment on its line")
         else:
             pins.append((where, v.rsplit("@", 1)[0], sha, tag))
+        if ident in DOCKER_ACTIONS:
+            docker_inputs(where, parent, bad)
         check_executor(where, "/".join(v.split("@")[0].split("/")[:2]), parent, bad)
         return
     if DOCKER_USES.fullmatch(v):
-        for k, w in parent.value if isinstance(parent, yaml.MappingNode) else []:
-            if key_of(k) != "with":
-                continue
-            names = [kk.value if isinstance(kk, yaml.ScalarNode) else None
-                     for kk, _ in (w.value if isinstance(w, yaml.MappingNode) else [(None, None)])]
-            for n in names:
-                if n is None or not re.fullmatch(r"[a-z0-9_-]+", n) or n in ("entrypoint", "args"):
-                    bad.append(f"{where}: docker:// input {n!r} is refused (entrypoint/args, or not a plain name)")
-        return
+        return docker_inputs(where, parent, bad)
     bad.append(f"{where}: not a full commit digest: {v!r}")
 
 
@@ -482,6 +509,11 @@ def main():
 
     for rel in files:
         check_file(tree, rel, pins, bad)
+    if GATE_WORKFLOW not in files:
+        bad.append(f"{GATE_WORKFLOW}: missing — the gate that runs this check")
+    elif gate_digest(tree.read(GATE_WORKFLOW)) != GATE_WORKFLOW_SHA256:
+        bad.append(f"{GATE_WORKFLOW}: changed — update GATE_WORKFLOW_SHA256 in this checker "
+                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}")
     if verify:
         bad += verify_pins(pins)
     for b in bad:

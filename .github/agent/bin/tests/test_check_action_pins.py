@@ -5,7 +5,7 @@ reach the branches a fixture workflow cannot: the tag verifier (GitHub's API is 
 urllib.request.urlopen — no network), a submodule in a git tree, a missing PyYAML, and the
 command-line errors.
 """
-import contextlib, importlib.util, io, json, os, runpy, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, os, re, runpy, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -25,7 +25,14 @@ TAGOBJ = "2222222222222222222222222222222222222222"
 HEAD = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
 
 
-def repo(files):
+GATE = os.path.join(BIN, "..", "..", "workflows", "agent-review-gate.yml")
+
+
+def repo(files, gate=True):
+    """A throwaway tree; it carries the real, pinned gate workflow unless gate=False."""
+    if gate:
+        with open(GATE) as fh:
+            files = {".github/workflows/agent-review-gate.yml": fh.read(), **files}
     d = tempfile.mkdtemp()
     for rel, text in files.items():
         p = os.path.join(d, rel)
@@ -140,15 +147,19 @@ class Main(unittest.TestCase):
     def test_verify_tags_through_main(self):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n"})
-        f, _ = api({"/git/ref/tags/v7.0.1": {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}},
-                    **CHECKOUT})
+        table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
+                 {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}}
+        with open(GATE) as fh:  # the gate's own pins answer truthfully too
+            for slug, sha, tag in re.findall(r"uses: ([\w.-]+/[\w.-]+)@([0-9a-f]{40}) # (v\S+)", fh.read()):
+                table[f"/repos/{slug}/git/ref/tags/{tag}"] = {"ref": f"refs/tags/{tag}", "object": {"type": "commit", "sha": sha}}
+        f, _ = api(table)
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}), mock.patch.object(urllib_request(), "urlopen", f):
             code, out = run(["--verify-tags", d])
         self.assertEqual(code, 0, out)
-        self.assertIn("1 pinned action(s) verified against their tags, 0 finding(s)", out)
+        self.assertIn("pinned action(s) verified against their tags, 0 finding(s)", out)
 
     def test_nothing_to_check(self):
-        code, _ = run([repo({"README.md": "x\n"})])
+        code, _ = run([repo({"README.md": "x\n"}, gate=False)])
         self.assertEqual(code, "check-action-pins: no .github/workflows/ — nothing checked")
 
     def test_git_usage(self):

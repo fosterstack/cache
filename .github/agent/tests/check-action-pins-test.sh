@@ -4,6 +4,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
+gate="$here/../../workflows/agent-review-gate.yml"
 # the vendored pure-Python PyYAML (fixtures/testlib/pyyaml) as `yaml`, so every CI job — with or
 # without a PyYAML of its own — runs these cases against the same parser
 mkdir -p "$work/pylib"; ln -s "$here/../fixtures/testlib/pyyaml" "$work/pylib/yaml"
@@ -15,6 +16,7 @@ DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 case_() {
   local name=$1 expect=$2 d="$work/$1"
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -556,10 +558,28 @@ case_ unclassified-action  bad "$head
         with:
           image: alpine:latest"
 
+# --- adversarial round 9 (audits/2026-09-30/pins/round9)
+case_ docker-action-entrypoint bad "$head
+    steps:
+      - uses: ossf/scorecard-action@$SHA # v2.4.4
+        with:
+          results_file: r.sarif
+          entrypoint: '/bin/echo\" alpine:latest \"'"
+case_ gate-edited          bad "$head
+    steps:
+      - run: true" "sed -i.bak 's/--verify-tags --git/--git/' .github/workflows/agent-review-gate.yml && rm .github/workflows/*.bak"
+case_ gate-missing         bad "$head
+    steps:
+      - run: true" "rm .github/workflows/agent-review-gate.yml"
+case_ gate-pin-bumped-ok   ok  "$head
+    steps:
+      - run: true" "sed -i.bak -E 's/@[0-9a-f]{40} # v7.0.1/@$SHA # v7.0.2/' .github/workflows/agent-review-gate.yml && rm .github/workflows/*.bak"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
