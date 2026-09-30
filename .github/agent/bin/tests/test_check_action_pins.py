@@ -203,11 +203,18 @@ class Transitive(unittest.TestCase):
              **manifest("docker/setup-qemu-action", OTHER, NODE)}
         out, _ = self.judge(t)
         self.assertEqual(len(out), 5, out)
-        self.assertIn("runs.steps[1].uses: a local action, resolved in the caller's workspace at run time: './sub'", out[0])
-        self.assertIn("runs.steps[2]: a mapping key that is not a plain string or holds an expression", out[1])
+        self.assertIn(".runs.steps[2]: a mapping key holding an expression", out[0])  # the whole-manifest walk
+        self.assertIn("runs.steps[1].uses: a local action, resolved in the caller's workspace at run time: './sub'", out[1])
         self.assertIn("runs.steps[4].uses: not a full commit digest: 'o/c@v1'", out[2])
         self.assertIn("runs.steps[5].uses: not a full commit digest: '../escape'", out[3])
         self.assertIn("docker/setup-qemu-action runs a container image of its own", out[4])
+
+    def test_expression_key_anywhere_in_a_fetched_manifest(self):
+        comp = ("runs:\n  using: composite\n  steps:\n"
+                f"    - uses: o/b@{OTHER}\n      with:\n        \"${{{{ 'append' }}}}\": x\n")
+        out, _ = self.judge({**manifest("o/a", SHA, comp), **manifest("o/b", OTHER, NODE)})
+        self.assertEqual(len(out), 1, out)
+        self.assertIn(".runs.steps[0].with: a mapping key holding an expression", out[0])
 
     def test_composite_seen_once_and_depth_bounded(self):
         loop = f"runs:\n  using: composite\n  steps:\n    - uses: o/a@{SHA}\n"

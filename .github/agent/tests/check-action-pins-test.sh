@@ -438,6 +438,34 @@ case_ kind-cloud-provider  bad "$head
         with:
           cloud_provider: 'true'"
 
+# --- adversarial round 6 (audits/2026-09-30/pins/round6)
+case_ kind-node-collision  bad "$head
+    steps:
+      - uses: helm/kind-action@$SHA # v1.15.0
+        with:
+          node_image: kindest/node@$DIG
+          \"node image\": kindest/node:v1.33.0"
+case_ qemu-image-collision bad "$head
+    steps:
+      - uses: docker/setup-qemu-action@$SHA # v4.4.0
+        with:
+          image: tonistiigi/binfmt@$DIG
+          \"Image\": tonistiigi/binfmt:latest"
+case_ buildx-kubernetes    bad "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver: kubernetes
+          driver-opts: |
+            image=moby/buildkit@$DIG
+            qemu.install=true"
+case_ buildx-container-ok  ok  "$head
+    steps:
+      - uses: docker/setup-buildx-action@$SHA # v4.4.1
+        with:
+          driver: docker-container
+          driver-opts: image=moby/buildkit@$DIG"
+
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"

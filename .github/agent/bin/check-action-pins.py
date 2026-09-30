@@ -31,8 +31,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
              image is still a mutable reference. Action identity is case-folded (GitHub resolves
-             owner/repo case-insensitively); input names are matched exactly as the runner does
-             (case-insensitive, never trimmed); buildx's driver-opts is read one option per line, as
+             owner/repo case-insensitively); input names are matched as the runner exports them
+             (INPUT_<name upper-cased, spaces to underscores>, never trimmed), and two inputs that
+             export to the same variable are a finding (the later would win); buildx runs only its
+             default docker-container driver or the docker driver (kubernetes and remote bring
+             images of their own, e.g. qemu.image); its driver-opts is read one option per line, as
              the action reads it — and each line as CSV, as buildx reads it, so exactly one image=
              may appear across them all — and its `append` (which can re-set a node's image) is refused.
              helm/kind-action: node_image, if given, by digest (unset, kind's own default for the
@@ -219,13 +222,14 @@ def check_image(where, node, bad):
 
 
 def inputs_of(step):
-    """The step's `with:` inputs as {name: [value nodes]}, names exactly as the runner matches them."""
+    """The step's `with:` inputs as {name: [value nodes]}, each name as the runner exports it
+    (INPUT_<upper-cased, spaces to underscores>): "node image" and node_image are one input."""
     got = {}
     for k, w in step.value if isinstance(step, yaml.MappingNode) else []:
         if key_of(k) == "with" and isinstance(w, yaml.MappingNode):
             for kk, v in w.value:
                 if isinstance(kk, yaml.ScalarNode):
-                    got.setdefault(kk.value.lower(), []).append(v)
+                    got.setdefault(kk.value.replace(" ", "_").lower(), []).append(v)
     return got
 
 
@@ -247,6 +251,10 @@ def check_kind(where, got, bad):
 def check_executor(where, action, step, bad):
     action = action.lower()
     got = inputs_of(step)
+    if action in EXECUTOR_INPUTS or action == "helm/kind-action":
+        dup = sorted(n for n, vs in got.items() if len(vs) > 1)
+        if dup:
+            return bad.append(f"{where}: {action} inputs that the runner exports to one variable: {', '.join(dup)}")
     if action == "helm/kind-action":
         return check_kind(where, got, bad)
     need = EXECUTOR_INPUTS.get(action)
@@ -256,9 +264,11 @@ def check_executor(where, action, step, bad):
     if action == "docker/setup-buildx-action":
         if "append" in got:
             return bad.append(f"{where}: {action} with `append` (it can re-set a node's image) is refused")
-        drivers = [v.value for v in got.get("driver", []) if isinstance(v, yaml.ScalarNode)]
+        drivers = [v.value if isinstance(v, yaml.ScalarNode) else None for v in got.get("driver", [])]
         if drivers == ["docker"]:
             return  # the docker driver runs no BuildKit container of its own
+        if drivers not in ([], ["docker-container"]):
+            return bad.append(f"{where}: {action} driver {drivers[0]!r} is refused (only docker-container or docker)")
     ok = False
     vals = got.get(inp, [])
     if len(vals) == 1 and isinstance(vals[0], yaml.ScalarNode) and "${{" not in vals[0].value:
@@ -392,10 +402,9 @@ def transitive(api, where, repo, sha, seen, depth):
         steps = next(v for k, v in steps.value if key_of(k) == "steps").value
     except Exception as e:
         return [f"{at}: composite steps unreadable ({e.__class__.__name__})"]
+    walk(nodes, [], [], found, at)  # every key in the fetched manifest, at any depth (no expressions)
     for i, step in enumerate(steps):
         keys = step.value if isinstance(step, yaml.MappingNode) else []
-        if any(not isinstance(k, yaml.ScalarNode) or "${{" in k.value for k, _ in keys):
-            found.append(f"{at}.runs.steps[{i}]: a mapping key that is not a plain string or holds an expression")
         for k, u in keys:
             if key_of(k) != "uses":
                 continue
