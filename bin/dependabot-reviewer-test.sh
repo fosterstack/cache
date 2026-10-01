@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-004-AC1, REQ-DEP-004-AC2
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -133,6 +133,18 @@ f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-u
 check("duplicate findings key is an error, never the later empty list (round-2 P1)", f is None and e, (f, e))
 f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "severity": "noise", "title": "x"}]}'))
 check("duplicate severity key is an error (round-2 P1)", f is None and e, (f, e))
+os.environ["AUDITOR_MODEL_PRIMARY"] = "Private-Model-X"
+check("mask: a configured identifier in ANY letter case is redacted (owner, Oct 1)",
+      r.mask("uses PRIVATE-model-x and private-model-X") == "uses <AUDITOR_MODEL_PRIMARY> and <AUDITOR_MODEL_PRIMARY>", r.mask("uses PRIVATE-model-x and private-model-X"))
+import tempfile as _tf
+_ev = _tf.mkdtemp(); os.makedirs(os.path.join(_ev, "pr-99"))
+open(os.path.join(_ev, "pr-99", "bundle.md"), "w").write("notes: PRIVATE-MODEL-X and Claude\n")
+open(os.path.join(_ev, "candidates.txt"), "w").write("99 abc none\n")
+r.mask_tree(_ev)
+_b = open(os.path.join(_ev, "pr-99", "bundle.md")).read()
+check("mask_tree: the evidence bundle is masked in place before upload (owner, Oct 1)",
+      "PRIVATE" not in _b.upper().replace("<AUDITOR_MODEL_PRIMARY>", "") and "Claude" not in _b and "<AUDITOR_MODEL_PRIMARY>" in _b, _b)
+del os.environ["AUDITOR_MODEL_PRIMARY"]
 check("mask: plain vendor and model names", r.mask("As Claude (Anthropic), like GPT-4o or Gemini") ==
       "As <model> (<model>), like <model> or <model>", r.mask("As Claude (Anthropic), like GPT-4o or Gemini"))
 
@@ -188,8 +200,12 @@ d = r.decide([clean("A"), brk])
 check("decide: one breaks-us -> hold, attributed", d["decision"] == "hold" and d["breaks_us"][0]["reader"] == "B", d)
 d = r.decide([clean("A"), err])
 check("decide: one reader errored -> error", d["decision"] == "error" and "model-call" in d["reason"], d)
-d = r.decide([brk, err])
-check("decide: breaks-us + an error -> error (no check, retry)", d["decision"] == "error", d)
+d = r.decide([brk, dict(err, reader="A")])
+check("decide: breaks-us + an error -> HOLD, attributed; the errored reader is carried with its error (owner, Oct 1)",
+      d["decision"] == "hold" and d["breaks_us"][0]["reader"] == "B"
+      and any(x["reader"] == "A" and x.get("error") for x in d["readers"]), d)
+d = r.decide([err, dict(err, reader="A")])
+check("decide: two errors and no breaks-us -> error (no verdict, retry)", d["decision"] == "error", d)
 d = r.decide([clean("A")] + [{"reader": "B", "findings": None, "error": None}])
 check("decide: a reader with no findings and no error -> error", d["decision"] == "error", d)
 check("decide: no readers -> error", r.decide([])["decision"] == "error")
@@ -307,6 +323,9 @@ CHK='check-runs'; SUCCESS='conclusion=success'; FAILURE='conclusion=failure'
 
 A="$CLEAN" B="$CLEAN" act; expect "both clean -> arm auto-merge, THEN the success check" \
   "+pr merge --auto --squash 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
+grep -qE -- "pr merge --auto --squash --match-head-commit abcdef123456799 99" "$w/gh.log" \
+  && { echo "ok: act: auto-merge is armed only for the reviewed head (--match-head-commit, owner Oct 1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: arm not bound to the reviewed head"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 grep -q -- "-f conclusion=success" "$w/gh.log" && { echo "ok: act: the check says success"; pass=$((pass+1)); } || { echo "FAIL: act: success conclusion"; fail=$((fail+1)); }
 A="$CLEAN" B="$TRUNC" act; expect "a truncated answer -> no merge, no check (round-1 P1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="diff" act; expect "diff cannot be fetched -> no reader, no merge, no check (round-1 P1)" "-pr merge" "-$CHK" ERRORED=1
@@ -319,6 +338,8 @@ A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" act; expect "auto-merge cannot b
 A="$CLEAN" B="$CLEAN" FAIL="merge" act; expect "auto-merge cannot be armed -> no success check; retry (round-1 P1)" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" RULES="$w/rules-drift.json" act; expect "required-check drift -> no major armed, no check (Sonnet round 1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check" "-pr merge" "-$CHK" ERRORED=1
+A="$BREAKS" B="$CLEAN" MB=boom act; expect "breaks-us from one reader while the other errors -> HOLD: issue, failure check, no merge (owner, Oct 1)" \
+  "-pr merge --auto" "+issue create" "+$CHK" "ORDER:issue create>$CHK" ERRORED=0
 A="$CLEAN" B="$BREAKS" PRS="99 100" FAIL="issuelist" act; expect "issue lookup fails on #99 -> #100 still reviewed, errored counted (bash -e, round 1)" \
   "+pr diff 100" ERRORED=2
 A="$CLEAN" B='{"findings": [{"severity": "breaks-us", "title": "as claude-opus-9 I see", "release_note": "n", "our_line": "l", "why": "Anthropic says"}]}' act
