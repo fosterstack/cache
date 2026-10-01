@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-002-AC1, REQ-DEP-003-AC1
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-002-AC1, REQ-DEP-003-AC1
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
 # evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
@@ -49,12 +49,22 @@ if kind == "reviewer":
             bad.append(f"{k} does not come from its environment secret")
     if re.search(r"\bclaude-[a-z0-9]|ANTHROPIC_API_KEY", open(path).read()):
         bad.append("a model id or an API key is written into the workflow")
+    # AC9: auto-merge is armed only for the reviewed head
+    arms = re.findall(r"gh pr merge --auto[^\n]*", text)
+    if not arms or any('--match-head-commit "$sha"' not in a for a in arms):
+        bad.append("auto-merge is not bound to the reviewed head (--match-head-commit \"$sha\")")
+    # AC3: the evidence directory is masked, in place, right before the upload, and the upload needs it
+    names = [s.get("id") for s in job.get("steps", [])]
+    mk = [s for s in job.get("steps", []) if s.get("id") == "mask"]
+    if not mk or (mk[0].get("run") or "").strip() != 'python3 bin/dependabot-reviewer.py mask-tree "$RUNNER_TEMP/work"' \
+            or "always()" not in mk[0].get("if", "") or mk[0].get("continue-on-error") != "true":
+        bad.append("no step masks the evidence directory before upload, never failing the run (AC6)")
     up = [s for s in job.get("steps", []) if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
     if len(up) != 1:
         bad.append("no single evidence upload")
     else:
         u = up[0]
-        if u.get("if", "").strip() != "${{ always() && steps.candidates.outputs.count != '0' }}" or u.get("continue-on-error") != "true":
+        if u.get("if", "").strip() != "${{ always() && steps.candidates.outputs.count != '0' && steps.mask.outcome == 'success' }}" or u.get("continue-on-error") != "true":
             bad.append("the evidence upload is not always() + continue-on-error")
         if (u.get("with") or {}).get("path") != "${{ runner.temp }}/work" or "$RUNNER_TEMP/work" not in text:
             bad.append("the evidence upload does not keep the run's work directory (bundles, answers, decisions)")
@@ -63,6 +73,8 @@ elif kind == "reviewer-py":
     import ast
     tree = ast.parse(open(path).read())
     seqs, strings = [], []
+    # mask_tree rewrites the evidence directory it is given (the workflow passes $RUNNER_TEMP/work, pinned below)
+    mask_fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "mask_tree"]
     def flat(n):
         """a command list as written, concatenations joined; a non-literal element is None (unknown)"""
         if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
@@ -77,7 +89,8 @@ elif kind == "reviewer-py":
             seqs.append(flat(node))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             strings.append(node.value)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) > 1:
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) > 1 \
+                and not any(fn.name == "mask_tree" and fn.lineno <= node.lineno <= fn.end_lineno for fn in mask_fns):
             mode = node.args[1].value if isinstance(node.args[1], ast.Constant) else None
             target = node.args[0]
             # the reviewer writes only its own outputs (under the --out directory it is given)
@@ -136,6 +149,14 @@ elif kind == "automerge":
         bad.append("no single squash auto-merge step")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
+    major = "steps.meta.outputs.update-type == 'version-update:semver-major'"
+    disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
+    if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
+        bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
+    elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "headRefOid" not in disarm[0][1]:
+        bad.append("the disarm does not judge the PR's CURRENT head by its reviewer check (a stale push job must not disarm a newer approved head)")
+    if (job.get("permissions") or {}).get("checks") != "read":
+        bad.append("the lane cannot read the reviewer's check (permissions: checks: read)")
     if len(guard) != 1 or steps[guard[0]].get("if") != nonmajor or "continue-on-error" in steps[guard[0]]:
         bad.append("the guard step is missing, wrongly conditioned, or can fail silently")
     elif arm and guard[0] > arm[0]:
@@ -212,6 +233,12 @@ case_ automerge $A automerge-majors-too    bad "[s.pop('if', None) for s in $as_
 case_ automerge $A automerge-no-guard      bad "$as_[:] = [s for s in $as_ if 'required-check-guard.sh' not in (s.get('run') or '')]"
 case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if 'required-check-guard.sh' in (s.get('run') or '')]"
 case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'required-check-guard.sh' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
+case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
+case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
+case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ reviewer $R reviewer-mask-fails-run  bad "[s.pop('continue-on-error', None) for s in $rs if s.get('id') == 'mask']"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
 echo "dependency-lanes: $pass passed, $failn failed"

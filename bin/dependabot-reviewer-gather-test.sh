@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-DEP-001-AC2
+# (and, owner Oct 1: a failed read of release notes or usage is labeled "unavailable" and is an error,
+# never "none found"; a genuine absence is still said plainly)
 # The Dependabot reviewer's gather step (register row 75 (b)), run offline: `cmd_gather` with its one external
 # seam (`_run`: the gh and git calls) standing in, so the test reads the bundle the readers actually receive.
 # It must carry the PR diff, the upstream release notes for EVERY version after the old one up to the new one
@@ -31,8 +33,18 @@ def fake_run(cmd, cap=None):
     if cmd[:3] == ["gh", "pr", "diff"]:
         return ("" if os.environ.get("NODIFF") else "-uses: actions/checkout@aaaa # v4.2.2\n+uses: actions/checkout@bbbb # v7.0.1\n"), (1 if os.environ.get("NODIFF") else 0)
     if cmd[:2] == ["gh", "api"]:
+        if os.environ.get("NOTES") == "fail":
+            return "", 1
+        if os.environ.get("NOTES") == "none":
+            return "[]", 0
         return json.dumps(releases if "page=1" in cmd[2] else []), 0
     if cmd[:2] == ["git", "grep"]:
+        if os.environ.get("USAGE") == "fail":
+            return "", 2
+        if os.environ.get("USAGE") == "none":
+            return "", 1
+        if os.environ.get("USAGE") == "vanished":
+            return ".github/workflows/gone.yml:5:        uses: actions/checkout@x\n", 0
         return ".github/workflows/w.yml:5:        uses: actions/checkout@0000000000000000000000000000000000000000 # v4.2.2\n", 0
     raise AssertionError("unexpected command: %r" % (cmd,))
 r._run = fake_run
@@ -63,6 +75,35 @@ try:
 except SystemExit as e:
     code = e.code
 check(code == 3 and not os.path.exists("out2/bundle.md"), "no diff -> exit 3 and no bundle (no review)")
+del os.environ["NODIFF"]
+def gather_to(out):
+    class G(A): pass
+    G.out = out
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            r.cmd_gather(G)
+        return 0, open(out + "/bundle.md").read()
+    except SystemExit as e:
+        return e.code, (open(out + "/bundle.md").read() if os.path.exists(out + "/bundle.md") else "")
+os.environ["NOTES"] = "fail"
+code, b = gather_to("out3")
+check(code not in (0, None) and "release notes UNAVAILABLE" in b and "no upstream release notes found" not in b,
+      "a failed release-notes read is labeled unavailable and is an error, never 'none found'")
+os.environ["NOTES"] = "none"
+code, b = gather_to("out4")
+check(code in (0, None) and "no upstream release notes found" in b, "a genuine absence of release notes is still said plainly (no error)")
+del os.environ["NOTES"]
+os.environ["USAGE"] = "fail"
+code, b = gather_to("out5")
+check(code not in (0, None) and "usage UNAVAILABLE" in b and "no line in this repository names" not in b,
+      "a failed usage search is labeled unavailable and is an error, never 'none found'")
+os.environ["USAGE"] = "none"
+code, b = gather_to("out6")
+check(code in (0, None) and "no line in this repository names" in b, "a genuine absence of usage is still said plainly (no error)")
+os.environ["USAGE"] = "vanished"
+code, b = gather_to("out7")
+check(code not in (0, None) and "usage UNAVAILABLE" in b, "a usage hit whose file cannot be read is unavailable and an error (round 1 R1)")
+del os.environ["USAGE"]
 print("dependabot-reviewer gather: %d failed" % len(fails))
 sys.exit(1 if fails else 0)
 PY

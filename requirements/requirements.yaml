@@ -1278,19 +1278,19 @@ requirements:
       - id: REQ-DEP-001-AC2
         given: an open Dependabot major with no verdict yet
         when: the reviewer runs
-        then: it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency
+        then: it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency; a read of release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never "none found"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC3
         given: the gathered evidence for one major
         when: the two readers answer
-        then: "the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier reaches a finding, issue or evidence"
+        then: "the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked \"breaks us\", \"check\" or \"noise\", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier, in any letter case, reaches a finding, an issue or the uploaded evidence, the evidence bundle included"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC4
         given: both readers' findings
         when: the reviewer decides
-        then: "the decision is mechanical: no \"breaks us\" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" holds the PR with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
+        then: "the decision is mechanical: no \"breaks us\" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any \"breaks us\" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no \"breaks us\" leaves no verdict and is retried next hour"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-DEP-001-AC5
@@ -1315,6 +1315,12 @@ requirements:
         given: a reviewer run that is cancelled or superseded
         when: it ends
         then: it never posts a verdict over a newer one
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-001-AC9
+        given: a merge verdict on a Dependabot major
+        when: auto-merge is armed, and when a new commit is pushed to the PR
+        then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
         verification: { method: unit, release_blocking: false }
         status: approved
 

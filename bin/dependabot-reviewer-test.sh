@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-004-AC1, REQ-DEP-004-AC2
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -83,9 +83,29 @@ r._gh_json = lambda args: [{"tag_name": "v7.0.0", "name": "seven", "body": "remo
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: in-range releases oldest first, counted",
       n == 2 and text.index("v5.0.0") < text.index("v7.0.0") and "v4.3.0" not in text, (n, text))
-r._gh_json = lambda args: None
+r._gh_json = lambda args: [{"tag_name": "v3.0.0", "body": "older"}]
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: none found is said, count 0", n == 0 and "no upstream release notes found" in text, (n, text))
+r._gh_json = lambda args: None
+text, n = r.release_notes("actions/checkout", "4", "7")
+check("release_notes: a failed API read is UNAVAILABLE (count None), never 'none found' (owner, Oct 1)",
+      n is None and "UNAVAILABLE" in text and "no upstream release notes found" not in text, (n, text))
+_newer = [{"tag_name": "v9.%d.0" % i, "body": "later"} for i in range(100)]
+r._gh_json = lambda args: (_newer if args[0].endswith(("&page=1", "&page=2", "&page=3"))
+                           else [{"tag_name": "v7.0.0", "body": "the one"}, {"tag_name": "v4.0.0", "body": "old"}])
+text, n = r.release_notes("actions/checkout", "4", "7")
+check("release_notes: an in-range release on page 4 is found, never 'none found' (round 1 B2)", n == 1 and "the one" in text, (n, text[:120]))
+_bp = [{"tag_name": "v9.%d.0" % i, "body": "later"} for i in range(99)] + [{"tag_name": "v4.2.1", "body": "backport"}]
+r._gh_json = lambda args: (_bp if args[0].endswith("&page=1") else
+                           [{"tag_name": "v5.0.0", "body": "removed foo"}, {"tag_name": "nightly", "body": "n"},
+                            {"tag_name": "codeql-bundle-20260101", "body": "b"}] if args[0].endswith("&page=2") else [])
+text, n = r.release_notes("actions/checkout", "4.2.2", "7")
+check("release_notes: a backport interleaved on page 1 never ends the read early; v5.0.0 on page 2 is found (round 2 B2)",
+      n == 1 and "removed foo" in text, (n, text[:120]))
+check("release_notes: non-version tags (nightly, codeql-bundle-*) never crash the read (round 2 Sonnet)", True, "")
+r._gh_json = lambda args: _newer
+text, n = r.release_notes("actions/checkout", "4", "7")
+check("release_notes: pages run out before the old version is reached -> UNAVAILABLE (round 1 B2)", n is None and "UNAVAILABLE" in text, (n, text[:120]))
 text, n = r.release_notes("golang", "`3f3c01a`", "`9e8d7c6`")
 check("release_notes: non-GitHub dependency is said, count 0", n == 0 and "not a GitHub-hosted" in text, (n, text))
 
@@ -133,6 +153,28 @@ f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-u
 check("duplicate findings key is an error, never the later empty list (round-2 P1)", f is None and e, (f, e))
 f, e = r.normalize_findings(r.parse_answer('{"findings": [{"severity": "breaks-us", "severity": "noise", "title": "x"}]}'))
 check("duplicate severity key is an error (round-2 P1)", f is None and e, (f, e))
+os.environ["AUDITOR_MODEL_PRIMARY"] = "Private-Model-X"
+check("mask: a configured identifier in ANY letter case is redacted (owner, Oct 1)",
+      r.mask("uses PRIVATE-model-x and private-model-X") == "uses <AUDITOR_MODEL_PRIMARY> and <AUDITOR_MODEL_PRIMARY>", r.mask("uses PRIVATE-model-x and private-model-X"))
+import tempfile as _tf
+_ev = _tf.mkdtemp(); os.makedirs(os.path.join(_ev, "pr-99"))
+open(os.path.join(_ev, "pr-99", "bundle.md"), "w").write("notes: PRIVATE-MODEL-X and Claude\n")
+open(os.path.join(_ev, "candidates.txt"), "w").write("99 abc none\n")
+open(os.path.join(_ev, "pr-99", "reader-X.json"), "w").write('{"raw": "\\u0050RIVATE-MODEL-X said so"}')
+r.mask_tree(_ev)
+_j = json.load(open(os.path.join(_ev, "pr-99", "reader-X.json")))
+open(os.path.join(_ev, "pr-99", "reader-Y.json"), "w").write(json.dumps({"raw": '{"findings": [{"title": "\\u0050RIVATE-MODEL-X"}]}'}))
+r.mask_tree(_ev)
+_y = json.load(open(os.path.join(_ev, "pr-99", "reader-Y.json")))["raw"]
+check("mask_tree: an identifier escaped inside the raw answer (JSON in a JSON string) is masked (round 2 B3)",
+      "PRIVATE-MODEL-X" not in json.loads(_y)["findings"][0]["title"].upper(), _y)
+check("mask: \\uXXXX escapes are decoded before masking", "PRIVATE" not in r.mask("\\u0050RIVATE-MODEL-X").upper(), r.mask("\\u0050RIVATE-MODEL-X"))
+check("mask_tree: a JSON-escaped identifier is masked after decoding (round 1 B3)",
+      "PRIVATE-MODEL-X" not in json.dumps(_j, ensure_ascii=False).upper(), _j)
+_b = open(os.path.join(_ev, "pr-99", "bundle.md")).read()
+check("mask_tree: the evidence bundle is masked in place before upload (owner, Oct 1)",
+      "PRIVATE" not in _b.upper().replace("<AUDITOR_MODEL_PRIMARY>", "") and "Claude" not in _b and "<AUDITOR_MODEL_PRIMARY>" in _b, _b)
+del os.environ["AUDITOR_MODEL_PRIMARY"]
 check("mask: plain vendor and model names", r.mask("As Claude (Anthropic), like GPT-4o or Gemini") ==
       "As <model> (<model>), like <model> or <model>", r.mask("As Claude (Anthropic), like GPT-4o or Gemini"))
 
@@ -188,8 +230,21 @@ d = r.decide([clean("A"), brk])
 check("decide: one breaks-us -> hold, attributed", d["decision"] == "hold" and d["breaks_us"][0]["reader"] == "B", d)
 d = r.decide([clean("A"), err])
 check("decide: one reader errored -> error", d["decision"] == "error" and "model-call" in d["reason"], d)
-d = r.decide([brk, err])
-check("decide: breaks-us + an error -> error (no check, retry)", d["decision"] == "error", d)
+d = r.decide([brk, dict(err, reader="A")])
+check("decide: breaks-us + an error -> HOLD, attributed; the errored reader is carried with its error (owner, Oct 1)",
+      d["decision"] == "hold" and d["breaks_us"][0]["reader"] == "B"
+      and any(x["reader"] == "A" and x.get("error") for x in d["readers"]), d)
+import tempfile as _tf2
+_dd = _tf2.mkdtemp(); json.dump(brk, open(os.path.join(_dd, "reader-AUDITOR_MODEL_PRIMARY.json"), "w"))
+class _DA: reader = [os.path.join(_dd, "reader-AUDITOR_MODEL_PRIMARY.json"), os.path.join(_dd, "reader-AUDITOR_MODEL_FALLBACK.json")]; out = os.path.join(_dd, "d.json")
+import io as _io, contextlib as _cl
+with _cl.redirect_stdout(_io.StringIO()):
+    r.cmd_decide(_DA)
+_d = json.load(open(_DA.out))
+check("decide: a missing answer file is an errored reader, and the other's breaks-us still holds (round 1 B4)",
+      _d["decision"] == "hold" and any(x["reader"] == "AUDITOR_MODEL_FALLBACK" and "no answer" in x.get("error", "") for x in _d["readers"]), _d)
+d = r.decide([err, dict(err, reader="A")])
+check("decide: two errors and no breaks-us -> error (no verdict, retry)", d["decision"] == "error", d)
 d = r.decide([clean("A")] + [{"reader": "B", "findings": None, "error": None}])
 check("decide: a reader with no findings and no error -> error", d["decision"] == "error", d)
 check("decide: no readers -> error", r.decide([])["decision"] == "error")
@@ -227,7 +282,8 @@ case "$1 $2" in
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer") echo success ;;   # cancellation cleanup lookups
   "api repos/o/r/commits/shaB/check-runs?check_name=dependabot-reviewer") echo none ;;
-  "api "*) exit 1 ;;                                   # upstream releases: none available
+  "api repos/a/b/releases"*) fails notes; echo '[]' ;;      # upstream releases: a successful read, none published
+  "api "*) exit 1 ;;
   "pr diff") fails diff; printf -- '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;;
   "pr merge") if [ "$3" = "--disable-auto" ]; then fails disarm; else fails merge; fi ;;
   "pr view") fails view; echo "${ARMED:-false}" ;;
@@ -250,6 +306,8 @@ class _Messages:
     def create(self, model, max_tokens, messages):
         if model == "boom":
             raise RuntimeError("connection reset")
+        if model == "die":
+            os._exit(3)   # the reader process dies before writing its answer file
         m = _Msg(os.environ["ANSWER_" + model])
         if model == "cut":
             m.stop_reason = "max_tokens"
@@ -306,7 +364,10 @@ expect() { # name; then grep -E assertions on the gh log: +regex must appear, -r
 CHK='check-runs'; SUCCESS='conclusion=success'; FAILURE='conclusion=failure'
 
 A="$CLEAN" B="$CLEAN" act; expect "both clean -> arm auto-merge, THEN the success check" \
-  "+pr merge --auto --squash 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
+  "+pr merge --auto --squash --match-head-commit [0-9a-f]+ 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
+grep -qE -- "pr merge --auto --squash --match-head-commit abcdef123456799 99" "$w/gh.log" \
+  && { echo "ok: act: auto-merge is armed only for the reviewed head (--match-head-commit, owner Oct 1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: arm not bound to the reviewed head"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
 grep -q -- "-f conclusion=success" "$w/gh.log" && { echo "ok: act: the check says success"; pass=$((pass+1)); } || { echo "FAIL: act: success conclusion"; fail=$((fail+1)); }
 A="$CLEAN" B="$TRUNC" act; expect "a truncated answer -> no merge, no check (round-1 P1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" FAIL="diff" act; expect "diff cannot be fetched -> no reader, no merge, no check (round-1 P1)" "-pr merge" "-$CHK" ERRORED=1
@@ -319,6 +380,16 @@ A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" act; expect "auto-merge cannot b
 A="$CLEAN" B="$CLEAN" FAIL="merge" act; expect "auto-merge cannot be armed -> no success check; retry (round-1 P1)" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" RULES="$w/rules-drift.json" act; expect "required-check drift -> no major armed, no check (Sonnet round 1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check" "-pr merge" "-$CHK" ERRORED=1
+A="$CLEAN" B="$CLEAN" FAIL="notes" act; expect "release notes cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried (owner, Oct 1)" "-pr merge" "-$CHK" ERRORED=1
+grep -q "release notes UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
+  && { echo "ok: act: the bundle labels the failed read UNAVAILABLE"; pass=$((pass+1)); } || { echo "FAIL: act: unavailable label"; fail=$((fail+1)); }
+A="$BREAKS" B="$CLEAN" MB=die act; expect "breaks-us while the other reader's process dies without an answer -> HOLD, the missing answer an error (round 1 B4)" \
+  "-pr merge --auto" "+issue create" "+$CHK" ERRORED=0
+grep -q "reader B" "$w/run/work/pr-99/issue.md" && grep -qi "no answer" "$w/run/work/pr-99/issue.md" && ! grep -q "_(no findings)_" "$w/run/work/pr-99/issue.md" \
+  && { echo "ok: act: the issue shows the errored reader as errored, never as 'no findings' (round 1 Sonnet B1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: errored reader rendering"; sed 's/^/    /' "$w/run/work/pr-99/issue.md"; fail=$((fail+1)); }
+A="$BREAKS" B="$CLEAN" MB=boom act; expect "breaks-us from one reader while the other errors -> HOLD: issue, failure check, no merge (owner, Oct 1)" \
+  "-pr merge --auto" "+issue create" "+$CHK" "ORDER:issue create>$CHK" ERRORED=0
 A="$CLEAN" B="$BREAKS" PRS="99 100" FAIL="issuelist" act; expect "issue lookup fails on #99 -> #100 still reviewed, errored counted (bash -e, round 1)" \
   "+pr diff 100" ERRORED=2
 A="$CLEAN" B='{"findings": [{"severity": "breaks-us", "title": "as claude-opus-9 I see", "release_note": "n", "our_line": "l", "why": "Anthropic says"}]}' act
@@ -359,7 +430,7 @@ done
 
 # --- round 2
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \
-  "+pr merge --auto --squash 99" "+pr merge --disable-auto 99" ERRORED=1
+  "+pr merge --auto --squash --match-head-commit [0-9a-f]+ 99" "+pr merge --disable-auto 99" ERRORED=1
 A="$CLEAN" B="$BREAKS" FAIL="check" act; expect "held but the failure check fails -> counted unfinished (round-2)" "+issue create" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act; expect "forced re-review errors over an old success -> disarm + neutral check (round-2 P1)" \
   "+pr merge --disable-auto 99" "+check-runs" "-pr merge --auto" ERRORED=1

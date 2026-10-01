@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 55 |
-| Acceptance criteria | 90 |
+| Acceptance criteria | 91 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 86 |
+| ACs with mapped evidence | 87 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -604,13 +604,14 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEP-001-AC1 | Given the Dependabot reviewer workflow; when it is triggered; then it runs hourly from main and on manual dispatch, never on a pull-request event | ci-workflow |  | approved | 1 item(s) |
-| REQ-DEP-001-AC2 | Given an open Dependabot major with no verdict yet; when the reviewer runs; then it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency | unit |  | approved | 2 item(s) |
-| REQ-DEP-001-AC3 | Given the gathered evidence for one major; when the two readers answer; then the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked "breaks us", "check" or "noise", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier reaches a finding, issue or evidence | unit |  | approved | 2 item(s) |
-| REQ-DEP-001-AC4 | Given both readers' findings; when the reviewer decides; then the decision is mechanical: no "breaks us" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any "breaks us" holds the PR with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no "breaks us" leaves no verdict and is retried next hour | unit |  | approved | 1 item(s) |
+| REQ-DEP-001-AC2 | Given an open Dependabot major with no verdict yet; when the reviewer runs; then it gathers, with no model involved, the PR diff, the upstream release notes for every version between old and new, and every line in our workflows and modules that uses the dependency; a read of release notes or usage that fails is labeled unavailable in the bundle and is an error (no verdict, retried), never "none found" | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC3 | Given the gathered evidence for one major; when the two readers answer; then the bundle reaches two readers through the same workload-identity federation the auditor uses, with model identifiers only in environment secrets; each returns findings ranked "breaks us", "check" or "noise", never a verdict; an answer that is malformed, cut off or declares failure is an error, never a clean pass; no model name or identifier, in any letter case, reaches a finding, an issue or the uploaded evidence, the evidence bundle included | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC4 | Given both readers' findings; when the reviewer decides; then the decision is mechanical: no "breaks us" from either reader, with the required-check guard matching, arms squash auto-merge, which merges only once every required check is green; any "breaks us" from either reader holds the PR, even when the other reader errored, with one issue carrying the readers' findings and the fix, which is ccode's; a reader error with no "breaks us" leaves no verdict and is retried next hour | unit |  | approved | 1 item(s) |
 | REQ-DEP-001-AC5 | Given a finished review; when the reviewer reports it; then it posts its result as a check through the automation App; it scans nothing, opens no pull request and edits nothing | unit |  | approved | 2 item(s) |
 | REQ-DEP-001-AC6 | Given any reviewer run; when it ends; then its evidence (the bundles, both readers' answers, the decisions) is kept as a run artifact, and keeping it never fails the run | ci-workflow |  | approved | 2 item(s) |
 | REQ-DEP-001-AC7 | Given the reviewer's readers failing three hourly runs in a row; when the third run ends; then it opens one issue for the ccode queue and posts nothing else | unit |  | approved | 1 item(s) |
 | REQ-DEP-001-AC8 | Given a reviewer run that is cancelled or superseded; when it ends; then it never posts a verdict over a newer one | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC9 | Given a merge verdict on a Dependabot major; when auto-merge is armed, and when a new commit is pushed to the PR; then auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh | unit |  | approved | 2 item(s) |
 
 ### REQ-DEP-002 — The required-check guard runs everywhere
 
