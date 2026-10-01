@@ -62,9 +62,24 @@ def mask_tree(root):
             with open(p, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
             masked = mask(text)
+            if f.endswith(".json"):  # decode first: a \\u-escaped identifier is masked too
+                try:
+                    masked = json.dumps(_mask_json(json.loads(text)), indent=1, ensure_ascii=False)
+                except ValueError:
+                    pass
             if masked != text:
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write(masked)
+
+
+def _mask_json(v):
+    if isinstance(v, str):
+        return mask(v)
+    if isinstance(v, list):
+        return [_mask_json(x) for x in v]
+    if isinstance(v, dict):
+        return {mask(k): _mask_json(x) for k, x in v.items()}
+    return v
 
 
 def cmd_mask_tree(a):
@@ -183,6 +198,9 @@ def _upstream_repo(name):
     return None
 
 
+MAX_RELEASE_PAGES = 20
+
+
 def release_notes(name, old, new):
     """(text, count): upstream release notes for every release after `old` and up to `new`
     (in_range), oldest first; a plain statement and count 0 when none exist (never a guess); a
@@ -191,17 +209,21 @@ def release_notes(name, old, new):
     if not repo:
         return "(no upstream release notes available for %s: not a GitHub-hosted dependency)\n" % name, 0
     lo, hi = _vertuple(old), _vertuple(new)
-    rels = []
-    for page in (1, 2, 3):
+    rels, complete = [], False
+    for page in range(1, MAX_RELEASE_PAGES + 1):
         chunk = _gh_json(["repos/%s/releases?per_page=100&page=%d" % (repo, page)])
         if chunk is None:  # the read failed: never mistaken for "none found" (owner, Oct 1)
             return ("(release notes UNAVAILABLE for %s: the GitHub API read of %s failed; this bundle "
                     "cannot be judged)\n" % (name, repo)), None
-        if not chunk:
-            break
         rels.extend(chunk)
-        if len(chunk) < 100:
+        # newest first: once a release at or below the old version is seen, every newer one has been read
+        if len(chunk) < 100 or any(_vertuple(r.get("tag_name", "")) <= lo for r in chunk
+                                   if _vertuple(r.get("tag_name", "")) != (-1,)):
+            complete = True
             break
+    if not complete:
+        return ("(release notes UNAVAILABLE for %s: more than %d pages of releases on %s and the old version "
+                "%s was not reached; this bundle cannot be judged)\n" % (name, MAX_RELEASE_PAGES, repo, old)), None
     picked = []
     for r in rels:
         t = _vertuple(r.get("tag_name", ""))
@@ -278,7 +300,10 @@ def our_usage(name):
             return USAGE_UNAVAILABLE % (name, rc)
     if not out:
         return "(no line in this repository names %s)\n" % name
-    text = usage_blocks(out.splitlines(), lambda p: open(p, encoding="utf-8", errors="replace").read().splitlines())
+    try:
+        text = usage_blocks(out.splitlines(), lambda p: open(p, encoding="utf-8", errors="replace").read().splitlines())
+    except OSError as e:  # a hit whose file cannot be read: unavailable, never a partial "this is all"
+        return USAGE_UNAVAILABLE % (name, type(e).__name__)
     if len(text) > CAP_USAGE:
         text = text[:CAP_USAGE] + "\n[... usage truncated at %d characters ...]\n" % CAP_USAGE
     return text
@@ -465,7 +490,13 @@ def decide(readers):
 
 
 def cmd_decide(a):
-    readers = [json.load(open(p)) for p in a.reader]
+    readers = []
+    for p in a.reader:
+        name = re.sub(r"^reader-|\.json$", "", os.path.basename(p))
+        try:
+            readers.append(json.load(open(p)))
+        except (OSError, ValueError) as e:  # a reader that wrote no answer is an errored reader, never a crash
+            readers.append({"reader": name, "findings": None, "error": "no answer (%s)" % type(e).__name__})
     d = decide(readers)
     json.dump(d, open(a.out, "w"), indent=1)
     print("decision: %s%s" % (d["decision"], (" (%s)" % d.get("reason")) if d.get("reason") else ""))

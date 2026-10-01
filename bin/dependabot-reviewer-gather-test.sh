@@ -43,6 +43,8 @@ def fake_run(cmd, cap=None):
             return "", 2
         if os.environ.get("USAGE") == "none":
             return "", 1
+        if os.environ.get("USAGE") == "vanished":
+            return ".github/workflows/gone.yml:5:        uses: actions/checkout@x\n", 0
         return ".github/workflows/w.yml:5:        uses: actions/checkout@0000000000000000000000000000000000000000 # v4.2.2\n", 0
     raise AssertionError("unexpected command: %r" % (cmd,))
 r._run = fake_run
@@ -98,6 +100,9 @@ check(code not in (0, None) and "usage UNAVAILABLE" in b and "no line in this re
 os.environ["USAGE"] = "none"
 code, b = gather_to("out6")
 check(code in (0, None) and "no line in this repository names" in b, "a genuine absence of usage is still said plainly (no error)")
+os.environ["USAGE"] = "vanished"
+code, b = gather_to("out7")
+check(code not in (0, None) and "usage UNAVAILABLE" in b, "a usage hit whose file cannot be read is unavailable and an error (round 1 R1)")
 del os.environ["USAGE"]
 print("dependabot-reviewer gather: %d failed" % len(fails))
 sys.exit(1 if fails else 0)

@@ -83,13 +83,21 @@ r._gh_json = lambda args: [{"tag_name": "v7.0.0", "name": "seven", "body": "remo
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: in-range releases oldest first, counted",
       n == 2 and text.index("v5.0.0") < text.index("v7.0.0") and "v4.3.0" not in text, (n, text))
-r._gh_json = lambda args: []
+r._gh_json = lambda args: [{"tag_name": "v3.0.0", "body": "older"}]
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: none found is said, count 0", n == 0 and "no upstream release notes found" in text, (n, text))
 r._gh_json = lambda args: None
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: a failed API read is UNAVAILABLE (count None), never 'none found' (owner, Oct 1)",
       n is None and "UNAVAILABLE" in text and "no upstream release notes found" not in text, (n, text))
+_newer = [{"tag_name": "v9.%d.0" % i, "body": "later"} for i in range(100)]
+r._gh_json = lambda args: (_newer if args[0].endswith(("&page=1", "&page=2", "&page=3"))
+                           else [{"tag_name": "v7.0.0", "body": "the one"}, {"tag_name": "v4.0.0", "body": "old"}])
+text, n = r.release_notes("actions/checkout", "4", "7")
+check("release_notes: an in-range release on page 4 is found, never 'none found' (round 1 B2)", n == 1 and "the one" in text, (n, text[:120]))
+r._gh_json = lambda args: _newer
+text, n = r.release_notes("actions/checkout", "4", "7")
+check("release_notes: pages run out before the old version is reached -> UNAVAILABLE (round 1 B2)", n is None and "UNAVAILABLE" in text, (n, text[:120]))
 text, n = r.release_notes("golang", "`3f3c01a`", "`9e8d7c6`")
 check("release_notes: non-GitHub dependency is said, count 0", n == 0 and "not a GitHub-hosted" in text, (n, text))
 
@@ -144,7 +152,11 @@ import tempfile as _tf
 _ev = _tf.mkdtemp(); os.makedirs(os.path.join(_ev, "pr-99"))
 open(os.path.join(_ev, "pr-99", "bundle.md"), "w").write("notes: PRIVATE-MODEL-X and Claude\n")
 open(os.path.join(_ev, "candidates.txt"), "w").write("99 abc none\n")
+open(os.path.join(_ev, "pr-99", "reader-X.json"), "w").write('{"raw": "\\u0050RIVATE-MODEL-X said so"}')
 r.mask_tree(_ev)
+_j = json.load(open(os.path.join(_ev, "pr-99", "reader-X.json")))
+check("mask_tree: a JSON-escaped identifier is masked after decoding (round 1 B3)",
+      "PRIVATE-MODEL-X" not in json.dumps(_j, ensure_ascii=False).upper(), _j)
 _b = open(os.path.join(_ev, "pr-99", "bundle.md")).read()
 check("mask_tree: the evidence bundle is masked in place before upload (owner, Oct 1)",
       "PRIVATE" not in _b.upper().replace("<AUDITOR_MODEL_PRIMARY>", "") and "Claude" not in _b and "<AUDITOR_MODEL_PRIMARY>" in _b, _b)
@@ -208,6 +220,15 @@ d = r.decide([brk, dict(err, reader="A")])
 check("decide: breaks-us + an error -> HOLD, attributed; the errored reader is carried with its error (owner, Oct 1)",
       d["decision"] == "hold" and d["breaks_us"][0]["reader"] == "B"
       and any(x["reader"] == "A" and x.get("error") for x in d["readers"]), d)
+import tempfile as _tf2
+_dd = _tf2.mkdtemp(); json.dump(brk, open(os.path.join(_dd, "reader-AUDITOR_MODEL_PRIMARY.json"), "w"))
+class _DA: reader = [os.path.join(_dd, "reader-AUDITOR_MODEL_PRIMARY.json"), os.path.join(_dd, "reader-AUDITOR_MODEL_FALLBACK.json")]; out = os.path.join(_dd, "d.json")
+import io as _io, contextlib as _cl
+with _cl.redirect_stdout(_io.StringIO()):
+    r.cmd_decide(_DA)
+_d = json.load(open(_DA.out))
+check("decide: a missing answer file is an errored reader, and the other's breaks-us still holds (round 1 B4)",
+      _d["decision"] == "hold" and any(x["reader"] == "AUDITOR_MODEL_FALLBACK" and "no answer" in x.get("error", "") for x in _d["readers"]), _d)
 d = r.decide([err, dict(err, reader="A")])
 check("decide: two errors and no breaks-us -> error (no verdict, retry)", d["decision"] == "error", d)
 d = r.decide([clean("A")] + [{"reader": "B", "findings": None, "error": None}])
@@ -271,6 +292,8 @@ class _Messages:
     def create(self, model, max_tokens, messages):
         if model == "boom":
             raise RuntimeError("connection reset")
+        if model == "die":
+            os._exit(3)   # the reader process dies before writing its answer file
         m = _Msg(os.environ["ANSWER_" + model])
         if model == "cut":
             m.stop_reason = "max_tokens"
@@ -346,6 +369,11 @@ A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check
 A="$CLEAN" B="$CLEAN" FAIL="notes" act; expect "release notes cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried (owner, Oct 1)" "-pr merge" "-$CHK" ERRORED=1
 grep -q "release notes UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
   && { echo "ok: act: the bundle labels the failed read UNAVAILABLE"; pass=$((pass+1)); } || { echo "FAIL: act: unavailable label"; fail=$((fail+1)); }
+A="$BREAKS" B="$CLEAN" MB=die act; expect "breaks-us while the other reader's process dies without an answer -> HOLD, the missing answer an error (round 1 B4)" \
+  "-pr merge --auto" "+issue create" "+$CHK" ERRORED=0
+grep -q "reader B" "$w/run/work/pr-99/issue.md" && grep -qi "no answer" "$w/run/work/pr-99/issue.md" && ! grep -q "_(no findings)_" "$w/run/work/pr-99/issue.md" \
+  && { echo "ok: act: the issue shows the errored reader as errored, never as 'no findings' (round 1 Sonnet B1)"; pass=$((pass+1)); } \
+  || { echo "FAIL: act: errored reader rendering"; sed 's/^/    /' "$w/run/work/pr-99/issue.md"; fail=$((fail+1)); }
 A="$BREAKS" B="$CLEAN" MB=boom act; expect "breaks-us from one reader while the other errors -> HOLD: issue, failure check, no merge (owner, Oct 1)" \
   "-pr merge --auto" "+issue create" "+$CHK" "ORDER:issue create>$CHK" ERRORED=0
 A="$CLEAN" B="$BREAKS" PRS="99 100" FAIL="issuelist" act; expect "issue lookup fails on #99 -> #100 still reviewed, errored counted (bash -e, round 1)" \

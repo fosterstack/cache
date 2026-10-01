@@ -328,7 +328,7 @@ jobs:
                   echo "## breaks-us findings"; echo
                   jq -r '.breaks_us[] | "- **\(.title)** (\(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B")))  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)"' "$d/decision.json"
                   echo; echo "## every finding, both readers, verbatim"
-                  jq -r '.readers[] | "\n### \(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B"))\n", (if (.findings|length)==0 then "_(no findings)_" else (.findings[] | "- [\(.severity)] **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)") end)' "$d/decision.json"
+                  jq -r '.readers[] | "\n### \(.reader | sub("AUDITOR_MODEL_PRIMARY";"reader A") | sub("AUDITOR_MODEL_FALLBACK";"reader B"))\n", (if .error then "_(no answer: \(.error))_" elif (.findings|length)==0 then "_(no findings)_" else (.findings[] | "- [\(.severity)] **\(.title)**  \n  release note: \(.release_note)  \n  our line: `\(.our_line)`  \n  why: \(.why)") end)' "$d/decision.json"
                   echo; echo "## fix on our side"; echo; echo "_(ccode fills this in: the change to our line, or why the finding is wrong, then re-runs the reviewer with force=true)_"
                 } > "$d/issue.md"
                 # disarm any auto-merge a previous verdict armed (the check is not required, so it cannot hold the PR by itself)
@@ -420,11 +420,12 @@ jobs:
           else gh issue create --title "$title" --body-file "$RUNNER_TEMP/streak-issue.md" >/dev/null; fi
 
       # Owner, Oct 1: no identifier reaches the uploaded evidence, the bundle included. The readers
-      # read the bundle unmasked (it never leaves the run); everything is masked in place here, and
-      # the upload runs only if this succeeded.
+      # receive the bundle unmasked (it is not uploaded as is); everything is masked in place here.
+      # The upload runs only if this succeeded, and a failure here never fails the run (AC6).
       - name: mask the evidence before it is uploaded
         id: mask
         if: ${{ always() && steps.candidates.outputs.count != '0' }}
+        continue-on-error: true
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.REVIEWER_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}

@@ -57,8 +57,8 @@ if kind == "reviewer":
     names = [s.get("id") for s in job.get("steps", [])]
     mk = [s for s in job.get("steps", []) if s.get("id") == "mask"]
     if not mk or (mk[0].get("run") or "").strip() != 'python3 bin/dependabot-reviewer.py mask-tree "$RUNNER_TEMP/work"' \
-            or "always()" not in mk[0].get("if", "") or "continue-on-error" in mk[0]:
-        bad.append("no unconditional step masks the evidence directory before upload")
+            or "always()" not in mk[0].get("if", "") or mk[0].get("continue-on-error") != "true":
+        bad.append("no step masks the evidence directory before upload, never failing the run (AC6)")
     up = [s for s in job.get("steps", []) if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
     if len(up) != 1:
         bad.append("no single evidence upload")
@@ -150,9 +150,13 @@ elif kind == "automerge":
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
     major = "steps.meta.outputs.update-type == 'version-update:semver-major'"
-    disarm = [s for s, r in runs(job) if "gh pr merge --disable-auto" in r]
-    if len(disarm) != 1 or disarm[0].get("if") != major or "continue-on-error" in disarm[0]:
+    disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
+    if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
+    elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "head.sha" not in str(disarm[0][0].get("env", {})):
+        bad.append("the disarm does not spare a head the reviewer already approved (it must read that head's reviewer check)")
+    if (job.get("permissions") or {}).get("checks") != "read":
+        bad.append("the lane cannot read the reviewer's check (permissions: checks: read)")
     if len(guard) != 1 or steps[guard[0]].get("if") != nonmajor or "continue-on-error" in steps[guard[0]]:
         bad.append("the guard step is missing, wrongly conditioned, or can fail silently")
     elif arm and guard[0] > arm[0]:
@@ -232,6 +236,8 @@ case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
+case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ reviewer $R reviewer-mask-fails-run  bad "[s.pop('continue-on-error', None) for s in $rs if s.get('id') == 'mask']"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
 echo "dependency-lanes: $pass passed, $failn failed"
