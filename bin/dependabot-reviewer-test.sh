@@ -83,9 +83,13 @@ r._gh_json = lambda args: [{"tag_name": "v7.0.0", "name": "seven", "body": "remo
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: in-range releases oldest first, counted",
       n == 2 and text.index("v5.0.0") < text.index("v7.0.0") and "v4.3.0" not in text, (n, text))
-r._gh_json = lambda args: None
+r._gh_json = lambda args: []
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: none found is said, count 0", n == 0 and "no upstream release notes found" in text, (n, text))
+r._gh_json = lambda args: None
+text, n = r.release_notes("actions/checkout", "4", "7")
+check("release_notes: a failed API read is UNAVAILABLE (count None), never 'none found' (owner, Oct 1)",
+      n is None and "UNAVAILABLE" in text and "no upstream release notes found" not in text, (n, text))
 text, n = r.release_notes("golang", "`3f3c01a`", "`9e8d7c6`")
 check("release_notes: non-GitHub dependency is said, count 0", n == 0 and "not a GitHub-hosted" in text, (n, text))
 
@@ -243,7 +247,8 @@ case "$1 $2" in
   "api repos/fosterstack/ops/dispatches") fails dispatch ;;
   "api repos/o/r/commits/shaA/check-runs?check_name=dependabot-reviewer") echo success ;;   # cancellation cleanup lookups
   "api repos/o/r/commits/shaB/check-runs?check_name=dependabot-reviewer") echo none ;;
-  "api "*) exit 1 ;;                                   # upstream releases: none available
+  "api repos/a/b/releases"*) fails notes; echo '[]' ;;      # upstream releases: a successful read, none published
+  "api "*) exit 1 ;;
   "pr diff") fails diff; printf -- '--- a/.github/workflows/x.yml\n+++ b/.github/workflows/x.yml\n-      - uses: a/b@v4\n+      - uses: a/b@v7\n' ;;
   "pr merge") if [ "$3" = "--disable-auto" ]; then fails disarm; else fails merge; fi ;;
   "pr view") fails view; echo "${ARMED:-false}" ;;
@@ -322,7 +327,7 @@ expect() { # name; then grep -E assertions on the gh log: +regex must appear, -r
 CHK='check-runs'; SUCCESS='conclusion=success'; FAILURE='conclusion=failure'
 
 A="$CLEAN" B="$CLEAN" act; expect "both clean -> arm auto-merge, THEN the success check" \
-  "+pr merge --auto --squash 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
+  "+pr merge --auto --squash --match-head-commit [0-9a-f]+ 99" "+$CHK" "ORDER:pr merge --auto>$CHK" ERRORED=0
 grep -qE -- "pr merge --auto --squash --match-head-commit abcdef123456799 99" "$w/gh.log" \
   && { echo "ok: act: auto-merge is armed only for the reviewed head (--match-head-commit, owner Oct 1)"; pass=$((pass+1)); } \
   || { echo "FAIL: act: arm not bound to the reviewed head"; sed 's/^/    gh: /' "$w/gh.log"; fail=$((fail+1)); }
@@ -338,6 +343,9 @@ A="$CLEAN" B="$BREAKS" ARMED=true FAIL="disarm" act; expect "auto-merge cannot b
 A="$CLEAN" B="$CLEAN" FAIL="merge" act; expect "auto-merge cannot be armed -> no success check; retry (round-1 P1)" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" RULES="$w/rules-drift.json" act; expect "required-check drift -> no major armed, no check (Sonnet round 1)" "-pr merge" "-$CHK" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom act; expect "a reader raises -> no merge, no check" "-pr merge" "-$CHK" ERRORED=1
+A="$CLEAN" B="$CLEAN" FAIL="notes" act; expect "release notes cannot be read -> UNAVAILABLE: no reader, no merge, no check; retried (owner, Oct 1)" "-pr merge" "-$CHK" ERRORED=1
+grep -q "release notes UNAVAILABLE" "$w/run/work/pr-99/bundle.md" 2>/dev/null \
+  && { echo "ok: act: the bundle labels the failed read UNAVAILABLE"; pass=$((pass+1)); } || { echo "FAIL: act: unavailable label"; fail=$((fail+1)); }
 A="$BREAKS" B="$CLEAN" MB=boom act; expect "breaks-us from one reader while the other errors -> HOLD: issue, failure check, no merge (owner, Oct 1)" \
   "-pr merge --auto" "+issue create" "+$CHK" "ORDER:issue create>$CHK" ERRORED=0
 A="$CLEAN" B="$BREAKS" PRS="99 100" FAIL="issuelist" act; expect "issue lookup fails on #99 -> #100 still reviewed, errored counted (bash -e, round 1)" \
@@ -380,7 +388,7 @@ done
 
 # --- round 2
 A="$CLEAN" B="$CLEAN" ARMED=true FAIL="check" act; expect "armed but the success check fails -> counted unfinished, auto-merge turned back off (round-2)" \
-  "+pr merge --auto --squash 99" "+pr merge --disable-auto 99" ERRORED=1
+  "+pr merge --auto --squash --match-head-commit [0-9a-f]+ 99" "+pr merge --disable-auto 99" ERRORED=1
 A="$CLEAN" B="$BREAKS" FAIL="check" act; expect "held but the failure check fails -> counted unfinished (round-2)" "+issue create" ERRORED=1
 A="$CLEAN" B="$CLEAN" MB=boom ARMED=true PRIOR=success act; expect "forced re-review errors over an old success -> disarm + neutral check (round-2 P1)" \
   "+pr merge --disable-auto 99" "+check-runs" "-pr merge --auto" ERRORED=1

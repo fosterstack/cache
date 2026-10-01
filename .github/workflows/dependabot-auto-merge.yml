@@ -59,6 +59,20 @@ jobs:
             echo "holds with an issue. Nothing waits on a person."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Owner, Oct 1: a merge verdict holds only for the head the reviewer read. Any push to a major
+      # PR (a Dependabot rebase or a new version) voids it: auto-merge comes off here, at once, and
+      # the hourly reviewer judges the new head afresh. Fails loudly if it cannot.
+      - name: a new head voids the reviewer's verdict on a major — turn auto-merge off
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          if [ "$armed" = true ]; then gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
+          else echo "auto-merge is not armed; nothing to void"; fi
+
       - name: require that main enforces the exact expected check set
         if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:

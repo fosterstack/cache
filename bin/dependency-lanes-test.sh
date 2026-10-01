@@ -73,6 +73,8 @@ elif kind == "reviewer-py":
     import ast
     tree = ast.parse(open(path).read())
     seqs, strings = [], []
+    # mask_tree rewrites the evidence directory it is given (the workflow passes $RUNNER_TEMP/work, pinned below)
+    mask_fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "mask_tree"]
     def flat(n):
         """a command list as written, concatenations joined; a non-literal element is None (unknown)"""
         if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
@@ -87,7 +89,8 @@ elif kind == "reviewer-py":
             seqs.append(flat(node))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             strings.append(node.value)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) > 1:
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open" and len(node.args) > 1 \
+                and not any(fn.name == "mask_tree" and fn.lineno <= node.lineno <= fn.end_lineno for fn in mask_fns):
             mode = node.args[1].value if isinstance(node.args[1], ast.Constant) else None
             target = node.args[0]
             # the reviewer writes only its own outputs (under the --out directory it is given)

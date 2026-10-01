@@ -42,13 +42,34 @@ def mask(s):
     for k in _SECRET_ENVS:
         v = os.environ.get(k)
         if v and len(v) >= 4:
-            s = s.replace(v, "<%s>" % k)
+            s = re.sub(re.escape(v), "<%s>" % k, s, flags=re.IGNORECASE)  # in any letter case
     s = re.sub(r"claude-[A-Za-z0-9._-]+", "<model-id>", s)
     s = re.sub(r"(?i)bearer\s+[A-Za-z0-9._-]{6,}", "Bearer <redacted>", s)
     # a reader naming itself or its maker (row 48): no vendor or model name on a public surface
     s = re.sub(r"(?i)\b(?:anthropic|claude|openai|chatgpt|gpt-?[0-9][A-Za-z0-9.-]*|gemini|opus|sonnet|haiku)\b",
                "<model>", s)
     return s
+
+
+def mask_tree(root):
+    """Mask every file of the evidence directory in place, right before it is uploaded (owner, Oct 1):
+    the bundle the readers read unmasked becomes, like every other evidence file, free of identifiers."""
+    for d, _dirs, files in os.walk(root):
+        for f in files:
+            p = os.path.join(d, f)
+            if os.path.islink(p):
+                continue
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            masked = mask(text)
+            if masked != text:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(masked)
+
+
+def cmd_mask_tree(a):
+    mask_tree(a.dir)
+    print("evidence masked: %s" % a.dir)
 
 
 # ----------------------------------------------------------------------------- updates
@@ -164,8 +185,8 @@ def _upstream_repo(name):
 
 def release_notes(name, old, new):
     """(text, count): upstream release notes for every release after `old` and up to `new`
-    (in_range), oldest first; a plain statement and count 0 when none are available (never a
-    guess)."""
+    (in_range), oldest first; a plain statement and count 0 when none exist (never a guess); a
+    failed read is UNAVAILABLE with count None — an error, never "none found"."""
     repo = _upstream_repo(name)
     if not repo:
         return "(no upstream release notes available for %s: not a GitHub-hosted dependency)\n" % name, 0
@@ -173,6 +194,9 @@ def release_notes(name, old, new):
     rels = []
     for page in (1, 2, 3):
         chunk = _gh_json(["repos/%s/releases?per_page=100&page=%d" % (repo, page)])
+        if chunk is None:  # the read failed: never mistaken for "none found" (owner, Oct 1)
+            return ("(release notes UNAVAILABLE for %s: the GitHub API read of %s failed; this bundle "
+                    "cannot be judged)\n" % (name, repo)), None
         if not chunk:
             break
         rels.extend(chunk)
@@ -238,13 +262,20 @@ def usage_blocks(hits, read_file):
     return "\n".join(out) + ("\n" if out else "")
 
 
+USAGE_UNAVAILABLE = "(usage UNAVAILABLE for %s: the repository search failed (rc %s); this bundle cannot be judged)\n"
+
+
 def our_usage(name):
     """Every line of ours that names the dependency (workflows, go.mod, Dockerfiles, scripts);
     a workflow hit comes with its whole step, inputs included."""
     short = name.split("/")
-    out, _rc = _run(["git", "grep", "-n", "-I", "--", name])
+    out, rc = _run(["git", "grep", "-n", "-I", "--", name])
+    if rc not in (0, 1):  # git grep: 1 is "no match"; anything else is a failed search, never "none"
+        return USAGE_UNAVAILABLE % (name, rc)
     if not out and len(short) >= 2 and "." not in short[0]:
-        out, _rc = _run(["git", "grep", "-n", "-I", "--", "%s/%s" % (short[0], short[1])])
+        out, rc = _run(["git", "grep", "-n", "-I", "--", "%s/%s" % (short[0], short[1])])
+        if rc not in (0, 1):
+            return USAGE_UNAVAILABLE % (name, rc)
     if not out:
         return "(no line in this repository names %s)\n" % name
     text = usage_blocks(out.splitlines(), lambda p: open(p, encoding="utf-8", errors="replace").read().splitlines())
@@ -265,16 +296,24 @@ def cmd_gather(a):
              "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "not major")
                        for u in updates) + "\n",
              "## The PR diff\n\n```diff\n%s```\n" % (diff or "(empty diff)\n")]
-    notes = 0
+    notes, unavailable = 0, []
     for u in updates:
         if not u["major"]:
             continue
         text, count = release_notes(u["name"], u["from"], u["to"])
-        notes += count
+        if count is None:
+            unavailable.append("release notes of %s" % u["name"])
+        notes += count or 0
         parts.append("## Upstream release notes: %s %s -> %s\n\n%s" % (u["name"], u["from"], u["to"], text))
-        parts.append("## Every line of ours that uses %s\n\n```\n%s```\n" % (u["name"], our_usage(u["name"])))
+        usage = our_usage(u["name"])
+        if usage.startswith("(usage UNAVAILABLE"):
+            unavailable.append("our usage of %s" % u["name"])
+        parts.append("## Every line of ours that uses %s\n\n```\n%s```\n" % (u["name"], usage))
     text = "\n".join(parts)
     open(os.path.join(a.out, "bundle.md"), "w").write(text)
+    if unavailable:  # labeled in the bundle (kept as evidence) and an error: no reader, no verdict, retried
+        sys.stderr.write("gather: UNAVAILABLE — %s; no review this hour\n" % "; ".join(unavailable))
+        sys.exit(4)
     print("bundle: %d characters, %d update(s), %d major, %d upstream release note(s)%s"
           % (len(text), len(updates), sum(1 for u in updates if u["major"]), notes,
              "" if notes else " — NONE found; the readers judge from the diff and our usage only"))
@@ -406,13 +445,20 @@ def cmd_read(a):
 # ----------------------------------------------------------------------------- decide
 
 def decide(readers):
-    """Mechanical, in code, no model: every reader answered -> merge iff no breaks-us anywhere."""
+    """Mechanical, in code, no model: any breaks-us from a reader that answered -> hold (even if the
+    other errored); otherwise every reader answered -> merge iff no breaks-us; else error (retry)."""
     if not readers:
         return {"decision": "error", "reason": "no readers"}
     errors = [r for r in readers if r.get("error") or r.get("findings") is None]
+    breaks = [dict(f, reader=r.get("reader")) for r in readers if r not in errors
+              for f in r["findings"] if f["severity"] == "breaks-us"]
+    if breaks:  # "breaks us" from either reader holds, even when the other errored (owner, Oct 1)
+        return {"decision": "hold", "breaks_us": breaks,
+                "readers": [{"reader": r.get("reader"), "findings": r.get("findings") or [],
+                             **({"error": mask(r.get("error") or "no findings")} if r in errors else {})}
+                            for r in readers]}
     if errors:
         return {"decision": "error", "reason": mask("; ".join("%s: %s" % (r.get("reader"), r.get("error")) for r in errors))}
-    breaks = [dict(f, reader=r.get("reader")) for r in readers for f in r["findings"] if f["severity"] == "breaks-us"]
     return {"decision": "hold" if breaks else "merge",
             "breaks_us": breaks,
             "readers": [{"reader": r.get("reader"), "findings": r["findings"]} for r in readers]}
@@ -432,6 +478,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("updates"); p.add_argument("--title", default=""); p.add_argument("--body-file"); p.set_defaults(fn=cmd_updates)
     p = sub.add_parser("gather"); p.add_argument("--pr", required=True); p.add_argument("--updates", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_gather)
+    p = sub.add_parser("mask-tree"); p.add_argument("dir"); p.set_defaults(fn=cmd_mask_tree)
     p = sub.add_parser("read"); p.add_argument("--bundle", required=True); p.add_argument("--prompt", required=True); p.add_argument("--model-env", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_read)
     p = sub.add_parser("decide"); p.add_argument("--reader", action="append", required=True); p.add_argument("--out", required=True); p.set_defaults(fn=cmd_decide)
     a = ap.parse_args(argv)
