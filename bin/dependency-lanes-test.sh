@@ -153,8 +153,8 @@ elif kind == "automerge":
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
-    elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "head.sha" not in str(disarm[0][0].get("env", {})):
-        bad.append("the disarm does not spare a head the reviewer already approved (it must read that head's reviewer check)")
+    elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "headRefOid" not in disarm[0][1]:
+        bad.append("the disarm does not judge the PR's CURRENT head by its reviewer check (a stale push job must not disarm a newer approved head)")
     if (job.get("permissions") or {}).get("checks") != "read":
         bad.append("the lane cannot read the reviewer's check (permissions: checks: read)")
     if len(guard) != 1 or steps[guard[0]].get("if") != nonmajor or "continue-on-error" in steps[guard[0]]:
@@ -236,6 +236,7 @@ case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
+case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ reviewer $R reviewer-mask-fails-run  bad "[s.pop('continue-on-error', None) for s in $rs if s.get('id') == 'mask']"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"

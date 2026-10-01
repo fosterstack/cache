@@ -95,6 +95,14 @@ r._gh_json = lambda args: (_newer if args[0].endswith(("&page=1", "&page=2", "&p
                            else [{"tag_name": "v7.0.0", "body": "the one"}, {"tag_name": "v4.0.0", "body": "old"}])
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: an in-range release on page 4 is found, never 'none found' (round 1 B2)", n == 1 and "the one" in text, (n, text[:120]))
+_bp = [{"tag_name": "v9.%d.0" % i, "body": "later"} for i in range(99)] + [{"tag_name": "v4.2.1", "body": "backport"}]
+r._gh_json = lambda args: (_bp if args[0].endswith("&page=1") else
+                           [{"tag_name": "v5.0.0", "body": "removed foo"}, {"tag_name": "nightly", "body": "n"},
+                            {"tag_name": "codeql-bundle-20260101", "body": "b"}] if args[0].endswith("&page=2") else [])
+text, n = r.release_notes("actions/checkout", "4.2.2", "7")
+check("release_notes: a backport interleaved on page 1 never ends the read early; v5.0.0 on page 2 is found (round 2 B2)",
+      n == 1 and "removed foo" in text, (n, text[:120]))
+check("release_notes: non-version tags (nightly, codeql-bundle-*) never crash the read (round 2 Sonnet)", True, "")
 r._gh_json = lambda args: _newer
 text, n = r.release_notes("actions/checkout", "4", "7")
 check("release_notes: pages run out before the old version is reached -> UNAVAILABLE (round 1 B2)", n is None and "UNAVAILABLE" in text, (n, text[:120]))
@@ -155,6 +163,12 @@ open(os.path.join(_ev, "candidates.txt"), "w").write("99 abc none\n")
 open(os.path.join(_ev, "pr-99", "reader-X.json"), "w").write('{"raw": "\\u0050RIVATE-MODEL-X said so"}')
 r.mask_tree(_ev)
 _j = json.load(open(os.path.join(_ev, "pr-99", "reader-X.json")))
+open(os.path.join(_ev, "pr-99", "reader-Y.json"), "w").write(json.dumps({"raw": '{"findings": [{"title": "\\u0050RIVATE-MODEL-X"}]}'}))
+r.mask_tree(_ev)
+_y = json.load(open(os.path.join(_ev, "pr-99", "reader-Y.json")))["raw"]
+check("mask_tree: an identifier escaped inside the raw answer (JSON in a JSON string) is masked (round 2 B3)",
+      "PRIVATE-MODEL-X" not in json.loads(_y)["findings"][0]["title"].upper(), _y)
+check("mask: \\uXXXX escapes are decoded before masking", "PRIVATE" not in r.mask("\\u0050RIVATE-MODEL-X").upper(), r.mask("\\u0050RIVATE-MODEL-X"))
 check("mask_tree: a JSON-escaped identifier is masked after decoding (round 1 B3)",
       "PRIVATE-MODEL-X" not in json.dumps(_j, ensure_ascii=False).upper(), _j)
 _b = open(os.path.join(_ev, "pr-99", "bundle.md")).read()

@@ -39,6 +39,8 @@ _SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
 def mask(s):
     """Redact identifiers/model ids from anything that could reach a public surface."""
     s = str(s or "")
+    # an escaped identifier (\\uXXXX, e.g. inside a JSON answer kept as a string) is decoded first
+    s = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), s)
     for k in _SECRET_ENVS:
         v = os.environ.get(k)
         if v and len(v) >= 4:
@@ -216,9 +218,9 @@ def release_notes(name, old, new):
             return ("(release notes UNAVAILABLE for %s: the GitHub API read of %s failed; this bundle "
                     "cannot be judged)\n" % (name, repo)), None
         rels.extend(chunk)
-        # newest first: once a release at or below the old version is seen, every newer one has been read
-        if len(chunk) < 100 or any(_vertuple(r.get("tag_name", "")) <= lo for r in chunk
-                                   if _vertuple(r.get("tag_name", "")) != (-1,)):
+        # every page, to the end: release branches interleave (a backport can appear before a newer
+        # in-range release), so nothing short of the last page proves the range was read
+        if len(chunk) < 100:
             complete = True
             break
     if not complete:
