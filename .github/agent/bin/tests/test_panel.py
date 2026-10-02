@@ -34,7 +34,9 @@ PURL = "pkg:deb/debian/tzdata@2026c-0%2Bdeb13u1?arch=all&distro=debian-13"
 
 
 def finding(fid="CVE-2099-0002", pkg="tzdata", ver="2026c-0+deb13u1", img="fips-arm64", seen=("scout",), of=3,
-            purls=(PURL,)):
+            purls=None):
+    if purls is None:       # the scanner's purl names the reported version (Codex r4 R6)
+        purls = ("pkg:deb/debian/%s@%s?arch=all&distro=debian-13" % (pkg, ver.replace("+", "%2B")),)
     return {"image": img, "id": fid, "package": pkg, "version": ver, "seen_by": list(seen), "of": of,
             "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": list(purls)}
 
@@ -310,7 +312,14 @@ class Day(unittest.TestCase):
         st, out = self.day(verdict(finding(ver=OLD)), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
         self.assertEqual(out["vex"][0]["status"], "not_affected")
         self.assertIn(EV_FALSE, out["vex"][0]["impact_statement"])
-        self.assertEqual(out["vex"][0]["purls"], [PURL])                    # scoped to the exact package
+        self.assertEqual(out["vex"][0]["purls"], [finding(ver=OLD)["purls"][0]])   # the exact package judged
+
+    def test_a_purl_naming_another_version_is_never_stated(self):          # Codex r4 R6
+        st, out = self.day(verdict(finding(ver=OLD, purls=(PURL,))), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
+        self.assertEqual(out["vex"], [])
+        self.assertTrue(any("no VEX statement was written" in o for o in out["owner"]))
+        self.assertEqual(P.purls_for(finding(ver=OLD, purls=(PURL, "pkg:deb/debian/tzdata@2025b-0%2Bdeb13u1", "junk"))),
+                         ["pkg:deb/debian/tzdata@2025b-0%2Bdeb13u1"])
 
     def test_a_statement_only_when_every_image_lacks_that_version(self):    # Codex r3 B2
         other = BUNDLE.replace("2026c-0+deb13u1", OLD)                      # the other image HAS the reported version
@@ -392,6 +401,16 @@ class Day(unittest.TestCase):
         self.assertEqual((len(st["false"]), len(st["real"])), (0, 1))
         self.assertEqual(out["misses"][0]["by"], "a later audit")
         self.assertTrue(any("audit miss" in o for o in out["owner"]))
+
+    def test_a_later_audit_reversal_turns_a_published_statement_affected(self):   # Sonnet r4 blocker
+        st, out = self.day(verdict(finding(ver=OLD)), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
+        self.assertEqual(out["vex"][0]["status"], "not_affected")
+        now_there = BUNDLE.replace("2026c-0+deb13u1", OLD)                  # the image now has the reported version
+        st, out = P.apply_day(verdict(finding(ver=OLD)), st, lambda f: now_there, {"entries": []},
+                              {"A": Seat({"audit": real(ev="Package: tzdata Version: " + OLD)}),
+                               "B": Seat({"audit": real(ev="Package: tzdata Version: " + OLD)})}, "2026-10-04", SCORING)
+        self.assertEqual(out["misses"][0]["by"], "a later audit")
+        self.assertEqual([(v["status"], v["purls"]) for v in out["vex"]], [("affected", list(finding(ver=OLD)["purls"]))])
 
     def test_once_real_stays_reported_without_new_audits(self):
         st, _ = self.day(verdict(finding()), a=Seat({"audit": real()}), b=Seat({"audit": real()}))

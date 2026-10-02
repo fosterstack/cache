@@ -365,6 +365,18 @@ def _ident(f):
     return {k: f.get(k) for k in ("image", "id", "package", "version")}
 
 
+def purls_for(f):
+    """The finding's purls whose decoded version is the version the audits validated: a statement never names a
+    package identity other than the one judged (Codex r4 R6)."""
+    ver = _ver(f.get("version")).lower()
+    out = []
+    for p in f.get("purls") or []:
+        _, at, rest = str(p).partition("@")
+        if at and _ver(urllib.parse.unquote(rest.split("?", 1)[0].split("#", 1)[0])).lower() == ver:
+            out.append(p)
+    return out
+
+
 def _not_in_image(bundles, f, image):
     """The image's evidence shows the finding's package is not installed at the reported version there."""
     g = dict(f, image=image)
@@ -419,8 +431,12 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
             st["debates"].append(dict(_ident(f), on=today, settled=None, **r["debate"]))
         if r["status"] == "report":
             if k in false_mem:      # a later audit reversed a remembered false judgment: that is an audit miss too
-                false_mem.pop(k)
+                before = false_mem.pop(k)
                 out["misses"].append(dict(_ident(f), seen_by=sorted(seen), by="a later audit"))
+                if before.get("vex"):       # rule 9: a published statement turns "affected" (Sonnet r4 blocker)
+                    out["vex"].append(dict(_ident(f), status="affected", purls=list(before.get("purls") or []),
+                                           impact_statement="a later audit found it present after the audits judged "
+                                                            "it not affected (audit miss)"))
             real_mem[k] = dict(_ident(f), seen_by=sorted(seen), since=today, last_seen=today)
             reported.append(f)
             if r["path"] == "a" or any(_same_entry(x, f["seen_by"][0], f["package"]) for x in out["profiles"]):
@@ -441,14 +457,15 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
         ev = r["status"] == "false-evidence"
         false_mem[k] = dict(_ident(f), seen_by=sorted(seen | set(old.get("seen_by") or [])),
                             since=old.get("since") or today, last_seen=today, vex=bool(old.get("vex") or ev),
-                            purls=list(old.get("purls") or f.get("purls") or []))
+                            purls=list(old.get("purls") or purls_for(f)))
         if ev and not old.get("vex"):
             quotes = r["proof"]       # only quotes vote() validated against the image, never an answer's raw text
             elsewhere = [img for img in images if not _not_in_image(bundles, f, img)]
-            if f.get("purls") and images and not elsewhere:
-                out["vex"].append(dict(_ident(f), status="not_affected", purls=list(f["purls"]),
+            purls = purls_for(f)
+            if purls and images and not elsewhere:
+                out["vex"].append(dict(_ident(f), status="not_affected", purls=purls,
                                        impact_statement="Audited from the images: " + "; ".join(quotes)[:500]))
-            elif f.get("purls"):
+            elif purls:
                 # the statement would cover every image; one that has the package at that version (or could not be
                 # read) means no statement — never broader than the evidence (Codex r3 B2)
                 false_mem[k]["vex"] = False
@@ -926,14 +943,18 @@ def cmd_deliver(a, run=subprocess.run):
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
                  "--title", policy.subject("scanner panel audits (rules 7-9, 13, 14)"), "--body", body], plan, real, run)
+    if changed or existing:     # the switch is re-checked every day, so it regains control of an armed PR (Sonnet r4)
         pr_paths = set(changed)
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
         if automerge_allowed(sorted(pr_paths)):
             _sh(["gh", "pr", "ready", branch], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", branch], plan, real, run)
-        elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it
-            _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run, check=False)
+        elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
+            armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
+                        plan, real, run).strip()
+            if armed == "true" or not real:
+                _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)    # a failure stops delivery
     ienv = dict(os.environ, GH_TOKEN=os.environ.get("AUDITOR_ISSUES_TOKEN", os.environ.get("GH_TOKEN", "")))
     if day["issue"]:
         n = _sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan", "--search", ISSUE_TITLE,

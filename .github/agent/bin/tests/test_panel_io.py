@@ -475,7 +475,7 @@ class Deliver(Tmp):
             open(vpath, "w"))
         self.day(issue="miss", owner=["an audit miss"],
                  vex=[dict(mine, status="affected", impact_statement="another scanner reported it")])
-        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n",
+        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n", ("gh", "pr", "view"): "true\n",
                                 ("gh", "pr", "diff"): ".github/policy/scanner-profiles.json\n.auditor/panel-state.json\n"})
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": "on"}), \
                 mock.patch("sys.stdout", new=io.StringIO()):
@@ -493,6 +493,24 @@ class Deliver(Tmp):
         self.assertEqual(stmts[2]["status"], "not_affected")                 # same CVE, another package: untouched
         self.assertIn(["gh", "pr", "merge", "--disable-auto", "17"], cmds)    # Codex r3 R5: disarmed, a profile entry is open
         self.assertEqual([c[:4] for c in cmds].count(["gh", "issue", "comment", "42"]), 2)   # tracking + owner, updated
+
+    def test_an_armed_pr_is_disarmed_on_a_quiet_day_when_the_switch_is_off(self):   # Sonnet r4 residual
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        os.makedirs(os.path.join(self.repo, ".auditor"), exist_ok=True)
+        json.dump(st, open(os.path.join(self.repo, P.STATE), "w"), indent=1, sort_keys=True)
+        self.day()                                                            # nothing new today
+        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "pr", "view"): "true\n"})
+        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": ""}), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            P.cmd_deliver(self.a(), run=run)
+        cmds = [c for c, _ in calls]
+        self.assertNotIn("commit", [c[3] for c in cmds if c[:1] == ["git"]])
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", "17"], cmds)
+        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "pr", "view"): "false\n"})
+        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": ""}), \
+                mock.patch("sys.stdout", new=io.StringIO()):
+            P.cmd_deliver(self.a(), run=run)
+        self.assertNotIn(["gh", "pr", "merge", "--disable-auto", "17"], [c for c, _ in calls])   # not armed: left alone
 
     def test_a_failed_command_stops_delivery_with_a_masked_error(self):
         self.day(issue="x")
