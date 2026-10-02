@@ -94,8 +94,8 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
-      - name: install gremlins (pinned)
-        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      - name: install gremlins (pinned to the full commit of v0.6.0; the Go checksum database verifies the bytes)
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@e05b1d47b8c55748e50abc28ff6b132c536bacca   # v0.6.0
       # gremlins takes a DIRECTORY, not a Go package pattern: `./...`
       # produced "No results to report" and no JSON while exiting 0 (R10).
       # Each MODULE is scanned separately with its directory argument; the

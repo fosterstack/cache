@@ -33,6 +33,10 @@ if m and c:
         bad.append("the freshness check is not guarded to the daily schedule (or dispatch)")
     if not any("gremlins" in (s.get("run") or "") for s in m.get("steps") or []):
         bad.append("the mutation job does not run gremlins")
+    installs = [s.get("run") or "" for s in m.get("steps") or [] if "go install" in (s.get("run") or "")]
+    import re as _re
+    if not installs or not all(_re.search(r"@[0-9a-f]{40}\b", r) for r in installs):
+        bad.append("a go install in the mutation job is not pinned to a full commit")
 if os.path.exists(os.path.join(root, ".github/workflows/mutation.yml")):
     bad.append("mutation.yml still exists")
 doc = open(os.path.join(root, "docs/quality/mutation.md")).read()
@@ -65,6 +69,7 @@ case_ check-unguarded         bad "$J['check'].pop('if')"
 case_ no-dispatch             bad "d['on'].pop('workflow_dispatch')"
 case_ mutation-renamed        bad "$J['mutation']['name'] = 'mutation testing'"
 case_ no-gremlins             bad "$J['mutation']['steps'] = [s for s in $J['mutation']['steps'] if 'gremlins' not in (s.get('run') or '')]"
+case_ gremlins-by-tag          bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('@e05b1d47b8c55748e50abc28ff6b132c536bacca', '@latest')"
 case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if']; $J['mutation']['if'], $J['check']['if'] = b, a"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
