@@ -79,6 +79,10 @@ jobs:
         run: bash bin/dependency-lanes-test.sh
       - name: the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)
         run: bash bin/dependabot-reviewer-gather-test.sh
+      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
+        run: bash bin/panel-test.sh
+      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
+        run: bash bin/panel-wiring-test.sh
 
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: bash bin/inspector-gate-test.sh

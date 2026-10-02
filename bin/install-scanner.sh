@@ -25,15 +25,16 @@ GRYPE_VER=0.118.0
 SNYK_VER=1.1307.0
 OSV_VER=2.6.0
 SBOMGEN_VER=1.16.0
+SCOUT_VER=1.26.0
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|snyk|osv-scanner|inspector-sbomgen) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen)" ;; esac
+case "$TOOL" in trivy|grype|snyk|osv-scanner|inspector-sbomgen|docker-scout) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen|docker-scout)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -48,6 +49,8 @@ case "${TOOL}:${arch}" in
   osv-scanner:aarch64|osv-scanner:arm64) SUM=2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4 ;;
   inspector-sbomgen:x86_64|inspector-sbomgen:amd64) SUM=2aff31bd5f7f426020a5cdda7a58aaebde72e7dae9bc78f687978ad19ef487b4 ;;
   inspector-sbomgen:aarch64|inspector-sbomgen:arm64) SUM=c0ee096fe6e25123b8420bdd09a14d0dbd15333c017825c6cc815ce68e465d0d ;;
+  docker-scout:x86_64|docker-scout:amd64) SUM=47daa9ac442816316c65389f516b847146bb9f45e8d6afdcbb9ce835c4e138bd ;;
+  docker-scout:aarch64|docker-scout:arm64) SUM=34282a50d6787eec46e44a377a1ed9e70342adf078135cca8617c9199852725c ;;
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -56,6 +59,7 @@ GRYPE_BASE="${GRYPE_BASE_URL:-https://github.com/anchore/grype/releases/download
 SNYK_BASE="${SNYK_BASE_URL:-https://github.com/snyk/cli/releases/download}"
 OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/download}"
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
+SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -105,8 +109,17 @@ case "$TOOL" in
     install -m 0755 "$tmp/inspector-sbomgen" "${DEST}/inspector-sbomgen" || pipeline_fail "install failed for inspector-sbomgen"
     "${DEST}/inspector-sbomgen" --version >/dev/null || pipeline_fail "inspector-sbomgen does not run after install"
     ;;
+  docker-scout)
+    # a Docker CLI plugin: installed as DEST/docker-scout; the caller links it into ~/.docker/cli-plugins
+    url="${SCOUT_BASE}/v${SCOUT_VER}/docker-scout_${SCOUT_VER}_${A_SCOUT}.tar.gz"
+    curl -fsSL -o "$tmp/d.tgz" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/d.tgz"
+    tar -xzf "$tmp/d.tgz" -C "$tmp" docker-scout || pipeline_fail "extract failed for docker-scout"
+    install -m 0755 "$tmp/docker-scout" "${DEST}/docker-scout" || pipeline_fail "install failed for docker-scout"
+    "${DEST}/docker-scout" docker-cli-plugin-metadata >/dev/null || pipeline_fail "docker-scout does not run after install"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen|docker-scout)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

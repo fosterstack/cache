@@ -245,7 +245,8 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/hygiene.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
   - ac: REQ-REL-004-AC3
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/main-candidate-rescan.yml: scheduled daily; builds main's latest candidate through stage-build/stage-image and runs the full scanner set, opening a labeled tracking issue on any finding" }
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
   - ac: REQ-REL-004-AC4
     evidence:
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
@@ -340,3 +341,63 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-SCAN-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-SCAN-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-SCAN-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-SCAN-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-SCAN-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-003-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-004-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-SCAN-004-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-006-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-007-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-008-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-008-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-009-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-009-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
+  - ac: REQ-SCAN-009-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-SCAN-007-AC2
+    evidence:
+      - { type: inspection, ref: ".github/policy/scanner-profiles.json changes only through a pull request into main, which every required check gates; each entry cites its finding and image evidence (validated by bin/panel-test.sh)" }
+  - ac: REQ-SCAN-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }
