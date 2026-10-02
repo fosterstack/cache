@@ -1,7 +1,7 @@
 name: 'Stage: reproducibility'
 
 # Release-chain reproducibility stage (release-chain-design.md §2 Stage 4),
-# release mode. PR mode's equivalent lives in release-chain-pr.yml as the
+# release mode. PR mode's equivalent lives in scan.yml's reproducibility job as the
 # two-assembly digest comparison; THIS stage is the tag chain's version:
 # verify the image-build predicate for the pushed candidate digests, then
 # repeat the assembly from the same verified dist/ on a fresh runner with

@@ -325,5 +325,79 @@ case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['m
 case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
 case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
 case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
+# assembly (which uploads oci-candidate) is assembly A, a verify-only assembly B uploads nothing (stage-image's artifact
+# name stays unique); the required check `reproducibility` stays a top-level job with its exact name, no condition and no
+# token beyond contents read; release.yml's own reproducibility stage is untouched and stays the one the release relies on.
+judge_scan() { python3 - "$1" "$root" <<'PY'
+import os, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+root = sys.argv[2]
+bad = []
+on = d.get("on") or {}
+if "pull_request" not in on or (on.get("push") or {}).get("branches") != ["main"]:
+    bad.append("scan.yml no longer runs on pull requests and pushes to main: %s" % on)
+jobs = d.get("jobs") or {}
+builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
+if builds != ["build"]:
+    bad.append("not exactly one build feeds both: %s" % builds)
+imgs = {j: v for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-image.yml"}
+if sorted(imgs) != ["assemble", "assemble-b"]:
+    bad.append("the two assemblies are not assemble + assemble-b: %s" % sorted(imgs))
+want = {"mode": "pr", "dist-artifact": "dist-snapshot", "expected-checksums": "${{ needs.build.outputs.checksums }}"}
+for j, v in imgs.items():
+    w = dict(v.get("with") or {})
+    up = w.pop("upload-oci", "false")
+    if w != want or v.get("needs") != "build":
+        bad.append("%s is not a pr-mode assembly of the one build: %s" % (j, v.get("with")))
+    if (j == "assemble") != (up == "true"):
+        bad.append("oci-candidate must be uploaded by assemble only (%s upload-oci=%s)" % (j, up))
+r = jobs.get("reproducibility") or {}
+if r.get("name") != "reproducibility" or r.get("if") or sorted(r.get("needs") or []) != ["assemble", "assemble-b"]:
+    bad.append("reproducibility changed: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+if r.get("permissions") not in (None, {"contents": "read"}):
+    bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
+run = " ".join(s.get("run", "") for s in r.get("steps") or [])
+if "needs.assemble.outputs.digests" not in run or "needs.assemble-b.outputs.digests" not in run or "exit 1" not in run:
+    bad.append("reproducibility no longer fails when assembly A and B disagree")
+a = jobs.get("artifact-acceptance") or {}
+if a.get("uses") != "./.github/workflows/stage-acceptance-artifacts.yml" or a.get("needs") != "build" or \
+        (a.get("with") or {}).get("dist-artifact") != "dist-snapshot":
+    bad.append("artifact-acceptance changed: %s" % a)
+if os.path.exists(os.path.join(root, ".github/workflows/release-chain-pr.yml")):
+    bad.append("release-chain-pr.yml still exists")
+rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
+if (rel.get("reproducibility") or {}).get("uses") != "./.github/workflows/stage-reproducibility.yml":
+    bad.append("release.yml's own reproducibility stage changed")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_scan() {
+  local f="$work/scan-$1.yml"
+  cp "$root/.github/workflows/scan.yml" "$f"
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_scan "$f" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS scan:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL scan:$1 → $got, want $2 ($out)"; fi
+}
+case_scan real                   ok  ""
+case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
+case_scan b-uploads-oci          bad "d['jobs']['assemble-b']['with']['upload-oci'] = 'true'"
+case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
+case_scan repro-renamed          bad "d['jobs']['reproducibility']['name'] = 'reproducible'"
+case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'] = {'contents': 'read', 'packages': 'write'}"
+case_scan repro-never-fails      bad "[s.__setitem__('run', s['run'].replace('exit 1', 'true')) for s in d['jobs']['reproducibility']['steps']]"
+case_scan repro-one-assembly     bad "d['jobs']['reproducibility']['needs'] = ['assemble']"
+case_scan acceptance-lost        bad "d['jobs'].pop('artifact-acceptance')"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
