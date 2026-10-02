@@ -6,7 +6,7 @@ key); delivery runs against a fake git/gh that records every command. Asserts: t
 keyless seat construction with identifiers only from the environment, masking, the judge and deliver commands, and
 that every change reaches main only as a pull request (rule 0) while issues carry the tracking and owner reports.
 """
-import gzip, hashlib, importlib.util, io, json, os, runpy, subprocess, sys, tarfile, tempfile, types, unittest
+import gzip, hashlib, importlib.util, io, json, os, re, runpy, subprocess, sys, tarfile, tempfile, types, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -608,11 +608,76 @@ class Wiring(unittest.TestCase):                                            # RE
             self.assertNotIn("panel-state", text, name)
             self.assertNotIn("PANEL_AUDIT", text, name)
 
+    def test_the_probe_runs_only_on_request_from_main_and_replaces_the_judgment(self):   # advisor 0051 item 3
+        inputs = self.wf.get("on", self.wf.get(True))["workflow_dispatch"]["inputs"]
+        self.assertEqual((inputs["panel_probe"]["type"], inputs["panel_probe"]["default"]), ("boolean", False))
+        probe = self.steps[self.step("auditor-panel.py probe")]
+        self.assertIn("inputs.panel_probe", probe["if"])
+        self.assertIn("github.ref == 'refs/heads/main'", probe["if"])
+        self.assertNotIn("deliver", probe["run"])
+        for needle in ("auditor-panel.py judge", "auditor-panel.py deliver"):
+            self.assertIn("!inputs.panel_probe", self.steps[self.step(needle)]["if"].replace(" ", ""))
+        self.assertEqual(probe["env"]["PANEL_AUDIT_B_MODEL"], "${{ secrets.PANEL_AUDIT_B_MODEL }}")
+
     def test_delivery_is_the_auditor_lane_only(self):                       # rule 0
         d = self.steps[self.step("auditor-panel.py deliver")]
         self.assertIn("steps.panel.outcome == 'success'", d["if"])
         self.assertEqual(d["env"]["AUDITOR_ISSUES_TOKEN"], "${{ github.token }}")
         self.assertEqual(d["env"]["AUDITOR_AUTOMERGE"], "${{ vars.AUDITOR_AUTOMERGE }}")   # Codex r2 B6: the switch arrives
+
+
+class Probe(Tmp):                                                           # REQ-SCAN-008-AC3 (live proof)
+    """The seat probe: one fixed audit per seat from a committed synthetic bundle; nothing published."""
+
+    def a(self, **kw):
+        return args(**dict(dict(out=os.path.join(self.d, "out"), seats="none", token_budget=200000), **kw))
+
+    def test_the_bundle_is_synthetic(self):
+        text = open(P.PROBE_BUNDLE).read()
+        self.assertIn(P.EVIDENCE_MARK, text)
+        self.assertEqual(set(re.findall(r"Package: (\S+)", text)), {"probe-pkg"})
+        self.assertIsNone(re.search(r"CVE-\d", text))
+
+    def test_both_seats_answering_is_success_and_nothing_is_published(self):
+        asked = []
+
+        def seat(name):
+            def ask(req):
+                asked.append((name, req["mode"], req["finding"]["id"]))
+                return {"verdict": "real", "evidence": ["Package: probe-pkg Version: 1.0.0"], "why": "x", "case": "y",
+                        "_tokens": 10}
+            return ask
+        with mock.patch("sys.stdout", new=io.StringIO()) as out:
+            self.assertEqual(P.cmd_probe(self.a(), seats={"A": seat("A"), "B": seat("B")}), 0)
+        self.assertEqual(asked, [("A", "audit", "PROBE-0001"), ("B", "audit", "PROBE-0001")])   # at most two calls
+        summary = open(os.path.join(self.d, "out", "summary.md")).read()
+        self.assertIn("vendor A: answered with a valid vote (real)", summary)
+        self.assertIn("vendor B: answered with a valid vote (real)", summary)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.d, "out"))), ["summary.md"])        # no state, day or plan
+        self.assertIn("Tokens used: 20", out.getvalue())
+
+    def test_an_errored_or_silent_seat_fails_the_probe_with_a_masked_reason(self):
+        OpenAIError = type("OpenAIError", (Exception,), {})
+
+        def b(req):
+            raise OpenAIError("Token exchange failed with status 401 for gpt-6-astra")
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            rc = P.cmd_probe(self.a(), seats={"A": lambda r: {"verdict": "maybe"}, "B": b})
+        self.assertEqual(rc, 1)
+        summary = open(os.path.join(self.d, "out", "summary.md")).read()
+        self.assertIn("vendor A: answered without a valid vote", summary)
+        self.assertIn("vendor B: error: seat error: Token exchange failed with status 401", summary)
+        self.assertNotIn("openai", summary.lower())
+        self.assertNotIn("gpt", summary.lower())
+
+    def test_no_seats_configured_is_a_failed_probe(self):
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_probe(self.a()), 1)
+
+    def test_dispatch(self):
+        seen = []
+        P.main(["probe", "--out", "x", "--seats", "real"], probe=lambda a: seen.append(a.seats) or 0)
+        self.assertEqual(seen, ["real"])
 
 
 class Main(Tmp):

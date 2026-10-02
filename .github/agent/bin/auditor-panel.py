@@ -1055,7 +1055,40 @@ def cmd_deliver(a, run=subprocess.run):
     return 0
 
 
-def main(argv=None, judge=cmd_judge, deliver=cmd_deliver):
+PROBE_BUNDLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "panel", "probe-bundle.txt")
+PROBE_FINDING = {"image": "probe-amd64", "id": "PROBE-0001", "package": "probe-pkg", "version": "1.0.0",
+                 "seen_by": ["probe"]}
+
+
+def cmd_probe(a, seats=None):
+    """Prove both seats live (REQ-SCAN-008-AC3): one fixed audit per seat over a committed synthetic bundle, inside the
+    run's token budget. Publishes nothing (no state, no PR, no issue); the summary names only the seats. Exit 0 only
+    when both seats answered; a failing seat is reported with its masked error, never retried."""
+    bundle = open(PROBE_BUNDLE).read()
+    budget = Budget(a.token_budget)
+    seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}
+    lines, ok = ["## Scanner panel seat probe", ""], True
+    for s in SEATS:
+        ans = _ask(seats[s], s, _request("audit", PROBE_FINDING, bundle))
+        v = vote(ans, bundle, PROBE_FINDING)
+        if ans.get("error"):
+            ok = False
+            lines.append("- vendor %s: error: %s" % (s, ans["error"]))
+        elif v:
+            lines.append("- vendor %s: answered with a valid vote (%s)" % (s, v))
+        else:
+            lines.append("- vendor %s: answered without a valid vote (the seat is reachable; its answer cited no "
+                         "evidence from the bundle)" % s)
+    lines += ["", "Tokens used: %d of the run's budget of %d." % (budget.used, budget.cap)]
+    os.makedirs(a.out, exist_ok=True)
+    text = public("\n".join(lines)) + "\n"
+    with open(os.path.join(a.out, "summary.md"), "w") as fh:
+        fh.write(text)
+    print(text)
+    return 0 if ok else 1
+
+
+def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     ap = argparse.ArgumentParser(prog="auditor-panel")
     sub = ap.add_subparsers(dest="cmd", required=True)
     j = sub.add_parser("judge")
@@ -1072,8 +1105,12 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver):
     d.add_argument("--repo", default=".")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--today", default=datetime.date.today().isoformat())
+    pr = sub.add_parser("probe")
+    pr.add_argument("--out", required=True)
+    pr.add_argument("--seats", choices=("real", "none"), default="none")
+    pr.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
     a = ap.parse_args(argv)
-    return judge(a) if a.cmd == "judge" else deliver(a)
+    return {"judge": judge, "deliver": deliver, "probe": probe}[a.cmd](a)
 
 
 if __name__ == "__main__":

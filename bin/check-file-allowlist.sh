@@ -145,6 +145,8 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/testlib/pyyaml/[A-Za-z0-9._-]+\.py$'
   '^\.github/agent/fixtures/testlib/pyyaml/LICENSE$'
   '^\.github/agent/fixtures/testlib/workflows/[A-Za-z0-9._-]+\.ya?ml$'
+  # the scanner panel's seat probe: one committed synthetic evidence bundle (no real finding or data)
+  '^\.github/agent/fixtures/panel/probe-bundle\.txt$'
   # The reviewers' adversarial stand-ins, checked in as mutation-harness inputs.
   '^\.github/agent/fixtures/mutants/[A-Za-z0-9._-]+\.py$'
   # The fixture modules are stored ENTIRELY as .fixture files — go.mod.fixture / go.sum.fixture
