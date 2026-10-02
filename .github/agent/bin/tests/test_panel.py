@@ -494,15 +494,43 @@ class Reversals(unittest.TestCase):                                         # RE
                               {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING, advisory=lambda f: True)
         self.assertEqual((out["vex"], out["misses"]), ([], []))
 
-    def test_a_fix_shipping_settles_the_debate(self):
+    def debate_at(self, ver, installed_then):
         st = P.new_state()
-        st["debates"].append({"image": "fips-arm64", "id": "CVE-1", "package": "tzdata", "version": "2025a-1",
+        st["debates"].append({"image": "fips-arm64", "id": "CVE-1", "package": "tzdata", "version": ver,
                               "sides": {"A": "real", "B": "false"}, "outcome": "agreed-false", "prevailing": "B",
-                              "settled": None, "rounds": []})
-        st, _ = P.apply_day(verdict(images=["fips-arm64"]), st, bundles, {"entries": []},
+                              "settled": None, "rounds": [], "installed_then": installed_then})
+        return st
+
+    def test_a_fix_shipping_settles_the_debate(self):
+        # the debated version WAS installed then; today the same image carries 2026c-0+deb13u1 instead
+        st, _ = P.apply_day(verdict(images=["fips-arm64"]), self.debate_at("2025a-1", True), bundles, {"entries": []},
                             {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
         self.assertEqual(st["debates"][0]["settled"]["by"], "fix-shipped")
         self.assertEqual(st["scores"], {"A": 1, "B": -2})
+
+    def test_no_fix_ships_when_the_version_was_never_there_or_the_image_is_unreadable(self):   # Codex final item 1
+        for st0, b in ((self.debate_at("2025a-1", False), bundles),            # correctly absent all along
+                       (self.debate_at("2025a-1", None), bundles),
+                       (self.debate_at("2025a-1", True), lambda f: "unreadable")):
+            st, _ = P.apply_day(verdict(images=["fips-arm64"]), st0, b, {"entries": []},
+                                {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
+            self.assertIsNone(st["debates"][0]["settled"])
+            self.assertEqual(st["scores"], {"A": 0, "B": 0})
+
+    def test_debates_record_whether_the_image_had_the_version(self):
+        st, _ = P.apply_day(verdict(finding(ver=OLD)), P.new_state(), bundles, {"entries": []},
+                            {"A": Seat({"audit": real(), "case": real(), "verdict": false()}),
+                             "B": Seat({"audit": false(), "case": false(), "verdict": false()})}, "2026-10-03", SCORING)
+        self.assertIs(st["debates"][0]["installed_then"], False)
+
+    def test_an_advisory_reverses_a_finding_rejudged_false_today(self):    # Codex final item 2
+        st = self.stated()
+        now = BUNDLE.replace("2026c-0+deb13u1", OLD)
+        st, out = P.apply_day(verdict(finding(ver=OLD)), st, lambda f: now, {"entries": []},
+                              {"A": Seat({"audit": {"error": "x"}}), "B": Seat({"audit": {"error": "x"}})},
+                              "2026-10-04", SCORING, advisory=lambda f: True)
+        self.assertEqual(out["misses"][-1]["by"], "an advisory names the package we ship")
+        self.assertIn("CVE-2099-0002", out["issue"])
 
     def test_osv_is_asked_for_the_judged_version_only(self):
         seen = []

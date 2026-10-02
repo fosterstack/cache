@@ -456,7 +456,10 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
                      why=r["why"])
         out["log"].append(entry)
         if r["debate"]:
-            st["debates"].append(dict(_ident(f), on=today, settled=None, **r["debate"]))
+            then = installed_versions(bundles(f), f)
+            st["debates"].append(dict(_ident(f), on=today, settled=None,
+                                      installed_then=(_ver(f.get("version")).lower() in then) if then is not None else None,
+                                      **r["debate"]))
         if r["status"] == "report":
             if k in false_mem:      # a later audit reversed a remembered false judgment: that is an audit miss too
                 before = false_mem.pop(k)
@@ -529,8 +532,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             reverse(k, e, "another scanner reported it (hidden by our statement)", "corroborated")
     # (2) every remembered false judgment is re-checked against today's images
     for k, e in sorted(false_mem.items()):
-        if k in seen_today or not images:
-            continue
+        if not images:
+            continue                # (re-judged false today or not reported today: both are re-checked)
         present = _present_in(bundles, e, images)
         if not present:
             continue
@@ -542,14 +545,13 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             e["vex"] = False
             out["owner"].append("Scanner panel: %s (%s %s) was stated not affected, but %s now contain(s) that version; "
                                 "the statement is turned affected." % (e["id"], e["package"], e["version"], ", ".join(present)))
-    # (3) a fix shipped: a debated finding is gone and the images carry another version of the package
+    # (3) a fix shipped: the debated image HAD the debated version when debated, and today that same image is readable,
+    # carries another version of the package, and no longer has the debated one (Codex final verification, item 1)
     for d in st["debates"]:
-        if d.get("settled") or key_of(d) in seen_today or not images:
+        if d.get("settled") or d.get("installed_then") is not True or key_of(d) in seen_today or d["image"] not in images:
             continue
-        vers = set()
-        for img in images:
-            vers |= installed_versions(bundles(dict(d, image=img)), dict(d, image=img)) or set()
-        if vers and _ver(d["version"]).lower() not in vers:
+        now = installed_versions(bundles(dict(d)), dict(d))
+        if now and _ver(d["version"]).lower() not in now:
             events.append(dict(_ident(d), kind="fix-shipped"))
     st["false"] = sorted(false_mem.values(), key=lambda x: key_of(x))
     st["real"] = sorted(real_mem.values(), key=lambda x: key_of(x))
