@@ -182,6 +182,9 @@ jobs:
     name: panel — Google Artifact Analysis (three variants, linux/amd64)
     needs: [build, assemble]
     runs-on: ubuntu-latest
+    # The scanner identity admits main only as `push` or through the main-only `agent` environment; this
+    # job runs on `schedule`, so it takes the environment (ops/terraform/gcp; no secret is read here).
+    environment: agent
     permissions:
       contents: read
       id-token: write   # the workload identity (rule 2): no keys
@@ -253,10 +256,12 @@ jobs:
         run: |
           set +e
           mkdir -p /tmp/prior
-          prev=$(gh run list --workflow main-candidate-rescan.yml --branch main --status completed --limit 5 \
-                   --json databaseId --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})][0].databaseId // empty")
-          [ -n "$prev" ] && gh run download "$prev" -n panel-judgments -D /tmp/prior >/dev/null 2>&1
-          [ -f /tmp/prior/judgments.json ] && echo "comparing with run ${prev}" || echo "no earlier judgments"
+          # the latest earlier run that kept judgments (a day that failed before the panel keeps none)
+          for prev in $(gh run list --workflow main-candidate-rescan.yml --branch main --limit 15 \
+                          --json databaseId --jq ".[] | select(.databaseId != ${GITHUB_RUN_ID}) | .databaseId"); do
+            gh run download "$prev" -n panel-judgments -D /tmp/prior >/dev/null 2>&1 && { echo "comparing with run ${prev}"; break; }
+          done
+          [ -f /tmp/prior/judgments.json ] || echo "::warning::no earlier judgments found; no audit-miss comparison today"
           exit 0
       - name: judge the day's findings, auditing unique ones in this step (rules 3-9)
         id: judge

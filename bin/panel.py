@@ -69,6 +69,12 @@ def no_auditor(vendor, finding, image):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
+def _cdx_packages(doc):
+    """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
+    lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("purl")]
+
+
 def _cdx_findings(doc, comps):
     by_ref = {c.get("bom-ref"): c for c in comps + [c for c in doc.get("components") or [] if isinstance(c, dict)]
               if c.get("bom-ref")}
@@ -85,8 +91,7 @@ def _cdx_findings(doc, comps):
 
 def read_grype(d):
     doc = _load(os.path.join(d, "result.cdx.json"))
-    comps = [c for c in doc.get("components") or [] if isinstance(c, dict)]
-    return len(comps), _cdx_findings(doc, comps)
+    return len(_cdx_packages(doc)), _cdx_findings(doc, [])
 
 
 def read_scout(d):
@@ -109,12 +114,12 @@ def read_inspector(d):
     if not isinstance(scan, dict) or scan.get("bomFormat") != "CycloneDX":
         raise ValueError("ScanSbom answer is not CycloneDX")
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-    return len(comps), _cdx_findings(scan, comps)
+    return len(_cdx_packages(sbom)), _cdx_findings(scan, comps)
 
 
 def read_google(d):
     pkgs = _load(os.path.join(d, "packages.json"))
-    vulns = _load(os.path.join(d, "vulns.json")) if os.path.exists(os.path.join(d, "vulns.json")) else []
+    vulns = _load(os.path.join(d, "vulns.json"))   # no answer = did not run, never "no findings"
     if not isinstance(pkgs, list) or not isinstance(vulns, list):
         raise ValueError("unexpected shape")
     out = []

@@ -26,7 +26,8 @@ def W(d, name, obj):
 def grype(d, pkgs, vulns):     # CycloneDX from `grype --vex ... -o cyclonedx-json` (VEX already applied by grype)
     comps = [{"bom-ref": "r%d" % i, "name": n, "version": v, "purl": "pkg:generic/%s@%s" % (n, v)} for i, (n, v) in enumerate(pkgs)]
     ref = {(c["name"], c["version"]): c["bom-ref"] for c in comps}
-    W(d, "result.cdx.json", {"bomFormat": "CycloneDX", "components": comps,
+    files = [{"bom-ref": "f%d" % i, "type": "file", "name": "/usr/lib/f%d" % i} for i in range(5)] if pkgs else []
+    W(d, "result.cdx.json", {"bomFormat": "CycloneDX", "components": comps + files,
       "vulnerabilities": [{"id": c, "affects": [{"ref": ref[(n, v)]}]} for c, n, v in vulns]})
 def scout(d, pkgs, vulns):     # `docker scout sbom --format json` + `docker scout cves --format gitlab --vex-location`
     W(d, "sbom.json", {"artifacts": [{"name": n, "version": v, "purl": "pkg:generic/%s@%s" % (n, v)} for n, v in pkgs]})
@@ -64,15 +65,17 @@ check("the expected set: Grype, Scout, Inspector on all six images; Google on th
 
 # --- rule 3: package counts; zero / empty / unparsable = did not run
 r = tree(); v = judge(r)
-check("package counts are reported per scanner per image", v["images"]["debug-amd64"]["counts"] == {"google": 3, "grype": 3, "inspector": 3, "scout": 3}, v["images"]["debug-amd64"])
-r = tree(); grype(os.path.join(r, "grype", "debug-amd64"), [], [])
+check("package counts are reported per scanner per image, packages only (Grype's file components are not packages)", v["images"]["debug-amd64"]["counts"] == {"google": 3, "grype": 3, "inspector": 3, "scout": 3}, v["images"]["debug-amd64"])
+r = tree(); W(os.path.join(r, "grype", "debug-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX",
+    "components": [{"bom-ref": "f1", "type": "file", "name": "/etc/passwd"}]})   # files but no package: did not run
 W(os.path.join(r, "scout", "debug-amd64"), "sbom.json", "")
 W(os.path.join(r, "inspector", "debug-amd64"), "scan.json", "{not json")
+os.remove(os.path.join(r, "google", "debug-amd64", "vulns.json"))
 v = judge(r)
-check("zero packages, an empty file and an unparsable file are 'did not run', never clean",
-      sorted(v["images"]["debug-amd64"]["did_not_run"]) == ["grype", "inspector", "scout"], v["images"]["debug-amd64"])
+check("zero packages, an empty file, an unparsable file and a missing answer are 'did not run', never clean",
+      sorted(v["images"]["debug-amd64"]["did_not_run"]) == ["google", "grype", "inspector", "scout"], v["images"]["debug-amd64"])
 # --- rule 3: quorum
-check("an amd64 image with only Google left (1 of 4) does not count", v["images"]["debug-amd64"]["counts_for_day"] is False)
+check("an amd64 image with no scanner left does not count", v["images"]["debug-amd64"]["counts_for_day"] is False)
 r = tree(skip={("google", "debug-amd64")}); v = judge(r)
 check("an amd64 image with 3 of 4 counts", v["images"]["debug-amd64"]["counts_for_day"] is True)
 r = tree(skip={("scout", "debug-arm64")}); v = judge(r)
