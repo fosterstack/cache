@@ -795,13 +795,14 @@ class Budget:
         return budgeted
 
 
-def seat_a(env=os.environ, mint=mint_oidc):
+def seat_a(env=os.environ, mint=mint_oidc, retries=None):
     """Vendor A: the auditor's existing provider, through its existing federation (the SDK exchanges the identity
     token in ANTHROPIC_IDENTITY_TOKEN_FILE; workspace, organization and service account from the environment)."""
     import anthropic
     token = TokenFile(env["ANTHROPIC_IDENTITY_TOKEN_FILE"], "https://api.anthropic.com", mint=mint)
     token.fresh()
-    client, model = anthropic.Anthropic(), env["PANEL_AUDIT_A_MODEL"]
+    client = anthropic.Anthropic() if retries is None else anthropic.Anthropic(max_retries=retries)
+    model = env["PANEL_AUDIT_A_MODEL"]
 
     def ask(req):
         token.fresh()
@@ -813,7 +814,7 @@ def seat_a(env=os.environ, mint=mint_oidc):
     return ask
 
 
-def seat_b(env=os.environ, mint=mint_oidc):
+def seat_b(env=os.environ, mint=mint_oidc, retries=2):
     """Vendor B: workload identity federation (no key): a fresh GitHub identity token, minted on every exchange, is
     traded for a short-lived token bound to the configured service account; Responses API only."""
     from openai import OpenAI
@@ -823,7 +824,7 @@ def seat_b(env=os.environ, mint=mint_oidc):
     client = OpenAI(workload_identity={"identity_provider_id": env["PANEL_AUDIT_B_IDENTITY_PROVIDER_ID"],
                                        "service_account_id": env["PANEL_AUDIT_B_SERVICE_ACCOUNT_ID"],
                                        "provider": {"token_type": "jwt", "get_token": token}},
-                    project=env["PANEL_AUDIT_B_PROJECT_ID"], timeout=300, max_retries=2)
+                    project=env["PANEL_AUDIT_B_PROJECT_ID"], timeout=300, max_retries=retries)
     model = env["PANEL_AUDIT_B_MODEL"]
 
     def ask(req):
@@ -840,13 +841,13 @@ def unavailable(why):
     return ask
 
 
-def make_seats(mode, env=os.environ, a=seat_a, b=seat_b):
+def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
     if mode != "real":
         return {s: unavailable("no auditor in this run (%s)" % mode) for s in SEATS}
     seats = {}
     for s, make in (("A", a), ("B", b)):
         try:
-            seats[s] = make(env)
+            seats[s] = make(env) if retries is None else make(env, retries=retries)
         except Exception as e:   # a seat that cannot start errors every audit: no evidence, reported
             seats[s] = unavailable("seat %s could not start: %s: %s" % (s, type(e).__name__, public(e)))
     return seats
@@ -1066,7 +1067,8 @@ def cmd_probe(a, seats=None):
     when both seats answered; a failing seat is reported with its masked error, never retried."""
     bundle = open(PROBE_BUNDLE).read()
     budget = Budget(a.token_budget)
-    seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}
+    # retries disabled: each seat is asked exactly once (at most two model requests), and a failure is never retried
+    seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats, retries=0)).items()}
     lines, ok = ["## Scanner panel seat probe", ""], True
     for s in SEATS:
         ans = _ask(seats[s], s, _request("audit", PROBE_FINDING, bundle))

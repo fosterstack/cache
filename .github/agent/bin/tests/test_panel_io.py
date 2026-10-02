@@ -608,16 +608,23 @@ class Wiring(unittest.TestCase):                                            # RE
             self.assertNotIn("panel-state", text, name)
             self.assertNotIn("PANEL_AUDIT", text, name)
 
-    def test_the_probe_runs_only_on_request_from_main_and_replaces_the_judgment(self):   # advisor 0051 item 3
-        inputs = self.wf.get("on", self.wf.get(True))["workflow_dispatch"]["inputs"]
+    def test_the_probe_runs_only_on_request_from_main_and_alone(self):   # advisor 0051; Codex r1 blockers 1-2 (#155)
+        on = self.wf.get("on", self.wf.get(True))
+        inputs = on["workflow_dispatch"]["inputs"]
         self.assertEqual((inputs["panel_probe"]["type"], inputs["panel_probe"]["default"]), ("boolean", False))
-        probe = self.steps[self.step("auditor-panel.py probe")]
-        self.assertIn("inputs.panel_probe", probe["if"])
-        self.assertIn("github.ref == 'refs/heads/main'", probe["if"])
-        self.assertNotIn("deliver", probe["run"])
-        for needle in ("auditor-panel.py judge", "auditor-panel.py deliver"):
-            self.assertIn("!inputs.panel_probe", self.steps[self.step(needle)]["if"].replace(" ", ""))
-        self.assertEqual(probe["env"]["PANEL_AUDIT_B_MODEL"], "${{ secrets.PANEL_AUDIT_B_MODEL }}")
+        jobs = self.wf["jobs"]
+        self.assertEqual(jobs["audit"]["if"].replace(" ", ""), "${{!inputs.panel_probe}}")   # nothing else runs
+        p = jobs["panel-probe"]
+        self.assertEqual(p["if"].replace(" ", ""), "${{inputs.panel_probe&&github.ref=='refs/heads/main'}}")
+        self.assertEqual((p["environment"], p["permissions"]), ("agent", {"contents": "read", "id-token": "write"}))
+        runs = " ".join(st.get("run") or "" for st in p["steps"])
+        self.assertIn("auditor-panel.py probe --seats real", runs)
+        for absent in ("auditor-run.py", "deliver", "judge", "getIDToken", "create-github-app-token", "gh "):
+            self.assertNotIn(absent, runs + " ".join(str(st.get("uses", "")) for st in p["steps"]))
+        self.assertFalse([st for st in p["steps"] if st.get("id") == "oidc"])
+        env = next(st for st in p["steps"] if "auditor-panel.py probe" in (st.get("run") or ""))["env"]
+        self.assertEqual(env["PANEL_AUDIT_B_MODEL"], "${{ secrets.PANEL_AUDIT_B_MODEL }}")
+        self.assertLess(list(jobs).index("audit"), list(jobs).index("panel-probe"))   # the matrix reads the audit job
 
     def test_delivery_is_the_auditor_lane_only(self):                       # rule 0
         d = self.steps[self.step("auditor-panel.py deliver")]
@@ -673,6 +680,35 @@ class Probe(Tmp):                                                           # RE
     def test_no_seats_configured_is_a_failed_probe(self):
         with mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(P.cmd_probe(self.a()), 1)
+
+    def test_the_probe_disables_retries_in_both_sdks(self):              # Codex r1 blocker 2 (#155)
+        made = {}
+
+        def make_seats(mode, retries=None):
+            made["retries"] = retries
+            return {"A": lambda r: {"error": "x"}, "B": lambda r: {"error": "x"}}
+        with mock.patch.object(P, "make_seats", make_seats), mock.patch("sys.stdout", new=io.StringIO()):
+            P.cmd_probe(self.a(seats="real"))
+        self.assertEqual(made["retries"], 0)
+        seen = []
+        P.make_seats("real", env={}, a=lambda env, retries=None: seen.append(("A", retries)) or (lambda r: {}),
+                     b=lambda env, retries=None: seen.append(("B", retries)) or (lambda r: {}), retries=0)
+        self.assertEqual(seen, [("A", 0), ("B", 0)])
+        kw = {}
+        fake = types.ModuleType("anthropic")
+        fake.Anthropic = lambda **k: kw.update(k) or types.SimpleNamespace(messages=None)
+        with mock.patch.dict(sys.modules, {"anthropic": fake}):
+            P.seat_a({"PANEL_AUDIT_A_MODEL": "m", "ANTHROPIC_IDENTITY_TOKEN_FILE": os.path.join(self.d, "t")},
+                     mint=lambda a: "jwt", retries=0)
+        self.assertEqual(kw, {"max_retries": 0})
+        got = {}
+        fo = types.ModuleType("openai")
+        fo.OpenAI = lambda **k: got.update(k) or types.SimpleNamespace(responses=None)
+        env = {"PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "i", "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID": "s",
+               "PANEL_AUDIT_B_PROJECT_ID": "p", "PANEL_AUDIT_B_MODEL": "m"}
+        with mock.patch.dict(sys.modules, {"openai": fo}):
+            P.seat_b(env, mint=lambda a: "jwt", retries=0)
+        self.assertEqual(got["max_retries"], 0)
 
     def test_dispatch(self):
         seen = []

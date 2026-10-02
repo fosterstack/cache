@@ -765,7 +765,8 @@ sys.path.insert(0, ".github/agent/fixtures/testlib")
 import pyyaml as yaml
 doc = yaml.safe_load(open(os.environ["WF"]).read()) or {}
 jobs = doc.get("jobs") or {}
-job = next((j for j in jobs.values() if isinstance(j, dict) and j.get("environment") == "agent"), None) or (list(jobs.values())[0] if jobs else {})
+# the audit job by its id (the seat-probe job also runs in the agent environment); the old lookup is the fallback
+job = jobs.get("audit") or next((j for j in jobs.values() if isinstance(j, dict) and j.get("environment") == "agent"), None) or (list(jobs.values())[0] if jobs else {})
 steps = [s for s in (job.get("steps") or []) if isinstance(s, dict)]
 apptok = next((s for s in steps if s.get("id") == "app-token"), None)
 runstep = next((s for s in steps if isinstance(s.get("run"), str) and "dry='${{" in s["run"]), None)
