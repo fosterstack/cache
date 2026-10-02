@@ -188,6 +188,9 @@ SUPPRESSION_PATTERNS=(
   # delivered only through the auditor lane, and reviewed before merge.
   '^\.auditor/knowledge\.md$'
   '^\.auditor/proposals/[A-Za-z0-9._-]+\.json$'
+  # the scanner panel's memory of its judgments, debates, scores and primary seat (rules 9, 13, 14), delivered only
+  # through the auditor lane's auditor/panel branch
+  '^\.auditor/panel-state\.json$'
 )
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves

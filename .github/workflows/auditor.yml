@@ -96,6 +96,9 @@ jobs:
           # produced them (added this round; older runs pre-date the upload — not fatal)
           gh run download "$rid" -n rescan-scanner-reports -D "${RUNNER_TEMP}/rescan-reports" \
             || echo "::warning::selected run has no rescan-scanner-reports artifact; the auditor will scan on the runner and cannot assert the recorded digest"
+          # the scanner panel's tally (scanner-panel rules 3-6): its unique findings are judged below (rules 7-9)
+          gh run download "$rid" -n panel-evidence -D "${RUNNER_TEMP}/panel" \
+            || echo "::warning::selected run has no panel-evidence artifact; the scanner panel's audits cannot run"
 
       - name: Set up Go for govulncheck and the source scan
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -210,7 +213,8 @@ jobs:
             -r .github/agent/adjudicator-requirements.txt
           python3 - <<'PY'
           from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
-          print("adjudicator SDK ready: anthropic workload-identity federation surface importable")
+          from openai.auth import WorkloadIdentity  # noqa: F401  (the scanner panel's second seat)
+          print("adjudicator SDKs ready: both workload-identity federation surfaces importable")
           PY
 
       - name: Run the auditor
@@ -265,6 +269,75 @@ jobs:
           cp -r "${RUNNER_TEMP}/reports" "${RUNNER_TEMP}/auditor-out/scanner-reports" 2>/dev/null || true
           cp "${AUDITOR_KEV_CATALOG}" "${RUNNER_TEMP}/auditor-out/kev.json" 2>/dev/null || true
 
+      # The scanner panel's audits (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 3: "the audits run in the
+      # auditor's daily run, right after the rescan, in one of its steps"). The rescan tallied the scanners and listed
+      # the findings only one scanner reported; this judges them with two auditor seats, each reached through keyless
+      # federation: seat A is the provider above (its own identity token, so no exchange is replayed), seat B the
+      # second vendor's workload identity. Identifiers and model names come only from the environment's secrets
+      # (REQ-AUD-6 AC1); nothing public names a vendor.
+      - name: Mint the scanner panel's two identity tokens (real auditors only)
+        id: panel-oidc
+        if: ${{ always() && steps.rescan.outcome == 'success' && (github.event_name == 'schedule' || inputs.adjudicator == 'real') }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs')
+            const seats = [['https://api.anthropic.com', 'panel-a-token'], ['https://api.openai.com/v1', 'panel-b-token']]
+            const mint = async () => {
+              for (const [aud, file] of seats) {
+                try {
+                  const t = await core.getIDToken(aud)
+                  core.setSecret(t); fs.writeFileSync(`${process.env.RUNNER_TEMP}/${file}`, t)
+                } catch (e) { core.warning(`panel identity mint failed for seat ${file}: ${e}`) }
+              }
+            }
+            await mint()
+            // the audits and debates can run past a token's lifetime: re-mint every 4 minutes for the rest of the job
+            setInterval(mint, 4 * 60 * 1000).unref?.()
+
+      - name: Judge the rescan's unique findings (scanner panel rules 7-9, 8(c), 13, 14)
+        id: panel
+        if: ${{ always() && steps.rescan.outcome == 'success' }}
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/panel-a-token
+          PANEL_AUDIT_A_MODEL: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
+          PANEL_AUDIT_B_IDENTITY_PROVIDER_ID: ${{ secrets.PANEL_AUDIT_B_IDENTITY_PROVIDER_ID }}
+          PANEL_AUDIT_B_SERVICE_ACCOUNT_ID: ${{ secrets.PANEL_AUDIT_B_SERVICE_ACCOUNT_ID }}
+          PANEL_AUDIT_B_PROJECT_ID: ${{ secrets.PANEL_AUDIT_B_PROJECT_ID }}
+          PANEL_AUDIT_B_MODEL: ${{ secrets.PANEL_AUDIT_B_MODEL }}
+          PANEL_AUDIT_B_TOKEN_FILE: ${{ runner.temp }}/panel-b-token
+        run: |
+          set -euo pipefail
+          seats='${{ (github.event_name == 'schedule' || inputs.adjudicator == 'real') && 'real' || 'none' }}'
+          # yesterday's judgments, debates and scores: the open panel PR's branch if there is one, else main's file
+          state="${RUNNER_TEMP}/panel-state.json"
+          if git fetch --quiet origin auditor/panel 2>/dev/null && git show FETCH_HEAD:.auditor/panel-state.json > "$state" 2>/dev/null; then
+            echo "state from the open auditor/panel branch"
+          elif [ -f .auditor/panel-state.json ]; then cp .auditor/panel-state.json "$state"; echo "state from main"
+          else rm -f "$state"; echo "no earlier state: the first day"
+          fi
+          python3 .github/agent/bin/auditor-panel.py judge --verdict "${RUNNER_TEMP}/panel/verdict.json" \
+            --state "$state" --profiles .github/policy/scanner-profiles.json --oci "${RUNNER_TEMP}/rescan" \
+            --out "${RUNNER_TEMP}/panel-out" --seats "$seats" --today "$(date -u +%F)"
+
+      - name: Deliver the panel audits — a pull request from the auditor lane, the tracking issue, the owner report
+        if: ${{ always() && steps.panel.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          AUDITOR_ISSUES_TOKEN: ${{ github.token }}
+          AUDITOR_ALLOW_REAL_GH: '1'
+        run: |
+          set -euo pipefail
+          dry='${{ github.event_name == 'schedule' && (vars.AUDITOR_SCHEDULE_MODE == 'live' && 'false' || 'true') || inputs.dry_run }}'
+          dry_arg=""
+          [ "$dry" = "false" ] || dry_arg="--dry-run"
+          python3 .github/agent/bin/auditor-panel.py deliver --out "${RUNNER_TEMP}/panel-out" --repo . \
+            --today "$(date -u +%F)" ${dry_arg}
+
       - name: Publish the report to the run summary
         if: ${{ always() }}
         run: |
@@ -273,6 +346,7 @@ jobs:
           else
             echo "The auditor produced no report (see the failed step above)." >> "${GITHUB_STEP_SUMMARY}"
           fi
+          cat "${RUNNER_TEMP}/panel-out/summary.md" >> "${GITHUB_STEP_SUMMARY}" 2>/dev/null || true
 
       - name: Upload the full audit trail
         if: ${{ always() }}
@@ -282,5 +356,6 @@ jobs:
           include-hidden-files: true
           path: |
             ${{ runner.temp }}/auditor-out
+            ${{ runner.temp }}/panel-out
             ${{ runner.temp }}/manifest.json
             ${{ runner.temp }}/reports

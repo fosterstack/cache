@@ -1534,7 +1534,7 @@ requirements:
     title: Scanner profiles
     statement: >
       The repository shall record each scanner's known behaviors, each citing the finding and the evidence from the image that proved it; nothing from vendor claims alone; new entries only through a PR and review.
-    source: [.github/policy/scanner-profiles.json, bin/panel.py]
+    source: [.github/workflows/auditor.yml, .github/policy/scanner-profiles.json]
     tier: community
     introduced: v0.3.0
     origin: scanner-panel rule 7 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
@@ -1557,7 +1557,7 @@ requirements:
     title: Unique findings are presumed false positives
     statement: >
       A unique finding shall be presumed false: one audit decides when it matches a recorded behavior; otherwise two independent audits, one from each of two vendors, both through keyless federation, and it is real only if both say real with evidence from the image.
-    source: [.github/workflows/main-candidate-rescan.yml, bin/panel.py]
+    source: [.github/workflows/auditor.yml, .github/policy/scanner-profiles.json]
     tier: community
     introduced: v0.3.0
     origin: scanner-panel rule 8 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
@@ -1628,7 +1628,7 @@ requirements:
     title: What false does
     statement: >
       A unique finding judged false with evidence from the image shall get a not_affected VEX statement; one judged false only by default shall be logged with no alarm and no public statement; a later corroboration shall make it real and count as an audit miss reported to the owner.
-    source: [.github/workflows/main-candidate-rescan.yml, bin/panel.py]
+    source: [.github/workflows/auditor.yml, .github/policy/scanner-profiles.json]
     tier: community
     introduced: v0.3.0
     origin: scanner-panel rule 9 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
@@ -1780,7 +1780,7 @@ requirements:
     title: Debate scoring
     statement: >
       Every debate shall be recorded; it settles only when the real answer arrives; a settled debate scores +1 for the vendor that argued the true side and -2 for a vendor that convinced the other of a wrong answer; scores are kept per vendor in the repository.
-    source: [.github/agent/bin/auditor-panel.py]
+    source: [.github/workflows/auditor.yml]
     tier: community
     introduced: v0.3.0
     origin: scanner-panel rule 13 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
@@ -1815,7 +1815,7 @@ requirements:
     title: Primary seat
     statement: >
       The primary auditor for single audits shall be vendor A by default; vendor B takes the seat when its score leads by 3 or more and vendor A takes it back the same way; a seat change is reported to the owner as a pull request; it never moves the daily CVE auditor; vendor names stay in variables.
-    source: [.github/agent/bin/auditor-panel.py]
+    source: [.github/workflows/auditor.yml]
     tier: community
     introduced: v0.3.0
     origin: scanner-panel rule 14 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)

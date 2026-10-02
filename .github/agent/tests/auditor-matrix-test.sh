@@ -537,10 +537,12 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   { eq "$idt" "write" && eq "$cont" "read" && eq "$aud" "https://api.anthropic.com" && eq "$ghs" "true" && eq "$tf" "true" && eq "$apik" "false"; } \
     && ok || no "OIDC wired via github-script, no API key" "id-token=$idt contents=$cont audience=$aud github-script=$ghs token-file=$tf api-key=$apik"; fi
 
-begin "req6-ac1-identifiers-are-env-secrets" "the six identifiers + tokens come from secrets.* (GitHub masks them); the ONLY vars.* are the non-secret AUDITOR_SCHEDULE_MODE and AUDITOR_AUTOMERGE toggles — no secret identifier is ever a vars.*"
+begin "req6-ac1-identifiers-are-env-secrets" "the identifiers + tokens (both auditor seats) come from secrets.* (GitHub masks them); the ONLY vars.* are the non-secret AUDITOR_SCHEDULE_MODE and AUDITOR_AUTOMERGE toggles — no secret identifier is ever a vars.*"
 if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
-  want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","SNYK_TOKEN"]'
+  # + the scanner panel's second auditor seat (scanner-panel rule 8(b), owner Oct 2): its federation identifiers and
+  #   model are environment secrets too (same AC: ids only from the environment, never vars.* or a file)
+  want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","PANEL_AUDIT_B_IDENTITY_PROVIDER_ID","PANEL_AUDIT_B_MODEL","PANEL_AUDIT_B_PROJECT_ID","PANEL_AUDIT_B_SERVICE_ACCOUNT_ID","SNYK_TOKEN"]'
   fromsecrets="$(pj "$WORK/sh.json" 'str(sorted(d.get("secret_refs",[]))=='"$want"')')"
   # the only permitted variable is the non-secret schedule toggle; none of the secret
   # identifiers may appear as vars.* (they would not be masked)

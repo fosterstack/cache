@@ -106,6 +106,8 @@ check("the dropped finding is recorded as covered by the VEX", any(c["id"] == "C
 r = tree({("inspector", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
           ("google", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
 f = v["findings"][0]
+check("a finding carries the exact package identity a scanner gave (for a VEX statement scoped to it)",
+      f["purls"] == ["pkg:generic/tzdata@2026c"], f.get("purls"))
 check("one finding per CVE + package + version per image, 'seen by 2 of 4'", f["seen_by"] == ["google", "inspector"] and f["of"] == 4 and f["image"] == "debug-amd64", f)
 check("seen by two or more -> reported (the tracking issue), exit 1", f["status"] == "report" and v["exit"] == 1 and "CVE-2099-0001" in v["issue"], (f["status"], v["exit"]))
 # the same package named the way each scanner names it is one finding: Grype's purl carries the distro

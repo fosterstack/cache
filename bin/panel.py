@@ -91,7 +91,7 @@ def _cdx_findings(doc, comps):
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
-            out.append((v.get("id") or "?", name, ver))
+            out.append((v.get("id") or "?", name, ver, c.get("purl")))
     return out
 
 
@@ -112,7 +112,9 @@ def read_scout(d):
     for v in cves.get("vulnerabilities") or []:
         ids = [i.get("value") for i in v.get("identifiers") or [] if i.get("value")]
         dep = (v.get("location") or {}).get("dependency") or {}
-        out.append((ids[0] if ids else "?", (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""))
+        name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
+        purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
+        out.append((ids[0] if ids else "?", name, ver, purl))
     return len(arts), out
 
 
@@ -139,7 +141,7 @@ def read_google(d):
         x = v.get("vulnerability") or {}
         vid = x.get("shortDescription") or (v.get("noteName") or "?").rsplit("/", 1)[-1]
         for p in x.get("packageIssue") or [{}]:
-            out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or ""))
+            out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or "", None))
     return len(pkgs), out
 
 
@@ -175,14 +177,17 @@ def tally(root, vexidx):
                 continue
             st["counts"][s] = n
             st["ran"].append(s)
-            for vid, name, ver in found:
+            for vid, name, ver, purl in found:
                 if s in FILTER_HERE and _gate.covered(vexidx, vid, (name.lower(), ver)):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
                 key = key_of(img, vid, name, ver)
-                f = findings.setdefault(key, {"image": img, "id": vid, "package": name, "version": ver, "seen_by": []})
+                f = findings.setdefault(key, {"image": img, "id": vid, "package": name, "version": ver, "seen_by": [],
+                                              "purls": []})
                 if s not in f["seen_by"]:
                     f["seen_by"].append(s)
+                if purl and purl not in f["purls"]:
+                    f["purls"].append(purl)   # the exact package identity, for a VEX statement scoped to it
     for img, st in images.items():
         st["did_not_run"].sort(); st["ran"].sort()
         st["counts_for_day"] = len(st["ran"]) >= QUORUM
