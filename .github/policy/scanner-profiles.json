@@ -1,0 +1,18 @@
+{
+  "comment": [
+    "Scanner profiles (scanner-panel rule 7, ratified Oct 2): each scanner's known behaviors, each citing the",
+    "finding and the evidence from the image that proved it. Nothing from vendor claims alone; new entries only",
+    "from verified outcomes, through a reviewed PR. kind: sees_alone = this scanner may be the only one to find",
+    "packages matching `match` (rule 8 a: one audit decides); blind_spot = this scanner does not see them."
+  ],
+  "entries": [
+    {
+      "scanner": "google",
+      "kind": "blind_spot",
+      "match": { "package": "^busybox$" },
+      "behavior": "Google's local extraction reads distroless's package database and Go build info only; it does not see busybox, which distroless's debug image ships as a binary the package database does not list.",
+      "finding": "Probe run 36947601935 (PR #147, Oct 2): on the v0.2.1 debug linux/amd64 child, Grype reported CVE-2025-60876, CVE-2025-46394 and CVE-2024-58251 on busybox 1.37.0; Google reported none.",
+      "evidence": "The AnalyzePackages request gcloud sent for that image listed 17 packages (5 from the package database: tzdata, base-files, ca-certificates, media-types, netbase; the Go standard library; 11 Go modules), none of them busybox."
+    }
+  ]
+}
