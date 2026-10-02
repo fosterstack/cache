@@ -380,12 +380,6 @@ mappings:
   - ac: REQ-SCAN-007-AC1
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
-  - ac: REQ-SCAN-008-AC1
-    evidence:
-      - { type: shell-test, ref: "bin/panel-test.sh" }
-  - ac: REQ-SCAN-008-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/panel-test.sh" }
   - ac: REQ-SCAN-008-AC4
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
@@ -398,12 +392,12 @@ mappings:
   - ac: REQ-SCAN-009-AC3
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
-  - ac: REQ-SCAN-009-AC4
-    evidence:
-      - { type: shell-test, ref: "bin/panel-test.sh" }
   - ac: REQ-SCAN-009-AC5
     evidence:
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
   - ac: REQ-SCAN-007-AC2
     evidence:
       - { type: inspection, ref: ".github/policy/scanner-profiles.json changes only through a pull request into main, which every required check gates; each entry cites its finding and image evidence (validated by bin/panel-test.sh)" }
+  - ac: REQ-SCAN-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/panel-test.sh" }

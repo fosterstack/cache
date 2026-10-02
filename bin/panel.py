@@ -29,7 +29,7 @@ did not count (the run fails visibly; never reported clean).
 usage: panel.py judge --in DIR --vex F --profiles F [--prior F] --out DIR
        panel.py google-packages HTTP_LOG   (the package list gcloud sent, from its --log-http output)
 """
-import argparse, importlib.util, json, os, re, sys
+import argparse, datetime, importlib.util, json, os, re, sys, urllib.parse
 
 _gate_spec = importlib.util.spec_from_file_location(
     "inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector-gate.py"))
@@ -45,6 +45,8 @@ EXPECTED = {
     "google": ["%s-amd64" % v for v in VARIANTS],
 }
 QUORUM = 3
+HISTORY_DAYS = 180   # how long a false judgment is remembered for the audit-miss comparison (rule 9)
+DISTRO_PURL_TYPES = ("deb", "rpm", "apk", "alpm")   # their purl namespace is the distro, not part of the name
 VENDORS = ("vendor_a", "vendor_b")   # rule 8 b: one audit from each of two different vendors (named only in variables)
 SCANNERS = tuple(EXPECTED)
 KINDS = ("sees_alone", "blind_spot")
@@ -75,6 +77,23 @@ def _cdx_packages(doc):
     return [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("purl")]
 
 
+def _purl_name_version(purl):
+    """(name, version) from a package URL, as the other scanners name it: a distro package without its distro
+    namespace (pkg:deb/debian/libc-bin -> libc-bin), a Go module by its full path; the version un-escaped."""
+    name, ver = _gate.name_version(purl)
+    if (purl or "").startswith("pkg:") and (purl[4:].split("/", 1)[0] in DISTRO_PURL_TYPES):
+        name = name.rsplit("/", 1)[-1]
+    return name, urllib.parse.unquote(ver)
+
+
+def key_of(image, vid, package, version):
+    """One finding per CVE + package + version per image (rule 6): case and a Go-style leading v ignored."""
+    v = urllib.parse.unquote(version or "")
+    if re.match(r"^v\d", v):
+        v = v[1:]
+    return (image, (vid or "").upper(), (package or "").lower(), v)
+
+
 def _cdx_findings(doc, comps):
     by_ref = {c.get("bom-ref"): c for c in comps + [c for c in doc.get("components") or [] if isinstance(c, dict)]
               if c.get("bom-ref")}
@@ -82,7 +101,7 @@ def _cdx_findings(doc, comps):
     for v in doc.get("vulnerabilities") or []:
         for a in v.get("affects") or []:
             c = by_ref.get(a.get("ref"), {})
-            name, ver = _gate.name_version(c.get("purl") or "")
+            name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
             out.append((v.get("id") or "?", name, ver))
@@ -98,6 +117,8 @@ def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
     arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict)]
+    if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
+        raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
     for v in cves.get("vulnerabilities") or []:
         ids = [i.get("value") for i in v.get("identifiers") or [] if i.get("value")]
@@ -190,10 +211,11 @@ def _audit(audit, vendor, finding, image, errors):
     a = dict(a, vendor=vendor)
     if a.get("error"):
         errors.append("%s on %s %s: %s" % (vendor, image, finding["id"], a["error"]))
+        a = {"vendor": vendor, "error": a["error"]}   # an errored audit casts no vote and cites no evidence
     return a
 
 
-def judge(root, vexidx, profiles, audit, prior):
+def judge(root, vexidx, profiles, audit, prior, today=None):
     images, findings, covered_log, errors = {}, {}, [], []
     for s, imgs in EXPECTED.items():
         for img in imgs:
@@ -212,7 +234,7 @@ def judge(root, vexidx, profiles, audit, prior):
                 if s in FILTER_HERE and _gate.covered(vexidx, vid, (name.lower(), ver)):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
-                key = (img, vid, name.lower(), ver)
+                key = key_of(img, vid, name, ver)
                 f = findings.setdefault(key, {"image": img, "id": vid, "package": name, "version": ver, "seen_by": []})
                 if s not in f["seen_by"]:
                     f["seen_by"].append(s)
@@ -220,7 +242,14 @@ def judge(root, vexidx, profiles, audit, prior):
         st["did_not_run"].sort(); st["ran"].sort()
         st["counts_for_day"] = len(st["ran"]) >= QUORUM
     not_counted = sorted(i for i, st in images.items() if not st["counts_for_day"])
-    earlier_false = {(x["image"], x["id"], x["package"].lower(), x["version"]) for x in (prior or {}).get("false") or []}
+    scanner_failures = sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"])
+    today = today or datetime.date.today().isoformat()
+    cutoff = (datetime.date.fromisoformat(today) - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
+    earlier_false = {}
+    for x in (prior or {}).get("false") or []:
+        if not isinstance(x, dict) or str(x.get("since") or today) < cutoff:
+            continue
+        earlier_false[key_of(x.get("image"), x.get("id"), x.get("package"), x.get("version"))] = x
     out, log, proposals, misses, false_now = [], [], [], [], []
     for key in sorted(findings):
         f = findings[key]
@@ -228,11 +257,14 @@ def judge(root, vexidx, profiles, audit, prior):
         f["of"] = len(images[f["image"]]["ran"])
         f["unique"] = len(f["seen_by"]) == 1
         f["audits"], f["why"] = [], None
-        if not f["unique"]:
+        before = earlier_false.get(key)
+        ever = sorted(set(f["seen_by"]) | set((before or {}).get("seen_by") or []))
+        if before is not None and len(ever) >= 2:
+            # judged false earlier, and now another scanner reports it (today or on another day): real (rule 9)
+            f["status"], f["miss"], f["seen_ever"] = "report", True, ever
+            misses.append({k: f[k] for k in ("image", "id", "package", "version", "seen_by")})
+        elif not f["unique"]:
             f["status"] = "report"
-            if key in earlier_false:
-                f["miss"] = True
-                misses.append({k: f[k] for k in ("image", "id", "package", "version", "seen_by")})
         else:
             entry = _profile_match(profiles, f["seen_by"][0], f["package"])
             vendors = VENDORS[:1] if entry else VENDORS
@@ -251,7 +283,8 @@ def judge(root, vexidx, profiles, audit, prior):
             else:
                 f["status"] = "false-default"
             if f["status"] != "report":
-                false_now.append({k: f[k] for k in ("image", "id", "package", "version")})
+                false_now.append(dict({k: f[k] for k in ("image", "id", "package", "version")},
+                                      seen_by=ever, since=(before or {}).get("since") or today))
             log.append(f)
         out.append(f)
     reported = [f for f in out if f["status"] == "report"]
@@ -267,8 +300,12 @@ def judge(root, vexidx, profiles, audit, prior):
             lines += ["", "%d audit miss(es): a finding judged false earlier is now seen by two or more scanners. "
                       "Reported to the owner (rule 9)." % len(misses)]
         issue = "\n".join(lines) + "\n"
-    code = 2 if not_counted else (1 if reported else 0)
-    return {"images": images, "not_counted": not_counted, "findings": out, "vex_covered": covered_log,
+    # remembered false judgments not seen today are carried forward (an intervening day must not erase them)
+    seen_today = {key_of(f["image"], f["id"], f["package"], f["version"]) for f in out}
+    false_now += [x for k, x in sorted(earlier_false.items()) if k not in seen_today]
+    # rule 3: a scanner that did not run is a pipeline failure even when the image still has its quorum
+    code = 2 if (not_counted or scanner_failures) else (1 if reported else 0)
+    return {"images": images, "not_counted": not_counted, "scanner_failures": scanner_failures, "findings": out, "vex_covered": covered_log,
             "issue": issue, "exit": code, "audit_errors": errors, "vex_proposals": proposals, "log": log,
             "misses": misses, "judgments": {"false": false_now}}
 
@@ -320,6 +357,8 @@ def main(argv=None):
     if v["issue"]:
         open(os.path.join(a.out, "issue.md"), "w").write(v["issue"])
     print(summary(v))
+    for x in v["scanner_failures"]:
+        print("::error::scanner panel: %s did not run — a pipeline failure, never a clean result" % x)
     for img in v["not_counted"]:
         print("::error::scanner panel: %s does not count today — fewer than %d scanners ran on it" % (img, QUORUM))
     for e in v["audit_errors"]:

@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 67 |
 | Acceptance criteria | 129 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 109 |
+| ACs with mapped evidence | 107 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -732,8 +732,8 @@ A unique finding shall be presumed false: one audit decides when it matches a re
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-008-AC1 | Given a unique finding that matches a recorded behavior in that scanner's profile; when the panel judges it; then one audit decides; it is real only if that audit confirms from the image itself (package database, binary build info, file contents) that the named package and version are present | unit |  | approved | 1 item(s) |
-| REQ-SCAN-008-AC2 | Given a unique finding that matches no recorded behavior; when the panel judges it; then two independent audits, one from each of two different vendors, judge it; it is real only if both say real, each citing evidence from the image; if either says false or cites no evidence, it is false | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC1 | Given a unique finding that matches a recorded behavior in that scanner's profile; when the panel judges it; then one audit decides; it is real only if that audit confirms from the image itself (package database, binary build info, file contents) that the named package and version are present | unit |  | approved | none mapped |
+| REQ-SCAN-008-AC2 | Given a unique finding that matches no recorded behavior; when the panel judges it; then two independent audits, one from each of two different vendors, judge it; it is real only if both say real, each citing evidence from the image; if either says false or cites no evidence, it is false | unit |  | approved | none mapped |
 | REQ-SCAN-008-AC3 | Given the two audits; when they are reached; then both go through keyless federation from CI with no stored API key; vendor and model names live only in variables, never in public text | ci-workflow |  | approved | none mapped |
 | REQ-SCAN-008-AC4 | Given an audit that errors; when the panel judges the finding; then the error counts as citing no evidence and is reported in the run; the next daily rescan judges the finding again because it is still present | unit |  | approved | 1 item(s) |
 | REQ-SCAN-008-AC5 | Given a unique finding the audits confirm real; when the panel ends; then it proceeds under rule 5, and the audit's explanation of why only this scanner found it is proposed as a profile entry through a PR; with no explanation the finding is still real and an unexplained entry is proposed and flagged to the owner | ci-workflow |  | approved | none mapped |
@@ -750,7 +750,7 @@ A unique finding judged false with evidence from the image shall get a not_affec
 | REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | none mapped |
 | REQ-SCAN-009-AC2 | Given a unique finding judged false only by default (no audit cited evidence); when the panel ends; then it is logged, raises no alarm, and gets no public statement | unit |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC3 | Given any judged finding; when the panel ends; then it is logged with each audit's reasoning | unit |  | approved | 1 item(s) |
-| REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | none mapped |
 | REQ-SCAN-009-AC5 | Given the audits; when they run; then they run inside the same rescan run, in the step that judges findings, never deferred | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-SCAN-010 — VEX in three forms
@@ -763,7 +763,7 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 |---|---|---|---|---|---|
 | REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | none mapped |
 | REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | none mapped |
-| REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | none mapped |
+| REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | none mapped |
 
 ### REQ-SCAN-011 — Customer guide

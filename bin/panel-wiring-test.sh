@@ -66,6 +66,24 @@ if any(re.search(r"\b(schedule|workflow_run|repository_dispatch)\b", str(s)) for
 needs = pj.get("needs", [])
 if sorted(needs if isinstance(needs, list) else [needs]) != ["panel-google", "panel-grype", "panel-inspector", "panel-scout"] or "always()" not in pj.get("if", ""):
     bad.append("the panel does not wait for all four scanners whatever their outcome")
+# the run is daily, and nothing in the panel is switched off or allowed to fail quietly
+if not any(isinstance(c, dict) and c.get("cron") for c in ((d.get("on") or {}).get("schedule") or [])):
+    bad.append("the rescan has no daily schedule")
+for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "panel"):
+    if "if" in jobs[j] and j != "panel":
+        bad.append(f"{j} is conditional")
+    for st in jobs[j].get("steps", []):
+        cond = str(st.get("if", "")).replace(" ", "")
+        if cond and not cond.startswith("${{always()") and "steps.judge" not in cond:
+            bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
+        if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
+            bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
+issue = [st for st in pj.get("steps", []) if "gh issue create" in (st.get("run") or "") and "gh issue comment" in (st.get("run") or "")]
+if len(issue) != 1 or "refs/heads/main" not in str(issue[0].get("if", "")) or "issue.md" not in issue[0].get("run", ""):
+    bad.append("no step opens or updates the tracking issue from main with the judge's issue text")
+last = pj.get("steps", [])[-1] if pj.get("steps") else {}
+if "steps.judge.outputs.rc != '0'" not in str(last.get("if", "")) or "exit 1" not in (last.get("run") or ""):
+    bad.append("the panel's last step does not fail the run when the judge's verdict is not clean")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -100,6 +118,13 @@ case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run']
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py judge'); s['run'] = s['run'].replace('bin/panel.py judge', 'bin/panel.py collect')"
 case_ google-amd64-gone        bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('cand-\${v}-amd64', 'cand-\${v}')"
+case_ no-schedule             bad "d['on'].pop('schedule')"
+case_ scan-disabled           bad "s=$(step_of panel-inspector 'for v in'); s['if'] = 'false'"
+case_ scan-may-fail           bad "s=$(step_of panel-grype 'for v in'); s['continue-on-error'] = 'true'"
+case_ job-disabled            bad "$J['panel-scout']['if'] = 'false'"
+case_ no-issue-step           bad "$J['panel']['steps'] = [s for s in $J['panel']['steps'] if 'gh issue' not in (s.get('run') or '')]"
+case_ issue-from-any-branch   bad "[s.__setitem__('if', '\${{ always() }}') for s in $J['panel']['steps'] if 'gh issue' in (s.get('run') or '')]"
+case_ no-final-failure        bad "$J['panel']['steps'] = $J['panel']['steps'][:-1]"
 case_ panel-skips-on-failure  bad "$J['panel']['if'] = 'success()'"
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
