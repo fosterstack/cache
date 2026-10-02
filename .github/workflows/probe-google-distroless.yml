@@ -40,12 +40,11 @@ jobs:
           service_account: cache-scanner@fosterstack-cache.iam.gserviceaccount.com
           project_id: fosterstack-cache
 
-      - name: the gcloud local-extract component
-        run: |
-          set -euo pipefail
-          gcloud --version | head -3
-          gcloud components install local-extract --quiet 2>/dev/null \
-            || { sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-cli-local-extract; }
+      - name: a pinned gcloud with the local-extract component
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '587.0.0'
+          install_components: local-extract
 
       - name: Google on-demand scan (LOCAL mode) of the ${{ matrix.variant }} amd64 child
         env:
