@@ -81,8 +81,13 @@ check("an amd64 image with 3 of 4 counts", v["images"]["debug-amd64"]["counts_fo
 check("a scanner that did not run fails the run (exit 2) even when the image keeps its quorum",
       v["exit"] == 2 and v["scanner_failures"] == ["google on debug-amd64"] and not v["not_counted"], (v["exit"], v["scanner_failures"]))
 r = tree(); W(os.path.join(r, "scout", "fips-amd64"), "cves.json", {})
+W(os.path.join(r, "grype", "fips-amd64"), "result.cdx.json", {"components": [{"purl": "pkg:generic/a@1", "name": "a"}]})
+W(os.path.join(r, "inspector", "fips-amd64"), "sbom.cdx.json", {"components": [{"purl": "pkg:generic/a@1", "name": "a"}]})
+W(os.path.join(r, "google", "fips-amd64"), "packages.json", [{}, {"package": ""}])
 v = judge(r)
-check("an incomplete Scout answer (no vulnerabilities list) is did not run", v["images"]["fips-amd64"]["did_not_run"] == ["scout"], v["images"]["fips-amd64"])
+check("structurally incomplete answers (no bomFormat, empty package records) are did not run",
+      v["images"]["fips-amd64"]["did_not_run"] == ["google", "grype", "inspector", "scout"], v["images"]["fips-amd64"])
+check("an incomplete Scout answer (no vulnerabilities list) is did not run", "scout" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 r = tree(skip={("scout", "debug-arm64")}); v = judge(r)
 check("an arm64 image with 2 of its 3 does not count (all three must run)", v["images"]["debug-arm64"]["counts_for_day"] is False, v["images"]["debug-arm64"])
 check("an image that does not count fails the run (exit 2), never clean", v["exit"] == 2 and "debug-arm64" in v["not_counted"], (v["exit"], v.get("not_counted")))
@@ -175,13 +180,17 @@ check("day 1: today's false judgment is kept with its scanner and date",
 d2 = judge(tree({("grype", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}), prior=d1["judgments"], today="2026-10-04")
 check("day 2: another scanner reports it alone -> real, issue, audit miss",
       d2["findings"][0]["status"] == "report" and d2["misses"] and "audit miss" in d2["issue"] and d2["exit"] == 1, (d2["findings"][0]["status"], d2["misses"]))
+d3 = judge(tree({("grype", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}), prior=d2["judgments"], today="2026-10-05")
+check("day 3: once real, one scanner alone keeps it reported (never re-presumed false)",
+      d3["findings"][0]["status"] == "report" and d3["exit"] == 1 and not d3["findings"][0]["audits"], d3["findings"][0])
 # an intervening day without the finding does not erase the memory
 d2 = judge(tree(), prior=d1["judgments"], today="2026-10-04")
 check("a day without the finding carries the false judgment forward", d2["judgments"]["false"] == d1["judgments"]["false"], d2["judgments"])
 d3 = judge(tree({("grype", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")], ("scout", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}),
            prior=d2["judgments"], today="2026-10-05")
 check("day 3: corroborated after the gap -> an audit miss", d3["misses"] and d3["findings"][0].get("miss"), d3["misses"])
-check("a reported finding leaves the false memory", d3["judgments"]["false"] == [], d3["judgments"])
+check("a reported finding leaves the false memory and is remembered as real",
+      d3["judgments"]["false"] == [] and [x["id"] for x in d3["judgments"]["real"]] == ["CVE-2099-0003"], d3["judgments"])
 d4 = judge(tree(), prior=d1["judgments"], today="2027-06-01")
 check("a false judgment older than the history window is dropped", d4["judgments"]["false"] == [], d4["judgments"])
 

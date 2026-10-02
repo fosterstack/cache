@@ -67,8 +67,19 @@ needs = pj.get("needs", [])
 if sorted(needs if isinstance(needs, list) else [needs]) != ["panel-google", "panel-grype", "panel-inspector", "panel-scout"] or "always()" not in pj.get("if", ""):
     bad.append("the panel does not wait for all four scanners whatever their outcome")
 # the run is daily, and nothing in the panel is switched off or allowed to fail quietly
-if not any(isinstance(c, dict) and c.get("cron") for c in ((d.get("on") or {}).get("schedule") or [])):
+crons = [c.get("cron", "") for c in ((d.get("on") or {}).get("schedule") or []) if isinstance(c, dict)]
+if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) for c in crons):
     bad.append("the rescan has no daily schedule")
+# the exact scan commands: each architecture once, Google's package count from its request log
+for j in ("panel-grype", "panel-scout", "panel-inspector"):
+    t = text(j)
+    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != 1 \
+            or '--override-arch "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
+        bad.append(f"{j} does not load each architecture once by the loop variable")
+if "--log-http" not in tg or "bin/panel.py google-packages" not in tg or "list-vulnerabilities" not in tg:
+    bad.append("panel-google does not take its package count from the request log and its findings from list-vulnerabilities")
+if jobs["panel-google"].get("environment") != "agent":
+    bad.append("panel-google is not in the main-only agent environment (its identity admits a scheduled main run only there)")
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "panel"):
     if "if" in jobs[j] and j != "panel":
         bad.append(f"{j} is conditional")
@@ -81,6 +92,11 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
 issue = [st for st in pj.get("steps", []) if "gh issue create" in (st.get("run") or "") and "gh issue comment" in (st.get("run") or "")]
 if len(issue) != 1 or "refs/heads/main" not in str(issue[0].get("if", "")) or "issue.md" not in issue[0].get("run", ""):
     bad.append("no step opens or updates the tracking issue from main with the judge's issue text")
+elif re.search(r"^\s*exit 0\s*$", issue[0]["run"], re.M) or issue[0]["run"].count("exit 0") != 1:
+    bad.append("the issue step can exit before filing")
+js = judge_steps[0].get("run", "") if judge_steps else ""
+if 'echo "rc=$?" >> "$GITHUB_OUTPUT"' not in js or not re.search(r"bin/panel\.py judge[^\n]*(\\\n[^\n]*)*\n\s*echo \"rc=\$\?\"", js):
+    bad.append("the judge's exit code is not what the panel exports")
 last = pj.get("steps", [])[-1] if pj.get("steps") else {}
 if "steps.judge.outputs.rc != '0'" not in str(last.get("if", "")) or "exit 1" not in (last.get("run") or ""):
     bad.append("the panel's last step does not fail the run when the judge's verdict is not clean")
@@ -125,6 +141,12 @@ case_ job-disabled            bad "$J['panel-scout']['if'] = 'false'"
 case_ no-issue-step           bad "$J['panel']['steps'] = [s for s in $J['panel']['steps'] if 'gh issue' not in (s.get('run') or '')]"
 case_ issue-from-any-branch   bad "[s.__setitem__('if', '\${{ always() }}') for s in $J['panel']['steps'] if 'gh issue' in (s.get('run') or '')]"
 case_ no-final-failure        bad "$J['panel']['steps'] = $J['panel']['steps'][:-1]"
+case_ yearly-schedule         bad "d['on']['schedule'][0]['cron'] = '41 7 1 1 *'"
+case_ google-no-environment   bad "$J['panel-google'].pop('environment')"
+case_ grype-amd64-twice       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in amd64 amd64')"
+case_ issue-exits-early       bad "[s.__setitem__('run', 'exit 0\n' + s['run']) for s in $J['panel']['steps'] if 'gh issue' in (s.get('run') or '')]"
+case_ rc-forced-zero          bad "s=$(step_of panel 'bin/panel.py judge'); s['run'] = s['run'].replace('echo \"rc=\$?\"', 'echo \"rc=0\"')"
+case_ google-no-log-http      bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace(' --log-http', '')"
 case_ panel-skips-on-failure  bad "$J['panel']['if'] = 'success()'"
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

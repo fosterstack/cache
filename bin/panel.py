@@ -110,13 +110,15 @@ def _cdx_findings(doc, comps):
 
 def read_grype(d):
     doc = _load(os.path.join(d, "result.cdx.json"))
+    if not isinstance(doc, dict) or doc.get("bomFormat") != "CycloneDX":
+        raise ValueError("Grype's output is not CycloneDX")
     return len(_cdx_packages(doc)), _cdx_findings(doc, [])
 
 
 def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
-    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict)]
+    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and (a.get("purl") or a.get("version"))]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
@@ -134,14 +136,16 @@ def read_inspector(d):
         scan = scan["sbom"]
     if not isinstance(scan, dict) or scan.get("bomFormat") != "CycloneDX":
         raise ValueError("ScanSbom answer is not CycloneDX")
+    if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX":
+        raise ValueError("inspector-sbomgen's SBOM is not CycloneDX")
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
     return len(_cdx_packages(sbom)), _cdx_findings(scan, comps)
 
 
 def read_google(d):
-    pkgs = _load(os.path.join(d, "packages.json"))
+    pkgs = [p for p in _load(os.path.join(d, "packages.json")) or [] if isinstance(p, dict) and p.get("package") and p.get("version")]
     vulns = _load(os.path.join(d, "vulns.json"))   # no answer = did not run, never "no findings"
-    if not isinstance(pkgs, list) or not isinstance(vulns, list):
+    if not isinstance(vulns, list):
         raise ValueError("unexpected shape")
     out = []
     for v in vulns:
@@ -245,11 +249,12 @@ def judge(root, vexidx, profiles, audit, prior, today=None):
     scanner_failures = sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"])
     today = today or datetime.date.today().isoformat()
     cutoff = (datetime.date.fromisoformat(today) - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
-    earlier_false = {}
-    for x in (prior or {}).get("false") or []:
-        if not isinstance(x, dict) or str(x.get("since") or today) < cutoff:
-            continue
-        earlier_false[key_of(x.get("image"), x.get("id"), x.get("package"), x.get("version"))] = x
+    earlier_false, earlier_real = {}, {}
+    for kind, into in (("false", earlier_false), ("real", earlier_real)):
+        for x in (prior or {}).get(kind) or []:
+            if not isinstance(x, dict) or str(x.get("since") or today) < cutoff:
+                continue
+            into[key_of(x.get("image"), x.get("id"), x.get("package"), x.get("version"))] = x
     out, log, proposals, misses, false_now = [], [], [], [], []
     for key in sorted(findings):
         f = findings[key]
@@ -258,8 +263,11 @@ def judge(root, vexidx, profiles, audit, prior, today=None):
         f["unique"] = len(f["seen_by"]) == 1
         f["audits"], f["why"] = [], None
         before = earlier_false.get(key)
-        ever = sorted(set(f["seen_by"]) | set((before or {}).get("seen_by") or []))
-        if before is not None and len(ever) >= 2:
+        ever = sorted(set(f["seen_by"]) | set((before or {}).get("seen_by") or []) | set((earlier_real.get(key) or {}).get("seen_by") or []))
+        if key in earlier_real:
+            # once real, it stays real while it is present: a later day with one scanner does not re-presume it false
+            f["status"], f["seen_ever"] = "report", ever
+        elif before is not None and len(ever) >= 2:
             # judged false earlier, and now another scanner reports it (today or on another day): real (rule 9)
             f["status"], f["miss"], f["seen_ever"] = "report", True, ever
             misses.append({k: f[k] for k in ("image", "id", "package", "version", "seen_by")})
@@ -303,11 +311,15 @@ def judge(root, vexidx, profiles, audit, prior, today=None):
     # remembered false judgments not seen today are carried forward (an intervening day must not erase them)
     seen_today = {key_of(f["image"], f["id"], f["package"], f["version"]) for f in out}
     false_now += [x for k, x in sorted(earlier_false.items()) if k not in seen_today]
+    real_now = [dict({k: f[k] for k in ("image", "id", "package", "version")}, seen_by=f.get("seen_ever") or f["seen_by"],
+                     since=(earlier_real.get(key_of(f["image"], f["id"], f["package"], f["version"])) or {}).get("since") or today)
+                for f in out if f["status"] == "report"]
+    real_now += [x for k, x in sorted(earlier_real.items()) if k not in seen_today]
     # rule 3: a scanner that did not run is a pipeline failure even when the image still has its quorum
     code = 2 if (not_counted or scanner_failures) else (1 if reported else 0)
     return {"images": images, "not_counted": not_counted, "scanner_failures": scanner_failures, "findings": out, "vex_covered": covered_log,
             "issue": issue, "exit": code, "audit_errors": errors, "vex_proposals": proposals, "log": log,
-            "misses": misses, "judgments": {"false": false_now}}
+            "misses": misses, "judgments": {"false": false_now, "real": real_now}}
 
 
 def summary(v):

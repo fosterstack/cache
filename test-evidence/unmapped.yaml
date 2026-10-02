@@ -45,4 +45,4 @@ unmapped:
   - ac: REQ-SCAN-008-AC2
     reason: "PR 1 implements and tests the two-vote decision (bin/panel-test.sh, with stand-in audits); the two vendors' image audits arrive in PR 2"
   - ac: REQ-SCAN-009-AC4
-    reason: "PR 1 implements and tests the reversal when another scanner reports it, the same day or later (bin/panel-test.sh); the advisory trigger and turning a VEX statement to affected arrive with PR 2's VEX statements"
+    reason: "PR 1 implements and tests the reversal when another scanner reports it, the same day or later (bin/panel-test.sh); a finding remembered as real stays reported; not yet covered: the advisory trigger, and a finding judged false that a VEX statement then covers (our pipeline and the scanners filter it before the reversal check) being reported and its statement turned to affected — these arrive with PR 2's VEX statements"
