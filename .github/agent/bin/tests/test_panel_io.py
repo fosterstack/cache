@@ -697,18 +697,116 @@ class Probe(Tmp):                                                           # RE
         kw = {}
         fake = types.ModuleType("anthropic")
         fake.Anthropic = lambda **k: kw.update(k) or types.SimpleNamespace(messages=None)
-        with mock.patch.dict(sys.modules, {"anthropic": fake}):
+        fake_httpx = types.ModuleType("httpx2")
+        fake_httpx.Client = lambda **k: k
+        with mock.patch.dict(sys.modules, {"anthropic": fake, "httpx2": fake_httpx}):
             P.seat_a({"PANEL_AUDIT_A_MODEL": "m", "ANTHROPIC_IDENTITY_TOKEN_FILE": os.path.join(self.d, "t")},
                      mint=lambda a: "jwt", retries=0)
-        self.assertEqual(kw, {"max_retries": 0})
+        self.assertEqual(kw["max_retries"], 0)
+        self.assertIn("http_client", kw)      # Codex #155 phase-2 r2: the capped client (one model request, 401 named)
         got = {}
         fo = types.ModuleType("openai")
         fo.OpenAI = lambda **k: got.update(k) or types.SimpleNamespace(responses=None)
         env = {"PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "i", "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID": "s",
                "PANEL_AUDIT_B_PROJECT_ID": "p", "PANEL_AUDIT_B_MODEL": "m"}
-        with mock.patch.dict(sys.modules, {"openai": fo}):
+        with mock.patch.dict(sys.modules, {"openai": fo, "httpx2": fake_httpx}):
             P.seat_b(env, mint=lambda a: "jwt", retries=0)
         self.assertEqual(got["max_retries"], 0)
+        self.assertIn("http_client", got)
+
+    # Codex #155 phase-2 round 2 blocker: both pinned SDKs re-send once after a 401 outside max_retries (a federated
+    # token refresh), so max_retries=0 still allowed a second model request and hid the first failure. The probe's seats
+    # now send through an HTTP client whose hooks allow ONE model-endpoint request per seat and turn a 401 from it into a
+    # named failure before the SDK can re-send. (The same sequence against the real pinned SDKs:
+    # test_panel_sdk_probe.py.)
+    def _req(self, path):
+        return types.SimpleNamespace(url=types.SimpleNamespace(path=path))
+
+    def test_the_cap_counts_model_requests_only_and_refuses_a_second(self):
+        cap = P.SeatCap()
+        for path in ("/v1/oauth/token", "/oauth/token"):     # the federated token exchanges are not model requests
+            cap.on_request(self._req(path))
+        cap.on_request(self._req("/v1/messages"))
+        with self.assertRaises(P.SeatCapError) as e:
+            cap.on_request(self._req("/v1/responses"))
+        self.assertIn("second model request", str(e.exception))
+        self.assertEqual(cap.failure, str(e.exception))
+
+    def test_the_cap_names_a_401_from_the_model_endpoint_only(self):
+        cap = P.SeatCap()
+        cap.on_response(types.SimpleNamespace(status_code=401, request=self._req("/v1/oauth/token")))
+        cap.on_response(types.SimpleNamespace(status_code=200, request=self._req("/v1/responses")))
+        self.assertIsNone(cap.failure)
+        with self.assertRaises(P.SeatCapError) as e:
+            cap.on_response(types.SimpleNamespace(status_code=401, request=self._req("/v1/responses")))
+        self.assertIn("HTTP 401", str(e.exception))
+
+    def test_the_capped_client_hooks_both_events(self):
+        made = {}
+        fake = types.ModuleType("httpx2")
+        fake.Client = lambda **k: made.update(k) or "client"
+        cap = P.SeatCap()
+        with mock.patch.dict(sys.modules, {"httpx2": fake}):
+            self.assertEqual(P.capped_client(cap), "client")
+            self.assertNotIn("transport", made)
+            P.capped_client(cap, transport="t")
+        self.assertEqual(made["event_hooks"], {"request": [cap.on_request], "response": [cap.on_response]})
+        self.assertEqual(made["transport"], "t")
+
+    def _sdk_failing_with_401(self, kw, path):
+        """A fake SDK call: the transport answers 401, the capped client's hook fires, and the SDK wraps what it raised
+        in its own generic error (as both pinned SDKs do with max_retries=0)."""
+        try:
+            kw["http_client"]["event_hooks"]["response"][0](
+                types.SimpleNamespace(status_code=401, request=self._req(path)))
+        except P.SeatCapError:
+            raise RuntimeError("Connection error.")
+
+    def test_a_capped_seat_reports_the_cap_failure_not_the_sdk_error(self):
+        fake_httpx = types.ModuleType("httpx2")
+        fake_httpx.Client = lambda **k: k
+        kw, got = {}, {}
+        fa = types.ModuleType("anthropic")
+        fa.Anthropic = lambda **k: kw.update(k) or types.SimpleNamespace(messages=types.SimpleNamespace(
+            create=lambda **c: self._sdk_failing_with_401(kw, "/v1/messages")))
+        fo = types.ModuleType("openai")
+        fo.OpenAI = lambda **k: got.update(k) or types.SimpleNamespace(responses=types.SimpleNamespace(
+            create=lambda **c: self._sdk_failing_with_401(got, "/v1/responses")))
+        env = {"PANEL_AUDIT_A_MODEL": "m", "ANTHROPIC_IDENTITY_TOKEN_FILE": os.path.join(self.d, "t"),
+               "PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "i", "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID": "s",
+               "PANEL_AUDIT_B_PROJECT_ID": "p", "PANEL_AUDIT_B_MODEL": "m"}
+        with mock.patch.dict(sys.modules, {"anthropic": fa, "openai": fo, "httpx2": fake_httpx}), \
+                mock.patch.object(P, "render", lambda r: "x"):
+            for seat in (P.seat_a(env, mint=lambda a: "jwt", retries=0), P.seat_b(env, mint=lambda a: "jwt", retries=0)):
+                ans = P._ask(seat, "A", {"mode": "audit"})
+                self.assertIn("HTTP 401", ans["error"])
+                self.assertNotIn("Connection error", ans["error"])
+
+    def test_an_uncapped_seat_passes_other_sdk_errors_through(self):
+        fake_httpx = types.ModuleType("httpx2")
+        fake_httpx.Client = lambda **k: k
+        fo = types.ModuleType("openai")
+        fo.OpenAI = lambda **k: types.SimpleNamespace(responses=types.SimpleNamespace(
+            create=lambda **c: (_ for _ in ()).throw(RuntimeError("upstream 500"))))
+        env = {"PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "i", "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID": "s",
+               "PANEL_AUDIT_B_PROJECT_ID": "p", "PANEL_AUDIT_B_MODEL": "m"}
+        with mock.patch.dict(sys.modules, {"openai": fo, "httpx2": fake_httpx}), mock.patch.object(P, "render", lambda r: "x"):
+            self.assertIn("upstream 500", P._ask(P.seat_b(env, mint=lambda a: "jwt", retries=0), "B", {"mode": "audit"})["error"])
+
+    def test_ordinary_runs_keep_the_sdk_default_client(self):
+        got, kw = {}, {}
+        fo = types.ModuleType("openai")
+        fo.OpenAI = lambda **k: got.update(k) or types.SimpleNamespace(responses=None)
+        fa = types.ModuleType("anthropic")
+        fa.Anthropic = lambda **k: kw.update(k) or types.SimpleNamespace(messages=None)
+        env = {"PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "i", "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID": "s",
+               "PANEL_AUDIT_B_PROJECT_ID": "p", "PANEL_AUDIT_B_MODEL": "m", "PANEL_AUDIT_A_MODEL": "m",
+               "ANTHROPIC_IDENTITY_TOKEN_FILE": os.path.join(self.d, "t")}
+        with mock.patch.dict(sys.modules, {"openai": fo, "anthropic": fa}):
+            P.seat_b(env, mint=lambda a: "jwt")
+            P.seat_a(env, mint=lambda a: "jwt")
+        self.assertNotIn("http_client", got)
+        self.assertEqual(kw, {})
 
     def test_dispatch(self):
         seen = []

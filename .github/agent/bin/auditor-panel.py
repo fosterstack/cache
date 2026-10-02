@@ -795,18 +795,68 @@ class Budget:
         return budgeted
 
 
-def seat_a(env=os.environ, mint=mint_oidc, retries=None):
+MODEL_PATHS = ("/v1/messages", "/v1/responses")
+
+
+class SeatCapError(Exception):
+    pass
+
+
+class SeatCap:
+    """The probe's request cap (retries disabled; Codex #155 phase-2 r2). Both pinned SDKs re-send once after a 401
+    OUTSIDE max_retries (a federated token refresh), so max_retries=0 alone still allowed a second model request and
+    hid the first failure. These HTTP hooks allow ONE model-endpoint request per seat, and turn a 401 from it into a
+    named failure before the SDK can re-send. Token exchanges are not model requests and are not counted."""
+
+    def __init__(self):
+        self.sent, self.failure = 0, None
+
+    def _fail(self, why):
+        self.failure = self.failure or why
+        raise SeatCapError(self.failure)
+
+    def on_request(self, request):
+        if request.url.path in MODEL_PATHS:
+            self.sent += 1
+            if self.sent > 1:
+                self._fail("a second model request (an SDK retry) was refused: the probe sends one per seat")
+
+    def on_response(self, response):
+        if response.request.url.path in MODEL_PATHS and response.status_code == 401:
+            self._fail("the model endpoint refused the federated token (HTTP 401)")
+
+
+def capped_client(cap, transport=None):
+    import httpx2
+    kw = {"transport": transport} if transport is not None else {}
+    return httpx2.Client(event_hooks={"request": [cap.on_request], "response": [cap.on_response]}, timeout=300, **kw)
+
+
+def _capped(call, cap):
+    """Run a seat's SDK call; a cap failure is reported as itself, never as the SDK's generic wrapper of it."""
+    try:
+        return call()
+    except Exception:
+        if cap is not None and cap.failure:
+            raise SeatCapError(cap.failure) from None
+        raise
+
+
+def seat_a(env=os.environ, mint=mint_oidc, retries=None, transport=None):
     """Vendor A: the auditor's existing provider, through its existing federation (the SDK exchanges the identity
     token in ANTHROPIC_IDENTITY_TOKEN_FILE; workspace, organization and service account from the environment)."""
     import anthropic
     token = TokenFile(env["ANTHROPIC_IDENTITY_TOKEN_FILE"], "https://api.anthropic.com", mint=mint)
     token.fresh()
-    client = anthropic.Anthropic() if retries is None else anthropic.Anthropic(max_retries=retries)
+    cap = SeatCap() if retries == 0 else None
+    client = anthropic.Anthropic(**({} if retries is None else {"max_retries": retries}),
+                                 **({"http_client": capped_client(cap, transport)} if cap is not None else {}))
     model = env["PANEL_AUDIT_A_MODEL"]
 
     def ask(req):
         token.fresh()
-        msg = client.messages.create(model=model, max_tokens=2048, messages=[{"role": "user", "content": render(req)}])
+        msg = _capped(lambda: client.messages.create(model=model, max_tokens=2048,
+                                                     messages=[{"role": "user", "content": render(req)}]), cap)
         a = _answer("".join(getattr(b, "text", "") for b in msg.content))
         u = getattr(msg, "usage", None)
         a["_tokens"] = (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0)
@@ -814,21 +864,23 @@ def seat_a(env=os.environ, mint=mint_oidc, retries=None):
     return ask
 
 
-def seat_b(env=os.environ, mint=mint_oidc, retries=2):
+def seat_b(env=os.environ, mint=mint_oidc, retries=2, transport=None):
     """Vendor B: workload identity federation (no key): a fresh GitHub identity token, minted on every exchange, is
     traded for a short-lived token bound to the configured service account; Responses API only."""
     from openai import OpenAI
 
     def token():
         return mint("https://api.openai.com/v1")
+    cap = SeatCap() if retries == 0 else None
     client = OpenAI(workload_identity={"identity_provider_id": env["PANEL_AUDIT_B_IDENTITY_PROVIDER_ID"],
                                        "service_account_id": env["PANEL_AUDIT_B_SERVICE_ACCOUNT_ID"],
                                        "provider": {"token_type": "jwt", "get_token": token}},
-                    project=env["PANEL_AUDIT_B_PROJECT_ID"], timeout=300, max_retries=retries)
+                    project=env["PANEL_AUDIT_B_PROJECT_ID"], timeout=300, max_retries=retries,
+                    **({"http_client": capped_client(cap, transport)} if cap is not None else {}))
     model = env["PANEL_AUDIT_B_MODEL"]
 
     def ask(req):
-        r = client.responses.create(model=model, input=render(req), max_output_tokens=4096)
+        r = _capped(lambda: client.responses.create(model=model, input=render(req), max_output_tokens=4096), cap)
         a = _answer(r.output_text)
         a["_tokens"] = getattr(getattr(r, "usage", None), "total_tokens", 0) or 0
         return a
