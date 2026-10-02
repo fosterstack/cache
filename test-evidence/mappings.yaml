@@ -157,22 +157,22 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
   - ac: REQ-GRADLE-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
   - ac: REQ-GRADLE-001-AC2
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml steps 'assert the cold build populated the cache' + 'assert the warm build hit the server' (exact-count /metrics assertions)" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) steps 'assert the cold build populated the cache' + 'assert the warm build hit the server' (exact-count /metrics assertions)" }
   - ac: REQ-GRADLE-001-AC3
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml sha256 comparison of build/classes trees across cold and restored builds" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) sha256 comparison of build/classes trees across cold and restored builds" }
   - ac: REQ-GRADLE-001-AC4
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml step 'assert no remote-cache errors were silently ignored'" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert no remote-cache errors were silently ignored'" }
   - ac: REQ-MAVEN-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenarios 1-6: cold uploads (exact counts), local wiped, remote restore of both modules, byte-identical jars, server-side metrics, settings.xml auth - counts measured empirically 2026-09-11" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) scenarios 1-6: cold uploads (exact counts), local wiped, remote restore of both modules, byte-identical jars, server-side metrics, settings.xml auth - counts measured empirically 2026-09-11" }
   - ac: REQ-MAVEN-001-AC2
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) scenario 7: wrong + missing credentials complete with logged errors, server 401s, zero stored entries" }
   - ac: REQ-PROTO-002-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestNestedKeyRoundTripOverHTTP" }
@@ -195,10 +195,10 @@ mappings:
       - { type: go-test, ref: "internal/server:TestBodyLimitRejectionCarriesNoRejectHeader" }
   - ac: REQ-EVICT-002-AC3
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-gradle.yml capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
   - ac: REQ-EVICT-002-AC4
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/acceptance-maven.yml capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
+      - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
   - ac: REQ-AUTH-004-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestCredentialsIgnoredByNoAuthServer" }

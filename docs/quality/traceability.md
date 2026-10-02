@@ -506,7 +506,7 @@ The server shall interoperate with the Apache Maven Build Cache Extension's remo
 
 *Introduced v0.1.0 · tier community · confidence claimed-unverified · source: README.md (qualified claim); docs/maven.md*
 
-> Acceptance coverage built 2026-09-11 (remediation item 1.6): acceptance-maven.yml runs the eight audit-§21 scenarios against a real multi-module project, over an extension-version matrix that IS the compatibility policy (a version not in the matrix is not a claim). Empirical facts the assertions rest on: cold = 2 lookup 404s + 5 uploads; warm restores both modules ("Found cached build, restoring"); wrong/missing credentials complete the build with logged errors, 401 at the server, and nothing stored - which is the documented failure mode for build-cache clients.
+> Acceptance coverage built 2026-09-11 (remediation item 1.6): acceptance.yml's acceptance-maven job runs the eight audit-§21 scenarios against a real multi-module project, over an extension-version matrix that IS the compatibility policy (a version not in the matrix is not a claim). Empirical facts the assertions rest on: cold = 2 lookup 404s + 5 uploads; warm restores both modules ("Found cached build, restoring"); wrong/missing credentials complete the build with logged errors, 401 at the server, and nothing stored - which is the documented failure mode for build-cache clients.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
