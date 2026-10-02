@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 55 |
-| Acceptance criteria | 91 |
+| Active requirements | 67 |
+| Acceptance criteria | 129 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 87 |
+| ACs with mapped evidence | 109 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 12 |
+| Confidence: implementation-only | 24 |
 
 ## Cache protocol
 
@@ -557,7 +557,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 |---|---|---|---|---|---|
 | REQ-REL-004-AC1 | Given any pull request, push to main, or tag; when the required scan check runs; then The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck. | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-004-AC2 | Given the scanner installer; when it installs any scanner; then the download is pinned to a specific version and verified against a repo-pinned sha256, and a scanner that cannot be installed or verified exits as a labeled pipeline failure rather than a finding or a silent clean pass | ci-workflow |  | approved | 1 item(s) |
-| REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set, and any finding opens a tracking issue within 24 hours | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set; findings seen by two or more scanners open the tracking issue within 24 hours; single-scanner findings follow REQ-SCAN-008 and REQ-SCAN-009 (owner, Oct 2) | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-004-AC4 | Given a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor); when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that release | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
@@ -644,6 +644,154 @@ A held Dependabot major, or a required-check drift issue, shall send one generic
 |---|---|---|---|---|---|
 | REQ-DEP-004-AC1 | Given a completed hold; when the reviewer finishes it; then it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands | unit |  | approved | 1 item(s) |
 | REQ-DEP-004-AC2 | Given a required-check drift issue opened by the guard; when hygiene has seen it; then the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job | unit |  | approved | 1 item(s) |
+
+## SCAN
+
+### REQ-SCAN-001 — The four-scanner panel on the daily rescan
+
+The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all six images, and Google Artifact Analysis on the three variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-001-AC1 | Given the daily main-candidate rescan; when it runs; then Grype, Docker Scout and Amazon Inspector each scan all six images (production, debug and fips, each on linux/amd64 and linux/arm64); the set is fixed in the workflow, not computed at build time | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-001-AC2 | Given the daily main-candidate rescan; when it runs; then Google Artifact Analysis scans the three variants on linux/amd64 only, never arm64 | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-001-AC3 | Given the daily main-candidate rescan; when it runs; then Trivy and Snyk are not run by its scanner panel | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-SCAN-002 — Google through federation only
+
+Google shall be reached only through the workload identity, with no keys; its two identifiers shall be repository variables, not secrets.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-002-AC1 | Given the rescan's Google job; when it authenticates; then it is reached only through the workload identity from main, takes id-token: write, reads CACHE_SCANNER_PROVIDER and CACHE_SCANNER_SERVICE_ACCOUNT from repository variables, and holds no key and no secret for Google | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-SCAN-003 — Proof of running, and quorum
+
+Every scanner shall report its package count; zero packages shall mean the scanner did not run, a pipeline failure, never a clean result; an image shall count for the day only if at least three scanners actually ran on it.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml; bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-003-AC1 | Given one scanner's output for one image; when the panel reads it; then it reports the package count; zero packages, an empty file or an unparsable file means the scanner did not run, a pipeline failure, never a clean result | unit |  | approved | 1 item(s) |
+| REQ-SCAN-003-AC2 | Given the scanners that ran on one image; when the panel judges the image; then the image counts for the day only if at least three scanners actually ran on it (an arm64 image therefore needs all three of its scanners) | unit |  | approved | 1 item(s) |
+| REQ-SCAN-003-AC3 | Given an image that does not count; when the run ends; then the run fails visibly and the image is never reported as clean | unit |  | approved | 1 item(s) |
+
+### REQ-SCAN-004 — The published VEX is the only exception
+
+Our published OpenVEX file shall be the only exception for all four scanners: Grype and Docker Scout read it directly, and our pipeline filters Inspector's and Google's results against it.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml; bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-004-AC1 | Given the four panel scanners; when they scan; then no scanner-specific ignore list and no suppression configured in any vendor account applies; the published OpenVEX file is the only exception | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 1 item(s) |
+
+### REQ-SCAN-005 — Reporting
+
+A finding not covered by the VEX and reported by two or more scanners shall open or update the tracking issue; a finding reported by one scanner only shall go through rule 8 first.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml; bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-005-AC1 | Given a finding not covered by the VEX and reported by two or more scanners; when the panel ends; then it opens or updates the tracking issue | unit |  | approved | 1 item(s) |
+| REQ-SCAN-005-AC2 | Given a finding reported by only one scanner; when the panel ends; then it never reaches the issue directly; it goes through rule 8 first | unit |  | approved | 1 item(s) |
+
+### REQ-SCAN-006 — Corroboration count
+
+Every finding shall record which scanners reported it, as seen by N of M; a finding from one scanner only is unique.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-006-AC1 | Given the findings of the scanners that ran on one image; when the panel merges them; then every finding records which scanners reported it, as "seen by N of M" (M = the scanners that ran on that image); the same CVE, package and version on one image is one finding; N = 1 is unique | unit |  | approved | 1 item(s) |
+
+### REQ-SCAN-007 — Scanner profiles
+
+The repository shall record each scanner's known behaviors, each citing the finding and the evidence from the image that proved it; nothing from vendor claims alone; new entries only through a PR and review.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/policy/scanner-profiles.json; bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-007-AC1 | Given the scanner profiles file; when it is validated; then every entry names the scanner, the behavior, the finding that showed it, and the evidence from the image; an entry without a cited finding or image evidence fails | unit |  | approved | 1 item(s) |
+| REQ-SCAN-007-AC2 | Given a change to a scanner profile; when it is made; then it is a reviewed pull request like any other change; nothing is recorded from vendor claims alone | inspection |  | approved | 1 item(s) |
+
+### REQ-SCAN-008 — Unique findings are presumed false positives
+
+A unique finding shall be presumed false: one audit decides when it matches a recorded behavior; otherwise two independent audits, one from each of two vendors, both through keyless federation, and it is real only if both say real with evidence from the image.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml; bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-008-AC1 | Given a unique finding that matches a recorded behavior in that scanner's profile; when the panel judges it; then one audit decides; it is real only if that audit confirms from the image itself (package database, binary build info, file contents) that the named package and version are present | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC2 | Given a unique finding that matches no recorded behavior; when the panel judges it; then two independent audits, one from each of two different vendors, judge it; it is real only if both say real, each citing evidence from the image; if either says false or cites no evidence, it is false | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC3 | Given the two audits; when they are reached; then both go through keyless federation from CI with no stored API key; vendor and model names live only in variables, never in public text | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-008-AC4 | Given an audit that errors; when the panel judges the finding; then the error counts as citing no evidence and is reported in the run; the next daily rescan judges the finding again because it is still present | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC5 | Given a unique finding the audits confirm real; when the panel ends; then it proceeds under rule 5, and the audit's explanation of why only this scanner found it is proposed as a profile entry through a PR; with no explanation the finding is still real and an unexplained entry is proposed and flagged to the owner | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-008-AC6 | Given a merged profile entry; when the next matching unique finding is judged; then it takes the one-audit path | unit |  | approved | 1 item(s) |
+
+### REQ-SCAN-009 — What false does
+
+A unique finding judged false with evidence from the image shall get a not_affected VEX statement; one judged false only by default shall be logged with no alarm and no public statement; a later corroboration shall make it real and count as an audit miss reported to the owner.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml; bin/panel.py*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-009-AC2 | Given a unique finding judged false only by default (no audit cited evidence); when the panel ends; then it is logged, raises no alarm, and gets no public statement | unit |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC3 | Given any judged finding; when the panel ends; then it is logged with each audit's reasoning | unit |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC5 | Given the audits; when they run; then they run inside the same rescan run, in the step that judges findings, never deferred | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-SCAN-010 — VEX in three forms
+
+Every release shall publish the VEX three ways, all generated from the one OpenVEX file: OpenVEX, an Amazon Inspector suppression-rule file, and CSAF 2.0, covering exactly the same statements.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .vex/fosterstack-cache.openvex.json*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | none mapped |
+| REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | none mapped |
+| REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | none mapped |
+| REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | none mapped |
+
+### REQ-SCAN-011 — Customer guide
+
+docs/using-our-vex.md shall ship in the same release as the three VEX forms, never before, with tested per-scanner instructions and no claim beyond what ships.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: docs/using-our-vex.md*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-011-AC1 | Given docs/using-our-vex.md; when a release is cut; then it ships in the same release as the rule-10 files, never before | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC3 | Given every command in the guide; when the live test runs; then it worked exactly as written | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | none mapped |
+
+### REQ-SCAN-012 — Live tests
+
+Our VEX files and the customer guide shall be tested against the real services, only in dedicated test repositories, only from CI through federated identities, cleaning up after every run.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: docs/using-our-vex.md*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-012-AC1 | Given a live test; when it runs; then it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-012-AC2 | Given the live test's images; when they are pushed; then they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-012-AC4 | Given the live test; when it is triggered; then it runs on each release candidate and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-012-AC5 | Given a live test; when it passes; then the finding showed before the suppression, was gone after, and every guide command worked exactly as written | ci-workflow |  | approved | none mapped |
 
 ## Licensing
 

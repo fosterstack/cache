@@ -11,11 +11,11 @@ unmapped:
   - ac: REQ-DEPLOY-001-AC1
     reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-SCAN-008-AC3
-    reason: PR 2 of the scanner panel: the two vendor audits through keyless federation (the existing provider's rescan federation rule is an owner item)
+    reason: "PR 2 of the scanner panel: the two vendor audits through keyless federation (the existing provider's rescan federation rule is an owner item)"
   - ac: REQ-SCAN-008-AC5
-    reason: PR 2 of the scanner panel: a confirmed-real unique finding's profile PR needs the real audits
+    reason: "PR 2 of the scanner panel: a confirmed-real unique finding's profile PR needs the real audits"
   - ac: REQ-SCAN-009-AC1
-    reason: PR 2 of the scanner panel: a false-with-evidence VEX statement needs the real audits
+    reason: "PR 2 of the scanner panel: a false-with-evidence VEX statement needs the real audits"
   - ac: REQ-SCAN-010-AC1
     reason: rule 10 (VEX in three forms) is a later PR of the scanner panel
   - ac: REQ-SCAN-010-AC2

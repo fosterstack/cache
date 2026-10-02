@@ -142,6 +142,22 @@ check("a finding judged false earlier and now seen by two is real: issue, and an
       v["findings"][0]["status"] == "report" and v["misses"] and "audit miss" in v["issue"], (v["misses"], v["issue"][:80]))
 check("today's false judgments are carried for tomorrow's comparison", "false" in v["judgments"], v["judgments"])
 
+# --- rule 3 for Google: its package count is the list gcloud sent (from the --log-http request body)
+log = """==== request start ====
+uri: https://ondemandscanning.googleapis.com/v1/projects/p/locations/us/scans:analyzePackages?alt=json
+Authorization: --- Token Redacted ---
+== body start ==
+{"packages": [{"os": "debian", "osVersion": "12", "package": "tzdata", "version": "2026c", "packageType": "OS"},
+ {"package": "stdlib", "version": "go1.26.4", "packageType": "GO_STDLIB"}], "resourceUri": "x"}
+== body end ==
+==== request end ====
+---- response start ----
+{"name": "op"}
+"""
+got = P.google_packages(log)
+check("Google's package count is read from the AnalyzePackages request it was sent", [p["package"] for p in got] == ["tzdata", "stdlib"], got)
+check("a log with no request body gives no packages (did not run)", P.google_packages("==== request start ====\nnothing") == [], "")
+
 # --- rule 7: profile validator
 check("a profile entry without a cited finding or image evidence fails validation",
       P.validate_profiles({"entries": [{"scanner": "google", "kind": "blind_spot", "behavior": "b", "finding": "", "evidence": "e"}]})

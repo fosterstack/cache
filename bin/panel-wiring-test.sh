@@ -28,7 +28,8 @@ for j in ("panel-grype", "panel-scout", "panel-inspector"):
     if "for v in production debug fips" not in t or "for arch in amd64 arm64" not in t:
         bad.append(f"{j} does not scan the six images, fixed in the workflow")
 tg = text("panel-google")
-if "for v in production debug fips" not in tg or "arm64" in tg or "for arch" in tg or "linux/amd64" not in tg:
+if "for v in production debug fips" not in tg or "arm64" in tg or "for arch" in tg \
+        or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
     bad.append("panel-google does not scan exactly the three variants on linux/amd64 (and never arm64)")
 for j in jobs:
     if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk")) and j != "scanner-reports":
@@ -87,7 +88,7 @@ PY
 J='d["jobs"]'
 step_of() { echo "[s for s in $J['$1']['steps'] if '$2' in (s.get('run') or '')][0]"; }
 case_ real                    ok  ""
-case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('linux/amd64', 'linux/arm64')"
+case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
 case_ grype-five-images       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production debug fips', 'for v in production debug')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
 case_ trivy-back              bad "$J['trivy-main'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'trivy image x'}]}"
@@ -98,6 +99,7 @@ case_ grype-no-vex            bad "s=$(step_of panel-grype 'for v in'); s['run']
 case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-location .vex/fosterstack-cache.openvex.json', '')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py judge'); s['run'] = s['run'].replace('bin/panel.py judge', 'bin/panel.py collect')"
+case_ google-amd64-gone        bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('cand-\${v}-amd64', 'cand-\${v}')"
 case_ panel-skips-on-failure  bad "$J['panel']['if'] = 'success()'"
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
