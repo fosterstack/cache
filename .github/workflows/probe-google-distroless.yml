@@ -52,7 +52,22 @@ jobs:
         run: |
           set -euo pipefail
           docker pull -q "$IMAGE"
-          gcloud artifacts docker images scan "$IMAGE" --format=json > "$RUNNER_TEMP/scan.json"
+          gcloud artifacts docker images scan "$IMAGE" --additional-package-types=GO --format=json --log-http \
+            > "$RUNNER_TEMP/scan.json" 2> "$RUNNER_TEMP/http.log"
+          echo "=== packages gcloud extracted locally and sent to Google (from the AnalyzePackages request)"
+          python3 - "$RUNNER_TEMP/http.log" <<'PY'
+          import json, re, sys
+          text = open(sys.argv[1], errors="replace").read()
+          pkgs = []
+          for m in re.finditer(r'"packages"\s*:\s*(\[.*?\])\s*[,}]', text, re.S):
+              try:
+                  pkgs += json.loads(m.group(1))
+              except ValueError:
+                  pass
+          print("PROBE: Google received %d package(s)" % len(pkgs))
+          for p in pkgs:
+              print("  ", p.get("packageType") or p.get("os") or "?", p.get("package"), p.get("version"))
+          PY
           echo "=== scan response"; cat "$RUNNER_TEMP/scan.json"
           scan=$(jq -r '.response.scan' "$RUNNER_TEMP/scan.json")
           gcloud artifacts docker images list-vulnerabilities "$scan" --format=json > "$RUNNER_TEMP/vulns.json"
@@ -73,5 +88,7 @@ jobs:
           set -euo pipefail
           ./bin/install-scanner.sh grype
           grype "$IMAGE" -o json > "$RUNNER_TEMP/grype.json"
-          echo "=== Grype: $(jq '.source.target | length' "$RUNNER_TEMP/grype.json" >/dev/null; jq '[.matches[]] | length' "$RUNNER_TEMP/grype.json") matches; packages via SBOM:"
-          grype "$IMAGE" -o json | jq -r '[.matches[].artifact.name] | unique | .[]' | head -40
+          echo "=== Grype matches: $(jq '[.matches[]] | length' "$RUNNER_TEMP/grype.json")"
+          jq -r '.matches[] | "  \(.vulnerability.id)  \(.artifact.name) \(.artifact.version)  \(.vulnerability.severity)"' "$RUNNER_TEMP/grype.json"
+          echo "=== Grype packages (SBOM): $(grype "$IMAGE" -o json --add-cpes-if-none 2>/dev/null | jq '[.matches[].artifact.name]|unique|length') matched; full count:"
+          syft_count=$(grype "$IMAGE" -o json | jq '.source.target.imageSize // 0' 2>/dev/null); echo "  (image size field: $syft_count)"
