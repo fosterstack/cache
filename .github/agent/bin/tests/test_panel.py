@@ -214,7 +214,7 @@ class TwoAudits(unittest.TestCase):                                         # ru
 
     def test_errors_are_reported(self):
         r, _, _ = self.judge(real(), RuntimeError("model down"))
-        self.assertEqual([a.get("error") for a in r["audits"]][1], "RuntimeError: model down")
+        self.assertEqual([a.get("error") for a in r["audits"]][1], "seat error: model down")
 
     def test_real_carries_why_or_is_flagged_unexplained(self):             # rule 8(b) why, AC5 data
         r, _, _ = self.judge(real(why="reads the dpkg status file"), real(why=None))
@@ -291,7 +291,7 @@ class Debate(unittest.TestCase):                                            # ru
     def test_an_error_while_building_a_case_is_kept_and_reported(self):
         r, _, _ = self.run_debate({"audit": real(), "case": [RuntimeError("case broke"), real()], "verdict": [false(), real()]},
                                   {"audit": false(), "case": [false(), false()], "verdict": [real(), real()]})
-        self.assertIn("RuntimeError: case broke", [x.get("error") for x in r["audits"]])
+        self.assertIn("seat error: case broke", [x.get("error") for x in r["audits"]])
 
 
 class Day(unittest.TestCase):

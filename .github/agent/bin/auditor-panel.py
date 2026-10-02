@@ -30,7 +30,9 @@ MIN_QUOTE = 8               # a quote shorter than this proves nothing
 LEAD = 3                    # rule 14: the primary seat moves at a lead of 3 or more
 SCANNERS = ("grype", "scout", "inspector", "google")
 KINDS = ("sees_alone", "blind_spot")
-VENDOR_WORDS = re.compile(r"(?i)\b(anthropic|claude[\w.-]*|openai|chat\s*gpt|gpt[\w.-]*|codex|gemini|o[1-9][\w.-]*-?mini)\b")
+# a leading boundary only, so a vendor name inside an identifier (OpenAIError, AnthropicAPIError) is caught too
+VENDOR_WORDS = re.compile(r"(?i)(?<![a-z])(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini)[\w.-]*|"
+                          r"\bo[1-9][\w.-]*-?mini\b")
 
 
 def scoring_text():
@@ -220,8 +222,8 @@ def _ask(auditor, seat, req):
     tag = {"seat": seat, "mode": req["mode"], "round": req.get("round", 1)}
     try:
         a = auditor(req)
-    except Exception as e:      # an auditor that fails is an error, never a vote
-        return dict(tag, error="%s: %s" % (type(e).__name__, e))
+    except Exception as e:      # an auditor that fails is an error, never a vote; its SDK's class name is never kept
+        return dict(tag, error="seat error: %s" % e)
     if not isinstance(a, dict):
         return dict(tag, error="no answer")
     if a.get("error"):

@@ -349,6 +349,23 @@ class Judge(Tmp):
         self.assertIn("token budget (0) is spent", out.getvalue())
         self.assertIn("STOPPED at the budget", open(os.path.join(self.d, "out", "summary.md")).read())
 
+    def test_an_sdk_exception_never_publishes_its_vendor_named_class(self):   # Codex p2-r2 blocker
+        OpenAIError = type("OpenAIError", (Exception,), {})
+        AnthropicError = type("AnthropicError", (Exception,), {})
+
+        def b(r):
+            raise OpenAIError("Token exchange failed with status 500")
+
+        def a(r):
+            raise AnthropicError("AnthropicAPIError: overloaded")
+        with mock.patch("sys.stdout", new=io.StringIO()) as out:
+            self.assertEqual(P.cmd_judge(self.a(), seats={"A": a, "B": b}, bundles=lambda f: BUNDLE), 0)
+        published = out.getvalue() + open(os.path.join(self.d, "out", "day.json")).read() + \
+            open(os.path.join(self.d, "out", "summary.md")).read() + open(os.path.join(self.d, "out", "state.json")).read()
+        self.assertIn("Token exchange failed with status 500", published)
+        for name in ("openai", "anthropic"):
+            self.assertNotIn(name, published.lower())
+
     def test_real_seats_judge_with_the_bundle(self):
         good = {"verdict": "real", "evidence": ["Package: tzdata Version: 2026c-0+deb13u1"], "why": "reads status.d",
                 "case": "listed"}
