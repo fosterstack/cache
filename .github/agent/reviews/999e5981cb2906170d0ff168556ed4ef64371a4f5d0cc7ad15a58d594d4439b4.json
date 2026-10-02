@@ -1,0 +1,52 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "999e5981cb2906170d0ff168556ed4ef64371a4f5d0cc7ad15a58d594d4439b4",
+ "change": "row 78: classify google-github-actions/auth and setup-gcloud (node24, no image run) for the scanner panel; document package-manager installs in run: blocks as outside the check (split out of PR #148; PR #149)",
+ "reviewed_commit": "859d00dfdfec379162687a8161a8b971b37afc97",
+ "closed_commit": "859d00dfdfec379162687a8161a8b971b37afc97",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "row-78 adversarial pin pass on PR #148 at 54404b3 (same two ACTIONS entries)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "5f61a89677a298282a323a6620b86cc658d4dd7191ca4a4616769082cdacfced"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "dd14e7c08c46f702df80409ca1c43f4c1db340312c44934015752d177698e808"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "classification review of this commit",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "c88372cba7bcce31e709fd173af3c523111b3bfe431c3dbc46a121eebac6b0d0"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "4d021ae25f1fa106d5e2e24d94a6f4facc197ce4d4ae46574004516f49a5ac83"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none needed: two consecutive rounds with zero blockers from both reviewers (row 79 stop rule)",
+ "evidence_location": "private audit tree: audits/2026-10-02/scanner-panel/{pin-r1,classify-r1}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": [
+  "classification is by owner/repository, so a subpath under a classified repository (google-github-actions/auth/<sub>) is also classified; pre-existing design, no runnable nested-action bypass reproduced (Codex, classification review)",
+  "package-manager installs (apt skopeo, pip PyYAML) are documented as outside the check, not pinned; their supply chain is the review pass's (Codex, pin pass)"
+ ]
+}
