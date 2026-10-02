@@ -1,0 +1,180 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "f45171faefe0fd24c61fda43814995b97841890761c40c044a672de31d374b12",
+ "change": "scanner panel PR 2: the audits, debates, scoring and primary seat in the daily auditor (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 2-3); the rescan's tally made mechanical; REQ-AUD-18 AC1 amendment (owner Oct 2) \u2014 PR #150",
+ "reviewed_commit": "e60c6b0b96a71ed4855a6d71462b518a1cdab62f",
+ "closed_commit": "e60c6b0b96a71ed4855a6d71462b518a1cdab62f",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "step 8 round 1 (0dd408a)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 7,
+     "evidence_sha256": "059842c04a92fd78b7b86e7b12728725ea6aab5ef5f5496c5c892fae6367cbad"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "3de4daa5b86497bfba38c8c8950563dce8860f5c27aa9b06e32ae34629b4d59d"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 1 round 2 (fix) (61d1ec6)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 6,
+     "evidence_sha256": "91eb04568956c2bc95909585bf456a677c5e89acc530aae107cfb68b7d767efc"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "a1545a47d0e7ea2ab5b1393abdf2f84d08e5a8a06afe1c81d51f19b8fd551181"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "phase 1 round 3 (fix) (0ae628e)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "3c80b48f91d2a26244f5e38aaa3724e469d184e08f1b9606253800d52700ae66"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "9eaa943ed432d23df7c079276374f8eb617709c53012147aa04506fd280b3f28"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "phase 1 round 4 -> phase 2 round 1 (split) (92c2ae7)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "ca076be80a7ddff7f970cbc88124f5329ae4ad4e12b6b9b8530b8440bb8241c4"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "3b94202c9658b85555fa11a735d930cd033e2cf5f6f760e68d8edaefa3da92a2"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "phase 2 round 2 (independent) (b97ac8f)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "9979b31ec6e1d89771c8a59279b1df2dac9e78a4dcdda0f4879503e214883d36"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "4c7caaa172cf55c69169f024b72345e4f3e832fb60a778b15c5a3d57fcffa26a"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "label": "phase 2 round 3 (consultation): both green (ff997de)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "6de5d721e19576758eb37cf3e725fb40a61a9d7a0919c44b7cb763019d84d331"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "05e937e13debe8e533c58459c5a058cc599a6a434916ab073e1e771475369883"
+    }
+   }
+  },
+  {
+   "round": 7,
+   "label": "verification of the REQ-AUD-18 AC1 amendment + residual disposition (R1, R3 held) (dda42b6)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "100c9bae88e713cea1767ddcd081f1af34fe856bdce93907e638286f062f7663"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "926e4a26824efc20793f9d329e385c04fc8c77ecaf3a5b15ca27b838fa47cb7f"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "label": "round 5: held findings fixed, verify the fix (e401ec7)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "853f21942348d5b65eccc3e1f65b46d9dec2e7b3ad0a9f3a38fc889d48cf917b"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "6fcbcd34fa254beaf051a0a8db17805f5dbce22d520a32635327df4667631c8a"
+    }
+   }
+  },
+  {
+   "round": 9,
+   "label": "row-78 adversarial pin pass (0dd408a)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "f6ddba1d4883b5d0c66b6e5e666465eb79dfbe3cd2e9bbf43842c3a06141836e"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ca000f44be5de850a0840f1c8c4a1e7669ea84c26ecc4b03c566f20f63bf0726"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "label": "round 5 closing verification of the two narrow fixes (e60c6b0)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "9e446c25574fe3cde3d700ddf1730305ed7794b3b844c235d9d8e2b61ad66563"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "69c1c0a3fd96b2f184d51b107659f589a3f4f11815ab6720e192fda7aef35596"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none: codex reviewer rules (owner Oct 2) \u2014 unanimous green on the final verification; residual R2 accepted by both as minor",
+ "evidence_location": "private audit tree: audits/2026-10-02/panel-audits/{step8-r1..r4,p2-r2,p2-r3,p2-verify,p2-r5,p2-r5b,pin-r1}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": [
+  "R2 (both: MINOR-ACCEPT): Google-only findings carry no purl, so a validated false finding gets an owner notice instead of a VEX statement (fail-safe: never a blanket statement)",
+  "stated limit: Grype and Docker Scout apply the VEX file themselves (rule 4), so their reports of a finding our statement covers are not visible; every stated finding is re-verified against the images daily instead"
+ ]
+}
