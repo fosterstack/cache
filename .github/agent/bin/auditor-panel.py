@@ -58,13 +58,15 @@ def public(s):
         v = os.environ.get(k)
         if v and len(v) >= 4:
             s = s.replace(v, "<%s>" % k)
+        elif v:                 # a short value (a model alias like o3) only as a whole word
+            s = re.sub(r"(?<![A-Za-z0-9_.-])%s(?![A-Za-z0-9_.-])" % re.escape(v), "<%s>" % k, s)
     return KEYLIKE.sub("<redacted>", VENDOR_WORDS.sub("<auditor>", s))
 
 
 def scrub(obj):
     """public() applied to every string in a JSON-able object: what is written out (day, state, plan) is public."""
     if isinstance(obj, dict):
-        return {k: scrub(v) for k, v in obj.items()}
+        return {(public(k) if isinstance(k, str) else k): scrub(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [scrub(v) for v in obj]
     return public(obj) if isinstance(obj, str) else obj
@@ -124,31 +126,68 @@ def _ver(v):
     return v[1:] if re.match(r"^v\d", v) else v
 
 
-def vote(answer, bundle, f):
-    """'real' / 'false' only when the answer quotes the EVIDENCE section of the image's bundle verbatim (never its
-    header, never a diagnostic) and the quotes support the verdict: "real" needs a quote naming the package AND its
-    reported version; "false" needs a quote stating the package is absent, or naming it at a different version.
-    Anything else cites no evidence (rule 8(b)) -> None."""
-    if not isinstance(answer, dict) or answer.get("error") or answer.get("verdict") not in ("real", "false"):
+def installed_versions(bundle, f):
+    """The versions of the finding's package the image's evidence section actually records: a package-database record's
+    own Version field (within its stanza: no other package's field, never a Breaks/Depends constraint), or a Go build
+    info module line. Returns None when the image could not be read."""
+    if EVIDENCE_MARK not in str(bundle):
         return None
+    pkg = str(f.get("package") or "").lower()
+    short = pkg.rsplit("/", 1)[-1]
+    found = set()
+    for stanza in re.split(r"\npackage database [^\n]*:\n|\n\n", str(bundle).split(EVIDENCE_MARK, 1)[1]):
+        m = re.search(r"(?m)^Package:\s*(\S+)\s*$", stanza)
+        v = re.search(r"(?m)^Version:\s*(\S+)\s*$", stanza)
+        src = re.search(r"(?m)^Source:\s*(\S+)", stanza)
+        if v and ((m and m.group(1).lower() in (pkg, short)) or (src and src.group(1).lower() in (pkg, short))):
+            found.add(_ver(v.group(1)).lower())
+    for m in re.finditer(r"(?m)\b(?:dep|mod)\s+(\S+)\s+(v?\S+)", str(bundle).split(EVIDENCE_MARK, 1)[1]):
+        if m.group(1).lower() == pkg:
+            found.add(_ver(m.group(2)).lower())
+    return found
+
+
+def vote(answer, bundle, f):
+    return validated(answer, bundle, f)[0]
+
+
+def validated(answer, bundle, f):
+    """(verdict, the quotes that prove it): 'real' / 'false' only when the answer quotes the EVIDENCE section of the
+    image's bundle verbatim (never its header, never a diagnostic) and the quotes support the verdict: "real" needs a
+    quote naming the package AND its reported version; "false" needs a quote stating the package is absent, or naming
+    it at a different version. Anything else cites no evidence (rule 8(b)) -> (None, []). Only the returned quotes are
+    ever published (a VEX justification, a profile entry)."""
+    none = (None, [])
+    if not isinstance(answer, dict) or answer.get("error") or answer.get("verdict") not in ("real", "false"):
+        return none
     ev = answer.get("evidence")
     if not isinstance(ev, list) or not ev or EVIDENCE_MARK not in str(bundle):
-        return None
+        return none
     hay = _norm(str(bundle).split(EVIDENCE_MARK, 1)[1])
     quotes = []
     for q in ev:
         q = _norm(q)
         if len(q) < MIN_QUOTE or q not in hay or EVIDENCE_MARK in q:
-            return None
-        quotes.append(q.lower())
+            return none
+        quotes.append(q)
     pkg = str(f.get("package") or "").lower()
     short, ver = pkg.rsplit("/", 1)[-1], _ver(f.get("version")).lower()
-    names = [q for q in quotes if pkg in q or re.search(r"(^|[^a-z0-9.+-])%s($|[^a-z0-9.+-])" % re.escape(short), q)]
-    absent = [q for q in names if any(a.lower() in q for a in ABSENT)]
+    have = installed_versions(bundle, f)
+    pkg_re = r"(?i)(Package:\s*%s\s|(?:dep|mod)\s+%s\s)" % (re.escape(short), re.escape(pkg))
+
+    def record(q):          # a quote of one record of THIS package: its own Package/Version, or its Go module line
+        return re.search(pkg_re, q + " ") and q.lower().count("package:") <= 1
     if answer["verdict"] == "real":
-        return "real" if ver and any(ver in q for q in names if q not in absent) else None
-    other_version = [q for q in names if q not in absent and ver and ver not in q and re.search(r"\d", q)]
-    return "false" if absent or other_version else None
+        # real: the image records the package at exactly the reported version, and the quote shows that record
+        proof = [q for q in quotes if record(q) and re.search(r"(?i)(Version:\s*|\s)v?%s(\s|$)" % re.escape(ver), q)]
+        return ("real", proof) if proof and ver in (have or ()) else none
+    # false: the image records NO installed copy at the reported version, and the quote shows absence or another version
+    if have is None or ver in have:
+        return none
+    absent = [q for q in quotes if any(a.lower() in q.lower() for a in ABSENT) and (pkg in q.lower() or short in q.lower())]
+    other = [q for q in quotes if record(q) and re.search(r"(?i)(Version:\s*\S|(?:dep|mod)\s+\S+\s+v?\d)", q)]
+    proof = (absent if not have else []) + other
+    return ("false", proof) if proof else none
 
 
 def _ask(auditor, seat, req):
@@ -161,7 +200,12 @@ def _ask(auditor, seat, req):
         return dict(tag, error="no answer")
     if a.get("error"):
         return dict(tag, error=str(a["error"]))   # an errored answer casts no vote and cites nothing
-    return dict(tag, verdict=a.get("verdict"), evidence=a.get("evidence"), why=a.get("why"), case=a.get("case"))
+    def text(x):            # an answer's fields are plain text; anything else is flattened before it is kept
+        return None if x is None else (x if isinstance(x, str) else json.dumps(x, sort_keys=True))
+    ev = a.get("evidence")
+    return dict(tag, verdict=a.get("verdict") if a.get("verdict") in ("real", "false") else text(a.get("verdict")),
+                evidence=[text(q) for q in ev] if isinstance(ev, list) else text(ev), why=text(a.get("why")),
+                case=text(a.get("case")))
 
 
 def _request(mode, f, bundle, **kw):
@@ -194,10 +238,10 @@ def judge_unique(f, bundle, profiles, auditors, seat, scoring):
     scanner = f["seen_by"][0]
     if profile_match(profiles, scanner, f.get("package")):
         a = _ask(auditors[seat], seat, _request("audit", f, bundle))
-        v = vote(a, bundle, f)
+        v, proof = validated(a, bundle, f)
         status = "report" if v == "real" else ("false-evidence" if v == "false" else "false-default")
         return {"status": status, "path": "a", "audits": [a], "debate": None, "why": _why([a]),
-                "unexplained": status == "report" and not _why([a])}
+                "unexplained": status == "report" and not _why([a]), "proof": proof}
     first = {s: _ask(auditors[s], s, _request("audit", f, bundle)) for s in SEATS}
     audits = [first[s] for s in SEATS]
     verdicts = {s: first[s].get("verdict") for s in SEATS}
@@ -224,9 +268,11 @@ def judge_unique(f, bundle, profiles, auditors, seat, scoring):
         status = "false-default"        # rule 8(c): still disagreeing after round 4 -> false by default
     else:
         status = _decide(final, bundle, f)
+    want = {"report": "real", "false-evidence": "false"}.get(status)
+    proof = [q for a in final for v, qs in [validated(a, bundle, f)] if v == want for q in qs]
     why = _why(final) if status == "report" else None
     return {"status": status, "path": "b", "audits": audits, "debate": debate, "why": why,
-            "unexplained": status == "report" and not why}
+            "unexplained": status == "report" and not why, "proof": proof}
 
 
 def _other(s):
@@ -305,6 +351,10 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
         if len(seen) >= 2:
             events.append(dict(_ident(f), kind="corroborated"))     # settles any debate on it (rule 13)
         if k in real_mem:
+            ever = seen | set(real_mem[k].get("seen_by") or [])
+            if len(ever) >= 2 and len(seen) < 2:
+                events.append(dict(_ident(f), kind="corroborated"))    # corroborated across days
+            real_mem[k]["seen_by"] = sorted(ever)
             real_mem[k]["last_seen"] = today
             reported.append(f)
             continue
@@ -319,6 +369,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
                                                             "judged it not affected (audit miss)"))
                 del false_mem[k]
                 real_mem[k] = dict(_ident(f), seen_by=miss["seen_by"], since=today, last_seen=today)
+                if len(seen) < 2:
+                    events.append(dict(_ident(f), kind="corroborated"))   # corroborated across days
                 reported.append(f)
                 continue
         if len(seen) >= 2:
@@ -336,8 +388,7 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
                     "match": {"package": "^%s$" % re.escape(f["package"])},
                     "behavior": r["why"] or "unexplained: the audits confirmed the finding but not why only this scanner saw it",
                     "finding": "%s on %s (%s %s), %s" % (f["id"], f["image"], f["package"], f["version"], today),
-                    "evidence": "; ".join(q for a in r["audits"] for q in (a.get("evidence") or [])
-                                          if a.get("verdict") == "real")[:500],
+                    "evidence": "; ".join(r["proof"])[:500],
                     "unexplained": r["unexplained"]}
             out["profiles"].append(prop)
             if r["unexplained"]:
@@ -351,7 +402,7 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
                             since=old.get("since") or today, last_seen=today, vex=bool(old.get("vex") or ev),
                             purls=list(old.get("purls") or f.get("purls") or []))
         if ev and not old.get("vex"):
-            quotes = [q for a in r["audits"] if a.get("verdict") == "false" for q in (a.get("evidence") or [])]
+            quotes = r["proof"]       # only quotes vote() validated against the image, never an answer's raw text
             if f.get("purls"):
                 out["vex"].append(dict(_ident(f), status="not_affected", purls=list(f["purls"]),
                                        impact_statement="Audited from the image: " + "; ".join(quotes)[:500]))
@@ -415,18 +466,25 @@ def read_image(archive, arch):
             raise ValueError("no linux/%s image in %s" % (arch, os.path.basename(archive)))
         for layer in man.get("layers") or []:
             with tarfile.open(fileobj=io.BytesIO(blob(layer["digest"])), mode="r:*") as lt:
-                for m in lt.getmembers():
+                members = lt.getmembers()
+
+                def drop(prefix, exact=None):
+                    for coll in (paths, status, gobins):
+                        for gone in [x for x in coll if x == exact or x.startswith(prefix)]:
+                            coll.remove(gone) if isinstance(coll, set) else coll.pop(gone)
+                # whiteouts apply to the LOWER layers, before this layer's own entries are added
+                for m in members:
                     name = "/" + m.name.lstrip("./")
                     base = os.path.basename(name)
                     if base == ".wh..wh..opq":          # opaque directory: nothing from lower layers survives in it
-                        top = os.path.dirname(name).rstrip("/") + "/"
-                        for coll in (paths, status, gobins):
-                            for gone in [x for x in coll if x.startswith(top)]:
-                                coll.remove(gone) if isinstance(coll, set) else coll.pop(gone)
-                        continue
-                    if base.startswith(".wh."):
+                        drop(os.path.dirname(name).rstrip("/") + "/")
+                    elif base.startswith(".wh."):       # a removed file or directory, with everything below it
                         gone = os.path.join(os.path.dirname(name), base[4:])
-                        paths.discard(gone); status.pop(gone, None); gobins.pop(gone, None)
+                        drop(gone + "/", exact=gone)
+                for m in members:
+                    name = "/" + m.name.lstrip("./")
+                    base = os.path.basename(name)
+                    if base.startswith(".wh."):
                         continue
                     paths.add(name)
                     status.pop(name, None); gobins.pop(name, None)      # a later layer replaces the file
@@ -818,18 +876,21 @@ def cmd_deliver(a, run=subprocess.run):
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
                  "--title", policy.subject("scanner panel audits (rules 7-9, 13, 14)"), "--body", body], plan, real, run)
-        if automerge_allowed(changed):
+        pr_paths = set(changed)
+        if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
+            pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
+        if automerge_allowed(sorted(pr_paths)):
             _sh(["gh", "pr", "ready", branch], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", branch], plan, real, run)
     ienv = dict(os.environ, GH_TOKEN=os.environ.get("AUDITOR_ISSUES_TOKEN", os.environ.get("GH_TOKEN", "")))
     if day["issue"]:
         n = _sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan", "--search", ISSUE_TITLE,
                  "--json", "number", "--jq", ".[0].number"], plan, real, run, env=ienv).strip()
-        if n:
+        if n:                   # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", n, "--body", day["issue"]], plan, real, run, env=ienv)
-        else:
-            _sh(["gh", "issue", "create", "--title", ISSUE_TITLE, "--label", "daily-rescan", "--label", "security",
-                 "--body", day["issue"]], plan, real, run, env=ienv)
+        else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
+            _sh(["gh", "issue", "create", "--title", policy.subject(ISSUE_TITLE), "--label", "daily-rescan",
+                 "--label", "security", "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
         body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
         n = _sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", OWNER_TITLE,

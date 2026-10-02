@@ -5,7 +5,7 @@ The scanner panel's audits in the daily auditor (scanner-panel rules 7-9, 8(c), 
 Offline: stand-in auditors play the two seats; the rescan's verdict.json and the evidence bundles are fixtures.
 Every test asserts an effect on the judgment, the day's state, or the text that would be published.
 """
-import copy, importlib.util, json, os, sys, unittest
+import copy, importlib.util, json, os, sys, unittest, unittest.mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -26,7 +26,8 @@ BUNDLE = ("image fips-arm64 (tzdata 2026c-0+deb13u1, reported by scout)\n" + P.E
           "file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\n"
           "go build info: no Go binary in the image records tzdata\n")
 EV_REAL = "Package: tzdata Version: 2026c-0+deb13u1"
-EV_FALSE = "file: /usr/share/zoneinfo/tzdata.zi (version 2026a)"
+OLD = "2025b-0+deb13u1"          # a reported version the image does NOT have (it has 2026c-0+deb13u1)
+EV_FALSE = EV_REAL               # for a finding at OLD: the package database records tzdata at another version
 
 
 PURL = "pkg:deb/debian/tzdata@2026c-0%2Bdeb13u1?arch=all&distro=debian-13"
@@ -100,7 +101,7 @@ class Evidence(unittest.TestCase):
     def test_a_vote_counts_only_with_evidence_quoted_from_the_image(self):
         f = finding()
         self.assertEqual(P.vote(real(), BUNDLE, f), "real")
-        self.assertEqual(P.vote(false(), BUNDLE, f), "false")
+        self.assertEqual(P.vote(false(), BUNDLE, finding(ver=OLD)), "false")
         self.assertIsNone(P.vote(real(ev="Package: busybox"), BUNDLE, f))     # not in the image
         self.assertIsNone(P.vote(real(ev="   "), BUNDLE, f))
         self.assertIsNone(P.vote(dict(real(), evidence=[]), BUNDLE, f))
@@ -110,6 +111,26 @@ class Evidence(unittest.TestCase):
 
     def test_short_quotes_are_not_evidence(self):
         self.assertIsNone(P.vote(real(ev="tz"), BUNDLE, finding()))
+
+    def test_the_version_is_a_whole_token(self):                          # Sonnet r2 residual
+        f = finding(pkg="libfoo", ver="1.2")
+        b = "h\n%s\nPackage: libfoo Version: 11.2.0\nfiles: x\n" % P.EVIDENCE_MARK
+        self.assertIsNone(P.vote(real(ev="Package: libfoo Version: 11.2.0"), b, f))
+        self.assertEqual(P.vote(false(ev="Package: libfoo Version: 11.2.0"), b, f), "false")
+
+    def test_only_validated_quotes_are_published(self):                    # Sonnet r2 blocker
+        fabricated = "fabricated text not in the bundle at all"
+        a = Seat({"audit": dict(false(), evidence=[fabricated])})        # rejected by vote()
+        b = Seat({"audit": false()})                                     # a valid other-version quote
+        st, out = P.apply_day(verdict(finding(ver=OLD)), P.new_state(), bundles, {"entries": []}, {"A": a, "B": b},
+                              "2026-10-03", SCORING)
+        self.assertEqual(out["log"][0]["status"], "false-evidence")
+        self.assertIn(EV_FALSE, out["vex"][0]["impact_statement"])
+        self.assertNotIn(fabricated, out["vex"][0]["impact_statement"])
+        a2 = Seat({"audit": dict(real(), evidence=[EV_REAL, "Status: install ok installed"])})
+        st, out = P.apply_day(verdict(finding()), P.new_state(), bundles, {"entries": []}, {"A": a2, "B": Seat({"audit": real()})},
+                              "2026-10-03", SCORING)
+        self.assertEqual(out["profiles"][0]["evidence"], "; ".join([EV_REAL, EV_REAL]))
 
     def test_the_header_and_diagnostics_are_never_evidence(self):          # Codex r1 B1
         f = finding()
@@ -127,8 +148,23 @@ class Evidence(unittest.TestCase):
         self.assertIsNone(P.vote(real(ev="Status: install ok installed"), BUNDLE, f))     # no package
         self.assertIsNone(P.vote(false(ev=EV_REAL), BUNDLE, f))                          # present at that version
         self.assertIsNone(P.vote(false(ev="Status: install ok installed"), BUNDLE, f))
-        self.assertEqual(P.vote(false(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f), "false")
+        # Codex r2 B1: absence from ONE source is not absence when the package database records it at that version
+        self.assertIsNone(P.vote(false(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
         self.assertIsNone(P.vote(real(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
+        gone = ("h\n%s\npackage database: no record names busybox\nfiles: no path in the image mentions busybox\n"
+                "go build info: no Go binary in the image records busybox\n" % P.EVIDENCE_MARK)
+        bb = finding(pkg="busybox", ver="1.37.0")
+        self.assertEqual(P.vote(false(ev="package database: no record names busybox"), gone, bb), "false")
+        self.assertIsNone(P.vote(real(ev="package database: no record names busybox"), gone, bb))
+
+    def test_a_file_name_or_another_packages_constraint_is_not_a_version(self):    # Codex r2 B1
+        b = ("h\n%s\npackage database /var/lib/dpkg/status.d/tzdata:\nPackage: tzdata\nVersion: 2026c-0+deb13u1\n"
+             "Breaks: tzdata-legacy (= 2023c-8)\nfile: /var/lib/dpkg/status.d/tzdata.md5sums\n" % P.EVIDENCE_MARK)
+        self.assertIsNone(P.vote(false(ev="file: /var/lib/dpkg/status.d/tzdata.md5sums"), b, finding()))
+        self.assertIsNone(P.vote(real(ev="Package: tzdata Version: 2026c-0+deb13u1 Breaks: tzdata-legacy (= 2023c-8)"),
+                                 b, finding(ver="2023c-8")))
+        self.assertEqual(P.installed_versions(b, finding()), {"2026c-0+deb13u1"})
+        self.assertIsNone(P.installed_versions("no evidence section", finding()))
         g = finding(pkg="golang.org/x/sys", ver="v0.47.0")
         gb = "h\n%s\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\n" % P.EVIDENCE_MARK
         self.assertEqual(P.vote(real(ev="dep golang.org/x/sys v0.47.0"), gb, g), "real")
@@ -143,7 +179,7 @@ class OneAudit(unittest.TestCase):                                          # ru
         r = P.judge_unique(finding(), BUNDLE, self.PROF, {"A": a, "B": b}, "A", SCORING)
         self.assertEqual((r["status"], r["path"], len(r["audits"])), ("report", "a", 1))
         self.assertEqual(len(b.seen), 0)
-        r = P.judge_unique(finding(), BUNDLE, self.PROF, {"A": a, "B": b}, "B", SCORING)   # seat B holds primary
+        r = P.judge_unique(finding(ver=OLD), BUNDLE, self.PROF, {"A": a, "B": b}, "B", SCORING)   # seat B holds primary
         self.assertEqual((r["status"], len(a.seen)), ("false-evidence", 1))
 
     def test_one_audit_real_without_image_evidence_is_false(self):
@@ -153,9 +189,9 @@ class OneAudit(unittest.TestCase):                                          # ru
 
 
 class TwoAudits(unittest.TestCase):                                         # rule 8(b)
-    def judge(self, va, vb, **kw):
+    def judge(self, va, vb, f=None, **kw):
         a, b = Seat({"audit": va, **kw.get("a", {})}), Seat({"audit": vb, **kw.get("b", {})})
-        return P.judge_unique(finding(), BUNDLE, {"entries": []}, {"A": a, "B": b}, "A", SCORING), a, b
+        return P.judge_unique(f or finding(), BUNDLE, {"entries": []}, {"A": a, "B": b}, "A", SCORING), a, b
 
     def test_every_round_one_combination(self):                             # REQ-SCAN-008-AC2, AC4
         cases = [
@@ -168,7 +204,7 @@ class TwoAudits(unittest.TestCase):                                         # ru
             (real(), RuntimeError("model down"), "false-default"),
         ]
         for va, vb, want in cases:
-            r, _, _ = self.judge(va, vb)
+            r, _, _ = self.judge(va, vb, f=finding(ver=OLD) if want == "false-evidence" else None)
             self.assertEqual(r["status"], want, (va, vb))
             self.assertEqual(len(r["audits"]), 2)
             self.assertIsNone(r["debate"])
@@ -185,9 +221,9 @@ class TwoAudits(unittest.TestCase):                                         # ru
 
 
 class Debate(unittest.TestCase):                                            # rule 8(c)
-    def run_debate(self, a_answers, b_answers):
+    def run_debate(self, a_answers, b_answers, f=None):
         a, b = Seat(a_answers), Seat(b_answers)
-        return P.judge_unique(finding(), BUNDLE, {"entries": []}, {"A": a, "B": b}, "A", SCORING), a, b
+        return P.judge_unique(f or finding(), BUNDLE, {"entries": []}, {"A": a, "B": b}, "A", SCORING), a, b
 
     def test_agreement_in_round_two_stops_the_debate(self):                 # REQ-SCAN-008-AC7
         r, a, b = self.run_debate({"audit": real(), "case": real(), "verdict": real()},
@@ -203,7 +239,8 @@ class Debate(unittest.TestCase):                                            # ru
 
     def test_agreement_in_round_four(self):
         r, _, _ = self.run_debate({"audit": false(), "case": [false()] * 3, "verdict": [false(), false(), false()]},
-                                  {"audit": real(), "case": [real()] * 3, "verdict": [real(), real(), false()]})
+                                  {"audit": real(), "case": [real()] * 3, "verdict": [real(), real(), false()]},
+                                  f=finding(ver=OLD))
         self.assertEqual((r["status"], r["debate"]["outcome"], len(r["debate"]["rounds"])),
                          ("false-evidence", "agreed-false", 3))
         self.assertEqual(r["debate"]["prevailing"], "A")
@@ -269,13 +306,13 @@ class Day(unittest.TestCase):
         self.assertEqual([x["id"] for x in st["false"]], ["CVE-2099-0002"])
 
     def test_false_with_evidence_proposes_not_affected(self):
-        st, out = self.day(verdict(finding()), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
+        st, out = self.day(verdict(finding(ver=OLD)), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
         self.assertEqual(out["vex"][0]["status"], "not_affected")
         self.assertIn(EV_FALSE, out["vex"][0]["impact_statement"])
         self.assertEqual(out["vex"][0]["purls"], [PURL])                    # scoped to the exact package
 
     def test_false_with_evidence_but_no_package_identity_writes_no_blanket_statement(self):
-        st, out = self.day(verdict(finding(purls=())), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
+        st, out = self.day(verdict(finding(ver=OLD, purls=())), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
         self.assertEqual(out["vex"], [])
         self.assertTrue(any("no VEX statement was written" in o for o in out["owner"]))
         self.assertFalse(st["false"][0]["vex"])
@@ -299,8 +336,8 @@ class Day(unittest.TestCase):
         self.assertEqual([x["id"] for x in st["real"]], ["CVE-2099-0002"])
 
     def test_a_reversed_vex_statement_turns_affected(self):
-        st, out = self.day(verdict(finding()), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
-        st, out = self.day(verdict(finding(seen=("grype", "scout"))), st, today="2026-10-04")
+        st, out = self.day(verdict(finding(ver=OLD)), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
+        st, out = self.day(verdict(finding(ver=OLD, seen=("grype", "scout"))), st, today="2026-10-04")
         self.assertEqual(out["vex"][0]["status"], "affected")
 
     def test_once_real_stays_reported_without_new_audits(self):
@@ -369,6 +406,28 @@ class Scoring(unittest.TestCase):                                           # ru
                          [dict(f, kind="corroborated")], "2026-10-06")
         self.assertEqual(twice["scores"], {"A": 1, "B": -2})                 # a debate settles once
 
+    def test_corroboration_across_days_settles(self):                       # Codex r2 B4
+        a = Seat({"audit": real(), "case": real(), "verdict": false()})
+        b = Seat({"audit": false(), "case": false(), "verdict": false()})
+        st, out = P.apply_day(verdict(finding(ver=OLD)), P.new_state(), bundles, {"entries": []}, {"A": a, "B": b},
+                              "2026-10-03", SCORING)
+        self.assertEqual(st["debates"][0]["outcome"], "agreed-false")
+        st, out = P.apply_day(verdict(finding(ver=OLD, seen=("grype",))), st, bundles, {"entries": []},
+                              {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
+        self.assertEqual(st["debates"][0]["settled"]["by"], "corroborated")
+        self.assertEqual(st["scores"], {"A": 1, "B": -2})
+        # and a finding already remembered real, now seen by another scanner on a later day
+        st2 = P.new_state()
+        st2["real"] = [dict(image="fips-arm64", id="CVE-2099-0002", package="tzdata", version="2026c-0+deb13u1",
+                            seen_by=["scout"], since="2026-10-03", last_seen="2026-10-03")]
+        st2["debates"] = [{"image": "fips-arm64", "id": "CVE-2099-0002", "package": "tzdata", "version": "2026c-0+deb13u1",
+                           "sides": {"A": "real", "B": "false"}, "outcome": "agreed-real", "prevailing": "A",
+                           "settled": None, "rounds": []}]
+        st2, _ = P.apply_day(verdict(finding(seen=("grype",))), st2, bundles, {"entries": []},
+                             {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
+        self.assertEqual(st2["debates"][0]["settled"]["by"], "corroborated")
+        self.assertEqual(st2["real"][0]["seen_by"], ["grype", "scout"])
+
     def test_corroboration_in_the_day_settles(self):
         st = P.new_state()
         st["debates"].append(self.debate({"A": "real", "B": "false"}, "agreed-false", "B"))
@@ -401,6 +460,15 @@ class PrimarySeat(unittest.TestCase):                                       # ru
 
 
 class PublicText(unittest.TestCase):                                        # REQ-SCAN-014-AC4, REQ-SCAN-008-AC3 (text)
+    def test_keys_non_text_fields_and_short_identifiers_are_scrubbed(self):   # Codex r2 B5
+        r = P.judge_unique(finding(), BUNDLE, {"entries": []},
+                           {"A": Seat({"audit": dict(real(), why={"OpenAI": "reads status.d"}, case=["gpt-6"])}),
+                            "B": Seat({"audit": real()})}, "A", SCORING)
+        self.assertIsInstance(r["audits"][0]["why"], str)
+        self.assertNotIn("openai", json.dumps(P.scrub({"OpenAI": r})).lower())
+        with unittest.mock.patch.dict(os.environ, {"PANEL_AUDIT_B_MODEL": "o3"}):
+            self.assertEqual(P.public("seat B ran o3; footwork o3x"), "seat B ran <PANEL_AUDIT_B_MODEL>; footwork o3x")
+
     def test_no_vendor_or_model_name_in_anything_published(self):
         st = P.new_state()
         a = Seat({"audit": dict(real(why="claude-opus read it; gpt-6 agreed"), evidence=[EV_REAL, "openai quote"])})

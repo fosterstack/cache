@@ -209,7 +209,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
         run: |
           set -euo pipefail
-          python3 -m pip install --require-hashes --break-system-packages \
+          python3 -m pip install --quiet --require-hashes --break-system-packages \
             -r .github/agent/adjudicator-requirements.txt
           python3 - <<'PY'
           from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
@@ -313,6 +313,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
           AUDITOR_ALLOW_REAL_GH: '1'
+          AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}   # REQ-AUD-17 AC3: the owner's switch, as for the CVE auditor's PRs
         run: |
           set -euo pipefail
           dry='${{ github.event_name == 'schedule' && (vars.AUDITOR_SCHEDULE_MODE == 'live' && 'false' || 'true') || inputs.dry_run }}'

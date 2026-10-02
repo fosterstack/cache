@@ -100,9 +100,17 @@ class Image(Tmp):
         oci_archive(os.path.join(self.d, "x.oci"), [l1, l2])
         facts = P.read_image(os.path.join(self.d, "x.oci"), "arm64")
         self.assertNotIn("/opt/lib/old-tzdata", facts["paths"])
+        self.assertIn("/opt/lib/new", facts["paths"])                        # same-layer entry survives its opaque marker
         self.assertIn("/opt/lib/new", facts["paths"])
         self.assertEqual(facts["status"], {})
         self.assertEqual(facts["gobins"], {})                               # replaced by a non-Go executable
+
+    def test_a_removed_directory_takes_its_contents(self):                 # Codex r2 R4
+        l1 = tar_bytes([("srv/old", None, 0o755), ("srv/old/tzdata.txt", b"x", 0o644), ("srv/oldest", b"y", 0o644)])
+        l2 = tar_bytes([("srv/.wh.old", b"", 0o644)])
+        oci_archive(os.path.join(self.d, "y.oci"), [l1, l2])
+        paths = P.read_image(os.path.join(self.d, "y.oci"), "arm64")["paths"]
+        self.assertEqual([p for p in paths if p.startswith("/srv")], ["/srv/oldest"])
 
     def test_no_image_for_the_architecture(self):
         with self.assertRaises(ValueError):
@@ -283,7 +291,7 @@ class Seats(Tmp):                                                           # RE
     def test_public_masks_identifiers_and_names(self):
         with mock.patch.dict(os.environ, {"PANEL_AUDIT_B_PROJECT_ID": "proj_secret_1", "PANEL_AUDIT_A_MODEL": "abc"}):
             self.assertEqual(P.public("proj_secret_1 via openai and claude-x; abc"),
-                             "<PANEL_AUDIT_B_PROJECT_ID> via <auditor> and <auditor>; abc")
+                             "<PANEL_AUDIT_B_PROJECT_ID> via <auditor> and <auditor>; <PANEL_AUDIT_A_MODEL>")
         self.assertIsNone(P.public(None))
 
 
@@ -418,7 +426,8 @@ class Deliver(Tmp):
         self.assertTrue(any(c[:4] == ["gh", "pr", "create", "--draft"] for c in cmds))
         issue_calls = [(c, t) for c, t in calls if c[:2] == ["gh", "issue"]]
         self.assertTrue(all(t == "issues-token" for _, t in issue_calls))
-        self.assertTrue(any(c[:3] == ["gh", "issue", "create"] and "daily-rescan" in c for c, _ in issue_calls))
+        self.assertTrue(any(c[:3] == ["gh", "issue", "create"] and "daily-rescan" in c and
+                            "auditor: Daily scanner panel: findings on main" in c for c, _ in issue_calls))
         self.assertTrue(any("owner-decision" in c for c, _ in issue_calls))
         vex = json.load(open(os.path.join(self.repo, P.VEX)))
         st = vex["statements"][0]
@@ -455,10 +464,13 @@ class Deliver(Tmp):
             open(vpath, "w"))
         self.day(issue="miss", owner=["an audit miss"],
                  vex=[dict(mine, status="affected", impact_statement="another scanner reported it")])
-        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n"})
-        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1"}), mock.patch("sys.stdout", new=io.StringIO()):
+        calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n",
+                                ("gh", "pr", "diff"): ".github/policy/scanner-profiles.json\n.auditor/panel-state.json\n"})
+        with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": "on"}), \
+                mock.patch("sys.stdout", new=io.StringIO()):
             P.cmd_deliver(self.a(), run=run)
         cmds = [c for c, _ in calls]
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], cmds)   # the open PR holds a profile entry (r2 R7)
         self.assertIn(["git", "-C", self.repo, "fetch", "origin", "auditor/panel"], cmds)   # builds on the open PR
         self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
         self.assertIn(["gh", "pr", "edit", "17"], [c[:4] for c in cmds])
@@ -540,6 +552,7 @@ class Wiring(unittest.TestCase):                                            # RE
         d = self.steps[self.step("auditor-panel.py deliver")]
         self.assertIn("steps.panel.outcome == 'success'", d["if"])
         self.assertEqual(d["env"]["AUDITOR_ISSUES_TOKEN"], "${{ github.token }}")
+        self.assertEqual(d["env"]["AUDITOR_AUTOMERGE"], "${{ vars.AUDITOR_AUTOMERGE }}")   # Codex r2 B6: the switch arrives
 
 
 class Main(Tmp):

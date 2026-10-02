@@ -52,8 +52,33 @@ def _load(path):
     return json.loads(text)
 
 
+def _covers(product, image):
+    """Does a statement's product cover this image? The repository-wide product covers every image; a product scoped
+    with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names."""
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(str(product)).query))
+    variant, _, arch = image.rpartition("-")
+    return q.get("variant", variant) == variant and q.get("arch", arch) == arch
+
+
 def load_vex(path):
-    return _gate.vex_index(_gate.load(path))
+    """Per-image VEX indexes ({image: index}): each image is filtered only by the statements whose product covers it,
+    with purl versions decoded (%2B is +) so a statement matches the version the scanner reports."""
+    doc = _gate.load(path)
+    out = {}
+    for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
+        stmts = []
+        for st in doc.get("statements") or []:
+            prods = [p for p in st.get("products") or [] if _covers(p.get("@id", ""), img)]
+            if not prods:
+                continue
+            for p in prods:
+                for sub in p.get("subcomponents") or []:
+                    if "@id" in sub:
+                        sub["@id"] = urllib.parse.unquote(sub["@id"].split("?", 1)[0]) + (
+                            "?" + sub["@id"].split("?", 1)[1] if "?" in sub["@id"] else "")
+            stmts.append(dict(st, products=prods))
+        out[img] = _gate.vex_index(dict(doc, statements=stmts))
+    return out
 
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
@@ -178,7 +203,7 @@ def tally(root, vexidx):
             st["counts"][s] = n
             st["ran"].append(s)
             for vid, name, ver, purl in found:
-                if s in FILTER_HERE and _gate.covered(vexidx, vid, (name.lower(), ver)):
+                if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver)):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
                 key = key_of(img, vid, name, ver)

@@ -102,6 +102,19 @@ check("Inspector's and Google's VEX-covered finding is dropped; the uncovered on
       ids == [("CVE-2099-0001", ("google", "inspector"))], ids)
 check("the dropped finding is recorded as covered by the VEX", any(c["id"] == "CVE-2025-60876" for c in v["vex_covered"]), v["vex_covered"])
 
+# --- rule 4 with the auditor's per-image statements: a statement scoped to one image filters only that image, and
+# its encoded purl version (%2B) matches the decoded version the scanner reports
+vexf = os.path.join(tempfile.mkdtemp(), "v.json")
+json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
+    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=debug&arch=amd64",
+                  "subcomponents": [{"@id": "pkg:deb/debian/tzdata@2026%63?arch=all"}]}]}]}, open(vexf, "w"))   # %63 = c
+row = ("CVE-2099-0009", "tzdata", "2026c")
+r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("debug-amd64", "fips-amd64")})
+v = P.tally(r, P.load_vex(vexf))
+check("a per-image statement filters only its own image (Codex r2 B2) and matches the decoded version (r2 R9)",
+      [f["image"] for f in v["findings"]] == ["fips-amd64"] and [c["image"] for c in v["vex_covered"]] == ["debug-amd64", "debug-amd64"],
+      ([f["image"] for f in v["findings"]], v["vex_covered"]))
+
 # --- rules 5 and 6: merge, seen by N of M, report at two or more
 r = tree({("inspector", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
           ("google", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
