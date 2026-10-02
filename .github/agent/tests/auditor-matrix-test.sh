@@ -24,7 +24,7 @@
 #   suppression/disp-01 disposition ; set-01/ deliberately inconsistent set
 #   policy/env-01 good-env env-02 non-main ; rule-01 no-bypass rule-02 bypass
 #   adjudicator/scenario-01 refusal scenario ; stub/fail-on-call/fake-github doubles
-# Run:  bash .github/agent/tests/auditor-matrix-test.sh   (CI: hygiene.yml, required 'allowlist' job)
+# Run:  bash .github/agent/tests/auditor-matrix-test.sh   (CI: ci.yml, required 'allowlist' job)
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/../../.." && pwd)"; cd "$repo"
 PY=python3
@@ -3110,11 +3110,11 @@ printf 'test-evidence/other.yaml\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; 
   && eq "$trace" "0" && eq "$trace_other" "1"; } \
   && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other"
 
-begin "req18-ac1-suites-wired-into-required-allowlist-job" "hygiene.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
+begin "req18-ac1-suites-wired-into-required-allowlist-job" "ci.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
 hy="$(python3 - <<'HH'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml  # the vendored reader — never whatever PyYAML the host happens to have
-d=yaml.safe_load(open(".github/workflows/hygiene.yml")); j=d["jobs"]["allowlist"]
+d=yaml.safe_load(open(".github/workflows/ci.yml")); j=d["jobs"]["allowlist"]
 st=j["steps"]; runs=[x.get("run","") for x in st]
 ok=(j.get("name")=="allowlist" and any("auditor-layout-check.py" in r for r in runs)
     and any(".github/agent/tests/auditor-matrix-test.sh" in r for r in runs)
@@ -3226,7 +3226,7 @@ begin "req18-requirements-resolve-in-required-job" "the required allowlist job r
 rq="$(python3 - <<'RQ'
 import sys; sys.path.insert(0,".github/agent/fixtures/testlib")
 import pyyaml as yaml
-j=yaml.safe_load(open(".github/workflows/hygiene.yml"))["jobs"]["allowlist"]
+j=yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["allowlist"]
 st=[x for x in j["steps"] if "--dry-run" in x.get("run","") and "--require-hashes" in x.get("run","")]
 d=yaml.safe_load(open(".github/dependabot.yml"))
 pip=[u for u in d["updates"] if u.get("package-ecosystem")=="pip" and u.get("directory")=="/.github/agent"]

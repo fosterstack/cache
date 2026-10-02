@@ -1181,7 +1181,7 @@ requirements:
       digest with its version in a comment, and every container image the
       pipeline names or passes to an action shall be named by digest; a tag
       or branch reference shall fail the check that gates every pull request.
-    source: [.github/workflows/agent-review-gate.yml, .github/workflows/hygiene.yml]
+    source: [.github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: register row 78 (owner, Sep 30 2026)
@@ -1203,7 +1203,7 @@ requirements:
       main shall never turn a frozen baseline red; a frozen baseline shall
       change only by an owner-ratified amendment recorded in the register,
       applied as a new fixed commit.
-    source: [tools/requirements/main.go, requirements/releases/, .github/workflows/requirements.yml, .github/workflows/stage-admission.yml]
+    source: [tools/requirements/main.go, requirements/releases/, .github/workflows/ci.yml, .github/workflows/stage-admission.yml]
     tier: community
     introduced: v0.3.0
     origin: register row 80 (owner, Sep 30 2026), sentences 1-3
@@ -1330,7 +1330,7 @@ requirements:
       The ruleset on main and the committed required-check list shall be
       compared on every pull request and every push to main, so drift is red
       the day it happens, and a refusal shall open one issue.
-    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/workflows/hygiene.yml]
+    source: [bin/required-check-guard.sh, .github/policy/required-checks.json, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: register row 75 (owner, Sep 29 2026), "also ratified"
@@ -1373,7 +1373,7 @@ requirements:
       A held Dependabot major, or a required-check drift issue, shall send one
       generic dispatch to the ops repository so an agent fixes our side; a
       failed dispatch shall be a warning and never undo the hold.
-    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/hygiene.yml]
+    source: [bin/dispatch-fixer.sh, .github/workflows/dependabot-reviewer.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: register row 76 (owner, Sep 29 2026), the cache side
@@ -1398,7 +1398,7 @@ requirements:
       The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge
       keeping every required check's name, top-level placement and events, and no new workflow file added without the
       owner's ratification.
-    source: [.github/workflows/go-freshness.yml]
+    source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
     origin: workflow consolidation (owner RATIFIED Oct 2; ops/docs/ratify/2026-10-02-workflow-consolidation.md)

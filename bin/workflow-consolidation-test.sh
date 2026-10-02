@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC3
+# proves: REQ-REL-008-AC2, REQ-REL-008-AC3
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -91,5 +91,93 @@ case_ escaped-go-by-tag        bad "s=[x for x in $J['mutation']['steps'] if 'go
 case_ quoted-go-by-tag        bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\n\\\"go\\\" install github.com/x/y@v0.6.0'"
 case_ full-path-go-by-tag     bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\n/usr/local/go/bin/go install github.com/x/y@main'"
 case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if']; $J['mutation']['if'], $J['check']['if'] = b, a"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (REQ-REL-008-AC2). Every moved job
+# keeps its exact check name, top-level placement, job permissions, environment, needs and condition; ci.yml's
+# top-level permissions stay read-only and it gains no concurrency; dependency-review runs only on pull requests (the
+# only scope it is required on); every required check in .github/policy/required-checks.json is still produced by a
+# top-level job of a workflow on its scope's event. dependabot-auto-merge.yml does NOT move: its events
+# (pull_request only) differ from ci.yml's (advisor, 0051 check 3).
+judge_ci() { python3 - "$1" "$root" <<'PY'
+import glob, json, os, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+root = sys.argv[2]
+bad = []
+MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as in the original file
+    "allowlist": ("allowlist", None, None, None, None),
+    "required-check-guard": ("required-check guard", {"contents": "read", "issues": "write"}, None, None, None),
+    "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
+                             "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
+    "requirements": ("requirements", None, None, None, None),
+    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
+}
+jobs = d.get("jobs") or {}
+for jid, (name, perms, env, needs, cond) in MOVED.items():
+    j = jobs.get(jid)
+    if j is None:
+        bad.append("job %s is not in ci.yml" % jid); continue
+    got = (j.get("name"), j.get("permissions"), j.get("environment"), j.get("needs"), j.get("if"))
+    if got != (name, perms, env, needs, cond):
+        bad.append("job %s changed: %s" % (jid, got))
+    if "uses" in j:
+        bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
+if d.get("permissions") != {"contents": "read"}:
+    bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
+if d.get("concurrency") or any(j.get("concurrency") for j in jobs.values()):
+    bad.append("ci.yml gained a concurrency setting")
+if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
+    bad.append("ci.yml's events changed: %s" % d.get("on"))
+for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
+    if os.path.exists(os.path.join(root, ".github/workflows", gone)):
+        bad.append("%s still exists" % gone)
+if not os.path.exists(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")):
+    bad.append("dependabot-auto-merge.yml was moved, but its events differ from ci.yml's")
+# every required check is produced by a top-level job (name or id) of some workflow, on its scope's event
+names = {}
+for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
+    w = d if os.path.basename(wf) == "ci.yml" else yaml.load(open(wf), Loader=yaml.BaseLoader)
+    on = w.get("on") or {}
+    events = set(on) if isinstance(on, dict) else {on}
+    for jid, j in (w.get("jobs") or {}).items():
+        if "uses" in j:
+            continue
+        names.setdefault(j.get("name") or jid, set()).update(events)
+for rc in json.load(open(os.path.join(root, ".github/policy/required-checks.json")))["required_checks"]:
+    ev = "push" if rc["scope"] == "push" else "pull_request"
+    if rc["integration_id"] != 15368:
+        continue                                    # the review gate's App check, published by the App, not a job
+    if not any(n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0] for n in names) or \
+            not any(ev in evs for n, evs in names.items() if n == rc["context"] or n.split(" (")[0] == rc["context"].split(" (")[0]):
+        bad.append("required check %r is no longer produced on %s" % (rc["context"], ev))
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_ci() {
+  local f="$work/ci-$1.yml"
+  cp "$root/.github/workflows/ci.yml" "$f"
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_ci "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS ci:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL ci:$1 → $got, want $2 ($out)"; fi
+}
+case_ci real                     ok  ""
+case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
+case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
+case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
+case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"
+case_ci review-on-push-too       bad "d['jobs']['dependency-review'].pop('if')"
+case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
+case_ci concurrency-added        bad "d['concurrency'] = {'group': 'ci', 'cancel-in-progress': 'true'}"
+case_ci events-changed           bad "d['on'].pop('pull_request')"
+case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

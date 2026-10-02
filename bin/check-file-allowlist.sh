@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared allowlist logic for public-repo hygiene, called by both
 # .githooks/pre-commit (local, every commit) and
-# .github/workflows/hygiene.yml (CI backstop, catches anything committed
+# .github/workflows/ci.yml (CI backstop, catches anything committed
 # without the hook installed/enabled). One definition, so the two never
 # drift apart. Mirrors the same mechanism in fosterstack/www.
 #

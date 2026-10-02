@@ -3,7 +3,7 @@
 # row 76). A generic repository_dispatch: nothing here names what runs on the other side.
 #
 # Callers: dependabot-reviewer.yml after a HOLD (issue created/updated, check published) and
-# hygiene.yml's drift dispatch on main. The issue is the record; the dispatch is best effort:
+# ci.yml's drift dispatch on main. The issue is the record; the dispatch is best effort:
 # a missing token (the App not installed on ops) or a failed call is a ::warning:: and exit 1,
 # and every caller treats that as a warning, never as a failed hold. The fixer can always be
 # dispatched by hand with the same payload.

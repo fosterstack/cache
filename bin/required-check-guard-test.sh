@@ -47,7 +47,7 @@ check "list without required_checks = exit 2"     2 "no required_checks array"  
 # The hygiene step that opens/updates the `required-check drift` issue, run EXACTLY as
 # committed under GitHub's default `bash -e` with a recording gh stub (round-1 blocker:
 # -e ended the step at the guard's refusal, before any issue call).
-python3 - "$repo/.github/workflows/hygiene.yml" "$w/step.sh" <<'PY'
+python3 - "$repo/.github/workflows/ci.yml" "$w/step.sh" <<'PY'
 import sys, yaml
 wf = yaml.safe_load(open(sys.argv[1]))
 steps = wf["jobs"]["required-check-guard"]["steps"]
