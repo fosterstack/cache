@@ -249,6 +249,8 @@ mappings:
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
   - ac: REQ-REL-004-AC4
     evidence:
+      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-005-AC1
     evidence:

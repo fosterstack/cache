@@ -33,11 +33,16 @@ jobs:
     name: open the go.mod bump PR when a newer patch exists
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *' }}
     runs-on: ubuntu-latest
+    # The bump PR is opened with the auditor App's token (owner, Oct 2: the repository setting that would let Actions'
+    # own token open PRs stays off). The App's secrets live in the main-only `agent` environment; this job's own token
+    # stays read-only, and only the bump step receives the App token.
+    environment: agent
     permissions:
-      contents: write        # push the bump branch
-      pull-requests: write   # open the PR
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # the App token, via gh, is the only push credential
 
       - name: compare go.mod against the newest patch of a supported minor
         id: cmp
@@ -66,16 +71,31 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
+      - name: mint the auditor App's token (exactly the auditor's scope)
+        id: app-token
+        if: steps.cmp.outputs.bump == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: open (or recover) the bump PR
         if: steps.cmp.outputs.bump == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           CURRENT: ${{ steps.cmp.outputs.current }}
           LATEST: ${{ steps.cmp.outputs.latest }}
         # Recovery logic (orphaned-branch, closed/merged handling) lives in the
         # unit-tested bin/go-bump-open-pr.sh, exercised by
         # bin/go-bump-open-pr-test.sh in hygiene CI (audit R03).
-        run: ./bin/go-bump-open-pr.sh "$CURRENT" "$LATEST"
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          ./bin/go-bump-open-pr.sh "$CURRENT" "$LATEST"
 
   # Mutation testing (advisory), merged from mutation.yml (workflow consolidation, owner RATIFIED Oct 2): weekly on
   # its own schedule, never on the daily freshness schedule. test-strategy.md §6: coverage says the tests ran the

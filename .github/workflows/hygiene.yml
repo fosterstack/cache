@@ -90,6 +90,8 @@ jobs:
         run: bash bin/dependabot-reviewer-gather-test.sh
       - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
         run: bash bin/panel-test.sh
+      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
+        run: bash bin/go-freshness-wiring-test.sh
       - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
         run: bash bin/workflow-consolidation-test.sh
       - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
