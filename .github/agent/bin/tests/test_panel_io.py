@@ -575,6 +575,20 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertEqual(self.wf["jobs"]["audit"]["permissions"]["id-token"], "write")   # the step mints its own tokens
         self.assertIn("--token-budget 200000", j["run"])                             # REQ-AUD-6 AC2, in the workflow
 
+    def test_the_panel_judges_only_todays_completed_rescan_of_mains_head(self):   # both reviewers: R3 must-fix
+        sel = self.steps[self.step("gh run list --workflow main-candidate-rescan.yml")]["run"]
+        self.assertIn('gh run view "$rid" --json status --jq .status', sel)            # waits for completion
+        self.assertIn("rescan_status=", sel)
+        self.assertIn("rescan_created=", sel)
+        j = self.steps[self.step("auditor-panel.py judge")]
+        self.assertEqual(j["env"]["RESCAN_HEAD_BOUND"], "${{ steps.rescan.outputs.head_bound }}")
+        for must in ('[ "${RESCAN_HEAD_BOUND}" = true ] ||', '[ "${RESCAN_STATUS}" = completed ] ||',
+                     '[ "$age" -le 93600 ] ||', '[ -f "${RUNNER_TEMP}/panel/verdict.json" ] ||'):
+            self.assertIn(must, j["run"])
+        # every refusal comes before the judgment, and each exits non-zero
+        self.assertLess(j["run"].index("verdict.json\" ] ||"), j["run"].index("auditor-panel.py judge"))
+        self.assertEqual(j["run"].count("exit 1; }"), 4)
+
     def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # Codex r1 R3
         run = self.steps[self.step("auditor-panel.py judge")]["run"]
         self.assertIn("gh pr list --head auditor/panel --state open", run)

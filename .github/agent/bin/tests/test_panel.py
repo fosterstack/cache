@@ -1,10 +1,10 @@
-# proves: REQ-SCAN-007-AC1, REQ-SCAN-008-AC1, REQ-SCAN-008-AC2, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-008-AC7, REQ-SCAN-008-AC8, REQ-SCAN-008-AC9, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-SCAN-013-AC1, REQ-SCAN-013-AC3, REQ-SCAN-014-AC1, REQ-SCAN-014-AC4
+# proves: REQ-SCAN-007-AC1, REQ-SCAN-008-AC1, REQ-SCAN-008-AC2, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-008-AC7, REQ-SCAN-008-AC8, REQ-SCAN-008-AC9, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-SCAN-013-AC1, REQ-SCAN-013-AC3, REQ-SCAN-014-AC1, REQ-SCAN-014-AC4, REQ-SCAN-009-AC4, REQ-SCAN-013-AC2
 """The scanner panel's audits in the daily auditor (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 2-3).
 
 Offline: stand-in auditors play the two seats; the rescan's verdict.json and the evidence bundles are fixtures.
 Every test asserts an effect on the judgment, the day's state, or the text that would be published.
 """
-import copy, importlib.util, json, os, sys, unittest, unittest.mock
+import copy, importlib.util, io, json, os, sys, unittest, unittest.mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
@@ -447,6 +447,84 @@ class Day(unittest.TestCase):
         a = Seat({})
         st, out = self.day(verdict(finding(seen=("grype", "scout"))), a=a, b=a)
         self.assertEqual((a.seen, out["issue"]), ([], ""))
+
+
+class Reversals(unittest.TestCase):                                         # REQ-SCAN-009-AC4, REQ-SCAN-013-AC2
+    """Codex/Sonnet residual R1: reversal and settlement inputs beyond visible corroboration."""
+
+    def stated(self):
+        """Day 1: a finding at OLD judged false with evidence and stated not_affected."""
+        st, out = P.apply_day(verdict(finding(ver=OLD)), P.new_state(), bundles, {"entries": []},
+                              {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}, "2026-10-03", SCORING)
+        self.assertEqual(out["vex"][0]["status"], "not_affected")
+        return st
+
+    def test_a_scanner_hidden_by_our_own_statement_still_reverses_it(self):
+        v = verdict(images=["fips-arm64"])
+        v["vex_covered"] = [{"image": "fips-arm64", "scanner": "inspector", "id": "CVE-2099-0002", "package": "tzdata",
+                             "version": OLD}]
+        st, out = P.apply_day(v, self.stated(), bundles, {"entries": []}, {"A": Seat({}), "B": Seat({})},
+                              "2026-10-04", SCORING)
+        self.assertEqual([(x["status"]) for x in out["vex"]], ["affected"])
+        self.assertIn("hidden by our statement", out["misses"][0]["by"])
+        self.assertIn("audit miss", out["issue"])
+        self.assertEqual((st["false"], [x["id"] for x in st["real"]]), ([], ["CVE-2099-0002"]))
+
+    def test_an_advisory_for_a_version_we_now_ship_reverses(self):
+        now = BUNDLE.replace("2026c-0+deb13u1", OLD)
+        asked = []
+        st, out = P.apply_day(verdict(images=["fips-arm64"]), self.stated(), lambda f: now, {"entries": []},
+                              {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING,
+                              advisory=lambda f: asked.append(f["id"]) or True)
+        self.assertEqual(asked, ["CVE-2099-0002"])
+        self.assertEqual(out["misses"][0]["by"], "an advisory names the package we ship")
+        self.assertEqual(out["vex"][0]["status"], "affected")
+
+    def test_a_statement_contradicted_by_the_images_is_turned_without_an_advisory(self):
+        now = BUNDLE.replace("2026c-0+deb13u1", OLD)
+        st, out = P.apply_day(verdict(images=["fips-arm64"]), self.stated(), lambda f: now, {"entries": []},
+                              {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING, advisory=lambda f: False)
+        self.assertEqual((out["vex"][0]["status"], out["misses"]), ("affected", []))
+        self.assertTrue(any("now contain" in o for o in out["owner"]))
+        self.assertFalse(st["false"][0]["vex"])
+
+    def test_nothing_changes_while_the_images_still_lack_it(self):
+        st0 = self.stated()
+        st, out = P.apply_day(verdict(images=["fips-arm64"]), st0, bundles, {"entries": []},
+                              {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING, advisory=lambda f: True)
+        self.assertEqual((out["vex"], out["misses"]), ([], []))
+
+    def test_a_fix_shipping_settles_the_debate(self):
+        st = P.new_state()
+        st["debates"].append({"image": "fips-arm64", "id": "CVE-1", "package": "tzdata", "version": "2025a-1",
+                              "sides": {"A": "real", "B": "false"}, "outcome": "agreed-false", "prevailing": "B",
+                              "settled": None, "rounds": []})
+        st, _ = P.apply_day(verdict(images=["fips-arm64"]), st, bundles, {"entries": []},
+                            {"A": Seat({}), "B": Seat({})}, "2026-10-04", SCORING)
+        self.assertEqual(st["debates"][0]["settled"]["by"], "fix-shipped")
+        self.assertEqual(st["scores"], {"A": 1, "B": -2})
+
+    def test_osv_is_asked_for_the_judged_version_only(self):
+        seen = []
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def opener(body):
+            def o(req, timeout):
+                seen.append(json.loads(req.data))
+                return Resp(json.dumps(body).encode())
+            return o
+        f = finding(ver=OLD)
+        self.assertTrue(P.osv_advisory(f, opener=opener({"vulns": [{"id": "DSA-1", "aliases": ["cve-2099-0002"]}]})))
+        self.assertEqual(seen[0], {"package": {"purl": "pkg:deb/debian/tzdata@2025b-0+deb13u1"}})
+        self.assertFalse(P.osv_advisory(f, opener=opener({"vulns": [{"id": "CVE-2099-9999"}]})))
+        self.assertIsNone(P.osv_advisory(f, opener=lambda r, timeout: (_ for _ in ()).throw(OSError("offline"))))
+        self.assertIsNone(P.osv_advisory(finding(purls=())))
 
 
 class Scoring(unittest.TestCase):                                           # rule 13

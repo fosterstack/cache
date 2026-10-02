@@ -89,6 +89,16 @@ jobs:
           [ -n "$rid" ] || { echo "::error::no main-candidate-rescan run to consume" >&2; exit 1; }
           echo "selected rescan run: ${rid}"
           echo "run_id=${rid}" >> "$GITHUB_OUTPUT"
+          # wait (bounded) for the selected run to finish, so its artifacts are complete; the scanner panel judges only
+          # a COMPLETED run of main's head created within the last day (checked by the panel step below)
+          for _ in $(seq 1 90); do
+            st=$(gh run view "$rid" --json status --jq .status)
+            [ "$st" = completed ] && break
+            echo "rescan run ${rid} is ${st}; waiting"; sleep 60
+          done
+          meta=$(gh run view "$rid" --json status,createdAt,headSha)
+          echo "rescan_status=$(printf '%s' "$meta" | jq -r .status)" >> "$GITHUB_OUTPUT"
+          echo "rescan_created=$(printf '%s' "$meta" | jq -r .createdAt)" >> "$GITHUB_OUTPUT"
           mkdir -p "${RUNNER_TEMP}/rescan" "${RUNNER_TEMP}/rescan-reports"
           gh run download "$rid" -n oci-candidate -D "${RUNNER_TEMP}/rescan" \
             || gh run download "$rid" -D "${RUNNER_TEMP}/rescan"
@@ -291,8 +301,18 @@ jobs:
           PANEL_AUDIT_B_PROJECT_ID: ${{ secrets.PANEL_AUDIT_B_PROJECT_ID }}
           PANEL_AUDIT_B_MODEL: ${{ secrets.PANEL_AUDIT_B_MODEL }}
           GH_TOKEN: ${{ github.token }}
+          RESCAN_HEAD_BOUND: ${{ steps.rescan.outputs.head_bound }}
+          RESCAN_STATUS: ${{ steps.rescan.outputs.rescan_status }}
+          RESCAN_CREATED: ${{ steps.rescan.outputs.rescan_created }}
         run: |
           set -euo pipefail
+          # the panel judges only today's completed rescan of main's head: never a stale, unfinished or other-head run
+          # (an unusable run fails this step visibly; the next daily run judges again)
+          [ "${RESCAN_HEAD_BOUND}" = true ] || { echo "::error::scanner panel: no rescan run of main's head to judge" >&2; exit 1; }
+          [ "${RESCAN_STATUS}" = completed ] || { echo "::error::scanner panel: the rescan run did not finish in time" >&2; exit 1; }
+          age=$(( $(date -u +%s) - $(date -u -d "${RESCAN_CREATED}" +%s) ))
+          [ "$age" -le 93600 ] || { echo "::error::scanner panel: the rescan run is ${age}s old (more than a day)" >&2; exit 1; }
+          [ -f "${RUNNER_TEMP}/panel/verdict.json" ] || { echo "::error::scanner panel: the rescan run has no panel-evidence" >&2; exit 1; }
           seats='${{ (github.event_name == 'schedule' || inputs.adjudicator == 'real') && 'real' || 'none' }}'
           # yesterday's judgments, debates and scores: the OPEN panel PR's branch (pending, not yet merged) if there is
           # one, else main's file; a closed or rejected branch never steers the run

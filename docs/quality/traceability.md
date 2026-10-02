@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 69 |
 | Acceptance criteria | 141 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 123 |
+| ACs with mapped evidence | 125 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -754,7 +754,7 @@ A unique finding judged false with evidence from the image shall get a not_affec
 | REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC2 | Given a unique finding judged false only by default (no audit cited evidence); when the panel ends; then it is logged, raises no alarm, and gets no public statement | unit |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC3 | Given any judged finding; when the panel ends; then it is logged with each audit's reasoning | unit |  | approved | 1 item(s) |
-| REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | none mapped |
+| REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC5 | Given the audits; when they run; then they run in the auditor's daily run (auditor.yml), right after the rescan, in one of its steps; no separate workflow and no deferral to another day; the rescan stays mechanical (scanners, counts, quorum, seen by N of M, the two-or-more issue rule) and judges no unique finding (owner, Oct 3) | ci-workflow |  | approved | 3 item(s) |
 
 ### REQ-SCAN-010 — VEX in three forms
@@ -806,7 +806,7 @@ Every debate shall be recorded; it settles only when the real answer arrives; a 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-013-AC1 | Given a debate; when it ends; then it is recorded: both cases, both verdicts, and which vendor argued which side | unit |  | approved | 1 item(s) |
-| REQ-SCAN-013-AC2 | Given a recorded debate; when the daily run looks at it; then it settles only when the real answer arrives (another scanner reports the finding, an advisory names the package we ship, or a fix ships); until then it is unsettled | unit |  | approved | none mapped |
+| REQ-SCAN-013-AC2 | Given a recorded debate; when the daily run looks at it; then it settles only when the real answer arrives (another scanner reports the finding, an advisory names the package we ship, or a fix ships); until then it is unsettled | unit |  | approved | 1 item(s) |
 | REQ-SCAN-013-AC3 | Given a settled debate; when it is scored; then the vendor that argued the true side scores +1; a vendor that convinced the other of a wrong answer scores -2; an unsettled debate scores nothing | unit |  | approved | 1 item(s) |
 | REQ-SCAN-013-AC4 | Given the scores; when they change; then they are kept per vendor in the repository and change only through a pull request | ci-workflow |  | approved | 1 item(s) |
 

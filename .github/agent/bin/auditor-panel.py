@@ -388,7 +388,33 @@ def _not_in_image(bundles, f, image):
     return have is not None and ver not in have and (bool(have) or absence_is_complete(b, g))
 
 
-def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
+def osv_advisory(f, opener=urllib.request.urlopen):
+    """Does a published advisory (OSV) name this exact package version for this CVE? True / False, or None when it
+    cannot be asked or answered (no purl of the judged version, a network error): None is never a "yes"."""
+    purls = purls_for(f)
+    if not purls:
+        return None
+    want = str(f.get("id") or "").upper()
+    try:
+        for p in purls:
+            req = urllib.request.Request("https://api.osv.dev/v1/query", method="POST",
+                                         data=json.dumps({"package": {"purl": urllib.parse.unquote(p.split("?", 1)[0])}}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with opener(req, timeout=30) as r:
+                for v in (json.load(r).get("vulns") or []):
+                    if want in [str(x).upper() for x in [v.get("id")] + list(v.get("aliases") or [])]:
+                        return True
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _present_in(bundles, f, images):
+    ver = _ver(f.get("version")).lower()
+    return [img for img in images if ver in (installed_versions(bundles(dict(f, image=img)), dict(f, image=img)) or ())]
+
+
+def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advisory=None):
     st = copy.deepcopy(state)
     images = sorted((verdict.get("images") or {}).keys())      # every image the rescan built today
     out = {"issue": "", "vex": [], "profiles": [], "owner": [], "misses": [], "log": []}
@@ -480,6 +506,51 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
                 out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but no "
                                     "scanner gave its package identity, so no VEX statement was written: %s" %
                                     (f["id"], f["image"], f["package"], f["version"], "; ".join(quotes)[:300]))
+    seen_today = {key_of(f) for f in verdict.get("findings") or []}
+
+    def reverse(k, entry, by, kind):
+        out["misses"].append(dict(_ident(entry), seen_by=entry.get("seen_by") or [], by=by))
+        if entry.get("vex"):
+            out["vex"].append(dict(_ident(entry), status="affected", purls=list(entry.get("purls") or []),
+                                   impact_statement="%s after the audits judged it not affected (audit miss)" % by))
+        false_mem.pop(k, None)
+        real_mem[k] = dict(_ident(entry), seen_by=entry.get("seen_by") or [], since=today, last_seen=today)
+        reported.append(entry)
+        events.append(dict(_ident(entry), kind=kind))
+    # (1) a finding our own statement hides: the scanners whose results the tally filters record what they covered
+    covered = {}
+    for c in verdict.get("vex_covered") or []:
+        covered.setdefault((str(c.get("id")).upper(), str(c.get("package")).lower(), _ver(c.get("version")).lower()),
+                           set()).add(c.get("scanner"))
+    for k, e in sorted(false_mem.items()):
+        others = covered.get((str(e["id"]).upper(), str(e["package"]).lower(), _ver(e["version"]).lower()), set())
+        if e.get("vex") and others - set(e.get("seen_by") or []):
+            e["seen_by"] = sorted(set(e.get("seen_by") or []) | others)
+            reverse(k, e, "another scanner reported it (hidden by our statement)", "corroborated")
+    # (2) every remembered false judgment is re-checked against today's images
+    for k, e in sorted(false_mem.items()):
+        if k in seen_today or not images:
+            continue
+        present = _present_in(bundles, e, images)
+        if not present:
+            continue
+        if advisory and advisory(e):
+            reverse(k, e, "an advisory names the package we ship", "advisory")
+        elif e.get("vex"):          # the statement says absent; an image now has it: it cannot stand
+            out["vex"].append(dict(_ident(e), status="affected", purls=list(e.get("purls") or []),
+                                   impact_statement="an image now contains this package version; under investigation"))
+            e["vex"] = False
+            out["owner"].append("Scanner panel: %s (%s %s) was stated not affected, but %s now contain(s) that version; "
+                                "the statement is turned affected." % (e["id"], e["package"], e["version"], ", ".join(present)))
+    # (3) a fix shipped: a debated finding is gone and the images carry another version of the package
+    for d in st["debates"]:
+        if d.get("settled") or key_of(d) in seen_today or not images:
+            continue
+        vers = set()
+        for img in images:
+            vers |= installed_versions(bundles(dict(d, image=img)), dict(d, image=img)) or set()
+        if vers and _ver(d["version"]).lower() not in vers:
+            events.append(dict(_ident(d), kind="fix-shipped"))
     st["false"] = sorted(false_mem.values(), key=lambda x: key_of(x))
     st["real"] = sorted(real_mem.values(), key=lambda x: key_of(x))
     st = settle(st, events, today)
@@ -803,7 +874,7 @@ def _load_json(path, default=None):
         return default
 
 
-def cmd_judge(a, seats=None, bundles=None):
+def cmd_judge(a, seats=None, bundles=None, advisory=None):
     verdict = _load_json(a.verdict)
     if not isinstance(verdict, dict) or not isinstance(verdict.get("findings"), list):
         sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s); nothing was judged\n" % a.verdict)
@@ -817,7 +888,8 @@ def cmd_judge(a, seats=None, bundles=None):
         return 2
     budget = Budget(a.token_budget)
     seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}
-    st, out = apply_day(verdict, state, bundles or Bundles(a.oci), profiles, seats, a.today, scoring_text())
+    st, out = apply_day(verdict, state, bundles or Bundles(a.oci), profiles, seats, a.today, scoring_text(),
+                        advisory=advisory if advisory is not None else (osv_advisory if a.seats == "real" else None))
     st, out = scrub(st), scrub(out)      # everything written below is public (artifact, state file, PR)
     os.makedirs(a.out, exist_ok=True)
     for name, obj in (("state.json", st), ("day.json", out)):

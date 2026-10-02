@@ -34,7 +34,3 @@ unmapped:
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
   - ac: REQ-SCAN-012-AC5
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-SCAN-009-AC4
-    reason: "PR 2 implements and tests the reversal when another scanner reports a finding judged false, same day or later, with the audit miss reported to the owner and the panel's own statement turned affected (the auditor's panel tests); not yet covered: the advisory trigger (no advisory feed is read), and a finding a VEX statement covers, which the scanners and the tally filter before the reversal check (LR-55)"
-  - ac: REQ-SCAN-013-AC2
-    reason: "PR 2 settles a debate on all three triggers (test_panel.py tests settle() for each), and the daily run produces the corroboration trigger, same day or across days; the advisory and fix-shipped triggers need an advisory feed and the image's package list, not yet read"
