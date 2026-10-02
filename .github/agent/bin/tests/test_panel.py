@@ -1,6 +1,5 @@
-"""Proves (traced in the auditor's docs/scanner-panel-trace.md; REQ-AUD-18 AC1): REQ-SCAN-007-AC1, REQ-SCAN-008-AC1, REQ-SCAN-008-AC2, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-008-AC7, REQ-SCAN-008-AC8, REQ-SCAN-008-AC9, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-SCAN-013-AC1, REQ-SCAN-013-AC3, REQ-SCAN-014-AC1, REQ-SCAN-014-AC4.
-
-The scanner panel's audits in the daily auditor (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 2-3).
+# proves: REQ-SCAN-007-AC1, REQ-SCAN-008-AC1, REQ-SCAN-008-AC2, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-008-AC7, REQ-SCAN-008-AC8, REQ-SCAN-008-AC9, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-SCAN-013-AC1, REQ-SCAN-013-AC3, REQ-SCAN-014-AC1, REQ-SCAN-014-AC4
+"""The scanner panel's audits in the daily auditor (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 2-3).
 
 Offline: stand-in auditors play the two seats; the rescan's verdict.json and the evidence bundles are fixtures.
 Every test asserts an effect on the judgment, the day's state, or the text that would be published.

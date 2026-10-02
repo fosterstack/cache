@@ -3086,7 +3086,7 @@ print("OK" if ("owner-decision issue: skipped — a — CVEs: CVE-AAA" in pl and
 { eq "$csr" "OK"; } && ok || no "distinct skipped owner items each listed" "$csr"
 
 echo "=== REQ-AUD-18 engineering hygiene ==="
-begin "req18-ac1-everything-under-agent" "the layout check passes the real tree and FAILS an auditor-named path or a file referring to .github/agent/ outside it; workflows, the allowlist and the generated outputs are the only exemptions"
+begin "req18-ac1-everything-under-agent" "the layout check passes the real tree and FAILS an auditor-named path or a file referring to .github/agent/ outside it; workflows, the allowlist, the generated outputs and the two traceability files (amendment, owner Oct 2) are the only exemptions"
 LC="$repo/$BIN/auditor-layout-check.py"
 git ls-files 2>/dev/null | "$PY" "$LC" >/dev/null 2>&1; real=$?
 lr="$WORK/req18-ac1"; rm -rf "$lr"; mkdir -p "$lr/docs"; printf 'see .github/agent/bin/auditor-run.py\n' > "$lr/docs/notes.md"; printf 'plain\n' > "$lr/docs/other.md"
@@ -3100,8 +3100,14 @@ cp "$repo/$BIN/auditor-report.py" "$lr/.vex/auditor-helper.md"; cp "$repo/$BIN/a
 printf '.vex/auditor-helper.md\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; smug1=$?
 printf '.auditor/proposals/p2.json\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; smug2=$?
 old="$(git ls-files 'bin/auditor-*' 'docs/quality/cve-auditor-*' 2>/dev/null | wc -l | tr -d ' ')"
-{ eq "$real" "0" && eq "$named" "1" && eq "$refers" "1" && eq "$exempt" "0" && eq "$smug1" "1" && eq "$smug2" "1" && eq "$old" "0"; } \
-  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old"
+# the REQ-AUD-18 AC1 amendment (owner, Oct 2): the two traceability files may name auditor test paths; no other
+# test-evidence file may
+mkdir -p "$lr/test-evidence"; for f in mappings unmapped other; do printf 'ref: .github/agent/bin/tests/test_x.py\n' > "$lr/test-evidence/$f.yaml"; done
+printf 'test-evidence/mappings.yaml\ntest-evidence/unmapped.yaml\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; trace=$?
+printf 'test-evidence/other.yaml\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; trace_other=$?
+{ eq "$real" "0" && eq "$named" "1" && eq "$refers" "1" && eq "$exempt" "0" && eq "$smug1" "1" && eq "$smug2" "1" && eq "$old" "0" \
+  && eq "$trace" "0" && eq "$trace_other" "1"; } \
+  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other"
 
 begin "req18-ac1-suites-wired-into-required-allowlist-job" "hygiene.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
 hy="$(python3 - <<'HH'

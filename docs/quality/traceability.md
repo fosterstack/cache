@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 69 |
 | Acceptance criteria | 141 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 102 |
+| ACs with mapped evidence | 123 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -721,7 +721,7 @@ The repository shall record each scanner's known behaviors, each citing the find
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-007-AC1 | Given the scanner profiles file; when it is validated; then every entry names the scanner, the behavior, the finding that showed it, and the evidence from the image; an entry without a cited finding or image evidence fails | unit |  | approved | none mapped |
+| REQ-SCAN-007-AC1 | Given the scanner profiles file; when it is validated; then every entry names the scanner, the behavior, the finding that showed it, and the evidence from the image; an entry without a cited finding or image evidence fails | unit |  | approved | 1 item(s) |
 | REQ-SCAN-007-AC2 | Given a change to a scanner profile; when it is made; then it is a reviewed pull request like any other change; nothing is recorded from vendor claims alone | inspection |  | approved | 1 item(s) |
 
 ### REQ-SCAN-008 — Unique findings are presumed false positives
@@ -732,16 +732,16 @@ A unique finding shall be presumed false: one audit decides when it matches a re
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-008-AC1 | Given a unique finding that matches a recorded behavior in that scanner's profile; when the panel judges it; then one audit decides; it is real only if that audit confirms from the image itself (package database, binary build info, file contents) that the named package and version are present | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC2 | Given a unique finding that matches no recorded behavior; when the panel judges it; then two independent audits, one from each of two different vendors, judge it; it is real only if both say real, each citing evidence from the image; if either says false or cites no evidence, it is false | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC3 | Given the two audits; when they are reached; then both go through keyless federation from CI with no stored API key; vendor and model names live only in variables, never in public text | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-008-AC4 | Given an audit that errors; when the panel judges the finding; then the error counts as citing no evidence and is reported in the run; the next daily rescan judges the finding again because it is still present | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC5 | Given a unique finding the audits confirm real; when the panel ends; then it proceeds under rule 5, and the audit's explanation of why only this scanner found it is proposed as a profile entry through a PR; with no explanation the finding is still real and an unexplained entry is proposed and flagged to the owner | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-008-AC6 | Given a merged profile entry; when the next matching unique finding is judged; then it takes the one-audit path | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC7 | Given round 1 of the two audits ends in disagreement; when the finding is judged; then rounds 2-4 run as a debate (rule 8 c, owner Oct 2): each auditor investigates and builds its case from evidence in the image, delivers its case, reads the opponent's case and gives a final verdict; the debate stops as soon as they agree | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC8 | Given a debate; when an auditor argues; then it has been told the rule-13 scoring before it argues | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC9 | Given a debate still in disagreement after round 4; when the finding is judged; then rule 8 b applies: false by default, and no public statement without evidence | unit |  | approved | none mapped |
-| REQ-SCAN-008-AC10 | Given the debates; when they run; then they run in the auditor's daily run, like all audits | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-008-AC1 | Given a unique finding that matches a recorded behavior in that scanner's profile; when the panel judges it; then one audit decides; it is real only if that audit confirms from the image itself (package database, binary build info, file contents) that the named package and version are present | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC2 | Given a unique finding that matches no recorded behavior; when the panel judges it; then two independent audits, one from each of two different vendors, judge it; it is real only if both say real, each citing evidence from the image; if either says false or cites no evidence, it is false | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC3 | Given the two audits; when they are reached; then both go through keyless federation from CI with no stored API key; vendor and model names live only in variables, never in public text | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC4 | Given an audit that errors; when the panel judges the finding; then the error counts as citing no evidence and is reported in the run; the next daily rescan judges the finding again because it is still present | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC5 | Given a unique finding the audits confirm real; when the panel ends; then it proceeds under rule 5, and the audit's explanation of why only this scanner found it is proposed as a profile entry through a PR; with no explanation the finding is still real and an unexplained entry is proposed and flagged to the owner | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC6 | Given a merged profile entry; when the next matching unique finding is judged; then it takes the one-audit path | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC7 | Given round 1 of the two audits ends in disagreement; when the finding is judged; then rounds 2-4 run as a debate (rule 8 c, owner Oct 2): each auditor investigates and builds its case from evidence in the image, delivers its case, reads the opponent's case and gives a final verdict; the debate stops as soon as they agree | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC8 | Given a debate; when an auditor argues; then it has been told the rule-13 scoring before it argues | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC9 | Given a debate still in disagreement after round 4; when the finding is judged; then rule 8 b applies: false by default, and no public statement without evidence | unit |  | approved | 1 item(s) |
+| REQ-SCAN-008-AC10 | Given the debates; when they run; then they run in the auditor's daily run, like all audits | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-SCAN-009 — What false does
 
@@ -751,11 +751,11 @@ A unique finding judged false with evidence from the image shall get a not_affec
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-009-AC2 | Given a unique finding judged false only by default (no audit cited evidence); when the panel ends; then it is logged, raises no alarm, and gets no public statement | unit |  | approved | none mapped |
-| REQ-SCAN-009-AC3 | Given any judged finding; when the panel ends; then it is logged with each audit's reasoning | unit |  | approved | none mapped |
+| REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC2 | Given a unique finding judged false only by default (no audit cited evidence); when the panel ends; then it is logged, raises no alarm, and gets no public statement | unit |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC3 | Given any judged finding; when the panel ends; then it is logged with each audit's reasoning | unit |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | none mapped |
-| REQ-SCAN-009-AC5 | Given the audits; when they run; then they run in the auditor's daily run (auditor.yml), right after the rescan, in one of its steps; no separate workflow and no deferral to another day; the rescan stays mechanical (scanners, counts, quorum, seen by N of M, the two-or-more issue rule) and judges no unique finding (owner, Oct 3) | ci-workflow |  | approved | 2 item(s) |
+| REQ-SCAN-009-AC5 | Given the audits; when they run; then they run in the auditor's daily run (auditor.yml), right after the rescan, in one of its steps; no separate workflow and no deferral to another day; the rescan stays mechanical (scanners, counts, quorum, seen by N of M, the two-or-more issue rule) and judges no unique finding (owner, Oct 3) | ci-workflow |  | approved | 3 item(s) |
 
 ### REQ-SCAN-010 — VEX in three forms
 
@@ -805,10 +805,10 @@ Every debate shall be recorded; it settles only when the real answer arrives; a 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-013-AC1 | Given a debate; when it ends; then it is recorded: both cases, both verdicts, and which vendor argued which side | unit |  | approved | none mapped |
+| REQ-SCAN-013-AC1 | Given a debate; when it ends; then it is recorded: both cases, both verdicts, and which vendor argued which side | unit |  | approved | 1 item(s) |
 | REQ-SCAN-013-AC2 | Given a recorded debate; when the daily run looks at it; then it settles only when the real answer arrives (another scanner reports the finding, an advisory names the package we ship, or a fix ships); until then it is unsettled | unit |  | approved | none mapped |
-| REQ-SCAN-013-AC3 | Given a settled debate; when it is scored; then the vendor that argued the true side scores +1; a vendor that convinced the other of a wrong answer scores -2; an unsettled debate scores nothing | unit |  | approved | none mapped |
-| REQ-SCAN-013-AC4 | Given the scores; when they change; then they are kept per vendor in the repository and change only through a pull request | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-013-AC3 | Given a settled debate; when it is scored; then the vendor that argued the true side scores +1; a vendor that convinced the other of a wrong answer scores -2; an unsettled debate scores nothing | unit |  | approved | 1 item(s) |
+| REQ-SCAN-013-AC4 | Given the scores; when they change; then they are kept per vendor in the repository and change only through a pull request | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-SCAN-014 — Primary seat
 
@@ -818,10 +818,10 @@ The primary auditor for single audits shall be vendor A by default; vendor B tak
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-014-AC1 | Given the two vendors' scores; when a single audit (rule 8 a) needs its auditor; then the primary seat is vendor A by default; vendor B takes it when its score leads by 3 or more; vendor A takes it back when its score leads by 3 or more; a lead under 3 changes nothing | unit |  | approved | none mapped |
-| REQ-SCAN-014-AC2 | Given a seat change; when it happens; then it is reported to the owner and handed to the lane as a pull request | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-014-AC3 | Given a seat change; when it happens; then the daily CVE auditor stays with its configured provider | unit |  | approved | none mapped |
-| REQ-SCAN-014-AC4 | Given public text about audits, debates, scores and seats; when it is written (issues, PRs, evidence, logs, the score file); then it says primary/second auditor or vendor A/vendor B; vendor and model names come only from variables | unit |  | approved | none mapped |
+| REQ-SCAN-014-AC1 | Given the two vendors' scores; when a single audit (rule 8 a) needs its auditor; then the primary seat is vendor A by default; vendor B takes it when its score leads by 3 or more; vendor A takes it back when its score leads by 3 or more; a lead under 3 changes nothing | unit |  | approved | 1 item(s) |
+| REQ-SCAN-014-AC2 | Given a seat change; when it happens; then it is reported to the owner and handed to the lane as a pull request | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-014-AC3 | Given a seat change; when it happens; then the daily CVE auditor stays with its configured provider | unit |  | approved | 1 item(s) |
+| REQ-SCAN-014-AC4 | Given public text about audits, debates, scores and seats; when it is written (issues, PRs, evidence, logs, the score file); then it says primary/second auditor or vendor A/vendor B; vendor and model names come only from variables | unit |  | approved | 1 item(s) |
 
 ## Licensing
 

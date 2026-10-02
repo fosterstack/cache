@@ -387,3 +387,67 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-007-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC10
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-008-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-008-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-008-AC6
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC7
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC8
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-008-AC9
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-009-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-009-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-009-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-013-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-013-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-013-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-014-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-014-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-014-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+  - ac: REQ-SCAN-014-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }

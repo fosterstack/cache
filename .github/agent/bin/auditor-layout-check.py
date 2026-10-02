@@ -24,6 +24,9 @@ EXEMPT = [
      "the allowlist and its regressions (the allowlist entries)"),
     (r"^\.githooks/pre-commit$",
      "the allowlist's pre-commit hook"),
+    (r"^test-evidence/(mappings|unmapped)\.yaml$",
+     "the requirements traceability files: they name test paths as metadata and hold no auditor code "
+     "(REQ-AUD-18 AC1 amendment, owner Oct 2)"),
     # exactly the output contract (auditor-run.py stages these paths; the allowlist scopes their
     # change to auditor/ branches) — never a directory wildcard, and a .json one must parse.
     (r"^(\.vex/fosterstack-cache\.openvex\.json|\.snyk|osv-scanner\.toml|\.auditor/accepted-items\.json"

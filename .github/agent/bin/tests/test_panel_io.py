@@ -1,6 +1,5 @@
-"""Proves (traced in the auditor's docs/scanner-panel-trace.md; REQ-AUD-18 AC1): REQ-SCAN-008-AC3, REQ-SCAN-008-AC5, REQ-SCAN-008-AC10, REQ-SCAN-009-AC1, REQ-SCAN-009-AC5, REQ-SCAN-013-AC4, REQ-SCAN-014-AC2, REQ-SCAN-014-AC3.
-
-The scanner panel audits' input and output (scanner-panel rules 8, 9, 13, 14; owner Oct 2-3).
+# proves: REQ-SCAN-008-AC3, REQ-SCAN-008-AC5, REQ-SCAN-008-AC10, REQ-SCAN-009-AC1, REQ-SCAN-009-AC5, REQ-SCAN-013-AC4, REQ-SCAN-014-AC2, REQ-SCAN-014-AC3
+"""The scanner panel audits' input and output (scanner-panel rules 8, 9, 13, 14; owner Oct 2-3).
 
 The evidence bundle is read from a synthetic OCI archive; both seats run against fake SDK modules (no network, no
 key); delivery runs against a fake git/gh that records every command. Asserts: the evidence an auditor may quote,
