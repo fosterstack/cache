@@ -75,8 +75,19 @@ every image input we pass. What a pinned commit references on its own (e.g. the 
 inside ossf/scorecard-action's action.yaml) is fixed by our pin to that commit and is that action's
 supply chain, not ours; it is not read here, and no action is excepted by name.
 
-Outside this check (the review pass covers it): images a `run:` script pulls through a shell variable,
-and binaries a pinned action downloads by version.
+Outside this check (the review pass covers it): images a `run:` script names — through a shell variable
+OR literally (`docker run|pull|create`, `skopeo`, `crane`) — and binaries a pinned action downloads by version.
+Reason (documented exclusion, row 78; Codex pin pass on #156): this check reads YAML, not shell; a shell
+command's image argument has no fixed position (flags, variables, local names made by `docker tag` or
+`skopeo copy`), so a parser here would either miss real images or fail on local ones. The boundary above
+still binds every image a script names: each row-78 review pass answers it, and on Oct 2 every such image in
+the workflows is a digest, a variable bound to a digest, or a local build of our own bytes. A parser for the
+literal cases is proposed separately (outbox), as a security-tier change with its own read-back.
+Also outside, by design (row 78 documented exclusions, same pass): `runs-on` labels — GitHub-hosted runner
+images are GitHub's to build and cannot be named by digest; Go tools a script installs by module version
+(`go install …@vX.Y.Z`) — the module proxy serves them checksum-verified against the Go checksum database,
+so a version names fixed bytes; and the Go toolchain `setup-go` selects with `check-latest` — deliberately the
+newest patch of the line go.mod names (the go-freshness lane), each download verified by the action.
 
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
