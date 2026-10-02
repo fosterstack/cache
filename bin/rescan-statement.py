@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Extracted, testable core of the daily image rescan (.github/workflows/
-# daily-rescan.yml): the platform-child enumeration validation, the
+# main-candidate-rescan.yml's rescan job, merged from daily-rescan.yml): the platform-child enumeration validation, the
 # per-child merge/normalization of scanner findings, and the exit-code
 # classification that decides the durable statement's verdict.
 #

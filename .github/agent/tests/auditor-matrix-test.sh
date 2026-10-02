@@ -146,7 +146,7 @@ for w in .github/workflows/*.yml .github/workflows/*.yaml; do
   [ -e "$w" ] || continue
   $YAML load "$w" >/dev/null 2>"$WORK/yerr" || { echo "PREFLIGHT: invalid workflow YAML in $w — $(tail -1 "$WORK/yerr")" >&2; exit 2; }
 done
-for w in .github/workflows/main-candidate-rescan.yml .github/workflows/daily-rescan.yml "$F/testlib/workflows/quoted-on.yml"; do
+for w in .github/workflows/main-candidate-rescan.yml "$F/testlib/workflows/quoted-on.yml"; do
   t="$($YAML shape "$w" 2>/dev/null | "$PY" -c 'import json,sys;print(",".join(sorted(json.load(sys.stdin)["triggers"])))' 2>/dev/null)"
   [ "$t" = "schedule,workflow_dispatch" ] || { echo "PREFLIGHT: PyYAML reader mis-parsed $w ($t)" >&2; exit 2; }
 done

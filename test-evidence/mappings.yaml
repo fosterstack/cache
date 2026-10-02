@@ -86,7 +86,7 @@ mappings:
       - { type: manual, ref: "v0.1.0 anonymous-pull verification (cache PR #28 body): all six published tags returned HTTP 200 to a fresh anonymous registry token, 2026-09-07; the release.yml gate now enforces it before undrafting" }
   - ac: REQ-REL-003-AC1
     evidence:
-      - { type: inspection, ref: ".vex/fosterstack-cache.openvex.json v3 consumed by every scanner in release.yml, daily-rescan.yml and rescan-v010.yml; .grype.yaml ignore list empty since 2026-09-10 (PR #44)" }
+      - { type: inspection, ref: ".vex/fosterstack-cache.openvex.json v3 consumed by every scanner in release.yml and main-candidate-rescan.yml (its published-release rescan, merged from daily-rescan.yml; the v0.1.0 one-shot ran as run 34551059239); .grype.yaml ignore list empty since 2026-09-10 (PR #44)" }
   - ac: REQ-LIC-001-AC1
     evidence:
       - { type: manual, ref: "LICENSE is MIT; v0.1.0 artifact inventory shows one public channel, no gated artifact, no license-key gate (verified 2026-09-11)" }
