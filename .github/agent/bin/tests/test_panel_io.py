@@ -1,4 +1,4 @@
-"""Proves (traced in the auditor's docs/scanner-panel-trace.md; REQ-AUD-18 AC1): REQ-SCAN-008-AC3, REQ-SCAN-008-AC5, REQ-SCAN-008-AC10, REQ-SCAN-009-AC1, REQ-SCAN-009-AC5, REQ-SCAN-013-AC4, REQ-SCAN-014-AC2.
+"""Proves (traced in the auditor's docs/scanner-panel-trace.md; REQ-AUD-18 AC1): REQ-SCAN-008-AC3, REQ-SCAN-008-AC5, REQ-SCAN-008-AC10, REQ-SCAN-009-AC1, REQ-SCAN-009-AC5, REQ-SCAN-013-AC4, REQ-SCAN-014-AC2, REQ-SCAN-014-AC3.
 
 The scanner panel audits' input and output (scanner-panel rules 8, 9, 13, 14; owner Oct 2-3).
 
@@ -91,6 +91,19 @@ class Image(Tmp):
         self.assertEqual(sorted(facts["status"]), ["/var/lib/dpkg/status", "/var/lib/dpkg/status.d/tzdata"])
         self.assertEqual(list(facts["gobins"]), ["/usr/bin/cache"])
 
+    def test_opaque_directories_and_replaced_files(self):                  # Codex r1 R4
+        l1 = tar_bytes([("opt/lib/old-tzdata", b"x", 0o644), ("var/lib/dpkg/status.d/tzdata", STATUS, 0o644),
+                        ("usr/bin/cache", GO_BIN, 0o755)])
+        l2 = tar_bytes([("opt/lib/.wh..wh..opq", b"", 0o644), ("opt/lib/new", b"y", 0o644),
+                        ("var/lib/dpkg/status.d/.wh..wh..opq", b"", 0o644),
+                        ("usr/bin/cache", b"\x7fELF not go any more", 0o755)])
+        oci_archive(os.path.join(self.d, "x.oci"), [l1, l2])
+        facts = P.read_image(os.path.join(self.d, "x.oci"), "arm64")
+        self.assertNotIn("/opt/lib/old-tzdata", facts["paths"])
+        self.assertIn("/opt/lib/new", facts["paths"])
+        self.assertEqual(facts["status"], {})
+        self.assertEqual(facts["gobins"], {})                               # replaced by a non-Go executable
+
     def test_no_image_for_the_architecture(self):
         with self.assertRaises(ValueError):
             P.read_image(self.make(), "s390x")
@@ -172,36 +185,85 @@ class Seats(Tmp):                                                           # RE
                 return types.SimpleNamespace(content=[types.SimpleNamespace(text='{"verdict": "false", "evidence": []}')])
         fake = types.ModuleType("anthropic")
         fake.Anthropic = lambda: types.SimpleNamespace(messages=Msgs())
+        tok = os.path.join(self.d, "a-token")
+        minted = []
         with mock.patch.dict(sys.modules, {"anthropic": fake}):
-            ask = P.seat_a({"PANEL_AUDIT_A_MODEL": "model-a"})
-        self.assertEqual(ask({"mode": "audit", "finding": {}, "bundle": "b"})["verdict"], "false")
+            ask = P.seat_a({"PANEL_AUDIT_A_MODEL": "model-a", "ANTHROPIC_IDENTITY_TOKEN_FILE": tok},
+                           mint=lambda aud: minted.append(aud) or "jwt-%d" % len(minted))
+        self.assertEqual(open(tok).read(), "jwt-1")                          # minted before the client exchanges it
+        a = ask({"mode": "audit", "finding": {}, "bundle": "b"})
+        self.assertEqual((a["verdict"], a["_tokens"]), ("false", 0))
         self.assertEqual(created[0]["model"], "model-a")
         self.assertNotIn("api_key", created[0])
+        self.assertEqual(minted, ["https://api.anthropic.com"])
+
+    def test_the_token_file_is_reminted_when_it_ages(self):                # Codex r1 B6
+        now = [1000.0]
+        minted = []
+        tf = P.TokenFile(os.path.join(self.d, "t"), "aud", mint=lambda a: minted.append(a) or "t%d" % len(minted),
+                         clock=lambda: now[0], max_age=240)
+        tf.fresh(); tf.fresh()
+        now[0] += 241
+        tf.fresh()
+        self.assertEqual((len(minted), open(os.path.join(self.d, "t")).read()), (2, "t2"))
+
+    def test_mint_oidc_asks_the_jobs_endpoint_and_masks_the_token(self):
+        seen = {}
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def opener(req, timeout):
+            seen["url"], seen["auth"] = req.full_url, req.get_header("Authorization")
+            return Resp(b'{"value": "jwt-value"}')
+        env = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://x/token?api-version=2.0", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "req"}
+        with mock.patch("sys.stdout", new=io.StringIO()) as out:
+            self.assertEqual(P.mint_oidc("https://api.openai.com/v1", env=env, opener=opener), "jwt-value")
+        self.assertEqual(seen["url"], "https://x/token?api-version=2.0&audience=https%3A%2F%2Fapi.openai.com%2Fv1")
+        self.assertEqual(seen["auth"], "bearer req")
+        self.assertIn("::add-mask::jwt-value", out.getvalue())
+        with self.assertRaises(RuntimeError):
+            P.mint_oidc("aud", env={})
+
+    def test_the_budget_stops_asking_and_counts_usage(self):              # Codex r1 B7
+        b = P.Budget(100)
+        ask = b.wrap(lambda r: {"verdict": "real", "_tokens": 80})
+        self.assertEqual(ask({})["verdict"], "real")
+        self.assertNotIn("_tokens", ask({}))
+        self.assertEqual(b.used, 160)
+        self.assertIn("token budget is spent", ask({})["error"])
+        self.assertTrue(b.stopped)
+        self.assertIsNone(P.Budget(10).wrap(lambda r: None)({}))
 
     def test_seat_b_federates_without_a_key(self):
-        tok = os.path.join(self.d, "tok")
-        open(tok, "w").write("  github-oidc-jwt\n")
         made = {}
 
         class Responses:
             def create(self, **kw):
                 made["call"] = kw
-                return types.SimpleNamespace(output_text='{"verdict": "real", "evidence": ["x"]}')
+                return types.SimpleNamespace(output_text='{"verdict": "real", "evidence": ["x"]}',
+                                             usage=types.SimpleNamespace(total_tokens=321))
 
         def OpenAI(**kw):
             made["client"] = kw
             return types.SimpleNamespace(responses=Responses())
         fake = types.ModuleType("openai")
         fake.OpenAI = OpenAI
-        env = {"PANEL_AUDIT_B_TOKEN_FILE": tok, "PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "idp_x",
+        env = {"PANEL_AUDIT_B_IDENTITY_PROVIDER_ID": "idp_x",
                "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID": "sa_x", "PANEL_AUDIT_B_PROJECT_ID": "proj_x", "PANEL_AUDIT_B_MODEL": "model-b"}
         with mock.patch.dict(sys.modules, {"openai": fake}):
-            ask = P.seat_b(env)
-        self.assertEqual(ask({"mode": "audit", "finding": {}, "bundle": "b"})["verdict"], "real")
+            ask = P.seat_b(env, mint=lambda aud: "fresh-jwt-for " + aud)
+        a = ask({"mode": "audit", "finding": {}, "bundle": "b"})
+        self.assertEqual((a["verdict"], a["_tokens"]), ("real", 321))
+        self.assertEqual(made["call"]["max_output_tokens"], 4096)
         wi = made["client"]["workload_identity"]
         self.assertEqual((wi["identity_provider_id"], wi["service_account_id"], wi["provider"]["token_type"]),
                          ("idp_x", "sa_x", "jwt"))
-        self.assertEqual(wi["provider"]["get_token"](), "github-oidc-jwt")
+        self.assertEqual(wi["provider"]["get_token"](), "fresh-jwt-for https://api.openai.com/v1")   # minted per exchange
         self.assertEqual(made["client"]["project"], "proj_x")
         self.assertNotIn("api_key", made["client"])
         self.assertEqual(made["call"]["model"], "model-b")
@@ -234,7 +296,8 @@ def verdict_file(d, findings):
 UNIQUE = {"image": "fips-arm64", "id": "CVE-2099-0002", "package": "tzdata", "version": "2026c-0+deb13u1",
           "seen_by": ["scout"], "of": 3, "unique": True, "status": "unique",
           "purls": ["pkg:deb/debian/tzdata@2026c-0%2Bdeb13u1"]}
-BUNDLE = "Package: tzdata\nVersion: 2026c-0+deb13u1\n/usr/share/zoneinfo/tzdata.zi (version 2026c)\n"
+BUNDLE = ("image fips-arm64 (tzdata 2026c-0+deb13u1)\n" + P.EVIDENCE_MARK +
+          "\nPackage: tzdata\nVersion: 2026c-0+deb13u1\n/usr/share/zoneinfo/tzdata.zi (version 2026a)\n")
 
 
 def args(**kw):
@@ -245,7 +308,7 @@ class Judge(Tmp):
     def a(self, **kw):
         base = dict(verdict=verdict_file(self.d, [UNIQUE]), state=os.path.join(self.d, "none.json"),
                     profiles=os.path.join(REPO, ".github", "policy", "scanner-profiles.json"), oci=self.d,
-                    out=os.path.join(self.d, "out"), seats="none", today="2026-10-03")
+                    out=os.path.join(self.d, "out"), seats="none", today="2026-10-03", token_budget=200000)
         base.update(kw)
         return args(**base)
 
@@ -271,8 +334,16 @@ class Judge(Tmp):
         st = json.load(open(os.path.join(self.d, "out", "state.json")))
         self.assertEqual(st["false"][0]["id"], "CVE-2099-0002")
 
+    def test_a_spent_budget_is_reported(self):                            # Codex r1 B7
+        seats = {"A": lambda r: {"verdict": "real", "evidence": [], "_tokens": 5}, "B": lambda r: {"error": "x"}}
+        with mock.patch("sys.stdout", new=io.StringIO()) as out:
+            self.assertEqual(P.cmd_judge(self.a(token_budget=0), seats=seats, bundles=lambda f: BUNDLE), 0)
+        self.assertIn("token budget (0) is spent", out.getvalue())
+        self.assertIn("STOPPED at the budget", open(os.path.join(self.d, "out", "summary.md")).read())
+
     def test_real_seats_judge_with_the_bundle(self):
-        good = {"verdict": "real", "evidence": ["Package: tzdata"], "why": "reads status.d", "case": "listed"}
+        good = {"verdict": "real", "evidence": ["Package: tzdata Version: 2026c-0+deb13u1"], "why": "reads status.d",
+                "case": "listed"}
         seats = {"A": lambda r: good, "B": lambda r: good}
         with mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(P.cmd_judge(self.a(), seats=seats, bundles=lambda f: BUNDLE), 0)
@@ -356,15 +427,34 @@ class Deliver(Tmp):
         for c in cmds:                                                         # no vendor or model name anywhere
             self.assertIsNone(P.VENDOR_WORDS.search(" ".join(c)))
 
+    def test_one_statement_per_scope_and_auto_merge_only_when_on_and_no_profile_change(self):
+        prop = {"image": "fips-arm64", "id": "CVE-2099-0004", "package": "tzdata", "version": "1",
+                "status": "not_affected", "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}
+        self.day(vex=[prop, dict(prop)])
+        calls, run = self.fake()
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_AUTOMERGE": "on"}
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
+            P.cmd_deliver(self.a(), run=run)
+        self.assertEqual(len(json.load(open(os.path.join(self.repo, P.VEX)))["statements"]), 1)
+        cmds = [c for c, _ in calls]
+        self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], cmds)
+        self.assertTrue(P.automerge_allowed([P.STATE, P.VEX], env={"AUDITOR_AUTOMERGE": "on"}))
+        self.assertFalse(P.automerge_allowed([P.STATE, P.PROFILES], env={"AUDITOR_AUTOMERGE": "on"}))
+        self.assertFalse(P.automerge_allowed([P.STATE], env={}))
+
     def test_existing_pr_and_issue_are_updated_and_affected_turns(self):
         vpath = os.path.join(self.repo, P.VEX)
+        mine = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
+                "purls": ["pkg:deb/debian/tzdata@1"]}
+        other_image = dict(mine, image="fips-amd64")
         json.dump({"@id": "https://x/vex", "statements": [
-            {"@id": "https://x/vex#panel-cve-2099-0003-tzdata", "vulnerability": {"name": "CVE-2099-0003"},
+            {"@id": P.statement_id(mine), "vulnerability": {"name": "CVE-2099-0003"},
              "status": "not_affected", "justification": "component_not_present", "impact_statement": "old"},
-            {"@id": "https://x/vex#stmt-cve-2099-0003", "vulnerability": {"name": "CVE-2099-0003"}, "status": "not_affected"}]},
+            {"@id": "https://x/vex#stmt-cve-2099-0003", "vulnerability": {"name": "CVE-2099-0003"}, "status": "not_affected"},
+            {"@id": P.statement_id(other_image), "vulnerability": {"name": "CVE-2099-0003"}, "status": "not_affected"}]},
             open(vpath, "w"))
-        self.day(issue="miss", vex=[{"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
-                                     "status": "affected", "impact_statement": "another scanner reported it"}])
+        self.day(issue="miss", owner=["an audit miss"],
+                 vex=[dict(mine, status="affected", impact_statement="another scanner reported it")])
         calls, run = self.fake({("gh", "pr", "list"): "17\n", ("gh", "issue", "list"): "42\n"})
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1"}), mock.patch("sys.stdout", new=io.StringIO()):
             P.cmd_deliver(self.a(), run=run)
@@ -377,6 +467,8 @@ class Deliver(Tmp):
         self.assertEqual(stmts[0]["status"], "affected")
         self.assertNotIn("justification", stmts[0])
         self.assertEqual(stmts[1]["status"], "not_affected")                 # only the panel's own statement turns
+        self.assertEqual(stmts[2]["status"], "not_affected")                 # same CVE, another image: untouched
+        self.assertEqual([c[:4] for c in cmds].count(["gh", "issue", "comment", "42"]), 2)   # tracking + owner, updated
 
     def test_a_failed_command_stops_delivery_with_a_masked_error(self):
         self.day(issue="x")
@@ -422,12 +514,27 @@ class Wiring(unittest.TestCase):                                            # RE
             if k.endswith(("_ID", "_MODEL")):
                 self.assertTrue(str(v).startswith("${{ secrets."), k)
         self.assertNotIn("API_KEY", " ".join(env))
-        mint = next(st for st in self.steps if st.get("id") == "panel-oidc")
-        script = mint["with"]["script"]
-        self.assertIn("https://api.anthropic.com", script)
-        self.assertIn("https://api.openai.com/v1", script)
-        self.assertIn("setSecret", script)
-        self.assertEqual(self.wf["jobs"]["audit"]["permissions"]["id-token"], "write")
+        self.assertEqual(self.wf["jobs"]["audit"]["permissions"]["id-token"], "write")   # the step mints its own tokens
+        self.assertIn("--token-budget 200000", j["run"])                             # REQ-AUD-6 AC2, in the workflow
+
+    def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # Codex r1 R3
+        run = self.steps[self.step("auditor-panel.py judge")]["run"]
+        self.assertIn("gh pr list --head auditor/panel --state open", run)
+        self.assertIn('[ -n "$open_pr" ] && git fetch', run)
+
+    def test_the_seat_never_moves_the_daily_cve_auditor(self):             # REQ-SCAN-014-AC3
+        cve = self.steps[self.step("auditor-run.py")]
+        self.assertEqual(cve["env"]["AUDITOR_MODEL_PRIMARY"], "${{ secrets.AUDITOR_MODEL_PRIMARY }}")
+        self.assertFalse([k for k in cve["env"] if k.startswith("PANEL_")])
+        self.assertNotIn("panel", cve["run"])
+        self.assertLess(self.step("auditor-run.py"), self.step("auditor-panel.py judge"))   # it runs before the panel
+        # the CVE auditor's code never reads the panel's state or its seat
+        cve_code = ["auditor-run.py", "auditor-adjudicator-client.py", "auditor-adjudicate.py"] + \
+            [os.path.join("auditorlib", n) for n in os.listdir(os.path.join(BIN, "auditorlib")) if n.endswith(".py")]
+        for name in cve_code:
+            text = open(os.path.join(BIN, name)).read()
+            self.assertNotIn("panel-state", text, name)
+            self.assertNotIn("PANEL_AUDIT", text, name)
 
     def test_delivery_is_the_auditor_lane_only(self):                       # rule 0
         d = self.steps[self.step("auditor-panel.py deliver")]

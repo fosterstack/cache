@@ -1,4 +1,4 @@
-"""Proves (traced in the auditor's docs/scanner-panel-trace.md; REQ-AUD-18 AC1): REQ-SCAN-007-AC1, REQ-SCAN-008-AC1, REQ-SCAN-008-AC2, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-008-AC7, REQ-SCAN-008-AC8, REQ-SCAN-008-AC9, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-SCAN-013-AC1, REQ-SCAN-013-AC3, REQ-SCAN-014-AC1, REQ-SCAN-014-AC3, REQ-SCAN-014-AC4.
+"""Proves (traced in the auditor's docs/scanner-panel-trace.md; REQ-AUD-18 AC1): REQ-SCAN-007-AC1, REQ-SCAN-008-AC1, REQ-SCAN-008-AC2, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-008-AC7, REQ-SCAN-008-AC8, REQ-SCAN-008-AC9, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-SCAN-013-AC1, REQ-SCAN-013-AC3, REQ-SCAN-014-AC1, REQ-SCAN-014-AC4.
 
 The scanner panel's audits in the daily auditor (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 2-3).
 
@@ -20,11 +20,13 @@ def load(name):
 
 P = load("auditor-panel")
 
-BUNDLE = ("image fips-arm64\n"
-          "dpkg status: Package: tzdata\nVersion: 2026c-0+deb13u1\nStatus: install ok installed\n"
-          "file: /usr/share/zoneinfo/tzdata.zi (version 2026c)\n")
-EV_REAL = "Package: tzdata"
-EV_FALSE = "/usr/share/zoneinfo/tzdata.zi (version 2026c)"
+BUNDLE = ("image fips-arm64 (tzdata 2026c-0+deb13u1, reported by scout)\n" + P.EVIDENCE_MARK + "\n"
+          "package database /var/lib/dpkg/status.d/tzdata:\nPackage: tzdata\nVersion: 2026c-0+deb13u1\n"
+          "Status: install ok installed\n"
+          "file: /usr/share/zoneinfo/tzdata.zi (version 2026a)\n"
+          "go build info: no Go binary in the image records tzdata\n")
+EV_REAL = "Package: tzdata Version: 2026c-0+deb13u1"
+EV_FALSE = "file: /usr/share/zoneinfo/tzdata.zi (version 2026a)"
 
 
 PURL = "pkg:deb/debian/tzdata@2026c-0%2Bdeb13u1?arch=all&distro=debian-13"
@@ -96,17 +98,40 @@ class Profiles(unittest.TestCase):
 
 class Evidence(unittest.TestCase):
     def test_a_vote_counts_only_with_evidence_quoted_from_the_image(self):
-        self.assertEqual(P.vote(real(), BUNDLE), "real")
-        self.assertEqual(P.vote(false(), BUNDLE), "false")
-        self.assertIsNone(P.vote(real(ev="Package: busybox"), BUNDLE))        # not in the image
-        self.assertIsNone(P.vote(real(ev="   "), BUNDLE))
-        self.assertIsNone(P.vote(dict(real(), evidence=[]), BUNDLE))
-        self.assertIsNone(P.vote(dict(real(), evidence="Package: tzdata"), BUNDLE))   # not a list
-        self.assertIsNone(P.vote({"verdict": "maybe", "evidence": [EV_REAL]}, BUNDLE))
-        self.assertIsNone(P.vote({"error": "timeout", "verdict": "real", "evidence": [EV_REAL]}, BUNDLE))  # AC4
+        f = finding()
+        self.assertEqual(P.vote(real(), BUNDLE, f), "real")
+        self.assertEqual(P.vote(false(), BUNDLE, f), "false")
+        self.assertIsNone(P.vote(real(ev="Package: busybox"), BUNDLE, f))     # not in the image
+        self.assertIsNone(P.vote(real(ev="   "), BUNDLE, f))
+        self.assertIsNone(P.vote(dict(real(), evidence=[]), BUNDLE, f))
+        self.assertIsNone(P.vote(dict(real(), evidence=EV_REAL), BUNDLE, f))   # not a list
+        self.assertIsNone(P.vote({"verdict": "maybe", "evidence": [EV_REAL]}, BUNDLE, f))
+        self.assertIsNone(P.vote({"error": "timeout", "verdict": "real", "evidence": [EV_REAL]}, BUNDLE, f))  # AC4
 
     def test_short_quotes_are_not_evidence(self):
-        self.assertIsNone(P.vote(real(ev="tz"), BUNDLE))
+        self.assertIsNone(P.vote(real(ev="tz"), BUNDLE, finding()))
+
+    def test_the_header_and_diagnostics_are_never_evidence(self):          # Codex r1 B1
+        f = finding()
+        header = "image fips-arm64 (tzdata 2026c-0+deb13u1, reported by scout)"
+        self.assertIsNone(P.vote(real(ev=header), BUNDLE, f))
+        self.assertIsNone(P.vote(false(ev=header), BUNDLE, f))
+        unreadable = "image fips-arm64: the image could not be read; no evidence is available\n"
+        self.assertIsNone(P.vote(real(ev="the image could not be read"), unreadable, f))
+        self.assertIsNone(P.vote(false(ev="the image could not be read"), unreadable, f))
+        self.assertIsNone(P.vote(real(ev=P.EVIDENCE_MARK), BUNDLE, f))
+
+    def test_real_needs_the_package_at_its_version_and_false_needs_absence_or_another_version(self):
+        f = finding()
+        self.assertIsNone(P.vote(real(ev="Package: tzdata"), BUNDLE, f))                 # no version
+        self.assertIsNone(P.vote(real(ev="Status: install ok installed"), BUNDLE, f))     # no package
+        self.assertIsNone(P.vote(false(ev=EV_REAL), BUNDLE, f))                          # present at that version
+        self.assertIsNone(P.vote(false(ev="Status: install ok installed"), BUNDLE, f))
+        self.assertEqual(P.vote(false(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f), "false")
+        self.assertIsNone(P.vote(real(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
+        g = finding(pkg="golang.org/x/sys", ver="v0.47.0")
+        gb = "h\n%s\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\n" % P.EVIDENCE_MARK
+        self.assertEqual(P.vote(real(ev="dep golang.org/x/sys v0.47.0"), gb, g), "real")
 
 
 class OneAudit(unittest.TestCase):                                          # rule 8(a)
@@ -218,6 +243,15 @@ class Debate(unittest.TestCase):                                            # ru
         self.assertEqual(set(rnd), {"cases", "verdicts"})
         self.assertEqual(set(rnd["cases"]), {"A", "B"})
         self.assertEqual(rnd["verdicts"], {"A": "real", "B": "real"})
+        # every answer of every round is kept (Codex r1 B5)
+        self.assertEqual([(x["seat"], x["mode"], x["round"]) for x in r["audits"]],
+                         [("A", "audit", 1), ("B", "audit", 1), ("A", "case", 2), ("B", "case", 2),
+                          ("A", "verdict", 2), ("B", "verdict", 2)])
+
+    def test_an_error_while_building_a_case_is_kept_and_reported(self):
+        r, _, _ = self.run_debate({"audit": real(), "case": [RuntimeError("case broke"), real()], "verdict": [false(), real()]},
+                                  {"audit": false(), "case": [false(), false()], "verdict": [real(), real()]})
+        self.assertIn("RuntimeError: case broke", [x.get("error") for x in r["audits"]])
 
 
 class Day(unittest.TestCase):
@@ -365,17 +399,16 @@ class PrimarySeat(unittest.TestCase):                                       # ru
         self.assertEqual(st["seat"], "B")
         self.assertTrue(any("primary" in o and "vendor B" in o for o in out["owner"]))
 
-    def test_the_seat_never_moves_the_daily_cve_auditor(self):              # REQ-SCAN-014-AC3
-        self.assertEqual(P.cve_auditor_seat({"seat": "B"}), "A")
-
 
 class PublicText(unittest.TestCase):                                        # REQ-SCAN-014-AC4, REQ-SCAN-008-AC3 (text)
     def test_no_vendor_or_model_name_in_anything_published(self):
         st = P.new_state()
-        a = Seat({"audit": real(why="claude-opus read it; gpt-6 agreed")})
-        b = Seat({"audit": real(why=None)})
+        a = Seat({"audit": dict(real(why="claude-opus read it; gpt-6 agreed"), evidence=[EV_REAL, "openai quote"])})
+        b = Seat({"audit": RuntimeError("gpt-6-astra refused; key sk-abcdefghijk; token eyJhbGciOiJ.eyJzdWIiOiJ.sig")})
         st, out = P.apply_day(verdict(finding()), st, bundles, {"entries": []}, {"A": a, "B": b}, "2026-10-05", SCORING)
-        text = json.dumps([out["issue"], out["owner"], out["profiles"], out["vex"], out["log"], st]).lower()
+        text = json.dumps(P.scrub([out, st])).lower()      # what cmd_judge writes out
+        self.assertNotIn("sk-abcdefghijk", text)
+        self.assertNotIn("eyjhbgcioij", text)
         for name in ("anthropic", "claude", "openai", "gpt", "codex", "gemini"):
             self.assertNotIn(name, text, name)
         self.assertNotIn(name, SCORING.lower())

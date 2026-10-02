@@ -4,7 +4,7 @@ REQ-SCAN ACs implemented in the auditor (scanner-panel rules 7-9, 8(c), 13, 14; 
 auditor paths out of test-evidence/, so the trace lives here (as the CVE auditor matrix does for REQ-AUD); the
 requirements check lists these ACs as named residuals pointing here until the owner decides (outbox: trace-vs-layout).
 
-| AC | proven by |
+| AC | tested by |
 |---|---|
 | REQ-SCAN-007-AC1 | `bin/tests/test_panel.py` |
 | REQ-SCAN-008-AC1 | `bin/tests/test_panel.py` |
@@ -26,5 +26,5 @@ requirements check lists these ACs as named residuals pointing here until the ow
 | REQ-SCAN-013-AC4 | `bin/tests/test_panel_io.py` |
 | REQ-SCAN-014-AC1 | `bin/tests/test_panel.py` |
 | REQ-SCAN-014-AC2 | `bin/tests/test_panel_io.py` |
-| REQ-SCAN-014-AC3 | `bin/tests/test_panel.py` |
+| REQ-SCAN-014-AC3 | `bin/tests/test_panel_io.py` |
 | REQ-SCAN-014-AC4 | `bin/tests/test_panel.py` |

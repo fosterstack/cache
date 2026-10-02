@@ -272,29 +272,10 @@ jobs:
       # The scanner panel's audits (scanner-panel rules 7-9, 8(c), 13, 14; owner Oct 3: "the audits run in the
       # auditor's daily run, right after the rescan, in one of its steps"). The rescan tallied the scanners and listed
       # the findings only one scanner reported; this judges them with two auditor seats, each reached through keyless
-      # federation: seat A is the provider above (its own identity token, so no exchange is replayed), seat B the
-      # second vendor's workload identity. Identifiers and model names come only from the environment's secrets
-      # (REQ-AUD-6 AC1); nothing public names a vendor.
-      - name: Mint the scanner panel's two identity tokens (real auditors only)
-        id: panel-oidc
-        if: ${{ always() && steps.rescan.outcome == 'success' && (github.event_name == 'schedule' || inputs.adjudicator == 'real') }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const fs = require('fs')
-            const seats = [['https://api.anthropic.com', 'panel-a-token'], ['https://api.openai.com/v1', 'panel-b-token']]
-            const mint = async () => {
-              for (const [aud, file] of seats) {
-                try {
-                  const t = await core.getIDToken(aud)
-                  core.setSecret(t); fs.writeFileSync(`${process.env.RUNNER_TEMP}/${file}`, t)
-                } catch (e) { core.warning(`panel identity mint failed for seat ${file}: ${e}`) }
-              }
-            }
-            await mint()
-            // the audits and debates can run past a token's lifetime: re-mint every 4 minutes for the rest of the job
-            setInterval(mint, 4 * 60 * 1000).unref?.()
-
+      # federation: seat A is the provider above, seat B the second vendor's workload identity. The step mints each
+      # seat's GitHub identity token itself, fresh for every exchange (the job's id-token: write), so a long debate
+      # never outlives its tokens. Identifiers and model names come only from the environment's secrets
+      # (REQ-AUD-6 AC1); nothing public names a vendor. The panel's own per-run token budget is written below.
       - name: Judge the rescan's unique findings (scanner panel rules 7-9, 8(c), 13, 14)
         id: panel
         if: ${{ always() && steps.rescan.outcome == 'success' }}
@@ -309,20 +290,22 @@ jobs:
           PANEL_AUDIT_B_SERVICE_ACCOUNT_ID: ${{ secrets.PANEL_AUDIT_B_SERVICE_ACCOUNT_ID }}
           PANEL_AUDIT_B_PROJECT_ID: ${{ secrets.PANEL_AUDIT_B_PROJECT_ID }}
           PANEL_AUDIT_B_MODEL: ${{ secrets.PANEL_AUDIT_B_MODEL }}
-          PANEL_AUDIT_B_TOKEN_FILE: ${{ runner.temp }}/panel-b-token
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           seats='${{ (github.event_name == 'schedule' || inputs.adjudicator == 'real') && 'real' || 'none' }}'
-          # yesterday's judgments, debates and scores: the open panel PR's branch if there is one, else main's file
+          # yesterday's judgments, debates and scores: the OPEN panel PR's branch (pending, not yet merged) if there is
+          # one, else main's file; a closed or rejected branch never steers the run
           state="${RUNNER_TEMP}/panel-state.json"
-          if git fetch --quiet origin auditor/panel 2>/dev/null && git show FETCH_HEAD:.auditor/panel-state.json > "$state" 2>/dev/null; then
-            echo "state from the open auditor/panel branch"
+          open_pr=$(gh pr list --head auditor/panel --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open_pr" ] && git fetch --quiet origin auditor/panel && git show FETCH_HEAD:.auditor/panel-state.json > "$state" 2>/dev/null; then
+            echo "state from the open panel PR #${open_pr}"
           elif [ -f .auditor/panel-state.json ]; then cp .auditor/panel-state.json "$state"; echo "state from main"
           else rm -f "$state"; echo "no earlier state: the first day"
           fi
           python3 .github/agent/bin/auditor-panel.py judge --verdict "${RUNNER_TEMP}/panel/verdict.json" \
             --state "$state" --profiles .github/policy/scanner-profiles.json --oci "${RUNNER_TEMP}/rescan" \
-            --out "${RUNNER_TEMP}/panel-out" --seats "$seats" --today "$(date -u +%F)"
+            --out "${RUNNER_TEMP}/panel-out" --seats "$seats" --today "$(date -u +%F)" --token-budget 200000
 
       - name: Deliver the panel audits — a pull request from the auditor lane, the tracking issue, the owner report
         if: ${{ always() && steps.panel.outcome == 'success' }}

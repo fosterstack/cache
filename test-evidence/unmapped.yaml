@@ -39,44 +39,44 @@ unmapped:
   - ac: REQ-SCAN-013-AC2
     reason: "PR 2 settles a debate on all three triggers (test_panel.py tests settle() for each), but the daily run only produces the corroboration trigger; the advisory and fix-shipped triggers need an advisory feed and the image's package list, not yet read"
   - ac: REQ-SCAN-007-AC1
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC1
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC10
-    reason: "proven by the auditor's panel tests (test_panel_io.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel_io.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC2
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC3
-    reason: "proven by the auditor's panel tests (test_panel_io.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel_io.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC4
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC5
-    reason: "proven by the auditor's panel tests (test_panel_io.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel_io.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC6
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC7
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC8
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-008-AC9
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-009-AC1
-    reason: "proven by the auditor's panel tests (test_panel_io.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel_io.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-009-AC2
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-009-AC3
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-013-AC1
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-013-AC3
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-013-AC4
-    reason: "proven by the auditor's panel tests (test_panel_io.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel_io.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-014-AC1
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-014-AC2
-    reason: "proven by the auditor's panel tests (test_panel_io.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel_io.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-014-AC3
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"
   - ac: REQ-SCAN-014-AC4
-    reason: "proven by the auditor's panel tests (test_panel.py), traced inside the auditor (its docs/scanner-panel-trace.md) because REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision in the outbox (trace-vs-layout)"
+    reason: "tested by the auditor\'s panel tests (test_panel.py) and traced inside the auditor (its docs/scanner-panel-trace.md): REQ-AUD-18 AC1 forbids naming auditor paths here; owner decision pending (outbox: trace-vs-layout)"

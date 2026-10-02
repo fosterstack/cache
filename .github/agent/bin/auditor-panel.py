@@ -18,7 +18,10 @@ This step, run by auditor.yml right after the rescan, judges them:
 Public text names the seats ("vendor A", "vendor B", "primary", "second"); vendor and model names live only in the
 environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 """
-import argparse, copy, datetime, io, json, os, re, subprocess, sys, tarfile, tempfile
+import argparse, copy, datetime, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from auditorlib import policy  # noqa: E402
 
 SEATS = ("A", "B")
 DEBATE_ROUNDS = (2, 3, 4)
@@ -38,6 +41,8 @@ def scoring_text():
             "-2. Argue only from evidence you can quote from the image.")
 
 
+KEYLIKE = re.compile(r"(sk-[A-Za-z0-9_-]{6,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|"
+                     r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+|(?i:bearer)\s+[A-Za-z0-9._-]{6,})")
 SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID",
                "ANTHROPIC_WORKSPACE_ID", "PANEL_AUDIT_A_MODEL", "PANEL_AUDIT_B_MODEL", "PANEL_AUDIT_B_IDENTITY_PROVIDER_ID",
                "PANEL_AUDIT_B_SERVICE_ACCOUNT_ID", "PANEL_AUDIT_B_PROJECT_ID")
@@ -53,7 +58,16 @@ def public(s):
         v = os.environ.get(k)
         if v and len(v) >= 4:
             s = s.replace(v, "<%s>" % k)
-    return VENDOR_WORDS.sub("<auditor>", s)
+    return KEYLIKE.sub("<redacted>", VENDOR_WORDS.sub("<auditor>", s))
+
+
+def scrub(obj):
+    """public() applied to every string in a JSON-able object: what is written out (day, state, plan) is public."""
+    if isinstance(obj, dict):
+        return {k: scrub(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [scrub(v) for v in obj]
+    return public(obj) if isinstance(obj, str) else obj
 
 
 def key_of(f):
@@ -101,33 +115,53 @@ def _norm(s):
     return " ".join(str(s).split())
 
 
-def vote(answer, bundle):
-    """'real' / 'false' when the answer quotes evidence found verbatim in the image's bundle; None otherwise
-    (an error, no verdict, or no quote from the image: "cites no evidence", rule 8(b))."""
+EVIDENCE_MARK = "--- evidence from the image ---"
+ABSENT = ("no record names", "no path in the image mentions", "no Go binary in the image records")
+
+
+def _ver(v):
+    v = str(v or "")
+    return v[1:] if re.match(r"^v\d", v) else v
+
+
+def vote(answer, bundle, f):
+    """'real' / 'false' only when the answer quotes the EVIDENCE section of the image's bundle verbatim (never its
+    header, never a diagnostic) and the quotes support the verdict: "real" needs a quote naming the package AND its
+    reported version; "false" needs a quote stating the package is absent, or naming it at a different version.
+    Anything else cites no evidence (rule 8(b)) -> None."""
     if not isinstance(answer, dict) or answer.get("error") or answer.get("verdict") not in ("real", "false"):
         return None
     ev = answer.get("evidence")
-    if not isinstance(ev, list) or not ev:
+    if not isinstance(ev, list) or not ev or EVIDENCE_MARK not in str(bundle):
         return None
-    hay = _norm(bundle)
+    hay = _norm(str(bundle).split(EVIDENCE_MARK, 1)[1])
+    quotes = []
     for q in ev:
         q = _norm(q)
-        if len(q) < MIN_QUOTE or q not in hay:
+        if len(q) < MIN_QUOTE or q not in hay or EVIDENCE_MARK in q:
             return None
-    return answer["verdict"]
+        quotes.append(q.lower())
+    pkg = str(f.get("package") or "").lower()
+    short, ver = pkg.rsplit("/", 1)[-1], _ver(f.get("version")).lower()
+    names = [q for q in quotes if pkg in q or re.search(r"(^|[^a-z0-9.+-])%s($|[^a-z0-9.+-])" % re.escape(short), q)]
+    absent = [q for q in names if any(a.lower() in q for a in ABSENT)]
+    if answer["verdict"] == "real":
+        return "real" if ver and any(ver in q for q in names if q not in absent) else None
+    other_version = [q for q in names if q not in absent and ver and ver not in q and re.search(r"\d", q)]
+    return "false" if absent or other_version else None
 
 
 def _ask(auditor, seat, req):
+    tag = {"seat": seat, "mode": req["mode"], "round": req.get("round", 1)}
     try:
         a = auditor(req)
     except Exception as e:      # an auditor that fails is an error, never a vote
-        return {"seat": seat, "error": "%s: %s" % (type(e).__name__, public(e))}
+        return dict(tag, error="%s: %s" % (type(e).__name__, e))
     if not isinstance(a, dict):
-        return {"seat": seat, "error": "no answer"}
+        return dict(tag, error="no answer")
     if a.get("error"):
-        return {"seat": seat, "error": public(a["error"])}   # an errored answer casts no vote and cites nothing
-    return {"seat": seat, "verdict": a.get("verdict"), "evidence": a.get("evidence"), "why": public(a.get("why")),
-            "case": public(a.get("case"))}
+        return dict(tag, error=str(a["error"]))   # an errored answer casts no vote and cites nothing
+    return dict(tag, verdict=a.get("verdict"), evidence=a.get("evidence"), why=a.get("why"), case=a.get("case"))
 
 
 def _request(mode, f, bundle, **kw):
@@ -139,9 +173,9 @@ def _request(mode, f, bundle, **kw):
 
 # ------------------------------------------------------------------------------------------------ rule 8 judgment
 
-def _decide(answers, bundle):
+def _decide(answers, bundle, f):
     """real / false-evidence / false-default from final answers that all count (rule 8(b))."""
-    votes = [vote(a, bundle) for a in answers]
+    votes = [vote(a, bundle, f) for a in answers]
     if votes and all(v == "real" for v in votes):
         return "report"
     if any(v == "false" for v in votes):
@@ -160,7 +194,8 @@ def judge_unique(f, bundle, profiles, auditors, seat, scoring):
     scanner = f["seen_by"][0]
     if profile_match(profiles, scanner, f.get("package")):
         a = _ask(auditors[seat], seat, _request("audit", f, bundle))
-        status = "report" if vote(a, bundle) == "real" else ("false-evidence" if vote(a, bundle) == "false" else "false-default")
+        v = vote(a, bundle, f)
+        status = "report" if v == "real" else ("false-evidence" if v == "false" else "false-default")
         return {"status": status, "path": "a", "audits": [a], "debate": None, "why": _why([a]),
                 "unexplained": status == "report" and not _why([a])}
     first = {s: _ask(auditors[s], s, _request("audit", f, bundle)) for s in SEATS}
@@ -171,24 +206,24 @@ def judge_unique(f, bundle, profiles, auditors, seat, scoring):
     if all(verdicts[s] in ("real", "false") for s in SEATS) and verdicts["A"] != verdicts["B"]:
         debate = {"sides": dict(verdicts), "rounds": [], "outcome": "disagreed", "prevailing": None}
         cases = {s: first[s].get("case") for s in SEATS}
-        for _rnd in DEBATE_ROUNDS:
-            new_cases = {s: _ask(auditors[s], s, _request("case", f, bundle, own_case=cases[s],
+        for rnd in DEBATE_ROUNDS:
+            new_cases = {s: _ask(auditors[s], s, _request("case", f, bundle, own_case=cases[s], round=rnd,
                                                           opponent_case=cases[_other(s)], scoring=scoring))
                          for s in SEATS}
             cases = {s: new_cases[s].get("case") for s in SEATS}
-            final = [_ask(auditors[s], s, _request("verdict", f, bundle, own_case=cases[s],
+            final = [_ask(auditors[s], s, _request("verdict", f, bundle, own_case=cases[s], round=rnd,
                                                    opponent_case=cases[_other(s)], scoring=scoring)) for s in SEATS]
+            audits = audits + [new_cases[s] for s in SEATS] + final     # every answer, error and citation is kept
             vs = {s: final[i].get("verdict") for i, s in enumerate(SEATS)}
             debate["rounds"].append({"cases": {s: cases[s] for s in SEATS}, "verdicts": vs})
             if vs["A"] == vs["B"] and vs["A"] in ("real", "false"):
                 debate["outcome"] = "agreed-" + vs["A"]
                 debate["prevailing"] = next(s for s in SEATS if verdicts[s] == vs["A"])
                 break
-        audits = audits + final
     if debate and debate["outcome"] == "disagreed":
         status = "false-default"        # rule 8(c): still disagreeing after round 4 -> false by default
     else:
-        status = _decide(final, bundle)
+        status = _decide(final, bundle, f)
     why = _why(final) if status == "report" else None
     return {"status": status, "path": "b", "audits": audits, "debate": debate, "why": why,
             "unexplained": status == "report" and not why}
@@ -243,11 +278,6 @@ def seat(scores, current):
     return current
 
 
-def cve_auditor_seat(_state):
-    """Rule 14: a seat change never moves the daily CVE auditor (a separate owner decision)."""
-    return "A"
-
-
 # ------------------------------------------------------------------------------------------------ the day
 
 def new_state():
@@ -272,6 +302,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
     for f in verdict.get("findings") or []:
         k = key_of(f)
         seen = set(f.get("seen_by") or [])
+        if len(seen) >= 2:
+            events.append(dict(_ident(f), kind="corroborated"))     # settles any debate on it (rule 13)
         if k in real_mem:
             real_mem[k]["last_seen"] = today
             reported.append(f)
@@ -282,16 +314,14 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
                 miss = dict(_ident(f), seen_by=sorted(seen | set(before.get("seen_by") or [])))
                 out["misses"].append(miss)
                 if before.get("vex"):
-                    out["vex"].append(dict(_ident(f), status="affected",
+                    out["vex"].append(dict(_ident(f), status="affected", purls=list(before.get("purls") or []),
                                            impact_statement="another scanner reported it after the audits "
                                                             "judged it not affected (audit miss)"))
                 del false_mem[k]
                 real_mem[k] = dict(_ident(f), seen_by=miss["seen_by"], since=today, last_seen=today)
                 reported.append(f)
-                events.append(dict(_ident(f), kind="corroborated"))
                 continue
         if len(seen) >= 2:
-            events.append(dict(_ident(f), kind="corroborated"))
             continue                                    # the rescan reports it (rule 5); nothing to judge
         r = judge_unique(f, bundles(f), profiles, auditors, st["seat"], scoring)
         entry = dict(_ident(f), seen_by=sorted(seen), status=r["status"], path=r["path"], audits=r["audits"],
@@ -318,7 +348,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
         old = false_mem.get(k) or {}
         ev = r["status"] == "false-evidence"
         false_mem[k] = dict(_ident(f), seen_by=sorted(seen | set(old.get("seen_by") or [])),
-                            since=old.get("since") or today, last_seen=today, vex=bool(old.get("vex") or ev))
+                            since=old.get("since") or today, last_seen=today, vex=bool(old.get("vex") or ev),
+                            purls=list(old.get("purls") or f.get("purls") or []))
         if ev and not old.get("vex"):
             quotes = [q for a in r["audits"] if a.get("verdict") == "false" for q in (a.get("evidence") or [])]
             if f.get("purls"):
@@ -387,11 +418,18 @@ def read_image(archive, arch):
                 for m in lt.getmembers():
                     name = "/" + m.name.lstrip("./")
                     base = os.path.basename(name)
+                    if base == ".wh..wh..opq":          # opaque directory: nothing from lower layers survives in it
+                        top = os.path.dirname(name).rstrip("/") + "/"
+                        for coll in (paths, status, gobins):
+                            for gone in [x for x in coll if x.startswith(top)]:
+                                coll.remove(gone) if isinstance(coll, set) else coll.pop(gone)
+                        continue
                     if base.startswith(".wh."):
                         gone = os.path.join(os.path.dirname(name), base[4:])
                         paths.discard(gone); status.pop(gone, None); gobins.pop(gone, None)
                         continue
                     paths.add(name)
+                    status.pop(name, None); gobins.pop(name, None)      # a later layer replaces the file
                     if not m.isfile():
                         continue
                     if name == "/var/lib/dpkg/status" or name.startswith("/var/lib/dpkg/status.d/"):
@@ -421,7 +459,8 @@ def bundle_text(facts, buildinfo, f):
     paths that mention it, and the Go build information lines that mention it; their absence is stated in words."""
     pkg = str(f.get("package") or "")
     low = pkg.lower().rsplit("/", 1)[-1]
-    lines = ["image %s (%s %s, reported by %s)" % (f.get("image"), pkg, f.get("version"), ", ".join(f.get("seen_by") or []))]
+    lines = ["image %s (%s %s, reported by %s)" % (f.get("image"), pkg, f.get("version"), ", ".join(f.get("seen_by") or [])),
+             EVIDENCE_MARK]
     stanzas = []
     for path, text in sorted(facts["status"].items()):
         for st in text.split("\n\n"):
@@ -507,27 +546,78 @@ def _answer(text):
     return a if a is not None else {"error": "no JSON answer"}
 
 
-def seat_a(env=os.environ):
+def mint_oidc(audience, env=os.environ, opener=urllib.request.urlopen):
+    """A fresh GitHub OIDC identity token for one audience, from the job's own endpoint (id-token: write), masked in
+    the log at once. Minted inside this process, so a long debate never outlives its tokens."""
+    url, tok = env.get("ACTIONS_ID_TOKEN_REQUEST_URL"), env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not url or not tok:
+        raise RuntimeError("no GitHub OIDC endpoint in this job (needs id-token: write)")
+    req = urllib.request.Request("%s&audience=%s" % (url, urllib.parse.quote(audience, safe="")),
+                                 headers={"Authorization": "bearer " + tok})
+    with opener(req, timeout=30) as r:
+        value = json.load(r)["value"]
+    print("::add-mask::" + value)
+    return value
+
+
+class TokenFile:
+    """Keeps an identity-token file fresh for an SDK that reads its token from a file (re-mints after max_age)."""
+
+    def __init__(self, path, audience, mint=mint_oidc, clock=time.time, max_age=240):
+        self.path, self.audience, self.mint, self.clock, self.max_age, self.at = path, audience, mint, clock, max_age, None
+
+    def fresh(self):
+        if self.at is None or self.clock() - self.at > self.max_age:
+            token = self.mint(self.audience)
+            with open(self.path, "w") as fh:
+                fh.write(token)
+            self.at = self.clock()
+
+
+class Budget:
+    """The panel's per-run token budget (REQ-AUD-6 AC2): once spent, no seat is asked again this run; the unasked
+    audits error (no evidence -> false by default, judged again tomorrow) and the run reports the stop."""
+
+    def __init__(self, cap):
+        self.cap, self.used, self.stopped = cap, 0, False
+
+    def wrap(self, ask):
+        def budgeted(req):
+            if self.used >= self.cap:
+                self.stopped = True
+                return {"error": "the run's token budget is spent (%d of %d); not asked" % (self.used, self.cap)}
+            a = ask(req)
+            if isinstance(a, dict):
+                self.used += int(a.pop("_tokens", 0) or 0)
+            return a
+        return budgeted
+
+
+def seat_a(env=os.environ, mint=mint_oidc):
     """Vendor A: the auditor's existing provider, through its existing federation (the SDK exchanges the identity
     token in ANTHROPIC_IDENTITY_TOKEN_FILE; workspace, organization and service account from the environment)."""
     import anthropic
+    token = TokenFile(env["ANTHROPIC_IDENTITY_TOKEN_FILE"], "https://api.anthropic.com", mint=mint)
+    token.fresh()
     client, model = anthropic.Anthropic(), env["PANEL_AUDIT_A_MODEL"]
 
     def ask(req):
+        token.fresh()
         msg = client.messages.create(model=model, max_tokens=2048, messages=[{"role": "user", "content": render(req)}])
-        return _answer("".join(getattr(b, "text", "") for b in msg.content))
+        a = _answer("".join(getattr(b, "text", "") for b in msg.content))
+        u = getattr(msg, "usage", None)
+        a["_tokens"] = (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0)
+        return a
     return ask
 
 
-def seat_b(env=os.environ):
-    """Vendor B: workload identity federation (no key): the GitHub identity token in PANEL_AUDIT_B_TOKEN_FILE is
-    exchanged for a short-lived token bound to the configured service account; Responses API only."""
+def seat_b(env=os.environ, mint=mint_oidc):
+    """Vendor B: workload identity federation (no key): a fresh GitHub identity token, minted on every exchange, is
+    traded for a short-lived token bound to the configured service account; Responses API only."""
     from openai import OpenAI
-    token_file = env["PANEL_AUDIT_B_TOKEN_FILE"]
 
     def token():
-        with open(token_file) as fh:
-            return fh.read().strip()
+        return mint("https://api.openai.com/v1")
     client = OpenAI(workload_identity={"identity_provider_id": env["PANEL_AUDIT_B_IDENTITY_PROVIDER_ID"],
                                        "service_account_id": env["PANEL_AUDIT_B_SERVICE_ACCOUNT_ID"],
                                        "provider": {"token_type": "jwt", "get_token": token}},
@@ -535,7 +625,10 @@ def seat_b(env=os.environ):
     model = env["PANEL_AUDIT_B_MODEL"]
 
     def ask(req):
-        return _answer(client.responses.create(model=model, input=render(req)).output_text)
+        r = client.responses.create(model=model, input=render(req), max_output_tokens=4096)
+        a = _answer(r.output_text)
+        a["_tokens"] = getattr(getattr(r, "usage", None), "total_tokens", 0) or 0
+        return a
     return ask
 
 
@@ -562,7 +655,15 @@ def make_seats(mode, env=os.environ, a=seat_a, b=seat_b):
 STATE = ".auditor/panel-state.json"
 PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
-ISSUE_TITLE = "Daily scanner panel: findings on main"
+ISSUE_TITLE = "Daily scanner panel: findings on main"           # shared with the rescan's two-or-more issue
+OWNER_TITLE = policy.subject("owner-decision: scanner panel")   # one standing owner issue, updated, never duplicated
+
+
+def automerge_allowed(changed, env=os.environ):
+    """REQ-AUD-17 AC3/AC4, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
+    that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
+    on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
+    return on and PROFILES not in changed
 
 
 def _load_json(path, default=None):
@@ -585,8 +686,10 @@ def cmd_judge(a, seats=None, bundles=None):
         for e in errs:
             sys.stderr.write("::error::scanner profiles: %s\n" % e)
         return 2
-    seats = seats or make_seats(a.seats)
+    budget = Budget(a.token_budget)
+    seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}
     st, out = apply_day(verdict, state, bundles or Bundles(a.oci), profiles, seats, a.today, scoring_text())
+    st, out = scrub(st), scrub(out)      # everything written below is public (artifact, state file, PR)
     os.makedirs(a.out, exist_ok=True)
     for name, obj in (("state.json", st), ("day.json", out)):
         with open(os.path.join(a.out, name), "w") as fh:
@@ -599,14 +702,30 @@ def cmd_judge(a, seats=None, bundles=None):
                    sum(e["status"] == "false-evidence" for e in out["log"]),
                    sum(e["status"] == "false-default" for e in out["log"]),
                    sum(1 for d in st["debates"] if d.get("on") == a.today), len(out["misses"]), len(errors),
-                   st["seat"], st["scores"]["A"], st["scores"]["B"])]
+                   st["seat"], st["scores"]["A"], st["scores"]["B"]),
+               "Tokens used: %d of the run's budget of %d%s." % (budget.used, budget.cap,
+                                                              " — STOPPED at the budget; the unasked audits are judged "
+                                                              "again tomorrow" if budget.stopped else "")]
     summary += ["- audit error (vendor %s): %s" % (x["seat"], x["error"]) for x in errors]
     with open(os.path.join(a.out, "summary.md"), "w") as fh:
         fh.write(public("\n".join(summary)) + "\n")
     for x in errors:
         print("::warning::scanner panel audit error (vendor %s): %s" % (x["seat"], x["error"]))
+    if budget.stopped:
+        print("::warning::scanner panel: the run's token budget (%d) is spent; remaining audits were not asked" % budget.cap)
     print(public("\n".join(summary)))
     return 0
+
+
+def image_product(image):
+    """The product a panel statement covers: exactly the image the audit read (variant + architecture), never the
+    whole repository (REQ-AUD-13 scope; rule 9: a statement is no broader than its evidence)."""
+    variant, _, arch = str(image).rpartition("-")
+    return "%s&variant=%s&arch=%s" % (policy.VEX_PRODUCT, variant, arch)
+
+
+def statement_id(v):
+    return policy.scope_id(v["id"], image_product(v["image"]), v.get("purls") or [])
 
 
 def apply_files(root, st, day, today):
@@ -625,15 +744,18 @@ def apply_files(root, st, day, today):
         ts = "%sT00:00:00Z" % today
         for v in day["vex"]:
             subs = [{"@id": p} for p in v.get("purls") or []]
+            sid = statement_id(v)
             if v["status"] == "not_affected":
+                if any(stmt.get("@id") == sid for stmt in doc["statements"]):
+                    continue                        # the same scope is stated once
                 doc["statements"].append({
-                    "@id": "%s#panel-%s-%s" % (doc.get("@id", ""), v["id"].lower(), re.sub(r"[^a-z0-9]+", "-", v["package"].lower())),
+                    "@id": sid,
                     "vulnerability": {"name": v["id"]}, "timestamp": ts, "status": "not_affected",
-                    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": subs}],
+                    "products": [{"@id": image_product(v["image"]), "subcomponents": subs}],
                     "justification": "component_not_present", "impact_statement": v["impact_statement"]})
             else:
                 for stmt in doc["statements"]:
-                    if (stmt.get("vulnerability") or {}).get("name") == v["id"] and str(stmt.get("@id", "")).find("#panel-") != -1:
+                    if stmt.get("@id") == sid:     # exactly the panel's statement for this CVE, image and package
                         stmt.update(status="affected", last_updated=ts,
                                     action_statement="Under investigation: " + v["impact_statement"])
                         stmt.pop("justification", None)
@@ -695,7 +817,10 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "pr", "edit", existing, "--body", body], plan, real, run)
         else:
             _sh(["gh", "pr", "create", "--draft", "--head", branch, "--base", "main",
-                 "--title", "Scanner panel audits (rules 7-9, 13, 14)", "--body", body], plan, real, run)
+                 "--title", policy.subject("scanner panel audits (rules 7-9, 13, 14)"), "--body", body], plan, real, run)
+        if automerge_allowed(changed):
+            _sh(["gh", "pr", "ready", branch], plan, real, run)
+            _sh(["gh", "pr", "merge", "--auto", "--squash", branch], plan, real, run)
     ienv = dict(os.environ, GH_TOKEN=os.environ.get("AUDITOR_ISSUES_TOKEN", os.environ.get("GH_TOKEN", "")))
     if day["issue"]:
         n = _sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan", "--search", ISSUE_TITLE,
@@ -706,10 +831,16 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "issue", "create", "--title", ISSUE_TITLE, "--label", "daily-rescan", "--label", "security",
                  "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
-        _sh(["gh", "issue", "create", "--title", "Scanner panel: for the owner (%s)" % a.today, "--label", "owner-decision",
-             "--body", public("\n\n".join(day["owner"]))], plan, real, run, env=ienv)
+        body = public("Scanner panel, %s:\n\n%s" % (a.today, "\n\n".join(day["owner"])))
+        n = _sh(["gh", "issue", "list", "--state", "open", "--label", policy.OWNER_LABEL, "--search", OWNER_TITLE,
+                 "--json", "number", "--jq", ".[0].number"], plan, real, run, env=ienv).strip()
+        if n:
+            _sh(["gh", "issue", "comment", n, "--body", body], plan, real, run, env=ienv)
+        else:
+            _sh(["gh", "issue", "create", "--title", OWNER_TITLE, "--label", policy.OWNER_LABEL,
+                 "--assignee", policy.OWNER_LOGIN, "--body", body], plan, real, run, env=ienv)
     with open(os.path.join(a.out, "plan.json"), "w") as fh:
-        json.dump({"real": real, "changed": changed, "commands": plan}, fh, indent=1)
+        json.dump(scrub({"real": real, "changed": changed, "commands": plan}), fh, indent=1)
     print("auditor-panel: delivered (%s): %d path(s), %d command(s)" % ("real" if real else "plan only", len(changed), len(plan)))
     return 0
 
@@ -725,6 +856,7 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver):
     j.add_argument("--out", required=True)
     j.add_argument("--seats", choices=("real", "none"), default="none")
     j.add_argument("--today", default=datetime.date.today().isoformat())
+    j.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
     d = sub.add_parser("deliver")
     d.add_argument("--out", required=True)
     d.add_argument("--repo", default=".")

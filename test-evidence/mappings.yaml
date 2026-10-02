@@ -343,7 +343,7 @@ mappings:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
   - ac: REQ-SCAN-007-AC2
     evidence:
-      - { type: inspection, ref: ".github/policy/scanner-profiles.json changes only through a pull request into main, which every required check gates; each entry cites its finding and image evidence (validated by bin/panel-test.sh)" }
+      - { type: inspection, ref: ".github/policy/scanner-profiles.json changes only through a pull request into main, which every required check gates; the auditor proposes entries only through its own PR lane, and a day that proposes one never auto-merges" }
   - ac: REQ-SCAN-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
