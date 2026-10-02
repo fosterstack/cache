@@ -34,10 +34,24 @@ if m and c:
     if not any("gremlins" in (s.get("run") or "") for s in m.get("steps") or []):
         bad.append("the mutation job does not run gremlins")
     import re as _re
-    # EVERY `go install` target, one by one: module@<full commit> (a tag, a branch, @latest or no version fails)
-    targets = [t for st in m.get("steps") or [] for t in _re.findall(r"\bgo\s+install\s+(?:-\S+\s+)*(\S+)", st.get("run") or "")]
-    if not targets or not all(_re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", t) for t in targets):
-        bad.append("a go install in the mutation job is not pinned to a full commit: %s" % targets)
+    # EVERY `go install` target, one by one: module@<full commit> (a tag, a branch, @latest or no version fails). The run
+    # text is split into words the way the shell splits them (escapes and quotes undone: g\o is go), command by command.
+    import shlex
+    targets, unparsed = [], []
+    for st in m.get("steps") or []:
+        lx = shlex.shlex(st.get("run") or "", posix=True, punctuation_chars=True)
+        lx.whitespace_split = True
+        lx.commenters = "#"
+        try:
+            words = list(lx)
+        except ValueError:
+            unparsed.append(st.get("name")); continue
+        for i in range(len(words) - 1):
+            if words[i].rsplit("/", 1)[-1] == "go" and words[i + 1] == "install":
+                rest = [w for w in words[i + 2:] if not w.startswith("-")]
+                targets.append(rest[0] if rest else "")
+    if unparsed or not targets or not all(_re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", t) for t in targets):
+        bad.append("a go install in the mutation job is not pinned to a full commit: %s %s" % (targets, unparsed))
 if os.path.exists(os.path.join(root, ".github/workflows/mutation.yml")):
     bad.append("mutation.yml still exists")
 doc = open(os.path.join(root, "docs/quality/mutation.md")).read()
@@ -73,6 +87,9 @@ case_ no-gremlins             bad "$J['mutation']['steps'] = [s for s in $J['mut
 case_ gremlins-by-tag          bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('@e05b1d47b8c55748e50abc28ff6b132c536bacca', '@latest')"
 case_ second-install-by-tag    bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = 'go install github.com/x/y@latest; ' + s['run']"
 case_ install-no-version      bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\ngo install github.com/x/y'"
+case_ escaped-go-by-tag        bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\ng\\\\o install github.com/x/y@v0.6.0'"
+case_ quoted-go-by-tag        bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\n\\\"go\\\" install github.com/x/y@v0.6.0'"
+case_ full-path-go-by-tag     bad "s=[x for x in $J['mutation']['steps'] if 'go install' in (x.get('run') or '')][0]; s['run'] = s['run'] + '\\n/usr/local/go/bin/go install github.com/x/y@main'"
 case_ guards-swapped           bad "a, b = $J['mutation']['if'], $J['check']['if']; $J['mutation']['if'], $J['check']['if'] = b, a"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
