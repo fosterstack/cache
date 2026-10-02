@@ -3,7 +3,7 @@
 # The scanner panel's wiring in the daily rescan (scanner-panel rules 1, 2, 4, 9; ratified Oct 2): which
 # scanner runs on which images (fixed in the workflow, never computed), Google only through the federation
 # with repository variables, the VEX as the only exception (Grype and Scout given the file, no ignore
-# options anywhere), Trivy and Snyk gone from the panel, and the audits in the same step that judges. The
+# options anywhere), Trivy and Snyk gone from the panel, and no audit in the rescan (the auditor judges unique findings). The
 # real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -56,11 +56,15 @@ if "--vex-location .vex/fosterstack-cache.openvex.json" not in text("panel-scout
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
-# rule 9: the audits run in the step that judges findings, inside the rescan run
+# rule 9 (owner, Oct 3): the AI judging lives in the auditor; the rescan's panel job tallies and cannot audit
 pj = jobs["panel"]
-judge_steps = [s for s in pj.get("steps", []) if "bin/panel.py judge" in (s.get("run") or "")]
+if "id-token" in (pj.get("permissions") or {}) or pj.get("environment") or re.search(r"profiles|audit|--prior", text("panel")):
+    bad.append("the rescan's panel job can audit (identity, environment, profiles or history): the auditor judges unique findings")
+# the tally step (one step, the verdict the auditor reads)
+pj = jobs["panel"]
+judge_steps = [s for s in pj.get("steps", []) if "bin/panel.py tally" in (s.get("run") or "")]
 if len(judge_steps) != 1 or "if" in judge_steps[0] and "always()" not in judge_steps[0]["if"]:
-    bad.append("no single step runs `bin/panel.py judge` (findings judged and audited in one step)")
+    bad.append("no single step runs `bin/panel.py tally`")
 if any(re.search(r"\b(schedule|workflow_run|repository_dispatch)\b", str(s)) for s in pj.get("steps", [])):
     bad.append("the panel defers audits to another workflow")
 needs = pj.get("needs", [])
@@ -91,12 +95,12 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
 issue = [st for st in pj.get("steps", []) if "gh issue create" in (st.get("run") or "") and "gh issue comment" in (st.get("run") or "")]
 if len(issue) != 1 or "refs/heads/main" not in str(issue[0].get("if", "")) or "issue.md" not in issue[0].get("run", ""):
-    bad.append("no step opens or updates the tracking issue from main with the judge's issue text")
+    bad.append("no step opens or updates the tracking issue from main with the tally's issue text")
 elif re.search(r"^\s*exit 0\s*$", issue[0]["run"], re.M) or issue[0]["run"].count("exit 0") != 1:
     bad.append("the issue step can exit before filing")
 js = judge_steps[0].get("run", "") if judge_steps else ""
-if 'echo "rc=$?" >> "$GITHUB_OUTPUT"' not in js or not re.search(r"bin/panel\.py judge[^\n]*(\\\n[^\n]*)*\n\s*echo \"rc=\$\?\"", js):
-    bad.append("the judge's exit code is not what the panel exports")
+if 'echo "rc=$?" >> "$GITHUB_OUTPUT"' not in js or not re.search(r"bin/panel\.py tally[^\n]*(\\\n[^\n]*)*\n\s*echo \"rc=\$\?\"", js):
+    bad.append("the tally's exit code is not what the panel exports")
 last = pj.get("steps", [])[-1] if pj.get("steps") else {}
 if "steps.judge.outputs.rc != '0'" not in str(last.get("if", "")) or "exit 1" not in (last.get("run") or ""):
     bad.append("the panel's last step does not fail the run when the judge's verdict is not clean")
@@ -132,7 +136,7 @@ case_ google-no-idtoken       bad "$J['panel-google']['permissions'].pop('id-tok
 case_ grype-no-vex            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('--vex .vex/fosterstack-cache.openvex.json', '')"
 case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-location .vex/fosterstack-cache.openvex.json', '')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
-case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py judge'); s['run'] = s['run'].replace('bin/panel.py judge', 'bin/panel.py collect')"
+case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"
 case_ google-amd64-gone        bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('cand-\${v}-amd64', 'cand-\${v}')"
 case_ no-schedule             bad "d['on'].pop('schedule')"
 case_ scan-disabled           bad "s=$(step_of panel-inspector 'for v in'); s['if'] = 'false'"
@@ -145,8 +149,10 @@ case_ yearly-schedule         bad "d['on']['schedule'][0]['cron'] = '41 7 1 1 *'
 case_ google-no-environment   bad "$J['panel-google'].pop('environment')"
 case_ grype-amd64-twice       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in amd64 amd64')"
 case_ issue-exits-early       bad "[s.__setitem__('run', 'exit 0\n' + s['run']) for s in $J['panel']['steps'] if 'gh issue' in (s.get('run') or '')]"
-case_ rc-forced-zero          bad "s=$(step_of panel 'bin/panel.py judge'); s['run'] = s['run'].replace('echo \"rc=\$?\"', 'echo \"rc=0\"')"
+case_ rc-forced-zero          bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('echo \"rc=\$?\"', 'echo \"rc=0\"')"
 case_ google-no-log-http      bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace(' --log-http', '')"
+case_ panel-audits             bad "$J['panel']['permissions']['id-token'] = 'write'"
+case_ panel-reads-history     bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('--out', '--prior /tmp/prior/judgments.json --out')"
 case_ panel-skips-on-failure  bad "$J['panel']['if'] = 'success()'"
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

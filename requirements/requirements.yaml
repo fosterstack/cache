@@ -1599,6 +1599,30 @@ requirements:
         then: "it takes the one-audit path"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SCAN-008-AC7
+        given: "round 1 of the two audits ends in disagreement"
+        when: "the finding is judged"
+        then: "rounds 2-4 run as a debate (rule 8 c, owner Oct 2): each auditor investigates and builds its case from evidence in the image, delivers its case, reads the opponent's case and gives a final verdict; the debate stops as soon as they agree"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-008-AC8
+        given: "a debate"
+        when: "an auditor argues"
+        then: "it has been told the rule-13 scoring before it argues"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-008-AC9
+        given: "a debate still in disagreement after round 4"
+        when: "the finding is judged"
+        then: "rule 8 b applies: false by default, and no public statement without evidence"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-008-AC10
+        given: "the debates"
+        when: "they run"
+        then: "they run in the auditor's daily run, like all audits"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-SCAN-009
     title: What false does
@@ -1637,7 +1661,7 @@ requirements:
       - id: REQ-SCAN-009-AC5
         given: "the audits"
         when: "they run"
-        then: "they run inside the same rescan run, in the step that judges findings, never deferred"
+        then: "they run in the auditor's daily run (auditor.yml), right after the rescan, in one of its steps; no separate workflow and no deferral to another day; the rescan stays mechanical (scanners, counts, quorum, seen by N of M, the two-or-more issue rule) and judges no unique finding (owner, Oct 3)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -1750,6 +1774,76 @@ requirements:
         when: "it passes"
         then: "the finding showed before the suppression, was gone after, and every guide command worked exactly as written"
         verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-SCAN-013
+    title: Debate scoring
+    statement: >
+      Every debate shall be recorded; it settles only when the real answer arrives; a settled debate scores +1 for the vendor that argued the true side and -2 for a vendor that convinced the other of a wrong answer; scores are kept per vendor in the repository.
+    source: [.github/agent/bin/auditor-panel.py]
+    tier: community
+    introduced: v0.3.0
+    origin: scanner-panel rule 13 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-SCAN-013-AC1
+        given: "a debate"
+        when: "it ends"
+        then: "it is recorded: both cases, both verdicts, and which vendor argued which side"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-013-AC2
+        given: "a recorded debate"
+        when: "the daily run looks at it"
+        then: "it settles only when the real answer arrives (another scanner reports the finding, an advisory names the package we ship, or a fix ships); until then it is unsettled"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-013-AC3
+        given: "a settled debate"
+        when: "it is scored"
+        then: "the vendor that argued the true side scores +1; a vendor that convinced the other of a wrong answer scores -2; an unsettled debate scores nothing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-013-AC4
+        given: "the scores"
+        when: "they change"
+        then: "they are kept per vendor in the repository and change only through a pull request"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
+  - id: REQ-SCAN-014
+    title: Primary seat
+    statement: >
+      The primary auditor for single audits shall be vendor A by default; vendor B takes the seat when its score leads by 3 or more and vendor A takes it back the same way; a seat change is reported to the owner as a pull request; it never moves the daily CVE auditor; vendor names stay in variables.
+    source: [.github/agent/bin/auditor-panel.py]
+    tier: community
+    introduced: v0.3.0
+    origin: scanner-panel rule 14 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-SCAN-014-AC1
+        given: "the two vendors' scores"
+        when: "a single audit (rule 8 a) needs its auditor"
+        then: "the primary seat is vendor A by default; vendor B takes it when its score leads by 3 or more; vendor A takes it back when its score leads by 3 or more; a lead under 3 changes nothing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-014-AC2
+        given: "a seat change"
+        when: "it happens"
+        then: "it is reported to the owner and handed to the lane as a pull request"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-014-AC3
+        given: "a seat change"
+        when: "it happens"
+        then: "the daily CVE auditor stays with its configured provider"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-014-AC4
+        given: "public text about audits, debates, scores and seats"
+        when: "it is written (issues, PRs, evidence, logs, the score file)"
+        then: "it says primary/second auditor or vendor A/vendor B; vendor and model names come only from variables"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-LIC-001

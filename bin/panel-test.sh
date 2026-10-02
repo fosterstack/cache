@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-003-AC1, REQ-SCAN-003-AC2, REQ-SCAN-003-AC3, REQ-SCAN-004-AC2, REQ-SCAN-005-AC1, REQ-SCAN-005-AC2, REQ-SCAN-006-AC1, REQ-SCAN-007-AC1, REQ-SCAN-008-AC4, REQ-SCAN-008-AC6, REQ-SCAN-009-AC2, REQ-SCAN-009-AC3, REQ-REL-004-AC3, REQ-SCAN-010-AC3
-# The scanner panel's judge (bin/panel.py; scanner-panel rules 3-9, ratified Oct 2), offline: each scanner's
-# real output shape per image, written as fixtures; stand-in audits for rule 8. Asserts the package counts
-# (zero = did not run), the quorum per image, VEX filtering for Inspector and Google, the merge into one
-# finding "seen by N of M", reporting only at two or more scanners, the rule-8 paths and votes, the rule-9
-# outcomes, the audit-miss reversal, and the profile validator.
+# proves: REQ-SCAN-003-AC1, REQ-SCAN-003-AC2, REQ-SCAN-003-AC3, REQ-SCAN-004-AC2, REQ-SCAN-005-AC1, REQ-SCAN-005-AC2, REQ-SCAN-006-AC1, REQ-SCAN-009-AC5, REQ-SCAN-010-AC3, REQ-REL-004-AC3
+# The scanner panel's tally (bin/panel.py; scanner-panel rules 3-6, ratified Oct 2), offline: each scanner's
+# real output shape per image, written as fixtures. Asserts the package counts (zero = did not run), the quorum
+# per image, VEX filtering for Inspector and Google, the merge into one finding "seen by N of M", reporting
+# only at two or more scanners, and that unique findings are only listed for the auditor (rule 9, Oct 3).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 python3 - "$here/panel.py" "$here/../.vex/fosterstack-cache.openvex.json" <<'PY'
@@ -55,8 +54,8 @@ def tree(spec=None, skip=()):
                 continue
             WRITE[s](os.path.join(root, s, img), BASE, (spec or {}).get((s, img), []))
     return root
-def judge(root, audit=None, prior=None, profiles=None, today="2026-10-02"):
-    return P.judge(root, P.load_vex(VEX), profiles or {"entries": []}, audit or P.no_auditor, prior or {"false": []}, today=today)
+def judge(root):
+    return P.tally(root, P.load_vex(VEX))
 
 # --- rule 1 shape the judge expects (the workflow wiring test checks the jobs)
 check("the expected set: Grype, Scout, Inspector on all six images; Google on the three amd64 images only",
@@ -123,76 +122,10 @@ check("one finding across scanners' namings (distro namespace, escaped version, 
       sorted((f["id"], len(f["seen_by"])) for f in v["findings"]) == [("CVE-2023-4911", 2), ("GO-2099-0001", 2)], [(f["id"], f["package"], f["seen_by"]) for f in v["findings"]])
 r = tree({("scout", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")]}); v = judge(r)
 f = v["findings"][0]
-check("a unique finding never reaches the issue directly", f["unique"] and f["of"] == 3 and f["status"] != "report" and not v["issue"], (f, v["issue"]))
-
-# --- rule 8: no auditor configured (PR 1) -> each audit errors -> no evidence -> false by default
-check("no auditor: the audit error counts as no evidence -> false by default, error reported (rule 8 b)",
-      f["status"] == "false-default" and all(a.get("error") for a in f["audits"]) and len(f["audits"]) == 2 and v["audit_errors"], f)
-check("false by default: logged, no alarm, no public statement (rule 9)", v["exit"] == 0 and not v["vex_proposals"] and f in v["log"], v["exit"])
-
-def audits(votes):
-    """votes: {vendor: (verdict, evidence)} or {vendor: 'error'}"""
-    def a(vendor, finding, image):
-        x = votes[vendor]
-        return {"error": "stand-in failure"} if x == "error" else {"verdict": x[0], "evidence": x[1], "why": "reads the binary" if x[0] == "real" else None}
-    return a
-U = {("scout", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")]}
-for votes, want in [
-    ({"vendor_a": ("real", "dpkg status lists tzdata 2026c"), "vendor_b": ("real", "/usr/share/zoneinfo shows 2026c")}, "report"),
-    ({"vendor_a": ("real", "dpkg status lists tzdata 2026c"), "vendor_b": ("false", "not present")}, "false-evidence"),
-    ({"vendor_a": ("real", "dpkg status lists tzdata 2026c"), "vendor_b": ("real", None)}, "false-default"),
-    ({"vendor_a": ("real", "dpkg status lists tzdata 2026c"), "vendor_b": "error"}, "false-default"),
-    ({"vendor_a": ("false", None), "vendor_b": ("false", None)}, "false-default")]:
-    v = judge(tree(U), audit=audits(votes)); f = v["findings"][0]
-    check("rule 8 b votes %s -> %s" % ({k: (x if x == "error" else x[0] + ("+ev" if x[1] else "")) for k, x in votes.items()}, want),
-          f["status"] == want and len(f["audits"]) == 2, (f["status"], f["audits"]))
-def err_with_vote(vendor, finding, image):
-    return {"error": "timeout", "verdict": "real", "evidence": "stale text"}
-v = judge(tree(U), audit=err_with_vote); f = v["findings"][0]
-check("an errored audit casts no vote, even if it also returned a verdict and evidence (rule 8 b)",
-      f["status"] == "false-default" and all("verdict" not in a for a in f["audits"]) and len(v["audit_errors"]) == 2, f)
-v = judge(tree(U), audit=audits({"vendor_a": ("real", "e"), "vendor_b": ("real", "e")}))
-check("a unique finding confirmed real is reported under rule 5 with the audit's why", v["findings"][0]["status"] == "report" and v["exit"] == 1 and v["findings"][0]["why"], v["findings"][0])
-v = judge(tree(U), audit=audits({"vendor_a": ("false", "tzdata 2026c is not in the package database"), "vendor_b": ("real", "e")}))
-check("false with evidence -> a not_affected VEX proposal citing it (rule 9)",
-      v["vex_proposals"] and v["vex_proposals"][0]["status"] == "not_affected" and "not in the package database" in v["vex_proposals"][0]["justification_evidence"], v["vex_proposals"])
-check("every judged finding is logged with each audit's reasoning (rule 9)", v["log"] and all("audits" in x for x in v["log"]), v["log"])
-
-# --- rule 8 a: a recorded behavior -> one audit; real only with evidence from the image
-prof = {"entries": [{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"},
-                     "behavior": "reads /usr/share/zoneinfo", "finding": "CVE-2099-0002 on fips-arm64", "evidence": "zoneinfo 2026c in the image"}]}
-v = judge(tree(U), audit=audits({"vendor_a": ("real", "dpkg status lists tzdata 2026c"), "vendor_b": ("false", None)}), profiles=prof)
-f = v["findings"][0]
-check("a profile match takes one audit, and it decides (rule 8 a; a merged entry -> one audit)", len(f["audits"]) == 1 and f["status"] == "report", f)
-v = judge(tree(U), audit=audits({"vendor_a": ("real", None), "vendor_b": ("real", "e")}), profiles=prof)
-check("rule 8 a: real without evidence from the image is false", v["findings"][0]["status"] == "false-default", v["findings"][0])
-
-# --- rule 9: a finding judged false earlier, now seen by two -> real, an audit miss
-prior = {"false": [{"image": "fips-arm64", "id": "CVE-2099-0002", "package": "tzdata", "version": "2026c"}]}
-v = judge(tree({("scout", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")], ("grype", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")]}), prior=prior)
-check("a finding judged false earlier and now seen by two is real: issue, and an audit miss reported",
-      v["findings"][0]["status"] == "report" and v["misses"] and "audit miss" in v["issue"], (v["misses"], v["issue"][:80]))
-# across days: Scout alone on day 1 (false by default), Grype alone on day 2 -> another scanner reported it: real, a miss
-d1 = judge(tree({("scout", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}), today="2026-10-03")
-check("day 1: today's false judgment is kept with its scanner and date",
-      d1["judgments"]["false"] == [{"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "2026c",
-                                    "seen_by": ["scout"], "since": "2026-10-03"}], d1["judgments"])
-d2 = judge(tree({("grype", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}), prior=d1["judgments"], today="2026-10-04")
-check("day 2: another scanner reports it alone -> real, issue, audit miss",
-      d2["findings"][0]["status"] == "report" and d2["misses"] and "audit miss" in d2["issue"] and d2["exit"] == 1, (d2["findings"][0]["status"], d2["misses"]))
-d3 = judge(tree({("grype", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}), prior=d2["judgments"], today="2026-10-05")
-check("day 3: once real, one scanner alone keeps it reported (never re-presumed false)",
-      d3["findings"][0]["status"] == "report" and d3["exit"] == 1 and not d3["findings"][0]["audits"], d3["findings"][0])
-# an intervening day without the finding does not erase the memory
-d2 = judge(tree(), prior=d1["judgments"], today="2026-10-04")
-check("a day without the finding carries the false judgment forward", d2["judgments"]["false"] == d1["judgments"]["false"], d2["judgments"])
-d3 = judge(tree({("grype", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")], ("scout", "fips-arm64"): [("CVE-2099-0003", "tzdata", "2026c")]}),
-           prior=d2["judgments"], today="2026-10-05")
-check("day 3: corroborated after the gap -> an audit miss", d3["misses"] and d3["findings"][0].get("miss"), d3["misses"])
-check("a reported finding leaves the false memory and is remembered as real",
-      d3["judgments"]["false"] == [] and [x["id"] for x in d3["judgments"]["real"]] == ["CVE-2099-0003"], d3["judgments"])
-d4 = judge(tree(), prior=d1["judgments"], today="2027-06-01")
-check("a false judgment older than the history window is dropped", d4["judgments"]["false"] == [], d4["judgments"])
+check("a unique finding never reaches the issue; it is listed for the auditor, and alone does not fail the run",
+      f["unique"] and f["of"] == 3 and f["status"] == "unique" and v["unique"] == [f] and not v["issue"] and v["exit"] == 0, (f, v["issue"], v["exit"]))
+check("the rescan judges no unique finding (rule 9, owner Oct 3): no audit, no verdict, no history",
+      not any(k in f for k in ("audits", "why", "path")) and not any(k in v for k in ("judgments", "misses", "log", "vex_proposals", "audit_errors")), sorted(v))
 
 # --- rule 3 for Google: its package count is the list gcloud sent (from the --log-http request body)
 log = """==== request start ====
@@ -210,12 +143,6 @@ got = P.google_packages(log)
 check("Google's package count is read from the AnalyzePackages request it was sent", [p["package"] for p in got] == ["tzdata", "stdlib"], got)
 check("a log with no request body gives no packages (did not run)", P.google_packages("==== request start ====\nnothing") == [], "")
 
-# --- rule 7: profile validator
-check("a profile entry without a cited finding or image evidence fails validation",
-      P.validate_profiles({"entries": [{"scanner": "google", "kind": "blind_spot", "behavior": "b", "finding": "", "evidence": "e"}]})
-      and P.validate_profiles({"entries": [{"scanner": "google", "kind": "blind_spot", "behavior": "b", "finding": "f"}]})
-      and P.validate_profiles({"entries": [{"scanner": "nope", "kind": "blind_spot", "behavior": "b", "finding": "f", "evidence": "e"}]}), "")
-check("the committed profiles validate", P.validate_profiles(json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".github", "policy", "scanner-profiles.json")))) == [], "")
 print("panel: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
