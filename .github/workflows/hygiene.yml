@@ -74,7 +74,7 @@ jobs:
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/panel-sdk"
           "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
-          PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" -m unittest .github/agent/bin/tests/test_panel_sdk_probe.py -v
+          PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
 
       - name: privacy candidate-trace analyzer regressions (B03)
         run: bash bin/analyze-egress-trace-test.sh
