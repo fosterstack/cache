@@ -39,8 +39,9 @@ def finding(fid="CVE-2099-0002", pkg="tzdata", ver="2026c-0+deb13u1", img="fips-
             "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": list(purls)}
 
 
-def verdict(*fs):
-    return {"findings": list(fs), "unique": [f for f in fs if f["unique"]]}
+def verdict(*fs, images=None):
+    imgs = images if images is not None else sorted({f["image"] for f in fs} or {"fips-arm64"})
+    return {"findings": list(fs), "unique": [f for f in fs if f["unique"]], "images": {i: {} for i in imgs}}
 
 
 class Seat:
@@ -311,6 +312,42 @@ class Day(unittest.TestCase):
         self.assertIn(EV_FALSE, out["vex"][0]["impact_statement"])
         self.assertEqual(out["vex"][0]["purls"], [PURL])                    # scoped to the exact package
 
+    def test_a_statement_only_when_every_image_lacks_that_version(self):    # Codex r3 B2
+        other = BUNDLE.replace("2026c-0+deb13u1", OLD)                      # the other image HAS the reported version
+
+        def per_image(f):
+            return other if f["image"] == "debug-amd64" else BUNDLE
+        st, out = P.apply_day(verdict(finding(ver=OLD), images=["fips-arm64", "debug-amd64"]), P.new_state(), per_image,
+                              {"entries": []}, {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})},
+                              "2026-10-03", SCORING)
+        self.assertEqual(out["log"][0]["status"], "false-evidence")
+        self.assertEqual(out["vex"], [])
+        self.assertTrue(any("debug-amd64" in o and "no VEX statement" in o for o in out["owner"]))
+
+    def test_absence_is_proof_only_where_the_evidence_is_complete(self):   # Codex r3 B1
+        def b(lines):
+            return "h\n%s\n%s\n" % (P.EVIDENCE_MARK, "\n".join(lines))
+        bb = finding(pkg="busybox", ver="1.37.0", purls=("pkg:generic/busybox@1.37.0",))
+        static = b(["package database: no record names busybox", "file: /busybox/busybox",
+                    "go build info: no Go binary in the image records busybox"])
+        self.assertIsNone(P.vote(false(ev="package database: no record names busybox"), static, bb))
+        deb = finding(pkg="libssl3", ver="3.0", purls=("pkg:deb/debian/libssl3@3.0",))
+        clean = b(["package database: no record names libssl3", "files: no path in the image mentions libssl3"])
+        self.assertEqual(P.vote(false(ev="package database: no record names libssl3"), clean, deb), "false")
+        named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])
+        self.assertIsNone(P.vote(false(ev="package database: no record names libssl3"), named, deb))
+        mod = finding(pkg="golang.org/x/net", ver="v0.1.0", purls=("pkg:golang/golang.org/x/net@v0.1.0",))
+        gob = b(["go build info /cache: /cache: go1.26.6", "go build info: no Go binary in the image records golang.org/x/net"])
+        self.assertEqual(P.vote(false(ev="go build info: no Go binary in the image records golang.org/x/net"), gob, mod), "false")
+        nogo = b(["go build info: no Go binary in the image records golang.org/x/net"])
+        self.assertIsNone(P.vote(false(ev="go build info: no Go binary in the image records golang.org/x/net"), nogo, mod))
+        std = finding(pkg="stdlib", ver="go1.26.6", purls=("pkg:golang/stdlib@1.26.6",))
+        self.assertEqual(P.installed_versions(gob, std), {"1.26.6"})
+        self.assertIsNone(P.vote(false(ev="go build info: no Go binary in the image records golang.org/x/net"), gob, std))
+        self.assertEqual(P.vote(real(ev="go build info /cache: /cache: go1.26.6"), gob, std), "real")   # toolchain line
+        self.assertIsNone(P.vote(real(ev="go build info /cache: /cache: go1.26.6"), gob, finding(pkg="stdlib", ver="1.25.0",
+                                                                                            purls=("pkg:golang/stdlib@1.25.0",))))
+
     def test_false_with_evidence_but_no_package_identity_writes_no_blanket_statement(self):
         st, out = self.day(verdict(finding(ver=OLD, purls=())), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
         self.assertEqual(out["vex"], [])
@@ -339,6 +376,22 @@ class Day(unittest.TestCase):
         st, out = self.day(verdict(finding(ver=OLD)), a=Seat({"audit": false()}), b=Seat({"audit": false()}))
         st, out = self.day(verdict(finding(ver=OLD, seen=("grype", "scout"))), st, today="2026-10-04")
         self.assertEqual(out["vex"][0]["status"], "affected")
+
+    def test_profile_entries_are_proposed_once(self):                       # Sonnet r3 blocker
+        prof = {"entries": [{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"},
+                             "behavior": "b", "finding": "f", "evidence": "e"}]}
+        st, out = self.day(verdict(finding()), a=Seat({"audit": real()}), b=Seat({}), profiles=prof)
+        self.assertEqual((out["log"][0]["path"], out["profiles"]), ("a", []))   # path (a): the entry exists already
+        two = verdict(finding(fid="CVE-2099-0005"), finding(fid="CVE-2099-0006"))
+        st, out = self.day(two, a=Seat({"audit": [real(), real()]}), b=Seat({"audit": [real(), real()]}))
+        self.assertEqual(len(out["profiles"]), 1)                               # one per scanner + package per day
+
+    def test_a_later_audit_reversing_false_is_an_audit_miss(self):          # Codex r3 R6
+        st, _ = self.day(verdict(finding()))                                 # day 1: false by default
+        st, out = self.day(verdict(finding()), st, a=Seat({"audit": real()}), b=Seat({"audit": real()}), today="2026-10-04")
+        self.assertEqual((len(st["false"]), len(st["real"])), (0, 1))
+        self.assertEqual(out["misses"][0]["by"], "a later audit")
+        self.assertTrue(any("audit miss" in o for o in out["owner"]))
 
     def test_once_real_stays_reported_without_new_audits(self):
         st, _ = self.day(verdict(finding()), a=Seat({"audit": real()}), b=Seat({"audit": real()}))

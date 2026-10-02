@@ -103,6 +103,11 @@ def validate_profiles(doc):
     return errs
 
 
+def _same_entry(e, scanner, package):
+    return (e.get("scanner") == scanner and e.get("kind") == "sees_alone"
+            and (e.get("match") or {}).get("package") == "^%s$" % re.escape(package))
+
+
 def profile_match(profiles, scanner, package):
     for e in (profiles or {}).get("entries") or []:
         pat = (e.get("match") or {}).get("package")
@@ -123,7 +128,7 @@ ABSENT = ("no record names", "no path in the image mentions", "no Go binary in t
 
 def _ver(v):
     v = str(v or "")
-    return v[1:] if re.match(r"^v\d", v) else v
+    return v[2:] if re.match(r"^go\d", v) else (v[1:] if re.match(r"^v\d", v) else v)
 
 
 def installed_versions(bundle, f):
@@ -141,10 +146,29 @@ def installed_versions(bundle, f):
         src = re.search(r"(?m)^Source:\s*(\S+)", stanza)
         if v and ((m and m.group(1).lower() in (pkg, short)) or (src and src.group(1).lower() in (pkg, short))):
             found.add(_ver(v.group(1)).lower())
-    for m in re.finditer(r"(?m)\b(?:dep|mod)\s+(\S+)\s+(v?\S+)", str(bundle).split(EVIDENCE_MARK, 1)[1]):
+    ev = str(bundle).split(EVIDENCE_MARK, 1)[1]
+    for m in re.finditer(r"(?m)\b(?:dep|mod)\s+(\S+)\s+(v?\S+)", ev):
         if m.group(1).lower() == pkg:
             found.add(_ver(m.group(2)).lower())
+    if pkg in ("stdlib", "go"):         # the Go standard library: each Go binary's toolchain version
+        found |= {m.group(1).lower() for m in re.finditer(r"(?m)^go build info \S+: \S+: go(\d[\w.+-]*)\s*$", ev)}
     return found
+
+
+def absence_is_complete(bundle, f):
+    """Absence is proof only where the evidence covers that kind of package: a distribution package (deb/rpm/apk)
+    with no record AND no file path mentioning it, or a Go module (not the standard library) in an image whose Go
+    binaries carry build information. Anything else (a static non-Go binary such as busybox, an unknown type) can
+    never be shown absent by this evidence (Codex r3 B1)."""
+    ev = str(bundle).split(EVIDENCE_MARK, 1)[1] if EVIDENCE_MARK in str(bundle) else ""
+    pkg = str(f.get("package") or "").lower()
+    short = pkg.rsplit("/", 1)[-1]
+    kinds = {p[4:].split("/", 1)[0] for p in f.get("purls") or [] if str(p).startswith("pkg:")}
+    if kinds & {"deb", "rpm", "apk"} and len(kinds) == 1:
+        return not any(ln.startswith("file: ") and short in ln.lower() for ln in ev.splitlines())
+    if kinds == {"golang"} and pkg not in ("stdlib", "go"):
+        return bool(re.search(r"(?m)^go build info \S+: \S+: go\d", ev))
+    return False
 
 
 def vote(answer, bundle, f):
@@ -174,19 +198,21 @@ def validated(answer, bundle, f):
     short, ver = pkg.rsplit("/", 1)[-1], _ver(f.get("version")).lower()
     have = installed_versions(bundle, f)
     pkg_re = r"(?i)(Package:\s*%s\s|(?:dep|mod)\s+%s\s)" % (re.escape(short), re.escape(pkg))
+    if pkg in ("stdlib", "go"):         # the standard library's record is a Go binary's toolchain line
+        pkg_re = r"(?i)^go build info \S+: \S+: go\d"
 
     def record(q):          # a quote of one record of THIS package: its own Package/Version, or its Go module line
         return re.search(pkg_re, q + " ") and q.lower().count("package:") <= 1
     if answer["verdict"] == "real":
         # real: the image records the package at exactly the reported version, and the quote shows that record
-        proof = [q for q in quotes if record(q) and re.search(r"(?i)(Version:\s*|\s)v?%s(\s|$)" % re.escape(ver), q)]
+        proof = [q for q in quotes if record(q) and re.search(r"(?i)(Version:\s*|\s|go)v?%s(\s|$)" % re.escape(ver), q)]
         return ("real", proof) if proof and ver in (have or ()) else none
     # false: the image records NO installed copy at the reported version, and the quote shows absence or another version
     if have is None or ver in have:
         return none
     absent = [q for q in quotes if any(a.lower() in q.lower() for a in ABSENT) and (pkg in q.lower() or short in q.lower())]
     other = [q for q in quotes if record(q) and re.search(r"(?i)(Version:\s*\S|(?:dep|mod)\s+\S+\s+v?\d)", q)]
-    proof = (absent if not have else []) + other
+    proof = (absent if not have and absence_is_complete(bundle, f) else []) + other
     return ("false", proof) if proof else none
 
 
@@ -339,8 +365,18 @@ def _ident(f):
     return {k: f.get(k) for k in ("image", "id", "package", "version")}
 
 
+def _not_in_image(bundles, f, image):
+    """The image's evidence shows the finding's package is not installed at the reported version there."""
+    g = dict(f, image=image)
+    b = bundles(g)
+    have = installed_versions(b, g)
+    ver = _ver(f.get("version")).lower()
+    return have is not None and ver not in have and (bool(have) or absence_is_complete(b, g))
+
+
 def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
     st = copy.deepcopy(state)
+    images = sorted((verdict.get("images") or {}).keys())      # every image the rescan built today
     out = {"issue": "", "vex": [], "profiles": [], "owner": [], "misses": [], "log": []}
     false_mem = {key_of(x): x for x in st["false"] if not _expired(x, today)}
     real_mem = {key_of(x): x for x in st["real"] if not _expired(x, today)}
@@ -382,8 +418,13 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
         if r["debate"]:
             st["debates"].append(dict(_ident(f), on=today, settled=None, **r["debate"]))
         if r["status"] == "report":
+            if k in false_mem:      # a later audit reversed a remembered false judgment: that is an audit miss too
+                false_mem.pop(k)
+                out["misses"].append(dict(_ident(f), seen_by=sorted(seen), by="a later audit"))
             real_mem[k] = dict(_ident(f), seen_by=sorted(seen), since=today, last_seen=today)
             reported.append(f)
+            if r["path"] == "a" or any(_same_entry(x, f["seen_by"][0], f["package"]) for x in out["profiles"]):
+                continue        # a recorded behavior took this finding (rule 8(a)), or today already proposes it
             prop = {"scanner": f["seen_by"][0], "kind": "sees_alone",
                     "match": {"package": "^%s$" % re.escape(f["package"])},
                     "behavior": r["why"] or "unexplained: the audits confirmed the finding but not why only this scanner saw it",
@@ -403,9 +444,18 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring):
                             purls=list(old.get("purls") or f.get("purls") or []))
         if ev and not old.get("vex"):
             quotes = r["proof"]       # only quotes vote() validated against the image, never an answer's raw text
-            if f.get("purls"):
+            elsewhere = [img for img in images if not _not_in_image(bundles, f, img)]
+            if f.get("purls") and images and not elsewhere:
                 out["vex"].append(dict(_ident(f), status="not_affected", purls=list(f["purls"]),
-                                       impact_statement="Audited from the image: " + "; ".join(quotes)[:500]))
+                                       impact_statement="Audited from the images: " + "; ".join(quotes)[:500]))
+            elif f.get("purls"):
+                # the statement would cover every image; one that has the package at that version (or could not be
+                # read) means no statement — never broader than the evidence (Codex r3 B2)
+                false_mem[k]["vex"] = False
+                out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence there, but "
+                                    "the package at that version is present in, or could not be checked on: %s — so no "
+                                    "VEX statement was written." % (f["id"], f["image"], f["package"], f["version"],
+                                                                    ", ".join(elsewhere)))
             else:   # no exact package identity from any scanner: a statement could not be scoped; never a blanket one
                 false_mem[k]["vex"] = False
                 out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but no "
@@ -529,9 +579,11 @@ def bundle_text(facts, buildinfo, f):
     lines += stanzas or ["package database: no record names %s" % pkg]
     hits = [x for x in facts["paths"] if low and low in x.lower()][:40]
     lines += ["file: %s" % x for x in hits] or ["files: no path in the image mentions %s" % pkg]
+    toolchains = ["go build info %s: %s" % (b, text.splitlines()[0].strip()) for b, text in sorted(buildinfo.items())
+                  if text.strip()]
     go = ["go build info %s: %s" % (b, ln.strip()) for b, text in sorted(buildinfo.items())
-          for ln in text.splitlines() if pkg and pkg.lower() in ln.lower()]
-    lines += go or ["go build info: no Go binary in the image records %s" % pkg]
+          for ln in text.splitlines()[1:] if pkg and pkg.lower() in ln.lower()]
+    lines += toolchains + (go or ["go build info: no Go binary in the image records %s" % pkg])
     return "\n".join(lines) + "\n"
 
 
@@ -775,15 +827,10 @@ def cmd_judge(a, seats=None, bundles=None):
     return 0
 
 
-def image_product(image):
-    """The product a panel statement covers: exactly the image the audit read (variant + architecture), never the
-    whole repository (REQ-AUD-13 scope; rule 9: a statement is no broader than its evidence)."""
-    variant, _, arch = str(image).rpartition("-")
-    return "%s&variant=%s&arch=%s" % (policy.VEX_PRODUCT, variant, arch)
-
-
 def statement_id(v):
-    return policy.scope_id(v["id"], image_product(v["image"]), v.get("purls") or [])
+    """The statement's scope: the repository's product (every image — written only when every image's evidence shows
+    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids)."""
+    return policy.scope_id(v["id"], policy.VEX_PRODUCT, v.get("purls") or [])
 
 
 def apply_files(root, st, day, today):
@@ -809,7 +856,7 @@ def apply_files(root, st, day, today):
                 doc["statements"].append({
                     "@id": sid,
                     "vulnerability": {"name": v["id"]}, "timestamp": ts, "status": "not_affected",
-                    "products": [{"@id": image_product(v["image"]), "subcomponents": subs}],
+                    "products": [{"@id": policy.VEX_PRODUCT, "subcomponents": subs}],
                     "justification": "component_not_present", "impact_statement": v["impact_statement"]})
             else:
                 for stmt in doc["statements"]:
@@ -823,10 +870,13 @@ def apply_files(root, st, day, today):
             json.dump(doc, fh, indent=2)
             fh.write("\n")
         changed.append(VEX)
-    if day["profiles"]:
-        ppath = os.path.join(root, PROFILES)
-        prof = _load_json(ppath)
-        prof["entries"].extend(day["profiles"])
+    ppath = os.path.join(root, PROFILES)
+    prof = _load_json(ppath) if day["profiles"] else None
+    key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
+    # never twice: an entry the file (or its open PR) already holds is skipped
+    new = [e for e in day["profiles"] if prof is not None and key(e) not in {key(x) for x in prof["entries"]}]
+    if new:
+        prof["entries"].extend(new)
         with open(ppath, "w") as fh:
             json.dump(prof, fh, indent=2)
             fh.write("\n")
@@ -834,11 +884,11 @@ def apply_files(root, st, day, today):
     return changed
 
 
-def _sh(cmd, plan, real, run=subprocess.run, **kw):
+def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
     plan.append(cmd)
     if real:
         r = run(cmd, capture_output=True, text=True, **kw)
-        if r.returncode != 0:
+        if r.returncode != 0 and check:
             raise RuntimeError("%s failed: %s" % (cmd[0:3], public(r.stderr)[-400:]))
         return r.stdout
     return ""
@@ -882,6 +932,8 @@ def cmd_deliver(a, run=subprocess.run):
         if automerge_allowed(sorted(pr_paths)):
             _sh(["gh", "pr", "ready", branch], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", branch], plan, real, run)
+        elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it
+            _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run, check=False)
     ienv = dict(os.environ, GH_TOKEN=os.environ.get("AUDITOR_ISSUES_TOKEN", os.environ.get("GH_TOKEN", "")))
     if day["issue"]:
         n = _sh(["gh", "issue", "list", "--state", "open", "--label", "daily-rescan", "--search", ISSUE_TITLE,

@@ -436,6 +436,17 @@ class Deliver(Tmp):
         for c in cmds:                                                         # no vendor or model name anywhere
             self.assertIsNone(P.VENDOR_WORDS.search(" ".join(c)))
 
+    def test_a_profile_entry_already_in_the_file_is_not_added_again(self):  # Sonnet r3 blocker
+        entry = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b",
+                 "finding": "f", "evidence": "e"}
+        json.dump({"entries": [entry]}, open(os.path.join(self.repo, P.PROFILES), "w"))
+        self.day(profiles=[dict(entry, finding="another day")])
+        calls, run = self.fake()
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            P.cmd_deliver(self.a(dry=True), run=run)
+        self.assertEqual(len(json.load(open(os.path.join(self.repo, P.PROFILES)))["entries"]), 1)
+        self.assertNotIn(P.PROFILES, json.load(open(os.path.join(self.out, "plan.json")))["changed"])
+
     def test_one_statement_per_scope_and_auto_merge_only_when_on_and_no_profile_change(self):
         prop = {"image": "fips-arm64", "id": "CVE-2099-0004", "package": "tzdata", "version": "1",
                 "status": "not_affected", "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}
@@ -455,7 +466,7 @@ class Deliver(Tmp):
         vpath = os.path.join(self.repo, P.VEX)
         mine = {"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1",
                 "purls": ["pkg:deb/debian/tzdata@1"]}
-        other_image = dict(mine, image="fips-amd64")
+        other_image = dict(mine, package="busybox", purls=["pkg:generic/busybox@1"])   # same CVE, another package
         json.dump({"@id": "https://x/vex", "statements": [
             {"@id": P.statement_id(mine), "vulnerability": {"name": "CVE-2099-0003"},
              "status": "not_affected", "justification": "component_not_present", "impact_statement": "old"},
@@ -479,7 +490,8 @@ class Deliver(Tmp):
         self.assertEqual(stmts[0]["status"], "affected")
         self.assertNotIn("justification", stmts[0])
         self.assertEqual(stmts[1]["status"], "not_affected")                 # only the panel's own statement turns
-        self.assertEqual(stmts[2]["status"], "not_affected")                 # same CVE, another image: untouched
+        self.assertEqual(stmts[2]["status"], "not_affected")                 # same CVE, another package: untouched
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", "17"], cmds)    # Codex r3 R5: disarmed, a profile entry is open
         self.assertEqual([c[:4] for c in cmds].count(["gh", "issue", "comment", "42"]), 2)   # tracking + owner, updated
 
     def test_a_failed_command_stops_delivery_with_a_masked_error(self):
