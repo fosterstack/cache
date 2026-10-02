@@ -41,6 +41,10 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Script-text inputs: an input an action executes as a command (github-script `script`,
              golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
              a `run:` block — outside this check, covered by the review pass (see ACTIONS).
+  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (skopeo from the runner's
+             signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
+             outside this check, the same class as a binary installed by version; covered by the review
+             pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the review record:
@@ -121,6 +125,8 @@ ACTIONS = {
     "github/codeql-action": "node: CodeQL init/autobuild/analyze/upload-sarif",
     "golangci/golangci-lint-action": "node: installs golangci-lint by version (a binary); `args` reaches "
     "a shell — script text we write (the run: class; review pass)",
+    "google-github-actions/auth": "node: Google workload identity federation (OIDC); no image run",
+    "google-github-actions/setup-gcloud": "node: installs gcloud by version (a binary, outside this check)",
     "goreleaser/goreleaser-action": "node: installs goreleaser by version (a binary); `args` is command "
     "text we write (the run: class; review pass)",
     "ossf/scorecard-action": "docker: its own image, fixed inside the pinned commit (owner, Sep 30)",
