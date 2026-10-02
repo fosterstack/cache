@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -399,5 +399,31 @@ case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'
 case_scan repro-never-fails      bad "[s.__setitem__('run', s['run'].replace('exit 1', 'true')) for s in d['jobs']['reproducibility']['steps']]"
 case_scan repro-one-assembly     bad "d['jobs']['reproducibility']['needs'] = ['assemble']"
 case_scan acceptance-lost        bad "d['jobs'].pop('artifact-acceptance')"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24): after the consolidation PRs the workflow directory holds exactly
+# the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
+# stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
+go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
+stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
+stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml"
+judge_set() {  # $1: a newline list of the directory's files
+  local want got
+  want=$(tr ' ' '\n' <<<"$ratified" | grep . | sort); got=$(sort <<<"$1" | grep .)
+  [ "$(wc -l <<<"$want" | tr -d ' ')" = 24 ] || { echo "the ratified list is not 24 files"; return 1; }
+  [ "$want" = "$got" ] && { echo ok; return 0; }
+  echo "extra: $(comm -13 <(echo "$want") <(echo "$got") | tr '\n' ' ')missing: $(comm -23 <(echo "$want") <(echo "$got") | tr '\n' ' ')"; return 1
+}
+case_set() {
+  if out=$(judge_set "$3"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS set:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL set:$1 → $got, want $2 ($out)"; fi
+}
+real_set=$(cd "$root/.github/workflows" && ls -1 | grep -E '\.ya?ml$')
+case_set real          ok  "$real_set"
+case_set a-new-file    bad "$real_set"$'\n'"sprawl.yml"
+case_set one-missing   bad "$(grep -v '^codeql.yml$' <<<"$real_set")"
+case_set back-to-old   bad "$(grep -v '^acceptance.yml$' <<<"$real_set")"$'\n'"acceptance-gradle.yml"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

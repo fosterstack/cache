@@ -34,5 +34,3 @@ unmapped:
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
   - ac: REQ-SCAN-012-AC5
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-REL-008-AC1
-    reason: "the 23-file end state is proven when the last of the four ratified consolidation PRs lands (this is the first: mutation into go-freshness)"

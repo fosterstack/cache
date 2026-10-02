@@ -466,3 +466,6 @@ mappings:
   - ac: REQ-REL-008-AC2
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-008-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }

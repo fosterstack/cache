@@ -1407,7 +1407,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 23 ratified files"
+        then: "it holds exactly the 24 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
