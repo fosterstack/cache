@@ -1,0 +1,76 @@
+name: probe — Google on-demand scan of our distroless images (throwaway, never merged)
+
+# Register row 57: "Probes required before a vote: … Google distroless inventory." Scanner-panel rules
+# 1-12 (ratified Oct 2) let this probe run before the test matrix. Two scans, linux/amd64 only (rule 1):
+# the v0.2.1 production and debug children, pinned by digest. It prints what Google returns beside
+# Grype's package count for the same image. The debug image carries busybox, whose CVE-2025-60876 our
+# VEX covers: if Google reports it, Google read distroless's package database.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe:
+    if: github.head_ref == 'probe/google-distroless'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: production
+            image: ghcr.io/fosterstack/cache@sha256:1fa361196dd083d52f466828b965cf8c457fa0e09d6b31de078277d5762cb2b0
+          - variant: debug
+            image: ghcr.io/fosterstack/cache@sha256:fd52446f5bb30b17c7b20e5d4b381722180f63911f678937e75b16b6f080ac5a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: federated identity (no keys)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.CACHE_SCANNER_PROVIDER }}
+          service_account: ${{ vars.CACHE_SCANNER_SERVICE_ACCOUNT }}
+          project_id: fosterstack-cache
+
+      - name: the gcloud local-extract component
+        run: |
+          set -euo pipefail
+          gcloud --version | head -3
+          gcloud components install local-extract --quiet 2>/dev/null \
+            || { sudo apt-get update -qq && sudo apt-get install -y -qq google-cloud-cli-local-extract; }
+
+      - name: Google on-demand scan (LOCAL mode) of the ${{ matrix.variant }} amd64 child
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker pull -q "$IMAGE"
+          gcloud artifacts docker images scan "$IMAGE" --format=json > "$RUNNER_TEMP/scan.json"
+          echo "=== scan response"; cat "$RUNNER_TEMP/scan.json"
+          scan=$(jq -r '.response.scan' "$RUNNER_TEMP/scan.json")
+          gcloud artifacts docker images list-vulnerabilities "$scan" --format=json > "$RUNNER_TEMP/vulns.json"
+          echo "=== vulnerability occurrences: $(jq length "$RUNNER_TEMP/vulns.json")"
+          jq -r '.[] | "\(.vulnerability.shortDescription // .noteName)  \(.vulnerability.packageIssue[0].affectedPackage // "?") \(.vulnerability.packageIssue[0].affectedVersion.fullName // "?")  \(.vulnerability.effectiveSeverity // "?")"' "$RUNNER_TEMP/vulns.json" | sort -u
+          echo "=== packages Google names in its findings"
+          jq -r '[.[].vulnerability.packageIssue[]?.affectedPackage] | unique | .[]' "$RUNNER_TEMP/vulns.json"
+          if jq -e '[.[] | tostring | test("CVE-2025-60876")] | any' "$RUNNER_TEMP/vulns.json" >/dev/null; then
+            echo "PROBE: Google reports CVE-2025-60876 (busybox) — it read the distroless package database"
+          else
+            echo "PROBE: Google does NOT report CVE-2025-60876"
+          fi
+
+      - name: Grype on the same image, for comparison (pinned installer)
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh grype
+          grype "$IMAGE" -o json > "$RUNNER_TEMP/grype.json"
+          echo "=== Grype: $(jq '.source.target | length' "$RUNNER_TEMP/grype.json" >/dev/null; jq '[.matches[]] | length' "$RUNNER_TEMP/grype.json") matches; packages via SBOM:"
+          grype "$IMAGE" -o json | jq -r '[.matches[].artifact.name] | unique | .[]' | head -40
