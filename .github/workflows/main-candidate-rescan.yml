@@ -4,10 +4,10 @@ name: Daily main-candidate rescan
 # release's digests). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
 # 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
-# images, Google Artifact Analysis on the three variants on linux/amd64, judged together by bin/panel.py —
+# images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
 # package counts and quorum, the published VEX as the only exception, "seen by N of M", a tracking issue for
-# findings seen by two or more scanners, unique findings audited before they count (REQ-REL-004-AC3, amended
-# Oct 2). Trivy and Snyk are no longer run by the panel; scanner-reports below still hands the daily auditor
+# findings seen by two or more scanners; unique findings are listed for the daily auditor, whose run audits them
+# right after this one (REQ-REL-004-AC3, amended Oct 2; rule 9, owner Oct 3). Trivy and Snyk are no longer run by the panel; scanner-reports below still hands the daily auditor
 # its own inputs (REQ-AUD, unchanged).
 on:
   schedule:
@@ -47,10 +47,10 @@ jobs:
 
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
-  # leaving its raw output per image for the judge; the set of images is written here, never computed:
+  # leaving its raw output per image for the tally; the set of images is written here, never computed:
   # Grype, Docker Scout and Amazon Inspector scan all six images; Google scans the three variants on
   # linux/amd64 only. Trivy and Snyk are not in the panel (rule 1). A scanner job that fails leaves fewer
-  # outputs, which the judge counts as "did not run" (rule 3) — never as clean.
+  # outputs, which the tally counts as "did not run" (rule 3) — never as clean.
   panel-grype:
     name: panel — Grype (six images)
     needs: [build, assemble]
@@ -77,7 +77,7 @@ jobs:
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
               skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
               grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
-                || echo "::warning::grype could not scan ${v}-${arch} (the judge counts it as did not run)"
+                || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -122,7 +122,7 @@ jobs:
               skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
               docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
                 && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json "local://${ref}" > "${d}/cves.json" \
-                || echo "::warning::docker scout could not scan ${v}-${arch} (the judge counts it as did not run)"
+                || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -168,7 +168,7 @@ jobs:
               skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
               inspector-sbomgen container --image "${ref}" --outfile "${d}/sbom.cdx.json" --disable-progress-bar \
                 && aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json" \
-                || echo "::warning::inspector could not scan ${v}-${arch} (the judge counts it as did not run)"
+                || echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -221,7 +221,7 @@ jobs:
                 || rm -f "${d}/packages.json"
             fi
             rm -f "${d}/http.log"   # the request log holds tokens; never uploaded
-            [ -s "${d}/packages.json" ] || echo "::warning::google could not scan ${v} (the judge counts it as did not run)"
+            [ -s "${d}/packages.json" ] || echo "::warning::google could not scan ${v} (the tally counts it as did not run)"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ always() }}
@@ -231,14 +231,13 @@ jobs:
           if-no-files-found: warn
 
   panel:
-    name: panel — judge the day (rules 3-9)
+    name: panel — tally the day (rules 3-6)
     needs: [panel-grype, panel-scout, panel-inspector, panel-google]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write      # the tracking issue (rule 5)
-      actions: read      # yesterday's judgments (rule 9's audit-miss comparison)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -250,29 +249,15 @@ jobs:
           pattern: panel-*
           path: /tmp/panel/
           merge-multiple: true
-      - name: yesterday's judgments (best effort; without them there is no audit-miss comparison today)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +e
-          mkdir -p /tmp/prior
-          # the latest earlier run that kept judgments (a day that failed before the panel keeps none)
-          for prev in $(gh run list --workflow main-candidate-rescan.yml --branch main --limit 15 \
-                          --json databaseId --jq ".[] | select(.databaseId != ${GITHUB_RUN_ID}) | .databaseId"); do
-            gh run download "$prev" -n panel-judgments -D /tmp/prior >/dev/null 2>&1 && { echo "comparing with run ${prev}"; break; }
-          done
-          [ -f /tmp/prior/judgments.json ] || echo "::warning::no earlier judgments found; no audit-miss comparison today"
-          exit 0
-      - name: judge the day's findings, auditing unique ones in this step (rules 3-9)
+      - name: tally the day's findings — counts, quorum, seen by N of M (rules 3-6; unique findings go to the auditor)
         id: judge
         run: |
           set +e
-          python3 bin/panel.py judge --in /tmp/panel --vex .vex/fosterstack-cache.openvex.json \
-            --profiles .github/policy/scanner-profiles.json --prior /tmp/prior/judgments.json --out /tmp/panel-out
+          python3 bin/panel.py tally --in /tmp/panel --vex .vex/fosterstack-cache.openvex.json --out /tmp/panel-out
           echo "rc=$?" >> "$GITHUB_OUTPUT"
           cat /tmp/panel-out/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null
           exit 0
-      - name: open or update the tracking issue (seen by two or more scanners, or confirmed real; rule 5)
+      - name: open or update the tracking issue (seen by two or more scanners; rule 5)
         if: ${{ always() && steps.judge.outcome == 'success' && github.ref == 'refs/heads/main' }}   # only main's rescan files the issue
         env:
           GH_TOKEN: ${{ github.token }}
@@ -285,14 +270,7 @@ jobs:
           n=$(gh issue list --state open --label daily-rescan --json number,title --jq "[.[] | select(.title == \"${title}\")][0].number // empty")
           if [ -n "$n" ]; then gh issue comment "$n" --body-file /tmp/panel-out/issue-body.md
           else gh issue create --title "$title" --label daily-rescan --label security --body-file /tmp/panel-out/issue-body.md; fi
-      - name: keep today's judgments for tomorrow (rule 9)
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: panel-judgments
-          path: /tmp/panel-out/judgments.json
-          if-no-files-found: warn
-      - name: keep the verdict and the log (every judged finding with each audit's reasoning)
+      - name: keep the verdict — the auditor's input (every finding, seen by N of M, the unique ones listed)
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -302,7 +280,7 @@ jobs:
       - name: fail the run unless every image counted and nothing is to report (rule 3; never reported clean)
         if: ${{ steps.judge.outputs.rc != '0' }}
         run: |
-          echo "::error::scanner panel: rc ${{ steps.judge.outputs.rc }} (1 = findings to report, 2 = an image did not count or the judge could not run)" >&2
+          echo "::error::scanner panel: rc ${{ steps.judge.outputs.rc }} (1 = findings to report, 2 = a scanner did not run, an image did not count, or the tally could not run)" >&2
           exit 1
 
   # The daily auditor (auditor.yml) consumes this run: it needs the candidate's recorded

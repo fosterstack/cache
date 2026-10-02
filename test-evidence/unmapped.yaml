@@ -10,12 +10,6 @@ unmapped:
     reason: no acceptance-container run asserts uid 65532 and the data path; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-DEPLOY-001-AC1
     reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
-  - ac: REQ-SCAN-008-AC3
-    reason: "PR 2 of the scanner panel: the two vendor audits through keyless federation (the existing provider's rescan federation rule is an owner item)"
-  - ac: REQ-SCAN-008-AC5
-    reason: "PR 2 of the scanner panel: a confirmed-real unique finding's profile PR needs the real audits"
-  - ac: REQ-SCAN-009-AC1
-    reason: "PR 2 of the scanner panel: a false-with-evidence VEX statement needs the real audits"
   - ac: REQ-SCAN-010-AC1
     reason: rule 10 (VEX in three forms) is a later PR of the scanner panel
   - ac: REQ-SCAN-010-AC2
@@ -40,9 +34,3 @@ unmapped:
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
   - ac: REQ-SCAN-012-AC5
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-SCAN-008-AC1
-    reason: "PR 1 implements and tests the one-audit decision (bin/panel-test.sh, with stand-in audits); the audit that reads the image arrives in PR 2"
-  - ac: REQ-SCAN-008-AC2
-    reason: "PR 1 implements and tests the two-vote decision (bin/panel-test.sh, with stand-in audits); the two vendors' image audits arrive in PR 2"
-  - ac: REQ-SCAN-009-AC4
-    reason: "PR 1 implements and tests the reversal when another scanner reports it, the same day or later (bin/panel-test.sh); a finding remembered as real stays reported; not yet covered: the advisory trigger, and a finding judged false that a VEX statement then covers (our pipeline and the scanners filter it before the reversal check) being reported and its statement turned to affected — these arrive with PR 2's VEX statements"
