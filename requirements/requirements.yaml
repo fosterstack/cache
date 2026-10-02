@@ -1392,6 +1392,37 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-REL-008
+    title: The workflow set is consolidated to the ratified 23 files
+    statement: >
+      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge
+      keeping every required check's name, top-level placement and events, and no new workflow file added without the
+      owner's ratification.
+    source: [.github/workflows/go-freshness.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: workflow consolidation (owner RATIFIED Oct 2; ops/docs/ratify/2026-10-02-workflow-consolidation.md)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-008-AC1
+        given: "the four consolidation pull requests have landed"
+        when: "the workflow directory is listed"
+        then: "it holds exactly the 23 ratified files"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-008-AC2
+        given: "a job moved into another workflow file"
+        when: "it runs"
+        then: "its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-008-AC3
+        given: "the mutation job, merged into go-freshness.yml"
+        when: "the schedules fire or the workflow is dispatched"
+        then: "the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
