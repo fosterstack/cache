@@ -334,6 +334,29 @@ def decide(event, commits, tags, cut_today, removed):
     return out
 
 
+def ready(required, check_runs):
+    """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
+    (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
+    is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
+    no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head."""
+    waiting, red = [], []
+    for req in required.get("required_checks", []):
+        if req.get("scope", "push") != "push":
+            continue
+        mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
+        if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):
+            continue
+        if not mine or any(r.get("status") != "completed" for r in mine):
+            waiting.append(req["context"])
+        else:
+            red.append(req["context"])
+    if red and not waiting:
+        return "no", "not green on the tagged commit: " + ", ".join(red)
+    if waiting:
+        return "wait", "waiting on: " + ", ".join(waiting)
+    return "ready", "every push-scoped required check is green"
+
+
 def _git(*args, cwd="."):
     return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, check=True).stdout
 
@@ -386,12 +409,19 @@ def main(argv=None):
     d.add_argument("--removed", help="JSON list of the release's critical/high findings HEAD removes")
     d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
     d.add_argument("--out", required=True)
+    k = sub.add_parser("ready")
+    k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
+    k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
     r = sub.add_parser("removed")
     r.add_argument("--release-grype", required=True)
     r.add_argument("--gomod", required=True)
     r.add_argument("--base-grype")
     r.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "ready":
+        verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
+        print(verdict, _clean(why))
+        return 0
     if a.cmd == "removed":
         head = {"go": gomod_versions(open(a.gomod).read()),
                 "base_findings": grype_findings(json.load(open(a.base_grype))) if a.base_grype else None}

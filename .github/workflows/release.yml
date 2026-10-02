@@ -53,6 +53,7 @@ jobs:
     environment: agent          # the App's secrets live here (main only)
     permissions:
       contents: read
+      checks: read              # wait for the tagged commit's required checks (advisor 0063)
       id-token: write           # gitsign signs with this workflow's own OIDC identity (no key)
       issues: write             # the standing "main is not patch-clean" issue
     steps:
@@ -129,8 +130,35 @@ jobs:
           n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
 
-      - name: sign the patch tag keylessly (gitsign, this workflow's identity)
+      # Admission requires every push-scoped required check green on the exact tagged commit; on a push, that commit's
+      # checks are still running when decide runs. Wait for them (bounded: a wait, never a retry, rule 7); cut only if they
+      # are all green, judged as admission judges them. Otherwise no cut, and the daily run picks the patch up.
+      - name: wait for the tagged commit's required checks (as admission judges them; bounded)
+        id: checks
         if: ${{ steps.decide.outputs.cut == 'true' }}
+        timeout-minutes: 65
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # the same query admission makes (filter=latest), so "ready" here is what admission will see
+          end=$((SECONDS + 3600))
+          while [ "$SECONDS" -lt "$end" ]; do
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
+              --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+            v=$(python3 bin/patch-decide.py ready --required .github/policy/required-checks.json --check-runs "$RUNNER_TEMP/runs.json")
+            echo "$v"
+            case "${v%% *}" in
+              ready) echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              no) echo "::notice::no cut: ${v#no }; the daily run tries again once main is green"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            esac
+            sleep 60
+          done
+          echo "::notice::no cut: the required checks did not finish within 60 minutes; the daily run tries again"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+
+      - name: sign the patch tag keylessly (gitsign, this workflow's identity)
+        if: ${{ steps.checks.outputs.ready == 'true' }}
         env:
           VERSION: ${{ steps.decide.outputs.version }}
         run: |
@@ -142,7 +170,7 @@ jobs:
 
       - name: mint the auditor App's token (contents write on cache only)
         id: app-token
-        if: ${{ steps.decide.outputs.cut == 'true' }}
+        if: ${{ steps.checks.outputs.ready == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
@@ -151,7 +179,7 @@ jobs:
           permission-contents: write
 
       - name: push the signed tag (the App transports it)
-        if: ${{ steps.decide.outputs.cut == 'true' }}
+        if: ${{ steps.checks.outputs.ready == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ steps.decide.outputs.version }}

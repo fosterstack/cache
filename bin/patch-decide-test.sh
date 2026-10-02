@@ -283,6 +283,40 @@ open(os.path.join(blk, "go.mod"), "w").write("module x\n\nrequire (\n\tgolang.or
 g(blk, "commit", "-qam", "repl")
 cs = P.gather_commits("v0.2.1", blk)
 check("gather: a replace-block edit in a real repo is not patch-clean", [P.classify(x)[0] for x in cs] == ["fix", "dirty"], [P.classify(x) for x in cs])
+
+# --- `ready` (advisor 0063; rules 2, 4, 7): a cut waits until the tagged commit's push-scoped required checks have
+# finished, judged exactly as admission judges them (a success from the pinned app; pull_request-scoped checks are
+# admission's to read on the merged PR head, never here)
+REQ = {"required_checks": [{"context": "test", "integration_id": 15368, "scope": "push"},
+                           {"context": "scan", "integration_id": 15368, "scope": "push"},
+                           {"context": "dependency-review", "integration_id": 15368, "scope": "pull_request"}]}
+def run(name, status="completed", conclusion="success", app=15368):
+    return {"name": name, "status": status, "conclusion": conclusion if status == "completed" else None, "app_id": app}
+for runs, want, why in [
+    ([run("test"), run("scan")], "ready", "every push-scoped check green from the pinned app"),
+    ([run("test"), run("scan", "in_progress")], "wait", "one still running"),
+    ([run("test")], "wait", "one not created yet"),
+    ([run("test"), run("scan", conclusion="failure")], "no", "one finished red"),
+    ([run("test"), run("scan", conclusion="cancelled")], "no", "one cancelled"),
+    ([run("test"), run("scan", app=999)], "wait", "a green run from another app does not count"),
+    ([run("test"), run("scan", conclusion="failure"), run("scan")], "ready", "a green re-run counts, as admission takes any green"),
+    ([run("test"), run("scan", conclusion="failure"), run("scan", "queued")], "wait", "red, but a re-run is queued"),
+    ([run("test"), run("scan", conclusion="neutral")], "no", "neutral is not success"),
+]:
+    got = P.ready(REQ, runs)
+    check("ready: %s -> %s" % (why, want), got[0] == want, got)
+check("ready: names what it waits on", "scan" in P.ready(REQ, [run("test")])[1])
+pol = os.path.join(repo, "req.json"); json.dump(REQ, open(pol, "w"))
+cr = os.path.join(repo, "runs.json"); json.dump([run("test"), run("scan")], open(cr, "w"))
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = P.main(["ready", "--required", pol, "--check-runs", cr])
+check("ready CLI: prints the verdict first", rc == 0 and buf.getvalue().split()[0] == "ready", buf.getvalue())
+# a queued decide run recomputes the version from the tags its own checkout sees (advisor 0063): after an earlier run
+# pushed v0.2.2, the next one cuts v0.2.3, never a second v0.2.2
+check("a queued run after v0.2.2 was cut computes v0.2.3", P.decide("push", FIX, ["v0.2.1", "v0.2.2"], cut_today=True,
+      removed=[REL[0]])["version"] == "v0.2.3")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

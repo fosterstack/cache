@@ -37,8 +37,10 @@ if dec.get("concurrency") != {"group": "patch-decide", "cancel-in-progress": "fa
     bad.append("decide runs are not serialized (a push and the daily run could both cut)")
 if dec.get("environment") != "agent":
     bad.append("decide is not in the main-only agent environment")
-if dec.get("permissions") != {"contents": "read", "id-token": "write", "issues": "write"}:
-    bad.append("decide's own token is not contents read + id-token + issues: %s" % dec.get("permissions"))
+if dec.get("permissions") != {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}:
+    bad.append("decide's own token is not contents read + checks read + id-token + issues: %s" % dec.get("permissions"))
+if d.get("concurrency"):
+    bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
 steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
 if "bin/install-scanner.sh gitsign" not in text:
@@ -57,7 +59,26 @@ if users != ["push the signed tag (the App transports it)"]:
     bad.append("the App token reaches a step other than the tag push: %s" % users)
 if "patch-decide.py removed" not in text or "grype" not in text:
     bad.append("the critical/high comparison does not scan the release and the new base image")
+# advisor 0063: before signing, wait (bounded) for the tagged commit's push-scoped required checks, judged as admission
+# judges them; sign, mint and push only when they are ready
+names = [s.get("name") for s in steps]
+wait = [s for s in steps if s.get("id") == "checks"]
+if len(wait) != 1 or "patch-decide.py ready" not in (wait[0].get("run") or "") or \
+        not (wait[0].get("timeout-minutes") or "").isdigit() or int(wait[0]["timeout-minutes"]) > 70 or \
+        "steps.decide.outputs.cut == 'true'" not in wait[0].get("if", "") or \
+        "check-runs?filter=latest" not in (wait[0].get("run") or ""):
+    bad.append("no bounded wait for the tagged commit's required checks (patch-decide.py ready) before a cut")
+gated = [s.get("name") or s.get("id") for s in steps
+         if ("tag -s" in (s.get("run") or "") or s.get("id") == "app-token" or "git push" in (s.get("run") or ""))]
+ungated = [g for g, st in zip(gated, [s for s in steps if (s.get("name") or s.get("id")) in gated])
+           if "steps.checks.outputs.ready == 'true'" not in st.get("if", "")]
+if len(gated) != 3 or ungated:
+    bad.append("signing, the App token or the push does not wait for ready: %s" % (ungated or gated))
+if wait and gated and names.index(wait[0].get("name")) > min(names.index(g) for g in gated if g in names):
+    bad.append("the wait comes after signing")
 co = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+if not co or (co[0].get("with") or {}).get("fetch-depth") != "0":
+    bad.append("decide's checkout is shallow (a queued run must see every tag, including the earlier run's)")
 if not co or (co[0].get("with") or {}).get("persist-credentials") != "false":
     bad.append("decide's checkout keeps a credential")
 fail = jobs.get("patch-failed") or {}
@@ -99,6 +120,13 @@ case_ a-rerun-path            bad "$J['patch-failed']['steps'][0]['run'] += '\\n
 case_ gitsign-unpinned        bad "[s.__setitem__('run', s['run'].replace('bin/install-scanner.sh gitsign', 'go install github.com/sigstore/gitsign@latest')) for s in $D['steps'] if 'install-scanner.sh gitsign' in (s.get('run') or '')]"
 case_ no-failure-issue        bad "$J.pop('patch-failed')"
 case_ decide-concurrent       bad "$D.pop('concurrency')"
+case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
+case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
+case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
+case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
+case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
+case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
+case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ no-schedule             bad "d['on'].pop('schedule')"
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
