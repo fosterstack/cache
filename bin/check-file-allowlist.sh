@@ -91,6 +91,7 @@ ALLOW_PATTERNS=(
   '^bin/panel\.py$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
+  '^bin/workflow-consolidation-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'

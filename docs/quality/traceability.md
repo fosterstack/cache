@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 69 |
-| Acceptance criteria | 141 |
+| Active requirements | 70 |
+| Acceptance criteria | 144 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 125 |
+| ACs with mapped evidence | 126 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 26 |
+| Confidence: implementation-only | 27 |
 
 ## Cache protocol
 
@@ -644,6 +644,20 @@ A held Dependabot major, or a required-check drift issue, shall send one generic
 |---|---|---|---|---|---|
 | REQ-DEP-004-AC1 | Given a completed hold; when the reviewer finishes it; then it sends one fix-held-bump dispatch to ops naming the issue, the pull request and the repository; a merge never dispatches; a failed or impossible dispatch is a warning and the hold stands | unit |  | approved | 1 item(s) |
 | REQ-DEP-004-AC2 | Given a required-check drift issue opened by the guard; when hygiene has seen it; then the fixer is dispatched (one fix-required-check-drift dispatch to ops naming the issue), and dispatching never fails the job | unit |  | approved | 1 item(s) |
+
+## Release evidence
+
+### REQ-REL-008 — The workflow set is consolidated to the ratified 23 files
+
+The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge keeping every required check's name, top-level placement and events, and no new workflow file added without the owner's ratification.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/go-freshness.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 23 ratified files | ci-workflow |  | approved | none mapped |
+| REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | none mapped |
+| REQ-REL-008-AC3 | Given the mutation job, merged into go-freshness.yml; when the schedules fire or the workflow is dispatched; then the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml | ci-workflow |  | approved | 1 item(s) |
 
 ## SCAN
 

@@ -128,7 +128,7 @@ jobs:
       # under the CI Go toolchain — NOT the securego/gosec Docker action,
       # whose bundled Go cannot type-check a go.mod on the 1.26 line and
       # fails at the import phase (it never reaches the checks). Same
-      # install pattern as gremlins in mutation.yml. gosec still exits
+      # install pattern as gremlins in go-freshness.yml's mutation job. gosec still exits
       # non-zero on any finding, so the gate is unchanged.
       - name: install gosec (pinned)
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
