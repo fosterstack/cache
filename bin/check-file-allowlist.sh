@@ -95,6 +95,7 @@ ALLOW_PATTERNS=(
   '^bin/scout-selfcheck\.py$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
+  '^bin/release-patch-wiring-test\.sh$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
   '^bin/workflow-consolidation-test\.sh$'

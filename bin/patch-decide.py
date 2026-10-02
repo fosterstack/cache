@@ -12,9 +12,12 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   daily_cut               rule 2: at most one daily patch (a critical/high fix may cut at once, outside this rule).
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
                           no-behavior-change line; no vendor or model names.
+  removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
+                          toolchain at or past the advisory's fixed version; a distribution package the new base
+                          image no longer reports); unknown or unreadable never counts as removed.
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import re
+import argparse, json, os, re, subprocess, sys
 
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
@@ -273,3 +276,144 @@ def floating(version, released):
     if all(mine >= o for o in others):
         out += ["%d" % v[0], "latest"]
     return out
+
+
+def _ver_key(v):
+    """A comparable key for Go-style (v1.2.3, go1.26.6) and Debian-style (3.0.16-1, 1:2.36-9+deb12u3) versions."""
+    v = re.sub(r"^(go|v)", "", str(v or ""))
+    v = v.split(":", 1)[-1]
+    return [int(p) if p.isdigit() else p for p in re.split(r"[.+~-]", v) if p != ""]
+
+
+def _at_least(have, want):
+    try:
+        return _ver_key(have) >= _ver_key(want)
+    except TypeError:                     # mixed number/text parts that cannot be ordered: never "fixed"
+        return False
+
+
+def removed_critical_high(release_findings, head):
+    """The latest release's critical/high findings that HEAD removes. head: {"go": {module: version at HEAD},
+    "base_findings": [findings of the new base image] or None when it could not be scanned}."""
+    out = []
+    for f in release_findings:
+        if str(f.get("severity", "")).lower() not in ("critical", "high") or not f.get("fixed"):
+            continue
+        if f.get("type") == "go-module":
+            have = (head.get("go") or {}).get(f["package"])
+            if have and _at_least(have, f["fixed"]):
+                out.append(f)
+        elif f.get("type") == "deb":
+            base = head.get("base_findings")
+            if base is not None and not any(b.get("id") == f["id"] and b.get("package") == f["package"] for b in base):
+                out.append(f)
+    return out
+
+
+def decide(event, commits, tags, cut_today, removed):
+    """{cut, version, reason, not_clean}: rule 1 (patch-clean, fix-only), rule 2 (a critical/high fix at once on push;
+    otherwise at most one daily patch on the schedule)."""
+    version = next_patch(tags)
+    clean, why = patch_clean(commits)
+    out = {"cut": False, "version": version, "reason": "", "not_clean": why}
+    if version is None:
+        out["reason"] = "no release yet: the first release is the owner's"
+    elif why:
+        out["reason"] = "main is not patch-clean"
+    elif not clean:
+        out["reason"] = "nothing shipped since the latest tag"
+    elif event == "push":
+        if removed:
+            out.update(cut=True, reason="a critical or high finding removed: %s" % ", ".join(f["id"] for f in removed))
+        else:
+            out["reason"] = "no critical or high finding removed"
+    elif daily_cut(True, cut_today):
+        out.update(cut=True, reason="daily: shipped bytes ahead of the latest tag")
+    else:
+        out["reason"] = "a patch was already cut today"
+    return out
+
+
+def _git(*args, cwd="."):
+    return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, check=True).stdout
+
+
+def gather_commits(since, cwd=".", labels=lambda sha: []):
+    """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
+    the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
+    out = []
+    for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
+        files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
+        # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
+        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
+                              if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
+                 for f in files}
+        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha))})
+    return out
+
+
+def latest_tag(cwd="."):
+    tags = [t for t in _git("tag", "-l", "v*", cwd=cwd).split() if _semver(t)]
+    return max(tags, key=_semver) if tags else None
+
+
+def grype_findings(doc):
+    out = []
+    for m in (doc or {}).get("matches") or []:
+        v, a = m.get("vulnerability") or {}, m.get("artifact") or {}
+        fix = ((v.get("fix") or {}).get("versions") or [""])[0]
+        out.append({"id": v.get("id"), "package": a.get("name"), "installed": a.get("version"), "severity": v.get("severity"),
+                    "fixed": fix, "type": "go-module" if a.get("type") in ("go-module", "golang") else a.get("type")})
+    return out
+
+
+def gomod_versions(text):
+    """{module: version} from go.mod, plus the toolchain as stdlib (go1.X.Y from the go directive)."""
+    out = {m.group(1): m.group(2) for m in re.finditer(r"(?m)^\s*(?:require\s+)?([\w./-]+\.[\w./-]+)\s+(v\S+)", text)}
+    m = re.search(r"(?m)^go\s+(\d+\.\d+(?:\.\d+)?)\s*$", text)
+    if m:
+        out["stdlib"] = "go" + m.group(1)
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="patch-decide")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("decide")
+    d.add_argument("--event", choices=("push", "schedule", "workflow_dispatch"), required=True)
+    d.add_argument("--repo", default=".")
+    d.add_argument("--cut-today", choices=("true", "false"), required=True)
+    d.add_argument("--removed", help="JSON list of the release's critical/high findings HEAD removes")
+    d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
+    d.add_argument("--out", required=True)
+    r = sub.add_parser("removed")
+    r.add_argument("--release-grype", required=True)
+    r.add_argument("--gomod", required=True)
+    r.add_argument("--base-grype")
+    r.add_argument("--out", required=True)
+    a = ap.parse_args(argv)
+    if a.cmd == "removed":
+        head = {"go": gomod_versions(open(a.gomod).read()),
+                "base_findings": grype_findings(json.load(open(a.base_grype))) if a.base_grype else None}
+        found = removed_critical_high(grype_findings(json.load(open(a.release_grype))), head)
+        with open(a.out, "w") as fh:
+            json.dump(found, fh, indent=1)
+        return 0
+    tags = [t for t in _git("tag", "-l", "v*", cwd=a.repo).split()]
+    since = latest_tag(a.repo)
+    labels = json.load(open(a.labels)) if a.labels else {}
+    commits = gather_commits(since, a.repo, labels=lambda sha: labels.get(sha, [])) if since else []
+    removed = json.load(open(a.removed)) if a.removed else []
+    event = "schedule" if a.event == "workflow_dispatch" else a.event
+    dec = decide(event, commits, tags, a.cut_today == "true", removed)
+    dec["since"] = since
+    with open(a.out, "w") as fh:
+        json.dump(dec, fh, indent=1)
+    print(_clean("patch decision: %s — %s" % ("cut " + dec["version"] if dec["cut"] else "no cut", dec["reason"])))
+    for w in dec["not_clean"]:
+        print(_clean("  not patch-clean: " + w))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

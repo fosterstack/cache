@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 71 |
 | Acceptance criteria | 156 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 136 |
+| ACs with mapped evidence | 139 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -669,14 +669,14 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 |---|---|---|---|---|---|
 | REQ-REL-009-AC1 | Given the commits on main since the latest release tag; when release.yml's decide job classifies them; then each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (only .github/, docs/, requirements/, test-evidence/ or tests) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue "auditor: main is not patch-clean" is opened or updated with the commits and why | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC2 | Given a patch is cut; when its tag is chosen; then it is vX.Y.(Z+1) after the latest vX.Y.Z: a real semantic version with no build number or suffix; CI never creates a minor or major tag | unit |  | approved | 1 item(s) |
-| REQ-REL-009-AC3 | Given a push to main that removes a critical or high finding present in the latest release, on a patch-clean main; when release.yml runs on that push; then it cuts the patch in that run | ci-workflow |  | approved | none mapped |
+| REQ-REL-009-AC3 | Given a push to main that removes a critical or high finding present in the latest release, on a patch-clean main; when release.yml runs on that push; then it cuts the patch in that run | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-009-AC4 | Given the daily schedule, main ahead of the latest tag in shipped bytes and patch-clean; when release.yml runs; then it cuts one patch that day; it never cuts a second patch the same day except for a critical or high fix | unit |  | approved | 1 item(s) |
-| REQ-REL-009-AC5 | Given a patch tag; when CI creates it; then it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere | ci-workflow |  | approved | none mapped |
+| REQ-REL-009-AC5 | Given a patch tag; when CI creates it; then it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-009-AC6 | Given a release tag; when source admission verifies it; then it accepts the owner's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity for patch tags only; any other signer, or that identity on a minor or major tag, is refused | unit |  | approved | none mapped |
 | REQ-REL-009-AC7 | Given a patch tag; when the release runs; then it runs the full chain (admission, build, assembly, reproducibility, scans, acceptance, authorization, promotion) and lands on GHCR and the Docker Hub mirror with identical digests | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC8 | Given a patch release; when its notes are generated; then they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line; they are posted on the GitHub release and in the changelog, and name no vendor or model | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC9 | Given a patch that fixes CVEs; when it is released; then the VEX statements for those CVEs change to fixed in that version, and the customer suppression files regenerate with the release | ci-workflow |  | approved | none mapped |
-| REQ-REL-009-AC10 | Given a stage of a patch release; when it fails; then one issue is opened, that attempt is abandoned with no retry, the next daily run tries again once the cause is fixed, and the owner is told as information | ci-workflow |  | approved | none mapped |
+| REQ-REL-009-AC10 | Given a stage of a patch release; when it fails; then one issue is opened, that attempt is abandoned with no retry, the next daily run tries again once the cause is fixed, and the owner is told as information | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
 

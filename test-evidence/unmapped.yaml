@@ -32,13 +32,13 @@ unmapped:
     reason: "PR B of the patch-release build: release.yml's push-to-main trigger cuts on a removed critical/high finding"
   - ac: REQ-REL-009-AC5
     reason: "PR B: the keyless gitsign signature under release.yml's identity"
+  - ac: REQ-REL-008-AC2
+    reason: "check-name preservation is proven per moved job in the consolidation PRs that move required jobs (ci.yml absorptions, scan + release-chain-pr, the acceptance merge); the mutation job is not a required check"
   - ac: REQ-REL-009-AC6
     reason: "PR C: source admission accepting the CI identity for patch tags only (with the owner's ruleset and allowed-signers changes)"
   - ac: REQ-REL-009-AC7
     reason: "proven by the first real patch release (the full chain and identical GHCR/Docker Hub digests)"
   - ac: REQ-REL-009-AC9
     reason: "proven by the first real patch release; the customer suppression files depend on scanner-panel rule 10, a later PR"
-  - ac: REQ-REL-009-AC10
-    reason: "PR B: the failure issue and no-retry behavior in release.yml"
   - ac: REQ-REL-009-AC12
-    reason: "PR B: the labelling rule (both step-8 records say no behavior change) is enforced where the label is read"
+    reason: "the lane's process rule (both step-8 records say no behavior change before it applies patch-fix): CI cannot tell the owner's label from the lane's, since both act through the owner's account; each application is recorded in the lane's report with both reviewers' findings"

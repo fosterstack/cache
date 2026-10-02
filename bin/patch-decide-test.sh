@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
 # classified fix-class / neutral / not patch-clean by the files they change (a patch-fix label admits a source change);
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
@@ -182,6 +182,107 @@ for s_ in ("confirmed by Me-ta", "confirmed by Me_ta", "confirmed by M.e.t.a", "
     out = P._clean(s_)
     check("NEW-BLOCKER-4 %r is redacted" % s_, not re.search(r"(?i)m\W?e\W?t\W?a|git\W?hub|goo\W?gle|llama|copilot|gemini", out), out)
 check("NEW-BLOCKER-4 ordinary words survive (metadata, metal)", P._clean("metadata metal") == "metadata metal", P._clean("metadata metal"))
+# --- AC3: a push that removes a critical/high finding of the latest release cuts at once
+REL = [  # the latest release's findings (grype on the published image): id, package, installed, fixed, severity, type
+    {"id": "CVE-2099-1", "package": "golang.org/x/net", "installed": "v0.30.0", "fixed": "v0.33.0", "severity": "High", "type": "go-module"},
+    {"id": "CVE-2099-2", "package": "stdlib", "installed": "go1.26.5", "fixed": "go1.26.6", "severity": "Critical", "type": "go-module"},
+    {"id": "CVE-2099-3", "package": "libssl3", "installed": "3.0.15-1", "fixed": "3.0.16-1", "severity": "High", "type": "deb"},
+    {"id": "CVE-2099-4", "package": "golang.org/x/text", "installed": "v0.20.0", "fixed": "v0.21.0", "severity": "Medium", "type": "go-module"},
+]
+HEAD = {"go": {"golang.org/x/net": "v0.33.0", "stdlib": "go1.26.5", "golang.org/x/text": "v0.21.0"},
+        "base_findings": [{"id": "CVE-2099-3", "package": "libssl3"}]}       # the new base image still has it
+got = P.removed_critical_high(REL, HEAD)
+check("a critical/high go-module finding fixed at HEAD is removed", [f["id"] for f in got] == ["CVE-2099-1"], got)
+check("a medium finding never triggers the at-once cut", "CVE-2099-4" not in [f["id"] for f in got])
+got = P.removed_critical_high(REL, {"go": {"stdlib": "go1.26.6", "golang.org/x/net": "v0.30.0"}, "base_findings": []})
+check("the toolchain (stdlib) and a deb package gone from the new base image are removed",
+      sorted(f["id"] for f in got) == ["CVE-2099-2", "CVE-2099-3"], got)
+got = P.removed_critical_high(REL, {"go": {"golang.org/x/net": "v0.31.0"}, "base_findings": [{"id": "CVE-2099-3", "package": "libssl3"}]})
+check("a bump short of the fixed version, or a module whose HEAD version is unknown, removes nothing", got == [], got)
+check("no fixed version known -> never counted as removed", P.removed_critical_high(
+      [dict(REL[0], fixed="")], {"go": {"golang.org/x/net": "v9.9.9"}, "base_findings": []}) == [])
+check("an unreadable new base image never counts as removing a deb finding", P.removed_critical_high(
+      [REL[2]], {"go": {}, "base_findings": None}) == [])
+# --- the decision the workflow acts on
+FIX = [c("f1", ["go.mod"], diffs=BUMP)]
+D = P.decide("push", FIX, ["v0.2.1"], cut_today=False, removed=[REL[0]])
+check("push + patch-clean + a removed critical/high finding -> cut v0.2.2 now", D["cut"] and D["version"] == "v0.2.2", D)
+D = P.decide("push", FIX, ["v0.2.1"], cut_today=True, removed=[REL[0]])
+check("a critical/high fix cuts even after a patch today", D["cut"], D)
+D = P.decide("push", FIX, ["v0.2.1"], cut_today=False, removed=[])
+check("push without a removed critical/high finding -> wait for the daily run", not D["cut"] and D["reason"] == "no critical or high finding removed", D)
+D = P.decide("schedule", FIX, ["v0.2.1"], cut_today=False, removed=[])
+check("daily + patch-clean + shipped bytes -> cut", D["cut"] and D["version"] == "v0.2.2", D)
+D = P.decide("schedule", FIX, ["v0.2.1"], cut_today=True, removed=[])
+check("daily, already cut today -> no second", not D["cut"], D)
+D = P.decide("schedule", FIX + [c("bad1234", ["internal/x.go"])], ["v0.2.1"], cut_today=False, removed=[])
+check("not patch-clean -> no cut, the commits named for the standing issue", not D["cut"] and D["not_clean"] and "bad1234" in D["not_clean"][0], D)
+D = P.decide("push", FIX + [c("bad1234", ["internal/x.go"])], ["v0.2.1"], cut_today=False, removed=[REL[0]])
+check("not patch-clean blocks even a critical/high cut (a fix-only release is rule 1)", not D["cut"] and D["not_clean"], D)
+D = P.decide("schedule", [c("d", ["docs/x.md"])], ["v0.2.1"], cut_today=False, removed=[])
+check("nothing shipped since the tag -> no cut, no issue", not D["cut"] and not D["not_clean"], D)
+D = P.decide("schedule", FIX, [], cut_today=False, removed=[])
+check("no release yet -> no cut (the first release is the owner's)", not D["cut"], D)
+# --- the command the workflow runs, over a real git repository
+import json, os, subprocess, tempfile
+def g(repo, *a):
+    subprocess.run(["git", "-C", repo] + list(a), check=True, capture_output=True,
+                   env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x"))
+repo = tempfile.mkdtemp()
+g(repo, "init", "-q", "-b", "main")
+open(os.path.join(repo, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+os.makedirs(os.path.join(repo, "docs"))
+g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "base"); g(repo, "tag", "v0.2.1")
+open(os.path.join(repo, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(repo, "commit", "-qam", "bump")
+open(os.path.join(repo, "docs", "a.md"), "w").write("doc\n")
+g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "doc")
+out = os.path.join(repo, "decision.json")
+import io, contextlib
+with contextlib.redirect_stdout(io.StringIO()):
+    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--out", out])
+D = json.load(open(out))
+check("the command reads the real history since v0.2.1 and cuts v0.2.2", D["cut"] and D["version"] == "v0.2.2" and D["since"] == "v0.2.1", D)
+open(os.path.join(repo, "main.go"), "w").write("package main\n")
+g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "feature")
+with contextlib.redirect_stdout(io.StringIO()) as so:
+    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--out", out])
+D = json.load(open(out))
+check("a feature commit makes it not patch-clean, named", not D["cut"] and "main.go" in D["not_clean"][0], D)
+sha = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+lab = os.path.join(repo, "labels.json"); json.dump({sha: ["patch-fix"]}, open(lab, "w"))
+with contextlib.redirect_stdout(io.StringIO()):
+    P.main(["decide", "--event", "workflow_dispatch", "--repo", repo, "--cut-today", "false", "--labels", lab, "--out", out])
+check("the patch-fix label on that PR admits it", json.load(open(out))["cut"], json.load(open(out)))
+# --- `removed`: from grype's JSON for the release and the new base image, and HEAD's go.mod
+def gm(id_, name, ver, fix, sev, typ):
+    return {"vulnerability": {"id": id_, "severity": sev, "fix": {"versions": [fix] if fix else []}},
+            "artifact": {"name": name, "version": ver, "type": typ}}
+rel = os.path.join(repo, "rel.json"); json.dump({"matches": [
+    gm("CVE-2099-1", "golang.org/x/net", "v0.30.0", "0.33.0", "High", "go-module"),
+    gm("CVE-2099-2", "stdlib", "go1.26.5", "1.26.6", "Critical", "go-module"),
+    gm("CVE-2099-3", "libssl3", "3.0.15-1", "3.0.16-1", "High", "deb")]}, open(rel, "w"))
+gomod = os.path.join(repo, "head.mod"); open(gomod, "w").write("module x\n\ngo 1.26.6\n\nrequire (\n\tgolang.org/x/net v0.33.0\n)\n")
+base = os.path.join(repo, "base.json"); json.dump({"matches": [gm("CVE-2099-3", "libssl3", "3.0.15-1", "3.0.16-1", "High", "deb")]}, open(base, "w"))
+rem = os.path.join(repo, "removed.json")
+P.main(["removed", "--release-grype", rel, "--gomod", gomod, "--base-grype", base, "--out", rem])
+check("removed: the go module and the toolchain fixed at HEAD; the deb finding still in the new base stays",
+      sorted(f["id"] for f in json.load(open(rem))) == ["CVE-2099-1", "CVE-2099-2"], json.load(open(rem)))
+P.main(["removed", "--release-grype", rel, "--gomod", gomod, "--out", rem])
+check("removed: no base scan -> no deb finding counts as removed", "CVE-2099-3" not in [f["id"] for f in json.load(open(rem))])
+# gather_commits hands the classifier full context, so a require-block bump is judged (and a replace-block edit refused)
+blk = tempfile.mkdtemp()
+g(blk, "init", "-q", "-b", "main")
+open(os.path.join(blk, "go.mod"), "w").write("module x\n\nrequire (\n\tgolang.org/x/sys v0.46.0\n)\n\nreplace (\n\tex.org/a v1.0.0 => ex.org/b v1.0.0\n)\n")
+g(blk, "add", "-A"); g(blk, "commit", "-q", "-m", "base"); g(blk, "tag", "v0.2.1")
+open(os.path.join(blk, "go.mod"), "w").write("module x\n\nrequire (\n\tgolang.org/x/sys v0.47.0\n)\n\nreplace (\n\tex.org/a v1.0.0 => ex.org/b v1.0.0\n)\n")
+g(blk, "commit", "-qam", "bump")
+cs = P.gather_commits("v0.2.1", blk)
+check("gather: a require-block bump in a real repo is fix-class", [P.classify(x)[0] for x in cs] == ["fix"], [P.classify(x) for x in cs])
+open(os.path.join(blk, "go.mod"), "w").write("module x\n\nrequire (\n\tgolang.org/x/sys v0.47.0\n)\n\nreplace (\n\tex.org/a v1.0.0 => ex.org/evil v1.0.0\n)\n")
+g(blk, "commit", "-qam", "repl")
+cs = P.gather_commits("v0.2.1", blk)
+check("gather: a replace-block edit in a real repo is not patch-clean", [P.classify(x)[0] for x in cs] == ["fix", "dirty"], [P.classify(x) for x in cs])
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

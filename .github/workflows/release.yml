@@ -18,6 +18,12 @@ on:
   push:
     tags:
       - "v*"
+    # Automatic patch releases (owner RATIFIED Oct 2; REQ-REL-009): a push to main and a daily schedule run ONLY the
+    # decide job below; the chain itself starts only on a v* tag.
+    branches:
+      - main
+  schedule:
+    - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
 
 # Caller grants must COVER every called job's requests, or the run is a
 # startup_failure with zero jobs. checks/statuses: read are for the
@@ -32,7 +38,130 @@ permissions:
   pull-requests: read   # admission verifies pull_request-scoped checks on the merged-PR head (R01)
 
 jobs:
+  # ---------------------------------------------------------------------------------------------------------------
+  # Automatic patch releases (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056/0057; REQ-REL-009).
+  # On main only: decides whether a patch is due (bin/patch-decide.py: fix-only since the latest tag, rule 1; at once for
+  # a removed critical/high finding on push, else at most once a day, rule 2), signs the tag keylessly with gitsign under
+  # THIS workflow's identity (rule 3), and pushes it with the auditor App's token, whose tag push starts the chain below.
+  decide:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
+    concurrency:
+      group: patch-decide
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    environment: agent          # the App's secrets live here (main only)
+    permissions:
+      contents: read
+      id-token: write           # gitsign signs with this workflow's own OIDC identity (no key)
+      issues: write             # the standing "main is not patch-clean" issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: install the pinned tools (gitsign; grype on push)
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh gitsign
+          [ "${GITHUB_EVENT_NAME}" != push ] || ./bin/install-scanner.sh grype
+
+      - name: what changed since the latest tag (the PR labels of each commit) and whether a patch was cut today
+        id: facts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          since=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          echo "since=${since}" >> "$GITHUB_OUTPUT"
+          echo '{}' > "$RUNNER_TEMP/labels.json"
+          if [ -n "$since" ]; then
+            for sha in $(git rev-list "${since}..HEAD"); do
+              l=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/pulls" --jq '[.[0].labels[]?.name]' 2>/dev/null || echo '[]')
+              jq --arg s "$sha" --argjson l "$l" '. + {($s): $l}' "$RUNNER_TEMP/labels.json" > "$RUNNER_TEMP/l.tmp" && mv "$RUNNER_TEMP/l.tmp" "$RUNNER_TEMP/labels.json"
+            done
+          fi
+          today=$(date -u +%F)
+          cut=$(git for-each-ref --format='%(creatordate:short) %(refname:short)' 'refs/tags/v*' | awk -v t="$today" '$1==t' | grep -c . || true)
+          echo "cut_today=$([ "${cut:-0}" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: on push, the latest release's critical/high findings this commit removes (release vs. HEAD)
+        if: ${{ github.event_name == 'push' && steps.facts.outputs.since != '' }}
+        env:
+          SINCE: ${{ steps.facts.outputs.since }}
+        run: |
+          set -uo pipefail
+          ver="${SINCE#v}"; rel=()
+          for t in "$ver" "$ver-debug" "$ver-fips"; do
+            grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json" && rel+=("$RUNNER_TEMP/rel-${t}.json")
+          done
+          jq -s '{matches: [.[].matches[]]}' "${rel[@]}" > "$RUNNER_TEMP/release.json"
+          base_arg=()
+          if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n "$bases" ]; then
+            ok=1; for b in $bases; do grype "$b" -o json > "$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json" || ok=0; done
+            if [ "$ok" = 1 ]; then jq -s '{matches: [.[].matches[]]}' "$RUNNER_TEMP"/base-*.json > "$RUNNER_TEMP/base.json"; base_arg=(--base-grype "$RUNNER_TEMP/base.json"); fi
+          fi
+          python3 bin/patch-decide.py removed --release-grype "$RUNNER_TEMP/release.json" --gomod go.mod "${base_arg[@]}" \
+            --out "$RUNNER_TEMP/removed.json"
+
+      - name: decide (bin/patch-decide.py)
+        id: decide
+        run: |
+          set -euo pipefail
+          removed=(); [ -f "$RUNNER_TEMP/removed.json" ] && removed=(--removed "$RUNNER_TEMP/removed.json")
+          python3 bin/patch-decide.py decide --event "${GITHUB_EVENT_NAME}" --cut-today '${{ steps.facts.outputs.cut_today }}' \
+            --labels "$RUNNER_TEMP/labels.json" "${removed[@]}" --out "$RUNNER_TEMP/decision.json"
+          {
+            echo "cut=$(jq -r .cut "$RUNNER_TEMP/decision.json")"
+            echo "version=$(jq -r '.version // ""' "$RUNNER_TEMP/decision.json")"
+            echo "dirty=$(jq -r '(.not_clean | length) > 0' "$RUNNER_TEMP/decision.json")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: main is not patch-clean — the standing information issue (no vendor or model names)
+        if: ${{ steps.decide.outputs.dirty == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="auditor: main is not patch-clean"
+          body=$(jq -r '"No patch was cut: these commits since " + (.since // "the latest tag") + " are not fix-only (rule 1). A minor release, or the owner'"'"'s patch-fix label on the PR, resolves each.\n\n" + (.not_clean | map("- " + .) | join("\n"))' "$RUNNER_TEMP/decision.json")
+          n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+
+      - name: sign the patch tag keylessly (gitsign, this workflow's identity)
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "fosterstack release"
+          git config user.email "release@users.noreply.github.com"
+          git -c gpg.format=x509 -c gpg.x509.program=gitsign tag -s "$VERSION" -m "automatic patch release ${VERSION}"
+          git -c gpg.format=x509 -c gpg.x509.program=gitsign verify-tag "$VERSION" 2>&1 | tail -2 || true
+
+      - name: mint the auditor App's token (contents write on cache only)
+        id: app-token
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+
+      - name: push the signed tag (the App transports it)
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git push origin "refs/tags/${VERSION}"
+
   admission:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/stage-admission.yml
 
   build:
@@ -132,3 +261,22 @@ jobs:
       dist-artifact: dist-release
       expected-checksums: ${{ needs.build.outputs.checksums }}
     secrets: inherit
+
+  # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
+  # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
+  patch-failed:
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance-gradle, acceptance-maven,
+            acceptance-egress, acceptance-k8s, acceptance-predicate, authorization, promotion]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: open the issue for the abandoned release attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \
+            --body "The release run for ${GITHUB_REF_NAME} failed and is abandoned (no retry). The next daily run tries again once the cause is fixed. Run: ${RUN_URL}"
