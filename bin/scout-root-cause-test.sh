@@ -47,10 +47,20 @@ check("cases: our published form is the product we publish", [c["product"] for c
 check("cases: our failing condition reproduced (file path, .openvex.json)", all(c["location"] == "file" and c["file"].endswith(".openvex.json")
       for c in cases if c["id"].startswith("ours-best-openvex-file@")))
 before = {("CVE-1", "pkg:deb/debian/a@1", "1"): 1, ("CVE-2", "pkg:deb/debian/b@2", "2"): 1}
-check("judge: target gone, the rest kept: suppressed", R.judge(before, {("CVE-2", "pkg:deb/debian/b@2", "2"): 1}, "CVE-1") == "suppressed")
-check("judge: target kept: not applied", R.judge(before, dict(before), "CVE-1") == "not applied")
-check("judge: another finding lost too: inconclusive", R.judge(before, {}, "CVE-1").startswith("inconclusive"))
-check("judge: target absent before: inconclusive", R.judge(before, before, "CVE-9").startswith("inconclusive"))
+check("judge: target gone, the rest kept: suppressed",
+      R.judge(before, {("CVE-2", "pkg:deb/debian/b@2", "2"): 1}, "CVE-1", "pkg:deb/debian/a@1") == "suppressed")
+check("judge: target kept: not applied", R.judge(before, dict(before), "CVE-1", "pkg:deb/debian/a@1") == "not applied")
+check("judge: another finding lost too: inconclusive", R.judge(before, {}, "CVE-1", "pkg:deb/debian/a@1").startswith("inconclusive"))
+check("judge: target absent before: inconclusive", R.judge(before, before, "CVE-9", "pkg:deb/debian/x@1").startswith("inconclusive"))
+# Codex #176 r2, B3: judge() must match the exact (cve, package) identity, not every finding sharing the target CVE —
+# otherwise a scoped suppression that leaves a different package's SAME CVE untouched looks unchanged (correctly not
+# applied), but removing BOTH packages' findings for that CVE looks like scoped suppression (wrongly "suppressed")
+before3 = {("CVE-1", "pkg:deb/debian/a@1", "1"): 1, ("CVE-1", "pkg:deb/debian/b@2", "2"): 1, ("CVE-2", "pkg:deb/debian/c@3", "3"): 1}
+check("judge: removing only the target package is suppressed", R.judge(before3, {k: n for k, n in before3.items() if k[1] != "pkg:deb/debian/a@1"}, "CVE-1", "pkg:deb/debian/a@1") == "suppressed")
+check("judge: removing a DIFFERENT package sharing the target CVE is inconclusive, not suppressed",
+      R.judge(before3, {k: n for k, n in before3.items() if k[1] != "pkg:deb/debian/b@2"}, "CVE-1", "pkg:deb/debian/a@1").startswith("inconclusive"))
+check("pick: requires an uncovered control finding to remain (so judge has something to prove unchanged)",
+      R.pick({("CVE-1", "pkg:deb/debian/a@1", "1"): 1, ("CVE-1", "pkg:deb/debian/b@2", "2"): 1}) is None)
 check("pick: a finding whose package has exactly one CVE, deterministic",
       R.pick({("CVE-3", "pkg:deb/debian/c@3", "3"): 1, ("CVE-1", "pkg:deb/debian/a@1", "1"): 1, ("CVE-2", "pkg:deb/debian/a@1", "1"): 1})
       == ("CVE-3", "pkg:deb/debian/c@3"))
@@ -64,7 +74,27 @@ for target in ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache-scout-probe2 d
   elif grep -q "refusing to write to $target" <<<"$out"; then echo "ok: $target refused"; pass=$((pass+1))
   else echo "FAIL: $target: $out"; fail=$((fail+1)); fi
 done
+# Codex #176 r2, B2: install-scanner.sh never creates DEST; a fresh runner's install step must mkdir each
+# per-iteration destination before calling it (passing a different, uncreated dir per docker-scout version)
+out=$(python3 - "$here/../.github/workflows/main-candidate-rescan.yml" <<'PY'
+import sys, yaml, re
+d = yaml.safe_load(open(sys.argv[1]))
+run = next(s["run"] for j in d["jobs"].values() for s in j.get("steps") or [] if "install docker-scout 1.26.0" in (s.get("name") or ""))
+loop = re.search(r"for t in ([^;]+); do\n(.*?)\ndone", run, re.S).group(0)
+ok = 'mkdir -p "$RUNNER_TEMP/$t"' in loop or 'mkdir -p "$RUNNER_TEMP/${t}"' in loop
+print("ok" if ok else "BAD")
+PY
+)
+if [ "$out" = ok ]; then echo "ok: the install loop creates each per-iteration destination"; pass=$((pass+1))
+else echo "FAIL: the install loop never creates each per-iteration destination"; fail=$((fail+1)); fi
 if grep -q "PROBE_REPO: ghcr.io/fosterstack/cache-scout-probe$" "$here/../.github/workflows/main-candidate-rescan.yml"; then
   echo "ok: the workflow targets the scratch package"; pass=$((pass+1))
 else echo "FAIL: the workflow's PROBE_REPO is not the scratch package"; fail=$((fail+1)); fi
+# Codex #176 r2, B4: digest() must never mistake a failed read for a real, unchanged digest (sha256 of empty input)
+skopeo() { return 1; }   # a function shadows the real binary for this call only
+source <(sed -n '/^digest() {/,+1p' "$here/scout-root-cause.sh")
+out=$(digest "ghcr.io/x/y:z")
+if [ "$out" = READ-FAILED ]; then echo "ok: a failed registry read reports READ-FAILED, not a digest"; pass=$((pass+1))
+else echo "FAIL: a failed read produced $out"; fail=$((fail+1)); fi
+unset -f skopeo
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]

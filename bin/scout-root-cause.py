@@ -58,21 +58,27 @@ def cases():
 
 
 def pick(before):
+    """A (cve, package) whose package has exactly one CVE AND whose CVE names no other package — so judge() has a
+    single, unambiguous target identity plus at least one uncovered control finding (same CVE, another package) to
+    prove unchanged. None when no such pair exists (Codex #176 r2, B3: a shared CVE across packages must not be
+    picked, or a scoped suppression of one package looks the same as removing every package sharing that CVE)."""
     per_pkg = Counter(pkg for (_cve, pkg, _ver) in before)
-    one = sorted((cve, pkg) for (cve, pkg, _ver) in before if per_pkg[pkg] == 1)
-    if not one:
-        raise ValueError("no package with exactly one CVE in the before report")
-    return one[0]
+    per_cve = Counter(cve for (cve, _pkg, _ver) in before)
+    one = sorted((cve, pkg) for (cve, pkg, _ver) in before if per_pkg[pkg] == 1 and per_cve[cve] == 1)
+    return one[0] if one else None
 
 
-def judge(before, after, cve):
-    if not any(k[0] == cve for k in before):
+def judge(before, after, cve, pkg):
+    """Whether the exact (cve, pkg) finding — never every finding sharing cve — was suppressed, with every other
+    finding (including another package's SAME cve) required unchanged as the control (Codex #176 r2, B3)."""
+    target = [k for k in before if k[0] == cve and k[1] == pkg]
+    if not target:
         return "inconclusive: the target is not in the before report"
-    rest_b = Counter({k: n for k, n in before.items() if k[0] != cve})
-    rest_a = Counter({k: n for k, n in after.items() if k[0] != cve})
+    rest_b = Counter({k: n for k, n in before.items() if k not in target})
+    rest_a = Counter({k: n for k, n in after.items() if k not in target})
     if rest_a != rest_b:
         return "inconclusive: findings other than the target changed"
-    return "suppressed" if not any(k[0] == cve for k in after) else "not applied"
+    return "suppressed" if not any(k[0] == cve and k[1] == pkg for k in after) else "not applied"
 
 
 def main(argv):
@@ -84,10 +90,11 @@ def main(argv):
         for c in cases():
             print("\t".join([c["id"], c["version"], c["image"], c["location"], c["file"],
                              "1" if c["author_flag"] else "0", "1" if c["sub"] else "0", c["product"]]))
-    elif cmd == "pick":                    # pick BEFORE.json -> "CVE PURL"
-        print("%s %s" % pick(findings(argv[1])))
-    elif cmd == "judge":                   # judge BEFORE AFTER CVE
-        print(judge(findings(argv[1]), findings(argv[2]), argv[3]))
+    elif cmd == "pick":                    # pick BEFORE.json -> "CVE PURL" or "none"
+        p = pick(findings(argv[1]))
+        print("%s %s" % p if p else "none")
+    elif cmd == "judge":                   # judge BEFORE AFTER CVE PURL
+        print(judge(findings(argv[1]), findings(argv[2]), argv[3], argv[4]))
     else:
         print("unknown command %s" % cmd, file=sys.stderr)
         return 2

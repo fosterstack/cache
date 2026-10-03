@@ -247,6 +247,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
           for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do
+            mkdir -p "$RUNNER_TEMP/$t"      # install-scanner.sh never creates its DEST (Codex #176 r2, B2)
             ./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"
           done
           mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"

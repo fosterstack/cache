@@ -20,7 +20,9 @@ PRED=https://openvex.dev/ns/v0.2.0
 
 use() { install -m 0755 "$SCOUT_DIR/docker-scout-$1" "$HOME/.docker/cli-plugins/docker-scout"
         docker scout version 2>&1 | grep -m1 -i version; }
-digest() { skopeo inspect --raw "docker://$1" | sha256sum | cut -c1-64; }
+# Codex #176 r2, B4: a failed read must never produce sha256("") and be mistaken for a real, unchanged digest
+digest() { local raw; raw=$(skopeo inspect --raw "docker://$1" 2>/dev/null) && [ -n "$raw" ] \
+             && printf '%s' "$raw" | sha256sum | cut -c1-64 || echo READ-FAILED; }
 children() { skopeo inspect --raw "docker://$1" | jq -r '[.manifests[]? | "\(.digest) \(.annotations["vnd.docker.reference.type"] // .platform.os // "")"] | join(", ")'; }
 scan() { local o=$1; shift; docker scout cves --format gitlab "$@" > "$o" 2> "$o.err"; echo $?; }
 
@@ -47,6 +49,7 @@ for t in control release; do
 done
 scan "$a/control-before.json" "registry://$PROBE_REPO:control" > "$a/control-before.rc"
 read -r cve purl < <(python3 "$RC" pick "$a/control-before.json" 2>"$a/pick.err") || true
+[ "$cve" = none ] && cve="" && purl=""
 echo "- target (control): \`${cve:-none}\` in \`${purl:-?}\`" >> "$summ"
 python3 "$RC" doc "$AUTHOR" "pkg:docker/$PROBE_REPO@control" "${cve:-CVE-0000-0000}" "${purl:--}" "$a/control.vex.json"
 docker scout attestation add --file "$a/control.vex.json" --predicate-type "$PRED" "$PROBE_REPO:control" > "$a/control-add.log" 2>&1
@@ -57,7 +60,9 @@ docker scout attestation add --file "$here/../.vex/fosterstack-cache.openvex.jso
 echo "- attestation add (release copy, our published VEX as is): exit $? — \`$(tail -1 "$a/release-add.log" | cut -c1-200)\`" >> "$summ"
 for t in control release; do
   b=$(cat "$a/$t.before"); n=$(digest "$PROBE_REPO:$t"); children "$PROBE_REPO:$t" > "$a/$t.children.after"
-  echo "- $t: index digest before \`$b\`, after \`$n\` — $([ "$b" = "$n" ] && echo unchanged || echo CHANGED)" >> "$summ"
+  if [ "$b" = READ-FAILED ] || [ "$n" = READ-FAILED ]; then status="inconclusive (a read failed)"
+  elif [ "$b" = "$n" ]; then status=unchanged; else status=CHANGED; fi
+  echo "- $t: index digest before \`$b\`, after \`$n\` — $status" >> "$summ"
   echo "  - children before: $(cat "$a/$t.children.before")" >> "$summ"
   echo "  - children after: $(cat "$a/$t.children.after")" >> "$summ"
 done
@@ -66,7 +71,7 @@ for v in "tag:registry://$PROBE_REPO:control" "tag+author:registry://$PROBE_REPO
   k=${v%%:registry*}; ref=${v#*:}; f="$a/control-after-${k//[^a-z]/-}.json"
   extra=(); [ "$k" = "tag+author" ] && extra=(--vex-author "$AUTHOR_RE")
   rc=$(scan "$f" "${extra[@]}" "$ref")
-  echo "- scan control from the registry ($k): exit $rc — $(python3 "$RC" judge "$a/control-before.json" "$f" "${cve:-CVE-0000-0000}" 2>&1 | tail -1)" >> "$summ"
+  echo "- scan control from the registry ($k): exit $rc — $(python3 "$RC" judge "$a/control-before.json" "$f" "${cve:-CVE-0000-0000}" "${purl:--}" 2>&1 | tail -1)" >> "$summ"
 done
 f="$a/release-after.json"; rc=$(scan "$f" --vex-author '^FosterStack LLC$' "registry://$PROBE_REPO:release")
 echo "- scan the release copy from the registry (our author): exit $rc — findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)" >> "$summ"
@@ -83,13 +88,14 @@ while IFS=$'\t' read -r id ver image loc file aflag sub product; do
   fi
   before="$out/before-$ver-${image//[^a-z0-9]/-}.json"
   read -r cve purl < <(python3 "$RC" pick "$before" 2>/dev/null) || { cve=""; purl=""; }
+  [ "$cve" = none ] && cve="" && purl=""
   d="$out/case/$id"; mkdir -p "$d/vex"
   s="-"; [ "$sub" = 1 ] && s="$purl"
   python3 "$RC" doc "$AUTHOR" "$product" "${cve:-CVE-0000-0000}" "$s" "$d/vex/$file"
   args=(--vex-location "$d/vex"); [ "$loc" = file ] && args=(--vex-location "$d/vex/$file")
   [ "$aflag" = 1 ] && args+=(--vex-author "$AUTHOR_RE")
   rc=$(scan "$d/after.json" "${args[@]}" "$image")
-  res=$(python3 "$RC" judge "$before" "$d/after.json" "${cve:-CVE-0000-0000}" 2>&1 | tail -1)
+  res=$(python3 "$RC" judge "$before" "$d/after.json" "${cve:-CVE-0000-0000}" "${purl:--}" 2>&1 | tail -1)
   [ "$rc" = 0 ] || res="scan exit $rc: $(tail -1 "$d/after.json.err" | cut -c1-120)"
   echo "| ${id%@*} | $ver | \`$image\` | $loc | $file | $aflag | $sub | \`$product\` | $res |" >> "$summ"
 done < <(python3 "$RC" cases)
