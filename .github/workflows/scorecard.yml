@@ -28,17 +28,22 @@ jobs:
       # Row 78 (owner, Sep 30); amended Oct 3 (0117/0140): the composite action's own action.yaml ran a mutable
       # tag (docker://...:v2.4.4) — a commit pin on the wrapper does not fix that. Invoked directly by digest
       # instead. A bare `docker://` step carries NO action.yaml schema, so GitHub maps only the `with:` keys given
-      # here to INPUT_<NAME> — it does NOT apply the composite wrapper's declared input DEFAULTS (Sonnet #164 r2:
-      # traced into the pinned binary's own source; without repo_token the entrypoint calls log.Fatal on an empty
-      # GITHUB_AUTH_TOKEN, failing every run, not merely losing the badge). repo_token is supplied explicitly here
-      # for that reason. Prove the README badge still publishes after merge; revert to the composite action and
-      # outbox the trade-off if it does not.
+      # here to INPUT_<NAME> — it does NOT apply the composite wrapper's declared input DEFAULTS (Sonnet #164 r2/r3:
+      # traced into the pinned binary's own source three separate times). Every default the composite's action.yaml
+      # declares for an input this step uses is supplied explicitly here instead, byte-for-byte the same value:
+      # repo_token (else Validate() calls log.Fatal on an empty GITHUB_AUTH_TOKEN), internal_default_token (else,
+      # since publish_results: true and none of this job's triggers is pull_request, signing.New() fails the same
+      # way one step later) and internal_publish_base_url (else publish silently no-ops after ~14s of retries, with
+      # only a warning annotation). Prove the README badge still publishes after merge; revert to the composite
+      # action and outbox the trade-off if it does not.
       - uses: docker://ghcr.io/ossf/scorecard-action@sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670 # v2.4.4
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
           repo_token: ${{ github.token }}
+          internal_default_token: ${{ github.token }}
+          internal_publish_base_url: https://api.scorecard.dev
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
