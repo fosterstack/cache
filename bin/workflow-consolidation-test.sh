@@ -337,8 +337,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if "pull_request" not in on or (on.get("push") or {}).get("branches") != ["main"]:
-    bad.append("scan.yml no longer runs on pull requests and pushes to main: %s" % on)
+if sorted(on) != ["pull_request", "push"] or (on.get("push") or {}) != {"branches": ["main"], "tags": ["v*"]}:
+    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:
@@ -391,6 +391,8 @@ PY
   else failn=$((failn+1)); echo "FAIL scan:$1 → $got, want $2 ($out)"; fi
 }
 case_scan real                   ok  ""
+case_scan tags-dropped           bad "d['on']['push'].pop('tags')"
+case_scan event-added            bad "d['on']['workflow_dispatch'] = ''"
 case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
 case_scan b-uploads-oci          bad "d['jobs']['assemble-b']['with']['upload-oci'] = 'true'"
 case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
