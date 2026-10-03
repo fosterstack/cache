@@ -397,6 +397,12 @@ check("B4 tags but no published release: no cut, the first release is the owner'
 for s_, want in (("internal/providerGoogle.go", "internal/provider<redacted>.go"), ("laws draws jaws", "laws draws jaws"),
                  ("useAzureClient", "use<redacted>Client")):
     check("B5 camelCase vendor %r" % s_, P._clean(s_) == want, P._clean(s_))
+# Codex #159 pin pass B01: a null scope is "push", as admission's `.scope // "push"` reads it
+NUL = {"required_checks": [{"context": "test", "integration_id": 15368, "scope": None},
+                           {"context": "scan", "integration_id": 15368, "scope": "push"}]}
+check("B01 a null-scoped check is push-scoped: absent -> wait, never ready", P.ready(NUL, [run("scan")])[0] == "wait", P.ready(NUL, [run("scan")]))
+check("B01 a null-scoped check green -> ready", P.ready(NUL, [run("scan"), run("test")])[0] == "ready")
+check("B01 scope 'pusH' is a policy error", P.ready({"required_checks": [{"context": "t", "integration_id": 1, "scope": "pusH"}]}, [])[0] == "no")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

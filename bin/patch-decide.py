@@ -348,6 +348,11 @@ def decide(event, commits, tags, cut_today, removed):
     return out
 
 
+def _scope(req):
+    """admission reads `.scope // "push"`: absent, null or false is push (Codex #159 pin pass, B01)."""
+    return "push" if req.get("scope") in (None, False) else req.get("scope")
+
+
 def ready(required, check_runs):
     """(verdict, why) for the tagged commit's push-scoped required checks, judged as source admission judges them
     (stage-admission.yml): a check counts only as a success from its pinned app. "ready": every one has one. "wait": none
@@ -361,10 +366,10 @@ def ready(required, check_runs):
     for req in reqs:
         if not isinstance(req, dict) or not req.get("context") or not isinstance(req.get("integration_id"), int):
             return "no", "policy error: a required check without a context or integration_id"
-        if req.get("scope", "push") not in ("push", "pull_request"):
+        if _scope(req) not in ("push", "pull_request"):
             return "no", "policy error: unknown scope %r for required check %r" % (req.get("scope"), req["context"])
     for req in reqs:
-        if req.get("scope", "push") != "push":
+        if _scope(req) != "push":
             continue
         mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
         if any(r.get("status") == "completed" and r.get("conclusion") == "success" for r in mine):

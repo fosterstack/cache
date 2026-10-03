@@ -106,6 +106,8 @@ if not scan or "&& rel+=" in scan[0]["run"] or "removed-unknown" not in scan[0][
 if not wait or "git show origin/main:.github/policy/required-checks.json" not in (wait[0].get("run") or "") or \
         "--required .github/policy/" in (wait[0].get("run") or ""):
     bad.append("ready does not read the required checks from protected main")
+elif wait[0]["run"].index("git show origin/main:") < wait[0]["run"].index("while "):
+    bad.append("ready reads the policy once, not on each pass of the wait (a change on main during the wait is missed)")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -146,6 +148,7 @@ case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ no-schedule             bad "d['on'].pop('schedule')"
+case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ fail-no-repo            bad "[s['env'].pop('GH_REPO') for s in $J['patch-failed']['steps']]"
 case_ baseline-latest-tag     bad "[s.__setitem__('run', s['run'].replace('--released ', '--x ')) for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"
 case_ scan-failure-dropped    bad "[s.__setitem__('run', s['run'].replace('removed-unknown', 'removed-x')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"

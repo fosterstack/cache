@@ -153,11 +153,12 @@ jobs:
         run: |
           set -euo pipefail
           # the same query admission makes (filter=latest), against the same policy: protected main's, never the
-          # checked-out commit's (Codex #159 r1, B6) — so "ready" here is what admission will see
-          git fetch -q --no-tags origin main
-          git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
+          # checked-out commit's (Codex #159 r1, B6; pin pass B01/B02) — so "ready" here is what admission will see
           end=$((SECONDS + 3600))
           while [ "$SECONDS" -lt "$end" ]; do
+            # re-read each time: a policy change on main during the wait applies, as it will at admission (pin pass B02)
+            git fetch -q --no-tags origin main
+            git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
             gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
               --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
             v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs.json")
