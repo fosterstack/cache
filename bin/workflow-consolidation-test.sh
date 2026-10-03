@@ -372,8 +372,12 @@ for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
         bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
 # what the job inherits: the workflow's token and shell (Codex #162 pin r2, R78-B4/B5)
-if d.get("permissions") != {"contents": "read"} or "defaults" in d:
-    bad.append("the workflow's inherited token or defaults changed: %s" % {k: d.get(k) for k in ("permissions", "defaults")})
+if d.get("permissions") != {"contents": "read"} or set(d) != {"name", "on", "permissions", "jobs"}:
+    # fail closed: env (a PATH that fakes jq), defaults, concurrency … — every top-level key is reviewed (Sonnet #162
+    # pin r3, NEW-B6 / R2)
+    bad.append("the workflow's inherited settings changed: keys %s, permissions %s" % (sorted(d), d.get("permissions")))
+if (jobs.get("reproducibility") or {}).get("runs-on") != "ubuntu-latest":
+    bad.append("reproducibility runs elsewhere than a GitHub-hosted ubuntu runner: %s" % (jobs.get("reproducibility") or {}).get("runs-on"))
 if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
     bad.append("the reproducibility comparison is not one plain step (name + run): %s" % [sorted(st) for st in steps])
 run = steps[0].get("run", "") if len(steps) == 1 else ""
@@ -447,6 +451,9 @@ case_scan repro-matrix            bad "d['jobs']['reproducibility']['strategy'] 
 case_scan compare-fips-only       bad "s=d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('for v in production debug fips;', 'for v in fips;')"
 case_scan defaults-shell-true    bad "d['defaults'] = {'run': {'shell': 'true {0}'}}"
 case_scan workflow-token-write   bad "d['permissions']['contents'] = 'write'"
+case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/bin'}"
+case_scan workflow-concurrency   bad "d['concurrency'] = {'group': 'scan', 'cancel-in-progress': 'true'}"
+case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 case_scan compare-comments-only  bad "d['jobs']['reproducibility']['steps'][0]['run'] = '# needs.assemble.outputs.digests\n# needs.assemble-b.outputs.digests\n# exit 1\ntrue'"
 case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['run'] += '\n: \${{ needs.assemble.outputs.digests }} \${{ needs.assemble-b.outputs.digests }}'; d['jobs']['reproducibility']['steps'][0]['run'] = d['jobs']['reproducibility']['steps'][0]['run'].replace('exit 1', 'true')"
 
