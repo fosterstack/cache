@@ -270,3 +270,6 @@ class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwar
     def test_a_variable_pip_subcommand(self):
         self.assertEqual([w for _, w in M.script_installs('pip "$sub" requests')],
                          ["its subcommand is a variable; the packages cannot be seen"])
+
+    def test_other_python_modules_are_not_installs(self):     # r3: only installers and build frontends are flagged
+        self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])
