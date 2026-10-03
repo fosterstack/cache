@@ -670,5 +670,47 @@ case_ run-other-job-local      bad "$head
     runs-on: ubuntu-latest
     steps:
       - run: docker run fa-production"
+
+rb() { printf '%s\n    steps:\n      - run: |\n          %s' "$head" "$1"; }   # block scalar: quotes and ": " stay shell text
+# --- package installs a run: script makes (handoff 0070; owner Sep 30, handoff 0023). A Python install is pinned only
+#     when every package comes from a -r file pip checks with --require-hashes; pipx / uv tool / uvx cannot take hashes;
+#     npm, gem, yarn and pnpm installs are flagged too (none in the workflows today; a future one must not pass silently).
+case_ pkg-pip-bare             bad "$(r 'pip install requests')"
+case_ pkg-pip3-version         bad "$(r 'pip3 install requests==2.0')"
+case_ pkg-global-flag          bad "$(r 'pip --no-cache-dir install requests')"
+case_ pkg-python-m             bad "$(r 'python3 -m pip install requests')"
+case_ pkg-continued            bad "$head
+    steps:
+      - run: |
+          python3 -m pip \\
+            install --quiet requests"
+case_ pkg-venv-path            bad "$(rb '"$VENV/bin/pip" install requests')"
+case_ pkg-hashes-but-spec      bad "$(r 'pip install --require-hashes -r req.txt requests')"
+case_ pkg-r-without-hashes     bad "$(r 'pip install -r req.txt')"
+case_ pkg-editable             bad "$(r 'pip install --require-hashes -e .')"
+case_ pkg-pipx-install         bad "$(r 'pipx install black')"
+case_ pkg-pipx-run             bad "$(r 'pipx run black --version')"
+case_ pkg-uv-pip               bad "$(r 'uv pip install requests')"
+case_ pkg-uv-tool              bad "$(r 'uv tool install ruff')"
+case_ pkg-uvx                  bad "$(r 'uvx ruff check')"
+case_ pkg-timeout              bad "$(r 'timeout 60 pip install requests')"
+case_ pkg-npm                  bad "$(r 'npm install left-pad')"
+case_ pkg-npm-ci               bad "$(r 'npm ci')"
+case_ pkg-gem                  bad "$(r 'gem install rake')"
+case_ pkg-yarn                 bad "$(r 'yarn add left-pad')"
+case_ pkg-bash-c               bad "$(rb 'bash -c "pip install requests"')"
+case_ pkg-eval                 bad "$(rb 'eval "pip install requests"')"
+case_ img-bash-c               bad "$(rb 'sh -c "docker run alpine"')"
+case_ pkg-hashed-file          ok  "$(rb 'python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt')"
+case_ pkg-hashed-venv          ok  "$(rb '"$RUNNER_TEMP/v/bin/pip" install --quiet --require-hashes -r r.txt')"
+case_ pkg-hashed-stdin         ok  "$head
+    steps:
+      - run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'
+          pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476
+          REQ"
+case_ pkg-dry-run              ok  "$(rb 'python3 -m pip install --dry-run --ignore-installed --require-hashes --target /tmp/x -r r.txt')"
+case_ pkg-version-query        ok  "$(r 'pip --version; python3 -m pip --version; python3 bin/x.py install')"
+case_ pkg-echo                 ok  "$(r 'echo pip install requests')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
