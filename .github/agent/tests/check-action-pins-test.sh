@@ -1398,63 +1398,35 @@ case_ r4b1-trap-deferred-local-bad bad "$(rb "trap -- 'docker build -t alpine:la
 case_ r4b1-trap-deferred-tag-bad   bad "$(rb "trap 'docker tag alpine@\$DIG alpine:latest' EXIT
           docker run --rm alpine:latest")"
 case_ r4b1-trap-build-still-checked-bad bad "$(rb "trap -- 'docker build -t alpine:latest .' EXIT")" 'printf "FROM alpine:latest\n" > Dockerfile'
-# Sonnet #164 r7: a multi-line single-quoted trap body is the SAME deferred hazard -- the line carrying the word
-# "trap" is not the only line inside the quote
+# Sonnet #164 r7/r8, Codex #164 r9/r10/r11: scoping the exclusion to just the trap's own body -- by line, by
+# quote state, however carefully tracked -- kept reopening a new bypass every round: a multi-line body (single
+# or double quoted), the embedded-apostrophe idiom, an escaped quote, a close-then-reopen on one line, a
+# command substitution, an apostrophe in an EARLIER trap's comment confusing a LATER trap's own body, a quoted
+# spelling of the word "trap" itself evading detection. advisor 0080: stop chasing it construct by construct --
+# the word "trap" appearing ANYWHERE in the script now denies local-name trust to the WHOLE script, so every
+# one of those constructs (and the two below that actually broke the per-line tracking) is "bad" by the same
+# simple rule, not by successfully reading each one's quoting correctly.
 case_ r4b1-trap-multiline-local-bad bad "$(rb "trap -- '
           docker build -t alpine:latest .
           ' EXIT
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
-# Sonnet #164 r8, B-new-1: a multi-line trap body delimited by DOUBLE quotes is the same deferred hazard --
-# the old tracker only ever counted single quotes
 case_ r4b1-trap-multiline-dquote-local-bad bad "$(rb "trap -- \"
           docker build -t alpine:latest .
           \" EXIT
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
-# Sonnet #164 r8, B-new-2: the standard shell concatenation idiom for an embedded apostrophe ('\"'\"') puts an
-# EVEN count of ' characters on the trap line while the quote stays open in real bash past that line -- a naive
-# per-line parity count sees it as closed and wrongly stops excluding
-case_ r4b1-trap-embedded-apostrophe-local-bad bad "$(rb "trap -- 'echo '\"'\"'dont stop'\"'\"'
+# Codex #164 r11, B1: an apostrophe in an EARLIER trap's trailing comment must not let a LATER trap's own body
+# be read as plain, trusted script text -- moot now: "trap" appearing anywhere denies trust to the whole script
+case_ r4b1-trap-comment-then-second-trap-bad bad "$(rb "trap -- 'true' USR1 # don't discard later builds
+          trap -- '
           docker build -t alpine:latest .
-          ' EXIT
+          ' USR2
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
-# Codex #164 r9, B1: a double-quoted trap argument containing its own escaped \" is still open going into the
-# next line in real bash (backslash escapes the next character inside double quotes) -- a raw character count
-# sees two '"' characters on that line (the opening quote and the escaped one) and wrongly calls it closed
-case_ r4b1-trap-escaped-dquote-local-bad bad "$(rb "trap -- \"echo \\\"
-          docker build -t alpine:latest .
-          \" EXIT
-          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
-# Codex #164 r9, R1: a multi-line trap that genuinely closes must NOT cost the rest of the script its
-# local-name trust -- a legitimate build+run AFTER the trap's own closing line is still a real local build
-case_ r4b1-trap-closes-then-legit-build-ok ok "$(rb "trap -- '
+# Codex #164 r9, R1 turned real residual: a trap that only ever runs a harmless cleanup, with no build/tag in
+# it at all, still costs the rest of the script its local-name trust under the global rule -- an accepted,
+# documented usability cost (advisor 0080), not a bypass; a script with no real use for trap is unaffected.
+case_ r4b1-trap-harmless-cleanup-still-bad bad "$(rb "trap -- '
           cleanup
           ' EXIT
-          docker build -t alpine:latest .
-          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
-# Codex #164 r10, B1: a continuation line can close the trap's quote AND immediately reopen a new one
-# ('' right after the close) -- the scanner must keep reading the whole line, not stop at the first close
-case_ r4b1-trap-reopen-same-line-bad bad "$(rb "trap -- '
-          ''
-          docker build -t alpine:latest .
-          ' USR1
-          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
-# Codex #164 r10, B2/B3: a command substitution, or a backslash outside any quote, on the trap's own line
-# makes its quoting unsafe to read with plain rules -- fails closed (excluded forever) rather than risk
-# misreading it, same treatment on either side of the quote boundary
-case_ r4b1-trap-command-subst-bad bad "$(rb 'trap -- "#$(printf %s '"'"'"'"'"')
-          # comment
-          docker build -t alpine:latest .
-          " USR1
-          docker run --rm alpine:latest')" 'printf "FROM scratch\n" > Dockerfile'
-case_ r4b1-trap-stray-backslash-bad bad "$(rb 'trap -- \"'"'"'echo
-          docker build -t alpine:latest .
-          '"'"' USR1
-          docker run --rm alpine:latest')" 'printf "FROM scratch\n" > Dockerfile'
-# Codex #164 r10, R2 (accepted residual, advisor 0080): an apostrophe inside a shell COMMENT on the trap's
-# own line is not a real quote, but this checker does not parse comments -- it reads it as still-open and
-# excludes the rest of the script, costing a later legitimate build its local-name trust. A documented,
-# fail-closed usability cost, not a bypass; this pins the current (conservative) behavior against regressions.
-case_ r4b1-trap-apostrophe-in-comment-bad bad "$(rb "trap -- 'true' USR1 # don't discard later builds
           docker build -t alpine:latest .
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
 
