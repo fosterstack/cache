@@ -31,9 +31,15 @@ for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     # conservative (Codex #157 r3/r4): environment names are case-insensitive and an expression-valued one may be agent;
     # expressions are case-insensitive and allow whitespace
     # (toJson, SECRETS[...]); a workflow-level env/defaults reaches every job, so each job is judged with it
-    wf_text = json.dumps({k: (w or {}).get(k) for k in ("env", "defaults")})
+    def text_of(o):     # the raw strings (keys and values): json.dumps would escape tabs/newlines past \s* (r5)
+        if isinstance(o, dict):
+            return " ".join(text_of(k) + " " + text_of(v) for k, v in o.items())
+        if isinstance(o, list):
+            return " ".join(text_of(x) for x in o)
+        return str(o)
+    wf_text = " " + text_of({k: (w or {}).get(k) for k in ("env", "defaults")})
     for j, v in ((w or {}).get("jobs") or {}).items():
-        t = json.dumps(v) + wf_text
+        t = text_of(v) + wf_text + " " + json.dumps(v)
         env = v.get("environment")
         env_name = env.get("name") if isinstance(env, dict) else env
         if (isinstance(env_name, str) and env_name.strip().lower() == "agent") or (isinstance(env_name, str) and "${{" in env_name) \
@@ -148,5 +154,10 @@ t=$(mk_tree env-mixed); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on:
 case_ env-name-mapped-mixed  bad "" "$t"
 t=$(mk_tree tojson-space); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJSON  (  secrets  ) }}\n' > "$t/.github/workflows/dump2.yml"
 case_ tojson-whitespace      bad "" "$t"
+# Codex #157 r5 (pass 5b): a tab or a newline inside the expression (json.dumps escaped them past the match)
+t=$(mk_tree tojson-tab); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: "${{ toJson\t(secrets) }}"\n' > "$t/.github/workflows/dump3.yml"
+case_ tojson-tab             bad "" "$t"
+t=$(mk_tree tojson-newline); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: |-\n            ${{ toJson\n            (secrets) }}\n' > "$t/.github/workflows/dump4.yml"
+case_ tojson-newline         bad "" "$t"
 echo "go-freshness-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
