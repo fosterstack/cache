@@ -93,6 +93,7 @@ ALLOW_PATTERNS=(
   '^bin/panel\.py$'
   '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
+  '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/release-patch-wiring-test\.sh$'
