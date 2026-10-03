@@ -450,7 +450,12 @@ def tag_notes(raw):
     head, _, body = raw.partition("\n\n")
     tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
     tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
-    body, _, sig = body.partition("-----BEGIN ")
+    # the real signature git appends is always the LAST such block (Sonnet #159 r2b: an attacker's message can embed
+    # an earlier, fake one); no block at all is an unsigned message, kept whole with no signature
+    if "-----BEGIN " in body:
+        body, _, sig = body.rpartition("-----BEGIN ")
+    else:
+        sig = ""
     # only the release workflow's own patch tag: its tagger and a gitsign (x509) signature — an owner's tag is SSH-signed
     # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):

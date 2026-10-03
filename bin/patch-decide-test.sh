@@ -573,6 +573,15 @@ check("B1 an owner's SSH-signed tag shaped like a patch tag carries no notes",
                   .replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
 check("B1 the release tagger with an SSH signature carries no notes", P.tag_notes(tagraw.replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
 check("B1 an unsigned tag carries no notes", P.tag_notes(tagraw.split("-----BEGIN")[0]) is None)
+# Sonnet #159 r2b (BLOCKER-1 reopened): the real signature is always the LAST such block in a genuine `git cat-file
+# tag` (git appends it after the full message); splitting on the FIRST occurrence lets an attacker-embedded fake
+# "-----BEGIN SIGNED MESSAGE-----" block earlier in the message pass as if it were the real one
+raw2 = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
+        + pub.replace("### Behavior changes", "-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n\n### Behavior changes")
+        + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
+check("B1 (r2b) a fake signature block embedded earlier in the message does not stand in for the real, LAST one",
+      P.tag_notes(raw2) is None, P.tag_notes(raw2))
+check("B1 (r2b) the real signature is still read when it is genuinely the last block", P.tag_notes(tagraw) == pub)
 check("B1 another tagger with a gitsign signature carries no notes",
       P.tag_notes(tagraw.replace("fosterstack release <release@users.noreply.github.com>", "fosterstack release <x@evil>")) is None)
 leak_ = P.tag_notes(tagraw.replace("### Behavior changes", "Thanks to OpenAI Codex and the Anthropic Claude team.\n\n### Behavior changes"))
