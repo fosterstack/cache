@@ -52,6 +52,18 @@ check "osv-scanner checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE fa
 check "osv-scanner download failure rejected" 1 "download failed.*PIPELINE failure" \
   env INSTALL_SCANNER_ARCH=x86_64 OSV_BASE_URL="file://$work/nope" bash "$sut" osv-scanner "$work/bin"
 
+# 4s. the two older Scout versions for the root-cause round (advisor 0120/0122) are pinned too: wrong bytes are
+#     refused; an unlisted version is not a tool
+for v in 1.24.0 1.25.0; do
+  mkdir -p "$work/scout/v$v"; echo "not the real docker-scout $v" > "$work/scout/v$v/docker-scout_${v}_linux_amd64.tar.gz"
+  check "docker-scout-$v checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
+    env INSTALL_SCANNER_ARCH=x86_64 SCOUT_BASE_URL="file://$work/scout" bash "$sut" "docker-scout-$v" "$work/bin"
+done
+check "docker-scout-1.23.0 is not a pinned tool" 1 "(unknown scanner|no pinned checksum).*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=x86_64 bash "$sut" docker-scout-1.23.0 "$work/bin"
+check "docker-scout-1.25.0 has no arm64 pin" 1 "no pinned checksum.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=aarch64 bash "$sut" docker-scout-1.25.0 "$work/bin"
+
 # 4d. inspector-sbomgen checksum mismatch is a labeled pipeline failure.
 mkdir -p "$work/sg/1.16.0/linux/amd64"
 echo "not the real inspector-sbomgen zip" > "$work/sg/1.16.0/linux/amd64/inspector-sbomgen.zip"
