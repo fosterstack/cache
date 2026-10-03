@@ -265,12 +265,16 @@ def _check_entry(e):
     space or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
     if not CITED.search(e):
         raise ValueError("next-release-notes entry cites no handoff: %r" % e)
+    # any run of up to ten adjacent words that spells a name (the longest has nine letters): "Goo gle", "G o o g l e"
+    # (Sonnet #158 r2b); a run starting with a word that is already a name is _clean's, which redacts it
     words = re.findall(r"[A-Za-z0-9]+", e)
-    for w1, w2 in zip(words, words[1:]):
-        joined = w1 + w2
-        if (VENDOR.fullmatch(joined) or VENDOR_ALONE.fullmatch(joined)) and not (
-                VENDOR.fullmatch(w1) or VENDOR.fullmatch(w2) or VENDOR_ALONE.fullmatch(w1) or VENDOR_ALONE.fullmatch(w2)):
-            raise ValueError("next-release-notes entry names a vendor or model split in two: %r" % e)
+    for i in range(len(words)):
+        for j in range(i + 2, min(i + 10, len(words)) + 1):
+            joined = "".join(words[i:j])
+            if any(VENDOR.search(w) or VENDOR_ALONE.search(w) for w in words[i:j]):
+                continue                    # a word that is a name already: _clean redacts it
+            if VENDOR.fullmatch(joined) or VENDOR_ALONE.fullmatch(joined):
+                raise ValueError("next-release-notes entry names a vendor or model split by whitespace: %r" % e)
 
 
 def notes(version, fixes, vex_changes, behavior=()):
