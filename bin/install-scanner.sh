@@ -22,6 +22,7 @@ DEST="${2:-/usr/local/bin}"
 # Pinned versions.
 TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
+SYFT_VER=1.52.0
 SNYK_VER=1.1307.0
 OSV_VER=2.6.0
 SBOMGEN_VER=1.16.0
@@ -29,7 +30,7 @@ SCOUT_VER=1.26.0
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|snyk|osv-scanner|inspector-sbomgen|docker-scout) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen|docker-scout)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
@@ -44,6 +45,8 @@ case "${TOOL}:${arch}" in
   trivy:aarch64|trivy:arm64) SUM=b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5 ;;
   grype:x86_64|grype:amd64) SUM=1d444c5e7360471815f7158f71935fcecc68a3c417d85c7344f770854300bba2 ;;
   grype:aarch64|grype:arm64) SUM=32aceeb8ee837244775fcb522372c8b3a47914986385f3148f4ee2c930482a84 ;;
+  syft:x86_64|syft:amd64) SUM=caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d ;;
+  syft:aarch64|syft:arm64) SUM=c46d5e4c28e12aa4c5becfaa343ef1c7f89045b6b895f2c21d471c62db09c706 ;;
   snyk:x86_64|snyk:amd64) SUM=65fc01c378bd71f08cff214f7f8f91be907a27aa18b9649296cd8606adce245e ;;
   osv-scanner:x86_64|osv-scanner:amd64) SUM=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108 ;;
   osv-scanner:aarch64|osv-scanner:arm64) SUM=2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4 ;;
@@ -56,6 +59,7 @@ esac
 
 TRIVY_BASE="${TRIVY_BASE_URL:-https://github.com/aquasecurity/trivy/releases/download}"
 GRYPE_BASE="${GRYPE_BASE_URL:-https://github.com/anchore/grype/releases/download}"
+SYFT_BASE="${SYFT_BASE_URL:-https://github.com/anchore/syft/releases/download}"
 SNYK_BASE="${SNYK_BASE_URL:-https://github.com/snyk/cli/releases/download}"
 OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/download}"
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
@@ -86,6 +90,16 @@ case "$TOOL" in
     tar -xzf "$tmp/g.tgz" -C "$tmp" grype || pipeline_fail "extract failed for grype"
     install -m 0755 "$tmp/grype" "${DEST}/grype" || pipeline_fail "install failed for grype"
     "${DEST}/grype" version >/dev/null || pipeline_fail "grype does not run after install"
+    ;;
+  syft)
+    # grype's cataloguer for the auditor, a pinned release binary (Sep 30: building it from source at run time failed
+    # on transient sum.golang.org errors, grype then inventoried nothing and the audit stopped short of quorum)
+    url="${SYFT_BASE}/v${SYFT_VER}/syft_${SYFT_VER}_${A_GRYPE}.tar.gz"
+    curl -fsSL -o "$tmp/s.tgz" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/s.tgz"
+    tar -xzf "$tmp/s.tgz" -C "$tmp" syft || pipeline_fail "extract failed for syft"
+    install -m 0755 "$tmp/syft" "${DEST}/syft" || pipeline_fail "install failed for syft"
+    "${DEST}/syft" version >/dev/null || pipeline_fail "syft does not run after install"
     ;;
   snyk)
     url="${SNYK_BASE}/v${SNYK_VER}/${A_SNYK}"
@@ -119,7 +133,7 @@ case "$TOOL" in
     "${DEST}/docker-scout" docker-cli-plugin-metadata >/dev/null || pipeline_fail "docker-scout does not run after install"
     ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|snyk|osv-scanner|inspector-sbomgen|docker-scout)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

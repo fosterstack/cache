@@ -62,6 +62,14 @@ check "inspector-sbomgen checksum mismatch rejected" 1 "checksum mismatch.*PIPEL
 check "inspector-sbomgen download failure rejected" 1 "download failed.*PIPELINE failure" \
   env INSTALL_SCANNER_ARCH=arm64 SBOMGEN_BASE_URL="file://$work/nope" bash "$sut" inspector-sbomgen "$work/bin"
 
+# 4f. syft (the auditor's cataloguer; a pinned release binary since Sep 30's run-time build failed on sum.golang.org)
+#     checksum mismatch and download failure are labeled pipeline failures.
+mkdir -p "$work/syft/v1.52.0"
+echo "not the real syft tarball" > "$work/syft/v1.52.0/syft_1.52.0_linux_amd64.tar.gz"
+check "syft checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=x86_64 SYFT_BASE_URL="file://$work/syft" bash "$sut" syft "$work/bin"
+check "syft download failure rejected" 1 "download failed.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=arm64 SYFT_BASE_URL="file://$work/nope" bash "$sut" syft "$work/bin"
 # 5. No arg is a labeled pipeline failure (empty tool).
 check "missing scanner arg rejected" 1 "unknown scanner.*PIPELINE failure" \
   bash "$sut"
