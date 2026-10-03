@@ -240,7 +240,8 @@ def _indirect_exec(text):
     cannot be tokenized fails closed (Codex #159 r8, B3)."""
     import shlex
     for line in re.sub(r"\\\n", " ", text).splitlines():
-        if not re.search(r"exec|-ok|xargs", line):
+        # only the operators themselves (quoted or not) — never "kubectl exec" or "docker exec"
+        if not re.search(r"(?<![\w-])[\"']?-(?:exec|execdir|ok|okdir)[\"']?(?![\w-])|(?<![\w-])xargs(?![\w-])", line):
             continue
         try:
             toks = shlex.split(line, comments=True)

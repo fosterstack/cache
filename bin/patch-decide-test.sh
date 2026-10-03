@@ -606,6 +606,11 @@ except ValueError as e:
 check("r8/B6 an inert string naming a listed test does not make a dependency patch impossible", got == (True, []), got)
 check("r8/B6 ... and that listed test is not neutral in that decision",
       P.classify(cs[0] | {"files": ["bin/panel-test.sh"], "diffs": {"bin/panel-test.sh": "+x\n"}})[0] == "dirty" if isinstance(got, tuple) else False)
+check("r8/B3 kubectl exec / docker exec with an open quote are not find -exec", P.effective_neutral(
+    {"k.yml": "run: kubectl exec runner -- sh -c '\n  echo hi\n'\nrun: docker exec \"$c\" pgrep x\n"}) == set(P.NEUTRAL_TESTS))
+real_cs = P.gather_commits("HEAD~1", cwd=os.path.join(os.path.dirname(sys.argv[1]), ".."))
+check("r8 on this repository a decision keeps the listed tests neutral (45 of 46)",
+      real_cs and len(real_cs[0]["neutral"]) == len(P.NEUTRAL_TESTS) - 1, real_cs and len(real_cs[0]["neutral"]))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
