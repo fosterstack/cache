@@ -51,13 +51,55 @@ def route(tag, tag_object, released):
     return "gitsign", "a patch tag signed keylessly: the release workflow's identity on main decides"
 
 
-def baseline(tag, baselines, requirements):
-    """REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2): the approved ACs baseline a CI-signed patch tag uses.
-    baselines: {version: the parsed requirements/releases/<version>.yaml} as owner_baselines() collects them — each read
-    from an owner-SSH-signed release tag's own tree, never from the tagged commit (Codex #163 r1, B01); requirements:
-    the bytes of requirements/requirements.yaml at the tagged commit. Returns (version, why) or (None, why): the LATEST
-    owner-approved baseline of the tag's own X.Y line below the tag (an unapproved one is skipped, not a blocker: B02),
-    and only if the requirements are byte-for-byte unchanged since it (same requirements_sha256); otherwise no patch."""
+# REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + the owner's 0126 amendment (Oct 3) + advisor 0150's
+# validated classification table: a requirement ID whose changes since a baseline never need the owner's fresh
+# review to cut an automatic patch. Mirrors tools/requirements/main.go's publicationACs/blockingSet treatment
+# in spirit, not by import (this module has no Go dependency) — keep the two lists in sync by hand; a REQ id
+# not on this list, or not yet introduced at all, is product by default (fail-closed).
+PIPELINE_ONLY = frozenset([
+    "REQ-REL-004", "REQ-REL-005", "REQ-REL-006", "REQ-REL-007", "REQ-REL-008", "REQ-REL-009",
+    "REQ-DEP-001", "REQ-DEP-002", "REQ-DEP-003", "REQ-DEP-004",
+] + ["REQ-SCAN-%03d" % n for n in range(1, 15)])
+# mirrors tools/requirements/main.go's own publicationACs (kept in sync by hand, same reason)
+PUBLICATION_ACS = frozenset(["REQ-REL-001-AC1", "REQ-REL-002-AC1"])
+
+
+def _parse_requirements(raw):
+    """requirements/requirements.yaml bytes to (full, blocking): full maps every non-deprecated requirement's AC
+    id to a comparable tuple (so "changed since the baseline" means ANY field differs, the same fail-closed
+    reading verify-freeze's byte-for-byte sha256 already gave non-pipeline content); blocking is the release-
+    blocking subset as {(id, method, phase)}, the same shape release_blocking_acs already records."""
+    import yaml
+    d = yaml.safe_load(raw) or {}
+    full, blocking = {}, set()
+    for r in d.get("requirements") or []:
+        if r.get("deprecated") or not isinstance(r, dict):
+            continue
+        for ac in r.get("acceptance_criteria") or []:
+            v = ac.get("verification") or {}
+            key = (ac.get("given"), ac.get("when"), ac.get("then"), v.get("method"), v.get("release_blocking"),
+                   ac.get("status"))
+            full[ac["id"]] = key
+            if v.get("release_blocking"):
+                phase = "publication" if ac["id"] in PUBLICATION_ACS else "candidate"
+                blocking.add((ac["id"], v.get("method"), phase))
+    return full, blocking
+
+
+def _req_id(ac_id):
+    return ac_id.rsplit("-AC", 1)[0]
+
+
+def baseline(tag, baselines, baseline_requirements, requirements):
+    """REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + 0126/0150: the approved ACs baseline a CI-signed
+    patch tag uses. baselines: {version: the parsed requirements/releases/<version>.yaml} as owner_baselines()
+    collects them — each read from an owner-SSH-signed release tag's own tree, never from the tagged commit
+    (Codex #163 r1, B01); baseline_requirements: {version: requirements/requirements.yaml bytes at that SAME
+    tag's own tree}; requirements: the bytes of requirements/requirements.yaml at the tagged commit. Returns
+    (version, why) or (None, why): the LATEST owner-approved baseline of the tag's own X.Y line below the tag
+    (an unapproved one is skipped, not a blocker: B02), and only if (a) the release-blocking AC set is
+    identical to the baseline's AND (b) every AC added, removed or changed since the baseline belongs to a
+    PIPELINE_ONLY requirement — both required (advisor 0150); otherwise no patch, it waits for the owner."""
     m = PATCH.match(tag)
     if not m:
         return None, "%s is not a patch tag" % tag
@@ -82,18 +124,29 @@ def baseline(tag, baselines, requirements):
     acs = d.get("release_blocking_acs")
     if not isinstance(acs, list) or not acs or not re.fullmatch(r"[0-9a-f]{40}", str(d.get("fixed_at"))):
         return None, "%s, the latest owner-approved baseline, is malformed (no blocking ACs or no fixed_at commit)" % v
-    have = hashlib.sha256(requirements).hexdigest()
-    if d.get("requirements_sha256") != have:
-        return None, ("the requirements changed since %s (%s, now %s): no automatic patch; it waits for the owner"
-                      % (v, str(d.get("requirements_sha256"))[:12], have[:12]))
-    return v, "%s's approved ACs baseline, requirements unchanged since it" % v
+    base_req = baseline_requirements.get(v)
+    if base_req is None:
+        return None, "%s's requirements/requirements.yaml at its own tag could not be read: no fallback" % v
+    base_full, base_blocking = _parse_requirements(base_req)
+    have_full, have_blocking = _parse_requirements(requirements)
+    if base_blocking != have_blocking:
+        return None, ("the release-blocking AC set changed since %s (%d ACs then, %d now): no automatic "
+                      "patch; it waits for the owner" % (v, len(base_blocking), len(have_blocking)))
+    changed = [acid for acid in set(base_full) | set(have_full) if base_full.get(acid) != have_full.get(acid)]
+    not_pipeline = sorted(acid for acid in changed if _req_id(acid) not in PIPELINE_ONLY)
+    if not_pipeline:
+        return None, ("%s changed since %s and %s is not on the pipeline-only list: no automatic patch; it "
+                      "waits for the owner" % (not_pipeline[0], v, _req_id(not_pipeline[0])))
+    return v, "%s's approved ACs baseline; blocking set unchanged, every other change is pipeline-only" % v
 
 
 def owner_baselines(tag, repo, allowed_signers, out):
-    """Write <out>/<v>.yaml for every release tag v of the tag's X.Y line below it that is an annotated tag carrying
-    the owner's SSH signature, verified by git verify-tag against allowed_signers (main's copy), each file read from
-    THAT tag's own tree (git show v:requirements/releases/v.yaml). A CI-signed, unsigned, lightweight or other-key tag,
-    and the tagged commit itself, never supply a baseline (Codex #163 r1, B01)."""
+    """Write <out>/<v>.yaml and <out>/<v>.requirements.yaml for every release tag v of the tag's X.Y line below
+    it that is an annotated tag carrying the owner's SSH signature, verified by git verify-tag against
+    allowed_signers (main's copy), each file read from THAT tag's own tree (git show
+    v:requirements/releases/v.yaml and v:requirements/requirements.yaml — the second lets baseline() compare
+    the full AC set, not just its blocking subset, advisor 0150). A CI-signed, unsigned, lightweight or
+    other-key tag, and the tagged commit itself, never supply a baseline (Codex #163 r1, B01)."""
     m = PATCH.match(tag)
     os.makedirs(out, exist_ok=True)
     if not m:
@@ -112,21 +165,28 @@ def owner_baselines(tag, repo, allowed_signers, out):
         if kind(git("cat-file", "tag", "refs/tags/" + v).stdout) != "ssh" or git("verify-tag", v).returncode != 0:
             continue
         f = git("show", "%s:requirements/releases/%s.yaml" % (v, v))
-        if f.returncode == 0:
+        req = git("show", "%s:requirements/requirements.yaml" % v)
+        if f.returncode == 0 and req.returncode == 0:
             with open(os.path.join(out, v + ".yaml"), "w") as fh:
                 fh.write(f.stdout)
+            with open(os.path.join(out, v + ".requirements.yaml"), "w") as fh:
+                fh.write(req.stdout)
             got.append(v)
     return got
 
 
 def _load_baselines(directory):
+    """(freeze_dicts, requirements_bytes) — the two dicts baseline() needs, both keyed by version."""
     import yaml
-    out = {}
+    freeze, reqs = {}, {}
     for f in sorted(os.listdir(directory)):
-        if f.endswith(".yaml") and re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+\.yaml$", f):
+        if re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+\.yaml$", f):
             with open(os.path.join(directory, f)) as fh:
-                out[f[:-len(".yaml")]] = yaml.safe_load(fh)
-    return out
+                freeze[f[:-len(".yaml")]] = yaml.safe_load(fh)
+        elif re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+\.requirements\.yaml$", f):
+            with open(os.path.join(directory, f), "rb") as fh:
+                reqs[f[:-len(".requirements.yaml")]] = fh.read()
+    return freeze, reqs
 
 
 def main(argv=None):
@@ -151,7 +211,8 @@ def main(argv=None):
         print("owner-signed baselines: %s" % (" ".join(got) or "none"))
         return 0
     if a.cmd == "baseline":
-        v, why = baseline(a.tag, _load_baselines(a.owner_baselines), open(a.requirements, "rb").read())
+        freeze, reqs = _load_baselines(a.owner_baselines)
+        v, why = baseline(a.tag, freeze, reqs, open(a.requirements, "rb").read())
         print(("use %s" % v) if v else "no", why)
         return 0
     released = [t.strip() for t in open(a.tags) if t.strip() and t.strip() != a.tag]

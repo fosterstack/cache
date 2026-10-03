@@ -57,42 +57,80 @@ with contextlib.redirect_stdout(buf):
     rc = T.main(["route", "--tag", "v0.2.2", "--tag-object", o, "--tags", t])
 check("CLI prints the route first", rc == 0 and buf.getvalue().split()[0] == "gitsign", buf.getvalue())
 
-# --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2): which approved ACs baseline a CI patch uses
-REQ = b"requirements: [the approved ACs]\n"
-H = hashlib.sha256(REQ).hexdigest()
-ACS = [{"id": "REQ-X-001-AC1", "method": "acceptance", "phase": "candidate"}]
-def bl(v, approved=True, sha=H, on="2026-09-29", acs=ACS, fixed="a" * 40):
-    return {"version": v, "approved": approved, "approved_on": on, "requirements_sha256": sha,
-            "release_blocking_acs": acs, "fixed_at": fixed}
-for tag, bls, req, want, why in [
-    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], REQ, "v0.2.1", "v0.2.2 uses v0.2.1's baseline"),
-    ("v0.2.3", [bl("v0.2.0"), bl("v0.2.1")], REQ, "v0.2.1", "the latest approved of its line, even two patches back"),
-    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], REQ + b"x", None, "requirements changed since the baseline: no cut"),
-    ("v0.2.2", [bl("v0.2.0", sha=H), bl("v0.2.1", sha="0" * 64)], REQ, None, "the LATEST baseline must match; never an older one"),
+# --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses
+def req_yaml(entries):
+    """entries: [(req_id, ac_id, blocking)]. A minimal, real requirements.yaml _parse_requirements can read:
+    one requirement per distinct req_id, one AC per entry, given/when/then/status fixed (irrelevant here
+    except as "did this AC's content change")."""
+    by_req = {}
+    for req_id, ac_id, blocking in entries:
+        by_req.setdefault(req_id, []).append((ac_id, blocking))
+    lines = ["requirements:"]
+    for req_id, acs in by_req.items():
+        lines.append("  - id: %s" % req_id)
+        lines.append("    acceptance_criteria:")
+        for ac_id, blocking in acs:
+            lines += ["      - id: %s" % ac_id, "        given: g", "        when: w", "        then: t",
+                      "        verification: {method: unit, release_blocking: %s}" % ("true" if blocking else "false"),
+                      "        status: approved"]
+    return ("\n".join(lines) + "\n").encode()
+def blocking_acs(entries):
+    return [{"id": a, "method": "unit", "phase": "candidate"} for _, a, blocking in entries if blocking]
+BASE = [("REQ-X-001", "REQ-X-001-AC1", True)]
+REQ = req_yaml(BASE)
+ACS = blocking_acs(BASE)
+def bl(v, approved=True, acs=ACS, fixed="a" * 40):
+    return {"version": v, "approved": approved, "approved_on": "2026-09-29", "release_blocking_acs": acs, "fixed_at": fixed}
+PIPE = T.PIPELINE_ONLY
+not_pipe_req = next(r for r in ["REQ-X-001", "REQ-Y-002"] if r not in PIPE)       # any product-classified id
+pipe_req = next(iter(PIPE))                                                       # any pipeline-only id
+for tag, bls, breqs, req, want, why in [
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ}, REQ, "v0.2.1", "v0.2.2 uses v0.2.1's baseline"),
+    ("v0.2.3", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ}, REQ, "v0.2.1", "the latest approved of its line, even two patches back"),
+    # advisor 0150: rule (a), the release-blocking AC set must be identical -- a product AC's method changing breaks it
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
+     req_yaml([("REQ-X-001", "REQ-X-001-AC1", False)]), None, "a blocking AC became non-blocking: the set changed"),
+    # rule (b): a NEW product AC (not on PIPELINE_ONLY) refuses, even though it's non-blocking and (a) still holds
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
+     req_yaml(BASE + [(not_pipe_req, not_pipe_req + "-AC1", False)]), None,
+     "a new product AC since the baseline: no automatic patch"),
+    # rule (b): a new PIPELINE-ONLY AC is fine, blocking set (a) still holds
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
+     req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", False)]), "v0.2.1",
+     "a new pipeline-only AC since the baseline: still an automatic patch"),
+    # a CHANGED pipeline-only AC (same id, different wording/method) is also fine under (b)
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", acs=blocking_acs(BASE + [(pipe_req, pipe_req + "-AC1", False)]))],
+     {"v0.2.1": req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", False)])},
+     req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", True)]), None,
+     "a pipeline-only AC BECOMING blocking changes the set (a): still refused"),
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {}, REQ, None, "the baseline's own requirements.yaml could not be read: no fallback"),
     # Codex #163 r1 B02: the latest OWNER-APPROVED baseline (an unapproved newer one is skipped, never a blocker)
-    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", approved=False)], REQ, "v0.2.0", "an unapproved newer baseline is skipped: the latest approved is used"),
-    ("v0.2.2", [bl("v0.2.1", approved=False)], REQ, None, "no approved baseline on the line: no cut, it waits for the owner"),
-    ("v0.2.2", [bl("v0.2.0", sha="0" * 64), bl("v0.2.1", approved="true")], REQ, None, "approved must be boolean true"),
-    ("v0.2.2", [bl("v0.2.0", sha="0" * 64), bl("v0.2.1", on="soon")], REQ, None, "approved_on must be a real date"),
-    ("v0.2.2", [bl("v0.1.9"), bl("v0.3.0")], REQ, None, "no baseline on its own X.Y line"),
-    ("v0.2.2", [bl("v0.2.1"), bl("v0.2.4")], REQ, "v0.2.1", "a baseline above the tag is never used"),
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", approved=False)], {"v0.2.0": REQ, "v0.2.1": REQ}, REQ, "v0.2.0",
+     "an unapproved newer baseline is skipped: the latest approved is used"),
+    ("v0.2.2", [bl("v0.2.1", approved=False)], {"v0.2.1": REQ}, REQ, None, "no approved baseline on the line: no cut, it waits for the owner"),
+    ("v0.2.2", [bl("v0.2.1", approved="true")], {"v0.2.1": REQ}, REQ, None, "approved must be boolean true"),
+    ("v0.2.2", [bl("v0.1.9"), bl("v0.3.0")], {"v0.1.9": REQ, "v0.3.0": REQ}, REQ, None, "no baseline on its own X.Y line"),
+    ("v0.2.2", [bl("v0.2.1"), bl("v0.2.4")], {"v0.2.1": REQ, "v0.2.4": REQ}, REQ, "v0.2.1", "a baseline above the tag is never used"),
     # Codex #163 pin pass B03: the content admission requires is checked here too, and a malformed latest approved
     # baseline is no patch — never a fallback to an older one
-    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", acs=[])], REQ, None, "an empty release_blocking_acs: no patch, no fallback"),
-    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", acs=None)], REQ, None, "no release_blocking_acs list"),
-    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", fixed="main")], REQ, None, "fixed_at is not a full commit id"),
-    ("v0.3.0", [bl("v0.2.1")], REQ, None, "a minor is not a CI patch"),
-    ("v0.2.2", [dict(bl("v0.2.1"), version="v0.2.0")], REQ, None, "a file whose version is not its name is ignored"),
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", acs=[])], {"v0.2.0": REQ, "v0.2.1": REQ}, REQ, None, "an empty release_blocking_acs: no patch, no fallback"),
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", acs=None)], {"v0.2.0": REQ, "v0.2.1": REQ}, REQ, None, "no release_blocking_acs list"),
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", fixed="main")], {"v0.2.0": REQ, "v0.2.1": REQ}, REQ, None, "fixed_at is not a full commit id"),
+    ("v0.3.0", [bl("v0.2.1")], {"v0.2.1": REQ}, REQ, None, "a minor is not a CI patch"),
+    ("v0.2.2", [dict(bl("v0.2.1"), version="v0.2.0")], {"v0.2.1": REQ}, REQ, None, "a file whose version is not its name is ignored"),
 ]:
-    got = T.baseline(tag, {b["version"] if "name" not in b else b["name"]: b for b in bls} if why != "a file whose version is not its name is ignored" else {"v0.2.1": bls[0]}, req)
+    bmap = {b["version"]: b for b in bls} if "not its name" not in why else {"v0.2.1": bls[0]}
+    got = T.baseline(tag, bmap, breqs, req)
     check("baseline: %s -> %s" % (why, want), got[0] == want, got)
 rd = os.path.join(d, "releases"); os.makedirs(rd)
 for v in ("v0.2.0", "v0.2.1"):
-    open(os.path.join(rd, v + ".yaml"), "w").write("version: %s\napproved: true\napproved_on: 2026-09-29\nrequirements_sha256: %s\n"
-        "fixed_at: %s\nrelease_blocking_acs:\n  - {id: REQ-X-001-AC1, method: acceptance, phase: candidate}\n" % (v, H, "a" * 40))
+    open(os.path.join(rd, v + ".yaml"), "w").write("version: %s\napproved: true\napproved_on: 2026-09-29\n"
+        "fixed_at: %s\nrelease_blocking_acs:\n  - {id: REQ-X-001-AC1, method: unit, phase: candidate}\n" % (v, "a" * 40))
+    with open(os.path.join(rd, v + ".requirements.yaml"), "wb") as fh:
+        fh.write(REQ)
 open(os.path.join(rd, "README.md"), "w").write("not a baseline\n")
 rq = os.path.join(d, "req.yaml"); open(rq, "wb").write(REQ)
-for req_bytes, want in ((REQ, "use v0.2.1"), (REQ + b"x", "no")):
+for req_bytes, want in ((REQ, "use v0.2.1"), (req_yaml(BASE + [(not_pipe_req, not_pipe_req + "-AC1", False)]), "no")):
     open(rq, "wb").write(req_bytes)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -132,14 +170,17 @@ commit_baselines(["v0.2.0", "v0.2.1", "v0.2.3", "v0.2.4", "v0.2.5"])     # the t
 out = os.path.join(g, "owner-baselines")
 rc = T.main(["owner-baselines", "--tag", "v0.2.5", "--repo", g, "--allowed-signers", allowed, "--out", out])
 got = sorted(os.listdir(out)) if os.path.isdir(out) else None
-check("B01 only owner-SSH-signed tags of the line, below the tag, supply a baseline (v0.2.0)", rc == 0 and got == ["v0.2.0.yaml"], got)
+check("B01 only owner-SSH-signed tags of the line, below the tag, supply a baseline (v0.2.0)",
+      rc == 0 and got == sorted(["v0.2.0.yaml", "v0.2.0.requirements.yaml"]), got)
 check("B01 the baseline is read from the owner tag's own tree", open(os.path.join(out, "v0.2.0.yaml")).read().startswith("version: v0.2.0"))
-v, why = T.baseline("v0.2.5", T._load_baselines(out), open(os.path.join(g, "requirements", "requirements.yaml"), "rb").read())
+freeze, reqs = T._load_baselines(out)
+v, why = T.baseline("v0.2.5", freeze, reqs, open(os.path.join(g, "requirements", "requirements.yaml"), "rb").read())
 check("B01 the tagged commit's self-approved baselines are never used: v0.2.5 -> v0.2.0", v == "v0.2.0", (v, why))
-commit_baselines(["v0.2.0"], req=REQ + b"edited")
+commit_baselines(["v0.2.0"], req=req_yaml(BASE + [(not_pipe_req, not_pipe_req + "-AC1", False)]))
 rc = T.main(["owner-baselines", "--tag", "v0.2.6", "--repo", g, "--allowed-signers", allowed, "--out", out + "2"])
-v, why = T.baseline("v0.2.6", T._load_baselines(out + "2"), open(os.path.join(g, "requirements", "requirements.yaml"), "rb").read())
-check("B01 requirements changed since the owner's baseline: no patch", v is None and "changed" in why, (v, why))
+freeze2, reqs2 = T._load_baselines(out + "2")
+v, why = T.baseline("v0.2.6", freeze2, reqs2, open(os.path.join(g, "requirements", "requirements.yaml"), "rb").read())
+check("B01 requirements changed since the owner's baseline: no patch", v is None and "not on the pipeline-only list" in why, (v, why))
 try:
     T.main(["baseline", "--tag", "v0.2.2", "--releases-dir", rd, "--requirements", rq]); got = "accepted"
 except SystemExit:
