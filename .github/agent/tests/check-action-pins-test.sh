@@ -1085,5 +1085,19 @@ case_ n26-wd-pip-r             bad "$head
       - working-directory: sub
         run: pip install --require-hashes -r requirements.txt" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p sub; printf 'evil==9 --hash=sha256:11\\n' > sub/requirements.txt"
 case_ n26-pip-r-root-ok        ok  "$(rb 'pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt"
+# --- Sonnet #164 r18 (NEW-27, NEW-28): quote-split words (d""ocker, c""d) defeat raw-text detectors; aliases and ANSI-C
+#     quoting are refused outright (fail closed)
+case_ n27-alias-split          bad "$(rb 'shopt -s expand_aliases; alias foo=d""ocker; foo run alpine:3.20')"
+case_ n27-alias-any            bad "$(rb 'alias ll=ls; ll')"
+case_ n27-expand-aliases       bad "$(rb 'shopt -s expand_aliases')"
+case_ n27-ansi-c               bad "$(rb "\$'\\x64ocker' run alpine:3.20")"
+case_ n27-ansi-c-octal         bad "$(rb "\$'\\144ocker' run alpine:3.20")"
+case_ n27-ansi-c-tab-ok        ok  "$(rb "IFS=\$'\\t' read -r a b <<< \"x\"; printf '%s' \"\$a\$'\\n'\"")"
+case_ n27-regex-anchor-ok      ok  "$(rb "grep -oE '[^ ]+\$' f.txt; echo \"a\$'b\"")"
+case_ n27-ansi-in-dquote-text  bad "$(rb "echo \"x\" \$'\\x41'")"
+case_ n27-cp-split             bad "$(rb 'cp "$(command -v d""ocker)" /usr/local/bin/foo; foo run alpine:3.20')"
+case_ n28-cd-split-pip         bad "$(rb 'c""d sub; pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p sub; printf 'evil==9 --hash=sha256:11\\n' > sub/requirements.txt"
+case_ n28-pushd-split-build    bad "$(rb 'pus""hd evil; docker build -f Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
+case_ n28-backslash-cd         bad "$(rb 'c\\d evil; docker build -f Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

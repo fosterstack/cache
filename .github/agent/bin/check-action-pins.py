@@ -560,6 +560,47 @@ TOOL_WORDS = r"(docker|podman|skopeo|crane|pip3?|pipx|uvx?|npm|npx|gem|yarn|pnpm
 RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\((command\s+-v|which|type\s+-p)\s+[\"']?"
                      + TOOL_WORDS + r"[\"']?\)|/" + TOOL_WORDS + r"(?=[\s\"']|$))"
                      r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
+# Raw-text detectors read the script with every quote and backslash removed: d""ocker, c""d and c\\d are the words bash
+# runs (Sonnet #164 r18, NEW-27/28). Aliases hide a command from any static reading: refused outright (nothing in this
+# repository uses one). ANSI-C quoting may carry only \n, \t and \r (the repository's $'\t' and $'\n'); any other escape
+# ($'\x64ocker', octal, \u) can spell any word and is refused (fail closed)
+ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
+
+
+def _unquoted(text):
+    return re.sub(r"[\"'\\]", "", text)
+
+
+def _ansi_c_hidden(text):
+    """True when an ANSI-C string ($'...' outside any quotes) carries an escape other than \\n, \\t or \\r. A '$' that
+    closes a single-quoted regex ('x$') is not one: the scan tracks single and double quotes as bash does."""
+    i, q = 0, None
+    while i < len(text):
+        c = text[i]
+        if q == "'":
+            q = None if c == "'" else q
+        elif q == '"':
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                q = None
+        elif c == "\\":
+            i += 1
+        elif c in "'\"":
+            q = c
+        elif c == "$" and text[i + 1:i + 2] == "'":
+            j = i + 2
+            while j < len(text) and text[j] != "'":
+                if text[j] == "\\":
+                    if text[j + 1:j + 2] not in ("n", "t", "r"):
+                        return True
+                    j += 1
+                j += 1
+            i = j
+        i += 1
+    return False
+
+
 SHELLS = {"bash", "sh", "dash", "zsh"}
 # Verbs reviewed as running or pulling nothing remote (Sonnet #164 r12: every verb is checked, reviewed here, or refused)
 DOCKER_SAFE = {"login", "logout", "images", "ps", "rm", "rmi", "stop", "kill", "start", "restart", "logs", "inspect",
@@ -1143,10 +1184,14 @@ def check_runs(where_job, scripts, bad, tree=None):
         # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
         # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
-        moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", text))
+        moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
         for name in daemon_redirects(text):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
-        if RENAMED.search(text):
+        if ALIASING.search(_unquoted(text)):
+            bad.append(f"{where}: defines an alias; the command it hides cannot be checked, refused")
+        if _ansi_c_hidden(text):
+            bad.append(f"{where}: ANSI-C quoting ($'...') with an escape other than \\n \\t \\r can spell any word; refused")
+        if RENAMED.search(_unquoted(text)):
             bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
                        f"renamed command cannot be checked")
         if shell and not re.match(r"^(bash|sh)(\s|$)", shell):
