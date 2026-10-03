@@ -310,7 +310,6 @@ jobs:
           RESCAN_RUN: ${{ steps.rescan.outputs.run_id }}
           RESCAN_HEAD: ${{ steps.rescan.outputs.rescan_head }}
           RESCAN_CONCLUSION: ${{ steps.rescan.outputs.rescan_conclusion }}
-          MAIN_HEAD: ${{ steps.rescan.outputs.main_head }}
           RESCAN_STATUS: ${{ steps.rescan.outputs.rescan_status }}
           RESCAN_CREATED: ${{ steps.rescan.outputs.rescan_created }}
         run: |
@@ -320,8 +319,11 @@ jobs:
           # (owner RATIFIED Oct 3, item a; advisor 0113/0136). A stale, unfinished or evidence-less run fails visibly.
           [ "${RESCAN_STATUS}" = completed ] || { echo "::error::scanner panel: the rescan run did not finish in time" >&2; exit 1; }
           age=$(( $(date -u +%s) - $(date -u -d "${RESCAN_CREATED}" +%s) ))
-          [ "$age" -le 93600 ] || { echo "::error::scanner panel: the rescan run is ${age}s old (more than a day)" >&2; exit 1; }
+          [ "$age" -le 86400 ] || { echo "::error::scanner panel: the rescan run is ${age}s old (more than a day)" >&2; exit 1; }
           [ -f "${RUNNER_TEMP}/panel/verdict.json" ] || { echo "::error::scanner panel: the rescan run has no panel-evidence" >&2; exit 1; }
+          # main's head, refetched now (not the selection-time value, up to the bounded wait's 90 minutes stale) —
+          # the warning must compare against main as it is when the judgment is actually built (Codex r1, B3)
+          MAIN_HEAD=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
           seats='${{ (github.event_name == 'schedule' || inputs.adjudicator == 'real') && 'real' || 'none' }}'
           # yesterday's judgments, debates and scores: the OPEN panel PR's branch (pending, not yet merged) if there is
           # one, else main's file; a closed or rejected branch never steers the run

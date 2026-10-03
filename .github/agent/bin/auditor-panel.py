@@ -952,7 +952,11 @@ def rescan_binding(path, oci_dir):
         try:
             with tarfile.open(os.path.join(oci_dir, name)) as t:
                 idx = json.loads(t.extractfile("index.json").read())
-            ds = [m["digest"] for m in idx.get("manifests") or [] if DIGEST.match(str(m.get("digest", "")))]
+                ds = [m["digest"] for m in idx.get("manifests") or [] if DIGEST.match(str(m.get("digest", "")))]
+                # every manifest the index names must itself be readable — a syntactically valid digest over a blob
+                # that is missing or truncated is not usable evidence (Codex #177 r1, B2)
+                for d in ds:
+                    t.getmember("blobs/" + d.replace(":", "/"))
         except (OSError, ValueError, KeyError, AttributeError, tarfile.TarError):
             ds = []
         if not ds:
@@ -978,6 +982,14 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     rescan, why = rescan_binding(a.rescan, a.oci)
     if why:
         sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % why)
+        return 2
+    # every image the verdict judges must have its own readable evidence — a missing archive must never fall through
+    # to "no evidence, false by default" as if that image had simply cleared (Codex #177 r1, B2)
+    named = {f.get("image", "").rsplit("-", 1)[0] for f in verdict.get("findings") or [] if f.get("image")}
+    missing = sorted(v for v in named if v and v not in rescan["digests"])
+    if missing:
+        sys.stderr.write("::error::auditor-panel: the rescan's evidence is missing for %s; nothing was judged\n"
+                          % ", ".join(missing))
         return 2
     budget = Budget(a.token_budget)
     seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}

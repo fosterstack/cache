@@ -316,12 +316,16 @@ MAIN = "b" * 40
 DIGEST = "sha256:" + "c" * 64
 
 
-def rescan_oci(d, variant="fips", digest=DIGEST):
-    """A rescan OCI archive whose index names one image digest."""
+def rescan_oci(d, variant="fips", digest=DIGEST, blob=True):
+    """A rescan OCI archive whose index names one image digest, with the manifest blob it points to present (unless
+    blob=False, for a probe that needs a syntactically valid digest over missing/unreadable evidence)."""
     raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
     with tarfile.open(os.path.join(d, variant + ".oci"), "w") as t:
         ti = tarfile.TarInfo("index.json"); ti.size = len(raw)
         t.addfile(ti, io.BytesIO(raw))
+        if blob:
+            bi = tarfile.TarInfo("blobs/" + digest.replace(":", "/")); bi.size = 2
+            t.addfile(bi, io.BytesIO(b"{}"))
 
 
 def binding(d, **kw):
@@ -385,6 +389,24 @@ class Judge(Tmp):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=bad_oci)), 2)
         self.assertIn("no image digest", err.getvalue())
+
+    # Codex #177 r1, B2: a syntactically valid digest over a missing/unreadable blob, or an archive missing entirely
+    # for an image the verdict judges, must refuse — never fall through to "no evidence, false by default"
+    def test_a_digest_whose_blob_is_missing_is_refused(self):
+        unreadable = os.path.join(self.d, "unreadable"); os.makedirs(unreadable)
+        rescan_oci(unreadable, blob=False)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(self.a(oci=unreadable)), 2)
+        self.assertIn("no image digest", err.getvalue())
+
+    def test_an_image_the_verdict_judges_with_no_archive_at_all_is_refused(self):
+        no_production = os.path.join(self.d, "no-production"); os.makedirs(no_production)
+        rescan_oci(no_production, variant="fips")   # UNIQUE's image is fips-arm64: only this one is needed to pass
+        args = self.a(oci=no_production)
+        verdict_file(self.d, [UNIQUE, dict(UNIQUE, image="production-arm64")])   # args.verdict is this same path
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(args), 2)
+        self.assertIn("missing for production", err.getvalue())
 
     def test_missing_verdict_is_a_failure(self):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
@@ -652,13 +674,17 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertNotIn("select(.headSha==", sel)            # any head: the newest run of main, bound to its own head
         self.assertNotIn("head_bound", yaml.safe_dump(self.wf))
         j = self.steps[self.step("auditor-panel.py judge")]
-        for k, v in (("RESCAN_RUN", "run_id"), ("RESCAN_HEAD", "rescan_head"), ("RESCAN_CONCLUSION", "rescan_conclusion"),
-                     ("MAIN_HEAD", "main_head")):
+        for k, v in (("RESCAN_RUN", "run_id"), ("RESCAN_HEAD", "rescan_head"), ("RESCAN_CONCLUSION", "rescan_conclusion")):
             self.assertEqual(j["env"][k], "${{ steps.rescan.outputs.%s }}" % v)
+        self.assertNotIn("MAIN_HEAD", j.get("env", {}))     # never the selection-time value (Codex r1, B3)
         # COMPLETED (advisor 0136): finished, any conclusion, with its evidence; a running or evidence-less run is refused
-        for must in ('[ "${RESCAN_STATUS}" = completed ] ||', '[ "$age" -le 93600 ] ||',
+        for must in ('[ "${RESCAN_STATUS}" = completed ] ||', '[ "$age" -le 86400 ] ||',
                      '[ -f "${RUNNER_TEMP}/panel/verdict.json" ] ||', "--rescan \"${RUNNER_TEMP}/rescan-binding.json\""):
             self.assertIn(must, j["run"])
+        # main's head is refetched live, right before the binding is built — not reused from selection time, which can
+        # be up to 90 minutes stale by the time the bounded wait finishes (Codex r1, B3)
+        self.assertIn('MAIN_HEAD=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq', j["run"])
+        self.assertLess(j["run"].index('MAIN_HEAD=$(gh api'), j["run"].index("'{run_id: $r"))
         self.assertNotIn("RESCAN_CONCLUSION}\" = success", j["run"])    # a red rescan is judged, its conclusion named
         self.assertLess(j["run"].index("verdict.json\" ] ||"), j["run"].index("auditor-panel.py judge"))
         self.assertEqual(j["run"].count("exit 1; }"), 3)
