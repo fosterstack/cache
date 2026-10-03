@@ -74,7 +74,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          since=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          # the baseline is the latest PUBLISHED release: a tag whose release run failed is a used version number,
+          # never the baseline, so the next run releases what it held (REQ-REL-009-AC10; Codex #159 r1, B4)
+          gh release list --exclude-drafts --limit 1000 --json tagName,isPrerelease \
+            --jq '[.[] | select(.isPrerelease | not) | .tagName]' > "$RUNNER_TEMP/released.json"
+          since=$(jq -r '.[]' "$RUNNER_TEMP/released.json" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | while read -r t; do git rev-parse -q --verify "refs/tags/$t" > /dev/null && echo "$t"; done | sort -V | tail -1 || true)
           echo "since=${since}" >> "$GITHUB_OUTPUT"
           echo '{}' > "$RUNNER_TEMP/labels.json"
           if [ -n "$since" ]; then
@@ -93,26 +98,32 @@ jobs:
           SINCE: ${{ steps.facts.outputs.since }}
         run: |
           set -uo pipefail
-          ver="${SINCE#v}"; rel=()
+          # every variant of the release must scan: one that cannot is "unknown" (no at-once cut), never an empty
+          # release (Codex #159 r1, B2)
+          ver="${SINCE#v}"; rel=(); ok=1
           for t in "$ver" "$ver-debug" "$ver-fips"; do
-            grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json" && rel+=("$RUNNER_TEMP/rel-${t}.json")
+            if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
+            else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
           done
-          jq -s '{matches: [.[].matches[]]}' "${rel[@]}" > "$RUNNER_TEMP/release.json"
+          [ "$ok" = 1 ] && jq -s '{matches: [.[].matches[]]}' "${rel[@]}" > "$RUNNER_TEMP/release.json" || ok=0
           base_arg=()
           if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n "$bases" ]; then
             ok=1; for b in $bases; do grype "$b" -o json > "$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json" || ok=0; done
             if [ "$ok" = 1 ]; then jq -s '{matches: [.[].matches[]]}' "$RUNNER_TEMP"/base-*.json > "$RUNNER_TEMP/base.json"; base_arg=(--base-grype "$RUNNER_TEMP/base.json"); fi
           fi
-          python3 bin/patch-decide.py removed --release-grype "$RUNNER_TEMP/release.json" --gomod go.mod "${base_arg[@]}" \
-            --out "$RUNNER_TEMP/removed.json"
+          if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed --release-grype "$RUNNER_TEMP/release.json" --gomod go.mod \
+               "${base_arg[@]}" --out "$RUNNER_TEMP/removed.json"; then
+            touch "$RUNNER_TEMP/removed-unknown"
+          fi
 
       - name: decide (bin/patch-decide.py)
         id: decide
         run: |
           set -euo pipefail
           removed=(); [ -f "$RUNNER_TEMP/removed.json" ] && removed=(--removed "$RUNNER_TEMP/removed.json")
+          [ ! -f "$RUNNER_TEMP/removed-unknown" ] || removed=(--removed-unknown)
           python3 bin/patch-decide.py decide --event "${GITHUB_EVENT_NAME}" --cut-today '${{ steps.facts.outputs.cut_today }}' \
-            --labels "$RUNNER_TEMP/labels.json" "${removed[@]}" --out "$RUNNER_TEMP/decision.json"
+            --released "$RUNNER_TEMP/released.json" --labels "$RUNNER_TEMP/labels.json" "${removed[@]}" --out "$RUNNER_TEMP/decision.json"
           {
             echo "cut=$(jq -r .cut "$RUNNER_TEMP/decision.json")"
             echo "version=$(jq -r '.version // ""' "$RUNNER_TEMP/decision.json")"
@@ -141,12 +152,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # the same query admission makes (filter=latest), so "ready" here is what admission will see
+          # the same query admission makes (filter=latest), against the same policy: protected main's, never the
+          # checked-out commit's (Codex #159 r1, B6) — so "ready" here is what admission will see
+          git fetch -q --no-tags origin main
+          git show origin/main:.github/policy/required-checks.json > "$RUNNER_TEMP/required-checks.json"
           end=$((SECONDS + 3600))
           while [ "$SECONDS" -lt "$end" ]; do
             gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=latest&per_page=100" --paginate \
               --jq '[.check_runs[] | {name, status, conclusion, app_id: .app.id}]' | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
-            v=$(python3 bin/patch-decide.py ready --required .github/policy/required-checks.json --check-runs "$RUNNER_TEMP/runs.json")
+            v=$(python3 bin/patch-decide.py ready --required "$RUNNER_TEMP/required-checks.json" --check-runs "$RUNNER_TEMP/runs.json")
             echo "$v"
             case "${v%% *}" in
               ready) echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
@@ -304,6 +318,7 @@ jobs:
       - name: open the issue for the abandoned release attempt
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \

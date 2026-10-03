@@ -238,28 +238,29 @@ g(repo, "commit", "-qam", "bump")
 open(os.path.join(repo, "docs", "a.md"), "w").write("doc\n")
 g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "doc")
 out = os.path.join(repo, "decision.json")
+RL = os.path.join(repo, "released.json"); json.dump(["v0.2.1"], open(RL, "w"))
 import io, contextlib
 with contextlib.redirect_stdout(io.StringIO()):
-    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--out", out])
+    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 D = json.load(open(out))
 check("the command reads the real history since v0.2.1 and cuts v0.2.2", D["cut"] and D["version"] == "v0.2.2" and D["since"] == "v0.2.1", D)
 open(os.path.join(repo, "main.go"), "w").write("package main\n")
 g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "feature")
 with contextlib.redirect_stdout(io.StringIO()) as so:
-    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--out", out])
+    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 D = json.load(open(out))
 check("a feature commit makes it not patch-clean, named", not D["cut"] and "main.go" in D["not_clean"][0], D)
 sha = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 lab = os.path.join(repo, "labels.json"); json.dump({sha: ["patch-fix"]}, open(lab, "w"))
 with contextlib.redirect_stdout(io.StringIO()):
-    P.main(["decide", "--event", "workflow_dispatch", "--repo", repo, "--cut-today", "false", "--labels", lab, "--out", out])
+    P.main(["decide", "--event", "workflow_dispatch", "--repo", repo, "--cut-today", "false", "--released", RL, "--labels", lab, "--out", out])
 check("the patch-fix label on that PR admits it", json.load(open(out))["cut"], json.load(open(out)))
 # Sonnet #159 r1: decision.json feeds the public "main is not patch-clean" issue, so it is redacted as stdout is
 os.makedirs(os.path.join(repo, "internal"), exist_ok=True)
 open(os.path.join(repo, "internal", "openai-adapter.go"), "w").write("package internal\n")
 g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "adapter")
 with contextlib.redirect_stdout(io.StringIO()):
-    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--out", out])
+    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 raw = open(out).read()
 check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
 # --- `removed`: from grype's JSON for the release and the new base image, and HEAD's go.mod
@@ -325,6 +326,77 @@ check("ready CLI: prints the verdict first", rc == 0 and buf.getvalue().split()[
 # pushed v0.2.2, the next one cuts v0.2.3, never a second v0.2.2
 check("a queued run after v0.2.2 was cut computes v0.2.3", P.decide("push", FIX, ["v0.2.1", "v0.2.2"], cut_today=True,
       removed=[REL[0]])["version"] == "v0.2.3")
+# --- Codex #159 r1 (B1, B2, B4, B5, B6)
+# B1: a prerelease or pseudo-version is below its release; a fix listed for several release streams counts only in the
+# installed version's own stream (or when the installed version is at or past every listed fix)
+for have, want, ok in [("v1.2.3-rc.1", ["1.2.3"], False), ("v1.2.3-0.20261001000000-aaaaaaaaaaaa", ["1.2.3"], False),
+                       ("v1.2.3", ["1.2.3"], True), ("v1.2.4-rc.1", ["1.2.3"], True), ("go1.26rc1", ["1.26.0"], False),
+                       ("go1.26.5", ["1.25.11", "1.26.6"], False), ("go1.26.6", ["1.25.11", "1.26.6"], True),
+                       ("go1.25.11", ["1.26.6", "1.25.11"], True), ("go1.27.0", ["1.25.11", "1.26.6"], True),
+                       ("go1.24.9", ["1.25.11", "1.26.6"], False), ("v1.2.3", "1.2.3", True), ("v1.2.2", "1.2.3", False)]:
+    check("B1 %s fixes %s: %s" % (have, want, ok), P._at_least(have, want) == ok, P._at_least(have, want))
+MULTI = [{"id": "CVE-2099-9", "package": "stdlib", "installed": "go1.26.5", "fixed": ["1.25.11", "1.26.6"],
+          "severity": "High", "type": "go-module"}]
+check("B1 an unchanged go1.26.5 is not 'fixed' by a fix for the 1.25 stream",
+      P.removed_critical_high(MULTI, {"go": {"stdlib": "go1.26.5"}, "base_findings": []}) == [])
+check("B1 grype_findings keeps every fix version", P.grype_findings({"matches": [{"vulnerability": {"id": "x", "severity": "High",
+      "fix": {"versions": ["1.25.11", "1.26.6"]}}, "artifact": {"name": "stdlib", "version": "go1.26.5", "type": "go-module"}}]})[0]["fixed"]
+      == ["1.25.11", "1.26.6"])
+# B2: a scan document without a matches list is not a clean scan
+for doc in ({}, {"matches": None}, None, [], {"matches": "x"}):
+    try:
+        P.grype_findings(doc); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("B2 grype_findings refuses %r" % (doc,), got == "refused", got)
+check("B2 an empty matches list is a clean scan", P.grype_findings({"matches": []}) == [])
+bad = os.path.join(repo, "bad.json"); json.dump({}, open(bad, "w"))
+rem2 = os.path.join(repo, "removed2.json")
+P.main(["removed", "--release-grype", rel, "--gomod", gomod, "--base-grype", bad, "--out", rem2])
+check("B2 a malformed base scan is no base scan (no deb finding counts as removed)", "CVE-2099-3" not in [f["id"] for f in json.load(open(rem2))])
+rc = P.main(["removed", "--release-grype", bad, "--gomod", gomod, "--out", os.path.join(repo, "removed3.json")])
+check("B2 a malformed release scan is an error, not an empty release", rc != 0 and not os.path.exists(os.path.join(repo, "removed3.json")))
+D = P.decide("push", FIX, ["v0.2.1"], cut_today=False, removed=None)
+check("B2 push with the release scan unknown: no at-once cut, and the reason says so", not D["cut"] and "could not be scanned" in D["reason"], D)
+# B4: a failed (unreleased) tag is a used version number, never the baseline: the next run releases what it held
+rel4 = tempfile.mkdtemp()
+g(rel4, "init", "-q", "-b", "main")
+open(os.path.join(rel4, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+g(rel4, "add", "-A"); g(rel4, "commit", "-q", "-m", "base"); g(rel4, "tag", "v0.2.1")
+open(os.path.join(rel4, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(rel4, "commit", "-qam", "bump"); g(rel4, "tag", "v0.2.2")          # its release run failed: no published release
+rl = os.path.join(rel4, "released.json"); json.dump(["v0.2.1"], open(rl, "w"))
+o4 = os.path.join(rel4, "d.json")
+with contextlib.redirect_stdout(io.StringIO()):
+    P.main(["decide", "--event", "schedule", "--repo", rel4, "--cut-today", "false", "--released", rl, "--out", o4])
+D = json.load(open(o4))
+check("B4 the next daily run after a failed v0.2.2 cuts v0.2.3 from the last release v0.2.1", D["cut"] and D["version"] == "v0.2.3" and D["since"] == "v0.2.1", D)
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        P.main(["decide", "--event", "schedule", "--repo", rel4, "--cut-today", "false", "--out", o4]); got = "ran"
+except SystemExit:
+    got = "refused"
+check("B4 decide needs the published releases (never falls back to the latest tag)", got == "refused", got)
+# B5: a vendor name inside an identifier is redacted too
+for s_ in ("internal/providerOpenAI.go", "internal/myClaudeClient.go", "x/useGeminiAPI.go", "pkg/providerMeta.go"):
+    out = P._clean(s_)
+    check("B5 %s is redacted" % s_, not re.search(r"(?i)openai|claude|gemini|meta\.go", out), out)
+check("B5 ordinary words survive (metadata, so3)", P._clean("metadata so3") == "metadata so3", P._clean("metadata so3"))
+# B6: a policy admission would reject is never "ready"
+for pol_, why in [({}, "no required_checks"), ({"required_checks": None}, "required_checks null"),
+                  ({"required_checks": [{"context": "test", "integration_id": 15368, "scope": "typo"}]}, "an unknown scope"),
+                  ({"required_checks": [{"integration_id": 15368}]}, "no context"),
+                  ({"required_checks": [{"context": "test"}]}, "no integration_id")]:
+    got = P.ready(pol_, [run("test")])
+    check("B6 ready refuses a policy with %s" % why, got[0] == "no" and "policy" in got[1], got)
+json.dump([], open(rl, "w"))
+with contextlib.redirect_stdout(io.StringIO()):
+    P.main(["decide", "--event", "schedule", "--repo", rel4, "--cut-today", "false", "--released", rl, "--out", o4])
+D = json.load(open(o4))
+check("B4 tags but no published release: no cut, the first release is the owner's", not D["cut"] and "first release" in D["reason"], D)
+for s_, want in (("internal/providerGoogle.go", "internal/provider<redacted>.go"), ("laws draws jaws", "laws draws jaws"),
+                 ("useAzureClient", "use<redacted>Client")):
+    check("B5 camelCase vendor %r" % s_, P._clean(s_) == want, P._clean(s_))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

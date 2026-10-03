@@ -33,17 +33,18 @@ def _sep(*words):
 
 # no vendor or model names in public text (row 48; Codex #158 r1, B06: the wider set)
 # A platform name that qualifies a model goes with it (Codex #158 phase-2 r2, B06: "Google Gemini" left "Google").
-VENDOR = re.compile(r"(?i)(?<![a-z])((" + _sep("google", "microsoft", "amazon", "aws", "azure", "xai", "meta", "github")
+VENDOR = re.compile(r"(?i)((" + _sep("google", "microsoft", "amazon", "aws", "azure", "xai", "meta", "github")
                     + r"|x\.ai)\s+)?(chat[-_.\s]*gpt|"
                     + _sep("anthropic", "claude", "openai", "gpt", "codex", "gemini", "llama", "mistral", "mixtral", "grok",
                            "bedrock", "deepseek", "qwen", "copilot", "cohere", "bard", "sonnet", "opus", "haiku", "xai")
                     + r")(?:[\w-]|\.(?=\w))*|\bo[1-9](-(mini|pro|preview))?\b")
 # a vendor named alone (Sonnet #158 r3: rule 5 forbids vendor OR model names) is redacted wherever it stands, next to a
 # hyphen or slash too (Sonnet #158 r3b, NEW-BLOCKER-2: "AWS-reported", "Google/Microsoft"); fail closed — only a whole token
-# that is a wholly lowercase domain or module path stays readable (google.golang.org/protobuf, github.com/aws/aws-sdk-go-v2)
-# Meta too, with the separators every name takes (Codex #158 phase-2 r3, NEW-BLOCKER-4: Me-ta, me_ta_client.go)
-VENDOR_ALONE = re.compile(r"(?i)(?<![a-z0-9])(" + _sep("google", "microsoft", "amazon", "aws", "azure", "meta")
-                          + r")(?![a-z0-9])")
+# that is a wholly lowercase domain or module path stays readable (google.golang.org/protobuf, github.com/aws/aws-sdk-go-v2);
+# a camelCase boundary counts as a word boundary (Codex #159 r1, B5: providerGoogle.go), an ordinary word (laws) does not;
+# Meta too, with the separators every name takes (Codex #158 phase-2 r3, NEW-BLOCKER-4: Me-ta, providerMeta.go)
+VENDOR_ALONE = re.compile(r"(?i)(?:(?<![a-z0-9])|(?<=[a-z0-9])(?-i:(?=[A-Z])))("
+                          + _sep("google", "microsoft", "amazon", "aws", "azure", "meta") + r")(?-i:(?![a-z0-9]))")
 MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   # every part lowercase (Sonnet r3c, NEW-BLOCKER-3)
 
 
@@ -278,18 +279,29 @@ def floating(version, released):
     return out
 
 
-def _ver_key(v):
-    """A comparable key for Go-style (v1.2.3, go1.26.6) and Debian-style (3.0.16-1, 1:2.36-9+deb12u3) versions."""
-    v = re.sub(r"^(go|v)", "", str(v or ""))
-    v = v.split(":", 1)[-1]
-    return [int(p) if p.isdigit() else p for p in re.split(r"[.+~-]", v) if p != ""]
+GO_VERSION = re.compile(r"^(?:go|v)?(\d+)\.(\d+)(?:\.(\d+))?(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
+
+
+def _go_ver(v):
+    """((X, Y, Z), prerelease?) for a Go module or toolchain version; None when it cannot be read (go1.26rc1)."""
+    m = GO_VERSION.match(str(v or ""))
+    return ((int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)), bool(m.group(4))) if m else None
 
 
 def _at_least(have, want):
-    try:
-        return _ver_key(have) >= _ver_key(want)
-    except TypeError:                     # mixed number/text parts that cannot be ordered: never "fixed"
+    """Is `have` at or past a fix? A prerelease or pseudo-version is below its release (Codex #159 r1, B1); with several
+    fix versions (one per release stream), `have` counts only past the fix of its own X.Y stream, or past every one.
+    Anything unreadable is never "fixed"."""
+    h = _go_ver(have)
+    fixes = [_go_ver(w) for w in ([want] if isinstance(want, str) else list(want or []))]
+    if not h or not fixes or not all(fixes) or any(f[1] for f in fixes):
         return False
+    (hv, pre), mains = h, [f[0] for f in fixes]
+
+    def past(f):
+        return hv > f or (hv == f and not pre)
+    same = [f for f in mains if f[:2] == hv[:2]]
+    return any(past(f) for f in same) if same else all(past(f) for f in mains)
 
 
 def removed_critical_high(release_findings, head):
@@ -323,7 +335,9 @@ def decide(event, commits, tags, cut_today, removed):
     elif not clean:
         out["reason"] = "nothing shipped since the latest tag"
     elif event == "push":
-        if removed:
+        if removed is None:
+            out["reason"] = "the latest release could not be scanned: no at-once cut (the daily run decides)"
+        elif removed:
             out.update(cut=True, reason="a critical or high finding removed: %s" % ", ".join(f["id"] for f in removed))
         else:
             out["reason"] = "no critical or high finding removed"
@@ -340,7 +354,16 @@ def ready(required, check_runs):
     is red with nothing left to run (a run is missing, queued or in progress). "no": a check finished without success and
     no run of it is still pending. pull_request-scoped checks are admission's to read on the merged PR head."""
     waiting, red = [], []
-    for req in required.get("required_checks", []):
+    reqs = required.get("required_checks") if isinstance(required, dict) else None
+    # a policy admission would reject is never ready (Codex #159 r1, B6): admission fails on these
+    if not isinstance(reqs, list) or not reqs:
+        return "no", "policy error: no required_checks list"
+    for req in reqs:
+        if not isinstance(req, dict) or not req.get("context") or not isinstance(req.get("integration_id"), int):
+            return "no", "policy error: a required check without a context or integration_id"
+        if req.get("scope", "push") not in ("push", "pull_request"):
+            return "no", "policy error: unknown scope %r for required check %r" % (req.get("scope"), req["context"])
+    for req in reqs:
         if req.get("scope", "push") != "push":
             continue
         mine = [r for r in check_runs if r.get("name") == req["context"] and r.get("app_id") == req["integration_id"]]
@@ -375,18 +398,17 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     return out
 
 
-def latest_tag(cwd="."):
-    tags = [t for t in _git("tag", "-l", "v*", cwd=cwd).split() if _semver(t)]
-    return max(tags, key=_semver) if tags else None
-
-
 def grype_findings(doc):
+    """Grype's matches, every fix version kept (B1). A document without a matches list is not a clean scan: refused
+    (Codex #159 r1, B2)."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("matches"), list):
+        raise ValueError("not a grype scan: no matches list")
     out = []
-    for m in (doc or {}).get("matches") or []:
+    for m in doc["matches"]:
         v, a = m.get("vulnerability") or {}, m.get("artifact") or {}
-        fix = ((v.get("fix") or {}).get("versions") or [""])[0]
         out.append({"id": v.get("id"), "package": a.get("name"), "installed": a.get("version"), "severity": v.get("severity"),
-                    "fixed": fix, "type": "go-module" if a.get("type") in ("go-module", "golang") else a.get("type")})
+                    "fixed": list((v.get("fix") or {}).get("versions") or []),
+                    "type": "go-module" if a.get("type") in ("go-module", "golang") else a.get("type")})
     return out
 
 
@@ -407,6 +429,10 @@ def main(argv=None):
     d.add_argument("--repo", default=".")
     d.add_argument("--cut-today", choices=("true", "false"), required=True)
     d.add_argument("--removed", help="JSON list of the release's critical/high findings HEAD removes")
+    d.add_argument("--removed-unknown", action="store_true", help="the latest release could not be scanned")
+    d.add_argument("--released", required=True,
+                   help="JSON list of the tags with a published release: the baseline is the latest of these, never a "
+                        "tag whose release failed (Codex #159 r1, B4)")
     d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
     d.add_argument("--out", required=True)
     k = sub.add_parser("ready")
@@ -423,19 +449,28 @@ def main(argv=None):
         print(verdict, _clean(why))
         return 0
     if a.cmd == "removed":
-        head = {"go": gomod_versions(open(a.gomod).read()),
-                "base_findings": grype_findings(json.load(open(a.base_grype))) if a.base_grype else None}
-        found = removed_critical_high(grype_findings(json.load(open(a.release_grype))), head)
+        try:
+            release = grype_findings(json.load(open(a.release_grype)))
+        except (ValueError, OSError) as e:
+            print("removed: the release scan is unusable: %s" % e, file=sys.stderr)
+            return 2
+        try:
+            base = grype_findings(json.load(open(a.base_grype))) if a.base_grype else None
+        except (ValueError, OSError):
+            base = None                     # an unusable base scan removes no deb finding
+        found = removed_critical_high(release, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
         with open(a.out, "w") as fh:
             json.dump(found, fh, indent=1)
         return 0
     tags = [t for t in _git("tag", "-l", "v*", cwd=a.repo).split()]
-    since = latest_tag(a.repo)
+    released = [t for t in json.load(open(a.released)) if _semver(t) and t in tags]
+    since = max(released, key=_semver) if released else None
     labels = json.load(open(a.labels)) if a.labels else {}
     commits = gather_commits(since, a.repo, labels=lambda sha: labels.get(sha, [])) if since else []
-    removed = json.load(open(a.removed)) if a.removed else []
+    removed = None if a.removed_unknown else json.load(open(a.removed)) if a.removed else []
     event = "schedule" if a.event == "workflow_dispatch" else a.event
-    dec = decide(event, commits, tags, a.cut_today == "true", removed)
+    # no published release yet: the first release is the owner's, whatever tags a failed attempt left
+    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed)
     dec["since"] = since
     # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
     dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)

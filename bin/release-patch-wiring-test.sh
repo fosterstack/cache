@@ -88,6 +88,24 @@ if "gh issue create" not in "\n".join(s.get("run") or "" for s in fail.get("step
     bad.append("the failure job opens no issue")
 if re.search(r"gh run rerun|rerun-failed|/rerun\b|actions/runs/\S+/rerun", yaml.safe_dump(d), re.I):
     bad.append("a retry path exists")
+# Codex #159 r1: the failure issue names its repository (B3); the baseline is the latest PUBLISHED release, so a failed
+# tag is retried by the next run (B4); an unscannable release is "unknown", never an empty release (B2); ready reads
+# the required checks from protected main, as admission does (B6)
+fenv = {k: v for s in fail.get("steps") or [] for k, v in (s.get("env") or {}).items()}
+if fenv.get("GH_REPO") != "${{ github.repository }}":
+    bad.append("the failure job's gh has no repository (GH_REPO)")
+dstep = [s for s in steps if "patch-decide.py decide" in (s.get("run") or "")]
+facts = [s for s in steps if s.get("id") == "facts"]
+if not dstep or '--released "$RUNNER_TEMP/released.json"' not in dstep[0]["run"] or not facts or \
+        "gh release list --exclude-drafts" not in facts[0]["run"] or "released.json" not in facts[0]["run"]:
+    bad.append("decide's baseline is not the latest published release")
+scan = [s for s in steps if "patch-decide.py removed" in (s.get("run") or "")]
+if not scan or "&& rel+=" in scan[0]["run"] or "removed-unknown" not in scan[0]["run"] or \
+        not dstep or "--removed-unknown" not in dstep[0]["run"]:
+    bad.append("an unscannable release image is not reported as unknown")
+if not wait or "git show origin/main:.github/policy/required-checks.json" not in (wait[0].get("run") or "") or \
+        "--required .github/policy/" in (wait[0].get("run") or ""):
+    bad.append("ready does not read the required checks from protected main")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -128,5 +146,9 @@ case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ no-schedule             bad "d['on'].pop('schedule')"
+case_ fail-no-repo            bad "[s['env'].pop('GH_REPO') for s in $J['patch-failed']['steps']]"
+case_ baseline-latest-tag     bad "[s.__setitem__('run', s['run'].replace('--released ', '--x ')) for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"
+case_ scan-failure-dropped    bad "[s.__setitem__('run', s['run'].replace('removed-unknown', 'removed-x')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ ready-checkout-policy   bad "[s.__setitem__('run', s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
