@@ -586,6 +586,23 @@ open(os.path.join(cd_, "n2.md"), "w").write(pub)
 P.main(["changelog", "--notes", os.path.join(cd_, "n2.md"), "--changelog", os.path.join(cd_, "CL.md"), "--next-notes", os.path.join(cd_, "nrn.md")])
 check("0130 CLI changelog: no next-release-notes file is not created", not os.path.exists(os.path.join(cd_, "nrn.md"))
       and open(os.path.join(cd_, "CL.md")).read().startswith("# Changelog\n\n## v0.2.2"))
+# Sonnet #158 r2: the citation is enforced where the notes are made (SEC-2); a vendor name split by the line wrap or a
+# space is refused, not redacted (SEC-1)
+for bad_b in (["Some change nobody judged."], ["A change (owner said so)."]):
+    try:
+        P.notes("v0.2.2", [], [], behavior=bad_b); raised = False
+    except ValueError:
+        raised = True
+    check("SEC-2 notes() refuses an uncited behavior entry %r" % bad_b[0], raised)
+for split in ("- Goo\n  gle now rejects long headers (advisor 0130).\n", "- Op enAI client changed (advisor 0130).\n",
+              "- the Clau de helper (advisor 0130).\n"):
+    try:
+        P.behavior_entries(split); raised = False
+    except ValueError:
+        raised = True
+    check("SEC-1 a vendor name split by whitespace is refused: %r" % split, raised)
+check("SEC-1 the real entries still pass (Go 1.27; metadata; to 1.2)", len(P.behavior_entries(NRN)) == 2 and
+      P.behavior_entries("- metadata handling for a meta tag moved to 1.2 (advisor 0130).\n") != [])
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
