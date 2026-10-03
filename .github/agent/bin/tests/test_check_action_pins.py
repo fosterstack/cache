@@ -209,3 +209,22 @@ def urllib_request():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunScriptImages(unittest.TestCase):              # handoff 0068: literal images a run: script names
+    def test_double_dash_ends_the_options(self):
+        self.assertEqual(M.script_images("docker run --rm -- alpine true")[0], [("docker run", "alpine")])
+        self.assertEqual(M.script_images("docker run --rm --")[0], [("docker run", None)])
+
+    def test_a_command_without_an_image(self):
+        self.assertEqual(M.script_images("docker run --rm")[0], [("docker run", None)])
+        bad = []
+        M.check_runs("j", [("w", "docker run --rm")], bad)
+        self.assertEqual(bad, [])
+
+    def test_tag_equals_form_makes_a_local_name(self):
+        used, local = M.script_images("docker build --tag=img1 . && docker buildx build -t img2 .")
+        self.assertEqual(local, {"img1", "img2"})
+
+    def test_a_document_that_is_not_a_mapping_has_no_scripts(self):
+        self.assertEqual(M.run_scripts(M.yaml.compose("- a\n- b\n", Loader=M.StrLoader)), {})

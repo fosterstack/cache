@@ -70,24 +70,25 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   something the runner resolves as an action or a container.
   --verify-tags  each `# vX` comment must resolve, through the GitHub API, to the pinned commit.
 
-The boundary (owner, Sep 30): we pin every reference WE write — every `uses:`, every image we name,
-every image input we pass. What a pinned commit references on its own (e.g. the container image
-inside ossf/scorecard-action's action.yaml) is fixed by our pin to that commit and is that action's
-supply chain, not ours; it is not read here, and no action is excepted by name.
+The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
+is a fix or a documented exclusion in the check's own allowlist with a reason". So this check pins every `uses:`,
+every image a workflow or action names (container:, services:, image:, executor inputs), and every LITERAL image a
+`run:` script runs or pulls (docker/podman run|create|pull, skopeo copy|inspect docker://, crane copy|pull). What
+a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
+fixed by our pin to that commit and is that action's supply chain, not ours; it is not read here, and no action
+is excepted by name.
 
-Outside this check (the review pass covers it): images a `run:` script names — through a shell variable
-OR literally (`docker run|pull|create`, `skopeo`, `crane`) — and binaries a pinned action downloads by version.
-Reason (documented exclusion, row 78; Codex pin pass on #156): this check reads YAML, not shell; a shell
-command's image argument has no fixed position (flags, variables, local names made by `docker tag` or
-`skopeo copy`), so a parser here would either miss real images or fail on local ones. The boundary above
-still binds every image a script names: each row-78 review pass answers it, and on Oct 2 every such image in
-the workflows is a digest, a variable bound to a digest, or a local build of our own bytes. A parser for the
-literal cases is proposed separately (outbox), as a security-tier change with its own read-back.
-Also outside, by design (row 78 documented exclusions, same pass): `runs-on` labels — GitHub-hosted runner
-images are GitHub's to build and cannot be named by digest; Go tools a script installs by module version
-(`go install …@vX.Y.Z`) — the module proxy serves them checksum-verified against the Go checksum database,
-so a version names fixed bytes; and the Go toolchain `setup-go` selects with `check-latest` — deliberately the
-newest patch of the line go.mod names (the go-freshness lane), each download verified by the action.
+Outside this check, each a documented exclusion with its reason (row 78):
+  - an image a `run:` script names through a shell variable or an expression: the shell is not evaluated here, so
+    the row-78 review pass answers it (on Oct 2 every such image in the workflows is bound to a digest);
+  - a name the same job made locally (docker tag / build -t / skopeo docker-daemon:, or a template like `fa-${v}`
+    with a literal prefix of two or more characters): those are our own bytes, pinned where they were pulled;
+  - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
+  - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
+    against the Go checksum database, so a version names fixed bytes;
+  - the Go toolchain `setup-go` selects with `check-latest`: deliberately the newest patch of the line go.mod
+    names (the go-freshness lane), each download verified by the action; and binaries a pinned action downloads
+    by version.
 
 usage: check-action-pins.py [--verify-tags] [--git <commit>] [repo-root]
 """
@@ -456,6 +457,150 @@ def verify_pins(pins):
     return found
 
 
+# ---------------------------------------------------------------------------- images a run: script names
+# (handoff 0068; owner Sep 30, handoff 0023: "no exceptions, anywhere"). A LITERAL image a script runs or pulls must
+# be a digest. Not flagged: an argument holding a shell variable or an expression (the review pass covers those), a
+# local name the same job made (docker tag / build -t / skopeo docker-daemon:), or a digest reference.
+DIGEST_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
+# docker run/create options that take NO value; every other option takes one (fails closed: a value-less option
+# not listed here would swallow the image and leave the next token judged as the image)
+DOCKER_BOOL = {"-d", "--detach", "--rm", "-i", "--interactive", "-t", "--tty", "-it", "-ti", "-dit", "-itd", "-di",
+               "-dt", "-td", "--privileged", "--init", "--read-only", "-P", "--publish-all", "--no-healthcheck",
+               "--oom-kill-disable", "--sig-proxy", "--disable-content-trust", "-q", "--quiet", "-a", "--all-tags"}
+PULL_ONLY_BOOL = {"-a", "--all-tags"}
+TOOLS = {"docker", "podman", "skopeo", "crane"}
+PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
+SEPARATORS = re.compile(r"&&|\|\||[;|&\n`]|\$\(|\)")
+
+
+def _commands(script):
+    """The simple commands of a shell script, each a token list (quotes removed, comments dropped)."""
+    import shlex
+    text = re.sub(r"\\\n", " ", script)
+    out = []
+    for chunk in SEPARATORS.split(text):
+        try:
+            toks = shlex.split(chunk, comments=True)
+        except ValueError:
+            toks = chunk.split()
+        if not toks or toks[0] in PRINTERS:
+            continue
+        # the tool word anywhere in the command (`if docker …`, `timeout 30 docker …`, `xargs docker …`): fail closed
+        at = next((i for i, w in enumerate(toks) if w in TOOLS), None)
+        if at is not None:
+            out.append(toks[at:])
+    return out
+
+
+def _variable(tok):
+    return "$" in tok or "${{" in tok
+
+
+def _first_positional(args, bool_opts):
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if _variable(a) and a.startswith("$"):
+            return a  # a variable here may be options or the image: the review pass (documented boundary)
+        if a == "--":
+            return args[i + 1] if i + 1 < len(args) else None
+        if a.startswith("-"):
+            i += 1 if ("=" in a or a in bool_opts) else 2
+            continue
+        return a
+    return None
+
+
+def script_images(script):
+    """(command, image) for every image the script runs or pulls, and the local names it makes."""
+    used, local = [], set()
+    for t in _commands(script):
+        cmd, args = t[0], t[1:]
+        if cmd in ("docker", "podman") and args:
+            verb, rest = args[0], args[1:]
+            if verb in ("container", "image") and rest:
+                verb, rest = rest[0], rest[1:]
+            if verb in ("run", "create"):
+                used.append(("docker " + verb, _first_positional(rest, DOCKER_BOOL - PULL_ONLY_BOOL)))
+            elif verb == "pull":
+                used.append(("docker pull", _first_positional(rest, DOCKER_BOOL)))
+            elif verb == "tag" and len(rest) >= 2:
+                local.add(rest[-1])
+            elif verb in ("build", "buildx"):
+                for i, a in enumerate(rest):
+                    if a in ("-t", "--tag") and i + 1 < len(rest):
+                        local.add(rest[i + 1])
+                    elif a.startswith(("--tag=", "-t=")):
+                        local.add(a.split("=", 1)[1])
+        elif cmd == "skopeo" and args and args[0] in ("copy", "inspect"):
+            pos = [a for a in args[1:] if not a.startswith("-")]
+            if pos and pos[0].startswith("docker://"):
+                used.append(("skopeo " + args[0], pos[0][len("docker://"):]))
+            for a in pos[1:]:
+                if a.startswith("docker-daemon:"):
+                    local.add(a[len("docker-daemon:"):])
+        elif cmd == "crane" and args and args[0] in ("copy", "cp", "pull", "export"):
+            pos = [a for a in args[1:] if not a.startswith("-")]
+            if pos:
+                used.append(("crane " + args[0], pos[0]))
+    return used, local
+
+
+def _local(ref, local):
+    """A name the job made: exactly, as name:latest, or by a template (`fa-${v}`) with a literal prefix of at least
+    two characters before its first variable (a bare `${x}` would cover any image, so it covers none)."""
+    if ref in local or (":" not in ref.rsplit("/", 1)[-1] and ref + ":latest" in local):
+        return True
+    for name in local:
+        if "$" in name:
+            prefix = name.split("$", 1)[0]
+            if len(prefix) >= 2 and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]+", ref):
+                return True
+    return False
+
+
+def check_runs(where_job, scripts, bad):
+    """scripts: [(where, text)] of ONE job (or one composite action); a local name counts only within it."""
+    found, local = [], set()
+    for where, text in scripts:
+        used, made = script_images(text)
+        local |= made
+        found += [(where, c, img) for c, img in used]
+    for where, c, img in found:
+        if img is None or _variable(img) or DIGEST_REF.search(img) or _local(img, local):
+            continue
+        bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
+
+
+def run_scripts(doc):
+    """{job or composite: [(path, run text)]} for every step run: GitHub executes."""
+    groups = {}
+    if not isinstance(doc, yaml.MappingNode):
+        return groups
+    top = {key_of(k): v for k, v in doc.value}
+
+    def steps_of(seq, base, group):
+        if isinstance(seq, yaml.SequenceNode):
+            for i, st in enumerate(seq.value):
+                if isinstance(st, yaml.MappingNode):
+                    for k, v in st.value:
+                        if key_of(k) == "run" and isinstance(v, yaml.ScalarNode):
+                            groups.setdefault(group, []).append((f"{base}[{i}].run", v.value))
+    jobs = top.get("jobs")
+    if isinstance(jobs, yaml.MappingNode):
+        for k, j in jobs.value:
+            if isinstance(j, yaml.MappingNode):
+                for kk, vv in j.value:
+                    if key_of(kk) == "steps":
+                        steps_of(vv, f".jobs.{k.value}.steps", "jobs." + k.value)
+    runs = top.get("runs")
+    if isinstance(runs, yaml.MappingNode):
+        for kk, vv in runs.value:
+            if key_of(kk) == "steps":
+                steps_of(vv, ".runs.steps", "runs")
+    return groups
+
+
 def check_file(tree, rel, pins, bad):
     text = tree.read(rel)
     lines = text.splitlines()
@@ -470,6 +615,8 @@ def check_file(tree, rel, pins, bad):
     for i, d in enumerate(docs):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
+            for group, scripts in run_scripts(d).items():
+                check_runs(group, [(rel + w, t) for w, t in scripts], bad)
     for key, path, node, parent in refs:
         where = f"{rel}{show(path)}"
         if key == "uses":

@@ -608,5 +608,67 @@ gitcase symlink  bad "$head
     steps:
       - run: true" "ln -s w.yml .github/workflows/s.yml"
 
+
+# --- images a run: script names (handoff 0068; owner Sep 30, handoff 0023: "no exceptions, anywhere"; every finding
+#     a fix or a documented exclusion with a reason). A LITERAL image a script runs or pulls must be a digest; an image
+#     through a shell variable stays with the review pass; a local name the same job made is our own bytes.
+r() { printf '%s\n    steps:\n      - run: %s' "$head" "$1"; }
+case_ run-literal-tag          bad "$(r 'docker run --rm alpine:latest true')"
+case_ run-bare-name            bad "$(r 'docker run alpine true')"
+case_ run-registry-tag         bad "$(r 'docker pull ghcr.io/x/y:1.0')"
+case_ run-flags-first          bad "$(r 'docker run -d --name x -p 127.0.0.1:1:2 -e A=b --entrypoint /bin/sh alpine -c true')"
+case_ run-flag-equals          bad "$(r 'docker run --name=x --platform=linux/arm64 alpine')"
+case_ run-sudo-env             bad "$(r 'FOO=1 sudo docker pull busybox')"
+case_ run-chained              bad "$(r 'true && docker run alpine')"
+case_ run-subshell             bad "$(r 'x=$(docker run alpine cat /etc/os-release)')"
+case_ run-container-verb       bad "$(r 'docker container run alpine')"
+case_ run-image-verb           bad "$(r 'docker image pull alpine')"
+case_ run-create               bad "$(r 'docker create alpine')"
+case_ run-continued            bad "$head
+    steps:
+      - run: |
+          docker run \\
+            --rm alpine:3 true"
+case_ run-skopeo-src           bad "$(r 'skopeo copy docker://alpine:3 oci-archive:/tmp/a.oci')"
+case_ run-crane-src            bad "$(r 'crane copy alpine:3 ghcr.io/x/y:t')"
+case_ run-composite            bad "$head
+    steps:
+      - uses: ./.github/actions/x" "mkdir -p .github/actions/x; printf 'runs:\n  using: composite\n  steps:\n    - run: docker run alpine\n      shell: bash\n' > .github/actions/x/action.yml"
+case_ run-digest               ok  "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
+case_ run-variable             ok  "$(r 'docker run --rm "$IMG" true')"
+case_ run-braced-variable      ok  "$(r 'docker run -d --name x "${repo}@${d}"')"
+case_ run-variable-options     ok  "$(r 'docker run -d $authargs -p 1:2 "$ref"')"
+case_ run-local-tag            ok  "$head
+    steps:
+      - run: docker tag \"\$src\" fa-production
+      - run: docker run --rm fa-production"
+case_ run-local-build          ok  "$(r 'docker build -t localimg . && docker run localimg')"
+case_ run-local-skopeo         ok  "$(r 'skopeo copy oci-archive:/tmp/a.oci docker-daemon:fa-debug:latest && docker run fa-debug:latest')"
+case_ run-comment              ok  "$(r 'true # docker run alpine')"
+case_ run-echo                 ok  "$(r 'echo docker run alpine')"
+case_ run-crane-digest-only    ok  "$(r 'crane digest ghcr.io/x/y:1.0')"
+case_ run-skopeo-push-dst      ok  "$(r 'skopeo copy oci-archive:/tmp/a.oci docker://ghcr.io/x/y:t')"
+case_ run-if                   bad "$(r 'if docker run alpine true; then :; fi')"
+case_ run-negated              bad "$(r '! docker run alpine')"
+case_ run-loop-body            bad "$(r 'for x in 1; do docker run alpine; done')"
+case_ run-timeout              bad "$(r 'timeout 30 docker run alpine')"
+case_ run-env-wrapper          bad "$(r 'env A=b nohup docker pull alpine')"
+case_ run-xargs                bad "$(r 'echo x | xargs docker run alpine')"
+case_ run-local-template       ok  "$head
+    steps:
+      - run: for v in a b; do docker tag \"\$src\" \"fa-\${v}\"; done
+      - run: docker run --rm fa-production"
+case_ run-template-too-wide    bad "$head
+    steps:
+      - run: docker tag \"\$src\" \"\${v}\"
+      - run: docker run --rm alpine"
+case_ run-printf               ok  "$(r 'printf "%s\\n" "docker run alpine"; echo docker pull alpine')"
+case_ run-other-job-local      bad "$head
+    steps:
+      - run: docker tag \"\$src\" fa-production
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker run fa-production"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
