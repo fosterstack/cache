@@ -70,6 +70,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   something the runner resolves as an action or a container.
   --verify-tags  each `# vX` comment must resolve, through the GitHub API, to the pinned commit.
 
+Scope (advisor 0080): ubuntu runners only. Every job that runs steps must name an ubuntu runner literally
+(ubuntu-latest, ubuntu-<version>, ubuntu-<version>-arm); any other runs-on — Windows, macOS, self-hosted labels, a
+group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal. Inside
+the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options).
+
 The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
 is a fix or a documented exclusion in the check's own allowlist with a reason". So this check pins every `uses:`,
 every image a workflow or action names (container:, services:, image:, executor inputs), and every LITERAL image a
@@ -98,7 +103,7 @@ destination not named); a pip -r file must be an exact repository file or a here
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
 Round 7: the non-POSIX catch-all is built from the same tool sets the POSIX scanner reads, so they cannot drift.
-Round 8: choco, winget, scoop and brew installs are findings; tool words and their verbs match case-insensitively
+Round 8 (before the ubuntu-only scope made it moot; kept as defense in depth): choco, winget, scoop and brew installs are findings; tool words and their verbs match case-insensitively
 (Windows resolves `Docker RUN`); a job on a Windows runner, or one named by an expression, defaults to pwsh (the
 non-POSIX catch-all) unless it declares a POSIX shell. What
 static reading cannot see is the
@@ -1097,6 +1102,28 @@ def run_scripts(doc):
     return groups
 
 
+UBUNTU_RUNNER = re.compile(r"^ubuntu-(latest|[0-9]+\.[0-9]+)(-arm)?$")
+
+
+def check_runners(where, doc, bad):
+    """The checker's scope is ubuntu runners (advisor 0080, closing the open-ended OS classes fail-closed): every job
+    that runs steps must name one literally; another OS, a label list, a group, an expression or no runs-on at all is a
+    finding — adding such a runner turns this check red before any Windows/macOS-only bypass can matter."""
+    m = {key_of(k): v for k, v in doc.value} if isinstance(doc, yaml.MappingNode) else {}
+    jobs = m.get("jobs")
+    if not isinstance(jobs, yaml.MappingNode):
+        return
+    for k, j in jobs.value:
+        jm = {key_of(kk): vv for kk, vv in j.value} if isinstance(j, yaml.MappingNode) else {}
+        if "uses" in jm:
+            continue                                  # a reusable-workflow call has no runner of its own
+        ro = jm.get("runs-on")
+        if not (isinstance(ro, yaml.ScalarNode) and UBUNTU_RUNNER.fullmatch(ro.value.strip())):
+            shown = ro.value if isinstance(ro, yaml.ScalarNode) else ("missing" if ro is None else "not a plain label")
+            bad.append(f"{where}.jobs.{k.value}.runs-on: {shown!r} is not an ubuntu runner; this check covers ubuntu "
+                       f"runners only and refuses any other")
+
+
 def check_file(tree, rel, pins, bad):
     text = tree.read(rel)
     lines = text.splitlines()
@@ -1111,6 +1138,8 @@ def check_file(tree, rel, pins, bad):
     for i, d in enumerate(docs):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
+            if rel.startswith(".github/workflows/"):
+                check_runners(rel, d, bad)
             for group, scripts in run_scripts(d).items():
                 check_runs(group, [(rel + w, t, sh) for w, t, sh in scripts], bad, tree)
     for key, path, node, parent in refs:
