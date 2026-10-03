@@ -159,8 +159,10 @@ jobs:
           tar xzf dist/fscache-fips_*_linux_arm64.tar.gz -C /tmp/ctx/binaries/arm64 fscache-fips
           cp build/docker/Dockerfile.* /tmp/ctx/
           cd /tmp/ctx
+          # localhost/fa-*: a name that can never resolve to a public registry, so the run step below cannot pull a
+          # public image of the same name if this step did not run (pin checker: Codex #164 adversarial r2, C10)
           for v in production debug fips; do
-            docker build -q -f Dockerfile.$v -t "fa-$v" . >/dev/null
+            docker build -q -f Dockerfile.$v -t "localhost/fa-$v" . >/dev/null
           done
 
       - name: pull the exact candidates by digest (candidates mode)
@@ -173,14 +175,14 @@ jobs:
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             [ -n "$d" ] && [ "$d" != "null" ] || { echo "::error::candidates mode with no digest for ${v}" >&2; exit 1; }
             docker pull -q "${repo}@${d}"
-            docker tag "${repo}@${d}" "fa-${v}"
+            docker tag "${repo}@${d}" "localhost/fa-${v}"
           done
 
       - name: exercise the images
         run: |
           set -euo pipefail
           # production serves cache traffic, as nonroot, data under /home/nonroot
-          docker run -d --name fa-prod -p 127.0.0.1:19010:8080 fa-production
+          docker run -d --name fa-prod -p 127.0.0.1:19010:8080 localhost/fa-production
           for _ in $(seq 1 20); do curl -sf localhost:19010/healthz >/dev/null && break; sleep 0.5; done
           curl -s -X PUT --data-binary 'artifact-bytes' localhost:19010/acckey -o /dev/null -w 'PUT %{http_code}\n'
           [ "$(curl -s localhost:19010/acckey)" = "artifact-bytes" ] || { echo "::error::round trip failed in the production image" >&2; exit 1; }
@@ -192,24 +194,24 @@ jobs:
           [ "${cuid}" = "65532" ] || { echo "::error::production container running as uid ${cuid}, want 65532" >&2; exit 1; }
 
           # shell-lessness per variant (REQ-PLAT-003-AC1)
-          if docker run --rm --entrypoint /busybox/sh fa-production -c true 2>/dev/null; then
+          if docker run --rm --entrypoint /busybox/sh localhost/fa-production -c true 2>/dev/null; then
             echo "::error::production image has a shell" >&2; exit 1; fi
-          if docker run --rm --entrypoint /busybox/sh fa-fips -c true 2>/dev/null; then
+          if docker run --rm --entrypoint /busybox/sh localhost/fa-fips -c true 2>/dev/null; then
             echo "::error::fips image has a shell" >&2; exit 1; fi
-          out=$(docker run --rm --entrypoint /busybox/sh fa-debug -c 'echo shell-ok')
+          out=$(docker run --rm --entrypoint /busybox/sh localhost/fa-debug -c 'echo shell-ok')
           [ "$out" = "shell-ok" ] || { echo "::error::debug image's /busybox/sh does not run" >&2; exit 1; }
-          if docker run --rm --entrypoint /bin/sh fa-debug -c true 2>/dev/null; then
+          if docker run --rm --entrypoint /bin/sh localhost/fa-debug -c true 2>/dev/null; then
             echo "::error::debug image has /bin/sh, which the docs say it does not" >&2; exit 1; fi
 
           # debug image serves cache traffic too (not only a shell check)
-          docker run -d --name fa-debugrun -p 127.0.0.1:19012:8080 fa-debug
+          docker run -d --name fa-debugrun -p 127.0.0.1:19012:8080 localhost/fa-debug
           for _ in $(seq 1 20); do curl -sf localhost:19012/healthz >/dev/null && break; sleep 0.5; done
           curl -s -X PUT --data-binary 'debug-bytes' localhost:19012/dk -o /dev/null
           [ "$(curl -s localhost:19012/dk)" = "debug-bytes" ] || { echo "::error::debug image round trip failed" >&2; exit 1; }
 
           # fips image serves authenticated traffic (REQ-FIPS runtime half)
           docker run -d --name fa-fipsrun -p 127.0.0.1:19011:8080 \
-            -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw fa-fips
+            -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw localhost/fa-fips
           for _ in $(seq 1 20); do curl -sf localhost:19011/healthz >/dev/null && break; sleep 0.5; done
           curl -s -u acc:accpw -X PUT --data-binary 'fips-bytes' localhost:19011/fk -o /dev/null
           [ "$(curl -s -u acc:accpw localhost:19011/fk)" = "fips-bytes" ] || { echo "::error::fips image round trip failed" >&2; exit 1; }

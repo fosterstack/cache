@@ -256,6 +256,13 @@ class MainDegraded(Harness):
         srcs = {c[-2] for c in self.argv()}
         self.assertEqual(srcs, {"docker://debian@sha256:abc"})
 
+    def test_test_image_without_digest_is_refused(self):     # Codex #164 adversarial r2, N02
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main(self.base_args("--test-image", "debian:12.0"))
+        self.assertEqual(str(cm.exception), "auditor-manifest: cannot ingest the candidate — "
+                         "test image debian:12.0 is not pinned by digest (ref@sha256:…); refused")
+        self.assertEqual(self.argv(), [])                        # nothing was fetched
+
     def test_test_image_env_tar_only_scanners_fail(self):
         rules = [
             {"tool": "skopeo", "has": ["copy"], "has_prefix": ["docker-archive:"], "touch": True},

