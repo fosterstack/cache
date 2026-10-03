@@ -755,7 +755,7 @@ case_ b8-default-shell-pwsh    bad "$head
         shell: pwsh
     steps:
       - run: echo x; docker pull alpine"
-case_ b8-pwsh-no-tools         ok  "$head
+case_ b8-pwsh-refused         bad "$head
     steps:
       - shell: pwsh
         run: Write-Output hello"
@@ -993,5 +993,22 @@ case_ n11-fused-backtick       bad "$(rb 'doc``ker pull alpine')"
 case_ n11-wrapper-fused        bad "$(rb 'timeout 5 d$()ocker run alpine')"
 case_ n11-whole-subst-command  bad "$(rb '$(echo docker) run alpine')"
 case_ n11-subst-in-argument-ok ok  "$(rb 'echo "built at $(date)"; tag="v$(cat VERSION)"')"
+# --- Sonnet #164 r10 (NEW-12): any non-POSIX shell step is refused outright (this check reads POSIX shell only)
+case_ n12-pwsh-backtick        bad "$head
+    steps:
+      - shell: pwsh
+        run: doc\\\`ker run alpine"
+case_ n12-pwsh-concat          bad "$head
+    steps:
+      - shell: pwsh
+        run: \\\$d = 'dock'; & \\\"\\\${d}er\\\" run alpine"
+case_ n12-python-shell         bad "$head
+    steps:
+      - shell: python
+        run: print('hi')"
+case_ n12-bash-template-ok     ok  "$head
+    steps:
+      - shell: bash --noprofile --norc -eo pipefail {0}
+        run: echo hi"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
