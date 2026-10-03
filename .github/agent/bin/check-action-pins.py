@@ -104,6 +104,9 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
+Round 16 (NEW-24): without -f the Dockerfile is <context>/Dockerfile; a literal Dockerfile path read after a cd/pushd or
+under a working-directory (step, job or workflow) cannot be placed in the repository and is refused (templates match
+every file of their pattern, as before).
 Round 15 (NEW-23): a build's context and every --build-context must be a local path; a URL, git address, variable or
 substitution builds from bytes this check never sees and is refused.
 Round 14 (NEW-21/22): a name counts as the job's own only when it is built (docker build, its FROM lines checked),
@@ -1133,8 +1136,13 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     local = set()
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7)
-    job_text = "\n".join(t for _, t, sh in scripts if not sh or re.match(r"^(bash|sh)(\s|$)", sh))
-    for where, text, shell in scripts:
+    job_text = "\n".join(item[1] for item in scripts if not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]))
+    for item in scripts:
+        where, text, shell = item[:3]
+        wdir = item[3] if len(item) > 3 else None
+        # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
+        # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24)
+        moved = bool(wdir) or bool(re.search(r"(^|[;&|(\s])(cd|pushd)\s", text))
         for name in daemon_redirects(text):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
         if RENAMED.search(text):
@@ -1169,7 +1177,14 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if dockerfile == "-" or (dockerfile is None and context == "-"):
                     bad.append(f"{where}: a build reads its Dockerfile from stdin; its FROM lines cannot be checked")
                     continue
-                name = dockerfile or "Dockerfile"
+                # without -f, docker reads <context>/Dockerfile (NEW-24)
+                name = dockerfile or os.path.normpath(os.path.join(context, "Dockerfile"))
+                if name.startswith("./"):
+                    name = name[2:]
+                if moved and not _variable(name):
+                    bad.append(f"{where}: a build's Dockerfile ({name}) is a literal path read from a working directory "
+                               f"this check cannot place (cd / working-directory); refused")
+                    continue
                 if name.startswith("/") or SUBST in name:
                     bad.append(f"{where}: a build's Dockerfile ({name}) is outside the repository, so its FROM lines "
                                f"cannot be checked")
@@ -1178,7 +1193,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                     bad.append(f"{where}: the script writes a file named like its Dockerfile ({name}); the build "
                                f"cannot be bound to a reviewed file")
                     continue
-                files = _dockerfiles(tree, dockerfile) if tree is not None else []
+                files = _dockerfiles(tree, name) if tree is not None else []
                 if not files:
                     bad.append(f"{where}: a build's Dockerfile ({dockerfile or 'Dockerfile'}) is not a file in the "
                                f"repository, so its FROM lines cannot be checked")
@@ -1211,6 +1226,15 @@ def check_runs(where_job, scripts, bad, tree=None):
                 bad.append(f"{where}: the script writes or changes {path}, the -r file `{c}` reads")
 
 
+def _default_wd(node):
+    """defaults.run.working-directory of a workflow or job mapping, or None."""
+    m = {key_of(k): v for k, v in node.value} if isinstance(node, yaml.MappingNode) else {}
+    d = m.get("defaults")
+    r = {key_of(k): v for k, v in d.value}.get("run") if isinstance(d, yaml.MappingNode) else None
+    w = {key_of(k): v for k, v in r.value}.get("working-directory") if isinstance(r, yaml.MappingNode) else None
+    return w.value if isinstance(w, yaml.ScalarNode) else None
+
+
 def _default_shell(node):
     """defaults.run.shell of a workflow or job mapping, or None."""
     m = {key_of(k): v for k, v in node.value} if isinstance(node, yaml.MappingNode) else {}
@@ -1228,15 +1252,16 @@ def run_scripts(doc):
         return groups
     top = {key_of(k): v for k, v in doc.value}
 
-    def steps_of(seq, base, group, inherited):
+    def steps_of(seq, base, group, inherited, inherited_wd=None):
         if isinstance(seq, yaml.SequenceNode):
             for i, st in enumerate(seq.value):
                 if isinstance(st, yaml.MappingNode):
                     m = {key_of(k): v for k, v in st.value}
-                    run, sh = m.get("run"), m.get("shell")
+                    run, sh, wd = m.get("run"), m.get("shell"), m.get("working-directory")
                     if isinstance(run, yaml.ScalarNode):
                         shell = sh.value if isinstance(sh, yaml.ScalarNode) else inherited
-                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell))
+                        wdir = wd.value if isinstance(wd, yaml.ScalarNode) else inherited_wd
+                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir))
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:
@@ -1246,9 +1271,10 @@ def run_scripts(doc):
                 ro_text = yaml.serialize(ro) if ro is not None else ""
                 if inherited is None and ("windows" in ro_text.lower() or "${{" in ro_text):
                     inherited = "pwsh"   # NEW-10: a Windows (or not statically known) runner's default shell is pwsh
+                inherited_wd = _default_wd(j) or _default_wd(doc)
                 for kk, vv in j.value:
                     if key_of(kk) == "steps":
-                        steps_of(vv, f".jobs.{k.value}.steps", "jobs." + k.value, inherited)
+                        steps_of(vv, f".jobs.{k.value}.steps", "jobs." + k.value, inherited, inherited_wd)
     runs = top.get("runs")
     if isinstance(runs, yaml.MappingNode):
         for kk, vv in runs.value:
@@ -1298,7 +1324,7 @@ def check_file(tree, rel, pins, bad):
             for m in re.finditer(r"(?m)^\s*(DOCKER_HOST|DOCKER_CONTEXT|BUILDKIT_HOST|DOCKER_CONFIG)\s*:", text):
                 bad.append(f"{rel}: an env block sets {m.group(1)}, which points docker or buildx elsewhere; refused")
             for group, scripts in run_scripts(d).items():
-                check_runs(group, [(rel + w, t, sh) for w, t, sh in scripts], bad, tree)
+                check_runs(group, [(rel + item[0],) + tuple(item[1:]) for item in scripts], bad, tree)
     for key, path, node, parent in refs:
         where = f"{rel}{show(path)}"
         if key == "uses":
