@@ -1398,6 +1398,12 @@ case_ r4b1-trap-deferred-local-bad bad "$(rb "trap -- 'docker build -t alpine:la
 case_ r4b1-trap-deferred-tag-bad   bad "$(rb "trap 'docker tag alpine@\$DIG alpine:latest' EXIT
           docker run --rm alpine:latest")"
 case_ r4b1-trap-build-still-checked-bad bad "$(rb "trap -- 'docker build -t alpine:latest .' EXIT")" 'printf "FROM alpine:latest\n" > Dockerfile'
+# Sonnet #164 r7: a multi-line single-quoted trap body is the SAME deferred hazard -- the line carrying the word
+# "trap" is not the only line inside the quote
+case_ r4b1-trap-multiline-local-bad bad "$(rb "trap -- '
+          docker build -t alpine:latest .
+          ' EXIT
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

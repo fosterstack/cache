@@ -1566,11 +1566,19 @@ def _expand_names(name, text):
 def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
     line, Codex #164 r2 C10), after && / || on its line, or a `trap` command's own body — deferred to a future signal,
-    not run in line order, so a build/tag inside one registers no local name either (Codex #164 fresh r5, B1). A
-    literal for-loop always runs and is kept."""
-    keep, stack = [], []
+    not run in line order, so a build/tag inside one registers no local name either (Codex #164 fresh r5, B1). The
+    body stays excluded across lines when it is a multi-line single-quoted string (Sonnet r7: the "trap" keyword's own
+    line is not the only one inside the quote). A literal for-loop always runs and is kept."""
+    keep, stack, in_trap_quote = [], [], False
     for line in text.splitlines():
-        if re.search(r"(?<![\w$.-])trap(?![\w.-])", line):
+        if in_trap_quote:
+            if line.count("'") % 2 == 1:
+                in_trap_quote = False
+            continue
+        m = re.search(r"(?<![\w$.-])trap(?![\w.-])", line)
+        if m:
+            if line[m.end():].count("'") % 2 == 1:
+                in_trap_quote = True
             continue
         words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
         opened = False
