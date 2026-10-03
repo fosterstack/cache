@@ -32,8 +32,8 @@ for files, diff, want in [
     ([".vex/fosterstack-cache.openvex.json"], {}, "fix"),
     ([".snyk", "osv-scanner.toml", ".auditor/accepted-items.json"], {}, "fix"),
     ([".github/workflows/ci.yml", "docs/x.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml"], {}, "neutral"),
-    (["cmd/fscache/main_test.go", "bin/panel-test.sh"], {}, "neutral"),      # listed tests (advisor 0107)
-    (["bin/x-test.sh"], {}, "dirty"),                                       # an unlisted test (advisor 0107)
+    (["cmd/fscache/main_test.go"], {}, "dirty"),                            # a test is executable (AC1, owner Oct 3)
+    (["bin/panel-test.sh"], {}, "dirty"),
     (["internal/cache/store.go"], {}, "dirty"),
     (["go.mod", "internal/cache/store.go"], BUMP, "dirty"),
 ]:
@@ -463,69 +463,31 @@ check("NEW-1 a base scan with a malformed nested field leaves only the deb infer
       rc == 0 and sorted(f["id"] for f in json.load(open(os.path.join(repo, "rm6.json")))) == ["CVE-2099-1", "CVE-2099-2"], rc)
 check("B6 scope 0 is a policy error, never push", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": 0}]}, [run("test")])[0] == "no")
 check("B6 scope '' is a policy error", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": ""}]}, [run("test")])[0] == "no")
-# advisor 0112 (replacing the release-chain walk of 0105/0107; advisor reading of AC1, conservative): no parsing —
-# (1) an executable or unknown file is never neutral unless it is a listed test; (2) a listed test loses neutrality when
-# any file that can execute something (a workflow other than ci.yml, an action, a non-data non-test file) names it, and
-# a test-shaped glob there takes them all, `go test` the Go tests; (3) data rules unchanged
-def mrepo(files):
-    r = tempfile.mkdtemp()
-    g(r, "init", "-q", "-b", "main")
-    for path, body in files.items():
-        os.makedirs(os.path.join(r, os.path.dirname(path)) or r, exist_ok=True)
-        open(os.path.join(r, path), "w").write(body)
-    g(r, "add", "-A"); g(r, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-    return r
-LT = "bin/panel-test.sh"
-base = {LT: "", "bin/other-test.sh": "", ".github/workflows/ci.yml": "steps:\n  - run: bash bin/panel-test.sh\n"}
-check("0112 a listed test no executing file names stays neutral", LT in P.neutral_tests(mrepo(base)))
-for why, extra in [("a release workflow runs it", {".github/workflows/release.yml": "steps:\n  - run: bash bin/panel-test.sh\n"}),
-                   ("a stage names it in an env value", {".github/workflows/stage-x.yml": "env:\n  S: bin/panel-test.sh\n"}),
-                   ("a helper names it by file name", {"bin/driver": "cd bin && bash panel-test.sh\n"}),
-                   ("a Python program runs it", {"bin/drv.py": 'subprocess.run(["bash", "bin/panel-test.sh"])\n'}),
-                   ("a composite action runs it", {".github/actions/g/action.yml": "runs:\n  steps:\n    - run: bash bin/panel-test.sh\n"}),
-                   ("a docs script runs it", {"docs/gate": "bash bin/panel-test.sh\n"})]:
-    check("0112 a listed test is not neutral when %s" % why, LT not in P.neutral_tests(mrepo(dict(base, **extra))))
-for why, extra in [("ci.yml", {}), ("a data file (mappings)", {"test-evidence/mappings.yaml": "ref: bin/panel-test.sh\n"}),
-                   ("another test", {"bin/other-test.sh": "bash bin/panel-test.sh\n"})]:
-    check("0112 a mention in %s keeps it neutral" % why, LT in P.neutral_tests(mrepo(dict(base, **extra))))
-for why, txt in [("find -exec over a glob", "run: find bin -name '*-test.sh' -exec bash {} \;\n"),
-                 ("a for loop over a glob", "run: for t in bin/*-test.sh; do bash $t; done\n"),
-                 ("a tests directory glob", "run: for t in .github/agent/tests/*; do bash $t; done\n")]:
-    check("0112 %s in a stage leaves no test neutral" % why,
-          P.neutral_tests(mrepo(dict(base, **{".github/workflows/stage-x.yml": "steps:\n  - " + txt})) ) == set())
-gt = P.neutral_tests(mrepo(dict(base, **{".github/workflows/stage-x.yml": "steps:\n  - run: go test ./...\n"})))
-check("0112 go test in a stage takes the Go tests, keeps the others", LT in gt and not any(t.endswith("_test.go") for t in gt))
-check("0112 'go test' in a Go comment is not a run", any(t.endswith("_test.go") for t in P.neutral_tests(mrepo(dict(base, **{"x/a.go": "// see go test\n"})))))
-# (1) executables and unknown files; (3) data
-for f, want in [("bin/brand-new-test.sh", "dirty"), ("docs/tool.py", "dirty"), ("test-evidence/gate", "dirty"),
-                ("requirements/x.lua", "dirty"), (".vex/gate.sh", "dirty"), (".vex/gate.txt", "fix"),
-                (".vex/fosterstack-cache.openvex.json", "fix"), (".auditor/accepted-items.json", "fix"),
-                ("docs/a.md", "neutral"), ("test-evidence/mappings.yaml", "neutral"), (".github/CODEOWNERS", "neutral"),
-                (".github/agent/tests/x.sh", "dirty")]:
-    check("0112 %s classifies %s" % (f, want), P.classify(c("q", [f], diffs={f: "+x\n"}))[0] == want, P.classify(c("q", [f], diffs={f: "+x\n"})))
-check("0112 a listed test neutral in the decision stays neutral", P.classify(c("n", [LT], diffs={LT: "+x\n"}) | {"neutral": [LT]})[0] == "neutral")
-check("0112 a listed test the decision took away is not neutral", P.classify(c("n2", [LT], diffs={LT: "+x\n"}) | {"neutral": []})[0] == "dirty")
-check("0112 an unlisted test is never neutral", P.classify(c("n3", ["bin/zz-test.sh"], diffs={"bin/zz-test.sh": "+x\n"}) | {"neutral": ["bin/zz-test.sh"]})[0] == "dirty")
-# a dependency-only bump stays possible whatever names it
-dep = mrepo(dict(base, **{".github/workflows/release.yml": "steps:\n  - run: printf '%s' 'env bash go.mod'\n",
-                         "go.mod": "module x\n\nrequire golang.org/x/sys v0.46.0\n"}))
-g(dep, "tag", "v0.1.0")
+# REQ-REL-009 AC1, owner RATIFIED Oct 3 (item h, advisor 0123): patch-neutral means non-executable data only — docs/,
+# requirements/, test-evidence/ data and the reviewed .github files; an executable test never counts
+for f, want in [("bin/panel-test.sh", "dirty"), ("bin/brand-new-test.sh", "dirty"), ("cmd/fscache/main_test.go", "dirty"),
+                (".github/agent/tests/auditor-matrix-test.sh", "dirty"), (".github/agent/bin/tests/test_x.py", "dirty"),
+                ("docs/tool.py", "dirty"), ("test-evidence/gate", "dirty"), ("requirements/x.lua", "dirty"),
+                (".vex/gate.sh", "dirty"), (".vex/fosterstack-cache.openvex.json", "fix"), (".auditor/accepted-items.json", "fix"),
+                ("docs/a.md", "neutral"), ("requirements/requirements.yaml", "neutral"), ("test-evidence/mappings.yaml", "neutral"),
+                (".github/CODEOWNERS", "neutral"), (".github/agent/reviews/x.json", "neutral")]:
+    got = P.classify(c("q", [f], diffs={f: "+x\n"}))
+    check("AC1(h) %s classifies %s" % (f, want), got[0] == want, got)
+check("AC1(h) a test's reason says it is executable", "executable" in P.classify(c("r", ["bin/panel-test.sh"], diffs={"bin/panel-test.sh": "+x\n"}))[1])
+check("AC1(h) a test-only change is not patch-clean (it waits for a normal release or a patch-fix label)",
+      P.patch_clean([c("t1", ["bin/panel-test.sh"], diffs={"bin/panel-test.sh": "+x\n"})])[0] is False)
+check("AC1(h) a patch-fix label still admits it", P.classify(c("t2", ["bin/panel-test.sh"], ["patch-fix"], diffs={"bin/panel-test.sh": "+x\n"}))[0] == "fix")
+check("AC1(h) no allowlist, no scan: the classifier keeps neither", not hasattr(P, "NEUTRAL_TESTS") and not hasattr(P, "neutral_tests"))
+dep = tempfile.mkdtemp()
+g(dep, "init", "-q", "-b", "main")
+open(os.path.join(dep, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+g(dep, "add", "-A"); g(dep, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(dep, "tag", "v0.1.0")
 open(os.path.join(dep, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
 g(dep, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "bump")
-check("0112 a dependency-only bump stays patch-clean", P.patch_clean(P.gather_commits("v0.1.0", cwd=dep)) == (True, []))
-# this repository: the list, its seed, and the CI guard named in the PR
-real_root = os.path.join(os.path.dirname(sys.argv[1]), "..")
-real_tree = set(subprocess.run(["git", "-C", real_root, "ls-files"], capture_output=True, text=True).stdout.split())
-check("0107 every listed test exists", P.NEUTRAL_TESTS <= real_tree, sorted(P.NEUTRAL_TESTS - real_tree))
-ci_text = open(os.path.join(real_root, ".github/workflows/ci.yml")).read()
-check("0107 every listed test is one ci.yml runs (the seed rule)",
-      all(t in ci_text or t.endswith("_test.go") or t.startswith(".github/agent/bin/tests/") or
-          any(t in open(os.path.join(real_root, f)).read() for f in real_tree if f.startswith((".github/agent/tests/", "bin/")) and f.endswith(".sh") and f in P.NEUTRAL_TESTS)
-          for t in P.NEUTRAL_TESTS), sorted(t for t in P.NEUTRAL_TESTS if t not in ci_text))
-check("0112 CI guard: ci.yml runs nothing release-like (no release/stage workflow, no release environment, no tag push, no promotion)",
+check("AC1(h) a dependency-only bump stays patch-clean", P.patch_clean(P.gather_commits("v0.1.0", cwd=dep)) == (True, []))
+ci_text = open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".github/workflows/ci.yml")).read()
+check("CI guard: ci.yml runs nothing release-like (no release/stage workflow, no release environment, no tag push, no promotion)",
       not re.search(r"uses:\s*\./\.github/workflows/(release|stage-)|environment:\s*release\b|git\s+push\s+[^\n]*\bv\d|gh\s+release\s+(create|edit|upload)|cosign\s+(sign|attest)\b", ci_text))
-rn = P.neutral_tests(real_root)
-check("0112 on this repository 40 of 46 listed tests stay neutral (the rest are named by files that can run them)", len(rn) == 40, (len(rn), sorted(P.NEUTRAL_TESTS - rn)))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

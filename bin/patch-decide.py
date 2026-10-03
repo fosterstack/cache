@@ -68,7 +68,7 @@ BUILD_INPUTS = re.compile(r"^\.goreleaser\.ya?ml$")
 # Outside workflows, .github/ is release-chain input by default: the stage workflows run .github/agent/bin and read
 # .github/policy (Codex #158 phase-2 r2, B04). Neutral only what is reviewed as never read by the release chain.
 NEUTRAL_GITHUB = {".github/dependabot.yml", ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md"}
-NEUTRAL_GITHUB_PREFIX = (".github/agent/reviews/", ".github/agent/docs/")   # tests: NEUTRAL_TESTS (advisor 0107)
+NEUTRAL_GITHUB_PREFIX = (".github/agent/reviews/", ".github/agent/docs/")   # tests are never neutral (AC1, owner Oct 3)
 
 
 def _changed_lines(diff):
@@ -167,115 +167,21 @@ def _digest_only(diff):
     return True
 
 
-# Advisor 0107 (AC1's "tests" = tests no release stage runs, written down): a test is neutral only when it is listed here
-# — seeded with the tests only ci.yml runs (its scripts and `go test ./...`); additions only by a reviewed change. Any
-# other test is not patch-clean. neutral_tests() takes a listed test out of a decision whenever a file that can execute
-# it names it (advisor 0112, which replaced the release-chain walk of 0105).
-NEUTRAL_TESTS = frozenset("""
-.github/agent/tests/auditor-matrix-test.sh
-.github/agent/tests/auditor-parser-tests.sh
-.github/agent/tests/coverage-check.py
-.github/agent/tests/coverage-gate.sh
-.github/agent/tests/govulncheck-fixtures-test.sh
-.github/agent/tests/pin-wiring-test.sh
-bin/authorize-acceptance-check-test.sh
-bin/check-file-allowlist-test.sh
-bin/dependabot-reviewer-gather-test.sh
-bin/dependabot-reviewer-test.sh
-bin/dependency-lanes-test.sh
-bin/go-bump-open-pr-test.sh
-bin/go-freshness-wiring-test.sh
-bin/inspector-gate-test.sh
-bin/install-scanner-test.sh
-bin/panel-test.sh
-bin/panel-wiring-test.sh
-bin/patch-decide-test.sh
-bin/release-patch-wiring-test.sh
-bin/required-check-guard-test.sh
-bin/rescan-statement-test.sh
-bin/vex-both-scanners-test.sh
-bin/vex-forms-test.sh
-bin/vex-scope-test.sh
-bin/workflow-consolidation-test.sh
-cmd/fscache/main_test.go
-cmd/fscache/serve_test.go
-internal/blobstore/blobstore_faults_test.go
-internal/blobstore/blobstore_test.go
-internal/blobstore/perms_test.go
-internal/buildinfo/buildinfo_test.go
-internal/cache/cache_test.go
-internal/cache/fault_test.go
-internal/cache/reconcile_test.go
-internal/metadata/metadata_errors_test.go
-internal/metadata/metadata_test.go
-internal/server/bounds_test.go
-internal/server/errorpaths_test.go
-internal/server/router_test.go
-internal/server/server_test.go
-internal/server/status_test.go
-internal/server/surface_test.go
-tools/requirements/cli_test.go
-tools/requirements/fixed_test.go
-tools/requirements/main_test.go
-tools/requirements/trace_test.go
-""".split())
-
-
 DATA_FILE = re.compile(r"\.(md|txt|json|ya?ml|toml|csv)$")
 
 
-def _is_test(path, neutral=None):
-    """Neutral only when reviewed (listed) AND kept by this decision's neutral_tests (advisor 0107, 0112)."""
-    return path in NEUTRAL_TESTS and (neutral is None or path in neutral)
-
-
-TEST_FILE = re.compile(r"(^bin/[^/]+-test\.sh$|^\.github/agent/(bin/)?tests/|_test\.go$)")
-TEST_GLOB = re.compile(r"\*-test\.sh|\*_test\.go|/tests/\*|-test\.sh\*")
-
-
-def _scanned(path):
-    """Files that can execute something, whose mention of a listed test takes its neutrality away (advisor 0112): every
-    workflow but ci.yml (which runs the listed tests by definition — 0107's seed), every composite action, and every
-    file without a data extension — except tests themselves and this classifier (whose list names them all)."""
-    if path in (".github/workflows/ci.yml", "bin/patch-decide.py") or path in NEUTRAL_TESTS or TEST_FILE.search(path):
-        return False
-    if path.startswith(".github/workflows/") or re.search(r"(^|/)action\.ya?ml$", path):
-        return True
-    return not DATA_FILE.search(path)
-
-
-def neutral_tests(cwd="."):
-    """The listed tests that stay neutral in this decision — no parsing (advisor 0112; AC1's "tests", read
-    conservatively): a listed test is not neutral when any scanned file names it (its path or its file name, in any
-    form); a scanned file with a test-shaped glob (*-test.sh, *_test.go, …/tests/*) takes all of them, and one that runs
-    `go test` (shell, workflow, Python; the argv form in Go) takes the Go tests. Mentions over-count executions, so a
-    miss cannot make a test the release runs neutral."""
-    out = set(NEUTRAL_TESTS)
-    for f in _git("ls-files", cwd=cwd).split():
-        if not _scanned(f):
-            continue
-        r = subprocess.run(["git", "-C", cwd, "show", "HEAD:" + f], capture_output=True)
-        if r.returncode != 0:
-            return set()                                    # cannot read a file that might run a test: fail closed
-        if b"\0" in r.stdout:
-            continue                                        # binary: names nothing
-        text = r.stdout.decode("utf-8", "replace")
-        if TEST_GLOB.search(text):
-            return set()
-        if (re.search(r"\bgo\s+test\b", text) and not f.endswith(".go")) or re.search(r"[\"']go[\"']\s*,\s*[\"']test[\"']", text):
-            out = {t for t in out if not t.endswith("_test.go")}
-        out -= {t for t in out if t in text or re.search(r"(?<![\w.-])" + re.escape(t.rsplit("/", 1)[-1]) + r"(?![\w.-])", text)}
-    return out
+# REQ-REL-009 AC1 (owner RATIFIED Oct 3, item h): an executable test is never patch-neutral
+TEST_FILE = re.compile(r"(-tests?\.sh|_test\.go|(^|/)test_[^/]*\.py|-check\.py)$|^\.github/agent/(bin/)?tests/")
 
 
 def classify(commit):
-    """('fix' | 'neutral' | 'dirty', reason) for one commit. commit["neutral"]: the listed tests neutral in this
-    decision (neutral_tests); an executable or unknown file is never neutral otherwise (advisor 0112)."""
+    """('fix' | 'neutral' | 'dirty', reason) for one commit. Neutral means non-executable data only — docs/, requirements/,
+    test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3)."""
     files, diffs = commit.get("files") or [], commit.get("diffs") or {}
     kinds, why = set(), []
     for f in files:
-        if _is_test(f, commit.get("neutral")):
-            kinds.add("neutral")
+        if TEST_FILE.search(f):
+            kinds.add("dirty"); why.append("%s is a test: executable, never patch-neutral (REQ-REL-009 AC1, owner Oct 3)" % f)
         elif f.startswith(NEUTRAL_PREFIX) and not DATA_FILE.search(f) and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB:
             # only data is neutral by its directory (Sonnet #159 r7 B4, r8): anything without a data extension —
@@ -305,7 +211,7 @@ def classify(commit):
         elif f.startswith(".github/") and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB and not f.startswith(NEUTRAL_GITHUB_PREFIX):
             kinds.add("dirty"); why.append("%s is read by the release chain (or not reviewed as outside it)" % f)
-        elif f.startswith(NEUTRAL_PREFIX) or _is_test(f, commit.get("neutral")):
+        elif f.startswith(NEUTRAL_PREFIX):
             kinds.add("neutral")
         else:
             kinds.add("dirty"); why.append("%s is shipped source or configuration" % f)
@@ -499,14 +405,13 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
-    neutral = sorted(neutral_tests(cwd))           # the listed tests no file that can run them names (advisor 0112)
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
         diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
-        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha)), "neutral": neutral})
+        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha))})
     return out
 
 
