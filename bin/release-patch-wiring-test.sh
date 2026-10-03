@@ -123,6 +123,13 @@ if len(nstep) != 1 or "steps.decide.outputs.cut == 'true'" not in nstep[0].get("
 elif "--next-notes docs/next-release-notes.md" not in nstep[0]["run"] or "--published" not in nstep[0]["run"] or \
         "removed-unknown" not in nstep[0]["run"]:
     bad.append("the notes step skips the next-release entries, the published guard, or an unscannable release")
+# Sonnet #159 r2 B1: tag-notes trusts only decide's own tagger; the workflow's git identity is exactly RELEASE_TAGGER
+import os as _os
+_pd = open(_os.path.join(_os.path.dirname(_os.path.abspath(sys.argv[2])), "..", "..", "bin", "patch-decide.py")).read()
+_who = re.search(r'RELEASE_TAGGER = "([^"<]+) <([^>]+)>"', _pd)
+if not _who or not sign or 'git config user.name "%s"' % _who.group(1) not in sign[0]["run"] or \
+        'git config user.email "%s"' % _who.group(2) not in sign[0]["run"]:
+    bad.append("decide's git identity is not the tagger tag-notes trusts (RELEASE_TAGGER)")
 if sign and ("--cleanup=verbatim" not in sign[0]["run"] or '-F "$RUNNER_TEMP/notes.md"' not in sign[0]["run"]):
     bad.append("the signed tag does not carry the notes verbatim")
 if scan and "event_name" in scan[0].get("if", ""):
@@ -212,6 +219,7 @@ case_ notes-job-wide-token    bad "[s['with'].__setitem__('permission-issues', '
 case_ notes-job-pushes-main   bad "[s.__setitem__('run', s['run'] + '\ngit push origin HEAD:main') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-job-no-automerge  bad "[s.__setitem__('run', s['run'].replace('gh pr merge --auto --squash', 'true')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-version-unexported bad "$D['outputs'].pop('version')"
+case_ tagger-drift            bad "[s.__setitem__('run', s['run'].replace('fosterstack release', 'someone else')) for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
 case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
 sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
 if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"

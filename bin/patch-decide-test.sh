@@ -541,7 +541,7 @@ pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
 check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
-tagraw = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <r@x> 1 +0000\n\n" + pub
+tagraw = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + pub
           + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
 check("AC8w tag-notes: a generated patch tag's message is its notes, the signature dropped", P.tag_notes(tagraw) == pub, P.tag_notes(tagraw))
 check("AC8w tag-notes: an owner's tag message is not taken as notes",
@@ -561,8 +561,24 @@ tg = tempfile.mkdtemp(); g(tg, "init", "-q", "-b", "main"); open(os.path.join(tg
 g(tg, "add", "-A"); g(tg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
 open(os.path.join(tg, "n.md"), "w").write(pub)
 g(tg, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "--cleanup=verbatim", "-F", os.path.join(tg, "n.md"), "v0.2.2")
-check("AC8w the tag made with --cleanup=verbatim round-trips through tag-notes",
-      P.tag_notes(subprocess.run(["git", "cat-file", "tag", "v0.2.2"], cwd=tg, capture_output=True, text=True).stdout) == pub)
+subprocess.run(["git", "-C", tg, "tag", "-a", "--cleanup=verbatim", "-F", os.path.join(tg, "n.md"), "v0.2.3"], check=True,
+               env=dict(os.environ, GIT_COMMITTER_NAME="fosterstack release", GIT_COMMITTER_EMAIL="release@users.noreply.github.com"))
+raw_ = subprocess.run(["git", "cat-file", "tag", "v0.2.3"], cwd=tg, capture_output=True, text=True).stdout
+check("AC8w the tag made with --cleanup=verbatim keeps the notes' headings",
+      P.tag_notes(raw_.replace("tag v0.2.3", "tag v0.2.2") + "-----BEGIN SIGNED MESSAGE-----\nx\n-----END SIGNED MESSAGE-----\n") == pub)
+# Sonnet #159 r2, BLOCKER-1: only the release workflow's own patch tag carries notes — its tagger and a gitsign (x509)
+# signature; an owner's tag (SSH-signed, any message) or an unsigned one never does; what is posted is always redacted
+check("B1 an owner's SSH-signed tag shaped like a patch tag carries no notes",
+      P.tag_notes(tagraw.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Owner <o@x>")
+                  .replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
+check("B1 the release tagger with an SSH signature carries no notes", P.tag_notes(tagraw.replace("SIGNED MESSAGE", "SSH SIGNATURE")) is None)
+check("B1 an unsigned tag carries no notes", P.tag_notes(tagraw.split("-----BEGIN")[0]) is None)
+check("B1 another tagger with a gitsign signature carries no notes",
+      P.tag_notes(tagraw.replace("fosterstack release <release@users.noreply.github.com>", "fosterstack release <x@evil>")) is None)
+leak_ = P.tag_notes(tagraw.replace("### Behavior changes", "Thanks to OpenAI Codex and the Anthropic Claude team.\n\n### Behavior changes"))
+check("B1 the notes a tag carries are redacted before they are posted", leak_ and not re.search(r"(?i)openai|codex|anthropic|claude", leak_), leak_)
+cl_, _ = P.changelog("## v0.2.2 — patch release\n\nGemini helper\n", None, "")
+check("B1 the changelog redacts what it is given", "Gemini" not in cl_, cl_)
 # the notes CLI end to end: scans per variant, the VEX pair, the next-release file, the published guard
 cd_ = tempfile.mkdtemp(); J_ = lambda n, o: (json.dump(o, open(os.path.join(cd_, n), "w")), os.path.join(cd_, n))[1]
 gr = lambda fs: {"matches": [{"vulnerability": {"id": f["id"], "severity": f["severity"], "fix": {"versions": [f["fixed"]]}},

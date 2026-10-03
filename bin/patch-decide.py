@@ -441,19 +441,28 @@ def unpublished(entries, published_text):
 PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
 
 
+RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"   # decide's git identity (release.yml)
+
+
 def tag_notes(raw):
     """AC8: the notes a generated patch tag carries (`git cat-file tag` output), or None for any other tag (an owner's
     release keeps the fixed release text). The heading must name the tag itself; the signature block is dropped."""
     head, _, body = raw.partition("\n\n")
     tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
-    body = body.split("-----BEGIN ", 1)[0]
+    tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
+    body, _, sig = body.partition("-----BEGIN ")
+    # only the release workflow's own patch tag: its tagger and a gitsign (x509) signature — an owner's tag is SSH-signed
+    # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
+    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
+        return None
     m = PATCH_HEAD.match(body.split("\n", 1)[0])
-    return body if m and m.group(1) == tag else None
+    return _clean(body) if m and m.group(1) == tag else None
 
 
 def changelog(notes_text, changelog_text, next_notes_text):
     """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
     entries these notes published — an entry added since stays)."""
+    notes_text = _clean(notes_text)
     title = "# Changelog\n"
     rest = (changelog_text or title)
     rest = rest[len(title):].lstrip("\n") if rest.startswith(title) else rest
