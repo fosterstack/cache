@@ -1436,11 +1436,12 @@ def script_images(script):
                 for cf in cache_from:
                     # a bare ref or type=registry,ref=... names a registry image; any other type (local/gha/...)
                     # reads from something this check does not treat as a remote pull (Codex r1, B4). Both forms are
-                    # comma-splitting CSV (buildx's cache-source parser), so each one may name several refs (N2)
-                    m = re.match(r"type=([^,]+)(?:,(.*))?$", cf)
-                    refstr = (dict(p.split("=", 1) for p in m.group(2).split(",") if "=" in p).get("ref")
-                              if m and m.group(2) else None) if m else cf
-                    if m and m.group(1) != "registry":
+                    # comma-splitting CSV (buildx's cache-source parser), so each one may name several refs (N2); a
+                    # repeated type=/ref= attribute keeps only its LAST value, same as any repeated key (Codex r5, B2)
+                    m = re.match(r"type=", cf)
+                    attrs = dict(p.split("=", 1) for p in cf.split(",") if "=" in p) if m else {}
+                    refstr = attrs.get("ref") if m else cf
+                    if m and attrs.get("type") != "registry":
                         continue
                     if refstr is None:
                         ev.append(("finding", "a build's --cache-from registry source names no ref (%s)" % cf))
@@ -1564,10 +1565,13 @@ def _expand_names(name, text):
 
 def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
-    line, Codex #164 r2 C10), or after && / || on its line. A build there registers no local name; a literal for-loop
-    always runs and is kept."""
+    line, Codex #164 r2 C10), after && / || on its line, or a `trap` command's own body — deferred to a future signal,
+    not run in line order, so a build/tag inside one registers no local name either (Codex #164 fresh r5, B1). A
+    literal for-loop always runs and is kept."""
     keep, stack = [], []
     for line in text.splitlines():
+        if re.search(r"(?<![\w$.-])trap(?![\w.-])", line):
+            continue
         words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
         opened = False
         if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line):

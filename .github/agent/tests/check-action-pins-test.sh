@@ -1380,6 +1380,10 @@ case_ r4b4-cache-from-digest-ok ok "$(rb "docker build --cache-from alpine@$DIG 
 case_ r4b4-cache-from-same-as-output-tag-bad bad "$(rb "docker build --cache-from alpine:3.20 -t alpine:3.20 -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
 case_ r4b4-cache-from-type-registry-bad bad "$(rb 'docker buildx build --cache-from type=registry,ref=alpine:3.20 -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
 case_ r4b4-cache-from-gha-ok   ok  "$(rb 'docker build --cache-from type=gha -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
+# Codex #164 fresh r5, B2: buildx keeps only the LAST repeated type= attribute (comma-separated), same rule as any
+# repeated key -- a leading type=local does not exempt a trailing, effective type=registry
+case_ r4b4-cache-from-repeated-type-bad bad "$(rb 'docker buildx build --cache-from type=local,type=registry,ref=alpine:latest -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-repeated-type-reverse-ok ok "$(rb 'docker buildx build --cache-from type=registry,ref=alpine@$DIG,type=local -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
 case_ r4b5-crane-index-append-bad bad "$(rb 'crane index append -m alpine:3.20 -t x/y:z')"
 case_ r4b5-crane-index-filter-bad bad "$(rb 'crane index filter alpine:3.20 --platform linux/amd64 -t x/y:z')"
 case_ r4b5-crane-index-append-digest-ok ok "$(rb "crane index append -m alpine@$DIG -t x/y:z")"
@@ -1387,5 +1391,13 @@ case_ r4b5-crane-index-append-extra-positional-bad bad "$(rb 'crane index append
 case_ r4b5-crane-manifest-comma-list-bad bad "$(rb 'crane index append --manifest busybox:1.37,alpine@$DIG --tag x/y:z')"
 case_ r4b4-cache-from-comma-list-bad bad "$(rb "docker build --cache-from busybox:1.37,alpine@\$DIG -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
 case_ r4b5-crane-index-list-ok ok  "$(rb 'crane index list x/y:z')"
+# Codex #164 fresh r5, B1: a trap body is deferred (runs only on the signal, not in line order) — its build/tag must
+# never register a local name an EARLIER, unconditional command can then rely on
+case_ r4b1-trap-deferred-local-bad bad "$(rb "trap -- 'docker build -t alpine:latest .' EXIT
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+case_ r4b1-trap-deferred-tag-bad   bad "$(rb "trap 'docker tag alpine@\$DIG alpine:latest' EXIT
+          docker run --rm alpine:latest")"
+case_ r4b1-trap-build-still-checked-bad bad "$(rb "trap -- 'docker build -t alpine:latest .' EXIT")" 'printf "FROM alpine:latest\n" > Dockerfile'
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
