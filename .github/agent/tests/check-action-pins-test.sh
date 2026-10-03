@@ -862,5 +862,57 @@ case_ n7-if-then-write         bad "$head
     steps:
       - run: if true; then echo 'x==1 --hash=sha256:00' > reqs/a.txt; fi
       - run: pip install --require-hashes -r reqs/a.txt" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/a.txt"
+# --- Sonnet #164 r7 (NEW-8): every tool the POSIX scanner knows is also caught in a non-POSIX step
+case_ n8-pwsh-buildah          bad "$head
+    steps:
+      - shell: pwsh
+        run: buildah run x"
+case_ n8-pwsh-nerdctl          bad "$head
+    steps:
+      - shell: pwsh
+        run: nerdctl run alpine"
+case_ n8-pwsh-ctr              bad "$head
+    steps:
+      - shell: pwsh
+        run: ctr image pull x"
+case_ n8-pwsh-crictl           bad "$head
+    steps:
+      - shell: pwsh
+        run: crictl pull x"
+case_ n8-pwsh-pipenv           bad "$head
+    steps:
+      - shell: pwsh
+        run: pipenv install x"
+case_ n8-pwsh-poetry           bad "$head
+    steps:
+      - shell: pwsh
+        run: poetry add x"
+case_ n8-pwsh-uv               bad "$head
+    steps:
+      - shell: pwsh
+        run: uv add x"
+case_ n8-pwsh-conda            bad "$head
+    steps:
+      - shell: pwsh
+        run: conda install x"
+case_ n8-pwsh-micromamba       bad "$head
+    steps:
+      - shell: pwsh
+        run: micromamba create x"
+case_ n8-pwsh-docker-compose   bad "$head
+    steps:
+      - shell: pwsh
+        run: docker-compose up"
+case_ n8-pwsh-rye              bad "$head
+    steps:
+      - shell: pwsh
+        run: rye add x"
+case_ n8-pwsh-pip-sync         bad "$head
+    steps:
+      - shell: pwsh
+        run: pip-sync r.txt"
+case_ n8-composite-pwsh         bad "$head
+    steps:
+      - uses: ./.github/actions/x" "mkdir -p .github/actions/x; printf 'runs:\\n  using: composite\\n  steps:\\n    - shell: pwsh\\n      run: buildah pull x\\n' > .github/actions/x/action.yml"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

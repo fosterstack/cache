@@ -96,7 +96,8 @@ command naming a build's Dockerfile or a pip -r file is a finding unless it is t
 read-only command without a write redirection, or a copy of the committed file into a context (relative sources,
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
-word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's. What
+word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
+Round 7: the non-POSIX catch-all is built from the same tool sets the POSIX scanner reads, so they cannot drift. What
 static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
@@ -531,6 +532,12 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
                      + TOOL_WORDS + r"[\"']?\)|/" + TOOL_WORDS + r"(?=[\s\"']|$))"
                      r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
 SHELLS = {"bash", "sh", "dash", "zsh"}
+# every tool name the POSIX scanner knows, so the non-POSIX catch-all can never drift from it (Sonnet #164 r7, NEW-8)
+ALL_TOOL_NAMES = sorted(TOOLS | UNREAD_CONTAINER | UNREAD_PY | {
+    "pip", "pip3", "python", "python3", "pipx", "uv", "uvx", "npm", "npx", "gem", "yarn", "pnpm", "conda", "mamba",
+    "micromamba"}, key=len, reverse=True)
+NONPOSIX_TOOL = re.compile(r"(?i)(^|[^A-Za-z0-9_.-])(" + "|".join(re.escape(t) for t in ALL_TOOL_NAMES)
+                           + r")(\.[0-9]+)?([^A-Za-z0-9_-]|$)")
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
 SUBST = "$__SUBST__"   # stands where a command substitution was cut out (Sonnet #164 r4, NEW-4): fails closed
 
@@ -976,8 +983,7 @@ def check_runs(where_job, scripts, bad, tree=None):
             bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
                        f"renamed command cannot be checked")
         if shell and not re.match(r"^(bash|sh)(\s|$)", shell):
-            if re.search(r"(?i)(^|[^A-Za-z0-9_-])(docker|podman|skopeo|crane|pipx?|pip3|uvx?|npm|npx|gem|yarn|pnpm)"
-                         r"([^A-Za-z0-9_-]|$)", text):
+            if NONPOSIX_TOOL.search(text):
                 bad.append(f"{where}: a `{shell}` step names a container or package tool; this check reads POSIX "
                            f"shell only")
             continue
