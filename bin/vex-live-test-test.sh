@@ -255,6 +255,11 @@ for why, aws_s, gc_s, curl_s in [
   *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""", OKGC, OKCURL)]:
     rc, out = sh("sweep", {"aws": aws_s, "gcloud": gc_s, "curl": curl_s})
     check("SEC-169-08 sweep fails on %s" % why, rc != 0, out[-200:])
+# Codex #169 r3 (SEC-169-08): a failing step inside the note enumeration (sed, cut) fails the sweep, never reads as empty
+NOTE_PAGE = r"""case " $* " in *" -X DELETE "*) echo "{}" ;; *) echo '{"notes": [%s]}' ;; esac""" % NOTE_OK
+for tool in ("sed", "cut"):
+    rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "curl": NOTE_PAGE, tool: "echo %s_FAILED >&2; exit 42" % tool.upper()})
+    check("SEC-169-08 sweep fails when %s fails inside the note enumeration" % tool, rc != 0, out[-200:])
 for kind, doc, ok in [("notes", '{"notes": [], "nextPageToken": 3}', False), ("notes", '{}', True),
                       ("gar", '[{"package": "x", "version": "sha256:a"}]', True), ("gar", '[{"package": 1}]', False),
                       ("ecr", '{"imageIds": [{"imageDigest": "sha256:a"}]}', True), ("ecr", '{"imageIds": [{}]}', False),

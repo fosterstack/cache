@@ -48,18 +48,18 @@ ca() {   # Container Analysis REST, as the live-test service account
 }
 
 notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note on images under that prefix, all pages;
-  local project page parsed token="" names=""   # any listing or parsing failure fails (Codex #169 r2, SEC-169-08)
-  project=$(cut -d/ -f2 <<<"$GAR")
+  local project page parsed token="" names="" more   # every step is checked: a failure anywhere fails the enumeration,
+  project=$(cut -d/ -f2 <<<"$GAR") || return 1        # never an empty answer (Codex #169 r2/r3, SEC-169-08)
+  [ -n "$project" ] || return 1
   while :; do
     page=$(ca "https://containeranalysis.googleapis.com/v1/projects/${project}/notes?filter=kind%3D%22VULNERABILITY_ASSESSMENT%22&pageSize=1000${token:+&pageToken=${token}}") || return 1
     parsed=$($LT inventory --kind notes --prefix "$1" <<<"$page") || return 1
-    names+=$(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["names"]))' "$parsed") || return 1
-    names+=$'\n'
+    more=$(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["names"]))' "$parsed") || return 1
+    [ -z "$more" ] || names+="${more}"$'\n'
     token=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["next"])' "$parsed") || return 1
     [ -n "$token" ] || break
   done
-  printf '%s' "$names" | sed '/^$/d'
-  return 0
+  printf '%s' "$names" || return 1
 }
 
 sweep() {   # empty the two dedicated test repositories, delete every live-test filter and every VEX note on the test
