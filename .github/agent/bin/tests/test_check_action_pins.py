@@ -275,7 +275,7 @@ class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwar
         self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])
 
     def test_the_non_posix_catch_all_knows_every_tool(self):          # Sonnet #164 r7, NEW-8: no drift
-        for t in M.TOOLS | M.UNREAD_CONTAINER | M.UNREAD_PY:
+        for t in M.TOOLS | M.UNREAD_CONTAINER | M.UNREAD_PY | M.OS_PKG:
             bad = []
             M.check_runs("j", [("w", "%s run x" % t, "pwsh")], bad)
             self.assertTrue(bad, t)

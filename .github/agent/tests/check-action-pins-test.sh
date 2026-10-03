@@ -914,5 +914,52 @@ case_ n8-pwsh-pip-sync         bad "$head
 case_ n8-composite-pwsh         bad "$head
     steps:
       - uses: ./.github/actions/x" "mkdir -p .github/actions/x; printf 'runs:\\n  using: composite\\n  steps:\\n    - shell: pwsh\\n      run: buildah pull x\\n' > .github/actions/x/action.yml"
+# --- Sonnet #164 r8 (NEW-9, NEW-10): Windows/macOS package managers; case-insensitive tool names; Windows default shell
+wh='on: push
+jobs:
+  j:
+    runs-on: windows-latest'
+case_ n9-choco-bash              bad "$wh
+    steps:
+      - shell: bash
+        run: choco install -y pkg"
+case_ n9-winget-default          bad "$wh
+    steps:
+      - run: winget install --id Some.Pkg"
+case_ n9-scoop                   bad "$wh
+    steps:
+      - shell: bash
+        run: scoop install pkg"
+case_ n9-brew                    bad "$wh
+    steps:
+      - run: brew install jq"
+case_ n10-Docker-bash            bad "$wh
+    steps:
+      - shell: bash
+        run: Docker run alpine:latest"
+case_ n10-DOCKER-bash            bad "$wh
+    steps:
+      - shell: bash
+        run: DOCKER RUN alpine:latest"
+case_ n10-Pip-bash               bad "$wh
+    steps:
+      - shell: bash
+        run: Pip install flask"
+case_ n10-windows-default-pwsh   bad "$wh
+    steps:
+      - run: docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+case_ n10-windows-bash-pinned-ok ok "$wh
+    steps:
+      - shell: bash
+        run: docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+case_ n10-windows-no-tools-ok    ok "$wh
+    steps:
+      - run: Write-Output hi"
+case_ n10-expr-runs-on          bad "on: push
+jobs:
+  j:
+    runs-on: \${{ matrix.os }}
+    steps:
+      - run: docker pull alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
