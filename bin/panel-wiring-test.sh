@@ -110,7 +110,7 @@ if not pr or scout_steps.index(pr) > scout_steps.index(step("rule 4 self-check")
 else:
     prun = pr.get("run", "")
     for need in ("./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck", "scout-selfcheck.py probe-doc",
-                 "scout-selfcheck.py probe-report"):
+                 "scout-selfcheck.py probe-report", "--only-vex-affected", 'tee -a "$GITHUB_STEP_SUMMARY"'):
         if need not in prun:
             bad.append("the probe lacks %s" % need)
     if pr.get("if") != "github.event_name == 'workflow_dispatch'" or pr.get("continue-on-error"):
