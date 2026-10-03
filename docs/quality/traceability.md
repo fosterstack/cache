@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 70 |
 | Acceptance criteria | 144 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 126 |
+| ACs with mapped evidence | 127 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -564,7 +564,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 
 Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; .github/workflows/hygiene.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -574,7 +574,7 @@ Every GitHub Action a workflow uses shall be pinned to a full commit digest with
 
 A frozen release baseline shall be fixed at a named commit, and the freeze check shall compare it with the requirements file as of that commit, never with main's current file; editing the requirements on main shall never turn a frozen baseline red; a frozen baseline shall change only by an owner-ratified amendment recorded in the register, applied as a new fixed commit.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: tools/requirements/main.go; requirements/releases/; .github/workflows/requirements.yml; .github/workflows/stage-admission.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: tools/requirements/main.go; requirements/releases/; .github/workflows/ci.yml; .github/workflows/stage-admission.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -617,7 +617,7 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 
 The ruleset on main and the committed required-check list shall be compared on every pull request and every push to main, so drift is red the day it happens, and a refusal shall open one issue.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/workflows/hygiene.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/required-check-guard.sh; .github/policy/required-checks.json; .github/workflows/ci.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -638,7 +638,7 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 
 A held Dependabot major, or a required-check drift issue, shall send one generic dispatch to the ops repository so an agent fixes our side; a failed dispatch shall be a warning and never undo the hold.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/dispatch-fixer.sh; .github/workflows/dependabot-reviewer.yml; .github/workflows/hygiene.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/dispatch-fixer.sh; .github/workflows/dependabot-reviewer.yml; .github/workflows/ci.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -651,12 +651,12 @@ A held Dependabot major, or a required-check drift issue, shall send one generic
 
 The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge keeping every required check's name, top-level placement and events, and no new workflow file added without the owner's ratification.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/go-freshness.yml*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/go-freshness.yml; .github/workflows/ci.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 23 ratified files | ci-workflow |  | approved | none mapped |
-| REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | none mapped |
+| REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC3 | Given the mutation job, merged into go-freshness.yml; when the schedules fire or the workflow is dispatched; then the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml | ci-workflow |  | approved | 1 item(s) |
 
 ## SCAN

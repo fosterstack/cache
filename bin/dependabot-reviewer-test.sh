@@ -413,7 +413,7 @@ out=$(bash "$here/dispatch-fixer.sh" fix-something 5 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "unknown event type" <<<"$out" && { echo "ok: dispatch-fixer: unknown event type refused"; pass=$((pass+1)); } || { echo "FAIL: unknown event"; fail=$((fail+1)); }
 out=$(DISPATCH_TOKEN=t bash "$here/dispatch-fixer.sh" fix-held-bump "" 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "no issue number" <<<"$out" && { echo "ok: dispatch-fixer: no issue number refused"; pass=$((pass+1)); } || { echo "FAIL: no issue"; fail=$((fail+1)); }
-python3 - "$repo/.github/workflows/hygiene.yml" "$w/drift-dispatch.sh" <<'PY5'
+python3 - "$repo/.github/workflows/ci.yml" "$w/drift-dispatch.sh" <<'PY5'
 import sys, yaml
 j = yaml.safe_load(open(sys.argv[1]))["jobs"]["drift-fixer-dispatch"]
 assert "push" in j["if"] and "refs/heads/main" in j["if"] and j["environment"] == "agent"

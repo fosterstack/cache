@@ -6,7 +6,7 @@
 # Either way a human (ruleset, owner) or a PR (list) fixes it; nothing guesses.
 #
 # Callers:
-#   hygiene.yml                — every PR and every push to main (drift is red the day it happens)
+#   ci.yml                — every PR and every push to main (drift is red the day it happens)
 #   dependabot-auto-merge.yml  — before arming auto-merge; fetches THIS script and the list
 #                                from protected main via the API, never from a checkout
 #

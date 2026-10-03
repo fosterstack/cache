@@ -191,7 +191,7 @@ PY
   else failn=$((failn+1)); echo "FAIL $3 → $got, want $4 ($out)"; fi
 }
 
-R=dependabot-reviewer.yml; H=hygiene.yml; A=dependabot-auto-merge.yml
+R=dependabot-reviewer.yml; H=ci.yml; A=dependabot-auto-merge.yml
 rs='d["jobs"]["review"]["steps"]'; gs='d["jobs"]["required-check-guard"]["steps"]'; as_='d["jobs"]["auto-merge"]["steps"]'
 case_ reviewer $R reviewer-real            ok  ""
 case_ reviewer $R reviewer-on-pr           bad "d['on']['pull_request'] = ''"

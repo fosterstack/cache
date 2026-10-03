@@ -94,7 +94,7 @@ jobs:
           # required-check set on main — contexts and integration IDs both —
           # against .github/policy/required-checks.json and refuses on any
           # difference in either direction (bin/required-check-guard.sh; the
-          # same script runs on every PR in hygiene.yml, register row 75).
+          # same script runs on every PR in ci.yml, register row 75).
           #
           # The script AND the list are fetched from protected MAIN via the
           # API, never from a checkout: this workflow deliberately checks out

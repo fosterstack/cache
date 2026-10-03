@@ -242,7 +242,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/hygiene.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml: bin/install-scanner-test.sh asserts an unverifiable/undownloadable/unknown scanner exits non-zero and is labeled a PIPELINE failure (never a finding or clean pass)" }
   - ac: REQ-REL-004-AC3
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
@@ -254,7 +254,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
   - ac: REQ-REL-005-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/hygiene.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
   - ac: REQ-REL-006-AC1
@@ -266,7 +266,7 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestFreezeFailsWithoutACommit" }
       - { type: go-test, ref: "tools/requirements:TestTheRealV021BaselineIsFixedAt326c459" }
       - { type: go-test, ref: "tools/requirements:TestVerifyFreezeRejectsATagObjectAsFixedCommit" }
-      - { type: workflow-job, ref: ".github/workflows/requirements.yml:requirements (verify-freeze v0.2.1, fixed at 326c459)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:requirements (verify-freeze v0.2.1, fixed at 326c459)" }
   - ac: REQ-REL-006-AC2
     evidence:
       - { type: go-test, ref: "tools/requirements:TestVerifyFreezeIgnoresMainAfterTheFixedCommit" }
@@ -461,5 +461,8 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
   - ac: REQ-REL-008-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-REL-008-AC2
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }

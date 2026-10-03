@@ -36,5 +36,3 @@ unmapped:
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
   - ac: REQ-REL-008-AC1
     reason: "the 23-file end state is proven when the last of the four ratified consolidation PRs lands (this is the first: mutation into go-freshness)"
-  - ac: REQ-REL-008-AC2
-    reason: "check-name preservation is proven per moved job in the consolidation PRs that move required jobs (ci.yml absorptions, scan + release-chain-pr, the acceptance merge); the mutation job is not a required check"

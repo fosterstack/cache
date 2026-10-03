@@ -1,0 +1,85 @@
+{
+    "schema": "auditor-review-record/v1",
+    "tree": "c1d0b81e4341a47f0d52c421643dba0245be5b528283698b86746a37900dd8d5",
+    "change": "workflow consolidation 2 of 4: ci.yml absorbs hygiene.yml, requirements.yml and dependency-review.yml (owner RATIFIED Oct 2); the action-pin checker documents its exclusions with reasons and the permission check installs PyYAML hash-pinned — PR #156",
+    "reviewed_commit": "7e9c86b",
+    "closed_commit": "80e83fe",
+    "rounds": [
+        {
+            "round": 1,
+            "label": "step 8 round 1",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 0,
+                    "evidence_sha256": "b3371fdfdf6701c9d94f9ba9a2a836b6f4a6d7b4ec41a24324d1be8488f7a307"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "a3ac49e3bedde1ea4da37a6d8e2b16917404f85bec5c1821352587fbd5b204a1"
+                }
+            }
+        },
+        {
+            "round": 2,
+            "label": "row-78 pin pass round 1",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 2,
+                    "evidence_sha256": "5afc421b568900134a4f14a81ffc594200fc2417065293d7926a927d0aee6772"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "499643eeacaf3e44d7b23afc03d0fede854d419bd491d14e51dab165b8518be6"
+                }
+            }
+        },
+        {
+            "round": 3,
+            "label": "pin pass phase 2 round 2 (fix)",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 0,
+                    "evidence_sha256": "599ef387aa934796796cea4cdcc356d2e651ac1db2ac3c2d8546e5b4e64fa06f"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 1,
+                    "evidence_sha256": "ad6176d9df725550abf28bb617053c06b7bd73c3d33037da63effb88d1e6068b"
+                }
+            }
+        },
+        {
+            "round": 4,
+            "label": "pin pass: verify the fix (7e9c86b; Codex was already green on it)",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 0,
+                    "evidence_sha256": "599ef387aa934796796cea4cdcc356d2e651ac1db2ac3c2d8546e5b4e64fa06f"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "b2b9373c33fd6a301fa8c33ab062246ff3c32c8bc4bf4316d4d5471fda5c57e5"
+                }
+            }
+        }
+    ],
+    "stop": {
+        "codex": "clear",
+        "sonnet": "clear"
+    },
+    "owner_decision": "none: codex reviewer rules (owner Oct 2) — both green on the final verification; the rebase onto main (80e83fe) carries #157's wiring step into ci.yml and renames one reviewed App-token consumer's file; no auditor path changed",
+    "evidence_location": "private audit tree: audits/2026-10-02/consolidate-ci/{r1,pin,pin-r2,pin-r3}/{codex,sonnet}/review.md",
+    "residuals_fixed_after_the_cap": [],
+    "residuals": [
+        "runs-on: ubuntu-latest is a GitHub-hosted label, not a digest (documented exclusion in the checker)",
+        "go install by module version and setup-go check-latest are version-selected, verified by the Go checksum database / the action (documented exclusions)",
+        "images and installs named in run: scripts are read by the shell scanner of PR #164, not by this PR"
+    ]
+}
