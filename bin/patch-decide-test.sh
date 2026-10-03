@@ -165,9 +165,17 @@ for s_ in ("an AWS-reported CVE", "a Google-disclosed vulnerability", "Microsoft
     out = P._clean(s_)
     check("NEW-BLOCKER-2 %r is redacted" % s_, not re.search(r"(?i)aws|google|microsoft|azure|amazon", out), out)
 for kept in ("github.com/aws/aws-sdk-go-v2 v1.30.0", "bump google.golang.org/grpc to v1.70.0", "cloud.google.com/go/storage,",
-             "sigs.k8s.io/x and github.com/Azure/azure-sdk-for-go"):
+             "sigs.k8s.io/x and github.com/azure/azure-sdk-for-go"):
     out = P._clean(kept)
     check("NEW-BLOCKER-2 module path stays readable: %r" % kept, out == kept, out)
+# Sonnet #158 r3c (NEW-BLOCKER-3): only a WHOLE lowercase token is a module path; a capitalized vendor segment anywhere in it
+# makes the token not a module path, so every vendor name in it is redacted (fail closed)
+for s_ in ("see github.com/foo/AWS-tool for the fix", "tracked at status.example.com/Azure-outage", "sigs.k8s.io/Google-report",
+           "github.com/example/Microsoft-compat-shim v2", "confirmed by Google.com"):
+    out = P._clean(s_)
+    check("NEW-BLOCKER-3 %r is redacted" % s_, not re.search(r"AWS|Azure|Google|Microsoft", out), out)
+check("NEW-BLOCKER-3 a module path with a capitalized vendor segment is redacted throughout",
+      P._clean("github.com/Azure/azure-sdk-for-go") == "github.com/<redacted>/<redacted>-sdk-for-go", P._clean("github.com/Azure/azure-sdk-for-go"))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

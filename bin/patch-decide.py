@@ -36,9 +36,9 @@ VENDOR = re.compile(r"(?i)(?<![a-z])((google|microsoft|amazon|aws|azure|xai|x\.a
                     + r")(?:[\w-]|\.(?=\w))*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
 # a vendor named alone (Sonnet #158 r3: rule 5 forbids vendor OR model names) is redacted wherever it stands, next to a
 # hyphen or slash too (Sonnet #158 r3b, NEW-BLOCKER-2: "AWS-reported", "Google/Microsoft"); fail closed — only a whole token
-# that is a lowercase domain or module path stays readable (google.golang.org/protobuf, github.com/Azure/azure-sdk-for-go)
+# that is a wholly lowercase domain or module path stays readable (google.golang.org/protobuf, github.com/aws/aws-sdk-go-v2)
 VENDOR_ALONE = re.compile(r"(?i)(?<![a-z0-9])(" + _sep("google", "microsoft", "amazon", "aws", "azure") + r")(?![a-z0-9])")
-MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[\w.@~+-]+)*/?$")
+MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   # every part lowercase (Sonnet r3c, NEW-BLOCKER-3)
 
 
 def _alone(m):
