@@ -94,7 +94,9 @@ exact repository path (or every file matching its template) — an absolute path
 script itself writes under that name is a finding. Round 5: "writes" is an allow-list, not a blocklist — any
 command naming a build's Dockerfile or a pip -r file is a finding unless it is the consuming build/install, a
 read-only command without a write redirection, or a copy of the committed file into a context (relative sources,
-destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step. What
+destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
+Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
+word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's. What
 static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
@@ -889,6 +891,10 @@ def _touches(script, name, consumer):
         if consumer(toks):
             continue
         words = [t for t in toks if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t) and t != "sudo"]
+        while words and words[0] in ("if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"):
+            words = words[1:]                   # a shell keyword arranges the command after it
+        if words and words[0] in ("for", "select", "case"):
+            continue                            # a loop's / case's word list only names things
         cmd = _base(words[0]) if words else ""
         writes = any(re.match(r"^[0-9]*>>?", t) and (mention.search(t) or (k + 1 < len(toks) and mention.search(toks[k + 1])))
                      for k, t in enumerate(toks))
@@ -963,6 +969,8 @@ def check_runs(where_job, scripts, bad, tree=None):
     the job made it earlier. A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
     local = set()
+    # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7)
+    job_text = "\n".join(t for _, t, sh in scripts if not sh or re.match(r"^(bash|sh)(\s|$)", sh))
     for where, text, shell in scripts:
         if RENAMED.search(text):
             bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
@@ -988,7 +996,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                     bad.append(f"{where}: a build's Dockerfile ({name}) is outside the repository, so its FROM lines "
                                f"cannot be checked")
                     continue
-                if _touches(text, name, _is_build):
+                if _touches(job_text, name, _is_build):
                     bad.append(f"{where}: the script writes a file named like its Dockerfile ({name}); the build "
                                f"cannot be bound to a reviewed file")
                     continue
@@ -1021,7 +1029,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 bad.append(f"{where}: `{c}` reads -r from {path}, outside the repository")
             elif tree is not None and path.lstrip("./") not in getattr(tree, "entries", {}) and path not in getattr(tree, "entries", {}):
                 bad.append(f"{where}: `{c}` reads -r from {path}, which is not a file in the repository")
-            elif _touches(text, path, _is_pip_reading):
+            elif _touches(job_text, path, _is_pip_reading):
                 bad.append(f"{where}: the script writes or changes {path}, the -r file `{c}` reads")
 
 

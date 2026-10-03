@@ -838,5 +838,29 @@ case_ n5-touch-in-subst        bad "$(rb 'x=$(sed -i s/a/b/ Dockerfile); docker 
 case_ n6-r-equals-form         ok  "$(r 'pip install --require-hashes --requirement=reqs/ok.txt')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
 case_ n6-r-attached-form       ok  "$(r 'pip install --require-hashes -rreqs/ok.txt')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
 case_ n6-r-from-subst          bad "$(rb 'pip install --require-hashes -r $(echo reqs/ok.txt)')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
+# --- Sonnet #164 r6 (NEW-7): a file changed in an EARLIER step of the same job
+case_ n7-earlier-step-docker   bad "$head
+    steps:
+      - run: sed -i s/a/b/ Dockerfile
+      - run: docker build -t x ." "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n7-earlier-step-pip      bad "$head
+    steps:
+      - run: echo 'x==1 --hash=sha256:00' > reqs/ok.txt
+      - run: pip install --require-hashes -r reqs/ok.txt" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
+case_ n7-other-job-ok          ok  "$head
+    steps:
+      - run: docker build -t x .
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cat Dockerfile" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n7-for-list-ok           ok  "$head
+    steps:
+      - run: for r in reqs/a.txt reqs/b.txt; do pip install --dry-run --require-hashes -r \"\$r\"; done
+      - run: if grep -q x reqs/a.txt; then pip install --require-hashes -r reqs/a.txt; fi" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/a.txt; cp reqs/a.txt reqs/b.txt"
+case_ n7-if-then-write         bad "$head
+    steps:
+      - run: if true; then echo 'x==1 --hash=sha256:00' > reqs/a.txt; fi
+      - run: pip install --require-hashes -r reqs/a.txt" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/a.txt"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
