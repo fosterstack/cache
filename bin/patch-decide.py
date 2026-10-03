@@ -175,13 +175,21 @@ DATA_FILE = re.compile(r"\.(md|txt|json|ya?ml|toml|csv)$")
 TEST_FILE = re.compile(r"(-tests?\.sh|_test\.go|(^|/)test_[^/]*\.py|-check\.py)$|^\.github/agent/(bin/)?tests/")
 
 
+def _reviewed_workflow(f):
+    """A reviewed workflow by its full path, .github/workflows/<name> — never a same-named file deeper (Codex B02)."""
+    return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
+
+
 def classify(commit):
     """('fix' | 'neutral' | 'dirty', reason) for one commit. Neutral means non-executable data only — docs/, requirements/,
     test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3)."""
-    files, diffs = commit.get("files") or [], commit.get("diffs") or {}
+    files, diffs, modes = commit.get("files") or [], commit.get("diffs") or {}, commit.get("modes") or {}
     kinds, why = set(), []
     for f in files:
-        if TEST_FILE.search(f):
+        if modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
+            # data is not executable: Git's executable bit, a symlink, or a script's #! line (Codex #159 AC1(h), B01)
+            kinds.add("dirty"); why.append("%s is executable (mode %s or a #! line), never data" % (f, modes.get(f, "?")))
+        elif TEST_FILE.search(f):
             kinds.add("dirty"); why.append("%s is a test: executable, never patch-neutral (REQ-REL-009 AC1, owner Oct 3)" % f)
         elif f.startswith(NEUTRAL_PREFIX) and not DATA_FILE.search(f) and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB:
@@ -207,7 +215,7 @@ def classify(commit):
                 kinds.add("fix")
             else:
                 kinds.add("dirty"); why.append("%s changes more than the base-image digest pin" % f)
-        elif BUILD_INPUTS.match(f) or (f.startswith(".github/workflows/") and f.split("/")[-1] not in NEUTRAL_WORKFLOWS):
+        elif BUILD_INPUTS.match(f) or (f.startswith(".github/workflows/") and not _reviewed_workflow(f)):
             kinds.add("dirty"); why.append("%s builds or ships the release image" % f)
         elif f.startswith(".github/") and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB and not f.startswith(NEUTRAL_GITHUB_PREFIX):
@@ -539,7 +547,13 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
         diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
-        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha))})
+        # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
+        modes = {}
+        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "-M", sha, cwd=cwd).splitlines():
+            meta, _, paths = ln.partition("\t")
+            if meta.startswith(":"):
+                modes[paths.split("\t")[-1]] = meta.split()[1]
+        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "labels": list(labels(sha))})
     return out
 
 

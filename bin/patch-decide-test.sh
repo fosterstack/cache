@@ -603,6 +603,28 @@ for split in ("- Goo\n  gle now rejects long headers (advisor 0130).\n", "- Op e
     check("SEC-1 a vendor name split by whitespace is refused: %r" % split, raised)
 check("SEC-1 the real entries still pass (Go 1.27; metadata; to 1.2)", len(P.behavior_entries(NRN)) == 2 and
       P.behavior_entries("- metadata handling for a meta tag moved to 1.2 (advisor 0130).\n") != [])
+# Codex #159 AC1(h) r1, B01: data is not executable — a changed file Git records as executable or as a symlink, or whose
+# added content starts a script (#!), is never neutral or fix-class; B02: a reviewed workflow by its full path only
+sh_ = "+#!/bin/sh\n+test 1 = 1 && printf AC1_EXECUTED\n"
+for f in ("docs/gate.md", "requirements/gate.yaml", "test-evidence/gate.json", ".github/agent/docs/gate.txt",
+          ".github/agent/reviews/gate.csv", ".github/CODEOWNERS", ".vex/gate.txt", ".auditor/gate.json", ".snyk", "osv-scanner.toml"):
+    got = P.classify(c("x", [f], diffs={f: sh_}))
+    check("B01 a script under a data name is dirty: %s" % f, got[0] == "dirty" and "executable" in got[1], got)
+    for mode in ("100755", "120000"):
+        got = P.classify(dict(c("x", [f], diffs={f: "+data\n"}), modes={f: mode}))
+        check("B01 mode %s is dirty: %s" % (mode, f), got[0] == "dirty" and "executable" in got[1], got)
+check("B01 an ordinary data file stays neutral", P.classify(dict(c("x", ["docs/a.md"], diffs={"docs/a.md": "+# heading\n"}), modes={"docs/a.md": "100644"}))[0] == "neutral")
+check("B01 a deleted file (mode 000000) is not executable", P.classify(dict(c("x", ["docs/a.md"], diffs={"docs/a.md": "-x\n"}), modes={"docs/a.md": "000000"}))[0] == "neutral")
+check("B01 a markdown line starting '#!' only after other text is data", P.classify(c("x", ["docs/a.md"], diffs={"docs/a.md": " intro\n+see #!/bin/sh in text\n"}))[0] == "neutral")
+md = tempfile.mkdtemp(); g(md, "init", "-q", "-b", "main"); os.makedirs(os.path.join(md, "docs"))
+open(os.path.join(md, "docs", "x.md"), "w").write("x\n"); g(md, "add", "-A"); g(md, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "b"); g(md, "tag", "v0.1.0")
+os.chmod(os.path.join(md, "docs", "x.md"), 0o755); g(md, "-c", "core.fileMode=true", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "chmod")
+gc = P.gather_commits("v0.1.0", cwd=md)
+check("B01 gather_commits records each file's new mode; a mode-only chmod +x is dirty",
+      gc and gc[0].get("modes", {}).get("docs/x.md") == "100755" and P.classify(gc[0])[0] == "dirty", gc)
+for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
+    got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
+    check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
