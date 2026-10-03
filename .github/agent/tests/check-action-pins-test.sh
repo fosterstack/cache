@@ -1099,5 +1099,21 @@ case_ n27-cp-split             bad "$(rb 'cp "$(command -v d""ocker)" /usr/local
 case_ n28-cd-split-pip         bad "$(rb 'c""d sub; pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p sub; printf 'evil==9 --hash=sha256:11\\n' > sub/requirements.txt"
 case_ n28-pushd-split-build    bad "$(rb 'pus""hd evil; docker build -f Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
 case_ n28-backslash-cd         bad "$(rb 'c\\d evil; docker build -f Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
+# --- Sonnet #164 r19 (NEW-29): a parameter expansion's default or alternate word is a literal the shell can run —
+#     ${x:-docker}, ${x-docker}, ${x:=docker}, ${x=docker}, ${x:+docker}, nested — it is read as that word (fail closed)
+case_ n29-default-run          bad "$(rb '${x:-docker} run alpine:3.20')"
+case_ n29-default-pip          bad "$(rb '${x:-pip} install unhashed-package')"
+case_ n29-nocolon              bad "$(rb '${x-docker} run alpine:3.20')"
+case_ n29-assign               bad "$(rb '${x:=docker} run alpine:3.20')"
+case_ n29-alternate            bad "$(rb 'y=1; ${y:+docker} run alpine:3.20')"
+case_ n29-npm                  bad "$(rb '${x:-npm} install left-pad')"
+case_ n29-quoted               bad "$(rb '"${x:-docker}" run alpine:3.20')"
+case_ n29-nested               bad "$(rb '${a:-${b:-docker}} run alpine:3.20')"
+case_ n29-cd                   bad "$(rb '${x:-cd} evil; docker build -f Dockerfile -t y .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
+case_ n29-pushd                bad "$(rb '${x:-pushd} evil; pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p evil; printf 'e==9 --hash=sha256:11\\n' > evil/requirements.txt"
+case_ n29-alias                bad "$(rb '${x:-alias} foo=docker; foo run alpine:3.20')"
+case_ n29-cp-rename            bad "$(rb '${x:-cp} "$(command -v docker)" /tmp/foo; /tmp/foo run alpine:3.20')"
+case_ n29-default-pinned-ok    ok  "$(rb '${DOCKER_BIN:-docker} run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ n29-plain-default-ok     ok  "$(rb 'echo "${GITHUB_REF_NAME:-none}" "${1:-}" "${X:?unset}"')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

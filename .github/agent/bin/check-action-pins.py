@@ -567,6 +567,20 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
 ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 
 
+# A parameter expansion with a default, assign or alternate word (${x:-docker}, ${x-docker}, ${x:=docker}, ${x:+docker},
+# nested) can run that literal word: every check reads it as the word (Sonnet #164 r19, NEW-29, fail closed). ${x:?msg}
+# runs nothing (its word is an error message): read as empty. A bare $x / ${x} stays the documented variable boundary.
+PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
+
+
+def _expand_defaults(text):
+    while True:   # each pass removes at least one ${...}: it ends
+        new = PARAM_WORD.sub(lambda m: "" if m.group(3) == "?" else m.group(4), text)
+        if new == text:
+            return new
+        text = new
+
+
 def _unquoted(text):
     return re.sub(r"[\"'\\]", "", text)
 
@@ -1177,9 +1191,11 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     local = set()
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7)
-    job_text = "\n".join(item[1] for item in scripts if not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]))
+    job_text = "\n".join(_expand_defaults(item[1]) for item in scripts
+                         if not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]))
     for item in scripts:
         where, text, shell = item[:3]
+        text = _expand_defaults(text)
         wdir = item[3] if len(item) > 3 else None
         # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
         # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
