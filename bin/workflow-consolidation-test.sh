@@ -124,7 +124,10 @@ for jid, (name, perms, env, needs, cond) in MOVED.items():
         bad.append("job %s is reached through uses: (its check would be renamed)" % jid)
 if d.get("permissions") != {"contents": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
-if d.get("concurrency") or any(j.get("concurrency") for j in jobs.values()):
+# the one reviewed exception: the rule-12 live test runs one at a time across workflows, never cancelled (#169)
+LIVE = {"group": "vex-live-test", "cancel-in-progress": "false"}
+if d.get("concurrency") or any(j.get("concurrency") and not (jid == "live-test" and j.get("concurrency") == LIVE)
+                               for jid, j in jobs.items()):
     bad.append("ci.yml gained a concurrency setting")
 if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
     bad.append("ci.yml's events changed: %s" % d.get("on"))
@@ -171,6 +174,9 @@ PY
 }
 case_ci real                     ok  ""
 case_ci allowlist-renamed        bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
+case_ci concurrency-other-job    bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_ci live-test-cancels        bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
+case_ci workflow-concurrency     bad "d['concurrency'] = {'group': 'ci'}"
 case_ci requirements-dropped     bad "d['jobs'].pop('requirements')"
 case_ci guard-widened            bad "d['jobs']['required-check-guard']['permissions']['contents'] = 'write'"
 case_ci drift-no-environment     bad "d['jobs']['drift-fixer-dispatch'].pop('environment')"

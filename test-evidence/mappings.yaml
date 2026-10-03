@@ -488,3 +488,18 @@ mappings:
   - ac: REQ-SCAN-011-AC4
     evidence:
       - { type: shell-test, ref: "bin/vex-guide-test.sh" }
+  - ac: REQ-SCAN-012-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }

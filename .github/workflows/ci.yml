@@ -306,6 +306,9 @@ jobs:
       - name: the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)
         run: bash bin/vex-guide-test.sh
 
+      - name: the live test's plan, test copy, fixture and wiring — offline (scanner-panel rule 12)
+        run: bash bin/vex-live-test-test.sh
+
       - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
         run: bash bin/go-bump-open-pr-test.sh
 
@@ -493,3 +496,90 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+
+  # Scanner-panel rule 12 (REQ-SCAN-012-AC4): on main, a change to the guide, the VEX file or its generator runs the live
+  # test against the newest published release that carries the rule-10 files (never on a pull request or a schedule)
+  live-test-gate:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"   # no usable base: run rather than miss a change
+            exit 0
+          fi
+          git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt"   # complete before it is read
+          if grep -qE '^(docs/using-our-vex\.md|\.vex/.+|bin/vex-forms\.py|bin/vex-live-test\.(sh|py))$' "$RUNNER_TEMP/changed.txt"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  live-test:
+    needs: live-test-gate
+    if: github.event_name == 'push' && needs.live-test-gate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
+      group: vex-live-test
+      cancel-in-progress: false
+    environment: live-test   # admits only main and v*-rc.* tags; holds the five LIVE_TEST_* identifiers (advisor 0078)
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+      - name: install crane, Grype and Docker Scout (pinned)
+        run: |
+          set -euo pipefail
+          GOTOOLCHAIN=local go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+          mkdir -p "$RUNNER_TEMP/bin" "$HOME/.docker/cli-plugins"
+          ./bin/install-scanner.sh grype "$RUNNER_TEMP/bin"
+          ./bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.LIVE_TEST_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Google, as the live-test service account (federated; the test Artifact Registry repository and VEX notes)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.LIVE_TEST_GCP_PROVIDER }}
+          service_account: ${{ vars.LIVE_TEST_GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: the live test — every guide command as written, the fixture's finding shown before and gone after
+        env:
+          MODE: main
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          GH_TOKEN: ${{ github.token }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
+        run: bash bin/vex-live-test.sh run
+      - name: cleanup — delete every image, live-test filter and VEX note the run created
+        if: always()
+        env:
+          ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
+          GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+        run: bash bin/vex-live-test.sh cleanup
