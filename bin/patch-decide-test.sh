@@ -555,6 +555,26 @@ check("r6/B2 find -exec rm and xargs sha256sum keep the list", P.effective_neutr
     {"a.yml": "run: find . -name build -exec rm -rf {} +\nrun: ls | xargs -0 sha256sum\n"}) == set(P.NEUTRAL_TESTS))
 check("r6/B2 the classifier's own list is not a mention", P.effective_neutral({"bin/patch-decide.py": open(sys.argv[1]).read()}) == set(P.NEUTRAL_TESTS))
 check("r6/B2 classify uses the decision-time list", P.classify(c("e1", [LT], diffs={LT: "+x\n"}) | {"neutral": []})[0] == "dirty")
+# Sonnet #159 r7 (B3): find -exec / -execdir / -ok and xargs with any command beyond a short safe list (quoted, wrapped
+# by env, or an interpreter) leave no test neutral
+for txt in ['run: find . -name "*-test.sh" -exec "bash" {} \;\n', 'run: ls bin/*-test.sh | xargs -n1 "sh"\n',
+            'run: find . -execdir "bash" {} +\n', 'run: find . -exec env bash {} \;\n', "run: find . -ok sh {} \;\n",
+            "run: xargs -0 env python3 < list\n", "run: find . -exec ./runner {} \;\n"]:
+    check("r7/B3 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"stage-x.yml": txt}) == set())
+check("r7/B3 the safe commands keep the list", P.effective_neutral({"a.yml": 'run: find . -name build -exec "rm" -rf {} +\nrun: ls | xargs -0 sha256sum\n'}) == set(P.NEUTRAL_TESTS))
+# Sonnet #159 r7 (B4): a quoted run line is still an execution, and an executable is never neutral by its directory
+q_repo = tempfile.mkdtemp()
+g(q_repo, "init", "-q")
+os.makedirs(os.path.join(q_repo, ".github/workflows")); os.makedirs(os.path.join(q_repo, "test-evidence"))
+for path, body in {".github/workflows/release.yml": 'steps:\n  - run: "bash test-evidence/gate-test.sh"\n  - run: \'bash test-evidence/b.sh\'\n',
+                   "test-evidence/gate-test.sh": "", "test-evidence/b.sh": ""}.items():
+    open(os.path.join(q_repo, path), "w").write(body)
+g(q_repo, "add", "-A"); g(q_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+qch = P.release_chain_files(q_repo)
+check("r7/B4 a quoted run line's script is in the chain", {"test-evidence/gate-test.sh", "test-evidence/b.sh"} <= qch, sorted(qch))
+for f in ("test-evidence/x.sh", "docs/tool.py", "requirements/gen.sh", ".github/agent/docs/run.sh"):
+    check("r7/B4 an executable under a neutral directory (%s) is not neutral" % f, P.classify(c("q", [f], diffs={f: "+x\n"}))[0] == "dirty")
+check("r7/B4 data under a neutral directory stays neutral", P.classify(c("q2", ["docs/a.md"], diffs={"docs/a.md": "+x\n"}))[0] == "neutral")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -225,6 +225,28 @@ def _is_test(path, neutral=None):
     return path in (NEUTRAL_TESTS if neutral is None else neutral)
 
 
+# commands find -exec / xargs may run without making every test chain input (Sonnet #159 r7, B3): anything else —
+# an interpreter, quoted or wrapped (env), a script, a variable — fails closed
+SAFE_INDIRECT = {"rm", "sha256sum", "sha1sum", "md5sum", "chmod", "chown", "touch", "cat", "ls", "stat", "wc", "echo",
+                 "grep", "test", "du", "basename", "dirname"}
+
+
+def _indirect_exec(text):
+    """True when a find -exec/-execdir/-ok/-okdir or an xargs runs a command outside SAFE_INDIRECT."""
+    strip = lambda w: os.path.basename(w.strip("\"'"))
+    for m in re.finditer(r"(?<![\w-])-(?:exec|execdir|ok|okdir)\s+(\S+)", text):
+        if strip(m.group(1)) not in SAFE_INDIRECT:
+            return True
+    for m in re.finditer(r"\bxargs\b([^\n;|&]*)", text):
+        words = m.group(1).split()
+        i = 0
+        while i < len(words) and words[i].startswith("-"):
+            i += 2 if re.fullmatch(r"-[nLPsdIEaJ]", words[i]) else 1     # an option with a separate value
+        if i < len(words) and strip(words[i]) not in SAFE_INDIRECT:
+            return True
+    return False
+
+
 def effective_neutral(texts):
     """NEUTRAL_TESTS at decision time (Sonnet #159 r6, B2): a listed test that any release-chain file names — by path
     or by file name, in any form (an env value, a subprocess list) — is not neutral; and when a chain file runs an
@@ -234,7 +256,7 @@ def effective_neutral(texts):
     for path, text in texts.items():
         if path == "bin/patch-decide.py":
             continue
-        if re.search(r"-exec(?:dir)?\s+(?:\S*/)?(?:bash|sh|python3?|source)\b|\bxargs\b(?:\s+-\S+)*\s+(?:\S*/)?(?:bash|sh|python3?)\b", text):
+        if _indirect_exec(text):
             return set()
         out -= {t for t in out if t in text or re.search(r"(?<![\w.-])" + re.escape(t.rsplit("/", 1)[-1]) + r"(?![\w.-])", text)}
     return out
@@ -283,7 +305,7 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
             # action (Sonnet #159 r5, F1): its steps run too
         # an interpreter only at the start of a command (after whitespace or a separator) — never the "sh" that ends a
         # file name such as x-test.sh (Codex #159 r6, B1: a list of test names is data, not executions)
-        cands = re.findall(r"(?:^|[\s;&|(`])(?:bash|sh|python3?|source)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
+        cands = re.findall(r"(?:^|[\s;&|(`\"'])(?:bash|sh|python3?|source)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
                            r"([\w./-]+\.(?:sh|py))\b", text, re.M)
         cands += re.findall(r"(?<![\w/.$-])\./([\w./-]+\.(?:sh|py))\b", text)
         cands += re.findall(r"\$\{?\w+\}?/([\w./-]+\.(?:sh|py))\b", text)
@@ -307,6 +329,9 @@ def classify(commit):
             kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
         elif _is_test(f, commit.get("neutral")):
             kinds.add("neutral")
+        elif re.search(r"\.(sh|bash|py|pl|rb|js|ts|go)$", f) and f.startswith(NEUTRAL_PREFIX):
+            # an executable is never neutral by its directory (Sonnet #159 r7, B4): only data is
+            kinds.add("dirty"); why.append("%s is executable; a directory does not make it neutral" % f)
         elif f in FIX_EXACT or f.startswith(FIX_PREFIX):
             kinds.add("fix")
         elif f in ("go.mod", "tools/requirements/go.mod"):
