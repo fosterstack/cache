@@ -488,6 +488,31 @@ check("AC1(h) a dependency-only bump stays patch-clean", P.patch_clean(P.gather_
 ci_text = open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".github/workflows/ci.yml")).read()
 check("CI guard: ci.yml runs nothing release-like (no release/stage workflow, no release environment, no tag push, no promotion)",
       not re.search(r"uses:\s*\./\.github/workflows/(release|stage-)|environment:\s*release\b|git\s+push\s+[^\n]*\bv\d|gh\s+release\s+(create|edit|upload)|cosign\s+(sign|attest)\b", ci_text))
+# advisor 0130: behavior changes judged unable to affect supported clients, from docs/next-release-notes.md
+NRN = """# Notes for the next release
+
+Behavior changes since the last release, carried into its notes.
+
+- Go 1.27: a request with more than 500 header values is rejected with 431 before it
+  reaches the cache (owner accepted; advisor 0115).
+- Second change, one line (advisor 0130).
+"""
+ents = P.behavior_entries(NRN)
+check("0130 entries parsed, continuation lines joined", ents == [
+    "Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).",
+    "Second change, one line (advisor 0130)."], ents)
+check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
+for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
+    try:
+        P.behavior_entries(bad); raised = False
+    except ValueError:
+        raised = True
+    check("0130 an entry without a cited handoff is refused: %r" % bad, raised)
+nb = P.notes("v0.2.2", fixes, vex, behavior=ents)
+check("0130 notes list behavior changes under their heading", "### Behavior changes\n- Go 1.27: a request" in nb, nb)
+check("0130 with behavior changes the no-behavior-change line is dropped", "No behavior change" not in nb, nb)
+check("0130 without them the no-behavior-change line stays", "No behavior change" in P.notes("v0.2.2", fixes, vex, behavior=[]))
+check("0130 behavior entries are cleaned of vendor names too", "Gemini" not in P.notes("v0.2.2", [], [], behavior=["Gemini x (advisor 0130)."]))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
