@@ -210,12 +210,15 @@ ACTIONS = {
     "google-github-actions/setup-gcloud": "node: installs gcloud by version (a binary, outside this check)",
     "goreleaser/goreleaser-action": "node: installs goreleaser by version (a binary); `args` is command "
     "text we write (the run: class; review pass)",
-    "ossf/scorecard-action": "docker: the pinned commit names its executor image by a mutable tag (an upstream "
-                             "supply-chain residual, see above; owner, Sep 30)",
+    "ossf/scorecard-action": "retired (advisor 0140): the composite wrapper's own action.yaml ran its executor image "
+                             "by a mutable tag, never fixed by a commit pin on the wrapper; refused outright below — "
+                             "use docker://ghcr.io/ossf/scorecard-action@<digest> directly instead",
     "sigstore/cosign-installer": "composite: installs cosign by version with checksum (a binary)",
 }
 # classified actions that are Docker actions: their step inputs follow the docker:// rules
 DOCKER_ACTIONS = {"ossf/scorecard-action"}
+RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
+                                                 # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 GATE_WORKFLOW_SHA256 = "e2a5938e14aa50c3b1a14d04c0b6ef299d1d43117329476effd6486cdf652631"
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
@@ -470,6 +473,9 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
     if m and any(seg in (".", "..", "") for seg in v.split("@")[0].split("/")):
         return bad.append(f"{where}: an action path with a `.`/`..`/empty segment is refused: {v!r}")
     ident = "/".join(v.split("@")[0].split("/")[:2]).lower() if m else ""
+    if m and ident in RETIRED_COMPOSITE:
+        return bad.append(f"{where}: {ident} is retired (advisor 0140) — its composite wrapper ran a mutable "
+                          f"executor image no commit pin fixes; invoke docker://<its image>@<digest> directly: {v!r}")
     if m and ident not in ACTIONS and ident not in EXECUTOR_ALLOWED and not (len(path) == 3 and path[0] == "jobs"):
         bad.append(f"{where}: {ident} is not a classified action (add it to ACTIONS with what it runs, "
                    f"or to EXECUTOR_ALLOWED): {v!r}")
@@ -953,8 +959,10 @@ def _commands(script, depth=0):
                 if _base(w) in SHELLS else None
             # `trap 'CMD' SIGSPEC...` runs CMD on the signal; a literal, non-option command argument is read like an
             # eval body (Codex #164 adversarial r1, B2) — `trap -p`, `trap -l` and a bare `trap SIGSPEC` (listing or
-            # resetting, no separate command) run nothing
-            trap_cmd = toks[i + 1] if w == "trap" and i + 2 < len(toks) and not toks[i + 1].startswith("-") else None
+            # resetting, no separate command) run nothing; `trap -- CMD SIG` (Codex r2, B2) is the option terminator,
+            # not an option itself
+            j_ = i + 2 if w == "trap" and toks[i + 1:i + 2] == ["--"] else i + 1
+            trap_cmd = toks[j_] if w == "trap" and j_ + 1 < len(toks) and not toks[j_].startswith("-") else None
             if c is not None or (w == "eval" and toks[i + 1:]) or trap_cmd is not None:
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
@@ -1425,16 +1433,20 @@ def script_images(script):
                 ev += [("local", x) for x in tags]
                 for cf in cache_from:
                     # a bare ref or type=registry,ref=... names a registry image; any other type (local/gha/...)
-                    # reads from something this check does not treat as a remote pull (Codex r1, B4)
+                    # reads from something this check does not treat as a remote pull (Codex r1, B4). Both forms are
+                    # comma-splitting CSV (buildx's cache-source parser), so each one may name several refs (N2)
                     m = re.match(r"type=([^,]+)(?:,(.*))?$", cf)
-                    img = (dict(p.split("=", 1) for p in m.group(2).split(",") if "=" in p).get("ref")
-                           if m and m.group(2) else None) if m else cf
+                    refstr = (dict(p.split("=", 1) for p in m.group(2).split(",") if "=" in p).get("ref")
+                              if m and m.group(2) else None) if m else cf
                     if m and m.group(1) != "registry":
                         continue
-                    if img is None:
+                    if refstr is None:
                         ev.append(("finding", "a build's --cache-from registry source names no ref (%s)" % cf))
                     else:
-                        ev.append(("use", "docker build --cache-from", img))
+                        # BuildKit's registry cache importer always fetches remotely; a matching local/output tag
+                        # never exempts it (Codex #164 r2, B4)
+                        for img in refstr.split(","):
+                            ev.append(("fetch", "docker build --cache-from", img))
         elif cmd == "skopeo" and args and args[0] not in ("copy", "inspect") + tuple(SKOPEO_SAFE):
             ev.append(("finding", "`skopeo %s` is not a verb this check reads; it is refused" % args[0]))
         elif cmd == "skopeo" and args and args[0] in ("copy", "inspect"):
@@ -1465,7 +1477,9 @@ def script_images(script):
                 continue
             manifests = [args[2:][i + 1] for i, a in enumerate(args[2:]) if a in ("-m", "--manifest")] + \
                         [a.split("=", 1)[1] for a in args[2:] if a.startswith(("-m=", "--manifest="))]
-            for img in ([pos[0]] if pos else []) + manifests:
+            # every positional operand is a source (base + append's extra manifests after it), and -m/--manifest is a
+            # comma-splitting pflag string-slice, same as --cache-from below (Codex #164 r2, B5/N2)
+            for img in [x for p in pos for x in p.split(",")] + [x for m in manifests for x in m.split(",")]:
                 ev.append(("fetch", "crane index " + args[1], img))
         elif cmd == "crane" and args and args[0] not in ("copy", "cp", "pull", "export") + tuple(CRANE_SAFE):
             ev.append(("finding", "`crane %s` is not a verb this check reads (it may take a base image); it is refused"
