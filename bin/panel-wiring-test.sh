@@ -114,9 +114,10 @@ else:
     scouts = [l for l in log if l.startswith("docker scout cves")]
     if rc != 0:
         bad.append("the Scout self-check fails when Scout applies our statement")
-    if len(scouts) != 2 or not all(l.startswith("docker scout cves --format gitlab --vex-location ")
-                                   and l.endswith(" --vex-author \\^FosterStack\\ LLC\\$ local://ghcr.io/fosterstack/cache:selfcheck")
-                                   for l in scouts):
+    # the WHOLE argument array, only the VEX path free (Codex #168 r3, B1: an extra option in between must fail)
+    want_sc = re.compile(r"docker scout cves --format gitlab --vex-location [^ ]+ --vex-author "
+                         r"\\\^FosterStack\\ LLC\\\$ local://ghcr\.io/fosterstack/cache:selfcheck")
+    if len(scouts) != 2 or not all(want_sc.fullmatch(l) for l in scouts):
         bad.append("the self-check does not run Scout with our author on the fixture under our name: %s" % scouts)
     # the VEX documents the self-check hands Scout: ours by author, the second covering exactly the target on our image
     try:
@@ -229,6 +230,9 @@ judge_case other-package     bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerab
 judge_case other-version     bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$A2]}"
 judge_case gained-a-finding  bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$A,$B]}"
 judge_case target-kept       bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$T,$A]}"
+judge_case id-number         bad "{\"vulnerabilities\":[$T,$(F 123 libalpha 1.0 | sed 's/"123"/123/')]}" "{\"vulnerabilities\":[$(F 123 libalpha 1.0 | sed 's/"123"/123/')]}"
+judge_case id-true           bad "{\"vulnerabilities\":[$T,$(F x libalpha 1.0 | sed 's/"x"/true/')]}" "{\"vulnerabilities\":[$(F x libalpha 1.0 | sed 's/"x"/true/')]}"
+judge_case id-blank          bad "{\"vulnerabilities\":[$T,$(F ' ' libalpha 1.0)]}" "{\"vulnerabilities\":[$(F ' ' libalpha 1.0)]}"
 judge_case no-location       bad "{\"vulnerabilities\":[$T,{\"identifiers\":[{\"value\":\"CVE-1\"}]}]}" "{\"vulnerabilities\":[{\"identifiers\":[{\"value\":\"CVE-1\"}]}]}"
 # Codex #168 r2 (B1): the helper's argument boundaries are what is checked — a mutated copy of bin/scout-vex-scan.sh in
 # a scratch root must fail the real workflow's judge
@@ -262,6 +266,7 @@ case_ scout-fixture-tag       bad "s = [s for s in $J['panel-scout']['steps'] if
 case_ scout-vex-other-repo    bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('repository_url=ghcr.io/fosterstack/cache\"}]}]\' \"\$RUNNER_TEMP/selfcheck/one.json', 'repository_url=ghcr.io/another-vendor/cache\"}]}]\' \"\$RUNNER_TEMP/selfcheck/one.json')"
 case_ scout-vex-affected      bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('\"CVE-2023-4911\"}, \"status\": \"not_affected\"', '\"CVE-2023-4911\"}, \"status\": \"affected\"')"
 case_ scout-fixture-elsewhere bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('docker-daemon:ghcr.io/fosterstack/cache:selfcheck', 'docker-daemon:another-vendor/cache:selfcheck')"
+case_ scout-sc-extra-option  bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck \"\$RUNNER_TEMP/selfcheck/one.json\" \"\$RUNNER_TEMP/selfcheck/after.json\"', 'docker scout cves --format gitlab --vex-location \"\$RUNNER_TEMP/selfcheck/one.json\" --only-vex-affected --vex-author \'^FosterStack LLC\$\' local://ghcr.io/fosterstack/cache:selfcheck > \"\$RUNNER_TEMP/selfcheck/after.json\"'); assert 'only-vex-affected' in s['run']"
 case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.vex/fosterstack-cache.openvex.json \"\${d}', '/dev/null \"\${d}')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"

@@ -19,11 +19,14 @@ def findings(path):
         raise ValueError("%s: Scout's report has no vulnerabilities list" % path)
     out = Counter()
     for v in doc["vulnerabilities"]:
-        ids = [i.get("value") for i in (v.get("identifiers") or []) if isinstance(i, dict) and i.get("value")] \
-            if isinstance(v, dict) else []
+        # a finding's CVE is a non-blank string, never a number, a boolean or blanks (Codex #168 r3, B2)
+        ids = [i.get("value") for i in (v.get("identifiers") or []) if isinstance(i, dict)] \
+            if isinstance(v, dict) and isinstance(v.get("identifiers") or [], list) else []
+        if not ids or not isinstance(ids[0], str) or not ids[0].strip():
+            raise ValueError("%s: a finding whose identifier is not a CVE string" % path)
         dep = ((v.get("location") or {}).get("dependency") or {}) if isinstance(v, dict) else {}
         name, ver = ((dep.get("package") or {}).get("name"), dep.get("version")) if isinstance(dep, dict) else (None, None)
-        if not ids or not isinstance(name, str) or not name or not isinstance(ver, str) or not ver:
+        if not isinstance(name, str) or not name.strip() or not isinstance(ver, str) or not ver.strip():
             raise ValueError("%s: a finding without its CVE, package or version" % path)
         out[(ids[0], name, ver)] += 1
     return out
