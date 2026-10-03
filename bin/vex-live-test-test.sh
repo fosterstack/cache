@@ -155,6 +155,115 @@ check("ci.yml: the gate ignores unrelated changes",
 check("ci.yml: no usable base runs the test rather than missing a change", 'echo "changed=true"' in gate.split("exit 0")[0])
 for name, d in (("release.yml", rel), ("ci.yml", ci)):
     check("%s: never on a schedule" % name, "schedule" not in d["on"], d["on"])
+# --- Codex #169 r1
+# SEC-169-04: a settings line is a plain value; anything else is a command the plan must run (or refuse)
+for bad_line in ("VER=0.3.0; false", "VER=$(false)", "VER=0.3.0 && false", "IMAGE=x`false`", "VER=0.3.0\nfalse"):
+    g = guide.replace("```sh\nVER=0.3.0\n```", "```sh\n%s\n```" % bad_line, 1)
+    try:
+        kinds = [b["kind"] for b in L.guide_blocks(g)]
+        got = "settings" if g != guide and kinds.count("settings") == 2 else "refused-or-run"
+    except ValueError:
+        got = "refused-or-run"
+    check("SEC-169-04 %r is never swallowed as a setting" % bad_line, got == "refused-or-run", got)
+# SEC-169-05: scanner reports must be valid, and suppression shown affirmatively, the rest kept
+GB = {"matches": [{"vulnerability": {"id": "CVE-T"}}, {"vulnerability": {"id": "CVE-C"}}], "ignoredMatches": []}
+GA = {"matches": [{"vulnerability": {"id": "CVE-C"}}], "ignoredMatches": [{"vulnerability": {"id": "CVE-T"}}]}
+check("grype: suppressed and the rest kept passes", L.judge_grype(GB, GA, "CVE-T") is None, L.judge_grype(GB, GA, "CVE-T"))
+for why, after in [("{}", {}), ("no matches list", {"ignoredMatches": []}), ("everything dropped", {"matches": [], "ignoredMatches": []}),
+                   ("still matched", GB), ("dropped without being ignored", {"matches": [{"vulnerability": {"id": "CVE-C"}}], "ignoredMatches": []}),
+                   ("not a dict", "x")]:
+    check("SEC-169-05 grype refuses after = %s" % why, L.judge_grype(GB, after, "CVE-T") is not None)
+check("SEC-169-05 grype refuses a before without the CVE", L.judge_grype(GA, GA, "CVE-T") is not None)
+SB = {"vulnerabilities": [{"identifiers": [{"value": "CVE-T"}]}, {"identifiers": [{"value": "CVE-C"}]}]}
+SA = {"vulnerabilities": [{"identifiers": [{"value": "CVE-C"}]}]}
+check("scout: dropped and the rest kept passes", L.judge_scout(SB, SA, "CVE-T") is None)
+for why, after in [("{}", {}), ("everything dropped", {"vulnerabilities": []}), ("still reported", SB), ("garbage", [1])]:
+    check("SEC-169-05 scout refuses after = %s" % why, L.judge_scout(SB, after, "CVE-T") is not None)
+# SEC-169-06: Google's assessment must be NEW and come from a note this run's load created
+occ = lambda state, note=None: {"noteName": "projects/goog-vulnz/notes/CVE-T", "vulnerability": dict(
+    {"vexAssessment": {"state": state, "noteName": note}} if state else {})}
+RUN_NOTES = {"projects/p/notes/ours"}
+check("google: unassessed before, ours after passes",
+      L.judge_google({"occurrences": [occ(None)]}, {"occurrences": [occ("NOT_AFFECTED", "projects/p/notes/ours")]}, "CVE-T", RUN_NOTES) is None)
+for why, b, a in [("pre-existing NOT_AFFECTED before", [occ("NOT_AFFECTED", "projects/p/notes/old")], [occ("NOT_AFFECTED", "projects/p/notes/old")]),
+                  ("an assessment from another note", [occ(None)], [occ("NOT_AFFECTED", "projects/unrelated/notes/old")]),
+                  ("no occurrence before", [], [occ("NOT_AFFECTED", "projects/p/notes/ours")]),
+                  ("no occurrence after", [occ(None)], []),
+                  ("still affected after", [occ(None)], [occ("AFFECTED", "projects/p/notes/ours")])]:
+    check("SEC-169-06 google refuses %s" % why, L.judge_google({"occurrences": b}, {"occurrences": a}, "CVE-T", RUN_NOTES) is not None)
+check("SEC-169-06 google refuses when this run created no note", L.judge_google({"occurrences": [occ(None)]},
+      {"occurrences": [occ("NOT_AFFECTED", "projects/p/notes/ours")]}, "CVE-T", set()) is not None)
+
+# behavioral: the shell library, with stubs
+script = os.path.join(root, "bin/vex-live-test.sh")
+def sh(body, stubs, env=None):
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "stub"))
+        for name, code in stubs.items():
+            with open(os.path.join(t, "stub", name), "w") as fh:
+                fh.write("#!/usr/bin/env bash\n" + code + "\n")
+            os.chmod(os.path.join(t, "stub", name), 0o755)
+        e = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], VEX_LIVE_TEST_LIB="1",
+                 RUNNER_TEMP=t, ECR="1.dkr.ecr.us-east-1.amazonaws.com/fosterstack-cache-live-test",
+                 GAR="us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test", GITHUB_RUN_ID="1", **(env or {}))
+        r = subprocess.run(["bash", "-c", 'set -euo pipefail; source "$0"; ' + body, script], cwd=t, env=e,
+                           capture_output=True, text=True)
+        return r.returncode, r.stdout + r.stderr
+# SEC-169-03: a guide block's failing command fails the run even inside a pipe
+plan_ok = 'mkdir -p plan; printf "00-verify.sh\\n" > plan.txt; printf "%s\\n" "cosign verify-attestation x | jq -r . > out.json" > plan/00-verify.sh; guide verify; echo CONTINUED'
+rc, out = sh(plan_ok, {"cosign": "echo '{}'; exit 42"})
+check("SEC-169-03 a failed cosign inside a pipe stops the run", rc != 0 and "CONTINUED" not in out, (rc, out[-200:]))
+# SEC-169-08/09: the sweep fails when it cannot list or delete, pages through notes, and empties the test repositories
+OKAWS = r"""case "$*" in
+  *"ecr list-images"*) echo '{"imageIds": []}' ;;
+  *"inspector2 list-filters"*) echo '{"filters": []}' ;;
+  *) echo '{}' ;; esac"""
+OKGC = 'case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "[]" ;; esac'
+OKCURL = 'echo "{}"'
+rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "curl": OKCURL})
+check("sweep of empty test resources passes", rc == 0, out[-300:])
+rc, out = sh("sweep", {"aws": 'echo AccessDenied >&2; exit 254', "gcloud": OKGC, "curl": OKCURL})
+check("SEC-169-08 sweep fails when AWS listing fails", rc != 0, out[-200:])
+rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "curl": 'echo denied >&2; exit 22'})
+check("SEC-169-08 sweep fails when the notes cannot be listed", rc != 0, out[-200:])
+rc, out = sh("sweep", {"aws": r"""case "$*" in
+  *"ecr list-images"*) echo '{"imageIds": [{"imageDigest": "sha256:a"}]}' ;;
+  *"batch-delete-image"*) echo '{"imageIds": [], "failures": [{"imageId": {"imageDigest": "sha256:a"}, "failureCode": "X"}]}' ;;
+  *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""", "gcloud": OKGC, "curl": OKCURL})
+check("SEC-169-08 sweep fails on an ECR per-image failure", rc != 0, out[-200:])
+rc, out = sh("sweep; cat \"$RUNNER_TEMP/deleted\"", {"aws": OKAWS, "gcloud": OKGC, "curl": r"""for a in "$@"; do u=$a; done
+case "$u" in
+  *notes\?*) [ -s "$RUNNER_TEMP/deleted" ] && { echo '{"notes": []}'; exit 0; } ;;& 
+  *notes\?*pageToken=p2*) echo '{"notes": [{"name": "projects/p/notes/two", "vulnerabilityAssessment": {"product": {"genericUri": "https://us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test/cache@sha256:b"}}}]}' ;;
+  *notes\?*) echo '{"notes": [{"name": "projects/p/notes/one", "vulnerabilityAssessment": {"product": {"genericUri": "https://us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test/cache@sha256:a"}}}], "nextPageToken": "p2"}' ;;
+  *) case " $* " in *" -X DELETE "*) echo "$u" >> "$RUNNER_TEMP/deleted" ;; esac; echo '{}' ;; esac"""})
+check("SEC-169-09 sweep pages through the notes and deletes every one of the test repository's",
+      "notes/one" in out and "notes/two" in out, out[-400:])
+# SEC-169-09: a push is journaled BEFORE the copy, so a copy that fails midway is still cleaned
+rc, out = sh('export PUSHED_LOG="$RUNNER_TEMP/p"; push_copy a b || true; cat "$RUNNER_TEMP/p"', {"crane": "exit 1"})
+check("SEC-169-09 a failed copy is still in the journal", out.strip().endswith("b"), out)
+# SEC-169-11: no eligible release is a failure, not a green no-test run
+rc, out = sh("MODE=main; select_release", {"gh": "echo '[]'"}, {"GITHUB_REPOSITORY": "fosterstack/cache"})
+check("SEC-169-11 no published release with the rule-10 files fails the run", rc != 0, out[-200:])
+# SEC-169-07: one live test at a time, across both workflows, never cancelled midway
+for name, d in (("release.yml", rel), ("ci.yml", ci)):
+    check("SEC-169-07 %s: the live-test job is serialized with every other live test" % name,
+          d["jobs"]["live-test"].get("concurrency") == {"group": "vex-live-test", "cancel-in-progress": "false"},
+          d["jobs"]["live-test"].get("concurrency"))
+# SEC-169-10: the gate reads a completed diff (no early-closed pipe under pipefail)
+gstep = [st for st in ci["jobs"]["live-test-gate"]["steps"] if "run" in st][0]["run"]
+with tempfile.TemporaryDirectory() as t:
+    os.makedirs(os.path.join(t, "stub"))
+    with open(os.path.join(t, "stub", "git"), "w") as fh:
+        fh.write('#!/usr/bin/env bash\ncase "$1" in cat-file) exit 0 ;; diff) echo .vex/fosterstack-cache.openvex.json; '
+                 'for i in $(seq 1 200000); do echo "src/file-$i.go"; done ;; esac\n')
+    os.chmod(os.path.join(t, "stub", "git"), 0o755)
+    outp = os.path.join(t, "out")
+    r = subprocess.run(["bash", "-eo", "pipefail", "-c", gstep], cwd=t, capture_output=True, text=True,
+                       env=dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], BEFORE="a",
+                                GITHUB_SHA="b", GITHUB_OUTPUT=outp, RUNNER_TEMP=t))
+    got = open(outp).read() if os.path.exists(outp) else ""
+check("SEC-169-10 a long diff with a VEX change still runs the live test", "changed=true" in got, (r.returncode, got))
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

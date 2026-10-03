@@ -520,7 +520,8 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"   # no usable base: run rather than miss a change
             exit 0
           fi
-          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -qE '^(docs/using-our-vex\.md|\.vex/.+|bin/vex-forms\.py|bin/vex-live-test\.(sh|py))$'; then
+          git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt"   # complete before it is read
+          if grep -qE '^(docs/using-our-vex\.md|\.vex/.+|bin/vex-forms\.py|bin/vex-live-test\.(sh|py))$' "$RUNNER_TEMP/changed.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -530,6 +531,9 @@ jobs:
     needs: live-test-gate
     if: github.event_name == 'push' && needs.live-test-gate.outputs.changed == 'true'
     runs-on: ubuntu-latest
+    concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
+      group: vex-live-test
+      cancel-in-progress: false
     environment: live-test   # admits only main and v*-rc.* tags; holds the five LIVE_TEST_* identifiers (advisor 0078)
     permissions:
       contents: read

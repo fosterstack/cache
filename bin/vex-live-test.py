@@ -33,7 +33,9 @@ def guide_blocks(text):
     """[{kind, section, text}] for every ```sh block of the guide, in order and byte for byte."""
     out = []
     for body in re.findall(r"```sh\n(.*?)```", text, re.S):
-        if re.fullmatch(r"(?:[A-Z_]+=\S.*\n)+", body) and set(re.findall(r"(?m)^([A-Z_]+)=", body)) <= set(SETTINGS):
+        # a setting is a plain value and nothing else: VER=0.3.0; false is a command the plan must run (Codex #169 r1,
+        # SEC-169-04), so it is not a setting, and a block that is not one known step is refused below
+        if re.fullmatch(r"(?:(?:%s)=[A-Za-z0-9._/:@-]+\n)+" % "|".join(SETTINGS), body):
             out.append({"kind": "settings", "section": "settings", "text": body})
             continue
         found = [name for name, key in SECTIONS[1:] if key in body]
@@ -115,6 +117,89 @@ def pick_cve(reports, exclude=()):
     return sorted(common, key=lambda c: (SEVERITY.get(reports["grype"][c], 9), c))[0]
 
 
+def _ids(items, path):
+    out = []
+    for m in items:
+        v = m
+        for k in path:
+            v = v.get(k) if isinstance(v, dict) else None
+        if not isinstance(v, str) or not v:
+            raise ValueError("a finding without an identifier")
+        out.append(v)
+    return out
+
+
+def judge_grype(before, after, cve):
+    """None when Grype matched the CVE before, lists it as IGNORED after (our VEX applied — affirmative evidence), and
+    keeps every other match; otherwise why not (Codex #169 r1, SEC-169-05: an empty or broken report is never success)."""
+    try:
+        for doc in (before, after):
+            if not isinstance(doc, dict) or not isinstance(doc.get("matches"), list) \
+                    or not isinstance(doc.get("ignoredMatches", []), list):
+                return "not a Grype report"
+        b, a = set(_ids(before["matches"], ("vulnerability", "id"))), set(_ids(after["matches"], ("vulnerability", "id")))
+        ign = set(_ids(after.get("ignoredMatches", []), ("vulnerability", "id")))
+    except ValueError as e:
+        return str(e)
+    if cve not in b:
+        return "Grype did not report %s before" % cve
+    if cve in a or cve not in ign:
+        return "Grype did not ignore %s with our file" % cve
+    if not b - {cve} or not (b - {cve}) <= a:
+        return "Grype dropped findings our file does not cover"
+    return None
+
+
+def judge_scout(before, after, cve):
+    """The same for Scout's GitLab report: the CVE gone, every other finding kept, a valid report both times."""
+    try:
+        for doc in (before, after):
+            if not isinstance(doc, dict) or not isinstance(doc.get("vulnerabilities"), list):
+                return "not a Scout report"
+        get = lambda doc: {(v.get("identifiers") or [{}])[0].get("value") if isinstance(v, dict) else None
+                           for v in doc["vulnerabilities"]}
+        b, a = get(before), get(after)
+    except (AttributeError, IndexError, TypeError):
+        return "not a Scout report"
+    if None in b | a or "" in b | a:
+        return "a Scout finding without an identifier"
+    if cve not in b:
+        return "Scout did not report %s before" % cve
+    if cve in a:
+        return "Scout kept %s with our file" % cve
+    if not b - {cve} or not (b - {cve}) <= a:
+        return "Scout dropped findings our file does not cover"
+    return None
+
+
+def judge_google(before, after, cve, run_notes):
+    """None when, before, the CVE's occurrences on the fixture carry no NOT_AFFECTED assessment, and after, every one
+    carries NOT_AFFECTED from a note THIS run's load created (Codex #169 r1, SEC-169-06: a pre-existing or foreign
+    assessment proves nothing)."""
+    def occ(doc):
+        if not isinstance(doc, dict) or not isinstance(doc.get("occurrences", []), list):
+            raise ValueError("not an occurrence list")
+        return [o for o in doc.get("occurrences", []) if isinstance(o, dict)
+                and str(o.get("noteName", "")).rsplit("/", 1)[-1] == cve]
+    try:
+        b, a = occ(before), occ(after)
+    except ValueError as e:
+        return str(e)
+    if not run_notes:
+        return "this run's load created no VEX note"
+    if not b:
+        return "Google did not report %s before" % cve
+    if any(((o.get("vulnerability") or {}).get("vexAssessment") or {}).get("state") == "NOT_AFFECTED" for o in b):
+        return "%s was already assessed not affected before our load" % cve
+    if not a:
+        return "Google no longer reports %s at all" % cve
+    for o in a:
+        va = (o.get("vulnerability") or {}).get("vexAssessment") or {}
+        if va.get("state") != "NOT_AFFECTED" or va.get("noteName") not in run_notes:
+            return "%s is not assessed not affected by this run's note" % cve
+    return None
+
+
 def _semver(tag):
     m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?", tag)
     return None if not m else (int(m[1]), int(m[2]), int(m[3]), int(m[4]) if m[4] else 1 << 30)
@@ -142,6 +227,12 @@ def main(argv=None):
     c = sub.add_parser("pick-cve")
     c.add_argument("--reports", required=True)
     c.add_argument("--openvex", required=True, help="our statements: their CVEs are never the fixture's")
+    j = sub.add_parser("judge")
+    j.add_argument("--kind", choices=("grype", "scout", "google"), required=True)
+    j.add_argument("--before", required=True)
+    j.add_argument("--after", required=True)
+    j.add_argument("--cve", required=True)
+    j.add_argument("--notes", help="google: a file with the names of the VEX notes this run created, one per line")
     st = sub.add_parser("settings", help="print the test's values as the guide's settings (VAR=value ...)")
     st.add_argument("pairs", nargs="+")
     r = sub.add_parser("release")
@@ -172,6 +263,23 @@ def main(argv=None):
         rep = json.load(open(a.reports))
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
         print(pick_cve({k: (v if k == "grype" else set(v)) for k, v in rep.items()}, ours))
+        return 0
+    if a.cmd == "judge":
+        def load(p):
+            try:
+                return json.load(open(p))
+            except (OSError, ValueError):
+                return None
+        b, af = load(a.before), load(a.after)
+        if a.kind == "google":
+            notes = {ln.strip() for ln in open(a.notes)} - {""} if a.notes else set()
+            why = judge_google(b, af, a.cve, notes)
+        else:
+            why = (judge_grype if a.kind == "grype" else judge_scout)(b, af, a.cve)
+        if why:
+            print("::error::%s: %s" % (a.kind, why), file=sys.stderr)
+            return 1
+        print("%s: %s shown before and suppressed by our file after; every other finding kept" % (a.kind, a.cve))
         return 0
     if a.cmd == "settings":
         sys.stdout.write(render_settings(dict(p.split("=", 1) for p in a.pairs)))

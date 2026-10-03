@@ -139,6 +139,9 @@ jobs:
     needs: promotion
     if: contains(github.ref_name, '-rc.')
     runs-on: ubuntu-latest
+    concurrency:   # one live test at a time across both workflows: the sweep owns the whole test estate
+      group: vex-live-test
+      cancel-in-progress: false
     environment: live-test   # admits only main and v*-rc.* tags; holds the five LIVE_TEST_* identifiers (advisor 0078)
     permissions:
       contents: read
