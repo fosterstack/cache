@@ -85,7 +85,10 @@ Dockerfile is a finding); a local name counts only if the job made it EARLIER; a
 a container or package tool is a finding (this check reads POSIX shell only). Round 2 (Sonnet #164): a tool
 given forwarded arguments ("$@", $*) or a variable verb is a finding; copying, linking or aliasing a tool binary under
 another name is a finding; pip download/wheel follow the install rule; conda/mamba/micromamba installs are flagged;
-docker manifest create and buildx imagetools create sources must be digests. What static reading cannot see is the
+docker manifest create and buildx imagetools create sources must be digests. After round 3: nerdctl is read as docker;
+buildah, ctr, crictl, apptainer, singularity and kaniko are findings on use (not read); uv add/sync/lock/run, pipenv,
+poetry, pdm, hatch, flit, pip-sync, pip-compile, rye, python setup.py and python -m build are findings (not holdable to
+hashes); uv pip sync follows the install rule. What static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
 a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
@@ -501,10 +504,17 @@ RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--inte
             "--sig-proxy", "-t", "--tty"}
 PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
-TOOLS = {"docker", "podman", "skopeo", "crane", "docker-compose", "podman-compose"}
+TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
+         "buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor"}
+# container CLIs this check does not parse (Sonnet #164 r3): any use is a finding — run images through docker,
+# podman, nerdctl, skopeo or crane, whose arguments are read
+UNREAD_CONTAINER = {"buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor"}
 PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 # package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
-PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba)$")
+PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba"
+                      r"|pipenv|poetry|pdm|hatch|flit|pip-sync|pip-compile|rye)$")
+# Python installers / build frontends that cannot be held to hashes here (Sonnet #164 r3): any use is a finding
+UNREAD_PY = {"pipenv", "poetry", "pdm", "hatch", "flit", "pip-sync", "pip-compile", "rye"}
 FORWARD = {"$@", "$*", "${@}", "${*}"}   # a wrapper forwarding its own arguments (Sonnet #164 r2, N1)
 TOOL_WORDS = r"(docker|podman|skopeo|crane|pip3?|pipx|uvx?|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba|python3?)"
 # a tool binary copied, linked or aliased under another name (N2): the renamed command is invisible to name matching
@@ -651,12 +661,27 @@ def script_installs(script):
     found = []
     for t in _commands(script):
         cmd, args = t[0], t[1:]
+        if cmd in UNREAD_PY:
+            found.append((cmd, "a Python installer this check cannot hold to hashes"))
+            continue
         if re.match(r"^python3?(\.[0-9]+)?$", cmd):
-            if "-m" not in args or args.index("-m") + 1 >= len(args) or args[args.index("-m") + 1] != "pip":
+            if args[:1] == ["setup.py"] or (args[:1] and args[0].endswith("/setup.py")):
+                found.append(("python setup.py", "setuptools fetches and builds packages without hashes"))
+                continue
+            if "-m" not in args or args.index("-m") + 1 >= len(args):
+                continue
+            mod = args[args.index("-m") + 1]
+            if mod in ("build", "pipx", "poetry", "pipenv", "pdm", "hatch", "flit", "uv"):
+                found.append(("python -m " + mod, "a Python installer or build frontend this check cannot hold to hashes"))
+                continue
+            if mod != "pip":
                 continue
             cmd, args = "python -m pip", args[args.index("-m") + 2:]
         if cmd == "uv" and args[:1] == ["pip"]:
             cmd, args = "uv pip", args[1:]
+        elif cmd == "uv" and args[:1] and args[0] in ("add", "sync", "lock", "run"):   # each resolves and installs
+            found.append(("uv " + args[0], "uv's project and ad-hoc installs cannot be held to hashes here"))
+            continue
         if FORWARD & set(args):
             found.append((cmd, "forwards its caller's arguments; the packages cannot be seen"))
             continue
@@ -664,7 +689,7 @@ def script_installs(script):
             sub = next((a for a in args if not a.startswith("-")), None)
             if sub is not None and _variable(sub):
                 found.append((cmd, "its subcommand is a variable; the packages cannot be seen"))
-            for verb in ("install", "download", "wheel"):     # download and wheel build from source too (N3)
+            for verb in ("install", "download", "wheel", "sync"):     # download/wheel build from source (N3); uv pip sync
                 if verb in args:
                     rest = args[args.index(verb) + 1:]
                     if not _pip_install(rest):
@@ -693,7 +718,10 @@ def script_images(script):
         if cmd in ("docker-compose", "podman-compose"):
             ev.append(("finding", "`%s` runs images named in compose files, which this check does not read" % cmd))
             continue
-        if cmd in ("docker", "podman") and args:
+        if cmd in UNREAD_CONTAINER:
+            ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
+            continue
+        if cmd in ("docker", "podman", "nerdctl") and args:
             k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
             if unknown:
                 ev.append(("finding", "`%s` has a global option this check does not know (%s)" % (cmd, unknown)))
