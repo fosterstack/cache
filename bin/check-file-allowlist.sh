@@ -91,6 +91,8 @@ ALLOW_PATTERNS=(
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
+  '^bin/scout-vex-scan\.sh$'
+  '^bin/scout-selfcheck\.py$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
   '^bin/workflow-consolidation-test\.sh$'

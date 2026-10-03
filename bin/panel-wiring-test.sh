@@ -55,31 +55,70 @@ if "secrets." in str(gj) or "GOOGLE_APPLICATION_CREDENTIALS" in tg:
 # rule 4: the VEX is the only exception
 if "--vex .vex/fosterstack-cache.openvex.json" not in text("panel-grype"):
     bad.append("Grype is not given the VEX file")
-if "--vex-location .vex/fosterstack-cache.openvex.json" not in text("panel-scout"):
-    bad.append("Scout is not given the VEX file")
-# Scout applies only statements by an author --vex-author accepts (default Docker's own): the scan and the self-check
-# both name ours, anchored and equal to the file's author (rule 4; Sonnet #167 r1 found the gate)
-import json, os
-author = json.load(open(os.path.join(os.environ.get("PANEL_ROOT", "."), ".vex/fosterstack-cache.openvex.json")))["author"]
-want_flag = "--vex-author '^%s$'" % re.escape(author).replace("\\ ", " ")
+# Scout applies only statements by an author --vex-author accepts (default Docker's own; rule 4). Proven by RUNNING the
+# two Scout steps of the (possibly mutated) workflow against a stub docker/skopeo (Codex #168 r1, B1/B2): the executed
+# arguments, and the self-check's verdict on reports where Scout applies, ignores, over-drops or returns nothing
+import json, os, subprocess, tempfile
+ROOT = os.environ.get("PANEL_ROOT", ".")
+FIXTURE = "docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"
+STUB = r"""#!/usr/bin/env bash
+echo "$(basename "$0") $*" >> "$STUB_LOG"
+if [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout cves" ]; then
+  vex=""; prev=""; for a in "$@"; do [ "$prev" = --vex-location ] && vex=$a; prev=$a; done
+  n=$(jq '[.statements[].vulnerability.name] | map(select(. == "CVE-2023-4911")) | length' "$vex" 2>/dev/null || echo 0)
+  case "$STUB_MODE:$n" in
+    *:0|ignores:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2023-4911"}]},{"identifiers":[{"value":"CVE-2099-0001"}]}]}' ;;
+    applies:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2099-0001"}]}]}' ;;
+    drops-all:*) printf '%s' '{"vulnerabilities":[]}' ;;
+    empty:*) printf '%s' '{}' ;;
+  esac
+elif [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout sbom" ]; then
+  printf '%s' '{"artifacts":[]}'
+fi
+exit 0
+"""
 scout_steps = jobs.get("panel-scout", {}).get("steps", [])
-scan = [i for i, s in enumerate(scout_steps) if "--vex-location .vex/fosterstack-cache.openvex.json" in (s.get("run") or "")]
-selfcheck = [i for i, s in enumerate(scout_steps) if "rule 4 self-check" in (s.get("name") or "")]
-if not scan or want_flag not in scout_steps[scan[0]].get("run", ""):
-    bad.append("Scout's scan does not accept our file's author (%s)" % want_flag)
-# a VEX'd finding is proven dropped: our author and product form, on the pinned fixture under our image's name, through
-# the same local:// path, before the scan — and the job fails when Scout keeps it
-if len(selfcheck) != 1 or not scan or selfcheck[0] > scan[0]:
+def step(name_part):
+    hit = [s for s in scout_steps if name_part in (s.get("name") or "")]
+    return hit[0] if len(hit) == 1 else None
+def run_block(block, mode):
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "stub"))
+        for tool in ("docker", "skopeo", "sudo"):
+            with open(os.path.join(t, "stub", tool), "w") as fh:
+                fh.write(STUB)
+            os.chmod(os.path.join(t, "stub", tool), 0o755)
+        log = os.path.join(t, "log")
+        open(log, "w").close()
+        env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], STUB_LOG=log, STUB_MODE=mode,
+                   RUNNER_TEMP=t)
+        r = subprocess.run(["bash", "-e", "-c", block], cwd=ROOT, env=env, capture_output=True, text=True)
+        return r.returncode, open(log).read().splitlines()
+sc, scan = step("rule 4 self-check"), step("Docker Scout every image")
+if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
 else:
-    sc = scout_steps[selfcheck[0]].get("run", "")
-    for need in (want_flag, "local://ghcr.io/fosterstack/cache:selfcheck", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
-                 "docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
-                 "exit 1"):
-        if need not in sc:
-            bad.append("the Scout self-check lacks %s" % need)
-    if scout_steps[selfcheck[0]].get("continue-on-error") or scout_steps[selfcheck[0]].get("if"):
+    if sc.get("continue-on-error") or sc.get("if"):
         bad.append("the Scout self-check can be skipped or softened")
+    rc, log = run_block(sc.get("run", ""), "applies")
+    scouts = [l for l in log if l.startswith("docker scout cves")]
+    if rc != 0:
+        bad.append("the Scout self-check fails when Scout applies our statement")
+    if len(scouts) != 2 or not all("--vex-author ^FosterStack LLC$ local://ghcr.io/fosterstack/cache:selfcheck" in l
+                                   and "--format gitlab --vex-location " in l for l in scouts):
+        bad.append("the self-check does not run Scout with our author on the fixture under our name: %s" % scouts)
+    if not any(l.startswith("skopeo copy " + FIXTURE + " ") for l in log):
+        bad.append("the self-check does not load the pinned fixture by digest")
+    for mode in ("ignores", "drops-all", "empty"):
+        if run_block(sc.get("run", ""), mode)[0] == 0:
+            bad.append("the Scout self-check passes when Scout %s" % mode)
+    rc, log = run_block(scan.get("run", ""), "applies")
+    scouts = [l for l in log if l.startswith("docker scout cves")]
+    want = ["docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author "
+            "^FosterStack LLC$ local://ghcr.io/fosterstack/cache:cand-%s-%s" % (v, a)
+            for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
+    if scouts != want:
+        bad.append("Scout's scan does not run with our VEX and author on our six images: %s" % scouts)
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
@@ -161,12 +200,15 @@ case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '
 case_ google-literal-provider bad "[s['with'].__setitem__('workload_identity_provider', 'projects/1/locations/global/workloadIdentityPools/p/providers/q') for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
 case_ google-no-idtoken       bad "$J['panel-google']['permissions'].pop('id-token')"
 case_ grype-no-vex            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('--vex .vex/fosterstack-cache.openvex.json', '')"
-case_ scout-no-author         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
-case_ scout-any-author        bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"'^FosterStack LLC\$'\", \"'.*'\")"
+case_ scout-no-author         bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('./bin/scout-vex-scan.sh \"\${ref}\" .vex/fosterstack-cache.openvex.json \"\${d}/cves.json\"', 'docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json \"local://\${ref}\" > \"\${d}/cves.json\"  # --vex-author ^FosterStack LLC\$')"
 case_ scout-no-selfcheck      bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'self-check' not in (s.get('name') or '')]"
 case_ scout-selfcheck-soft    bad "[s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]['continue-on-error'] = 'true'"
-case_ scout-selfcheck-no-fail bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 1', 'true')"
-case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-location .vex/fosterstack-cache.openvex.json', '')"
+case_ scout-selfcheck-exit0   bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = 'exit 0\n' + s['run']"
+case_ scout-selfcheck-nojudge bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('python3 bin/scout-selfcheck.py', 'true')"
+case_ scout-selfcheck-novex   bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('\"\$RUNNER_TEMP/selfcheck/one.json\"', '\"\$RUNNER_TEMP/selfcheck/none.json\"')"
+case_ scout-other-repo        bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('ghcr.io/fosterstack/cache:cand-', 'ghcr.io/another-vendor/cache:cand-')"
+case_ scout-fixture-tag       bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab', 'debian:latest') + '\n# debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab'"
+case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.vex/fosterstack-cache.openvex.json \"\${d}', '/dev/null \"\${d}')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"
 case_ google-amd64-gone        bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('cand-\${v}-amd64', 'cand-\${v}')"
