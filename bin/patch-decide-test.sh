@@ -575,6 +575,14 @@ check("r7/B4 a quoted run line's script is in the chain", {"test-evidence/gate-t
 for f in ("test-evidence/x.sh", "docs/tool.py", "requirements/gen.sh", ".github/agent/docs/run.sh"):
     check("r7/B4 an executable under a neutral directory (%s) is not neutral" % f, P.classify(c("q", [f], diffs={f: "+x\n"}))[0] == "dirty")
 check("r7/B4 data under a neutral directory stays neutral", P.classify(c("q2", ["docs/a.md"], diffs={"docs/a.md": "+x\n"}))[0] == "neutral")
+# Sonnet #159 r8: a "safe" find -exec / xargs command is a bare command name, never a path (./rm, bin/cat); and under a
+# neutral directory only data is neutral — anything without a data extension (extensionless, .run, .lua …) is not
+for txt in ["run: find . -exec ./rm {} \;\n", "run: ls | xargs bin/cat\n", 'run: find . -exec "./echo" {} +\n']:
+    check("r8/1 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"s.yml": txt}) == set())
+for f in ("test-evidence/gate", "docs/tool.run", "requirements/x.lua", ".github/agent/docs/runner"):
+    check("r8/2 %s (not data) is not neutral" % f, P.classify(c("d", [f], diffs={f: "+x\n"}))[0] == "dirty")
+for f in ("docs/a.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml", "docs/x.json", ".github/agent/reviews/a.json"):
+    check("r8/2 data (%s) stays neutral" % f, P.classify(c("d2", [f], diffs={f: "+x\n"}))[0] == "neutral")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

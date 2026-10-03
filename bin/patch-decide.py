@@ -221,6 +221,9 @@ tools/requirements/trace_test.go
 """.split())
 
 
+DATA_FILE = re.compile(r"\.(md|txt|json|ya?ml|toml|csv)$")
+
+
 def _is_test(path, neutral=None):
     return path in (NEUTRAL_TESTS if neutral is None else neutral)
 
@@ -233,7 +236,8 @@ SAFE_INDIRECT = {"rm", "sha256sum", "sha1sum", "md5sum", "chmod", "chown", "touc
 
 def _indirect_exec(text):
     """True when a find -exec/-execdir/-ok/-okdir or an xargs runs a command outside SAFE_INDIRECT."""
-    strip = lambda w: os.path.basename(w.strip("\"'"))
+    # a safe command is a bare name from the list — never a path to a script that happens to share it (Sonnet r8)
+    strip = lambda w: w.strip("\"'") if "/" not in w.strip("\"'") else "/"
     for m in re.finditer(r"(?<![\w-])-(?:exec|execdir|ok|okdir)\s+(\S+)", text):
         if strip(m.group(1)) not in SAFE_INDIRECT:
             return True
@@ -329,9 +333,11 @@ def classify(commit):
             kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
         elif _is_test(f, commit.get("neutral")):
             kinds.add("neutral")
-        elif re.search(r"\.(sh|bash|py|pl|rb|js|ts|go)$", f) and f.startswith(NEUTRAL_PREFIX):
-            # an executable is never neutral by its directory (Sonnet #159 r7, B4): only data is
-            kinds.add("dirty"); why.append("%s is executable; a directory does not make it neutral" % f)
+        elif f.startswith(NEUTRAL_PREFIX) and not DATA_FILE.search(f) and not f.startswith(".github/workflows/") \
+                and f not in NEUTRAL_GITHUB:
+            # only data is neutral by its directory (Sonnet #159 r7 B4, r8): anything without a data extension —
+            # a script, an extensionless file, another extension — could be executed, so it is not
+            kinds.add("dirty"); why.append("%s is not a data file; a directory does not make it neutral" % f)
         elif f in FIX_EXACT or f.startswith(FIX_PREFIX):
             kinds.add("fix")
         elif f in ("go.mod", "tools/requirements/go.mod"):
