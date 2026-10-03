@@ -1417,6 +1417,20 @@ case_ r4b1-trap-embedded-apostrophe-local-bad bad "$(rb "trap -- 'echo '\"'\"'do
           docker build -t alpine:latest .
           ' EXIT
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Codex #164 r9, B1: a double-quoted trap argument containing its own escaped \" is still open going into the
+# next line in real bash (backslash escapes the next character inside double quotes) -- a raw character count
+# sees two '"' characters on that line (the opening quote and the escaped one) and wrongly calls it closed
+case_ r4b1-trap-escaped-dquote-local-bad bad "$(rb "trap -- \"echo \\\"
+          docker build -t alpine:latest .
+          \" EXIT
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Codex #164 r9, R1: a multi-line trap that genuinely closes must NOT cost the rest of the script its
+# local-name trust -- a legitimate build+run AFTER the trap's own closing line is still a real local build
+case_ r4b1-trap-closes-then-legit-build-ok ok "$(rb "trap -- '
+          cleanup
+          ' EXIT
+          docker build -t alpine:latest .
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
 
 
 # advisor 0143: a plain `docker run <mutable tag>` step inserted into the REAL, full-size auditor.yml (not a
