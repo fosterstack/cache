@@ -566,6 +566,19 @@ case_ docker-action-entrypoint bad "$head
         with:
           results_file: r.sarif
           entrypoint: '/bin/echo\" alpine:latest \"'"
+# advisor 0140, Codex r2 B1: the composite ossf/scorecard-action wrapper is retired — refused outright, by name,
+# whatever its digest/comment; only the direct docker://...@sha256 executor form is accepted
+case_ scorecard-composite-retired bad "$head
+    steps:
+      - uses: ossf/scorecard-action@$SHA # v2.4.4
+        with:
+          results_file: r.sarif"
+case_ scorecard-digest-direct-ok  ok  "$head
+    steps:
+      - uses: docker://ghcr.io/ossf/scorecard-action@$DIG # v2.4.4
+        with:
+          results_file: r.sarif
+          results_format: sarif"
 case_ gate-edited          bad "$head
     steps:
       - run: true" "sed -i.bak 's/--verify-tags --git/--git/' .github/workflows/agent-review-gate.yml && rm .github/workflows/*.bak"
@@ -1351,6 +1364,8 @@ case_ r4b2-trap-exit-bad       bad "$(rb "trap 'docker run --rm alpine:3.20 echo
 case_ r4b2-trap-pinned-ok      ok  "$(rb "trap 'docker run --rm alpine@$DIG echo x' EXIT; true")"
 case_ r4b2-trap-print-ok       ok  "$(rb 'trap -p EXIT')"
 case_ r4b2-trap-reset-ok       ok  "$(rb 'trap EXIT')"
+case_ r4b2-trap-dashdash-bad   bad "$(rb "trap -- 'docker run --rm alpine:3.20 echo x' EXIT; true")"
+case_ r4b2-trap-dashdash-ok    ok  "$(rb "trap -- 'docker run --rm alpine@$DIG echo x' EXIT; true")"
 case_ r4b3-pull-never-then-always-bad bad "$(rb 'docker run --pull=never --pull=always --rm alpine:3.20 true')"
 case_ r4b3-pull-always-then-never-ok  ok  "$(rb 'docker run --pull=always --pull=never --rm alpine:3.20 true')"
 case_ r4b3-pull-bare-always-last-bad  bad "$(rb 'docker run --pull never --pull always --rm alpine:3.20 true')"
@@ -1358,13 +1373,15 @@ case_ r4b4-cache-from-tag-bad  bad "$(rb 'docker build --cache-from alpine:3.20 
 " > build/docker/Dockerfile.production'
 case_ r4b4-cache-from-digest-ok ok "$(rb "docker build --cache-from alpine@$DIG -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 " > build/docker/Dockerfile.production'
-case_ r4b4-cache-from-local-ok ok "$(rb "docker build -t cache:build -f build/docker/Dockerfile.production . && docker build --cache-from cache:build -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-" > build/docker/Dockerfile.production'
-case_ r4b4-cache-from-gha-ok   ok  "$(rb 'docker build --cache-from type=gha -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-same-as-output-tag-bad bad "$(rb "docker build --cache-from alpine:3.20 -t alpine:3.20 -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-type-registry-bad bad "$(rb 'docker buildx build --cache-from type=registry,ref=alpine:3.20 -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-gha-ok   ok  "$(rb 'docker build --cache-from type=gha -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
 case_ r4b5-crane-index-append-bad bad "$(rb 'crane index append -m alpine:3.20 -t x/y:z')"
 case_ r4b5-crane-index-filter-bad bad "$(rb 'crane index filter alpine:3.20 --platform linux/amd64 -t x/y:z')"
 case_ r4b5-crane-index-append-digest-ok ok "$(rb "crane index append -m alpine@$DIG -t x/y:z")"
+case_ r4b5-crane-index-append-extra-positional-bad bad "$(rb 'crane index append alpine@$DIG busybox:1.37 --tag x/y:z')"
+case_ r4b5-crane-manifest-comma-list-bad bad "$(rb 'crane index append --manifest busybox:1.37,alpine@$DIG --tag x/y:z')"
+case_ r4b4-cache-from-comma-list-bad bad "$(rb "docker build --cache-from busybox:1.37,alpine@\$DIG -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\n" > build/docker/Dockerfile.production'
 case_ r4b5-crane-index-list-ok ok  "$(rb 'crane index list x/y:z')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
