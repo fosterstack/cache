@@ -63,19 +63,19 @@ def _scopes(statement, digests):
     out = []
     for prod in statement.get("products") or []:
         pid = prod.get("@id", "")
-        if "#" in pid and pid.startswith("pkg:oci/cache") and REPO in pid:
-            # a subpath on our own image: a restriction the forms cannot represent — never read as "another
-            # repository", which would drop an affected statement silently (Sonnet #165 r3, SEC-165-01)
-            raise ValueError("%s: product %s has a subpath these forms cannot represent" % (_cve(statement), pid))
-        m = re.fullmatch(r"pkg:oci/([^@?#]+)(?:@([^?#]+))?(?:\?([^#]*))?", pid)
-        if not m:
-            continue
-        quals = urllib.parse.parse_qs(m.group(3) or "", keep_blank_values=True)
-        if m.group(1) != "cache" or quals.get("repository_url") != [REPO]:
-            continue
-        if set(quals) - {"repository_url"}:
-            raise ValueError("%s: product %s has a qualifier these forms cannot represent" % (_cve(statement), prod["@id"]))
-        want = urllib.parse.unquote(m.group(2)) if m.group(2) else None
+        if not pid.startswith("pkg:oci/"):
+            continue                                     # not an image (a Go module …)
+        # read as the purl spec orders it — #subpath, then ?qualifiers (decoded), then @version — so an encoding never
+        # decides whether a product is ours (Sonnet #165 r3b, SEC-165-01)
+        rest, _, subpath = pid[len("pkg:oci/"):].partition("#")
+        rest, _, qs = rest.partition("?")
+        name, at, version = rest.partition("@")
+        quals = urllib.parse.parse_qs(qs, keep_blank_values=True)
+        if urllib.parse.unquote(name) != "cache" or [urllib.parse.unquote(x) for x in quals.get("repository_url", [])] != [REPO]:
+            continue                                     # another repository's image
+        if subpath or (at and not version) or "@" in version or set(quals) - {"repository_url"}:
+            raise ValueError("%s: product %s has a part these forms cannot represent" % (_cve(statement), pid))
+        want = urllib.parse.unquote(version) if at else None
         ds = [d for d in digests if want is None or d == want]
         subs = prod.get("subcomponents") or []
         if not subs:

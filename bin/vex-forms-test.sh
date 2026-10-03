@@ -248,12 +248,19 @@ except Exception as e:
 # Sonnet #165 r3 (SEC-165-01, image level): a product naming OUR image in any form must parse exactly, or generation stops
 D1 = D("1").replace(":", "%3A")
 for pid in ("pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache#bin/foo" % D1,
-            "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache#sub"):
+            "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache#sub",
+            "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache#bin/foo" % D1,   # Sonnet r3b: encoded
+            "pkg:oci/cache@%s?repository_url=ghcr.io%%2ffosterstack%%2fcache&arch=amd64" % D1,
+            "pkg:oci/cache@@x?repository_url=ghcr.io/fosterstack/cache"):
     try:
         V._scopes(scoped("CVE-SUB2", "affected", [{"@id": pid}]), [D("1")]); ok = False
     except ValueError:
         ok = True
     check("SEC-165-01 our image's purl with an unrepresentable part stops generation: " + pid, ok)
+check("SEC-165-01 a percent-encoded repository_url without subpath is still our image",
+      V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]) == [([D("1")], None)])
+check("SEC-165-01 a fork whose name extends ours is another repository, not ours",
+      V._scopes(scoped("CVE-FORK", "affected", [{"@id": "pkg:oci/cache-fork?repository_url=ghcr.io/fosterstack/cache-fork#x"}]), [D("1")]) == [])
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
