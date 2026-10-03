@@ -28,11 +28,17 @@ found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)
     w = d if name == "go-freshness.yml" else yaml.load(open(f), Loader=yaml.BaseLoader)   # the judged copy
+    # conservative (Codex #157 r3): an expression-valued environment may be agent; expressions are case-insensitive
+    # (toJson, SECRETS[...]); a workflow-level env/defaults reaches every job, so each job is judged with it
+    wf_text = json.dumps({k: (w or {}).get(k) for k in ("env", "defaults")})
     for j, v in ((w or {}).get("jobs") or {}).items():
-        t = json.dumps(v)
+        t = json.dumps(v) + wf_text
         env = v.get("environment")
-        if env == "agent" or (isinstance(env, dict) and env.get("name") == "agent") or "AUDITOR_APP" in t \
-                or "create-github-app-token" in t or re.search(r"toJSON\(\s*secrets\s*\)", t) or v.get("secrets") == "inherit":
+        env_name = env.get("name") if isinstance(env, dict) else env
+        if env_name == "agent" or (isinstance(env_name, str) and "${{" in env_name) \
+                or re.search(r"(?i)auditor_app", t) or "create-github-app-token" in t \
+                or re.search(r"(?i)tojson\(\s*secrets\s*\)", t) or re.search(r"(?i)secrets\s*\[", t) \
+                or v.get("secrets") == "inherit":
             found.add((name, j))
 if found != ALLOWED:
     bad.append("the App's credential consumers changed: added %s, removed %s" % (sorted(found - ALLOWED), sorted(ALLOWED - found)))
@@ -127,5 +133,12 @@ t=$(mk_tree sidecar); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: u
 case_ sidecar-workflow       bad "" "$t"
 t=$(mk_tree tojson); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJSON(secrets) }}\n' > "$t/.github/workflows/dump.yml"
 case_ secrets-dump-elsewhere bad "" "$t"
+# Codex #157 r3 (SEC-157-02 B): an expression-valued environment with toJson (any case); a workflow-level secret env
+t=$(mk_tree expr-env); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    environment:\n      name: ${{ '"'"'agent'"'"' }}\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJson(secrets) }}\n' > "$t/.github/workflows/probe-sidecar.yml"
+case_ expr-env-tojson        bad "" "$t"
+t=$(mk_tree wf-env-secret); printf 'on: workflow_dispatch\nenv:\n  K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\njobs:\n  x:\n    runs-on: ubuntu-latest\n    environment: ${{ '"'"'agent'"'"' }}\n    steps:\n      - run: echo hi\n' > "$t/.github/workflows/probe-sidecar2.yml"
+case_ workflow-env-secret    bad "" "$t"
+t=$(mk_tree secrets-index); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          K: ${{ SECRETS['"'"'AUDITOR_APP_ID'"'"'] }}\n' > "$t/.github/workflows/idx.yml"
+case_ secrets-index-upper    bad "" "$t"
 echo "go-freshness-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
