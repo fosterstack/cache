@@ -23,7 +23,11 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"),
            ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
-           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion")}
+           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion"),
+           # automatic patch releases (REQ-REL-009, PR B/#159): decide is main-only + gitsign (id-token), never the
+           # App's secrets; patch-notes mints the auditor App's token (contents + pull-requests) to open the
+           # changelog PR after a patch tag — a deliberate, reviewed new consumer of that credential
+           ("release.yml", "decide"), ("release.yml", "patch-notes")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)
