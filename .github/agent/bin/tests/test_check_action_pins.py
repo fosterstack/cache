@@ -279,3 +279,8 @@ class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwar
             bad = []
             M.check_runs("j", [("w", "%s run x" % t, "pwsh")], bad)
             self.assertTrue(bad, t)
+
+    def test_a_workflow_without_jobs_has_no_runners_to_judge(self):   # advisor 0080: ubuntu-only scope
+        bad = []
+        M.check_runners("w", M.yaml.compose("on: push\n", Loader=M.StrLoader), bad)
+        self.assertEqual(bad, [])

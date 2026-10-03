@@ -948,11 +948,11 @@ case_ n10-Pip-bash               bad "$wh
 case_ n10-windows-default-pwsh   bad "$wh
     steps:
       - run: docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
-case_ n10-windows-bash-pinned-ok ok "$wh
+case_ n10-windows-bash-refused bad "$wh
     steps:
       - shell: bash
         run: docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
-case_ n10-windows-no-tools-ok    ok "$wh
+case_ n10-windows-no-tools-refused bad "$wh
     steps:
       - run: Write-Output hi"
 case_ n10-expr-runs-on          bad "on: push
@@ -961,5 +961,30 @@ jobs:
     runs-on: \${{ matrix.os }}
     steps:
       - run: docker pull alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+# --- advisor 0080: the checker's scope is ubuntu runners; any other runs-on (or one it cannot resolve) fails closed
+ro() { printf 'on: push\njobs:\n  j:\n    runs-on: %s\n    steps:\n      - run: true' "$1"; }
+case_ ro-ubuntu-latest         ok  "$(ro ubuntu-latest)"
+case_ ro-ubuntu-version        ok  "$(ro ubuntu-24.04)"
+case_ ro-ubuntu-arm            ok  "$(ro ubuntu-24.04-arm)"
+case_ ro-windows               bad "$(ro windows-latest)"
+case_ ro-macos                 bad "$(ro macos-14)"
+case_ ro-self-hosted-list      bad "$(ro '[self-hosted, linux]')"
+case_ ro-expression            bad "$(ro '\${{ matrix.os }}')"
+case_ ro-group                 bad "on: push
+jobs:
+  j:
+    runs-on:
+      group: big
+    steps:
+      - run: true"
+case_ ro-missing               bad "on: push
+jobs:
+  j:
+    steps:
+      - run: true"
+case_ ro-reusable-call-ok      ok  "on: push
+jobs:
+  j:
+    uses: ./.github/workflows/w2.yml" "printf 'on: workflow_call\\njobs:\\n  x:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: true\\n' > .github/workflows/w2.yml"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
