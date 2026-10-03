@@ -672,6 +672,32 @@ for i, run in enumerate(['\n          "if bash bin/driver.sh; then echo ok; fi"'
 check("r5b/B10 an executable under .vex/ is not fix-class", P.classify(c("v", [".vex/gate.sh"], diffs={".vex/gate.sh": "-exit 1\n+exit 0\n"}))[0] == "dirty")
 check("r5b/B10 ... nor when the chain runs it", P.classify(c("v2", [".vex/gate.sh"], diffs={".vex/gate.sh": "+x\n"}) | {"chain": [".vex/gate.sh"]})[0] == "dirty")
 check("r5b/B10 an auditor output that is data stays fix-class", P.classify(c("v3", [".vex/fosterstack-cache.openvex.json"], diffs={".vex/fosterstack-cache.openvex.json": "+x\n"}))[0] == "fix")
+# Codex #159 r5c (B8 variants): workflows are read as decoded YAML — folded >, literal | with a \ continuation, plain
+# and quoted multi-line scalars resolve to the shell text GitHub runs
+for i, step in enumerate(["- run: >\n          if bash\n          bin/driver.sh; then echo ok; fi\n",
+                          "- run: |\n          if bash \\\n            bin/driver.sh; then echo ok; fi\n",
+                          "- run: if bash\n          bin/driver.sh; then echo ok; fi\n",
+                          '- run:\n          "if bash\n          bin/driver.sh; then echo ok; fi"\n']):
+    y5 = tempfile.mkdtemp()
+    g(y5, "init", "-q")
+    os.makedirs(os.path.join(y5, ".github/workflows")); os.makedirs(os.path.join(y5, "bin"))
+    for path, body in {".github/workflows/release.yml": "jobs:\n  r:\n    steps:\n      " + step,
+                       "bin/driver.sh": "bash bin/panel-test.sh\n", "bin/panel-test.sh": ""}.items():
+        open(os.path.join(y5, path), "w").write(body)
+    g(y5, "add", "-A"); g(y5, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+    check("r5c/B8 a folded or continued run scalar reaches the driver (%d)" % i, {"bin/driver.sh", "bin/panel-test.sh"} <= P.release_chain_files(y5), sorted(P.release_chain_files(y5)))
+# without a YAML reader the walk cannot resolve scalars: no test is neutral (fail closed)
+saved = P._yaml
+try:
+    P._yaml = None
+    cs_noyaml = P.gather_commits("HEAD~1", cwd=os.path.join(os.path.dirname(sys.argv[1]), ".."))
+finally:
+    P._yaml = saved
+check("r5c/B8 without PyYAML a decision keeps no test neutral", cs_noyaml and cs_noyaml[0]["neutral"] == [], cs_noyaml and len(cs_noyaml[0]["neutral"]))
+# Codex #159 r5c (B10 data suffix): a file the chain executes is dirty whatever its suffix — only go.mod, go.sum and the
+# digest-pinned Dockerfiles keep their own rule when named
+for f in (".vex/gate.txt", ".auditor/gate.yaml", ".vex/fosterstack-cache.openvex.json"):
+    check("r5c/B10 %s executed by the chain is not fix-class" % f, P.classify(c("x", [f], diffs={f: "-exit 1\n+exit 0\n"}) | {"chain": [f]})[0] == "dirty")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

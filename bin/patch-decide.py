@@ -18,6 +18,10 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
 import argparse, json, os, re, subprocess, sys
+try:
+    import yaml as _yaml          # workflows are read as decoded YAML (Codex #159 r5c, B8); without it: fail closed
+except ImportError:
+    _yaml = None
 
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
@@ -310,11 +314,44 @@ def cross_check(chain, texts):
 EXECUTABLE = re.compile(r"\.(sh|py|ya?ml)$")
 
 
+def _decoded(path, text):
+    """What the shell runs, for scanning: a workflow's uses: lines and its run: values as YAML decodes them (folded,
+    literal, quoted and plain scalars resolved), with backslash-newline continuations joined. None when a workflow cannot be
+    decoded (no PyYAML, or invalid YAML) — the caller then fails closed."""
+    if not re.search(r"\.ya?ml$", path):
+        return re.sub(r"\\\n", " ", text)
+    if _yaml is None:
+        return None
+    try:
+        doc = _yaml.safe_load(text)
+    except _yaml.YAMLError:
+        return None
+    runs, uses = [], []
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "run" and isinstance(v, str):
+                    runs.append(re.sub(r"\\\n", " ", v))
+                elif k == "uses" and isinstance(v, str):
+                    uses.append("uses: " + v)
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(doc)
+    return "\n".join(uses + runs)
+
+
+CHAIN_DECODED = {"ok": True}       # set by release_chain_files: False when a workflow could not be decoded
+
+
 def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
     """Every workflow and script the release chain executes at HEAD (advisor 0105): release.yml, the workflows it calls
     (uses: ./…, transitively), every script or program they name, and every script those name in turn — found by path
     or next to their caller ($here/x.py). A test a stage runs as a gate is in it; a test no stage runs is not."""
     tree = set(_git("ls-tree", "-r", "--name-only", "HEAD", cwd=cwd).split())
+    CHAIN_DECODED["ok"] = True
     seen, todo = set(), [start] if start in tree else []
     while todo:
         f = todo.pop()
@@ -325,6 +362,11 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
             text = _git("show", "HEAD:" + f, cwd=cwd)
         except subprocess.CalledProcessError:
             continue
+        decoded = _decoded(f, text)
+        if decoded is None:
+            CHAIN_DECODED["ok"] = False          # fall back to the raw text, and the decision keeps no test neutral
+        else:
+            text = decoded
         here = os.path.dirname(f)
         # executed, not merely named: a workflow by uses:, a script by an interpreter, by ./path or by $dir/path —
         # a path read as data (git show main:…/ci.yml, a fixture, a policy file) is not followed
@@ -366,8 +408,10 @@ def classify(commit):
     chain = set(commit.get("chain") or ())
     kinds, why = set(), []
     for f in files:
-        if f in chain and not (f in FIX_EXACT or (f.startswith(FIX_PREFIX) and DATA_FILE.search(f)) or f in ("go.mod", "go.sum", "tools/requirements/go.mod",
-                                                                                  "tools/requirements/go.sum") or DOCKERFILES.match(f)):
+        if f in chain and not (f in ("go.mod", "go.sum", "tools/requirements/go.mod", "tools/requirements/go.sum")
+                               or DOCKERFILES.match(f)):
+            # only these keep their own line-level rule when named — anything else the chain executes is dirty, a
+            # .vex/.auditor data suffix included (Codex #159 r5c, B10)
             # a fix-class file keeps its own strict, line-level rule even when something names it (Codex #159 r5a, B9)
             kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
         elif _is_test(f, commit.get("neutral")):
@@ -605,6 +649,10 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
         cross_check([], texts)
     except ValueError:
         neutral = {t for t in neutral if not t.endswith("_test.go")}          # the chain runs go test
+    if not CHAIN_DECODED["ok"]:
+        print("::notice::patch-decide: a release workflow could not be read as YAML (PyYAML missing or invalid YAML); "
+              "no test is neutral in this decision", file=sys.stderr)
+        neutral = set()
     neutral = sorted(neutral)
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
