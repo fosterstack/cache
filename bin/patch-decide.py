@@ -336,10 +336,15 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
         # file name such as x-test.sh (Codex #159 r6, B1: a list of test names is data, not executions)
         # any file executed, whatever its extension (Codex #159 r9, B4: bash docs/gate, bash docs/gate.txt) — kept only
         # when it is a file of the tree, and walked through
-        cands = re.findall(r"(?:^|[\s;&|(`\"'])(?:bash|sh|python3?|source)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
+        # only at command position — the first word of a command: a line start (after "- " / "run:" / a quote), after
+        # ; & | ( `, or after a keyword or wrapper — so "osv-scanner scan source go.mod" names no program (Codex r9)
+        cmdpos = (r"(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*)?[|>]?[ \t]*|[;&|(`][ \t]*|"
+                  r"\b(?:then|do|else|if|elif|while|until|exec|env|nohup|time|sudo|!)[ \t]+)"
+                  r"(?:[A-Za-z_]\w*=\S*[ \t]+)*[\"']?")          # VAR=value prefixes keep the command position
+        cands = re.findall(cmdpos + r"(?:bash|sh|python3?|source|\.)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
                            r"([\w./-]*[\w-])", text, re.M)
-        cands += re.findall(r"(?<![\w/.$-])\./([\w./-]*[\w-])", text)
-        cands += re.findall(r"\$\{?\w+\}?/([\w./-]*[\w-])", text)
+        cands += re.findall(cmdpos + r"\./([\w./-]*[\w-])", text, re.M)
+        cands += re.findall(cmdpos + r"\$\{?\w+\}?/([\w./-]*[\w-])", text, re.M)
         for c in cands:
             for r in (os.path.normpath(c), os.path.normpath(os.path.join(here, c))):
                 if r in tree:

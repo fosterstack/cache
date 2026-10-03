@@ -626,6 +626,8 @@ g(w_repo, "add", "-A"); g(w_repo, "-c", "user.name=t", "-c", "user.email=t@t", "
 wch = P.release_chain_files(w_repo)
 check("r9/B4 an extensionless or data-suffixed file an interpreter runs is in the chain, and walked through",
       {"docs/gate", "docs/gate.txt", "test-evidence-gate", "bin/panel-test.sh"} <= wch, sorted(wch))
+check("r9 on this repository no data file is in the chain (go.mod bumps stay fix-class)",
+      not [f for f in P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), "..")) if f == "go.mod" or f.endswith((".json", ".yaml", ".md", ".mod", ".sum"))])
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
