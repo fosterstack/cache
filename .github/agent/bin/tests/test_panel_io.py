@@ -311,13 +311,124 @@ def args(**kw):
     return types.SimpleNamespace(**kw)
 
 
+HEAD = "a" * 40
+MAIN = "b" * 40
+DIGEST = "sha256:" + "c" * 64
+
+
+def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readable=True):
+    """A rescan OCI archive whose top-level index names exactly one manifest at `digest` — genuinely readable by
+    read_image() for `arch` (Codex #177 r2, B2: a present member alone proves nothing; the evidence must actually
+    parse the same way Bundles() reads it), unless blob=False (no blob at all) or readable=False (present but not a
+    real manifest — the getmember-only check of r1's fix passed this, r2 correctly still refuses it)."""
+    path = os.path.join(d, variant + ".oci")
+    if not readable:
+        with tarfile.open(path, "w") as t:
+            ti = tarfile.TarInfo("index.json")
+            raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
+            ti.size = len(raw); t.addfile(ti, io.BytesIO(raw))
+            if blob:
+                bi = tarfile.TarInfo("blobs/" + digest.replace(":", "/")); bi.size = 1
+                t.addfile(bi, io.BytesIO(b"{"))   # present, but not parseable JSON
+        return
+    man = json.dumps({"layers": []}).encode()
+    man_digest = "sha256:" + hashlib.sha256(man).hexdigest()
+    index = json.dumps({"manifests": [{"digest": digest, "platform": {"os": "linux", "architecture": arch}}]}).encode()
+    files = [("index.json", index, 0o644), ("blobs/" + digest.replace(":", "/"), man, 0o644)]
+    if digest != man_digest:
+        files.append(("blobs/" + man_digest.replace(":", "/"), man, 0o644))
+    with open(path, "wb") as fh:
+        fh.write(tar_bytes(files, gz=False))
+
+
+def binding(d, **kw):
+    b = dict(run_id="123", head=HEAD, main_head=HEAD, conclusion="success")
+    b.update(kw)
+    raw = json.dumps(b, sort_keys=True)
+    p = os.path.join(d, "rescan-%s.json" % hashlib.sha256(raw.encode()).hexdigest()[:12])   # one file per binding
+    open(p, "w").write(raw)
+    return p
+
+
 class Judge(Tmp):
     def a(self, **kw):
+        rescan_oci(self.d)
         base = dict(verdict=verdict_file(self.d, [UNIQUE]), state=os.path.join(self.d, "none.json"),
                     profiles=os.path.join(REPO, ".github", "policy", "scanner-profiles.json"), oci=self.d,
                     out=os.path.join(self.d, "out"), seats="none", today="2026-10-03", token_budget=200000)
         base.update(kw)
+        if "rescan" not in base:
+            base["rescan"] = binding(self.d)
         return args(**base)
+
+    # owner RATIFIED Oct 3 (item a; advisor 0113, 0136): the judgment is bound to the rescan's own head and image digests;
+    # main having moved past it, or a red conclusion, is reported, never a failure; no binding or no digests is refused
+    def judged(self, **kw):
+        with mock.patch("sys.stdout", new=io.StringIO()) as out:
+            self.assertEqual(P.cmd_judge(self.a(**kw), bundles=lambda f: BUNDLE), 0)
+        day = json.load(open(os.path.join(self.d, "out", "day.json")))
+        return out.getvalue(), open(os.path.join(self.d, "out", "summary.md")).read(), day
+
+    def test_the_judgment_names_the_scanned_run_head_and_digests(self):
+        _, summary, day = self.judged()
+        self.assertIn("rescan run 123 of main at %s (conclusion success)" % HEAD, summary)
+        self.assertIn("fips %s" % DIGEST, summary)
+        self.assertEqual(day["rescan"], {"run_id": "123", "head": HEAD, "main_head": HEAD, "conclusion": "success",
+                                         "digests": {"fips": DIGEST}})
+        self.assertFalse([o for o in day["owner"] if "rescan" in o])
+
+    def test_main_moved_past_the_scanned_head_warns_and_reports(self):
+        out, summary, day = self.judged(rescan=binding(self.d, main_head=MAIN))
+        self.assertIn("::warning::scanner panel: main has moved past the scanned head %s" % HEAD, out)
+        self.assertTrue([o for o in day["owner"] if "main has moved past the scanned head %s" % HEAD in o and MAIN in o])
+
+    def test_a_red_rescan_is_judged_and_its_conclusion_named(self):
+        _, summary, day = self.judged(rescan=binding(self.d, conclusion="failure"))
+        self.assertIn("(conclusion failure)", summary)
+        self.assertTrue([o for o in day["owner"] if "rescan run 123 finished failure" in o])
+
+    def test_no_binding_or_no_digests_is_refused(self):
+        junk = os.path.join(self.d, "junk.json"); open(junk, "w").write("not json")
+        for bad in (os.path.join(self.d, "missing.json"), junk, binding(self.d, head="x"), binding(self.d, run_id=""),
+                    binding(self.d, main_head=None), binding(self.d, conclusion="")):
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                self.assertEqual(P.cmd_judge(self.a(rescan=bad)), 2)
+            self.assertIn("no rescan binding", err.getvalue())
+        empty = os.path.join(self.d, "empty"); os.makedirs(empty)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(self.a(oci=empty)), 2)
+        self.assertIn("no image digest", err.getvalue())
+        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); open(os.path.join(bad_oci, "x.oci"), "w").write("junk")
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(self.a(oci=bad_oci)), 2)
+        self.assertIn("no image digest", err.getvalue())
+
+    # Codex #177 r1, B2: a syntactically valid digest over a missing/unreadable blob, or an archive missing entirely
+    # for an image the verdict judges, must refuse — never fall through to "no evidence, false by default"
+    def test_a_digest_whose_blob_is_missing_is_refused(self):
+        unreadable = os.path.join(self.d, "unreadable"); os.makedirs(unreadable)
+        rescan_oci(unreadable, readable=False, blob=False)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(self.a(oci=unreadable)), 2)
+        self.assertIn("no image digest", err.getvalue())
+
+    # Codex #177 r2, B2 (reopened): a member present in the archive (passes getmember) but not a real, parseable
+    # manifest must still refuse — read_image() is actually tried, the same way Bundles() reads it for real
+    def test_a_present_but_unparseable_blob_is_refused(self):
+        unparseable = os.path.join(self.d, "unparseable"); os.makedirs(unparseable)
+        rescan_oci(unparseable, readable=False, blob=True)   # the blob exists, but its bytes are "{" (truncated JSON)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(self.a(oci=unparseable)), 2)
+        self.assertIn("missing or unreadable for fips-arm64", err.getvalue())
+
+    def test_an_image_the_verdict_judges_with_no_archive_at_all_is_refused(self):
+        no_production = os.path.join(self.d, "no-production"); os.makedirs(no_production)
+        rescan_oci(no_production, variant="fips")   # UNIQUE's image is fips-arm64: only this one is needed to pass
+        args = self.a(oci=no_production)
+        verdict_file(self.d, [UNIQUE, dict(UNIQUE, image="production-arm64")])   # args.verdict is this same path
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(args), 2)
+        self.assertIn("missing or unreadable for production-arm64", err.getvalue())
 
     def test_missing_verdict_is_a_failure(self):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
@@ -575,19 +686,30 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertEqual(self.wf["jobs"]["audit"]["permissions"]["id-token"], "write")   # the step mints its own tokens
         self.assertIn("--token-budget 200000", j["run"])                             # REQ-AUD-6 AC2, in the workflow
 
-    def test_the_panel_judges_only_todays_completed_rescan_of_mains_head(self):   # both reviewers: R3 must-fix
+    # matrix case changed, owner-ratified Oct 3 (item a; advisor 0113, 0136), AC unchanged: replaces the #150 round-3
+    # head-only refusal with an equivalent binding to the scanned bytes
+    def test_the_panel_judges_a_completed_rescan_of_main_within_a_day_bound_to_its_scanned_head(self):
         sel = self.steps[self.step("gh run list --workflow main-candidate-rescan.yml")]["run"]
         self.assertIn('gh run view "$rid" --json status --jq .status', sel)            # waits for completion
-        self.assertIn("rescan_status=", sel)
-        self.assertIn("rescan_created=", sel)
+        for out in ("rescan_status=", "rescan_created=", "rescan_head=", "rescan_conclusion=", "main_head="):
+            self.assertIn(out, sel)
+        self.assertNotIn("select(.headSha==", sel)            # any head: the newest run of main, bound to its own head
+        self.assertNotIn("head_bound", yaml.safe_dump(self.wf))
         j = self.steps[self.step("auditor-panel.py judge")]
-        self.assertEqual(j["env"]["RESCAN_HEAD_BOUND"], "${{ steps.rescan.outputs.head_bound }}")
-        for must in ('[ "${RESCAN_HEAD_BOUND}" = true ] ||', '[ "${RESCAN_STATUS}" = completed ] ||',
-                     '[ "$age" -le 93600 ] ||', '[ -f "${RUNNER_TEMP}/panel/verdict.json" ] ||'):
+        for k, v in (("RESCAN_RUN", "run_id"), ("RESCAN_HEAD", "rescan_head"), ("RESCAN_CONCLUSION", "rescan_conclusion")):
+            self.assertEqual(j["env"][k], "${{ steps.rescan.outputs.%s }}" % v)
+        self.assertNotIn("MAIN_HEAD", j.get("env", {}))     # never the selection-time value (Codex r1, B3)
+        # COMPLETED (advisor 0136): finished, any conclusion, with its evidence; a running or evidence-less run is refused
+        for must in ('[ "${RESCAN_STATUS}" = completed ] ||', '[ "$age" -le 86400 ] ||',
+                     '[ -f "${RUNNER_TEMP}/panel/verdict.json" ] ||', "--rescan \"${RUNNER_TEMP}/rescan-binding.json\""):
             self.assertIn(must, j["run"])
-        # every refusal comes before the judgment, and each exits non-zero
+        # main's head is refetched live, right before the binding is built — not reused from selection time, which can
+        # be up to 90 minutes stale by the time the bounded wait finishes (Codex r1, B3)
+        self.assertIn('MAIN_HEAD=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq', j["run"])
+        self.assertLess(j["run"].index('MAIN_HEAD=$(gh api'), j["run"].index("'{run_id: $r"))
+        self.assertNotIn("RESCAN_CONCLUSION}\" = success", j["run"])    # a red rescan is judged, its conclusion named
         self.assertLess(j["run"].index("verdict.json\" ] ||"), j["run"].index("auditor-panel.py judge"))
-        self.assertEqual(j["run"].count("exit 1; }"), 4)
+        self.assertEqual(j["run"].count("exit 1; }"), 3)
 
     def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # Codex r1 R3
         run = self.steps[self.step("auditor-panel.py judge")]["run"]
@@ -817,7 +939,8 @@ class Probe(Tmp):                                                           # RE
 class Main(Tmp):
     def test_dispatch(self):
         seen = []
-        P.main(["judge", "--verdict", "v", "--state", "s", "--profiles", "p", "--oci", "o", "--out", "x", "--seats", "real"],
+        P.main(["judge", "--verdict", "v", "--state", "s", "--profiles", "p", "--oci", "o", "--out", "x", "--seats", "real",
+                "--rescan", "r"],
                judge=lambda a: seen.append(("judge", a.seats)) or 0)
         P.main(["deliver", "--out", "x", "--dry-run"], deliver=lambda a: seen.append(("deliver", a.dry_run)) or 0)
         self.assertEqual(seen, [("judge", "real"), ("deliver", True)])

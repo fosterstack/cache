@@ -1,0 +1,33 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "71fe80ae07ce383b8b417cdde91ec5e2f43ae962c836c7509e836f871d0aeec7",
+ "change": "PR #177: merge origin/main (which now includes #176) into auditor-head-binding to clear auto-merge's behind-base check. Conflict-free; the reviewed .github/agent files (auditor-panel.py, auditor.yml, test_panel_io.py) are byte-identical to the already-reviewed tree d82d46a4... (git diff f630054..b41a436 -- those paths is empty).",
+ "reviewed_commit": "b41a436",
+ "closed_commit": "b41a436",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "conflict-free merge, no new content; evidence cites PR #177's own final round",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "0f1559450daee7d8bcf2e0155fc5807884b4318c1a5389a39a35e47c39606228"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "7add15b4b29b000b72b2e00d239e0f31d0f25b969a966f96d551c69105021b1a"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none: a conflict-free merge introduces no new auditor content; see .github/agent/reviews/d82d46a4bc84c5dd9d1e448fdd07cf04f9344f0bff9d37d9f24456353405da64.json in this same tree for the full round history",
+ "evidence_location": "private audit tree: audits/2026-10-03/head-binding/{r1,r2,r3}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": []
+}
