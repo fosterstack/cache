@@ -146,6 +146,13 @@ for f in (".github/dependabot.yml", ".github/CODEOWNERS", ".github/agent/reviews
 for name in ("Google Gemini", "Microsoft Copilot", "Amazon Bedrock", "Azure OpenAI", "xAI Grok"):
     out = P._clean("confirmed by %s" % name)
     check("B06 %s is fully redacted" % name, all(w.lower() not in out.lower() for w in name.split()), out)
+# Sonnet #158 r3 (NEW-BLOCKER-1): a vendor named alone is redacted too (rule 5: no vendor OR model names); a module
+# path or domain that merely contains the word stays readable (google.golang.org/protobuf)
+for name in ("Google", "Microsoft", "Amazon", "AWS", "Azure", "xAI", "x.ai", "Meta"):
+    out = P._clean("confirmed by %s." % name)
+    check("NEW-BLOCKER-1 %s alone is redacted" % name, out == "confirmed by <redacted>.", out)
+for kept in ("google.golang.org/protobuf v1.36.9", "cloud.google.com/go/storage", "github.com/aws/aws-sdk-go-v2"):
+    check("NEW-BLOCKER-1 the module path %s stays readable" % kept, P._clean(kept) == kept, P._clean(kept))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -27,6 +27,9 @@ VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
 VENDOR = re.compile(r"(?i)(?<![a-z])((google|microsoft|amazon|aws|azure|xai|x\.ai|meta|github)\s+)?"
                     r"(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini|llama|mistral|mixtral|grok|bedrock|"
                     r"deepseek|qwen|copilot|cohere|bard|sonnet|opus|haiku)[\w.-]*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
+# a vendor named alone (Sonnet #158 r3: rule 5 forbids vendor OR model names); a module path or domain that contains the
+# word (google.golang.org/protobuf, github.com/aws/aws-sdk-go-v2) stays readable
+VENDOR_ALONE = re.compile(r"(?i)(?<![\w./@-])(google|microsoft|amazon|aws|azure|xai|x\.ai)(?![\w/-])(?!\.[a-z0-9])")
 # the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
 # NEW-01): a workflow is neutral only when it is reviewed as outside the release chain (release.yml calls stage-*.yml and
 # the acceptance workflows); any other — including one added later — is not patch-clean until it is reviewed here.
@@ -211,7 +214,7 @@ def daily_cut(ships, cut_today):
 
 
 def _clean(s):
-    return VENDOR.sub("<redacted>", str(s))
+    return VENDOR_ALONE.sub("<redacted>", VENDOR.sub("<redacted>", str(s)))
 
 
 def notes(version, fixes, vex_changes):
