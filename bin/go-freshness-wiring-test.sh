@@ -8,10 +8,34 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
-judge() { python3 - "$1" <<'PY'
-import hashlib, json, re, sys, yaml
+judge() { python3 - "$1" "${2:-$root}" <<'PY'
+import glob, hashlib, json, os, re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+tree = sys.argv[2]
 bad = []
+# Codex #157 r2 (SEC-157-02 A): the pin also binds what the privileged step EXECUTES — the bump script's bytes.
+REVIEWED_BUMP_SCRIPT = "9b233929890d339ab12c454d331bbcdf0458428b47637d0544bf48543f802f84"
+got_script = hashlib.sha256(open(os.path.join(tree, "bin/go-bump-open-pr.sh"), "rb").read()).hexdigest()
+if got_script != REVIEWED_BUMP_SCRIPT:
+    bad.append("bin/go-bump-open-pr.sh (run with the App token) differs from its reviewed form (%s)" % got_script[:12])
+# (SEC-157-02 B): repository-wide, the jobs that may reach the agent environment, the App's secrets, the token action,
+# every secret (toJSON) or inherited secrets are exactly these; a new consumer must come through review and be listed.
+ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("auditor.yml", "audit"),
+           ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"),
+           ("hygiene.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
+           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion")}
+found = set()
+for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
+    name = os.path.basename(f)
+    w = d if name == "go-freshness.yml" else yaml.load(open(f), Loader=yaml.BaseLoader)   # the judged copy
+    for j, v in ((w or {}).get("jobs") or {}).items():
+        t = json.dumps(v)
+        env = v.get("environment")
+        if env == "agent" or (isinstance(env, dict) and env.get("name") == "agent") or "AUDITOR_APP" in t \
+                or "create-github-app-token" in t or re.search(r"toJSON\(\s*secrets\s*\)", t) or v.get("secrets") == "inherit":
+            found.add((name, j))
+if found != ALLOWED:
+    bad.append("the App's credential consumers changed: added %s, removed %s" % (sorted(found - ALLOWED), sorted(ALLOWED - found)))
 # Codex #157 r1: properties alone let a widened App token (INPUT_PERMISSION-* in an env), another token consumer, a
 # transformed-token print, a secrets export or a gutted bump step through. The privileged job is pinned WHOLE to its
 # reviewed form (action pins masked, so a Dependabot bump of a pinned action does not trip it): any change to it —
@@ -60,7 +84,7 @@ sys.exit(1 if bad else 0)
 PY
 }
 case_() {
-  local f="$work/$1.yml"
+  local f="$work/$1.yml" t="${4:-$root}"
   cp "$root/.github/workflows/go-freshness.yml" "$f"
   if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
 import sys, yaml
@@ -70,7 +94,7 @@ exec(edit)
 yaml.safe_dump(d, open(p, "w"), sort_keys=False)
 PY
   fi
-  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if out=$(judge "$f" "$t"); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
 }
@@ -95,5 +119,13 @@ case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_AP
 case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"
+# Codex #157 r2 (SEC-157-02): a token print inside the executed script; a sidecar workflow minting the App token
+mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/bin" "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; cp "$root/bin/go-bump-open-pr.sh" "$t/bin/"; echo "$t"; }
+t=$(mk_tree script-leak); printf '\nprintf %%s "$GH_TOKEN" | od -An -tx1\n' >> "$t/bin/go-bump-open-pr.sh"
+case_ script-token-print     bad "" "$t"
+t=$(mk_tree sidecar); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    environment: agent\n    steps:\n      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1\n        with:\n          app-id: ${{ secrets.AUDITOR_APP_ID }}\n          permission-checks: write\n' > "$t/.github/workflows/probe-sidecar.yml"
+case_ sidecar-workflow       bad "" "$t"
+t=$(mk_tree tojson); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: ${{ toJSON(secrets) }}\n' > "$t/.github/workflows/dump.yml"
+case_ secrets-dump-elsewhere bad "" "$t"
 echo "go-freshness-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
