@@ -104,6 +104,10 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
+Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or context — -H/--host, -c/--context and
+--config are refused, and so are DOCKER_HOST, DOCKER_CONTEXT, BUILDKIT_HOST and any DOCKER_CONFIG but a fresh
+$(mktemp -d), in scripts or env blocks; plugin, context, import, system, trust, secret, config and buildx create/use
+are off the reviewed list (refused).
 Round 12 (NEW-14/15): every verb of docker/podman/nerdctl, skopeo and crane is either read (run/create/pull/build/
 scout/…), on a reviewed list of verbs that pull or run nothing remote, or refused (podman kube play, skopeo sync, crane
 append/mutate, …). Tool words match by exact case (the scope is ubuntu runners, where `Docker` is not found); PATH
@@ -507,8 +511,8 @@ DIGEST_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
 # docker options (Sonnet #164 r1, B2/B4): every option before the image must be KNOWN — a long or short form that
 # takes a value (attached `--x=v` / `-pV`, or the next word), or one that takes none (short ones may combine: -dit).
 # An unknown option fails closed: this check cannot tell which word is the image, so it is a finding.
-DOCKER_GLOBAL_VAL = {"-H", "--host", "--config", "-c", "--context", "-l", "--log-level", "--tlscacert", "--tlscert",
-                     "--tlskey"}
+# no -H/--host, -c/--context or --config: they point docker at another daemon (Sonnet #164 r13, NEW-18) — unknown, refused
+DOCKER_GLOBAL_VAL = {"-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"}
 DOCKER_GLOBAL_BOOL = {"-D", "--debug", "--tls", "--tlsverify"}
 RUN_VAL = {"--add-host", "--annotation", "-a", "--attach", "--blkio-weight", "--blkio-weight-device", "--cap-add",
            "--cap-drop", "--cgroup-parent", "--cgroupns", "--cidfile", "--cpu-period", "--cpu-quota", "--cpu-rt-period",
@@ -551,14 +555,14 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
 SHELLS = {"bash", "sh", "dash", "zsh"}
 # Verbs reviewed as running or pulling nothing remote (Sonnet #164 r12: every verb is checked, reviewed here, or refused)
 DOCKER_SAFE = {"login", "logout", "images", "ps", "rm", "rmi", "stop", "kill", "start", "restart", "logs", "inspect",
-               "exec", "cp", "version", "info", "push", "load", "save", "import", "export", "wait", "top", "port",
+               "exec", "cp", "version", "info", "push", "load", "save", "export", "wait", "top", "port",
                "stats", "events", "history", "pause", "unpause", "rename", "update", "attach", "diff", "commit",
-               "network", "volume", "system", "context", "search", "plugin", "trust", "secret", "config"}
+               "network", "volume", "search"}   # not plugin, context, import, system, trust, secret, config (NEW-16/17/20)
 DOCKER_SAFE_SUB = {("image", "ls"), ("image", "rm"), ("image", "inspect"), ("image", "prune"), ("image", "history"),
                    ("image", "save"), ("image", "load"), ("image", "push"), ("image", "tag"), ("container", "ls"),
                    ("container", "rm"), ("container", "inspect"), ("container", "logs"), ("container", "stop"),
                    ("container", "prune"), ("manifest", "inspect"), ("manifest", "push"), ("manifest", "annotate"),
-                   ("manifest", "rm"), ("buildx", "create"), ("buildx", "use"), ("buildx", "inspect"), ("buildx", "ls"),
+                   ("manifest", "rm"), ("buildx", "inspect"), ("buildx", "ls"),
                    ("buildx", "rm"), ("buildx", "stop"), ("buildx", "version"), ("buildx", "du"), ("buildx", "prune"),
                    ("buildx imagetools", "inspect"), ("builder", "prune"), ("builder", "ls")}
 SKOPEO_SAFE = {"login", "logout", "list-tags", "manifest-digest", "delete", "standalone-verify", "--version", "-v"}
@@ -1088,6 +1092,21 @@ def check_dockerfile(text):
     return bad
 
 
+DAEMON_ENV = re.compile(r"(^|[\s;&|(])(export\s+)?(DOCKER_HOST|DOCKER_CONTEXT|BUILDKIT_HOST|DOCKER_CONFIG)=(\S*)")
+
+
+def daemon_redirects(text):
+    """DOCKER_HOST / DOCKER_CONTEXT / BUILDKIT_HOST set anywhere, or DOCKER_CONFIG set to anything but a fresh
+    $(mktemp -d), point later commands at another daemon or credential/context set (Sonnet #164 r13, NEW-18)."""
+    out = []
+    for m in DAEMON_ENV.finditer(text):
+        name, value = m.group(3), m.group(4)
+        if name == "DOCKER_CONFIG" and value.rstrip(";") == "$(mktemp":
+            continue
+        out.append(name)
+    return out
+
+
 def check_runs(where_job, scripts, bad, tree=None):
     """scripts: [(where, text, shell)] of ONE job (or one composite action), in order; a local name counts only if
     the job made it earlier. A step in a non-POSIX shell that names a container or package tool is a finding: this
@@ -1096,6 +1115,8 @@ def check_runs(where_job, scripts, bad, tree=None):
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7)
     job_text = "\n".join(t for _, t, sh in scripts if not sh or re.match(r"^(bash|sh)(\s|$)", sh))
     for where, text, shell in scripts:
+        for name in daemon_redirects(text):
+            bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
         if RENAMED.search(text):
             bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
                        f"renamed command cannot be checked")
@@ -1240,6 +1261,8 @@ def check_file(tree, rel, pins, bad):
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
+            for m in re.finditer(r"(?m)^\s*(DOCKER_HOST|DOCKER_CONTEXT|BUILDKIT_HOST|DOCKER_CONFIG)\s*:", text):
+                bad.append(f"{rel}: an env block sets {m.group(1)}, which points docker or buildx elsewhere; refused")
             for group, scripts in run_scripts(d).items():
                 check_runs(group, [(rel + w, t, sh) for w, t, sh in scripts], bad, tree)
     for key, path, node, parent in refs:
