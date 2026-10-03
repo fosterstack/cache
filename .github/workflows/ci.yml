@@ -296,7 +296,7 @@ jobs:
       - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
         run: bash bin/panel-wiring-test.sh
       - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
-        run: bash bin/k8s-harness-fence-test.sh
+        run: bash .github/agent/tests/k8s-harness-fence-test.sh
 
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: bash bin/inspector-gate-test.sh

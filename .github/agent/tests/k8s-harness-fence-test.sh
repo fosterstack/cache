@@ -6,7 +6,7 @@
 # checked-out commit — no environment, no network, no other input — and the exclusion names nothing else; any other
 # eval of a variable anywhere is refused by the checker.
 set -euo pipefail
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(cd "$(dirname "$0")/../../.." && pwd)
 python3 - "$root" <<'PY'
 import ast, importlib.util, os, re, subprocess, sys, tempfile, yaml
 root = sys.argv[1]
