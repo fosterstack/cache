@@ -11,8 +11,9 @@ keeps reporting what does.
 | `fosterstack-cache-v<version>.inspector-filters.json` | Amazon Inspector suppression rules | Amazon Inspector (ECR) |
 | `fosterstack-cache-v<version>.csaf.json` | CSAF 2.0 VEX | Google Artifact Analysis |
 
-All three carry the same statements. Each one lives on the release page of its version,
-`https://github.com/fosterstack/cache/releases/tag/v<version>`, next to `release-manifest.json`.
+The OpenVEX and CSAF files carry every statement. The Inspector file carries only the *not affected* and *fixed*
+ones, as suppression rules: Inspector reports what affects you on its own. Each file lives on the release page of its
+version, `https://github.com/fosterstack/cache/releases/tag/v<version>`, next to `release-manifest.json`.
 
 ## 1. Download the files and check they are ours
 
@@ -107,8 +108,9 @@ The `jq` step is the only edit: it sets the name of the one product branch for y
 because Google applies a statement only to the image the branch names.
 
 What it does in your project: it uploads our statements for that one image digest as VEX notes, which Artifact
-Analysis shows with that image's vulnerabilities. Google's VEX upload is a **preview** feature, so its behavior may
-change.
+Analysis shows with that image's vulnerabilities. Google's loader reads only whole-image statements: a statement
+limited to one package inside the image is in the file, but the loader does not upload it, so Artifact Analysis keeps
+reporting that finding. Google's VEX upload is a **preview** feature, so its behavior may change.
 
 ## 3. Stay current
 
@@ -120,12 +122,12 @@ When a statement turns *affected*, the new release's files say so, and a suppres
 - **Amazon Inspector:** delete our earlier rules, then load the new file:
 
   ```sh
-  aws inspector2 list-filters --action SUPPRESS --query "filters[?starts_with(name, 'fosterstack-cache-')].arn" --output text | tr '\t' '\n' | while read -r arn; do [ -n "$arn" ] && aws inspector2 delete-filter --arn "$arn"; done
+  set -o pipefail; aws inspector2 list-filters --action SUPPRESS --query "filters[?starts_with(name, 'fosterstack-cache-')].arn" --output text | tr '\t' '\n' | while read -r arn; do if [ -n "$arn" ]; then aws inspector2 delete-filter --arn "$arn" || exit 1; fi; done
   ```
 
   This deletes only rules whose names start with `fosterstack-cache-`.
-- **Google Artifact Analysis:** load the new release's CSAF file for the image you run, with the same command. It
-  states the vulnerability as *known affected* for that digest.
+- **Google Artifact Analysis:** load the new release's CSAF file for the image you run, with the same command. For
+  a whole-image statement it states the vulnerability as *known affected* for that digest.
 
 ## Other scanners
 

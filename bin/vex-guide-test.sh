@@ -73,6 +73,19 @@ COMPETITORS = ["chainguard", "bitnami", "docker hardened", "minimus", "rapidfort
 hits = [c for c in COMPETITORS if re.search(r"\b%s\b" % re.escape(c), doc, re.I)]
 check("names no competitor", not hits, hits)
 check("no command is a placeholder the reader must guess", "<file>" not in code and "TODO" not in doc, re.findall(r"<[a-z-]+>", code))
+# Codex #167 r1: no claim beyond what ships, and every runnable command checked
+check("R1-01 never claims the three files carry the same statements",
+      not re.search(r"all three carry the same statements", doc, re.I), re.findall(r"[^.]*same statements[^.]*", doc))
+check("R1-01 says the Inspector file carries only the suppressing statements",
+      re.search(r"Inspector[^.]*only[^.]*(not affected|suppress)", doc, re.I | re.S) is not None)
+check("R1-02 says Google's loader reads only whole-image statements",
+      re.search(r"Google[^.]*(loader|upload)[^.]*whole-image", doc, re.I | re.S) is not None)
+rm = next((b for b in blocks if "delete-filter" in b), "")
+check("R1-03 the removal command fails when listing fails (pipefail)", rm.lstrip().startswith("set -o pipefail;"), rm)
+check("R1-04 the Inspector command appears once, and only as the constant",
+      code.count("create-filter") == 1 and V.GUIDE_INSPECTOR_COMMAND.replace("<file>", '"%s"' % insp) in code)
+check("R1-04 the Google command appears once, and only as the constant",
+      code.count("load-vex") == 1 and V.GUIDE_GOOGLE_COMMAND.replace("<file>", '"%s"' % csaf) in code)
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
