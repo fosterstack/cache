@@ -583,6 +583,29 @@ for f in ("test-evidence/gate", "docs/tool.run", "requirements/x.lua", ".github/
     check("r8/2 %s (not data) is not neutral" % f, P.classify(c("d", [f], diffs={f: "+x\n"}))[0] == "dirty")
 for f in ("docs/a.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml", "docs/x.json", ".github/agent/reviews/a.json"):
     check("r8/2 data (%s) stays neutral" % f, P.classify(c("d2", [f], diffs={f: "+x\n"}))[0] == "neutral")
+# Codex #159 r8 (B3 variants): quoted operators and quoted separators do not hide an indirect execution
+for txt in ["run: find bin -name '*-test.sh' '-exec' bash {} \;\n", "run: ls bin/*-test.sh | xargs -I ';' bash ';'\n",
+            "run: ls bin/*-test.sh | xargs -I '|' bash '|'\n", "run: find . \"-execdir\" sh {} +\n",
+            "run: xargs -n 1 -P 4 python3 < x\n", "run: find . -exec 'unterminated {} \;\n"]:
+    check("r8/B3 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"s.yml": txt}) == set())
+check("r8/B3 the real safe forms keep the list", P.effective_neutral({"a.yml": "run: find . -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +\nrun: find /tmp -print0 | xargs -0 sha256sum > /tmp/x\n"}) == set(P.NEUTRAL_TESTS))
+# Codex #159 r8 (B6): an inert string naming a listed test never aborts a decision; the test just is not neutral
+b6 = tempfile.mkdtemp()
+g(b6, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(b6, ".github/workflows")); os.makedirs(os.path.join(b6, "bin"))
+open(os.path.join(b6, ".github/workflows/release.yml"), "w").write('steps:\n  - run: echo "bash bin/panel-test.sh"\n')
+open(os.path.join(b6, "bin/panel-test.sh"), "w").write("")
+open(os.path.join(b6, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+g(b6, "add", "-A"); g(b6, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(b6, "tag", "v0.1.0")
+open(os.path.join(b6, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(b6, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "bump")
+try:
+    cs = P.gather_commits("v0.1.0", cwd=b6); got = P.patch_clean(cs)
+except ValueError as e:
+    got = "raised: %s" % e
+check("r8/B6 an inert string naming a listed test does not make a dependency patch impossible", got == (True, []), got)
+check("r8/B6 ... and that listed test is not neutral in that decision",
+      P.classify(cs[0] | {"files": ["bin/panel-test.sh"], "diffs": {"bin/panel-test.sh": "+x\n"}})[0] == "dirty" if isinstance(got, tuple) else False)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

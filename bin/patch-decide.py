@@ -235,19 +235,30 @@ SAFE_INDIRECT = {"rm", "sha256sum", "sha1sum", "md5sum", "chmod", "chown", "touc
 
 
 def _indirect_exec(text):
-    """True when a find -exec/-execdir/-ok/-okdir or an xargs runs a command outside SAFE_INDIRECT."""
-    # a safe command is a bare name from the list — never a path to a script that happens to share it (Sonnet r8)
-    strip = lambda w: w.strip("\"'") if "/" not in w.strip("\"'") else "/"
-    for m in re.finditer(r"(?<![\w-])-(?:exec|execdir|ok|okdir)\s+(\S+)", text):
-        if strip(m.group(1)) not in SAFE_INDIRECT:
+    """True when a find -exec/-execdir/-ok/-okdir or an xargs runs anything but a bare SAFE_INDIRECT command. Every line
+    that mentions one is tokenized as the shell reads it (shlex: quotes honoured, a quoted ; or | is a word); a line that
+    cannot be tokenized fails closed (Codex #159 r8, B3)."""
+    import shlex
+    for line in re.sub(r"\\\n", " ", text).splitlines():
+        if not re.search(r"exec|-ok|xargs", line):
+            continue
+        try:
+            toks = shlex.split(line, comments=True)
+        except ValueError:
             return True
-    for m in re.finditer(r"\bxargs\b([^\n;|&]*)", text):
-        words = m.group(1).split()
-        i = 0
-        while i < len(words) and words[i].startswith("-"):
-            i += 2 if re.fullmatch(r"-[nLPsdIEaJ]", words[i]) else 1     # an option with a separate value
-        if i < len(words) and strip(words[i]) not in SAFE_INDIRECT:
-            return True
+        for k, t in enumerate(toks):
+            cmd = None
+            if t in ("-exec", "-execdir", "-ok", "-okdir"):
+                cmd = toks[k + 1] if k + 1 < len(toks) else ""
+            elif os.path.basename(t) == "xargs":
+                i = k + 1
+                while i < len(toks) and toks[i].startswith("-"):
+                    i += 2 if re.fullmatch(r"-[nLPsdIEaJ]", toks[i]) else 1      # an option with a separate value
+                cmd = toks[i] if i < len(toks) else "echo"
+                if cmd in ("|", ";", "&&", "||", ">", "<"):
+                    cmd = "echo"                                                 # xargs with no command runs echo
+            if cmd is not None and ("/" in cmd or cmd not in SAFE_INDIRECT):
+                return True
     return False
 
 
@@ -557,8 +568,15 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     out = []
     chain = sorted(release_chain_files(cwd))       # what the release chain executes at HEAD (advisor 0105)
     texts = {f: _git("show", "HEAD:" + f, cwd=cwd) for f in chain}
-    cross_check(chain, texts)                       # advisor 0107
-    neutral = sorted(effective_neutral(texts))     # Sonnet #159 r6, B2
+    # advisor 0107's cross-check never aborts a decision (Codex #159 r8, B6: an inert string naming a listed test made a
+    # dependency patch impossible): what it finds only narrows the neutral list for this decision; the repository's own
+    # test (bin/patch-decide-test.sh, in CI) keeps it red
+    neutral = effective_neutral(texts) - set(chain)
+    try:
+        cross_check([], texts)
+    except ValueError:
+        neutral = {t for t in neutral if not t.endswith("_test.go")}          # the chain runs go test
+    neutral = sorted(neutral)
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
