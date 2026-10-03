@@ -337,7 +337,8 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
-if sorted(on) != ["pull_request", "push"] or (on.get("push") or {}) != {"branches": ["main"], "tags": ["v*"]}:
+# exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
+if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
     bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
@@ -359,9 +360,27 @@ if r.get("name") != "reproducibility" or r.get("if") or sorted(r.get("needs") or
     bad.append("reproducibility changed: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
-run = " ".join(s.get("run", "") for s in r.get("steps") or [])
-if "needs.assemble.outputs.digests" not in run or "needs.assemble-b.outputs.digests" not in run or "exit 1" not in run:
-    bad.append("reproducibility no longer fails when assembly A and B disagree")
+# the comparison is proven by running it (Codex #162 pin, R78-B2): no condition on it or on either assembly, one step,
+# and its script fails when A and B differ or A has no digest, and passes only when they agree
+import json, subprocess
+steps = r.get("steps") or []
+if len(steps) != 1 or any("if" in st for st in steps) or any("if" in (jobs.get(j) or {}) for j in ("build", "assemble", "assemble-b")):
+    bad.append("the reproducibility comparison or an assembly it compares can be skipped")
+run = steps[0].get("run", "") if len(steps) == 1 else ""
+if "${{ needs.assemble.outputs.digests }}" not in run or "${{ needs.assemble-b.outputs.digests }}" not in run:
+    bad.append("reproducibility does not compare assembly A with assembly B")
+else:
+    def verdict(a, b):
+        script = run.replace("${{ needs.assemble.outputs.digests }}", json.dumps(a)) \
+                    .replace("${{ needs.assemble-b.outputs.digests }}", json.dumps(b))
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True).returncode
+    same = {v: "sha256:" + c * 64 for v, c in (("production", "a"), ("debug", "b"), ("fips", "c"))}
+    if verdict(same, same) != 0:
+        bad.append("reproducibility fails when A and B agree")
+    for why, a, b in [("A and B differ", same, dict(same, fips="sha256:" + "d" * 64)), ("A has no digest", {}, same),
+                      ("B has no digest", same, {})]:
+        if verdict(a, b) == 0:
+            bad.append("reproducibility passes when %s" % why)
 a = jobs.get("artifact-acceptance") or {}
 if a.get("uses") != "./.github/workflows/stage-acceptance-artifacts.yml" or a.get("needs") != "build" or \
         (a.get("with") or {}).get("dist-artifact") != "dist-snapshot":
@@ -401,6 +420,13 @@ case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'
 case_scan repro-never-fails      bad "[s.__setitem__('run', s['run'].replace('exit 1', 'true')) for s in d['jobs']['reproducibility']['steps']]"
 case_scan repro-one-assembly     bad "d['jobs']['reproducibility']['needs'] = ['assemble']"
 case_scan acceptance-lost        bad "d['jobs'].pop('artifact-acceptance')"
+case_scan pr-types-closed        bad "d['on']['pull_request'] = {'types': ['closed']}"
+case_scan pr-branches-ignore     bad "d['on']['pull_request'] = {'branches-ignore': ['main']}"
+case_scan pr-paths               bad "d['on']['pull_request'] = {'paths': ['never/**']}"
+case_scan compare-step-off       bad "d['jobs']['reproducibility']['steps'][0]['if'] = '\${{ false }}'"
+case_scan assembly-b-off         bad "d['jobs']['assemble-b']['if'] = '\${{ false }}'"
+case_scan compare-comments-only  bad "d['jobs']['reproducibility']['steps'][0]['run'] = '# needs.assemble.outputs.digests\n# needs.assemble-b.outputs.digests\n# exit 1\ntrue'"
+case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['run'] += '\n: \${{ needs.assemble.outputs.digests }} \${{ needs.assemble-b.outputs.digests }}'; d['jobs']['reproducibility']['steps'][0]['run'] = d['jobs']['reproducibility']['steps'][0]['run'].replace('exit 1', 'true')"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24): after the consolidation PRs the workflow directory holds exactly
@@ -410,22 +436,32 @@ ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dep
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
 stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml"
-judge_set() {  # $1: a newline list of the directory's files
-  local want got
-  want=$(tr ' ' '\n' <<<"$ratified" | grep . | sort); got=$(sort <<<"$1" | grep .)
-  [ "$(wc -l <<<"$want" | tr -d ' ')" = 24 ] || { echo "the ratified list is not 24 files"; return 1; }
-  [ "$want" = "$got" ] && { echo ok; return 0; }
-  echo "extra: $(comm -13 <(echo "$want") <(echo "$got") | tr '\n' ' ')missing: $(comm -23 <(echo "$want") <(echo "$got") | tr '\n' ' ')"; return 1
+judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
+  python3 - "$1" "$ratified" <<'PY'
+import json, sys
+got, want = json.loads(sys.argv[1]), sys.argv[2].split()
+if len(want) != 24:
+    print("the ratified list is not 24 files"); sys.exit(1)
+odd = [n for n in got if "\n" in n or "/" in n]
+extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
+if odd or extra or missing or len(got) != len(set(got)):
+    print("extra: %s missing: %s odd names: %s" % (extra, missing, odd)); sys.exit(1)
+print("ok")
+PY
 }
 case_set() {
   if out=$(judge_set "$3"); then got=ok; else got=bad; fi
   if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS set:$1 → $got ($out)"
   else failn=$((failn+1)); echo "FAIL set:$1 → $got, want $2 ($out)"; fi
 }
-real_set=$(cd "$root/.github/workflows" && ls -1 | grep -E '\.ya?ml$')
+# every entry of the directory, unfiltered: a non-YAML file or a name with a newline is a difference (Codex #162 pin, R78-B3)
+real_set=$(python3 -c 'import json, os, sys; print(json.dumps(sorted(os.listdir(sys.argv[1]))))' "$root/.github/workflows")
+edit_set() { python3 -c 'import json, sys; s = json.loads(sys.argv[1]); exec(sys.argv[2]); print(json.dumps(s))' "$real_set" "$1"; }
 case_set real          ok  "$real_set"
-case_set a-new-file    bad "$real_set"$'\n'"sprawl.yml"
-case_set one-missing   bad "$(grep -v '^codeql.yml$' <<<"$real_set")"
-case_set back-to-old   bad "$(grep -v '^acceptance.yml$' <<<"$real_set")"$'\n'"acceptance-gradle.yml"
+case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
+case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
+case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
+case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
+case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
