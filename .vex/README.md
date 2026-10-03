@@ -40,8 +40,8 @@ release's own image digests — never edited by hand:
 | File | For | Statements |
 |---|---|---|
 | `fosterstack-cache.openvex.json` | scanners that read OpenVEX | the source |
-| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE and by every released image digest |
-| `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement, as a CSAF 2.0 VEX document whose products are the released image digests |
+| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. busybox 1.37.0), by that package and version |
+| `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement about this release's images, as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
 In other words: the CSAF file carries every OpenVEX statement; the Inspector file
 carries one rule per suppressible statement (not_affected, fixed) and none for
@@ -50,6 +50,12 @@ affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
 proven by the release candidate's live test (scanner-panel rule 12), not assumed.
+Google's loader matches the file to the image path you load it for, so name your own
+image first: `jq --arg u "$IMAGE" '.product_tree.branches[].name = $u' <file> > vex-for-my-image.json`,
+then `gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri="$IMAGE"`.
+Google applies whole-image statements only; a statement that names a package inside the
+image (our busybox statements) is carried in the file but not applied by Google's loader —
+the conservative direction (it never hides a finding the statement does not cover).
 
 All three files are listed, with their sha256, in the release's `release-manifest.json`,
 which the release already signs and attaches to every image. That is how to check a

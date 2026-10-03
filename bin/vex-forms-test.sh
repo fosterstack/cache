@@ -60,13 +60,83 @@ check("each rule is a complete create-filter --cli-input-json document (name, ac
       all(set(r) == {"name", "action", "filterCriteria", "description", "reason"} and len(r["name"]) <= 128 and r["name"].startswith("fosterstack-cache-v0.3.0-")
           for r in rules), [r["name"] for r in rules])
 check("no vendor or model name in any generated text", not any(w in json.dumps([insp, csaf]).lower() for w in ("anthropic", "claude", "openai", "gpt")))
-pids = {p["product_id"] for p in csaf["product_tree"]["full_product_names"]}
-check("CSAF products are every released image digest, each named by its image reference and purl",
-      len(pids) == 9 and all(p["product_identification_helper"]["purl"].startswith("pkg:oci/cache@sha256:") and "ghcr.io/fosterstack/cache@sha256:" in p["name"]
-                              for p in csaf["product_tree"]["full_product_names"]), csaf["product_tree"])
-check("CSAF is a csaf_vex 2.0 document from the vendor", csaf["document"]["category"] == "csaf_vex" and csaf["document"]["csaf_version"] == "2.0"
-      and csaf["document"]["publisher"]["category"] == "vendor" and csaf["document"]["tracking"]["status"] == "final", csaf["document"])
-check("every CSAF status lists every product", all(sorted(list(v["product_status"].values())[0]) == sorted(pids) for v in csaf["vulnerabilities"]))
+# Codex #165 r1 SEC-165-02: Google's loader (gcloud 587 vex_util._Validate / ParseVexFile) reads product_tree.branches —
+# one per product, its name the image path (>= 3 path parts), its product carrying the product_id the statuses use
+br = csaf["product_tree"]["branches"]
+pids = {b["product"]["product_id"] for b in br}
+check("CSAF branches are every released image digest, each named by the image path, its product by digest and purl",
+      len(br) == 9 and all(b["name"] == "ghcr.io/fosterstack/cache" and len(b["name"].split("/")) >= 3 and b["category"] == "product_version"
+                           and "ghcr.io/fosterstack/cache@sha256:" in b["product"]["name"]
+                           and b["product"]["product_identification_helper"]["purl"].startswith("pkg:oci/cache@sha256:") for b in br), br)
+def google_validate(doc):          # the loader's own checks, as gcloud 587.0.0 vex_util._Validate makes them
+    bs = (doc.get("product_tree") or {}).get("branches")
+    assert bs and all(b.get("name") and len(b["name"].split("/")) >= 3 for b in bs), "branches"
+    assert doc.get("vulnerabilities") and all(v.get("product_status") for v in doc["vulnerabilities"]), "vulnerabilities"
+    return {b["product"]["product_id"] for b in bs}
+try:
+    google_validate(csaf); ok = True
+except AssertionError as e:
+    ok = e
+check("the CSAF passes the checks Google's loader makes", ok is True, ok)
+try:                                # the real loader's own checks too, when the SDK is installed (not on CI runners)
+    import glob, ast, types
+    src = next(iter(glob.glob("/opt/homebrew/share/google-cloud-sdk/lib/googlecloudsdk/command_lib/artifacts/vex_util.py")
+                    + glob.glob("/usr/lib/google-cloud-sdk/lib/googlecloudsdk/command_lib/artifacts/vex_util.py")), None)
+    if src:
+        tree = ast.parse(open(src).read())
+        fns = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in ("_Validate", "_ValidateVulnerability"))
+               or (isinstance(n, ast.Assign) and all(isinstance(t, ast.Name) and t.id.isupper() for t in n.targets))]
+        class InvalidInputValueError(Exception): pass
+        ns = {"ar_exceptions": types.SimpleNamespace(InvalidInputValueError=InvalidInputValueError),
+              "log": types.SimpleNamespace(warning=lambda *a: None)}
+        exec(compile(ast.Module(body=fns, type_ignores=[]), src, "exec"), ns)
+        ns["_Validate"](csaf)
+        check("the installed gcloud loader's own _Validate accepts the CSAF", True)
+except Exception as e:
+    check("the installed gcloud loader's own _Validate accepts the CSAF", False, repr(e))
+check("a statement on the whole image lists every released image product", all(sorted(list(v["product_status"].values())[0]) == sorted(pids) for v in csaf["vulnerabilities"]))
+# --- Codex #165 r1 SEC-165-01: each statement keeps its product and package scope
+def scoped(cve, status, products, just="component_not_present"):
+    x = st(cve, status, just if status == "not_affected" else None); x["products"] = products; return x
+BB = [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]
+FOREIGN = [{"@id": "pkg:oci/other?repository_url=ghcr.io/someone/other"}]
+ONE = [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % D("5").replace(":", "%3A")}]
+SV = {"statements": [scoped("CVE-2099-10", "not_affected", BB), scoped("CVE-2099-11", "not_affected", FOREIGN),
+                     scoped("CVE-2099-12", "not_affected", ONE)]}
+ri = {r["filterCriteria"]["vulnerabilityId"][0]["value"]: r["filterCriteria"] for r in V.inspector(SV, IMAGES, "v0.3.0")["filters"]}
+check("a package-scoped statement suppresses only that package and version",
+      ri.get("CVE-2099-10", {}).get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "busybox"},
+                                                            "version": {"comparison": "EQUALS", "value": "1.37.0"}}], ri.get("CVE-2099-10"))
+check("a statement about another repository's product suppresses nothing here", "CVE-2099-11" not in ri, sorted(ri))
+check("a statement about one digest suppresses that digest only", [x["value"] for x in ri.get("CVE-2099-12", {}).get("ecrImageHash", [])] == [D("5")], ri.get("CVE-2099-12"))
+cs = V.csaf(SV, IMAGES, "v0.3.0")
+rel = {r["full_product_name"]["product_id"]: r for r in cs["product_tree"].get("relationships", [])}
+v10 = next(v for v in cs["vulnerabilities"] if v["cve"] == "CVE-2099-10")
+ids10 = list(v10["product_status"].values())[0]
+check("in CSAF a package-scoped statement names the component inside each image (relationships), never the whole image",
+      ids10 and all(i in rel and rel[i]["category"] == "default_component_of" for i in ids10)
+      and not set(ids10) & {b["product"]["product_id"] for b in cs["product_tree"]["branches"]}, (ids10, list(rel)[:2]))
+check("…so Google's loader, which reads branch products only, applies nothing for it (the safe direction)",
+      not set(ids10) & google_validate(cs))
+check("CSAF leaves out a statement about another repository's product", "CVE-2099-11" not in [v["cve"] for v in cs["vulnerabilities"]])
+v12 = next(v for v in cs["vulnerabilities"] if v["cve"] == "CVE-2099-12")
+check("CSAF scopes a one-digest statement to that digest's product", len(list(v12["product_status"].values())[0]) == 1)
+# conflicting statements for the same image (and package) stop generation: never a suppression of an affected product
+for name, sts in [("whole image affected, package not_affected", [scoped("CVE-2099-20", "not_affected", BB), scoped("CVE-2099-20", "affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}])]),
+                  ("one digest affected, the repo not_affected", [scoped("CVE-2099-21", "affected", ONE), scoped("CVE-2099-21", "not_affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}])])]:
+    try:
+        V.inspector({"statements": sts}, IMAGES, "v0.3.0"); ok = False
+    except ValueError:
+        ok = True
+    check("conflict refused: " + name, ok)
+try:
+    V.inspector({"statements": [scoped("CVE-2099-22", "not_affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&arch=amd64"}])]}, IMAGES, "v0.3.0"); ok = False
+except ValueError:
+    ok = True
+check("a product qualifier the forms cannot represent stops generation (fail closed)", ok)
+mixed = V.inspector({"statements": [scoped("CVE-2099-23", "affected", ONE), scoped("CVE-2099-23", "not_affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % D("1").replace(":", "%3A")}])]}, IMAGES, "v0.3.0")
+check("disjoint scopes are fine: only the not_affected digest is suppressed",
+      [x["value"] for r in mixed["filters"] for x in r["filterCriteria"]["ecrImageHash"]] == [D("1")], mixed)
 # --- the command the guide will print, tested exactly as written against a stub aws (advisor 0077 check 2)
 d = tempfile.mkdtemp(); fp = os.path.join(d, "fosterstack-cache-v0.3.0.inspector-filters.json"); json.dump(insp, open(fp, "w"))
 stub = os.path.join(d, "aws"); open(stub, "w").write('#!/bin/sh\necho "$@" >> "%s/calls"\n' % d); os.chmod(stub, 0o755)
@@ -76,6 +146,17 @@ subprocess.run(["bash", "-c", cmd], check=True, env=dict(os.environ, PATH=d + ":
 calls = open(os.path.join(d, "calls")).read().splitlines()
 check("the guide's command calls create-filter once per rule, each with one rule's JSON", len(calls) == len(rules)
       and all(c.startswith("inspector2 create-filter --cli-input-json {") for c in calls), calls)
+# Codex #165 r1 SEC-165-03: the command fails when the file is missing or a call fails, never reports success
+bad = subprocess.run(["bash", "-c", V.GUIDE_INSPECTOR_COMMAND.replace("<file>", os.path.join(d, "missing.json"))],
+                     env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
+check("…and fails on a missing file", bad.returncode != 0)
+open(stub, "w").write("#!/bin/sh\nexit 3\n")
+bad = subprocess.run(["bash", "-c", cmd], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
+check("…and fails when a create-filter call fails", bad.returncode != 0)
+# the Google step: the loader matches a branch name to --uri, so the guide renames the branches to the customer's image
+g = V.GUIDE_GOOGLE_COMMAND
+check("the guide's Google command renames every branch to the image it loads, then loads that file",
+      ".product_tree.branches[].name = $u" in g and "load-vex" in g and "--uri" in g, g)
 # --- refusal: an unknown status, a missing image digest
 try:
     V.inspector({"statements": [st("CVE-2099-9", "maybe")]}, IMAGES, "v0.3.0"); ok = False
@@ -90,6 +171,12 @@ check("all three variants' digests are required", ok)
 # --- the real OpenVEX file generates cleanly
 real = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
 check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]) == len(real["statements"]))
+rc = V.csaf(real, IMAGES, "v0.3.0")
+check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
+      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox-1.37.0" for r in rc["product_tree"]["relationships"]))
+if src:
+    ns["_Validate"](rc)
+    check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
 # --- AC3: our own pipeline keeps filtering against the OpenVEX file itself, never a derived form
 rescan = open(os.path.join(root, ".github/workflows/main-candidate-rescan.yml")).read()
 check("the rescan filters grype, docker scout and the tally against the OpenVEX file",
