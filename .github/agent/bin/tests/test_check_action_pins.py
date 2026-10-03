@@ -207,5 +207,83 @@ def urllib_request():
     return urllib.request
 
 
-if __name__ == "__main__":
+
+class RunScriptImages(unittest.TestCase):              # handoff 0068: literal images a run: script names
+    def test_double_dash_ends_the_options(self):
+        self.assertEqual(M.script_images("docker run --rm -- alpine true"), [("use", "docker run", "alpine")])
+        self.assertEqual(M.script_images("docker run --rm --"), [("use", "docker run", None)])
+
+    def test_a_command_without_an_image(self):
+        self.assertEqual(M.script_images("docker run --rm"), [("use", "docker run", None)])
+        self.assertEqual(M.script_images("docker"), [])
+        self.assertEqual(M.script_images("docker --tls"), [])
+        bad = []
+        M.check_runs("j", [("w", "docker run --rm", None)], bad)
+        self.assertEqual(bad, [])
+
+    def test_tag_equals_form_makes_a_local_name(self):
+        ev = M.script_images("docker build --tag=img1 . && docker buildx build -t img2 .")
+        self.assertEqual({e[1] for e in ev if e[0] == "local"}, {"img1", "img2"})
+
+    def test_a_document_that_is_not_a_mapping_has_no_scripts(self):
+        self.assertEqual(M.run_scripts(M.yaml.compose("- a\n- b\n", Loader=M.StrLoader)), {})
+
+    def test_build_without_a_tree_cannot_be_checked(self):           # Sonnet #164 B6: fails closed
+        bad = []
+        M.check_runs("j", [("w", "docker build .", None)], bad)
+        self.assertIn("not a file in the repository", bad[0])
+
+    def test_dockerfile_forms(self):
+        self.assertEqual(M.check_dockerfile("FROM --platform=x a@sha256:" + "0" * 64 + " AS b\nFROM b\nFROM scratch\nRUN x\nFROM\n"), [])
+        self.assertEqual(M.check_dockerfile("FROM alpine:3\n"), ["alpine:3"])
+        self.assertEqual(M.check_dockerfile("FROM --platform=x\n"), [])
+
+    def test_build_option_forms(self):
+        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set(), []))
+        self.assertEqual(M._build(["-f"]), ("-", ".", set(), []))
+        self.assertEqual(M._build(["--build-context=a=./x", "."])[3], ["./x"])
+
+    def test_short_option_forms(self):
+        self.assertEqual(M._options(["-dit", "img"], M.RUN_VAL, M.RUN_BOOL), (1, None))
+        self.assertEqual(M._options(["-p", "1:2", "img"], M.RUN_VAL, M.RUN_BOOL), (2, None))
+        self.assertEqual(M._options(["-p1:2", "img"], M.RUN_VAL, M.RUN_BOOL), (1, None))
+        self.assertEqual(M._options(["--rm"], M.RUN_VAL, M.RUN_BOOL), (1, None))
+
+
+class RunScriptInstalls(unittest.TestCase):             # handoff 0070: package installs a run: script makes
+    def test_attached_requirement_forms_count(self):
+        self.assertEqual(M.script_installs("pip install --require-hashes --requirement=r.txt"), [])
+        self.assertEqual(M.script_installs("pip install --require-hashes -rr.txt"), [])
+
+    def test_a_bare_yarn_or_pnpm_installs(self):
+        self.assertEqual(M.script_installs("yarn"),          # Codex #164 adversarial r1 C04: any use is refused
+                         [("yarn", "a package manager this repository does not use; any invocation is refused")])
+        self.assertEqual([c for c, _ in M.script_installs("pnpm")], ["pnpm"])
+
+    def test_redirections_are_not_packages(self):
+        self.assertEqual(M.script_installs("pip install --require-hashes -r r.txt 2>/dev/null > log"), [])
+        self.assertEqual(M.script_installs("pip install --require-hashes -r r.txt > log"), [])
+
+
+class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwarding, variable subcommands
+    def test_a_variable_pip_subcommand(self):
+        self.assertEqual([w for _, w in M.script_installs('pip "$sub" requests')],
+                         ["its subcommand is a variable; the packages cannot be seen"])
+
+    def test_other_python_modules_are_not_installs(self):     # r3: only installers and build frontends are flagged
+        self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])
+
+    def test_the_non_posix_catch_all_knows_every_tool(self):          # Sonnet #164 r7, NEW-8: no drift
+        for t in M.TOOLS | M.UNREAD_CONTAINER | M.UNREAD_PY | M.OS_PKG:
+            bad = []
+            M.check_runs("j", [("w", "%s run x" % t, "pwsh")], bad)
+            self.assertTrue(bad, t)
+
+    def test_a_workflow_without_jobs_has_no_runners_to_judge(self):   # advisor 0080: ubuntu-only scope
+        bad = []
+        M.check_runners("w", M.yaml.compose("on: push\n", Loader=M.StrLoader), bad)
+        self.assertEqual(bad, [])
+
+
+if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()

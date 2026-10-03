@@ -170,7 +170,7 @@ jobs:
           curl_block = next(b for b in sh_blocks if "curl -s localhost" in b)
           pf_cmd = next(l.strip() for l in pf_block.splitlines()
                         if l.strip() and not l.strip().startswith("#"))
-          open("/tmp/pf.cmd", "w").write(pf_cmd + "\n")
+          open("/tmp/pf-forward.sh", "w").write("#!/usr/bin/env bash\n" + pf_cmd + "\n")
 
           raw = re.sub(r"\\\n\s*", " ", curl_block)   # join line continuations
           cmds = [l.rstrip() for l in raw.splitlines()
@@ -233,8 +233,7 @@ jobs:
           # Run the documented port-forward verbatim (backgrounded for CI),
           # then the documented curl smoke commands with their doc-declared
           # expected results.
-          pf_cmd=$(cat /tmp/pf.cmd)
-          eval "$pf_cmd" >/tmp/pf.log 2>&1 &
+          bash /tmp/pf-forward.sh >/tmp/pf.log 2>&1 &   # the documented command, written by the step above
           pf=$!
           trap 'kill "$pf" 2>/dev/null || true' EXIT
           for _ in $(seq 1 30); do grep -q "Forwarding from" /tmp/pf.log && break; sleep 1; done
