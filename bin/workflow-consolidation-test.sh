@@ -371,6 +371,9 @@ KEYS = {"build": {"permissions", "uses", "with"}, "assemble": {"needs", "permiss
 for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
         bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
+# what the job inherits: the workflow's token and shell (Codex #162 pin r2, R78-B4/B5)
+if d.get("permissions") != {"contents": "read"} or "defaults" in d:
+    bad.append("the workflow's inherited token or defaults changed: %s" % {k: d.get(k) for k in ("permissions", "defaults")})
 if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
     bad.append("the reproducibility comparison is not one plain step (name + run): %s" % [sorted(st) for st in steps])
 run = steps[0].get("run", "") if len(steps) == 1 else ""
@@ -384,8 +387,12 @@ else:
     same = {v: "sha256:" + c * 64 for v, c in (("production", "a"), ("debug", "b"), ("fips", "c"))}
     if verdict(same, same) != 0:
         bad.append("reproducibility fails when A and B agree")
-    for why, a, b in [("A and B differ", same, dict(same, fips="sha256:" + "d" * 64)), ("A has no digest", {}, same),
-                      ("B has no digest", same, {})]:
+    # every variant on its own: a comparator that skips one must fail here (Codex #162 pin r2, R78-B2)
+    cases = [("A and B differ in " + v, same, dict(same, **{v: "sha256:" + "d" * 64})) for v in same]
+    cases += [("A has no " + v, {k: x for k, x in same.items() if k != v}, same) for v in same]
+    cases += [("B has no " + v, same, {k: x for k, x in same.items() if k != v}) for v in same]
+    cases += [("A has no digest", {}, same), ("B has no digest", same, {})]
+    for why, a, b in cases:
         if verdict(a, b) == 0:
             bad.append("reproducibility passes when %s" % why)
 a = jobs.get("artifact-acceptance") or {}
@@ -437,6 +444,9 @@ case_scan job-continue-on-error   bad "d['jobs']['reproducibility']['continue-on
 case_scan assembly-b-coe          bad "d['jobs']['assemble-b']['continue-on-error'] = 'true'"
 case_scan build-coe               bad "d['jobs']['build']['continue-on-error'] = 'true'"
 case_scan repro-matrix            bad "d['jobs']['reproducibility']['strategy'] = {'matrix': {'x': ['1']}}"
+case_scan compare-fips-only       bad "s=d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('for v in production debug fips;', 'for v in fips;')"
+case_scan defaults-shell-true    bad "d['defaults'] = {'run': {'shell': 'true {0}'}}"
+case_scan workflow-token-write   bad "d['permissions']['contents'] = 'write'"
 case_scan compare-comments-only  bad "d['jobs']['reproducibility']['steps'][0]['run'] = '# needs.assemble.outputs.digests\n# needs.assemble-b.outputs.digests\n# exit 1\ntrue'"
 case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['run'] += '\n: \${{ needs.assemble.outputs.digests }} \${{ needs.assemble-b.outputs.digests }}'; d['jobs']['reproducibility']['steps'][0]['run'] = d['jobs']['reproducibility']['steps'][0]['run'].replace('exit 1', 'true')"
 
