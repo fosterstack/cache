@@ -1997,7 +1997,8 @@ def check_runs(where_job, scripts, bad, tree=None):
             elif moved:                        # Sonnet #164 r17, NEW-26: resolved from a directory this check cannot place
                 bad.append(f"{where}: `{c}` reads -r from {path}, a literal path read from a working directory this "
                            f"check cannot place (cd / working-directory); refused")
-            elif tree is not None and path.lstrip("./") not in getattr(tree, "entries", {}) and path not in getattr(tree, "entries", {}):
+            elif tree is not None and "file" not in ((getattr(tree, "entries", {}) or {}).get(path.lstrip("./")),
+                                                     (getattr(tree, "entries", {}) or {}).get(path)):   # a regular file (r24)
                 bad.append(f"{where}: `{c}` reads -r from {path}, which is not a file in the repository")
             elif _touches(job_text, path, _is_pip_reading):
                 bad.append(f"{where}: the script writes or changes {path}, the -r file `{c}` reads")
