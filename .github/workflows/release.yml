@@ -314,7 +314,7 @@ jobs:
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance-gradle, acceptance-maven,
+    needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance,
             acceptance-egress, acceptance-k8s, acceptance-predicate, authorization, promotion]
     runs-on: ubuntu-latest
     permissions:

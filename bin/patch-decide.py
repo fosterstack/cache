@@ -69,7 +69,7 @@ BUILD_INPUTS = re.compile(r"^\.goreleaser\.ya?ml$")
 # Outside workflows, .github/ is release-chain input by default: the stage workflows run .github/agent/bin and read
 # .github/policy (Codex #158 phase-2 r2, B04). Neutral only what is reviewed as never read by the release chain.
 NEUTRAL_GITHUB = {".github/dependabot.yml", ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md"}
-NEUTRAL_GITHUB_PREFIX = (".github/agent/reviews/", ".github/agent/tests/", ".github/agent/bin/tests/", ".github/agent/docs/")
+NEUTRAL_GITHUB_PREFIX = (".github/agent/reviews/", ".github/agent/docs/")   # tests: NEUTRAL_TESTS (advisor 0107)
 
 
 def _changed_lines(diff):
@@ -168,19 +168,87 @@ def _digest_only(diff):
     return True
 
 
+# Advisor 0107 (AC1's "tests" = tests no release stage runs, written down): a test is neutral only when it is listed here
+# — seeded with the tests only ci.yml runs (its scripts and `go test ./...`); additions only by a reviewed change. Any
+# other test is not patch-clean. cross_check turns red when a listed test is found run by a release stage.
+NEUTRAL_TESTS = frozenset("""
+.github/agent/tests/auditor-matrix-test.sh
+.github/agent/tests/auditor-parser-tests.sh
+.github/agent/tests/coverage-check.py
+.github/agent/tests/coverage-gate.sh
+.github/agent/tests/govulncheck-fixtures-test.sh
+.github/agent/tests/pin-wiring-test.sh
+bin/authorize-acceptance-check-test.sh
+bin/check-file-allowlist-test.sh
+bin/dependabot-reviewer-gather-test.sh
+bin/dependabot-reviewer-test.sh
+bin/dependency-lanes-test.sh
+bin/go-bump-open-pr-test.sh
+bin/go-freshness-wiring-test.sh
+bin/inspector-gate-test.sh
+bin/install-scanner-test.sh
+bin/panel-test.sh
+bin/panel-wiring-test.sh
+bin/patch-decide-test.sh
+bin/release-patch-wiring-test.sh
+bin/required-check-guard-test.sh
+bin/rescan-statement-test.sh
+bin/vex-both-scanners-test.sh
+bin/vex-forms-test.sh
+bin/vex-scope-test.sh
+bin/workflow-consolidation-test.sh
+cmd/fscache/main_test.go
+cmd/fscache/serve_test.go
+internal/blobstore/blobstore_faults_test.go
+internal/blobstore/blobstore_test.go
+internal/blobstore/perms_test.go
+internal/buildinfo/buildinfo_test.go
+internal/cache/cache_test.go
+internal/cache/fault_test.go
+internal/cache/reconcile_test.go
+internal/metadata/metadata_errors_test.go
+internal/metadata/metadata_test.go
+internal/server/bounds_test.go
+internal/server/errorpaths_test.go
+internal/server/router_test.go
+internal/server/server_test.go
+internal/server/status_test.go
+internal/server/surface_test.go
+tools/requirements/cli_test.go
+tools/requirements/fixed_test.go
+tools/requirements/main_test.go
+tools/requirements/trace_test.go
+""".split())
+
+
 def _is_test(path):
-    return path.endswith("_test.go") or bool(re.match(r"^bin/[^/]+-test\.sh$", path))
+    return path in NEUTRAL_TESTS
+
+
+def cross_check(chain, texts):
+    """The walk as a cross-check of NEUTRAL_TESTS (advisor 0107): ValueError when a listed test is in the release chain,
+    or a chain file runs `go test` (the listed Go tests would then be gates). texts: {path: content} of the chain (or
+    one workflow/shell text); shell and YAML are read without comments, Python by an argv list naming go then test."""
+    run = sorted(NEUTRAL_TESTS & set(chain))
+    if run:
+        raise ValueError("listed neutral tests are run by the release chain: %s" % ", ".join(run))
+    for path, text in (texts.items() if isinstance(texts, dict) else [("chain.yml", texts or "")]):
+        if path.endswith(".py"):
+            hit = re.search(r"[\"']go[\"']\s*,\s*[\"']test[\"']", text)
+        else:
+            hit = any(re.search(r"\bgo\s+test\b", ln.split(" #")[0]) for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        if hit:
+            raise ValueError("%s runs go test: the listed Go tests would be gates" % path)
 
 
 EXECUTABLE = re.compile(r"\.(sh|py|ya?ml)$")
 
 
-def release_chain_files(cwd="."):
+def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
     """Every workflow and script the release chain executes at HEAD (advisor 0105): release.yml, the workflows it calls
     (uses: ./…, transitively), every script or program they name, and every script those name in turn — found by path
     or next to their caller ($here/x.py). A test a stage runs as a gate is in it; a test no stage runs is not."""
     tree = set(_git("ls-tree", "-r", "--name-only", "HEAD", cwd=cwd).split())
-    start = ".github/workflows/release.yml"
     seen, todo = set(), [start] if start in tree else []
     while todo:
         f = todo.pop()
@@ -195,6 +263,9 @@ def release_chain_files(cwd="."):
         # executed, not merely named: a workflow by uses:, a script by an interpreter, by ./path or by $dir/path —
         # a path read as data (git show main:…/ci.yml, a fixture, a policy file) is not followed
         refs = set(re.findall(r"uses:\s*\./(\.github/workflows/[\w.-]+\.ya?ml)", text))
+        for d in re.findall(r"uses:\s*\./((?!\.github/workflows/)[\w./-]+?)/?\s*$", text, re.M):   # a local composite
+            refs |= {d.rstrip("/") + "/" + a for a in ("action.yml", "action.yaml") if d.rstrip("/") + "/" + a in tree}
+            # action (Sonnet #159 r5, F1): its steps run too
         cands = re.findall(r"(?:\bbash|\bsh|\bpython3?|\bsource)\s+(?:-[\w-]+\s+)*[\"']?(?:\$\{?\w+\}?/)?([\w./-]+\.(?:sh|py))\b", text)
         cands += re.findall(r"(?<![\w/.$-])\./([\w./-]+\.(?:sh|py))\b", text)
         cands += re.findall(r"\$\{?\w+\}?/([\w./-]+\.(?:sh|py))\b", text)
@@ -216,6 +287,8 @@ def classify(commit):
     for f in files:
         if f in chain:
             kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
+        elif _is_test(f):
+            kinds.add("neutral")
         elif f in FIX_EXACT or f.startswith(FIX_PREFIX):
             kinds.add("fix")
         elif f in ("go.mod", "tools/requirements/go.mod"):
@@ -434,6 +507,7 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     chain = sorted(release_chain_files(cwd))       # what the release chain executes at HEAD (advisor 0105)
+    cross_check(chain, {f: _git("show", "HEAD:" + f, cwd=cwd) for f in chain})   # advisor 0107
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it

@@ -32,7 +32,8 @@ for files, diff, want in [
     ([".vex/fosterstack-cache.openvex.json"], {}, "fix"),
     ([".snyk", "osv-scanner.toml", ".auditor/accepted-items.json"], {}, "fix"),
     ([".github/workflows/ci.yml", "docs/x.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml"], {}, "neutral"),
-    (["internal/cache/store_test.go", "bin/x-test.sh"], {}, "neutral"),
+    (["cmd/fscache/main_test.go", "bin/panel-test.sh"], {}, "neutral"),      # listed tests (advisor 0107)
+    (["bin/x-test.sh"], {}, "dirty"),                                       # an unlisted test (advisor 0107)
     (["internal/cache/store.go"], {}, "dirty"),
     (["go.mod", "internal/cache/store.go"], BUMP, "dirty"),
 ]:
@@ -140,9 +141,10 @@ check("B03 a FROM moved past another instruction is not patch-clean", P.classify
 for f in (".github/agent/bin/auditor-release-authz.py", ".github/policy/scanners.json", ".github/policy/allowed_signers",
           ".github/actions/x/action.yml"):
     check("B04 %s (read by the release chain, or not reviewed) is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
-for f in (".github/dependabot.yml", ".github/CODEOWNERS", ".github/agent/reviews/abc.json", ".github/agent/tests/x.sh",
-          ".github/agent/bin/tests/test_x.py"):
+for f in (".github/dependabot.yml", ".github/CODEOWNERS", ".github/agent/reviews/abc.json"):
     check("B04 %s stays neutral" % f, P.classify(c("x", [f]))[0] == "neutral")
+for f in (".github/agent/tests/x.sh", ".github/agent/bin/tests/test_x.py"):   # tests: neutral only when listed (0107)
+    check("0107 an unlisted %s is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
 for name in ("Google Gemini", "Microsoft Copilot", "Amazon Bedrock", "Azure OpenAI", "xAI Grok"):
     out = P._clean("confirmed by %s" % name)
     check("B06 %s is fully redacted" % name, all(w.lower() not in out.lower() for w in name.split()), out)
@@ -466,7 +468,7 @@ check("B6 scope '' is a policy error", P.ready({"required_checks": [{"context": 
 GATE = "bin/analyze-egress-trace-test.sh"
 check("0105 a gate test the release chain runs is not patch-clean",
       P.classify(c("g1", [GATE], diffs={GATE: "+x\n"}) | {"chain": [GATE]})[0] == "dirty")
-check("0105 the same test, run by no stage, stays neutral", P.classify(c("g2", [GATE], diffs={GATE: "+x\n"}))[0] == "neutral")
+check("0105/0107 a listed test no stage runs stays neutral", P.classify(c("g2", ["bin/panel-test.sh"], diffs={"bin/panel-test.sh": "+x\n"}))[0] == "neutral")
 rc_repo = tempfile.mkdtemp()
 g(rc_repo, "init", "-q")
 os.makedirs(os.path.join(rc_repo, ".github/workflows")); os.makedirs(os.path.join(rc_repo, "bin"))
@@ -487,6 +489,46 @@ check("0105 a test only ci.yml runs is not in the chain", "bin/other-test.sh" no
 real = P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), ".."))
 check("0105 on this repository the egress gate test is in the chain, and this test is not",
       GATE in real and "bin/patch-decide-test.sh" not in real, sorted(x for x in real if x.startswith("bin/")))
+# advisor 0107: a test is neutral only when it is on the reviewed NEUTRAL_TESTS list; any other test is not patch-clean;
+# the walk cross-checks the list (a listed test a stage runs, or a chain that runs go test, is an error), and follows
+# local composite actions (Sonnet #159 r5, F1)
+check("0107 an unlisted test is not patch-clean", P.classify(c("t1", ["bin/brand-new-test.sh"], diffs={"bin/brand-new-test.sh": "+x\n"}))[0] == "dirty")
+listed = sorted(P.NEUTRAL_TESTS)[0]
+check("0107 a listed test stays neutral", P.classify(c("t2", [listed], diffs={listed: "+x\n"}))[0] == "neutral", listed)
+check("0107 a listed test the chain runs is not patch-clean", P.classify(c("t3", [listed], diffs={listed: "+x\n"}) | {"chain": [listed]})[0] == "dirty")
+try:
+    P.cross_check([listed], ""); got = "accepted"
+except ValueError:
+    got = "refused"
+check("0107 the cross-check refuses a listed test that a release stage runs", got == "refused", got)
+try:
+    P.cross_check([".github/workflows/stage-x.yml"], "steps:\n  - run: go test ./...\n"); got = "accepted"
+except ValueError:
+    got = "refused"
+check("0107 the cross-check refuses a chain that runs go test (Go tests are listed as neutral)", got == "refused", got)
+ca_repo = tempfile.mkdtemp()
+g(ca_repo, "init", "-q")
+os.makedirs(os.path.join(ca_repo, ".github/workflows")); os.makedirs(os.path.join(ca_repo, ".github/actions/gate")); os.makedirs(os.path.join(ca_repo, "bin"))
+for path, body in {".github/workflows/release.yml": "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/gate\n",
+                   ".github/actions/gate/action.yml": "runs:\n  using: composite\n  steps:\n    - run: bash bin/gate-test.sh\n      shell: bash\n",
+                   "bin/gate-test.sh": ""}.items():
+    open(os.path.join(ca_repo, path), "w").write(body)
+g(ca_repo, "add", "-A"); g(ca_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+ch = P.release_chain_files(ca_repo)
+check("0107/F1 a local composite action and what it runs are in the chain",
+      {".github/actions/gate/action.yml", "bin/gate-test.sh"} <= ch, sorted(ch))
+real_root = os.path.join(os.path.dirname(sys.argv[1]), "..")
+real_tree = set(subprocess.run(["git", "-C", real_root, "ls-files"], capture_output=True, text=True).stdout.split())
+check("0107 every listed test exists", P.NEUTRAL_TESTS <= real_tree, sorted(P.NEUTRAL_TESTS - real_tree))
+ci_run = P.release_chain_files(real_root, start=".github/workflows/ci.yml") | {f for f in real_tree if f.endswith("_test.go")}
+check("0107 every listed test is one ci.yml runs (the seed rule)", P.NEUTRAL_TESTS <= ci_run, sorted(P.NEUTRAL_TESTS - ci_run))
+real_chain = P.release_chain_files(real_root)
+try:
+    P.cross_check(real_chain, {f: open(os.path.join(real_root, f)).read() for f in real_chain if os.path.exists(os.path.join(real_root, f))})
+    got = "ok"
+except ValueError as e:
+    got = str(e)
+check("0107 on this repository the cross-check holds", got == "ok", got)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

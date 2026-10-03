@@ -28,12 +28,6 @@ unmapped:
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
   - ac: REQ-SCAN-012-AC5
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-REL-009-AC3
-    reason: "PR B of the patch-release build: release.yml's push-to-main trigger cuts on a removed critical/high finding"
-  - ac: REQ-REL-009-AC5
-    reason: "PR B: the keyless gitsign signature under release.yml's identity"
-  - ac: REQ-REL-008-AC2
-    reason: "check-name preservation is proven per moved job in the consolidation PRs that move required jobs (ci.yml absorptions, scan + release-chain-pr, the acceptance merge); the mutation job is not a required check"
   - ac: REQ-REL-009-AC6
     reason: "PR C: source admission accepting the CI identity for patch tags only (with the owner's ruleset and allowed-signers changes)"
   - ac: REQ-REL-009-AC7
