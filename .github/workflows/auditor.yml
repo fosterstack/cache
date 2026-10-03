@@ -82,29 +82,25 @@ jobs:
           echo "main head: ${main_head}"
           runs=$(gh run list --workflow main-candidate-rescan.yml --branch main --limit 50 \
                    --json databaseId,headSha,conclusion,createdAt)
-          # today's main head, regardless of conclusion (a red rescan is the day that needs us)
-          rid=$(printf '%s' "$runs" | jq -r --arg h "$main_head" \
-                  '[.[]|select(.headSha==$h)]|sort_by(.createdAt)|last|.databaseId // empty')
-          if [ -z "$rid" ]; then
-            rid=$(printf '%s' "$runs" | jq -r 'sort_by(.createdAt)|last|.databaseId // empty')
-            echo "::warning::no main-candidate-rescan run for main head ${main_head}; using latest run ${rid} (digest binding unavailable)"
-            echo "head_bound=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "head_bound=true" >> "$GITHUB_OUTPUT"
-          fi
+          # the newest rescan of main, whatever head it scanned and whatever its conclusion (a red rescan is the day that
+          # needs us): the panel's judgment is bound to THAT run's head and image digests (owner RATIFIED Oct 3, item a)
+          rid=$(printf '%s' "$runs" | jq -r 'sort_by(.createdAt)|last|.databaseId // empty')
           [ -n "$rid" ] || { echo "::error::no main-candidate-rescan run to consume" >&2; exit 1; }
+          echo "main_head=${main_head}" >> "$GITHUB_OUTPUT"
           echo "selected rescan run: ${rid}"
           echo "run_id=${rid}" >> "$GITHUB_OUTPUT"
           # wait (bounded) for the selected run to finish, so its artifacts are complete; the scanner panel judges only
-          # a COMPLETED run of main's head created within the last day (checked by the panel step below)
+          # a COMPLETED run (finished, any conclusion, with its evidence) created within the last day (the panel step)
           for _ in $(seq 1 90); do
             st=$(gh run view "$rid" --json status --jq .status)
             [ "$st" = completed ] && break
             echo "rescan run ${rid} is ${st}; waiting"; sleep 60
           done
-          meta=$(gh run view "$rid" --json status,createdAt,headSha)
+          meta=$(gh run view "$rid" --json status,conclusion,createdAt,headSha)
           echo "rescan_status=$(printf '%s' "$meta" | jq -r .status)" >> "$GITHUB_OUTPUT"
           echo "rescan_created=$(printf '%s' "$meta" | jq -r .createdAt)" >> "$GITHUB_OUTPUT"
+          echo "rescan_head=$(printf '%s' "$meta" | jq -r .headSha)" >> "$GITHUB_OUTPUT"
+          echo "rescan_conclusion=$(printf '%s' "$meta" | jq -r '.conclusion // ""')" >> "$GITHUB_OUTPUT"
           mkdir -p "${RUNNER_TEMP}/rescan" "${RUNNER_TEMP}/rescan-reports"
           gh run download "$rid" -n oci-candidate -D "${RUNNER_TEMP}/rescan" \
             || gh run download "$rid" -D "${RUNNER_TEMP}/rescan"
@@ -311,14 +307,17 @@ jobs:
           PANEL_AUDIT_B_PROJECT_ID: ${{ secrets.PANEL_AUDIT_B_PROJECT_ID }}
           PANEL_AUDIT_B_MODEL: ${{ secrets.PANEL_AUDIT_B_MODEL }}
           GH_TOKEN: ${{ github.token }}
-          RESCAN_HEAD_BOUND: ${{ steps.rescan.outputs.head_bound }}
+          RESCAN_RUN: ${{ steps.rescan.outputs.run_id }}
+          RESCAN_HEAD: ${{ steps.rescan.outputs.rescan_head }}
+          RESCAN_CONCLUSION: ${{ steps.rescan.outputs.rescan_conclusion }}
+          MAIN_HEAD: ${{ steps.rescan.outputs.main_head }}
           RESCAN_STATUS: ${{ steps.rescan.outputs.rescan_status }}
           RESCAN_CREATED: ${{ steps.rescan.outputs.rescan_created }}
         run: |
           set -euo pipefail
-          # the panel judges only today's completed rescan of main's head: never a stale, unfinished or other-head run
-          # (an unusable run fails this step visibly; the next daily run judges again)
-          [ "${RESCAN_HEAD_BOUND}" = true ] || { echo "::error::scanner panel: no rescan run of main's head to judge" >&2; exit 1; }
+          # the panel judges only a COMPLETED rescan of main (finished, any conclusion, with its evidence) from the last
+          # day, bound to the head and image digests it scanned; main having moved past it is a warning, never a failure
+          # (owner RATIFIED Oct 3, item a; advisor 0113/0136). A stale, unfinished or evidence-less run fails visibly.
           [ "${RESCAN_STATUS}" = completed ] || { echo "::error::scanner panel: the rescan run did not finish in time" >&2; exit 1; }
           age=$(( $(date -u +%s) - $(date -u -d "${RESCAN_CREATED}" +%s) ))
           [ "$age" -le 93600 ] || { echo "::error::scanner panel: the rescan run is ${age}s old (more than a day)" >&2; exit 1; }
@@ -333,7 +332,10 @@ jobs:
           elif [ -f .auditor/panel-state.json ]; then cp .auditor/panel-state.json "$state"; echo "state from main"
           else rm -f "$state"; echo "no earlier state: the first day"
           fi
+          jq -n --arg r "$RESCAN_RUN" --arg h "$RESCAN_HEAD" --arg m "$MAIN_HEAD" --arg c "$RESCAN_CONCLUSION" \
+            '{run_id: $r, head: $h, main_head: $m, conclusion: $c}' > "${RUNNER_TEMP}/rescan-binding.json"
           python3 .github/agent/bin/auditor-panel.py judge --verdict "${RUNNER_TEMP}/panel/verdict.json" \
+            --rescan "${RUNNER_TEMP}/rescan-binding.json" \
             --state "$state" --profiles .github/policy/scanner-profiles.json --oci "${RUNNER_TEMP}/rescan" \
             --out "${RUNNER_TEMP}/panel-out" --seats "$seats" --today "$(date -u +%F)" --token-budget 200000
 

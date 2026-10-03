@@ -929,6 +929,40 @@ def _load_json(path, default=None):
         return default
 
 
+SHA1 = re.compile(r"^[0-9a-f]{40}$")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def rescan_binding(path, oci_dir):
+    """(binding, None) or (None, why). The judgment is bound to the rescan it judges (owner RATIFIED Oct 3, item a;
+    advisor 0113/0136): its run, the head it scanned, main's head now, its conclusion (any: a red rescan is judged), and
+    the image digests of the evidence it left — every archive must name one, else the evidence is not that run's."""
+    try:
+        b = _load_json(path)
+    except ValueError:
+        b = None
+    keys = ("run_id", "head", "main_head", "conclusion")
+    if not isinstance(b, dict) or not all(isinstance(b.get(k), str) and b[k].strip() for k in keys) \
+            or not SHA1.match(b["head"]) or not SHA1.match(b["main_head"]):
+        return None, "no rescan binding (run, scanned head, main's head, conclusion) in %s" % path
+    digests = {}
+    for name in sorted(os.listdir(oci_dir)) if os.path.isdir(oci_dir) else []:
+        if not name.endswith(".oci"):
+            continue
+        try:
+            with tarfile.open(os.path.join(oci_dir, name)) as t:
+                idx = json.loads(t.extractfile("index.json").read())
+            ds = [m["digest"] for m in idx.get("manifests") or [] if DIGEST.match(str(m.get("digest", "")))]
+        except (OSError, ValueError, KeyError, AttributeError, tarfile.TarError):
+            ds = []
+        if not ds:
+            return None, "the rescan's evidence %s has no image digest" % name
+        digests[name[:-4]] = ", ".join(ds)
+    if not digests:
+        return None, "the rescan's evidence has no image digest (%s)" % oci_dir
+    return dict({k: b[k] for k in keys}, digests=digests), None
+
+
 def cmd_judge(a, seats=None, bundles=None, advisory=None):
     verdict = _load_json(a.verdict)
     if not isinstance(verdict, dict) or not isinstance(verdict.get("findings"), list):
@@ -941,10 +975,22 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
         for e in errs:
             sys.stderr.write("::error::scanner profiles: %s\n" % e)
         return 2
+    rescan, why = rescan_binding(a.rescan, a.oci)
+    if why:
+        sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % why)
+        return 2
     budget = Budget(a.token_budget)
     seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}
     st, out = apply_day(verdict, state, bundles or Bundles(a.oci), profiles, seats, a.today, scoring_text(),
                         advisory=advisory if advisory is not None else (osv_advisory if a.seats == "real" else None))
+    moved = rescan["main_head"] != rescan["head"]
+    if moved:
+        out["owner"].append("Scanner panel: main has moved past the scanned head %s (main is at %s); this judgment "
+                            "names the scanned bytes only." % (rescan["head"], rescan["main_head"]))
+    if rescan["conclusion"] != "success":
+        out["owner"].append("Scanner panel: the rescan run %s finished %s; the panel judged its evidence (quorum, rule 3, "
+                            "decides per image)." % (rescan["run_id"], rescan["conclusion"]))
+    out["rescan"] = rescan
     st, out = scrub(st), scrub(out)      # everything written below is public (artifact, state file, PR)
     os.makedirs(a.out, exist_ok=True)
     for name, obj in (("state.json", st), ("day.json", out)):
@@ -962,11 +1008,17 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
                "Tokens used: %d of the run's budget of %d%s." % (budget.used, budget.cap,
                                                               " — STOPPED at the budget; the unasked audits are judged "
                                                               "again tomorrow" if budget.stopped else "")]
+    summary += ["Judged rescan run %s of main at %s (conclusion %s); images: %s." % (
+        rescan["run_id"], rescan["head"], rescan["conclusion"],
+        "; ".join("%s %s" % kv for kv in sorted(rescan["digests"].items())))]
     summary += ["- audit error (vendor %s): %s" % (x["seat"], x["error"]) for x in errors]
     with open(os.path.join(a.out, "summary.md"), "w") as fh:
         fh.write(public("\n".join(summary)) + "\n")
     for x in errors:
         print("::warning::scanner panel audit error (vendor %s): %s" % (x["seat"], x["error"]))
+    if moved:
+        print("::warning::scanner panel: main has moved past the scanned head %s (main is at %s)"
+              % (rescan["head"], rescan["main_head"]))
     if budget.stopped:
         print("::warning::scanner panel: the run's token budget (%d) is spent; remaining audits were not asked" % budget.cap)
     print(public("\n".join(summary)))
@@ -1150,6 +1202,7 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     j.add_argument("--state", required=True)
     j.add_argument("--profiles", required=True)
     j.add_argument("--oci", required=True)
+    j.add_argument("--rescan", required=True, help="the rescan binding: run_id, head, main_head, conclusion (JSON)")
     j.add_argument("--out", required=True)
     j.add_argument("--seats", choices=("real", "none"), default="none")
     j.add_argument("--today", default=datetime.date.today().isoformat())
