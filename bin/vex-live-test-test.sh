@@ -239,6 +239,30 @@ case "$u" in
   *) case " $* " in *" -X DELETE "*) echo "$u" >> "$RUNNER_TEMP/deleted" ;; esac; echo '{}' ;; esac"""})
 check("SEC-169-09 sweep pages through the notes and deletes every one of the test repository's",
       "notes/one" in out and "notes/two" in out, out[-400:])
+# Codex #169 r2 (SEC-169-08): every inventory is parsed strictly; a malformed or unparseable listing fails the sweep
+NOTE_OK = '{"name": "projects/p/notes/stale", "vulnerabilityAssessment": {"product": {"genericUri": "https://us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test/cache@sha256:a"}}}'
+for why, aws_s, gc_s, curl_s in [
+        ("a note with a numeric genericUri before a stale test note", OKAWS, OKGC,
+         'case " $* " in *" -X DELETE "*) echo "{}" ;; *) echo \'{"notes": [{"name": "projects/p/notes/x", "vulnerabilityAssessment": {"product": {"genericUri": 7}}}, %s]}\' ;; esac' % NOTE_OK),
+        ("notes listing as a number", OKAWS, OKGC, "echo '{\"notes\": 7}'"),
+        ("GAR listing null", OKAWS, 'case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo null ;; esac', OKCURL),
+        ("GAR listing {}", OKAWS, 'case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "{}" ;; esac', OKCURL),
+        ("ECR listing without imageIds", 'case "$*" in *"ecr list-images"*) echo "{}" ;; *"inspector2 list-filters"*) echo \'{"filters": []}\' ;; *) echo "{}" ;; esac', OKGC, OKCURL),
+        ("filters listing null", 'case "$*" in *"ecr list-images"*) echo \'{"imageIds": []}\' ;; *"inspector2 list-filters"*) echo null ;; *) echo "{}" ;; esac', OKGC, OKCURL),
+        ("an ECR delete answer without a failures list", r"""case "$*" in
+  *"ecr list-images"*) echo '{"imageIds": [{"imageDigest": "sha256:a"}]}' ;;
+  *"batch-delete-image"*) echo 'oops' ;;
+  *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""", OKGC, OKCURL)]:
+    rc, out = sh("sweep", {"aws": aws_s, "gcloud": gc_s, "curl": curl_s})
+    check("SEC-169-08 sweep fails on %s" % why, rc != 0, out[-200:])
+for kind, doc, ok in [("notes", '{"notes": [], "nextPageToken": 3}', False), ("notes", '{}', True),
+                      ("gar", '[{"package": "x", "version": "sha256:a"}]', True), ("gar", '[{"package": 1}]', False),
+                      ("ecr", '{"imageIds": [{"imageDigest": "sha256:a"}]}', True), ("ecr", '{"imageIds": [{}]}', False),
+                      ("filters", '{"filters": [{"name": "fosterstack-cache-livetest-x", "arn": "a"}]}', True),
+                      ("filters", '{"filters": [{"name": 5, "arn": "a"}]}', False)]:
+    r = subprocess.run(["python3", os.path.join(root, "bin/vex-live-test.py"), "inventory", "--kind", kind,
+                        "--prefix", "fosterstack-cache-livetest-"], input=doc, capture_output=True, text=True)
+    check("inventory %s %s is %s" % (kind, doc, "read" if ok else "refused"), (r.returncode == 0) == ok, r.stderr[-120:])
 # SEC-169-09: a push is journaled BEFORE the copy, so a copy that fails midway is still cleaned
 rc, out = sh('export PUSHED_LOG="$RUNNER_TEMP/p"; push_copy a b || true; cat "$RUNNER_TEMP/p"', {"crane": "exit 1"})
 check("SEC-169-09 a failed copy is still in the journal", out.strip().endswith("b"), out)

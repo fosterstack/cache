@@ -47,65 +47,69 @@ ca() {   # Container Analysis REST, as the live-test service account
   curl -fsS -H "Authorization: Bearer ${tok}" "$@"
 }
 
-notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note on images under that prefix, all pages
-  local project page token="" names=""
+notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note on images under that prefix, all pages;
+  local project page parsed token="" names=""   # any listing or parsing failure fails (Codex #169 r2, SEC-169-08)
   project=$(cut -d/ -f2 <<<"$GAR")
   while :; do
     page=$(ca "https://containeranalysis.googleapis.com/v1/projects/${project}/notes?filter=kind%3D%22VULNERABILITY_ASSESSMENT%22&pageSize=1000${token:+&pageToken=${token}}") || return 1
-    jq -e 'type == "object"' <<<"$page" >/dev/null || return 1
-    names+=$(jq -r --arg g "$1" '.notes[]? | select((.vulnerabilityAssessment.product.genericUri // "") | startswith($g)) | .name' <<<"$page")$'\n'
-    token=$(jq -r '.nextPageToken // empty' <<<"$page")
+    parsed=$($LT inventory --kind notes --prefix "$1" <<<"$page") || return 1
+    names+=$(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["names"]))' "$parsed") || return 1
+    names+=$'\n'
+    token=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["next"])' "$parsed") || return 1
     [ -n "$token" ] || break
   done
-  grep -v '^$' <<<"$names" || true
+  printf '%s' "$names" | sed '/^$/d'
+  return 0
 }
 
 sweep() {   # empty the two dedicated test repositories, delete every live-test filter and every VEX note on the test
-  local rc=0 out ids r pass n f chunk ref   # repository's images; fail when anything cannot be listed or deleted, or remains
-  local repo=${ECR#*/}
+  local rc=0 out lst r pass n f chunk ref   # repository's images; every listing is parsed strictly, and any listing,
+  local repo=${ECR#*/}                       # parsing or deletion failure — or anything left — fails the sweep
   for pass in 1 2 3; do   # indexes first, then the children they held
     out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) \
       || { echo "::error::cannot list the test ECR repository" >&2; return 1; }
-    ids=$(jq -c '[.imageIds[] | {imageDigest}] | unique' <<<"$out") || return 1
-    [ "$ids" = "[]" ] && break
+    lst=$($LT inventory --kind ecr <<<"$out") || return 1
+    [ -n "$lst" ] || break
     while read -r chunk; do
       r=$(aws ecr batch-delete-image --region "$REGION" --repository-name "$repo" --image-ids "$chunk" --output json) \
         || { echo "::error::ECR delete failed" >&2; rc=1; continue; }
-      n=$(jq '.failures | length' <<<"$r") || n=1
+      n=$($LT inventory --kind ecr-delete <<<"$r") || { rc=1; continue; }
       [ "$n" = 0 ] || [ "$pass" -lt 3 ] || { echo "::error::ECR could not delete ${n} images" >&2; rc=1; }
-    done < <(jq -c '. as $a | range(0; length; 100) | $a[.:. + 100]' <<<"$ids")
+    done <<<"$lst"
   done
   out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) || return 1
-  [ "$(jq '.imageIds | length' <<<"$out")" = 0 ] \
-    || { echo "::error::the test ECR repository is not empty after the sweep" >&2; rc=1; }
+  lst=$($LT inventory --kind ecr <<<"$out") || return 1
+  [ -z "$lst" ] || { echo "::error::the test ECR repository is not empty after the sweep" >&2; rc=1; }
   for pass in 1 2 3; do
     out=$(gcloud artifacts docker images list "$GAR" --include-tags --format=json) \
       || { echo "::error::cannot list the test Artifact Registry repository" >&2; return 1; }
-    [ "$(jq 'length' <<<"$out")" = 0 ] && break
+    lst=$($LT inventory --kind gar <<<"$out") || return 1
+    [ -n "$lst" ] || break
     while read -r ref; do
       gcloud artifacts docker images delete "$ref" --delete-tags --quiet >/dev/null 2>&1 || [ "$pass" -lt 3 ] \
         || { echo "::error::cannot delete ${ref}" >&2; rc=1; }
-    done < <(jq -r '.[] | .package + "@" + .version' <<<"$out")
+    done <<<"$lst"
   done
   out=$(gcloud artifacts docker images list "$GAR" --format=json) || return 1
-  [ "$(jq 'length' <<<"$out")" = 0 ] \
-    || { echo "::error::the test Artifact Registry repository is not empty after the sweep" >&2; rc=1; }
+  lst=$($LT inventory --kind gar <<<"$out") || return 1
+  [ -z "$lst" ] || { echo "::error::the test Artifact Registry repository is not empty after the sweep" >&2; rc=1; }
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
     || { echo "::error::cannot list the Inspector filters" >&2; return 1; }
+  lst=$($LT inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
   while read -r f; do
     [ -n "$f" ] || continue
     aws inspector2 delete-filter --region "$REGION" --arn "$f" >/dev/null || { echo "::error::cannot delete ${f}" >&2; rc=1; }
-  done < <(jq -r --arg p "$TEST_FILTER_PREFIX" '.filters[] | select(.name | startswith($p)) | .arn' <<<"$out")
+  done <<<"$lst"
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) || return 1
-  [ "$(jq --arg p "$TEST_FILTER_PREFIX" '[.filters[] | select(.name | startswith($p))] | length' <<<"$out")" = 0 ] \
-    || { echo "::error::live-test Inspector filters remain after the sweep" >&2; rc=1; }
-  out=$(notes_of "https://${GAR}/") || { echo "::error::cannot list the VEX notes" >&2; return 1; }
+  lst=$($LT inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
+  [ -z "$lst" ] || { echo "::error::live-test Inspector filters remain after the sweep" >&2; rc=1; }
+  lst=$(notes_of "https://${GAR}/") || { echo "::error::cannot list the VEX notes" >&2; return 1; }
   while read -r n; do
     [ -n "$n" ] || continue
     ca -X DELETE "https://containeranalysis.googleapis.com/v1/${n}" >/dev/null || { echo "::error::cannot delete ${n}" >&2; rc=1; }
-  done <<<"$out"
-  out=$(notes_of "https://${GAR}/") || return 1
-  [ -z "$out" ] || { echo "::error::VEX notes remain on the test repository's images" >&2; rc=1; }
+  done <<<"$lst"
+  lst=$(notes_of "https://${GAR}/") || return 1
+  [ -z "$lst" ] || { echo "::error::VEX notes remain on the test repository's images" >&2; rc=1; }
   return "$rc"
 }
 

@@ -200,6 +200,55 @@ def judge_google(before, after, cve, run_notes):
     return None
 
 
+def inventory(kind, doc, prefix=""):
+    """Strictly read one listing the sweep acts on (Codex #169 r2, SEC-169-08): any shape this does not expect raises —
+    a listing that cannot be read is never taken for an empty one.
+    ecr -> [{"imageDigest"}…] chunks of 100; gar -> ["package@version"…]; filters -> [arn…] of names under prefix;
+    notes -> {"names": [names of notes whose genericUri starts with prefix], "next": page token or ""};
+    ecr-delete -> number of failures."""
+    def need(cond, what):
+        if not cond:
+            raise ValueError("%s listing: %s" % (kind, what))
+    s_ = lambda x: isinstance(x, str) and x != ""
+    if kind == "ecr":
+        need(isinstance(doc, dict) and isinstance(doc.get("imageIds"), list), "no imageIds list")
+        ds = []
+        for i in doc["imageIds"]:
+            need(isinstance(i, dict) and s_(i.get("imageDigest")) and i["imageDigest"].startswith("sha256:"), "an image without its digest")
+            ds.append(i["imageDigest"])
+        ds = sorted(set(ds))
+        return [[{"imageDigest": d} for d in ds[k:k + 100]] for k in range(0, len(ds), 100)]
+    if kind == "gar":
+        need(isinstance(doc, list), "not a list")
+        for i in doc:
+            need(isinstance(i, dict) and s_(i.get("package")) and s_(i.get("version")), "an image without package or version")
+        return ["%s@%s" % (i["package"], i["version"]) for i in doc]
+    if kind == "filters":
+        need(isinstance(doc, dict) and isinstance(doc.get("filters"), list), "no filters list")
+        for f in doc["filters"]:
+            need(isinstance(f, dict) and s_(f.get("name")) and s_(f.get("arn")), "a filter without name or arn")
+        return [f["arn"] for f in doc["filters"] if f["name"].startswith(prefix)]
+    if kind == "notes":
+        need(isinstance(doc, dict) and isinstance(doc.get("notes", []), list), "notes is not a list")
+        need(doc.get("nextPageToken") is None or isinstance(doc["nextPageToken"], str), "a page token that is not a string")
+        names = []
+        for n in doc.get("notes", []):
+            need(isinstance(n, dict) and s_(n.get("name")), "a note without its name")
+            va = n.get("vulnerabilityAssessment")
+            need(va is None or isinstance(va, dict), "an assessment that is not an object")
+            prod = (va or {}).get("product")
+            need(prod is None or isinstance(prod, dict), "a product that is not an object")
+            uri = (prod or {}).get("genericUri")
+            need(uri is None or isinstance(uri, str), "a genericUri that is not a string")
+            if uri and uri.startswith(prefix):
+                names.append(n["name"])
+        return {"names": names, "next": doc.get("nextPageToken") or ""}
+    if kind == "ecr-delete":
+        need(isinstance(doc, dict) and isinstance(doc.get("failures", []), list), "no failures list")
+        return len(doc.get("failures", []))
+    raise ValueError("unknown inventory %s" % kind)
+
+
 def _semver(tag):
     m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?", tag)
     return None if not m else (int(m[1]), int(m[2]), int(m[3]), int(m[4]) if m[4] else 1 << 30)
@@ -227,6 +276,9 @@ def main(argv=None):
     c = sub.add_parser("pick-cve")
     c.add_argument("--reports", required=True)
     c.add_argument("--openvex", required=True, help="our statements: their CVEs are never the fixture's")
+    iv = sub.add_parser("inventory", help="read one listing from stdin, strictly")
+    iv.add_argument("--kind", required=True, choices=("ecr", "gar", "filters", "notes", "ecr-delete"))
+    iv.add_argument("--prefix", default="")
     j = sub.add_parser("judge")
     j.add_argument("--kind", choices=("grype", "scout", "google"), required=True)
     j.add_argument("--before", required=True)
@@ -263,6 +315,18 @@ def main(argv=None):
         rep = json.load(open(a.reports))
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
         print(pick_cve({k: (v if k == "grype" else set(v)) for k, v in rep.items()}, ours))
+        return 0
+    if a.cmd == "inventory":
+        try:
+            out = inventory(a.kind, json.loads(sys.stdin.read()), a.prefix)
+        except ValueError as e:      # json.JSONDecodeError is a ValueError
+            print("::error::%s" % e, file=sys.stderr)
+            return 1
+        if isinstance(out, list):
+            for x in out:
+                print(json.dumps(x) if not isinstance(x, str) else x)
+        else:
+            print(json.dumps(out) if isinstance(out, dict) else out)
         return 0
     if a.cmd == "judge":
         def load(p):
