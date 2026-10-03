@@ -1,0 +1,73 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "3a4be41211ce3336e12ea8833694864a21478863c745cf8fa46b94b099fb2130",
+ "change": "REQ-AUD-18 AC1 exemption for bin/patch-decide.py and bin/patch-decide-test.sh (owner RATIFIED Oct 3, item b; advisor 0114); REQ-REL-009 AC8 patch notes list docs/next-release-notes.md's behavior changes, citing the handoff that judged them, with vendor/model redaction — PR #158",
+ "reviewed_commit": "ba9ac56",
+ "closed_commit": "ba9ac56",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "r1 (e033b74)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "410e347b990d343391c66d551c95b2f508e6f61fab8209787f37785f59794b39"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "54e34c688fe2973658dac17e274b57f9784f60ec71f65f463e6f4f7d68863b35"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 1 round 2 / phase 2 round 1 (split) (57c3fc7 -> ba9ac56)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "74b02d8feb4d40315e4c4a52f620c11d1d8fea318e54a5f8e32fe362f91326d3"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "8137c5a1878949092d01e5dd192af0e3367d7b88ac596501e54804fdc90c9339"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "Sonnet r2b: SEC-1 reopened (split into 3+ pieces), fixed",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "7ff179fa5878575ebbd23f51c944546466a21eecbea604f80a122a2d5a8c7d38"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "closing verification at ba9ac56: Sonnet r2c",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "540b42fb809d9a73f1c4628e03e33ffd3a69c32e9adff45db6b21e016dab8fdb"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none: codex reviewer rules (owner Oct 2) — unanimous green on the final verification",
+ "evidence_location": "private audit tree: audits/2026-10-03/patch-a-exempt/{r1,r2,r2b,r2c}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": [
+  "Sonnet r2c (non-blocking, pre-existing, not introduced by this change): the vendor-name split check's fail-closed width can refuse ordinary technical phrasing that happens to spell a name when concatenated (e.g. 'error code X' / 'code Y') — no leak, a usability nit, not a security gap"
+ ]
+}
