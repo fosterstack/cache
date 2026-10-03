@@ -40,8 +40,10 @@ else
     sed -i -E "s/^go ${CURRENT//./\\.}$/go ${LATEST}/" "$f"
     grep -q "^go ${LATEST}$" "$f" || { echo "::error::failed to bump go directive in $f" >&2; exit 1; }
   done
-  git config user.name  'github-actions[bot]'
-  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+  # the auditor App's bot when go-freshness.yml runs it with the App's token (owner, Oct 2), else the Actions bot
+  slug="${AUDITOR_APP_SLUG:-github-actions}"
+  git config user.name  "${slug}[bot]"
+  git config user.email "${slug}[bot]@users.noreply.github.com"
   git checkout -b "$branch"
   git add go.mod tools/requirements/go.mod
   git commit -q -m "chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
@@ -55,9 +57,9 @@ This tracks the newest patch of a supported Go minor, so it may be a patch bump 
 
 A minor bump can change toolchain behavior (and the FIPS validated-module snapshot); review the \`scan\` and \`fips140-only\` results before merging, and bump golangci-lint / gremlins if the new toolchain needs it.
 
-The required \`scan\` gate must pass on this PR before merge. Because this PR was opened with the built-in token, the \`scan\` check may need a manual nudge to start (push an empty commit, or close and reopen the PR) until a bot PAT is configured.
+The required \`scan\` gate must pass on this PR before merge. It is opened as a draft proposal: a minor jump is proposed, never auto-applied.
 EOF
 )"
-gh pr create --base main --head "$branch" \
+gh pr create --draft --base main --head "$branch" \
   --title "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
   --body "$body" --label dependencies
