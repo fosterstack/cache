@@ -16,12 +16,21 @@ All three carry the same statements. Each one lives on the release page of its v
 
 ## 1. Download the files and check they are ours
 
-Set the version you run and the image digest you run (`cache:${VER}` is the production image; use the tag of the
-variant you run):
+Set the version you run:
 
 ```sh
 VER=0.3.0
+```
+
+Look up the image digest you run (`cache:${VER}` is the production image; use the tag of the variant you run):
+
+```sh
 DIGEST=$(docker buildx imagetools inspect "ghcr.io/fosterstack/cache:${VER}" --format '{{.Manifest.Digest}}')
+```
+
+Download the three files:
+
+```sh
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache.openvex.json"
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.inspector-filters.json"
 curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/fosterstack-cache-v${VER}.csaf.json"
@@ -51,6 +60,7 @@ Every line must say `OK`. If `cosign` fails or a line says `FAILED`, do not load
 grype "ghcr.io/fosterstack/cache@${DIGEST}" --vex fosterstack-cache.openvex.json
 ```
 
+Use Grype 0.118.0 or later: earlier versions do not match our image's identifiers and apply none of the statements.
 Grype reads the statements at scan time and leaves out findings stated *not affected* or *fixed* for this image. It
 changes nothing outside that scan's output.
 
@@ -58,10 +68,11 @@ changes nothing outside that scan's output.
 
 ```sh
 mkdir -p vex && cp fosterstack-cache.openvex.json vex/
-docker scout cves --vex-location ./vex "ghcr.io/fosterstack/cache@${DIGEST}"
+docker scout cves --vex-location ./vex --vex-author '^FosterStack LLC$' "ghcr.io/fosterstack/cache@${DIGEST}"
 ```
 
-Like Grype, Scout applies the statements to that scan's output only.
+Scout applies only statements whose author it is told to accept (by default, Docker's own), so `--vex-author` names
+ours. Like Grype, Scout applies the statements to that scan's output only.
 
 ### Amazon Inspector
 
@@ -80,11 +91,15 @@ the first rule Inspector refuses.
 
 ### Google Artifact Analysis
 
-Set `IMAGE` to the path of your Artifact Registry copy of our image. Copy it by digest, so its digest stays ours.
-Then run:
+`IMAGE` is your own Artifact Registry copy of our image, copied by digest so its digest stays ours. Set it:
 
 ```sh
 IMAGE=us-docker.pkg.dev/my-project/my-repo/cache
+```
+
+Then run:
+
+```sh
 jq --arg u "$IMAGE" --arg d "$DIGEST" '.product_tree.branches |= map(if (.product.product_identification_helper.purl | startswith("pkg:oci/cache@" + $d + "?")) then .name = $u else . end)' "fosterstack-cache-v${VER}.csaf.json" > vex-for-my-image.json && gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri="$IMAGE@$DIGEST"
 ```
 

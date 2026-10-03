@@ -41,7 +41,16 @@ check("the Google command is GUIDE_GOOGLE_COMMAND verbatim",
       V.GUIDE_GOOGLE_COMMAND.replace("<file>", '"%s"' % csaf) in code)
 check("the Google step sets every variable it reads", all(re.search(r"(?m)^%s=" % v, code) for v in ("VER", "IMAGE", "DIGEST")))
 check("Grype reads the OpenVEX file", re.search(r"grype \S+ --vex %s" % re.escape(openvex), code) is not None)
-check("Docker Scout reads the OpenVEX file", re.search(r"docker scout cves --vex-location \S+ \S+", code) is not None)
+check("Docker Scout reads the OpenVEX file", re.search(r"docker scout cves --vex-location \S+ ", code) is not None)
+# Scout applies only statements whose author matches --vex-author (default <.*@docker.com>; Sonnet #167 r1): the
+# guide's flag must match our file's author exactly, anchored
+import json
+author = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))["author"]
+m = re.search(r"--vex-author '([^']+)'", code)
+check("Docker Scout is told to accept our file's author", m is not None and re.fullmatch(m.group(1), author) is not None
+      and m.group(1).startswith("^") and m.group(1).endswith("$"), (m and m.group(1), author))
+# Grype applies repository_url-qualified products from 0.118.0 (0.117 ignores them; the pin is 0.118.0)
+check("names the minimum Grype version the file works with", re.search(r"Grype 0\.118\.0 or later", doc) is not None)
 # what each does in the customer's account
 check("says the Inspector rules match only our exact image digests", re.search(r"only[^.]*exact[^.]*digest", doc, re.I) is not None)
 check("says the Google upload is a preview feature", re.search(r"preview", doc, re.I) is not None)
