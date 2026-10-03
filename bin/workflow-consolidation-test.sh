@@ -362,7 +362,7 @@ if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # the comparison is proven by running it (Codex #162 pin, R78-B2): no condition on it or on either assembly, one step,
 # and its script fails when A and B differ or A has no digest, and passes only when they agree
-import json, subprocess
+import json, re, subprocess
 steps = r.get("steps") or []
 # fail closed (Sonnet #162 pin r2: continue-on-error also hides a failure): the comparison step and the jobs it rests on
 # carry exactly the keys reviewed here — any other key (if, continue-on-error, timeout, strategy, ...) is refused
@@ -383,6 +383,11 @@ if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
 run = steps[0].get("run", "") if len(steps) == 1 else ""
 if "${{ needs.assemble.outputs.digests }}" not in run or "${{ needs.assemble-b.outputs.digests }}" not in run:
     bad.append("reproducibility does not compare assembly A with assembly B")
+elif re.search(r"\$\{\{", run.replace("${{ needs.assemble.outputs.digests }}", "")
+               .replace("${{ needs.assemble-b.outputs.digests }}", "")):
+    # fail closed (Codex #162 pin r3, R78-B2): any other expression is rendered by GitHub before bash runs, so this test
+    # cannot execute what runs — `exit ${{ 0 }}` turns a failure into success. Only the two assemblies' outputs.
+    bad.append("the comparison carries a GitHub expression other than the two assemblies' digests")
 else:
     def verdict(a, b):
         script = run.replace("${{ needs.assemble.outputs.digests }}", json.dumps(a)) \
@@ -396,6 +401,12 @@ else:
     cases += [("A has no " + v, {k: x for k, x in same.items() if k != v}, same) for v in same]
     cases += [("B has no " + v, same, {k: x for k, x in same.items() if k != v}) for v in same]
     cases += [("A has no digest", {}, same), ("B has no digest", same, {})]
+    # both lack it: equal, so only the missing-entry guard can fail it (Codex #162 pin r3, R78-B7)
+    cases += [("neither A nor B has " + v, {k: x for k, x in same.items() if k != v}, {k: x for k, x in same.items() if k != v})
+              for v in same]
+    cases += [("neither A nor B has any digest", {}, {}),
+              ("A and B both give production as null", dict(same, production=None), dict(same, production=None)),
+              ("A and B both give production as empty", dict(same, production=""), dict(same, production=""))]
     for why, a, b in cases:
         if verdict(a, b) == 0:
             bad.append("reproducibility passes when %s" % why)
@@ -456,6 +467,11 @@ case_scan workflow-concurrency   bad "d['concurrency'] = {'group': 'scan', 'canc
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 case_scan compare-comments-only  bad "d['jobs']['reproducibility']['steps'][0]['run'] = '# needs.assemble.outputs.digests\n# needs.assemble-b.outputs.digests\n# exit 1\ntrue'"
 case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['run'] += '\n: \${{ needs.assemble.outputs.digests }} \${{ needs.assemble-b.outputs.digests }}'; d['jobs']['reproducibility']['steps'][0]['run'] = d['jobs']['reproducibility']['steps'][0]['run'].replace('exit 1', 'true')"
+# Codex #162 pin r3: an expression other than the two assemblies' outputs can turn exit 1 into success (R78-B2), and the
+# missing-entry guard must be proven by running it when BOTH assemblies lack a variant (R78-B7)
+case_scan compare-expr-exit      bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('exit 1', '(exit 1) || exit \${{ 0 }}')"
+case_scan compare-expr-anywhere  bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('set -euo pipefail', 'set -euo pipefail\n: \${{ github.sha }}')"
+case_scan compare-no-guard       bad "import re; s = d['jobs']['reproducibility']['steps'][0]; s['run'] = re.sub(r'  if \[ -z \"\\\$da\" \].*?\n  fi\n', '', s['run'], flags=re.S); assert 'no digest' not in s['run']"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24): after the consolidation PRs the workflow directory holds exactly
