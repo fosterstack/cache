@@ -213,21 +213,43 @@ if __name__ == "__main__":
 
 class RunScriptImages(unittest.TestCase):              # handoff 0068: literal images a run: script names
     def test_double_dash_ends_the_options(self):
-        self.assertEqual(M.script_images("docker run --rm -- alpine true")[0], [("docker run", "alpine")])
-        self.assertEqual(M.script_images("docker run --rm --")[0], [("docker run", None)])
+        self.assertEqual(M.script_images("docker run --rm -- alpine true"), [("use", "docker run", "alpine")])
+        self.assertEqual(M.script_images("docker run --rm --"), [("use", "docker run", None)])
 
     def test_a_command_without_an_image(self):
-        self.assertEqual(M.script_images("docker run --rm")[0], [("docker run", None)])
+        self.assertEqual(M.script_images("docker run --rm"), [("use", "docker run", None)])
+        self.assertEqual(M.script_images("docker"), [])
+        self.assertEqual(M.script_images("docker --tls"), [])
         bad = []
-        M.check_runs("j", [("w", "docker run --rm")], bad)
+        M.check_runs("j", [("w", "docker run --rm", None)], bad)
         self.assertEqual(bad, [])
 
     def test_tag_equals_form_makes_a_local_name(self):
-        used, local = M.script_images("docker build --tag=img1 . && docker buildx build -t img2 .")
-        self.assertEqual(local, {"img1", "img2"})
+        ev = M.script_images("docker build --tag=img1 . && docker buildx build -t img2 .")
+        self.assertEqual({e[1] for e in ev if e[0] == "local"}, {"img1", "img2"})
 
     def test_a_document_that_is_not_a_mapping_has_no_scripts(self):
         self.assertEqual(M.run_scripts(M.yaml.compose("- a\n- b\n", Loader=M.StrLoader)), {})
+
+    def test_build_without_a_tree_cannot_be_checked(self):           # Sonnet #164 B6: fails closed
+        bad = []
+        M.check_runs("j", [("w", "docker build .", None)], bad)
+        self.assertIn("not a file in the repository", bad[0])
+
+    def test_dockerfile_forms(self):
+        self.assertEqual(M.check_dockerfile("FROM --platform=x a@sha256:" + "0" * 64 + " AS b\nFROM b\nFROM scratch\nRUN x\nFROM\n"), [])
+        self.assertEqual(M.check_dockerfile("FROM alpine:3\n"), ["alpine:3"])
+        self.assertEqual(M.check_dockerfile("FROM --platform=x\n"), [])
+
+    def test_build_option_forms(self):
+        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set()))
+        self.assertEqual(M._build(["-f"]), ("-", ".", set()))
+
+    def test_short_option_forms(self):
+        self.assertEqual(M._options(["-dit", "img"], M.RUN_VAL, M.RUN_BOOL), (1, None))
+        self.assertEqual(M._options(["-p", "1:2", "img"], M.RUN_VAL, M.RUN_BOOL), (2, None))
+        self.assertEqual(M._options(["-p1:2", "img"], M.RUN_VAL, M.RUN_BOOL), (1, None))
+        self.assertEqual(M._options(["--rm"], M.RUN_VAL, M.RUN_BOOL), (1, None))
 
 
 class RunScriptInstalls(unittest.TestCase):             # handoff 0070: package installs a run: script makes

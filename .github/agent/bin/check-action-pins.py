@@ -76,7 +76,13 @@ every image a workflow or action names (container:, services:, image:, executor 
 `run:` script runs or pulls (docker/podman run|create|pull, skopeo copy|inspect docker://, crane copy|pull),
 and every package a `run:` script installs (handoff 0070): a Python install (pip, python -m pip, uv pip, a venv's
 bin/pip) passes only when every package comes from a -r file checked with --require-hashes; pipx, uv tool, uvx,
-npx and npm/yarn/pnpm/gem installs are always flagged (they cannot be held to hashes here). What
+npx and npm/yarn/pnpm/gem installs are always flagged (they cannot be held to hashes here). Fail-closed edges
+(Sonnet #164 r1): an option this check does not know, before the verb or the image, is a finding (it cannot tell which
+word is the image); docker compose / docker-compose / buildx bake / stack are findings (their files name images this
+check does not read); a build's Dockerfile — a literal path, or a template like Dockerfile.${v} matched against the
+tree — must exist in the repository and every FROM be a digest, scratch or an earlier stage (stdin or a generated
+Dockerfile is a finding); a local name counts only if the job made it EARLIER; a step in a non-POSIX shell that names
+a container or package tool is a finding (this check reads POSIX shell only). What
 a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
 fixed by our pin to that commit and is that action's supply chain, not ours; it is not read here, and no action
 is excepted by name.
@@ -465,22 +471,72 @@ def verify_pins(pins):
 # be a digest. Not flagged: an argument holding a shell variable or an expression (the review pass covers those), a
 # local name the same job made (docker tag / build -t / skopeo docker-daemon:), or a digest reference.
 DIGEST_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
-# docker run/create options that take NO value; every other option takes one (fails closed: a value-less option
-# not listed here would swallow the image and leave the next token judged as the image)
-DOCKER_BOOL = {"-d", "--detach", "--rm", "-i", "--interactive", "-t", "--tty", "-it", "-ti", "-dit", "-itd", "-di",
-               "-dt", "-td", "--privileged", "--init", "--read-only", "-P", "--publish-all", "--no-healthcheck",
-               "--oom-kill-disable", "--sig-proxy", "--disable-content-trust", "-q", "--quiet", "-a", "--all-tags"}
-PULL_ONLY_BOOL = {"-a", "--all-tags"}
-TOOLS = {"docker", "podman", "skopeo", "crane"}
+# docker options (Sonnet #164 r1, B2/B4): every option before the image must be KNOWN — a long or short form that
+# takes a value (attached `--x=v` / `-pV`, or the next word), or one that takes none (short ones may combine: -dit).
+# An unknown option fails closed: this check cannot tell which word is the image, so it is a finding.
+DOCKER_GLOBAL_VAL = {"-H", "--host", "--config", "-c", "--context", "-l", "--log-level", "--tlscacert", "--tlscert",
+                     "--tlskey"}
+DOCKER_GLOBAL_BOOL = {"-D", "--debug", "--tls", "--tlsverify"}
+RUN_VAL = {"--add-host", "--annotation", "-a", "--attach", "--blkio-weight", "--blkio-weight-device", "--cap-add",
+           "--cap-drop", "--cgroup-parent", "--cgroupns", "--cidfile", "--cpu-period", "--cpu-quota", "--cpu-rt-period",
+           "--cpu-rt-runtime", "-c", "--cpu-shares", "--cpus", "--cpuset-cpus", "--cpuset-mems", "--detach-keys",
+           "--device", "--device-cgroup-rule", "--device-read-bps", "--device-read-iops", "--device-write-bps",
+           "--device-write-iops", "--dns", "--dns-option", "--dns-search", "--domainname", "--entrypoint", "-e", "--env",
+           "--env-file", "--expose", "--gpus", "--group-add", "--health-cmd", "--health-interval", "--health-retries",
+           "--health-start-interval", "--health-start-period", "--health-timeout", "-h", "--hostname", "--ip", "--ip6",
+           "--ipc", "--isolation", "--kernel-memory", "-l", "--label", "--label-file", "--link", "--link-local-ip",
+           "--log-driver", "--log-opt", "--mac-address", "-m", "--memory", "--memory-reservation", "--memory-swap",
+           "--memory-swappiness", "--mount", "--name", "--network", "--net", "--network-alias", "--net-alias",
+           "--oom-score-adj", "--pid", "--pids-limit", "--platform", "-p", "--publish", "--pull", "--restart",
+           "--runtime", "--security-opt", "--shm-size", "--stop-signal", "--stop-timeout", "--storage-opt", "--sysctl",
+           "--tmpfs", "--ulimit", "-u", "--user", "--userns", "--uts", "-v", "--volume", "--volume-driver",
+           "--volumes-from", "-w", "--workdir"}
+RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--interactive", "--no-healthcheck",
+            "--oom-kill-disable", "--privileged", "-P", "--publish-all", "-q", "--quiet", "--read-only", "--rm",
+            "--sig-proxy", "-t", "--tty"}
+PULL_VAL = {"--platform"}
+PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
+TOOLS = {"docker", "podman", "skopeo", "crane", "docker-compose", "podman-compose"}
+PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 # package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
 PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm)$")
 SHELLS = {"bash", "sh", "dash", "zsh"}
-PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n`]|\$\(|\)")
 
 
-def _base(word):
-    return word.rsplit("/", 1)[-1]
+def _options(args, val, boolean):
+    """Skip the options at the front of args. Returns (index of the first operand, an unknown option or None);
+    a variable where an option or the operand would be stops the walk (the review pass covers it)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            return i + 1, None
+        if not a.startswith("-") or a == "-" or (_variable(a) and a.startswith("$")):
+            return i, None
+        if a.startswith("--"):
+            name = a.split("=", 1)[0]
+            if name in boolean or (name in val and "=" in a):
+                i += 1
+            elif name in val:
+                i += 2
+            else:
+                return i, a
+            continue
+        short = {o[1] for o in val | boolean if len(o) == 2}
+        j = 1
+        while j < len(a):
+            o = "-" + a[j]
+            if o in boolean:
+                j += 1
+                continue
+            if o in val:
+                i += 1 if j + 1 < len(a) else 2
+                break
+            return i, a if a[j] not in short else a
+        else:
+            i += 1
+    return i, None
 
 
 def _commands(script, depth=0):
@@ -511,6 +567,43 @@ def _commands(script, depth=0):
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
     return out
+
+
+def _base(word):
+    return word.rsplit("/", 1)[-1]
+
+
+def _variable(tok):
+    return "$" in tok or "${{" in tok
+
+
+def _build(args):
+    """(dockerfile, context, tags) of a docker build / buildx build: dockerfile None = the default name."""
+    dockerfile, tags, pos, i = None, set(), [], 0
+    while i < len(args):
+        a = args[i]
+        if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument (`- < Dockerfile`)
+            i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
+            continue
+        if a in ("-f", "--file"):
+            dockerfile, i = (args[i + 1] if i + 1 < len(args) else "-"), i + 2
+            continue
+        if a.startswith("--file="):
+            dockerfile = a.split("=", 1)[1]
+        elif a in ("-t", "--tag") and i + 1 < len(args):
+            tags.add(args[i + 1]); i += 2
+            continue
+        elif a.startswith(("--tag=", "-t=")):
+            tags.add(a.split("=", 1)[1])
+        elif a.startswith("-") and a != "-":
+            if "=" not in a and i + 1 < len(args) and not args[i + 1].startswith("-") and a not in (
+                    "--push", "--load", "--no-cache", "--pull", "-q", "--quiet", "--rm", "--force-rm"):
+                i += 2
+                continue
+        else:
+            pos.append(a)
+        i += 1
+    return dockerfile, (pos[-1] if pos else "."), tags
 
 
 def _pip_install(args):
@@ -571,115 +664,180 @@ def script_installs(script):
     return found
 
 
-def _variable(tok):
-    return "$" in tok or "${{" in tok
-
-
-def _first_positional(args, bool_opts):
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if _variable(a) and a.startswith("$"):
-            return a  # a variable here may be options or the image: the review pass (documented boundary)
-        if a == "--":
-            return args[i + 1] if i + 1 < len(args) else None
-        if a.startswith("-"):
-            i += 1 if ("=" in a or a in bool_opts) else 2
-            continue
-        return a
-    return None
-
-
 def script_images(script):
-    """(command, image) for every image the script runs or pulls, and the local names it makes."""
-    used, local = [], set()
+    """Events, in order, for the images a script names: ("use", command, image), ("local", name), ("finding", why)."""
+    ev = []
     for t in _commands(script):
         cmd, args = t[0], t[1:]
+        if cmd in ("docker-compose", "podman-compose"):
+            ev.append(("finding", "`%s` runs images named in compose files, which this check does not read" % cmd))
+            continue
         if cmd in ("docker", "podman") and args:
-            verb, rest = args[0], args[1:]
-            if verb in ("container", "image") and rest:
+            k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
+            if unknown:
+                ev.append(("finding", "`%s` has a global option this check does not know (%s)" % (cmd, unknown)))
+                continue
+            rest = args[k:]
+            if not rest:
+                continue
+            verb, rest = rest[0], rest[1:]
+            if verb in ("container", "image", "builder") and rest:
                 verb, rest = rest[0], rest[1:]
-            if verb in ("run", "create"):
-                used.append(("docker " + verb, _first_positional(rest, DOCKER_BOOL - PULL_ONLY_BOOL)))
-            elif verb == "pull":
-                used.append(("docker pull", _first_positional(rest, DOCKER_BOOL)))
+            if verb == "buildx" and rest:
+                verb, rest = ("build" if rest[0] in ("build", "b") else "buildx " + rest[0]), rest[1:]
+            if verb in ("compose", "buildx bake", "stack"):
+                ev.append(("finding", "`docker %s` runs images named in files this check does not read" % verb))
+            elif verb in ("run", "create", "pull"):
+                val, boolean = (PULL_VAL, PULL_BOOL) if verb == "pull" else (RUN_VAL, RUN_BOOL)
+                k, unknown = _options(rest, val, boolean)
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "
+                                          "which word is the image" % (verb, unknown)))
+                else:
+                    ev.append(("use", "docker " + verb, rest[k] if k < len(rest) else None))
             elif verb == "tag" and len(rest) >= 2:
-                local.add(rest[-1])
-            elif verb in ("build", "buildx"):
-                for i, a in enumerate(rest):
-                    if a in ("-t", "--tag") and i + 1 < len(rest):
-                        local.add(rest[i + 1])
-                    elif a.startswith(("--tag=", "-t=")):
-                        local.add(a.split("=", 1)[1])
+                ev.append(("local", rest[-1]))
+            elif verb == "build":
+                dockerfile, context, tags = _build(rest)
+                ev.append(("build", dockerfile, context))
+                ev += [("local", x) for x in tags]
         elif cmd == "skopeo" and args and args[0] in ("copy", "inspect"):
             pos = [a for a in args[1:] if not a.startswith("-")]
             if pos and pos[0].startswith("docker://"):
-                used.append(("skopeo " + args[0], pos[0][len("docker://"):]))
+                ev.append(("use", "skopeo " + args[0], pos[0][len("docker://"):]))
             for a in pos[1:]:
                 if a.startswith("docker-daemon:"):
-                    local.add(a[len("docker-daemon:"):])
+                    ev.append(("local", a[len("docker-daemon:"):]))
         elif cmd == "crane" and args and args[0] in ("copy", "cp", "pull", "export"):
             pos = [a for a in args[1:] if not a.startswith("-")]
             if pos:
-                used.append(("crane " + args[0], pos[0]))
-    return used, local
+                ev.append(("use", "crane " + args[0], pos[0]))
+    return ev
 
 
 def _local(ref, local):
-    """A name the job made: exactly, as name:latest, or by a template (`fa-${v}`) with a literal prefix of at least
-    two characters before its first variable (a bare `${x}` would cover any image, so it covers none)."""
+    """A name the job made EARLIER: exactly, as name:latest, or by a template (`fa-${v}`) whose literal prefix is at
+    least three characters and ends in a separator (- _ .) — a shorter one could cover a public image (Sonnet B7)."""
     if ref in local or (":" not in ref.rsplit("/", 1)[-1] and ref + ":latest" in local):
         return True
     for name in local:
         if "$" in name:
             prefix = name.split("$", 1)[0]
-            if len(prefix) >= 2 and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]+", ref):
+            if len(prefix) >= 3 and prefix[-1] in "-_." and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]+", ref):
                 return True
     return False
 
 
-def check_runs(where_job, scripts, bad):
-    """scripts: [(where, text)] of ONE job (or one composite action); a local name counts only within it."""
-    found, local = [], set()
-    for where, text in scripts:
-        used, made = script_images(text)
-        local |= made
-        found += [(where, c, img) for c, img in used]
-    for where, c, img in found:
-        if img is None or _variable(img) or DIGEST_REF.search(img) or _local(img, local):
+def _dockerfiles(tree, dockerfile):
+    """The tree's files a build's Dockerfile argument names: a literal path (or, from another working directory,
+    the same file name), or a template (`Dockerfile.${v}`) matched against every file name in the tree."""
+    entries = [e for e, kind in (getattr(tree, "entries", {}) or {}).items() if kind == "file"]
+    name = dockerfile or "Dockerfile"
+    if _variable(name):
+        parts = re.split(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", _base(name))
+        pat = re.compile(".+".join(re.escape(x) for x in parts) + "$")
+        return [e for e in entries if pat.match(_base(e))]
+    if name in entries:
+        return [name]
+    return [e for e in entries if _base(e) == _base(name)]
+
+
+def check_dockerfile(text):
+    """Every FROM is a digest, scratch or an earlier stage; anything else (a tag, a variable) is returned."""
+    stages, bad = set(), []
+    for line in text.splitlines():
+        m = re.match(r"(?i)^\s*FROM\s+(.*)$", line)
+        if not m:
             continue
-        bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
-    for where, text in scripts:
+        words = [w for w in m.group(1).split() if not w.startswith("--")]
+        if not words:
+            continue
+        img = words[0]
+        if len(words) >= 3 and words[1].lower() == "as":
+            stages.add(words[2].lower())
+        if img.lower() in stages or img.lower() == "scratch" or (DIGEST_REF.search(img) and not _variable(img)):
+            continue
+        bad.append(img)
+    return bad
+
+
+def check_runs(where_job, scripts, bad, tree=None):
+    """scripts: [(where, text, shell)] of ONE job (or one composite action), in order; a local name counts only if
+    the job made it earlier. A step in a non-POSIX shell that names a container or package tool is a finding: this
+    check reads POSIX shell only (Sonnet B8)."""
+    local = set()
+    for where, text, shell in scripts:
+        if shell and not re.match(r"^(bash|sh)(\s|$)", shell):
+            if re.search(r"(?i)(^|[^A-Za-z0-9_-])(docker|podman|skopeo|crane|pipx?|pip3|uvx?|npm|npx|gem|yarn|pnpm)"
+                         r"([^A-Za-z0-9_-]|$)", text):
+                bad.append(f"{where}: a `{shell}` step names a container or package tool; this check reads POSIX "
+                           f"shell only")
+            continue
+        for ev in script_images(text):
+            if ev[0] == "local":
+                local.add(ev[1])
+            elif ev[0] == "finding":
+                bad.append(f"{where}: {ev[1]}")
+            elif ev[0] == "build":
+                dockerfile, context = ev[1], ev[2]
+                if dockerfile == "-" or (dockerfile is None and context == "-"):
+                    bad.append(f"{where}: a build reads its Dockerfile from stdin; its FROM lines cannot be checked")
+                    continue
+                files = _dockerfiles(tree, dockerfile) if tree is not None else []
+                if not files:
+                    bad.append(f"{where}: a build's Dockerfile ({dockerfile or 'Dockerfile'}) is not a file in the "
+                               f"repository, so its FROM lines cannot be checked")
+                for f in files:
+                    for img in check_dockerfile(tree.read(f)):
+                        bad.append(f"{where}: {f} builds FROM an image not pinned by digest: {img!r}")
+            else:
+                _, c, img = ev
+                if img is None or _variable(img) or DIGEST_REF.search(img) or _local(img, local):
+                    continue
+                bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
         for c, why in script_installs(text):
             bad.append(f"{where}: `{c}`: {why}")
 
 
+def _default_shell(node):
+    """defaults.run.shell of a workflow or job mapping, or None."""
+    m = {key_of(k): v for k, v in node.value} if isinstance(node, yaml.MappingNode) else {}
+    d = m.get("defaults")
+    r = {key_of(k): v for k, v in d.value}.get("run") if isinstance(d, yaml.MappingNode) else None
+    sh = {key_of(k): v for k, v in r.value}.get("shell") if isinstance(r, yaml.MappingNode) else None
+    return sh.value if isinstance(sh, yaml.ScalarNode) else None
+
+
 def run_scripts(doc):
-    """{job or composite: [(path, run text)]} for every step run: GitHub executes."""
+    """{job or composite: [(path, run text, shell)]} for every step run: GitHub executes, in order; shell is the
+    step's own `shell:`, else its job's then its workflow's defaults.run.shell, else None (bash)."""
     groups = {}
     if not isinstance(doc, yaml.MappingNode):
         return groups
     top = {key_of(k): v for k, v in doc.value}
 
-    def steps_of(seq, base, group):
+    def steps_of(seq, base, group, inherited):
         if isinstance(seq, yaml.SequenceNode):
             for i, st in enumerate(seq.value):
                 if isinstance(st, yaml.MappingNode):
-                    for k, v in st.value:
-                        if key_of(k) == "run" and isinstance(v, yaml.ScalarNode):
-                            groups.setdefault(group, []).append((f"{base}[{i}].run", v.value))
+                    m = {key_of(k): v for k, v in st.value}
+                    run, sh = m.get("run"), m.get("shell")
+                    if isinstance(run, yaml.ScalarNode):
+                        shell = sh.value if isinstance(sh, yaml.ScalarNode) else inherited
+                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell))
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:
             if isinstance(j, yaml.MappingNode):
+                inherited = _default_shell(j) or _default_shell(doc)
                 for kk, vv in j.value:
                     if key_of(kk) == "steps":
-                        steps_of(vv, f".jobs.{k.value}.steps", "jobs." + k.value)
+                        steps_of(vv, f".jobs.{k.value}.steps", "jobs." + k.value, inherited)
     runs = top.get("runs")
     if isinstance(runs, yaml.MappingNode):
         for kk, vv in runs.value:
             if key_of(kk) == "steps":
-                steps_of(vv, ".runs.steps", "runs")
+                steps_of(vv, ".runs.steps", "runs", None)
     return groups
 
 
@@ -698,7 +856,7 @@ def check_file(tree, rel, pins, bad):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
             for group, scripts in run_scripts(d).items():
-                check_runs(group, [(rel + w, t) for w, t in scripts], bad)
+                check_runs(group, [(rel + w, t, sh) for w, t, sh in scripts], bad, tree)
     for key, path, node, parent in refs:
         where = f"{rel}{show(path)}"
         if key == "uses":
