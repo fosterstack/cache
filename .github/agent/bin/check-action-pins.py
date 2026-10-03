@@ -581,6 +581,42 @@ def _expand_defaults(text):
         text = new
 
 
+def _decode_dollar_quotes(text):
+    """bash reads $'d'ocker and $"d"ocker as docker (Sonnet #164 r20, NEW-30/31): outside other quotes, $'...' becomes a
+    plain '...' (its only allowed escapes, \\n \\t \\r, become the characters; _ansi_c_hidden refuses any other on the raw
+    text) and $"..." becomes "...", so every check reads the word bash runs."""
+    out, i, q = [], 0, None
+    while i < len(text):
+        c = text[i]
+        if q == "'":
+            q = None if c == "'" else q
+        elif q == '"':
+            if c == "\\" and i + 1 < len(text):
+                out.append(c); i += 1; c = text[i]
+            elif c == '"':
+                q = None
+        elif c == "\\" and i + 1 < len(text):
+            out.append(c); i += 1; c = text[i]
+        elif c == "$" and text[i + 1:i + 2] == "'":
+            j, word = i + 2, []
+            while j < len(text) and text[j] != "'":
+                if text[j] == "\\" and text[j + 1:j + 2] in ("n", "t", "r"):
+                    word.append({"n": "\n", "t": "\t", "r": "\r"}[text[j + 1]]); j += 2
+                else:
+                    word.append(text[j]); j += 1
+            out.append("'" + "".join(word) + "'")
+            i = j + 1
+            continue
+        elif c == "$" and text[i + 1:i + 2] == '"':
+            i += 1
+            continue
+        elif c in "'\"":
+            q = c
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _unquoted(text):
     return re.sub(r"[\"'\\]", "", text)
 
@@ -1191,11 +1227,11 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     local = set()
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7)
-    job_text = "\n".join(_expand_defaults(item[1]) for item in scripts
+    job_text = "\n".join(_decode_dollar_quotes(_expand_defaults(item[1])) for item in scripts
                          if not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]))
     for item in scripts:
-        where, text, shell = item[:3]
-        text = _expand_defaults(text)
+        where, raw, shell = item[:3]
+        text = _decode_dollar_quotes(_expand_defaults(raw))
         wdir = item[3] if len(item) > 3 else None
         # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
         # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
@@ -1205,7 +1241,7 @@ def check_runs(where_job, scripts, bad, tree=None):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
         if ALIASING.search(_unquoted(text)):
             bad.append(f"{where}: defines an alias; the command it hides cannot be checked, refused")
-        if _ansi_c_hidden(text):
+        if _ansi_c_hidden(raw):
             bad.append(f"{where}: ANSI-C quoting ($'...') with an escape other than \\n \\t \\r can spell any word; refused")
         if RENAMED.search(_unquoted(text)):
             bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
