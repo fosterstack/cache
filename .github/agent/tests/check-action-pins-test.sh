@@ -1344,5 +1344,27 @@ case_ r3n01-quoted-subst       bad "$(rb "cat <<EOF
           EOF")"
 case_ r3n03-default-program    bad "$(rb 'tool=docker; "${tool:-echo}" run alpine')"
 case_ r3n03-default-eval       bad "$(rb 'payload="docker run alpine"; eval "${payload:-:}"')"
+# Codex #164 adversarial r1: B2 (trap runs a literal command on a signal), B3 (--pull keeps only its LAST value, like
+# any Docker/pflag string flag), B4 (--cache-from names a registry image), B5 (crane index append/filter fetch their
+# sources; list is read-only)
+case_ r4b2-trap-exit-bad       bad "$(rb "trap 'docker run --rm alpine:3.20 echo x' EXIT; true")"
+case_ r4b2-trap-pinned-ok      ok  "$(rb "trap 'docker run --rm alpine@$DIG echo x' EXIT; true")"
+case_ r4b2-trap-print-ok       ok  "$(rb 'trap -p EXIT')"
+case_ r4b2-trap-reset-ok       ok  "$(rb 'trap EXIT')"
+case_ r4b3-pull-never-then-always-bad bad "$(rb 'docker run --pull=never --pull=always --rm alpine:3.20 true')"
+case_ r4b3-pull-always-then-never-ok  ok  "$(rb 'docker run --pull=always --pull=never --rm alpine:3.20 true')"
+case_ r4b3-pull-bare-always-last-bad  bad "$(rb 'docker run --pull never --pull always --rm alpine:3.20 true')"
+case_ r4b4-cache-from-tag-bad  bad "$(rb 'docker build --cache-from alpine:3.20 -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-digest-ok ok "$(rb "docker build --cache-from alpine@$DIG -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-local-ok ok "$(rb "docker build -t cache:build -f build/docker/Dockerfile.production . && docker build --cache-from cache:build -f build/docker/Dockerfile.production .")" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+" > build/docker/Dockerfile.production'
+case_ r4b4-cache-from-gha-ok   ok  "$(rb 'docker build --cache-from type=gha -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+" > build/docker/Dockerfile.production'
+case_ r4b5-crane-index-append-bad bad "$(rb 'crane index append -m alpine:3.20 -t x/y:z')"
+case_ r4b5-crane-index-filter-bad bad "$(rb 'crane index filter alpine:3.20 --platform linux/amd64 -t x/y:z')"
+case_ r4b5-crane-index-append-digest-ok ok "$(rb "crane index append -m alpine@$DIG -t x/y:z")"
+case_ r4b5-crane-index-list-ok ok  "$(rb 'crane index list x/y:z')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
