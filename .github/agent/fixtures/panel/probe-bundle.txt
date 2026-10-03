@@ -1,0 +1,8 @@
+image probe-amd64 (probe-pkg 1.0.0, reported by probe)
+--- evidence from the image ---
+package database /var/lib/dpkg/status.d/probe-pkg:
+Package: probe-pkg
+Version: 1.0.0
+Status: install ok installed
+files: no path in the image mentions probe-pkg
+go build info: no Go binary in the image records probe-pkg

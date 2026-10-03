@@ -67,6 +67,15 @@ jobs:
           bash .github/agent/tests/auditor-parser-tests.sh
           bash .github/agent/tests/auditor-matrix-test.sh
 
+      # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
+      # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).
+      - name: the probe's one-request-per-seat cap against the hash-pinned SDKs (scanner panel rule 8; REQ-SCAN-008)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/panel-sdk"
+          "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
+          PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
+
       - name: privacy candidate-trace analyzer regressions (B03)
         run: bash bin/analyze-egress-trace-test.sh
 

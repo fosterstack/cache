@@ -37,6 +37,10 @@ on:
         description: 'Known-defect log path (proving runs may point at a fixture log)'
         type: string
         default: .github/agent/known-defect-log.json
+      panel_probe:
+        description: 'Probe the scanner panel''s two seats once instead of judging (proves keyless federation; publishes nothing; main only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,6 +48,8 @@ permissions:
 jobs:
   audit:
     name: audit
+    # a seat-probe dispatch runs ONLY the panel-probe job below: no ordinary audit, delivery, App token or claim logging
+    if: ${{ !inputs.panel_probe }}
     runs-on: ubuntu-latest
     # The `agent` environment (main-restricted, holds the model/App secrets) is attached ONLY when
     # secrets are actually needed — a real adjudicator or a scheduled run. A stub-adjudicator
@@ -363,3 +369,42 @@ jobs:
             ${{ runner.temp }}/panel-out
             ${{ runner.temp }}/manifest.json
             ${{ runner.temp }}/reports
+
+  # The scanner panel's seat probe (REQ-SCAN-008-AC3, live proof; advisor 0051): on request, from main only, in its own
+  # job so nothing else of the auditor runs. It installs the pinned SDKs and sends each seat ONE fixed audit over a
+  # committed synthetic bundle, with retries disabled (at most two model requests). It publishes nothing; the summary
+  # names only the seats, scrubbed; a failing seat fails the job with its masked error.
+  panel-probe:
+    name: scanner panel seat probe (on request, main only)
+    if: ${{ inputs.panel_probe && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+      id-token: write   # each seat's identity token is minted in the probe process
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned SDKs (both seats)
+        run: python3 -m pip install --quiet --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
+
+      - name: Probe the scanner panel's two seats
+        env:
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/panel-a-token
+          PANEL_AUDIT_A_MODEL: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
+          PANEL_AUDIT_B_IDENTITY_PROVIDER_ID: ${{ secrets.PANEL_AUDIT_B_IDENTITY_PROVIDER_ID }}
+          PANEL_AUDIT_B_SERVICE_ACCOUNT_ID: ${{ secrets.PANEL_AUDIT_B_SERVICE_ACCOUNT_ID }}
+          PANEL_AUDIT_B_PROJECT_ID: ${{ secrets.PANEL_AUDIT_B_PROJECT_ID }}
+          PANEL_AUDIT_B_MODEL: ${{ secrets.PANEL_AUDIT_B_MODEL }}
+        run: |
+          set -euo pipefail
+          rc=0
+          python3 .github/agent/bin/auditor-panel.py probe --seats real --out "${RUNNER_TEMP}/probe" --token-budget 20000 || rc=$?
+          cat "${RUNNER_TEMP}/probe/summary.md" >> "${GITHUB_STEP_SUMMARY}" 2>/dev/null || true
+          exit "$rc"

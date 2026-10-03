@@ -1,0 +1,100 @@
+{
+  "schema": "auditor-review-record/v1",
+  "tree": "8b8bd118726bbfedfd905a9aedca02e0799e0d360f3d2fcce8a93139fb7b99ae",
+  "change": "scanner panel seat probe: auditor.yml's panel_probe dispatch runs ONE synthetic audit per seat through the real keyless federation, from main only, with no auditor run, delivery or claim logging; in probe mode each seat sends one model request through a capped HTTP client (a 401 named, never re-sent) — PR #155",
+  "reviewed_commit": "7ccd53b04c2fe1524f5c6a018265e8cd2755e786",
+  "closed_commit": "7ccd53b04c2fe1524f5c6a018265e8cd2755e786",
+  "rounds": [
+    {
+      "round": 1,
+      "label": "step 8 round 1 -> phase 2 round 1 (split) (17871d7)",
+      "reviewers": {
+        "codex": {
+          "vendor": "openai",
+          "blockers_open": 2,
+          "evidence_sha256": "74ec288b9c33c5176ee232f96502dd0bbc0f5439cd02f63101762ec50b42169f"
+        },
+        "sonnet": {
+          "vendor": "anthropic",
+          "blockers_open": 0,
+          "evidence_sha256": "df67a1400145d1fdefc184c3a9ad915782d9d8b10e8536734b3a34b27fd99cf0"
+        }
+      }
+    },
+    {
+      "round": 2,
+      "label": "phase 2 round 2 (independent) (34db019)",
+      "reviewers": {
+        "codex": {
+          "vendor": "openai",
+          "blockers_open": 1,
+          "evidence_sha256": "781439c2fab82e641a735bd12c32682a6d264f42997a6eaad3b9a47da57f35de"
+        },
+        "sonnet": {
+          "vendor": "anthropic",
+          "blockers_open": 0,
+          "evidence_sha256": "ebab5b7b866b0e05b7929e2e4f04b24d35be7f5fa534540852dfe2bfa88a6f85"
+        }
+      }
+    },
+    {
+      "round": 3,
+      "label": "row-78 pin pass (34db019)",
+      "reviewers": {
+        "codex": {
+          "vendor": "openai",
+          "blockers_open": 0,
+          "evidence_sha256": "d344ed19a6d7a409dd05045768a5a04246cea6bc08df7a051a8d153f7c5f67d2"
+        },
+        "sonnet": {
+          "vendor": "anthropic",
+          "blockers_open": 0,
+          "evidence_sha256": "08d54cb142bd70dd95177f37e7b6537287d55c7e94debf338d4f13293234c612"
+        }
+      }
+    },
+    {
+      "round": 4,
+      "label": "phase 2 round 3 (consultation) (49faa99)",
+      "reviewers": {
+        "codex": {
+          "vendor": "openai",
+          "blockers_open": 1,
+          "evidence_sha256": "f229738657f168b85a356245e58f33605a91d78faf069da872157468da6ef409"
+        },
+        "sonnet": {
+          "vendor": "anthropic",
+          "blockers_open": 0,
+          "evidence_sha256": "29d31ad74f5893dea2b49be8f973683251b90737b00ef547bda80c9da9792e97"
+        }
+      }
+    },
+    {
+      "round": 5,
+      "label": "phase 2 round 4 (debate): both green (7ccd53b)",
+      "reviewers": {
+        "codex": {
+          "vendor": "openai",
+          "blockers_open": 0,
+          "evidence_sha256": "f910faa6d50473a4dfeeff79462d1f5978c8194493016d6b0bbc7fb87676c025"
+        },
+        "sonnet": {
+          "vendor": "anthropic",
+          "blockers_open": 0,
+          "evidence_sha256": "39986df80157dea275b77ce843b3ffee20db532870eab885e80486e8486f8f16"
+        }
+      }
+    }
+  ],
+  "stop": {
+    "codex": "clear",
+    "sonnet": "clear"
+  },
+  "owner_decision": "none: codex reviewer rules (owner Oct 2) — both green at phase 2 round 4 ends it",
+  "evidence_location": "private audit tree: audits/2026-10-02/seat-probe/{r1,r2,pin,r3,r4}/{codex,sonnet}/review.md",
+  "residuals_fixed_after_the_cap": [],
+  "residuals": [
+    "R2-R1 (both): AC3's live federation proof is outstanding until the authorized post-merge panel_probe dispatch from main runs (by design)",
+    "R78-R1 (Codex pin pass): images and package installs a run: script names were outside check-action-pins.py — closed by #164 (handoffs 0068/0070)"
+  ]
+}

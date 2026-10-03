@@ -20,6 +20,7 @@
 .github/agent/bin/tests/test_cov_manifest.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_run.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_check_action_pins.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_panel_sdk_probe.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_cov_small.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_lr27.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel.py  unit test (test code — the Go gate does not measure _test.go either)

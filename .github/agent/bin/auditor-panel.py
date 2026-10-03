@@ -795,17 +795,68 @@ class Budget:
         return budgeted
 
 
-def seat_a(env=os.environ, mint=mint_oidc):
+MODEL_PATHS = ("/v1/messages", "/v1/responses")
+
+
+class SeatCapError(Exception):
+    pass
+
+
+class SeatCap:
+    """The probe's request cap (retries disabled; Codex #155 phase-2 r2). Both pinned SDKs re-send once after a 401
+    OUTSIDE max_retries (a federated token refresh), so max_retries=0 alone still allowed a second model request and
+    hid the first failure. These HTTP hooks allow ONE model-endpoint request per seat, and turn a 401 from it into a
+    named failure before the SDK can re-send. Token exchanges are not model requests and are not counted."""
+
+    def __init__(self):
+        self.sent, self.failure = 0, None
+
+    def _fail(self, why):
+        self.failure = self.failure or why
+        raise SeatCapError(self.failure)
+
+    def on_request(self, request):
+        if request.url.path in MODEL_PATHS:
+            self.sent += 1
+            if self.sent > 1:
+                self._fail("a second model request (an SDK retry) was refused: the probe sends one per seat")
+
+    def on_response(self, response):
+        if response.request.url.path in MODEL_PATHS and response.status_code == 401:
+            self._fail("the model endpoint refused the federated token (HTTP 401)")
+
+
+def capped_client(cap, transport=None):
+    import httpx2
+    kw = {"transport": transport} if transport is not None else {}
+    return httpx2.Client(event_hooks={"request": [cap.on_request], "response": [cap.on_response]}, timeout=300, **kw)
+
+
+def _capped(call, cap):
+    """Run a seat's SDK call; a cap failure is reported as itself, never as the SDK's generic wrapper of it."""
+    try:
+        return call()
+    except Exception:
+        if cap is not None and cap.failure:
+            raise SeatCapError(cap.failure) from None
+        raise
+
+
+def seat_a(env=os.environ, mint=mint_oidc, retries=None, transport=None):
     """Vendor A: the auditor's existing provider, through its existing federation (the SDK exchanges the identity
     token in ANTHROPIC_IDENTITY_TOKEN_FILE; workspace, organization and service account from the environment)."""
     import anthropic
     token = TokenFile(env["ANTHROPIC_IDENTITY_TOKEN_FILE"], "https://api.anthropic.com", mint=mint)
     token.fresh()
-    client, model = anthropic.Anthropic(), env["PANEL_AUDIT_A_MODEL"]
+    cap = SeatCap() if retries == 0 else None
+    client = anthropic.Anthropic(**({} if retries is None else {"max_retries": retries}),
+                                 **({"http_client": capped_client(cap, transport)} if cap is not None else {}))
+    model = env["PANEL_AUDIT_A_MODEL"]
 
     def ask(req):
         token.fresh()
-        msg = client.messages.create(model=model, max_tokens=2048, messages=[{"role": "user", "content": render(req)}])
+        msg = _capped(lambda: client.messages.create(model=model, max_tokens=2048,
+                                                     messages=[{"role": "user", "content": render(req)}]), cap)
         a = _answer("".join(getattr(b, "text", "") for b in msg.content))
         u = getattr(msg, "usage", None)
         a["_tokens"] = (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "output_tokens", 0) or 0)
@@ -813,21 +864,23 @@ def seat_a(env=os.environ, mint=mint_oidc):
     return ask
 
 
-def seat_b(env=os.environ, mint=mint_oidc):
+def seat_b(env=os.environ, mint=mint_oidc, retries=2, transport=None):
     """Vendor B: workload identity federation (no key): a fresh GitHub identity token, minted on every exchange, is
     traded for a short-lived token bound to the configured service account; Responses API only."""
     from openai import OpenAI
 
     def token():
         return mint("https://api.openai.com/v1")
+    cap = SeatCap() if retries == 0 else None
     client = OpenAI(workload_identity={"identity_provider_id": env["PANEL_AUDIT_B_IDENTITY_PROVIDER_ID"],
                                        "service_account_id": env["PANEL_AUDIT_B_SERVICE_ACCOUNT_ID"],
                                        "provider": {"token_type": "jwt", "get_token": token}},
-                    project=env["PANEL_AUDIT_B_PROJECT_ID"], timeout=300, max_retries=2)
+                    project=env["PANEL_AUDIT_B_PROJECT_ID"], timeout=300, max_retries=retries,
+                    **({"http_client": capped_client(cap, transport)} if cap is not None else {}))
     model = env["PANEL_AUDIT_B_MODEL"]
 
     def ask(req):
-        r = client.responses.create(model=model, input=render(req), max_output_tokens=4096)
+        r = _capped(lambda: client.responses.create(model=model, input=render(req), max_output_tokens=4096), cap)
         a = _answer(r.output_text)
         a["_tokens"] = getattr(getattr(r, "usage", None), "total_tokens", 0) or 0
         return a
@@ -840,13 +893,13 @@ def unavailable(why):
     return ask
 
 
-def make_seats(mode, env=os.environ, a=seat_a, b=seat_b):
+def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
     if mode != "real":
         return {s: unavailable("no auditor in this run (%s)" % mode) for s in SEATS}
     seats = {}
     for s, make in (("A", a), ("B", b)):
         try:
-            seats[s] = make(env)
+            seats[s] = make(env) if retries is None else make(env, retries=retries)
         except Exception as e:   # a seat that cannot start errors every audit: no evidence, reported
             seats[s] = unavailable("seat %s could not start: %s: %s" % (s, type(e).__name__, public(e)))
     return seats
@@ -1055,7 +1108,41 @@ def cmd_deliver(a, run=subprocess.run):
     return 0
 
 
-def main(argv=None, judge=cmd_judge, deliver=cmd_deliver):
+PROBE_BUNDLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "panel", "probe-bundle.txt")
+PROBE_FINDING = {"image": "probe-amd64", "id": "PROBE-0001", "package": "probe-pkg", "version": "1.0.0",
+                 "seen_by": ["probe"]}
+
+
+def cmd_probe(a, seats=None):
+    """Prove both seats live (REQ-SCAN-008-AC3): one fixed audit per seat over a committed synthetic bundle, inside the
+    run's token budget. Publishes nothing (no state, no PR, no issue); the summary names only the seats. Exit 0 only
+    when both seats answered; a failing seat is reported with its masked error, never retried."""
+    bundle = open(PROBE_BUNDLE).read()
+    budget = Budget(a.token_budget)
+    # retries disabled: each seat is asked exactly once (at most two model requests), and a failure is never retried
+    seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats, retries=0)).items()}
+    lines, ok = ["## Scanner panel seat probe", ""], True
+    for s in SEATS:
+        ans = _ask(seats[s], s, _request("audit", PROBE_FINDING, bundle))
+        v = vote(ans, bundle, PROBE_FINDING)
+        if ans.get("error"):
+            ok = False
+            lines.append("- vendor %s: error: %s" % (s, ans["error"]))
+        elif v:
+            lines.append("- vendor %s: answered with a valid vote (%s)" % (s, v))
+        else:
+            lines.append("- vendor %s: answered without a valid vote (the seat is reachable; its answer cited no "
+                         "evidence from the bundle)" % s)
+    lines += ["", "Tokens used: %d of the run's budget of %d." % (budget.used, budget.cap)]
+    os.makedirs(a.out, exist_ok=True)
+    text = public("\n".join(lines)) + "\n"
+    with open(os.path.join(a.out, "summary.md"), "w") as fh:
+        fh.write(text)
+    print(text)
+    return 0 if ok else 1
+
+
+def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     ap = argparse.ArgumentParser(prog="auditor-panel")
     sub = ap.add_subparsers(dest="cmd", required=True)
     j = sub.add_parser("judge")
@@ -1072,8 +1159,12 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver):
     d.add_argument("--repo", default=".")
     d.add_argument("--dry-run", action="store_true")
     d.add_argument("--today", default=datetime.date.today().isoformat())
+    pr = sub.add_parser("probe")
+    pr.add_argument("--out", required=True)
+    pr.add_argument("--seats", choices=("real", "none"), default="none")
+    pr.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
     a = ap.parse_args(argv)
-    return judge(a) if a.cmd == "judge" else deliver(a)
+    return {"judge": judge, "deliver": deliver, "probe": probe}[a.cmd](a)
 
 
 if __name__ == "__main__":
