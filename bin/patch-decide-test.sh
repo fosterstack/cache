@@ -540,6 +540,21 @@ for path, body in {".github/workflows/release.yml": "steps:\n  - run: python3 bi
 g(data_repo, "add", "-A"); g(data_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
 dch = P.release_chain_files(data_repo)
 check("r6 a list of test names in a chain program is not an execution", "bin/b-test.sh" not in dch and "bin/a-test.sh" not in dch, sorted(dch))
+# Sonnet #159 r6 (B2): a listed test a chain file names in any form (env value, subprocess list) is not neutral at
+# decision time; a chain file that runs an interpreter through find -exec or xargs makes no test neutral (fail closed)
+LT = "bin/panel-test.sh"
+for why, texts in [("named in an env value", {"stage-x.yml": "env:\n  SCRIPT: bin/panel-test.sh\nrun: bash \"$SCRIPT\"\n"}),
+                   ("named in a subprocess list", {"bin/drv.py": 'subprocess.run(["bash", "bin/panel-test.sh"])\n'}),
+                   ("named by its file name alone", {"stage-x.yml": "run: cd bin && bash panel-test.sh\n"})]:
+    eff = P.effective_neutral(texts)
+    check("r6/B2 a listed test %s in a chain file is not neutral" % why, LT not in eff and len(eff) == len(P.NEUTRAL_TESTS) - 1)
+for why, txt in [("find -exec bash", "run: find bin -name '*-test.sh' -exec bash {} \;\n"),
+                 ("xargs sh", "run: ls bin/*-test.sh | xargs -n1 sh\n")]:
+    check("r6/B2 %s in the chain leaves no test neutral" % why, P.effective_neutral({"stage-x.yml": txt}) == set())
+check("r6/B2 find -exec rm and xargs sha256sum keep the list", P.effective_neutral(
+    {"a.yml": "run: find . -name build -exec rm -rf {} +\nrun: ls | xargs -0 sha256sum\n"}) == set(P.NEUTRAL_TESTS))
+check("r6/B2 the classifier's own list is not a mention", P.effective_neutral({"bin/patch-decide.py": open(sys.argv[1]).read()}) == set(P.NEUTRAL_TESTS))
+check("r6/B2 classify uses the decision-time list", P.classify(c("e1", [LT], diffs={LT: "+x\n"}) | {"neutral": []})[0] == "dirty")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

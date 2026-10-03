@@ -221,8 +221,23 @@ tools/requirements/trace_test.go
 """.split())
 
 
-def _is_test(path):
-    return path in NEUTRAL_TESTS
+def _is_test(path, neutral=None):
+    return path in (NEUTRAL_TESTS if neutral is None else neutral)
+
+
+def effective_neutral(texts):
+    """NEUTRAL_TESTS at decision time (Sonnet #159 r6, B2): a listed test that any release-chain file names — by path
+    or by file name, in any form (an env value, a subprocess list) — is not neutral; and when a chain file runs an
+    interpreter through find -exec or xargs (it executes files it never names) no test is neutral. texts: {path:
+    content} of the chain; the classifier's own list (this file) is not a mention."""
+    out = set(NEUTRAL_TESTS)
+    for path, text in texts.items():
+        if path == "bin/patch-decide.py":
+            continue
+        if re.search(r"-exec(?:dir)?\s+(?:\S*/)?(?:bash|sh|python3?|source)\b|\bxargs\b(?:\s+-\S+)*\s+(?:\S*/)?(?:bash|sh|python3?)\b", text):
+            return set()
+        out -= {t for t in out if t in text or re.search(r"(?<![\w.-])" + re.escape(t.rsplit("/", 1)[-1]) + r"(?![\w.-])", text)}
+    return out
 
 
 def cross_check(chain, texts):
@@ -290,7 +305,7 @@ def classify(commit):
     for f in files:
         if f in chain:
             kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
-        elif _is_test(f):
+        elif _is_test(f, commit.get("neutral")):
             kinds.add("neutral")
         elif f in FIX_EXACT or f.startswith(FIX_PREFIX):
             kinds.add("fix")
@@ -315,7 +330,7 @@ def classify(commit):
         elif f.startswith(".github/") and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB and not f.startswith(NEUTRAL_GITHUB_PREFIX):
             kinds.add("dirty"); why.append("%s is read by the release chain (or not reviewed as outside it)" % f)
-        elif f.startswith(NEUTRAL_PREFIX) or _is_test(f):
+        elif f.startswith(NEUTRAL_PREFIX) or _is_test(f, commit.get("neutral")):
             kinds.add("neutral")
         else:
             kinds.add("dirty"); why.append("%s is shipped source or configuration" % f)
@@ -510,14 +525,17 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     chain = sorted(release_chain_files(cwd))       # what the release chain executes at HEAD (advisor 0105)
-    cross_check(chain, {f: _git("show", "HEAD:" + f, cwd=cwd) for f in chain})   # advisor 0107
+    texts = {f: _git("show", "HEAD:" + f, cwd=cwd) for f in chain}
+    cross_check(chain, texts)                       # advisor 0107
+    neutral = sorted(effective_neutral(texts))     # Sonnet #159 r6, B2
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
         diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
-        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha)), "chain": chain})
+        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha)), "chain": chain,
+                    "neutral": neutral})
     return out
 
 
