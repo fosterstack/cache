@@ -56,6 +56,19 @@ check("any other eval of a variable is refused", bool(bad), bad)
 bad = []
 P.check_runs(".github/workflows/x.yml.jobs.j.steps[0].run", [("x", "bash /tmp/pf-forward.sh", None)], bad)
 check("the same file name in another workflow is refused", bool(bad), bad)
+for name, extra in [("a redirect", "echo id > /tmp/pf-forward.sh"), ("a copy", "cp /tmp/x /tmp/smoke-assert.sh"),
+                    ("a download", "curl -fsSL https://example.invalid/x -o /tmp/pf-forward.sh"),
+                    ("a bash -c write", "bash -c 'printf id > /tmp/smoke-assert.sh'")]:
+    bad = []
+    P.check_runs(".github/workflows/stage-acceptance-k8s.yml.jobs.k8s.steps[0].run",
+                 [(".github/workflows/stage-acceptance-k8s.yml.jobs.k8s.steps[0].run", extra, None),
+                  (".github/workflows/stage-acceptance-k8s.yml.jobs.k8s.steps[1].run",
+                   "bash /tmp/pf-forward.sh; bash /tmp/smoke-assert.sh", None)], bad)
+    check("a fenced script that %s also writes is refused (Codex #164 r3, N04)" % name, bool(bad), bad)
+bad = []
+P.check_runs(".github/workflows/stage-acceptance-k8s.yml.jobs.k8s.steps[0].run",
+             [(".github/workflows/stage-acceptance-k8s.yml.jobs.k8s.steps[0].run", "bash /tmp/pf-forward.sh", None)], bad)
+check("the fenced script with no other writer passes", not bad, bad)
 print("k8s-harness-fence: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

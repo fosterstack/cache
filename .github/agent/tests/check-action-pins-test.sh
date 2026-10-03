@@ -17,6 +17,7 @@ case_() {
   local name=$1 expect=$2 d="$work/$1"
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -593,6 +594,7 @@ gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
@@ -715,7 +717,7 @@ case_ pkg-hashed-stdin         ok  "$head
           pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476
           REQ"
 case_ pkg-dry-run              ok  "$(rb 'python3 -m pip install --dry-run --ignore-installed --require-hashes --target /tmp/x -r r.txt')" "printf 'x==1 --hash=sha256:00\\n' > r.txt"
-case_ pkg-version-query        ok  "$(r 'pip --version; python3 -m pip --version; python3 bin/x.py install')"
+case_ pkg-version-query        ok  "$(r 'pip --version; python3 -m pip --version; python3 bin/x.py install')" "mkdir -p bin; : > bin/x.py"
 case_ pkg-echo                 ok  "$(r 'echo pip install requests')"
 
 # --- Sonnet #164 r1's eight bypasses (B1-B8), each a red case; the fixes keep our own forms green
@@ -801,7 +803,7 @@ case_ x2-setup-py              bad "$(r 'python setup.py install')"
 case_ x2-python-m-build        bad "$(r 'python3 -m build')"
 # Codex #164 adversarial r1 C04: uv is not used here; any invocation is refused (was: hashed uv pip sync accepted)
 case_ x2-uv-pip-sync-hashed    bad "$(r 'uv pip sync --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt"
-case_ x2-python-script         ok  "$(r 'python3 bin/check.py --sync install')"
+case_ x2-python-script         ok  "$(r 'python3 bin/check.py --sync install')" "mkdir -p bin; : > bin/check.py"
 
 # --- Sonnet #164 r4 (NEW-3, NEW-4): a decoy Dockerfile; command substitution severing the image argument
 case_ n3-absolute-dockerfile   bad "$(rb 'docker build -f /tmp/Dockerfile .')" "mkdir -p sub; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > sub/Dockerfile"
@@ -1121,7 +1123,8 @@ case_ n29-cd                   bad "$(rb '${x:-cd} evil; docker build -f Dockerf
 case_ n29-pushd                bad "$(rb '${x:-pushd} evil; pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p evil; printf 'e==9 --hash=sha256:11\\n' > evil/requirements.txt"
 case_ n29-alias                bad "$(rb '${x:-alias} foo=docker; foo run alpine:3.20')"
 case_ n29-cp-rename            bad "$(rb '${x:-cp} "$(command -v docker)" /tmp/foo; /tmp/foo run alpine:3.20')"
-case_ n29-default-pinned-ok    ok  "$(rb '${DOCKER_BIN:-docker} run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+# the default word is pinned, but bash runs $DOCKER_BIN when it is set (Codex #164 r3, N03): refused
+case_ n29-default-pinned       bad "$(rb '${DOCKER_BIN:-docker} run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 case_ n29-plain-default-ok     ok  "$(rb 'echo "${GITHUB_REF_NAME:-none}" "${1:-}" "${X:?unset}"')"
 # --- Sonnet #164 r20 (NEW-30, NEW-31): ANSI-C ($'d'ocker) and locale ($"d"ocker) quoting splice a word as bash reads it;
 #     every check reads the decoded word (fail closed)
@@ -1276,7 +1279,7 @@ case_ r2c10-localhost-cond-ok   ok  "$head
     steps:
       - if: \${{ inputs.mode == 'build' }}
         run: docker build -t localhost/fa-production .
-      - run: docker run localhost/fa-production" "printf 'FROM scratch\\n' > Dockerfile"
+      - run: docker run --pull=never localhost/fa-production" "printf 'FROM scratch\\n' > Dockerfile"
 # --- Sonnet #164 r23 (NEW-35): a program the job downloads, writes or makes executable, then runs directly, is a script
 #     this check cannot read: refused
 case_ n35-curl-chmod-run       bad "$(rb 'curl -sL -o /tmp/setup https://example.com/ci/setup; chmod +x /tmp/setup; /tmp/setup')"
@@ -1285,5 +1288,56 @@ case_ n35-wget-run             bad "$(rb 'wget -O /tmp/inst https://example.com/
 case_ n35-built-binary-ok      ok  "$(rb 'mkdir -p /tmp/bins; tar xzf dist/fscache.tgz -C /tmp/bins fscache; /tmp/bins/fscache --version')"
 # --- Sonnet #164 r24: a pip -r file must be a committed regular FILE — a committed symlink points at bytes nobody reviewed
 case_ r24-req-symlink          bad "$(rb 'pip install --require-hashes -r reqs.txt')" "ln -s /tmp/poison.txt reqs.txt"
+# --- Codex #164 adversarial r3: C01, C02, C08-C11, C13, N01, N03, N04
+case_ r3c01-posix-class        bad "$(rb '/usr/bin/[[:lower:]]ocker run alpine')"
+case_ r3c02-command-source     bad "$(rb 'command source ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r3c02-env-u-bash         bad "$(rb 'env -u BASH_ENV bash ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r3c02-lead-redirect      bad "$(rb '> /dev/null bash ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r3c02-env-u-node         bad "$(rb "env -u PYTHONPATH node -e 'require(1)'")"
+case_ r3c02-env-S              bad "$(rb "env -S 'bash ci-image.sh'")" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ r3c02-glob-exec          bad "$(rb './[r]unner')" "printf '#!/usr/bin/env bash\\ndocker run alpine\\n' > runner"
+case_ r3c02-replace-dotslash   bad "$(rb "printf 'docker run alpine\\n' > ci-ok.sh; bash ./ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r3c02-replace-workspace  bad "$(rb "printf 'docker run alpine\\n' > ci-ok.sh; bash \"\$GITHUB_WORKSPACE/ci-ok.sh\"")" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r3c02-replace-bash-c     bad "$(rb "bash -c \"printf 'docker run alpine\\\\n' > ci-ok.sh\"; bash ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r3c02-replace-by-script  bad "$(rb 'bash mutate.sh; bash ci-ok.sh')" "printf 'echo ok\\n' > ci-ok.sh; printf \"printf 'docker run alpine\\\\\\\\n' > ci-ok.sh\\n\" > mutate.sh"
+case_ r3c02-replace-harness    bad "$(rb "printf 'docker run alpine\\n' > bin/probe-test.sh; bash bin/probe-test.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+case_ r3c02-api-unrelated      bad "$(rb 'gh api "repos/$GITHUB_REPOSITORY/contents/ci-ok.sh?ref=main" --jq .content >/dev/null; printf "docker run alpine\\n" > "$RUNNER_TEMP/ci-ok.sh"; bash "$RUNNER_TEMP/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r3c02-git-show-ref       bad "$(rb 'git show attacker:ci-ok.sh > "$RUNNER_TEMP/ci-ok.sh"; bash "$RUNNER_TEMP/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
+case_ r3c02-python-generated   bad "$(rb "printf 'import os\\n' > /tmp/fetch.py; python3 /tmp/fetch.py")"
+case_ r3c08-from-number        bad "$(rb 'docker build .')" "printf 'FROM scratch AS base\\nFROM 0\\n' > Dockerfile"
+case_ r3c09-sbom-true          bad "$(rb 'docker buildx build --sbom=true --output type=local,dest=/tmp/out .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c09-attest-sbom        bad "$(rb 'docker buildx build --attest=type=sbom --output type=local,dest=/tmp/out .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-function           bad "$(rb 'build_it() { docker build -t alpine .; }; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-empty-loop         bad "$(rb 'for v in; do docker build -t alpine .; done; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-subst-later        bad "$(rb 'docker run alpine; out=$(docker build -t alpine .)')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-script-before      bad "$(rb 'bash run.sh; docker build -t alpine .')" "printf 'FROM scratch\\n' > Dockerfile; printf 'docker run alpine\\n' > run.sh"
+case_ r3c10-skopeo-local       bad "$(rb 'docker build -t alpine .; skopeo copy docker://alpine docker-archive:/tmp/a')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-crane-local        bad "$(rb 'docker build -t alpine .; crane pull alpine /tmp/image.tar')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-localhost-cond     bad "$(rb 'if false; then docker build -t localhost/probe .; fi; docker run localhost/probe')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c10-pull-never-ok      ok  "$(rb 'docker run --pull=never localhost/fa-production')"
+case_ r3c11-adjacent-redirect  bad "$(rb "printf 'FROM alpine\\n'>Dockerfile; docker build .")" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c11-workspace-abs      bad "$(rb 'cp -R evil/. /home/runner/work/cache/cache/; docker build .')" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p evil; printf 'FROM alpine\\n' > evil/Dockerfile"
+case_ r3c11-tar-workspace      bad "$(rb 'tar xf evil.tar -C /home/runner/work/cache/cache; docker build .')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ r3c11-mpip-req           bad "$(rb 'curl -fsSL https://example.org/req.txt -o /tmp/req.txt; python3 -Im pip install --require-hashes -r /tmp/req.txt')"
+case_ r3c11-pipmain-req        bad "$(rb 'python3 -m pip.__main__ install --require-hashes -r /tmp/req.txt')"
+case_ r3c13-flow-env           bad "$head
+    steps:
+      - run: docker build -t alpine .
+      - env: {DOCKER_HOST: \"tcp://other:2375\"}
+        run: docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+case_ r3c13-quoted-env-key     bad "$head
+    steps:
+      - env:
+          \"DOCKER_HOST\": tcp://other:2375
+        run: docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+case_ r3n01-comment-marker     bad "$(rb '# <<EOF
+          docker run alpine')"
+case_ r3n01-string-marker      bad "$(rb "echo '<<EOF'
+          docker run alpine")"
+case_ r3n01-quoted-subst       bad "$(rb "cat <<EOF
+          '\$(docker pull alpine)'
+          EOF")"
+case_ r3n03-default-program    bad "$(rb 'tool=docker; "${tool:-echo}" run alpine')"
+case_ r3n03-default-eval       bad "$(rb 'payload="docker run alpine"; eval "${payload:-:}"')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
