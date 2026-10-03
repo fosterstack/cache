@@ -97,7 +97,6 @@ ALLOW_PATTERNS=(
   '^bin/panel-wiring-test\.sh$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
-  '^bin/k8s-harness-fence-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
