@@ -1366,6 +1366,10 @@ case_ r4b2-trap-print-ok       ok  "$(rb 'trap -p EXIT')"
 case_ r4b2-trap-reset-ok       ok  "$(rb 'trap EXIT')"
 case_ r4b2-trap-dashdash-bad   bad "$(rb "trap -- 'docker run --rm alpine:3.20 echo x' EXIT; true")"
 case_ r4b2-trap-dashdash-ok    ok  "$(rb "trap -- 'docker run --rm alpine@$DIG echo x' EXIT; true")"
+# Sonnet #164 r5: after -- (the option terminator), the command is unconditional — a command that itself happens to
+# start with a dash (legal text once -- has already ended option parsing) must still be read, not waved through
+case_ r4b2-trap-dashdash-dash-cmd-bad bad "$(rb "trap -- '-rf; docker run --rm alpine:3.20 echo x' EXIT; true")"
+case_ r4b2-trap-dashdash-dash-cmd-ok  ok  "$(rb "trap -- '-rf; docker run --rm alpine@$DIG echo x' EXIT; true")"
 case_ r4b3-pull-never-then-always-bad bad "$(rb 'docker run --pull=never --pull=always --rm alpine:3.20 true')"
 case_ r4b3-pull-always-then-never-ok  ok  "$(rb 'docker run --pull=always --pull=never --rm alpine:3.20 true')"
 case_ r4b3-pull-bare-always-last-bad  bad "$(rb 'docker run --pull never --pull always --rm alpine:3.20 true')"
