@@ -1115,5 +1115,16 @@ case_ n29-alias                bad "$(rb '${x:-alias} foo=docker; foo run alpine
 case_ n29-cp-rename            bad "$(rb '${x:-cp} "$(command -v docker)" /tmp/foo; /tmp/foo run alpine:3.20')"
 case_ n29-default-pinned-ok    ok  "$(rb '${DOCKER_BIN:-docker} run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 case_ n29-plain-default-ok     ok  "$(rb 'echo "${GITHUB_REF_NAME:-none}" "${1:-}" "${X:?unset}"')"
+# --- Sonnet #164 r20 (NEW-30, NEW-31): ANSI-C ($'d'ocker) and locale ($"d"ocker) quoting splice a word as bash reads it;
+#     every check reads the decoded word (fail closed)
+case_ n30-ansi-splice-run      bad "$(rb "\$'d'ocker run alpine:latest")"
+case_ n30-ansi-mid             bad "$(rb "do\$'c'ker run alpine:latest")"
+case_ n30-ansi-path            bad "$(rb "/usr/bin/\$'d'ocker run alpine:latest")"
+case_ n30-ansi-pip             bad "$(rb "\$'p'ip install alpine")"
+case_ n30-locale-splice        bad "$(rb '$"d"ocker run alpine:latest')"
+case_ n31-ansi-cd              bad "$(rb "c\$'d' sub; docker build -t myimg .")" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p sub; printf 'FROM alpine:latest\\n' > sub/Dockerfile"
+case_ n31-ansi-pushd           bad "$(rb "p\$'u'shd sub; docker build -t myimg .")" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p sub; printf 'FROM alpine:latest\\n' > sub/Dockerfile"
+case_ n31-locale-cd            bad "$(rb 'c$"d" sub; docker build -t myimg .')" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p sub; printf 'FROM alpine:latest\\n' > sub/Dockerfile"
+case_ n30-ansi-tab-still-ok    ok  "$(rb "IFS=\$'\\t' read -r a b <<< x; curl -s -w \$'\\n%{http_code}' -o /dev/null https://example.org")"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
