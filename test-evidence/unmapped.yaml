@@ -10,12 +10,6 @@ unmapped:
     reason: no acceptance-container run asserts uid 65532 and the data path; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-DEPLOY-001-AC1
     reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
-  - ac: REQ-SCAN-010-AC1
-    reason: rule 10 (VEX in three forms) is a later PR of the scanner panel
-  - ac: REQ-SCAN-010-AC2
-    reason: rule 10 (VEX in three forms) is a later PR of the scanner panel
-  - ac: REQ-SCAN-010-AC4
-    reason: rule 10 (VEX in three forms) is a later PR of the scanner panel
   - ac: REQ-SCAN-011-AC1
     reason: rule 11 (customer guide) ships with rule 10's files, a later PR
   - ac: REQ-SCAN-011-AC2

@@ -31,6 +31,33 @@ for the life of the shipped bytes:
 It ships as a release asset, so anyone auditing an artifact gets our claims alongside
 the SBOM and the provenance rather than having to take the scan result on faith.
 
+## The same statements, three ways (scanner-panel rule 10)
+
+From the first release cut after this change, every release also carries two files
+generated at release time from this one OpenVEX file (`bin/vex-forms.py`) and the
+release's own image digests — never edited by hand:
+
+| File | For | Statements |
+|---|---|---|
+| `fosterstack-cache.openvex.json` | scanners that read OpenVEX | the source |
+| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE and by every released image digest |
+| `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement, as a CSAF 2.0 VEX document whose products are the released image digests |
+
+In other words: the CSAF file carries every OpenVEX statement; the Inspector file
+carries one rule per suppressible statement (not_affected, fixed) and none for
+affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
+
+The Google VEX upload is a **preview feature** of Google Cloud
+(`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
+proven by the release candidate's live test (scanner-panel rule 12), not assumed.
+
+All three files are listed, with their sha256, in the release's `release-manifest.json`,
+which the release already signs and attaches to every image. That is how to check a
+downloaded file is ours — no separate signature.
+
+Our own pipeline keeps filtering every scanner's results against
+`fosterstack-cache.openvex.json` itself; the generated forms are for customers' tools.
+
 ## Writing a statement
 
 `status` and `justification` are not interchangeable, and the difference is what a
