@@ -1418,5 +1418,30 @@ case_ r4b1-trap-embedded-apostrophe-local-bad bad "$(rb "trap -- 'echo '\"'\"'do
           ' EXIT
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
 
+
+# advisor 0143: a plain `docker run <mutable tag>` step inserted into the REAL, full-size auditor.yml (not a
+# synthetic minimal fixture) must still be caught -- root-caused as main never having had run: scanning at all
+# (the docstring overclaimed it; this checker adds it for the first time), not a gap in this scanner's current
+# logic. This locks the real file in as a permanent regression case, not just the synthetic r()/rb() ones above.
+real_repo=$(cd "$here/../../.." && pwd)
+realcase="$work/real-auditor-plain-run"
+mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
+cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
+cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"
+: > "$realcase/.github/agent/bin/auditor-review-gate.py"; : > "$realcase/.github/agent/bin/check-action-pins.py"
+python3 -c "
+s = open('$realcase/.github/workflows/auditor.yml').read()
+marker = '    steps:\n'
+i = s.index(marker) + len(marker)
+s = s[:i] + '      - run: docker run --rm alpine:latest\n' + s[i:]
+open('$realcase/.github/workflows/auditor.yml', 'w').write(s)
+"
+out=$(python3 "$here/../bin/check-action-pins.py" "$realcase" 2>&1 || true)
+if echo "$out" | grep -q "docker run\` names an image not pinned by digest: 'alpine:latest'"; then
+  pass=$((pass+1)); echo "PASS real-auditor-plain-run-bad → bad"
+else
+  failn=$((failn+1)); echo "FAIL real-auditor-plain-run-bad → ok (want bad)"
+fi
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
