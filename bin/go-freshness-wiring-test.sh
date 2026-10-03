@@ -23,7 +23,10 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"),
            ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
-           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion")}
+           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion"),
+           # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
+           # panel-scout/panel-google above; it never mints or uses the auditor App's token
+           ("main-candidate-rescan.yml", "scout-root-cause")}
 found = set()
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     name = os.path.basename(f)
