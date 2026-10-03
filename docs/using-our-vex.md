@@ -20,7 +20,7 @@ version, `https://github.com/fosterstack/cache/releases/tag/v<version>`, next to
 Set the version you run:
 
 ```sh
-VER=0.3.0
+VER=X.Y.Z
 ```
 
 Look up the image digest you run (`cache:${VER}` is the production image; use the tag of the variant you run):
@@ -61,7 +61,7 @@ Every line must say `OK`. If `cosign` reports an error, or a line says `FAILED`,
 grype "ghcr.io/fosterstack/cache@${DIGEST}" --vex fosterstack-cache.openvex.json
 ```
 
-Use Grype 0.118.0 or later: earlier versions do not match our image's identifiers and apply none of the statements.
+Use Grype 0.118.0 or later: earlier versions do not match our image's identifiers and apply none of the statements. <!-- pinned: upstream -->
 Grype reads the statements at scan time and leaves out findings stated *not affected* or *fixed* for this image. It
 changes nothing outside that scan's output.
 
