@@ -481,3 +481,10 @@ mappings:
   - ac: REQ-SCAN-010-AC4
     evidence:
       - { type: inspection, ref: ".vex/README.md section \"The same statements, three ways\": the Google VEX upload is a preview feature" }
+
+  - ac: REQ-SCAN-011-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-guide-test.sh" }
+  - ac: REQ-SCAN-011-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vex-guide-test.sh" }

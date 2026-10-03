@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 70 |
 | Acceptance criteria | 144 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 131 |
+| ACs with mapped evidence | 133 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -793,9 +793,9 @@ docs/using-our-vex.md shall ship in the same release as the three VEX forms, nev
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-011-AC1 | Given docs/using-our-vex.md; when a release is cut; then it ships in the same release as the rule-10 files, never before | inspection |  | approved | none mapped |
-| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | 1 item(s) |
 | REQ-SCAN-011-AC3 | Given every command in the guide; when the live test runs; then it worked exactly as written | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | 1 item(s) |
 
 ### REQ-SCAN-012 — Live tests
 
