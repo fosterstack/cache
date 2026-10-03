@@ -254,6 +254,14 @@ lab = os.path.join(repo, "labels.json"); json.dump({sha: ["patch-fix"]}, open(la
 with contextlib.redirect_stdout(io.StringIO()):
     P.main(["decide", "--event", "workflow_dispatch", "--repo", repo, "--cut-today", "false", "--labels", lab, "--out", out])
 check("the patch-fix label on that PR admits it", json.load(open(out))["cut"], json.load(open(out)))
+# Sonnet #159 r1: decision.json feeds the public "main is not patch-clean" issue, so it is redacted as stdout is
+os.makedirs(os.path.join(repo, "internal"), exist_ok=True)
+open(os.path.join(repo, "internal", "openai-adapter.go"), "w").write("package internal\n")
+g(repo, "add", "-A"); g(repo, "commit", "-q", "-m", "adapter")
+with contextlib.redirect_stdout(io.StringIO()):
+    P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--out", out])
+raw = open(out).read()
+check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
 # --- `removed`: from grype's JSON for the release and the new base image, and HEAD's go.mod
 def gm(id_, name, ver, fix, sev, typ):
     return {"vulnerability": {"id": id_, "severity": sev, "fix": {"versions": [fix] if fix else []}},

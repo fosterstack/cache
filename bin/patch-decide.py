@@ -437,6 +437,9 @@ def main(argv=None):
     event = "schedule" if a.event == "workflow_dispatch" else a.event
     dec = decide(event, commits, tags, a.cut_today == "true", removed)
     dec["since"] = since
+    # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
+    dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)
+           for k, v in dec.items()}
     with open(a.out, "w") as fh:
         json.dump(dec, fh, indent=1)
     print(_clean("patch decision: %s — %s" % ("cut " + dec["version"] if dec["cut"] else "no cut", dec["reason"])))
