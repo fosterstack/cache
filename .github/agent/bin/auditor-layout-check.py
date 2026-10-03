@@ -77,7 +77,9 @@ def offenders(paths, root="."):
 
 def main(argv):
     root = argv[argv.index("--root") + 1] if "--root" in argv else "."
-    bad = offenders([ln.strip() for ln in sys.stdin], root)
+    # each path verbatim, only the line terminator removed: "bin/patch-decide.py " is another file (Codex r1 B1)
+    paths = [ln[:-1] if ln.endswith("\n") else ln for ln in sys.stdin]
+    bad = offenders([p for p in paths if p], root)
     for p, why in bad:
         print("::error file=%s::auditor-related file outside %s (%s) — move it under %s "
               "(REQ-AUD-18 AC1)" % (p, AGENT, why, AGENT))

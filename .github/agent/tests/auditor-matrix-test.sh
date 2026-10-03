@@ -3111,9 +3111,16 @@ printf 'test-evidence/other.yaml\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; 
 mkdir -p "$lr/bin"; for f in patch-decide.py patch-decide-test.sh patch-decide2.py; do printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/bin/$f"; done
 printf 'bin/patch-decide.py\nbin/patch-decide-test.sh\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; patchx=$?
 printf 'bin/patch-decide2.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; patch_other=$?
+# a whitespace look-alike is another file: git ls-files lists it verbatim and the check reads it verbatim (Codex r1 B1)
+for f in "patch-decide.py " "patch-decide-test.sh "; do printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/bin/$f"; done
+printf 'bin/patch-decide.py \n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws1=$?
+printf 'bin/patch-decide-test.sh \n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws2=$?
+mkdir -p "$lr/ bin"; printf 'NEUTRAL = (".github/agent/reviews/",)\n' > "$lr/ bin/patch-decide.py"
+printf ' bin/patch-decide.py\n' | "$PY" "$LC" --root "$lr" >/dev/null 2>&1; ws3=$?
 { eq "$real" "0" && eq "$named" "1" && eq "$refers" "1" && eq "$exempt" "0" && eq "$smug1" "1" && eq "$smug2" "1" && eq "$old" "0" \
-  && eq "$trace" "0" && eq "$trace_other" "1" && eq "$patchx" "0" && eq "$patch_other" "1"; } \
-  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other patch_classifier=$patchx patch_lookalike=$patch_other"
+  && eq "$trace" "0" && eq "$trace_other" "1" && eq "$patchx" "0" && eq "$patch_other" "1" \
+  && eq "$ws1" "1" && eq "$ws2" "1" && eq "$ws3" "1"; } \
+  && ok || no "real tree clean; auditor-named / .github/agent-referring files outside it fail; only the exact output contract is exempt" "real=$real named=$named refers=$refers exempt=$exempt smuggled_vex=$smug1 smuggled_proposal=$smug2 old_paths=$old trace=$trace trace_other=$trace_other patch_classifier=$patchx patch_lookalike=$patch_other whitespace=$ws1/$ws2/$ws3"
 
 begin "req18-ac1-suites-wired-into-required-allowlist-job" "ci.yml's required 'allowlist' job runs the layout check, the parser tests and the matrix suite from .github/agent/tests/"
 hy="$(python3 - <<'HH'
