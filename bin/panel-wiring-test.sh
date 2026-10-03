@@ -104,6 +104,15 @@ def run_block(block, mode):
             shutil.copy(x, keep)
             VEXCOPIES.append(keep)
         return r.returncode, open(log).read().splitlines()
+pr = step("product-form probe")
+if not pr or scout_steps.index(pr) > scout_steps.index(step("rule 4 self-check") or pr):
+    bad.append("no Scout product-form probe before the self-check (advisor 0106)")
+else:
+    prun = pr.get("run", "")
+    for need in ("./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck", "scout-selfcheck.py probe-doc",
+                 "scout-selfcheck.py probe-report"):
+        if need not in prun:
+            bad.append("the probe lacks %s" % need)
 sc, scan = step("rule 4 self-check"), step("Docker Scout every image")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
@@ -246,6 +255,23 @@ helper_case() {   # name sed-expression
 }
 helper_case unquoted-author 's/--vex-author "\$re"/--vex-author $re/'
 helper_case merged-image    's/"\$re" "local:\/\/\$1"/"\$re local:\/\/\$1"/'
+# advisor 0106: the Scout product-form probe — one statement per candidate form, each on a different fixture CVE; it
+# reports which forms Scout applied and never decides the job (the self-check does)
+probe_case() {   # name want-substring before after
+  local d; d=$(mktemp -d "$work/p.XXXX"); printf '%s' "$3" > "$d/b"; printf '%s' "$4" > "$d/a"
+  python3 "$root/bin/scout-selfcheck.py" probe-doc "$d/b" "FosterStack LLC" "$d/v.json" >/dev/null 2>&1 || { failn=$((failn+1)); echo "FAIL probe-$1: no document"; return; }
+  out=$(python3 "$root/bin/scout-selfcheck.py" probe-report "$d/b" "$d/a" "$d/v.json.map" 2>&1); rc=$?
+  if [ "$rc" = 0 ] && grep -q -- "$2" <<<"$out"; then pass=$((pass+1)); echo "PASS probe-$1"; else failn=$((failn+1)); echo "FAIL probe-$1 → rc=$rc: $out"; fi
+}
+PB="{\"vulnerabilities\":[$(F CVE-2001-0001 a 1),$(F CVE-2001-0002 b 1),$(F CVE-2001-0003 c 1),$(F CVE-2001-0004 d 1),$(F CVE-2001-0005 e 1),$(F CVE-2001-0006 f 1),$(F CVE-2001-0007 g 1)]}"
+probe_case none-applied "applied: none" "$PB" "$PB"
+d0=$(mktemp -d "$work/p.XXXX"); printf '%s' "$PB" > "$d0/b"; python3 "$root/bin/scout-selfcheck.py" probe-doc "$d0/b" "FosterStack LLC" "$d0/v.json" >/dev/null
+first=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["pkg:docker/ghcr.io/fosterstack/cache@selfcheck"])' "$d0/v.json.map")
+PA=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["vulnerabilities"]=[v for v in d["vulnerabilities"] if v["identifiers"][0]["value"]!=sys.argv[2]]; print(json.dumps(d))' "$PB" "$first")
+probe_case one-applied "applied: pkg:docker/ghcr.io/fosterstack/cache@selfcheck" "$PB" "$PA"
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"]; assert d["author"]=="FosterStack LLC" and len(s)==len({x["vulnerability"]["name"] for x in s})>=5 and all(x["status"]=="not_affected" for x in s) and any(p["@id"]=="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" for x in s for p in x["products"])' "$d0/v.json"; then
+  pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
+else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
 case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
 case_ grype-five-images       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production debug fips', 'for v in production debug')"

@@ -117,6 +117,28 @@ jobs:
       # fixture under our image's name with a VEX of our author covering only a CVE it does not have, then with one covering CVE-2023-4911;
       # bin/scout-selfcheck.py passes only when exactly that CVE drops and every other finding stays (rule 4,
       # REQ-SCAN-004-AC2), and refuses an empty or malformed report.
+      # Advisor 0106: which product identifiers does Scout match for our image? A diagnostic — one statement per candidate
+      # form, each on a different CVE the fixture has; it prints which forms Scout applied and never decides the job
+      # (the self-check below does, and keeps the rescan red until our published form is applied: fail closed).
+      - name: Scout product-form probe (rule 4 diagnostic, advisor 0106)
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab \
+            docker-daemon:ghcr.io/fosterstack/cache:selfcheck || exit 0
+          mkdir -p "$RUNNER_TEMP/probe"
+          jq -n --arg a "$(jq -er .author .vex/fosterstack-cache.openvex.json)" '{"@context": "https://openvex.dev/ns/v0.2.0",
+            "@id": "https://github.com/fosterstack/cache/scout-probe-none", "author": $a, "timestamp": "2026-10-03T00:00:00Z",
+            "version": 1, "statements": [{"vulnerability": {"name": "CVE-1999-0001"}, "status": "not_affected",
+            "justification": "vulnerable_code_not_present", "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]}' \
+            > "$RUNNER_TEMP/probe/none.json"
+          ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/none.json" "$RUNNER_TEMP/probe/before.json" || exit 0
+          python3 bin/scout-selfcheck.py probe-doc "$RUNNER_TEMP/probe/before.json" "$(jq -er .author .vex/fosterstack-cache.openvex.json)" \
+            "$RUNNER_TEMP/probe/forms.json" || exit 0
+          ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/forms.json" "$RUNNER_TEMP/probe/after.json" || exit 0
+          python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/after.json" \
+            "$RUNNER_TEMP/probe/forms.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Until our published form is applied, the self-check keeps this rescan red (fail closed, rule 4)." >> "$GITHUB_STEP_SUMMARY"
       - name: Scout applies a statement by our author to our image name (rule 4 self-check)
         run: |
           set -euo pipefail
