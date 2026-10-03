@@ -127,16 +127,29 @@ Round 8 (before the ubuntu-only scope made it moot; kept as defense in depth): c
 non-POSIX catch-all) unless it declares a POSIX shell. What
 static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
-network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
-a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
-fixed by our pin to that commit and is that action's supply chain, not ours; it is not read here, and no action
-is excepted by name.
+network under another name, and OS packages the runner installs from its signed distribution archives (apt). An
+image a pinned action's own manifest names is NOT fixed by our pin (Codex #164 adversarial r1, R01): the commit fixes
+the manifest's text, not a registry tag's resolution — ossf/scorecard-action's pinned action.yaml runs
+docker://ghcr.io/ossf/scorecard-action:v2.4.4, a mutable tag. That executor is the upstream's supply chain; it is
+listed here so it is not mistaken for pinned, and no action is excepted by name.
+
+Scripts a step runs (Codex #164 adversarial r1 C02; advisor ruling 0094): a committed shell script (bash/sh x.sh,
+source x.sh, ./x.sh, a $RUNNER_TEMP copy of main's committed script) is read at its committed bytes, recursively; a
+script that is not a committed file, a variable script path, or nesting past the depth limit is refused. Inline code
+for another interpreter (python -c, node -e, perl -e, ruby -e, …) is refused. Code in another language in a heredoc
+or a committed file is the documented boundary: not parsed; every diff that adds or changes it gets both reviewers,
+whose row-78 pass asks whether any non-shell code fetches an image or package without a digest or hash.
 
 Outside this check, each a documented exclusion with its reason (row 78):
   - an image a `run:` script names through a shell variable or an expression: the shell is not evaluated here, so
     the row-78 review pass answers it (on Oct 2 every such image in the workflows is bound to a digest);
-  - a name the same job made EARLIER (docker tag / build -t / skopeo docker-daemon:, or an unqualified template
-    like `fa-${v}` whose prefix is 3+ characters ending in - _ . and names no registry path): our own bytes;
+  - a name the same job made EARLIER by an unconditional build or tag (docker tag / build -t / skopeo docker-daemon:;
+    a template like `fa-${v}` stands only for the words of its literal `for v in …` list), not removed since, and used
+    by run/create without --pull=always (a pull always fetches): our own bytes;
+  - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
+    as fixture data; it is not read recursively (it is committed and reviewed like any diff);
+  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md
+    (committed, reviewed), written by the step's own python heredoc; they assert against the kind cluster;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -689,6 +702,47 @@ SKOPEO_SAFE = {"login", "logout", "list-tags", "manifest-digest", "delete", "sta
 CRANE_SAFE = {"digest", "manifest", "ls", "tag", "auth", "config", "validate", "catalog", "delete", "push", "blob",
               "version", "index"}
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
+def _split_commands(text):
+    """The simple commands of a shell text, split as bash splits them: at ; & | ( ) and newlines OUTSIDE quotes ('…',
+    "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
+    characters cut quoted text and comments into false commands (Codex #164 adversarial r1, C02 noise)."""
+    out, cur, i, q, n = [], [], 0, None, len(text)
+    while i < n:
+        c = text[i]
+        if q == "'":
+            cur.append(c)
+            q = None if c == "'" else q
+        elif q == "$'":
+            cur.append(c)
+            if c == "\\" and i + 1 < n:
+                cur.append(text[i + 1]); i += 1
+            elif c == "'":
+                q = None
+        elif q == '"':
+            cur.append(c)
+            if c == "\\" and i + 1 < n:
+                cur.append(text[i + 1]); i += 1
+            elif c == '"':
+                q = None
+        elif c == "\\" and i + 1 < n:
+            cur += [c, text[i + 1]]; i += 1
+        elif c == "$" and text[i + 1:i + 2] == "'":
+            cur += ["$", "'"]; q = "$'"; i += 1
+        elif c in "'\"":
+            cur.append(c); q = c
+        elif c == "#" and (not cur or cur[-1] in " \t"):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif c in ";&|()\n":
+            out.append("".join(cur)); cur = []
+        else:
+            cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return [x for x in out if x.strip()]
+
+
 SUBST = "$__SUBST__"   # stands where a command substitution was cut out (Sonnet #164 r4, NEW-4): fails closed
 
 
@@ -791,24 +845,35 @@ def _commands(script, depth=0):
     out = []
     if depth < 6:
         for sub in inner:
-            out += _commands(sub, depth + 1)
-    for chunk in SEPARATORS.split(text):
+            if sub.startswith("(") and sub.endswith(")"):     # $(( … )) arithmetic: only its own $( … ) run
+                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1)]
+            else:
+                out += _commands(sub, depth + 1)
+    elif inner:
+        out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
+    for chunk in _split_commands(text):
         try:
             toks = shlex.split(chunk, comments=True)
         except ValueError:
             toks = chunk.split()
         if not toks or toks[0] in PRINTERS:
             continue
-        if depth < 4:
-            for i, w in enumerate(toks):
-                if _base(w) in SHELLS and "-c" in toks[i + 1:]:
-                    j = toks.index("-c", i + 1)
-                    if j + 1 < len(toks):
-                        out += _commands(toks[j + 1], depth + 1)
-                    break
-                if w == "eval" and toks[i + 1:]:
+        for i, w in enumerate(toks):
+            c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
+                if _base(w) in SHELLS else None
+            if c is not None or (w == "eval" and toks[i + 1:]):
+                if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
+                    out.append(["__too_deep__", w])
+                elif c is not None:
+                    out += _commands(toks[c + 1], depth + 1) if c + 1 < len(toks) else []
+                else:
                     out += _commands(" ".join(toks[i + 1:]), depth + 1)
-                    break
+                break
+        inline = next((w for w in _command_words(toks) if _base(w) in INTERPRETERS and any(
+            re.fullmatch(INTERPRETERS[_base(w)], t) for t in toks[toks.index(w) + 1:])), None)
+        if inline:            # inline code for another interpreter is refused (handoff 0094)
+            out.append(["__inline__", inline])
+            continue
         stdin = _stdin_shell(toks)
         if stdin:             # a shell fed by a pipe, a herestring or a process substitution (Sonnet #164 r21, NEW-32)
             out.append(["__stdin_shell__", stdin])
@@ -848,6 +913,14 @@ def _glob_guarded(pattern):
         any(fnmatch.fnmatchcase(name, pattern) for name in GUARDED)
 
 
+# Inline-code flags of other interpreters (handoff 0094): their code in the workflow is refused; python's -c is read in
+# script_installs. A heredoc or a committed file in another language is the documented boundary.
+INTERPRETERS = {"node": r"-[a-zA-Z]*[ep]|--eval|--print", "nodejs": r"-[a-zA-Z]*[ep]|--eval|--print",
+                "perl": r"-[a-zA-Z]*[eE][a-zA-Z]*", "ruby": r"-[a-zA-Z]*e[a-zA-Z]*", "php": r"-[a-zA-Z]*r[a-zA-Z]*",
+                "deno": r"eval", "bun": r"-e|--eval|-p|--print", "Rscript": r"-e", "lua": r"-e", "pwsh": r"-[cC].*",
+                "osascript": r"-e", "awk": r"$^"}
+
+
 def _stdin_shell(toks):
     """The shell word when a program word of this command is a shell that would read its script from stdin, a
     herestring, a process substitution or /dev/stdin, instead of `-c "…"` (read as a script) or a file operand; and
@@ -858,13 +931,13 @@ def _stdin_shell(toks):
         if not (_base(w) in SHELLS or (dot and w == words[0])):
             continue
         rest = toks[toks.index(w) + 1:]
-        if "-c" in rest and not dot:
+        if not dot and any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a) for a in rest):
             return None
         i = 0
         while i < len(rest):
             a = rest[i]
-            if a.startswith("<("):                         # the script is a process substitution's output
-                return w
+            if a.startswith("<(") or (a == "<" and i + 1 == len(rest)):
+                return w                                  # the script is a process substitution's output
             if a.startswith("<"):                          # a redirection or herestring: not an operand
                 i += 1 if re.match(r"^<(<<?|&)?[^<>&]", a) else 2
                 continue
@@ -1077,6 +1150,13 @@ def script_images(script):
             continue
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
+            continue
+        if cmd == "__too_deep__":
+            ev.append(("finding", "`%s` nests scripts deeper than this check reads; refused" % args[0]))
+            continue
+        if cmd == "__inline__":
+            ev.append(("finding", "`%s` runs inline code from the workflow, which is not read; put it in a committed file "
+                                  "(handoff 0094)" % args[0]))
             continue
         if cmd in ("__glob__", "__hash_p__"):
             ev.append(("finding", ("a program name is a glob (%s); the file it runs cannot be seen" if cmd == "__glob__"
@@ -1315,7 +1395,7 @@ def _touches(script, name, consumer):
     for sub in inner:
         if _touches(sub, name, consumer):
             return True
-    for chunk in SEPARATORS.split(text):
+    for chunk in _split_commands(text):
         try:
             toks = shlex.split(chunk, comments=True)
         except ValueError:
@@ -1495,22 +1575,126 @@ def daemon_redirects(text):
     return out
 
 
+# Documented exclusion (advisor 0094 asks every exclusion to carry its reason): a committed TEST HARNESS a step runs is
+# not read recursively. The harnesses of this very checker and of the auditor must contain, as literal fixture data, the
+# constructs the checker refuses (DOCKER_HOST=…, alias, docker pull alpine); they write fixtures and run the code under
+# test, never a container. They are committed files, and every diff that adds or changes one gets both reviewers.
+TEST_HARNESS = re.compile(r"(^|/)tests?/|-tests?\.sh$|(^|/)test_[^/]*$")
+
+
+FOREIGN_HEREDOC = re.compile(r"(?m)^[^\n#]*\b(python3?(\.[0-9]+)?|node|nodejs|perl|ruby)\b[^\n]*<<-?\s*(['\"]?)(\w+)\3[^\n]*\n"
+                             r"(.*?\n)?\s*\4\s*$", re.S)
+
+
+def _drop_foreign_heredocs(text):
+    """A heredoc fed to python / node / perl / ruby is code in another language — the documented boundary (handoff
+    0094): its body is not shell and is not parsed as shell."""
+    return FOREIGN_HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0] + "\n", text)
+
+
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023):
+GENERATED_OK = {
+    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
+        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
+        "heredoc; they assert against the kind cluster and fetch nothing",
+}
+
+
+def _resolve_script(path, text, entries):
+    """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a $RUNNER_TEMP copy the job
+    writes from a committed file of that name (`git show <ref>:<file>`, or the contents API at ref=main: main's copy of
+    a reviewed script). None otherwise."""
+    rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", path)
+    if entries.get(rel) == "file":
+        return rel
+    if re.match(r"^\$\{?RUNNER_TEMP\}?/", path):
+        base = path.rsplit("/", 1)[-1].strip("\"'")
+        parts = [t.split("/") for t in re.findall(r"[\w./-]+", text) if t.rsplit("/", 1)[-1] == base]
+        cands = [f for p in parts for f in ("/".join(p[k:]) for k in range(len(p))) if entries.get(f) == "file"]
+        if cands and ("git show " in text or re.search(r"/contents/\S*\?ref=main\b", text)):
+            return cands[0]                              # main's copy of a committed, reviewed script
+    return None
+
+
+def _run_scripts(text, tree, moved, depth=0, where=""):
+    """(the committed shell scripts this text runs, their bytes appended; findings). A script is run by bash/sh/dash/
+    zsh <path>, source / . <path>, or a path executed directly that is a *.sh file or starts with a shell #!. It is read
+    at its committed bytes, recursively; one that is not a committed file, a variable path, or nesting past the depth
+    limit is refused (Codex #164 adversarial r1, C02; advisor 0094)."""
+    import shlex
+    added, found = [], []
+    entries = getattr(tree, "entries", {}) or {}
+    body, _ = _cut_substitutions(text)
+    for chunk in _split_commands(body):
+        try:
+            toks = shlex.split(chunk, comments=True)
+        except ValueError:
+            toks = chunk.split()
+        words = _command_words(toks)
+        if not words:
+            continue
+        w, path = words[0], None
+        rest = toks[toks.index(w) + 1:]
+        operands = [a for k, a in enumerate(rest) if not a.startswith(("-", "<", ">")) and not re.match(r"^[0-9]+[<>]", a)
+                    and not (k > 0 and re.fullmatch(r"[-+][a-zA-Z]*[oO]", rest[k - 1]))]
+        if _base(w) in SHELLS:
+            if any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a) for a in rest) or not operands:
+                continue                                 # -c is read as a script; stdin is _stdin_shell's
+            path = operands[0]
+        elif w in ("source", "."):
+            path = operands[0] if operands else None
+        elif "/" in w or w.endswith(".sh"):
+            rel = re.sub(r"^\./", "", w)
+            committed = entries.get(rel) == "file"
+            if w.endswith(".sh") or (committed and re.match(r"#!\S*\b(ba|da|z)?sh\b", tree.read(rel).lstrip()[:64])):
+                path = w
+        if path is None or path in ("-", "/dev/stdin"):
+            continue
+        if (where.split(".jobs.", 1)[0], path) in GENERATED_OK:
+            continue
+        rel = _resolve_script(path, text, entries)
+        if rel is None and (_variable(path) or SUBST in path):
+            found.append("runs a shell script named by a variable (%s); it cannot be read, refused" % path)
+            continue
+        if rel is None:
+            found.append("runs %s, which is not a committed file; its commands cannot be read, refused" % path)
+            continue
+        if moved and not path.startswith(("/", "$")):
+            found.append("runs %s from a working directory this check cannot place; refused" % path)
+            continue
+        if depth >= 4:
+            found.append("scripts nest deeper than this check reads (%s); refused" % path)
+            continue
+        if TEST_HARNESS.search(rel):
+            continue                                     # a test harness: its probes are fixture data (documented)
+        content = tree.read(rel)
+        more, also = _run_scripts(content, tree, False, depth + 1, where)
+        added.append(content + ("\n" + more if more else ""))
+        found += also
+    return "\n".join(added), found
+
+
 def check_runs(where_job, scripts, bad, tree=None):
     """scripts: [(where, text, shell)] of ONE job (or one composite action), in order; a local name counts only if
     the job made it earlier. A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
     local = set()
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7)
-    job_text = "\n".join(_decode_dollar_quotes(_expand_defaults(item[1])) for item in scripts
+    job_text = "\n".join(_drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(item[1]))) for item in scripts
                          if not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]))
     for item in scripts:
         where, raw, shell = item[:3]
-        text = _decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw)))
+        text = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
         wdir = item[3] if len(item) > 3 else None
         # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
         # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
+        if not shell or re.match(r"^(bash|sh)(\s|$)", shell):
+            more, also = _run_scripts(text, tree, moved, 0, where)
+            bad += [f"{where}: {x}" for x in also]
+            if more:                                     # the scripts' commands are checked as this step's own
+                text = text + "\n" + _decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", more)))
         for name in daemon_redirects(_unquoted(text)):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
         if ALIASING.search(_unquoted(text)):
