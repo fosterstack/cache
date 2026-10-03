@@ -1500,6 +1500,13 @@ case_ r4b6-multiline-array-comment-apostrophe-swallows-run-bad bad "$(rb "arr=(
           # product's files
           x
           ); docker run alpine:latest")"
+# Sonnet #164 r14, B1: the classic 'x'\''y' idiom (closing a single quote, escaping a literal apostrophe,
+# reopening) embeds a literal apostrophe without opening a new quote -- a scanner with no backslash-escape
+# handling outside quotes (unlike the outer _split_commands loop) mistakes each of the three remaining
+# apostrophes for independent open/close toggles, ending up still "inside a quote" and swallowing everything
+# through end of script, including a REAL command on a wholly separate, later statement
+case_ r4b6-array-escaped-apostrophe-idiom-swallows-run-bad bad "$(rb "arr=('a'\\''b' c)
+          docker run --rm alpine:latest")"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
