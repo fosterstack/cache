@@ -112,16 +112,41 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+      # Scout applies only statements whose author --vex-author accepts (default Docker's own): both steps name ours.
+      # The self-check proves a statement in our exact author and product form drops a real finding through the same
+      # local:// path the scan uses — the pinned debian 12.0 fixture under our image's name — or fails the job (rule 4).
+      - name: Scout applies a statement by our author to our image name (rule 4 self-check)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          skopeo copy "docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab" \
+            "docker-daemon:ghcr.io/fosterstack/cache:selfcheck"
+          mkdir -p "$RUNNER_TEMP/selfcheck"
+          jq -n --arg a "$(jq -r .author .vex/fosterstack-cache.openvex.json)" '{"@context": "https://openvex.dev/ns/v0.2.0",
+            "@id": "https://github.com/fosterstack/cache/scout-selfcheck", "author": $a, "timestamp": "2026-10-03T00:00:00Z",
+            "version": 1, "statements": [{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
+            "justification": "vulnerable_code_not_present",
+            "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]}' > "$RUNNER_TEMP/selfcheck/v.json"
+          n() { jq '[.runs[].results[] | select(.ruleId == "CVE-2023-4911")] | length' "$1"; }
+          docker scout cves --format sarif --output "$RUNNER_TEMP/before.sarif" "local://ghcr.io/fosterstack/cache:selfcheck"
+          docker scout cves --format sarif --output "$RUNNER_TEMP/after.sarif" --vex-location "$RUNNER_TEMP/selfcheck/v.json" \
+            --vex-author '^FosterStack LLC$' "local://ghcr.io/fosterstack/cache:selfcheck"
+          before=$(n "$RUNNER_TEMP/before.sarif"); after=$(n "$RUNNER_TEMP/after.sarif")
+          docker image rm "ghcr.io/fosterstack/cache:selfcheck" >/dev/null
+          if [ "$before" -eq 0 ] || [ "$after" -ne 0 ]; then
+            echo "::error::Scout did not apply our VEX: CVE-2023-4911 on the fixture before=${before} after=${after}" >&2
+            exit 1
+          fi
+          echo "Scout applies our VEX: CVE-2023-4911 before=${before} after=${after}"
       - name: Docker Scout every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           for v in production debug fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
               skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
               docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
-                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json "local://${ref}" > "${d}/cves.json" \
+                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' "local://${ref}" > "${d}/cves.json" \
                 || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
           done

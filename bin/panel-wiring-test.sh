@@ -7,6 +7,7 @@
 # real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+export PANEL_ROOT="$root"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 judge() { python3 - "$1" <<'PY'
@@ -56,6 +57,29 @@ if "--vex .vex/fosterstack-cache.openvex.json" not in text("panel-grype"):
     bad.append("Grype is not given the VEX file")
 if "--vex-location .vex/fosterstack-cache.openvex.json" not in text("panel-scout"):
     bad.append("Scout is not given the VEX file")
+# Scout applies only statements by an author --vex-author accepts (default Docker's own): the scan and the self-check
+# both name ours, anchored and equal to the file's author (rule 4; Sonnet #167 r1 found the gate)
+import json, os
+author = json.load(open(os.path.join(os.environ.get("PANEL_ROOT", "."), ".vex/fosterstack-cache.openvex.json")))["author"]
+want_flag = "--vex-author '^%s$'" % re.escape(author).replace("\\ ", " ")
+scout_steps = jobs.get("panel-scout", {}).get("steps", [])
+scan = [i for i, s in enumerate(scout_steps) if "--vex-location .vex/fosterstack-cache.openvex.json" in (s.get("run") or "")]
+selfcheck = [i for i, s in enumerate(scout_steps) if "rule 4 self-check" in (s.get("name") or "")]
+if not scan or want_flag not in scout_steps[scan[0]].get("run", ""):
+    bad.append("Scout's scan does not accept our file's author (%s)" % want_flag)
+# a VEX'd finding is proven dropped: our author and product form, on the pinned fixture under our image's name, through
+# the same local:// path, before the scan — and the job fails when Scout keeps it
+if len(selfcheck) != 1 or not scan or selfcheck[0] > scan[0]:
+    bad.append("no Scout self-check before the scan")
+else:
+    sc = scout_steps[selfcheck[0]].get("run", "")
+    for need in (want_flag, "local://ghcr.io/fosterstack/cache:selfcheck", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",
+                 "docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
+                 "exit 1"):
+        if need not in sc:
+            bad.append("the Scout self-check lacks %s" % need)
+    if scout_steps[selfcheck[0]].get("continue-on-error") or scout_steps[selfcheck[0]].get("if"):
+        bad.append("the Scout self-check can be skipped or softened")
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
@@ -137,6 +161,11 @@ case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '
 case_ google-literal-provider bad "[s['with'].__setitem__('workload_identity_provider', 'projects/1/locations/global/workloadIdentityPools/p/providers/q') for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
 case_ google-no-idtoken       bad "$J['panel-google']['permissions'].pop('id-token')"
 case_ grype-no-vex            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('--vex .vex/fosterstack-cache.openvex.json', '')"
+case_ scout-no-author         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
+case_ scout-any-author        bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"'^FosterStack LLC\$'\", \"'.*'\")"
+case_ scout-no-selfcheck      bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'self-check' not in (s.get('name') or '')]"
+case_ scout-selfcheck-soft    bad "[s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]['continue-on-error'] = 'true'"
+case_ scout-selfcheck-no-fail bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 1', 'true')"
 case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-location .vex/fosterstack-cache.openvex.json', '')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"
