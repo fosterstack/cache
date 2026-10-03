@@ -27,14 +27,18 @@ jobs:
 
       # Row 78 (owner, Sep 30); amended Oct 3 (0117/0140): the composite action's own action.yaml ran a mutable
       # tag (docker://...:v2.4.4) — a commit pin on the wrapper does not fix that. Invoked directly by digest
-      # instead, same inputs (GitHub maps a docker:// step's `with:` to INPUT_<NAME> env vars regardless of the
-      # action.yaml wrapper, so the image's own entrypoint behaves identically). Prove the README badge still
-      # publishes after merge; revert to the composite action and outbox the trade-off if it does not.
+      # instead. A bare `docker://` step carries NO action.yaml schema, so GitHub maps only the `with:` keys given
+      # here to INPUT_<NAME> — it does NOT apply the composite wrapper's declared input DEFAULTS (Sonnet #164 r2:
+      # traced into the pinned binary's own source; without repo_token the entrypoint calls log.Fatal on an empty
+      # GITHUB_AUTH_TOKEN, failing every run, not merely losing the badge). repo_token is supplied explicitly here
+      # for that reason. Prove the README badge still publishes after merge; revert to the composite action and
+      # outbox the trade-off if it does not.
       - uses: docker://ghcr.io/ossf/scorecard-action@sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670 # v2.4.4
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
+          repo_token: ${{ github.token }}
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
