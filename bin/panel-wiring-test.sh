@@ -62,13 +62,14 @@ import json, os, subprocess, tempfile
 ROOT = os.environ.get("PANEL_ROOT", ".")
 FIXTURE = "docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"
 STUB = r"""#!/usr/bin/env bash
-echo "$(basename "$0") $*" >> "$STUB_LOG"
+{ printf '%s' "$(basename "$0")"; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
 if [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout cves" ]; then
   vex=""; prev=""; for a in "$@"; do [ "$prev" = --vex-location ] && vex=$a; prev=$a; done
+  [ -f "$vex" ] && cp "$vex" "$STUB_LOG.vex.$(wc -l < "$STUB_LOG" | tr -d ' ')"
   n=$(jq '[.statements[].vulnerability.name] | map(select(. == "CVE-2023-4911")) | length' "$vex" 2>/dev/null || echo 0)
   case "$STUB_MODE:$n" in
-    *:0|ignores:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2023-4911"}]},{"identifiers":[{"value":"CVE-2099-0001"}]}]}' ;;
-    applies:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2099-0001"}]}]}' ;;
+    *:0|ignores:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2023-4911"}],"location":{"dependency":{"package":{"name":"libc6"},"version":"2.36-9"}}},{"identifiers":[{"value":"CVE-2099-0001"}],"location":{"dependency":{"package":{"name":"libalpha"},"version":"1.0"}}}]}' ;;
+    applies:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2099-0001"}],"location":{"dependency":{"package":{"name":"libalpha"},"version":"1.0"}}}]}' ;;
     drops-all:*) printf '%s' '{"vulnerabilities":[]}' ;;
     empty:*) printf '%s' '{}' ;;
   esac
@@ -77,6 +78,9 @@ elif [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout sbom" ]; then
 fi
 exit 0
 """
+author = json.load(open(os.path.join(ROOT, ".vex/fosterstack-cache.openvex.json")))["author"]
+VEXCOPIES = []
+KEEP = tempfile.mkdtemp()
 scout_steps = jobs.get("panel-scout", {}).get("steps", [])
 def step(name_part):
     hit = [s for s in scout_steps if name_part in (s.get("name") or "")]
@@ -93,6 +97,12 @@ def run_block(block, mode):
         env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], STUB_LOG=log, STUB_MODE=mode,
                    RUNNER_TEMP=t)
         r = subprocess.run(["bash", "-e", "-c", block], cwd=ROOT, env=env, capture_output=True, text=True)
+        VEXCOPIES[:] = []
+        import glob, shutil
+        for x in glob.glob(log + ".vex.*"):
+            keep = os.path.join(KEEP, os.path.basename(x))
+            shutil.copy(x, keep)
+            VEXCOPIES.append(keep)
         return r.returncode, open(log).read().splitlines()
 sc, scan = step("rule 4 self-check"), step("Docker Scout every image")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
@@ -104,10 +114,24 @@ else:
     scouts = [l for l in log if l.startswith("docker scout cves")]
     if rc != 0:
         bad.append("the Scout self-check fails when Scout applies our statement")
-    if len(scouts) != 2 or not all("--vex-author ^FosterStack LLC$ local://ghcr.io/fosterstack/cache:selfcheck" in l
-                                   and "--format gitlab --vex-location " in l for l in scouts):
+    if len(scouts) != 2 or not all(l.startswith("docker scout cves --format gitlab --vex-location ")
+                                   and l.endswith(" --vex-author \\^FosterStack\\ LLC\\$ local://ghcr.io/fosterstack/cache:selfcheck")
+                                   for l in scouts):
         bad.append("the self-check does not run Scout with our author on the fixture under our name: %s" % scouts)
-    if not any(l.startswith("skopeo copy " + FIXTURE + " ") for l in log):
+    # the VEX documents the self-check hands Scout: ours by author, the second covering exactly the target on our image
+    try:
+        docs = [json.load(open(x)) for x in sorted(VEXCOPIES, key=lambda p: int(p.rsplit(".", 1)[1]))]
+    except (OSError, ValueError):
+        docs = []
+    want_stmt = {"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
+                 "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}
+    def stmt_ok(st, cve):
+        return {k: st.get(k) for k in want_stmt} == dict(want_stmt, vulnerability={"name": cve})
+    if len(docs) != 2 or any(d.get("author") != author for d in docs) \
+            or len(docs[0].get("statements") or []) != 1 or not stmt_ok(docs[0]["statements"][0], "CVE-1999-0001") \
+            or len(docs[1].get("statements") or []) != 1 or not stmt_ok(docs[1]["statements"][0], "CVE-2023-4911"):
+        bad.append("the self-check's VEX documents are not ours (author, product, status, CVE): %s" % docs)
+    if "skopeo copy " + FIXTURE + " docker-daemon:ghcr.io/fosterstack/cache:selfcheck" not in log:
         bad.append("the self-check does not load the pinned fixture by digest")
     for mode in ("ignores", "drops-all", "empty"):
         if run_block(sc.get("run", ""), mode)[0] == 0:
@@ -115,7 +139,7 @@ else:
     rc, log = run_block(scan.get("run", ""), "applies")
     scouts = [l for l in log if l.startswith("docker scout cves")]
     want = ["docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author "
-            "^FosterStack LLC$ local://ghcr.io/fosterstack/cache:cand-%s-%s" % (v, a)
+            "\\^FosterStack\\ LLC\\$ local://ghcr.io/fosterstack/cache:cand-%s-%s" % (v, a)
             for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
     if scouts != want:
         bad.append("Scout's scan does not run with our VEX and author on our six images: %s" % scouts)
@@ -191,6 +215,33 @@ PY
 }
 J='d["jobs"]'
 step_of() { echo "[s for s in $J['$1']['steps'] if '$2' in (s.get('run') or '')][0]"; }
+# Codex #168 r2 (B2): the self-check's judge compares findings (CVE, package, version), not CVE names
+judge_case() {   # name want before after
+  local d; d=$(mktemp -d "$work/j.XXXX"); printf '%s' "$3" > "$d/b"; printf '%s' "$4" > "$d/a"
+  if python3 "$root/bin/scout-selfcheck.py" "$d/b" "$d/a" CVE-2023-4911 >/dev/null 2>&1; then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS judge-$1 → $got"; else failn=$((failn+1)); echo "FAIL judge-$1 → $got, want $2"; fi
+}
+F() { printf '{"identifiers":[{"value":"%s"}],"location":{"dependency":{"package":{"name":"%s"},"version":"%s"}}}' "$1" "$2" "$3"; }
+T=$(F CVE-2023-4911 libc6 2.36); A=$(F CVE-1 libalpha 1.0); B=$(F CVE-1 libbeta 1.0); A2=$(F CVE-1 libalpha 2.0)
+judge_case kept-exactly      ok  "{\"vulnerabilities\":[$T,$A,$B]}" "{\"vulnerabilities\":[$A,$B]}"
+judge_case lost-a-package    bad "{\"vulnerabilities\":[$T,$A,$B]}" "{\"vulnerabilities\":[$A]}"
+judge_case other-package     bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$B]}"
+judge_case other-version     bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$A2]}"
+judge_case gained-a-finding  bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$A,$B]}"
+judge_case target-kept       bad "{\"vulnerabilities\":[$T,$A]}"    "{\"vulnerabilities\":[$T,$A]}"
+judge_case no-location       bad "{\"vulnerabilities\":[$T,{\"identifiers\":[{\"value\":\"CVE-1\"}]}]}" "{\"vulnerabilities\":[{\"identifiers\":[{\"value\":\"CVE-1\"}]}]}"
+# Codex #168 r2 (B1): the helper's argument boundaries are what is checked — a mutated copy of bin/scout-vex-scan.sh in
+# a scratch root must fail the real workflow's judge
+helper_case() {   # name sed-expression
+  local r="$work/root-$1"; mkdir -p "$r/bin" "$r/.vex"
+  cp "$root/bin/scout-selfcheck.py" "$r/bin/"; cp "$root/.vex/fosterstack-cache.openvex.json" "$r/.vex/"
+  sed "$2" "$root/bin/scout-vex-scan.sh" > "$r/bin/scout-vex-scan.sh"; chmod +x "$r/bin/scout-vex-scan.sh"
+  cmp -s "$root/bin/scout-vex-scan.sh" "$r/bin/scout-vex-scan.sh" && { failn=$((failn+1)); echo "FAIL helper-$1: the mutation did not apply"; return; }
+  if out=$(PANEL_ROOT="$r" judge "$root/.github/workflows/main-candidate-rescan.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS helper-$1 → bad"; else failn=$((failn+1)); echo "FAIL helper-$1 → ok, want bad"; fi
+}
+helper_case unquoted-author 's/--vex-author "\$re"/--vex-author $re/'
+helper_case merged-image    's/"\$re" "local:\/\/\$1"/"\$re local:\/\/\$1"/'
 case_ real                    ok  ""
 case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
 case_ grype-five-images       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production debug fips', 'for v in production debug')"
@@ -208,6 +259,9 @@ case_ scout-selfcheck-nojudge bad "s = [s for s in $J['panel-scout']['steps'] if
 case_ scout-selfcheck-novex   bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('\"\$RUNNER_TEMP/selfcheck/one.json\"', '\"\$RUNNER_TEMP/selfcheck/none.json\"')"
 case_ scout-other-repo        bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('ghcr.io/fosterstack/cache:cand-', 'ghcr.io/another-vendor/cache:cand-')"
 case_ scout-fixture-tag       bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab', 'debian:latest') + '\n# debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab'"
+case_ scout-vex-other-repo    bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('repository_url=ghcr.io/fosterstack/cache\"}]}]\' \"\$RUNNER_TEMP/selfcheck/one.json', 'repository_url=ghcr.io/another-vendor/cache\"}]}]\' \"\$RUNNER_TEMP/selfcheck/one.json')"
+case_ scout-vex-affected      bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('\"CVE-2023-4911\"}, \"status\": \"not_affected\"', '\"CVE-2023-4911\"}, \"status\": \"affected\"')"
+case_ scout-fixture-elsewhere bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('docker-daemon:ghcr.io/fosterstack/cache:selfcheck', 'docker-daemon:another-vendor/cache:selfcheck')"
 case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.vex/fosterstack-cache.openvex.json \"\${d}', '/dev/null \"\${d}')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"
