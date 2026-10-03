@@ -1439,7 +1439,7 @@ requirements:
       - id: REQ-REL-009-AC1
         given: "the commits on main since the latest release tag"
         when: "release.yml's decide job classifies them"
-        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (only .github/, docs/, requirements/, test-evidence/ or tests) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why"
+        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC2

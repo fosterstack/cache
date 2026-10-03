@@ -284,6 +284,9 @@ jobs:
         run: bash bin/panel-test.sh
       - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
         run: bash bin/patch-decide-test.sh
+
+      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
+        run: bash bin/release-patch-wiring-test.sh
       - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
         run: bash bin/go-freshness-wiring-test.sh
       - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)

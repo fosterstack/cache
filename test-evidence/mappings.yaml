@@ -494,6 +494,17 @@ mappings:
   - ac: REQ-REL-009-AC8
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC11
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-009-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-009-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
