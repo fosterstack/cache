@@ -50,11 +50,12 @@ affected or under_investigation. `bin/vex-forms-test.sh` proves exactly that.
 The Google VEX upload is a **preview feature** of Google Cloud
 (`gcloud artifacts vulnerabilities load-vex`); whether our CSAF file loads there is
 proven by the release candidate's live test (scanner-panel rule 12), not assumed.
-Google's loader matches the file to the image path you load it for, so name your own
-image first: `jq --arg u "$IMAGE" '.product_tree.branches[].name = $u' <file> > vex-for-my-image.json`,
-then `gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri="$IMAGE"`.
-Google applies whole-image statements only; a statement that names a package inside the
-image (our busybox statements) is carried in the file but not applied by Google's loader —
+Google's loader matches the file to the image path you load it for, and applies one image per load, so
+name the digest you run (one of this release's digests, listed in `release-manifest.json`) and your own image path:
+`jq --arg u "$IMAGE" --arg d "$DIGEST" '.product_tree.branches |= map(if (.product.product_identification_helper.purl | startswith("pkg:oci/cache@" + $d + "?")) then .name = $u else . end)' <file> > vex-for-my-image.json`,
+then `gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri="$IMAGE@$DIGEST"` — the
+statements then bind to that digest only. Google applies whole-image statements only; a statement that names a package
+inside the image (our busybox statements) is carried in the file but not applied by Google's loader —
 the conservative direction (it never hides a finding the statement does not cover).
 
 All three files are listed, with their sha256, in the release's `release-manifest.json`,

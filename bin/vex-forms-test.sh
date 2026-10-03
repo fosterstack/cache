@@ -155,8 +155,8 @@ bad = subprocess.run(["bash", "-c", cmd], env=dict(os.environ, PATH=d + ":" + os
 check("…and fails when a create-filter call fails", bad.returncode != 0)
 # the Google step: the loader matches a branch name to --uri, so the guide renames the branches to the customer's image
 g = V.GUIDE_GOOGLE_COMMAND
-check("the guide's Google command renames every branch to the image it loads, then loads that file",
-      ".product_tree.branches[].name = $u" in g and "load-vex" in g and "--uri" in g, g)
+check("the guide's Google command renames the chosen digest's branch to the image it loads, then loads that file at that digest",
+      "$DIGEST" in g and "load-vex" in g and '--uri="$IMAGE@$DIGEST"' in g, g)
 # --- refusal: an unknown status, a missing image digest
 try:
     V.inspector({"statements": [st("CVE-2099-9", "maybe")]}, IMAGES, "v0.3.0"); ok = False
@@ -173,7 +173,7 @@ real = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json"))
 check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]) == len(real["statements"]))
 rc = V.csaf(real, IMAGES, "v0.3.0")
 check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
-      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox-1.37.0" for r in rc["product_tree"]["relationships"]))
+      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"]["relationships"]))
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -196,6 +196,55 @@ check("the manifest records all three files' sha256", all(k in mrun for k in ("v
 urun = steps[up]["run"] if up is not None else ""
 check("the release uploads the three files the manifest hashed", all(f in urun for f in (
     "/tmp/vex/fosterstack-cache.openvex.json", "fosterstack-cache-${ver}.inspector-filters.json", "fosterstack-cache-${ver}.csaf.json")))
+# --- Codex #165 r2: SEC-165-01 (version wildcards, qualifiers), SEC-165-07 (component identity), SEC-165-02 (titles),
+#     SEC-165-06 (the Google step binds the chosen digest; exactly one branch matches)
+def pkgst(cve, status, purl):
+    return scoped(cve, status, [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": purl}]}])
+for name, sts in [("unversioned not_affected vs versioned affected", [pkgst("CVE-2099-30", "not_affected", "pkg:generic/busybox"),
+                                                                       pkgst("CVE-2099-30", "affected", "pkg:generic/busybox@1.37.0")]),
+                  ("versioned not_affected vs unversioned affected", [pkgst("CVE-2099-31", "not_affected", "pkg:generic/busybox@1.37.0"),
+                                                                       pkgst("CVE-2099-31", "affected", "pkg:generic/busybox")])]:
+    try:
+        V.inspector({"statements": sts}, IMAGES, "v0.3.0"); ok = False
+    except ValueError:
+        ok = True
+    check("SEC-165-01 overlap refused: " + name, ok)
+for purl in ("pkg:generic/busybox@1.37.0?arch=amd64", "pkg:generic/busybox@1.37.0#bin/wget"):
+    try:
+        V.inspector({"statements": [pkgst("CVE-2099-32", "not_affected", purl)]}, IMAGES, "v0.3.0"); ok = False
+    except ValueError:
+        ok = True
+    check("SEC-165-01 an unrepresentable subcomponent restriction stops generation: " + purl, ok)
+col = V.csaf({"statements": [pkgst("CVE-2099-33", "not_affected", "pkg:generic/busybox-extra@1.0"),
+                             pkgst("CVE-2099-33", "affected", "pkg:generic/busybox@extra-1.0")]}, IMAGES, "v0.3.0")
+check("SEC-165-07 distinct packages stay distinct CSAF components", len(col["product_tree"]["full_product_names"]) == 2,
+      [p["product_id"] for p in col["product_tree"]["full_product_names"]])
+rc = V.csaf(real, IMAGES, "v0.3.0")
+check("SEC-165-02 every description note carries the title Google's loader reads",
+      all(n.get("title") and n.get("text") for v in rc["vulnerabilities"] for n in v.get("notes", [])))
+# the Google step, exactly as the guide prints it: rename only the chosen digest's branch, load with --uri path@digest
+gd = tempfile.mkdtemp(); src = os.path.join(gd, "x.csaf.json"); json.dump(rc, open(src, "w"))
+IMAGE, DIG = "us-east1-docker.pkg.dev/review-project/review-repo/cache", IMAGES["production"]["index"]
+cmd = V.GUIDE_GOOGLE_COMMAND.replace("<file>", src).replace("gcloud artifacts", "echo gcloud artifacts")
+out = subprocess.run(["bash", "-c", cmd], cwd=gd, env=dict(os.environ, IMAGE=IMAGE, DIGEST=DIG), capture_output=True, text=True)
+mine = json.load(open(os.path.join(gd, "vex-for-my-image.json")))
+named = [b for b in mine["product_tree"]["branches"] if b["name"] == IMAGE]
+check("SEC-165-06 the guide renames exactly the chosen digest's branch", len(named) == 1
+      and DIG in named[0]["product"]["product_identification_helper"]["purl"], [b["name"] for b in mine["product_tree"]["branches"]][:3])
+check("SEC-165-06 the guide loads with --uri set to the image path at that digest", ("--uri=%s@%s" % (IMAGE, DIG)) in out.stdout, out.stdout)
+try:                                # the installed SDK's own parser, as gcloud runs it, when present (not on CI runners)
+    L = next((x for x in ("/opt/homebrew/share/google-cloud-sdk/lib", "/usr/lib/google-cloud-sdk/lib") if os.path.isdir(x)), None)
+    if L:
+        sys.path[:0] = [L, L + "/third_party"]
+        from googlecloudsdk.command_lib.artifacts import vex_util as VU
+        notes, uri = VU.ParseVexFile(os.path.join(gd, "vex-for-my-image.json"), IMAGE, IMAGE + "@" + DIG)
+        whole = [v["cve"] for v in mine["vulnerabilities"] if any(i in {b["product"]["product_id"] for b in named}
+                                                                  for ids in v["product_status"].values() for i in ids)]
+        uris = {n.value.vulnerabilityAssessment.product.genericUri for n in notes}
+        check("the installed gcloud parser makes one note per whole-image statement, bound to the chosen digest",
+              len(notes) == len(whole) and uris == {"https://%s@%s" % (IMAGE, DIG)}, (len(notes), whole, uris))
+except Exception as e:
+    check("the installed gcloud parser loads the guide's file", False, repr(e))
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

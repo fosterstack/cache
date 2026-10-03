@@ -23,9 +23,13 @@ SUPPRESSIBLE = ("not_affected", "fixed")
 # Codex #165 r1 SEC-165-03: fail on a missing file or a failed call, never report success
 GUIDE_INSPECTOR_COMMAND = ("set -o pipefail; jq -ce '.filters[]' <file> | while read -r f; do "
                            "aws inspector2 create-filter --cli-input-json \"$f\" || exit 1; done")
-# Google's loader matches a branch's name to --uri (gcloud vex_util.ParseVexFile): the customer's own image path
-GUIDE_GOOGLE_COMMAND = ("jq --arg u \"$IMAGE\" '.product_tree.branches[].name = $u' <file> > vex-for-my-image.json && "
-                        "gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri=\"$IMAGE\"")
+# Google's loader (gcloud vex_util.ParseVexFile) applies the products of every branch NAMED like --uri's image path, and
+# prefixes https:// once per matching branch — so exactly one branch may match: the one of the digest being loaded,
+# renamed to the customer's own image path; --uri carries that digest, so the notes bind to it (Codex #165 r2, SEC-165-06)
+GUIDE_GOOGLE_COMMAND = ("jq --arg u \"$IMAGE\" --arg d \"$DIGEST\" '.product_tree.branches |= map(if "
+                        "(.product.product_identification_helper.purl | startswith(\"pkg:oci/cache@\" + $d + \"?\")) "
+                        "then .name = $u else . end)' <file> > vex-for-my-image.json && "
+                        "gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri=\"$IMAGE@$DIGEST\"")
 
 
 def _digests(images):
@@ -72,8 +76,8 @@ def _scopes(statement, digests):
         if not subs:
             out.append((ds, None))
         for sub in subs:
-            pm = re.fullmatch(r"pkg:[a-z]+/(?:[^/@?]+/)*([^/@?]+)(?:@([^?#]+))?.*", sub.get("@id", ""))
-            if not pm:
+            pm = re.fullmatch(r"pkg:[a-z]+/(?:[^/@?#]+/)*([^/@?#]+)(?:@([^?#]+))?", sub.get("@id", ""))
+            if not pm:                                   # a qualifier or subpath restricts it further: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             out.append((ds, (urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or ""))))
     return out
@@ -87,10 +91,12 @@ def _check_conflicts(vex, digests):
         for ds, pkg in _scopes(st, digests):
             for d in ds:
                 by.setdefault((_cve(st), d), []).append((_status(st) in SUPPRESSIBLE, pkg))
+    def overlap(p, q):                                    # no version = every version of that package (SEC-165-01)
+        return p is None or q is None or (p[0] == q[0] and (not p[1] or not q[1] or p[1] == q[1]))
     for (cve, d), xs in by.items():
         for sup, pkg in xs:
             for sup2, pkg2 in xs:
-                if sup and not sup2 and (pkg is None or pkg2 is None or pkg == pkg2):
+                if sup and not sup2 and overlap(pkg, pkg2):
                     raise ValueError("%s: statements contradict each other for %s" % (cve, d))
 
 
@@ -147,7 +153,7 @@ def csaf(vex, images, version):
                 if pkg is None:
                     out.append(pid[d])
                     continue
-                cid = "component-%s-%s" % pkg
+                cid = "component-%s@%s" % tuple(urllib.parse.quote(x, safe="") for x in pkg)   # unambiguous (SEC-165-07)
                 components.setdefault(cid, {"name": "%s %s" % pkg, "product_id": cid})
                 rid = "%s-in-%s" % (cid, pid[d])
                 relationships.setdefault(rid, {"category": "default_component_of", "product_reference": cid,
@@ -165,8 +171,8 @@ def csaf(vex, images, version):
         if st["status"] == "not_affected" and st.get("justification"):
             v["flags"] = [{"label": st["justification"], "product_ids": list(these)}]
         note = st.get("impact_statement") or st.get("action_statement")
-        if note:
-            v["notes"] = [{"category": "description", "text": note}]
+        if note:                                       # Google's _MakeNote reads the title too (SEC-165-02)
+            v["notes"] = [{"category": "description", "title": "%s: %s" % (_cve(st), st["status"]), "text": note}]
         if st["status"] == "affected" and st.get("action_statement"):
             v["remediations"] = [{"category": "vendor_fix", "details": st["action_statement"], "product_ids": list(these)}]
         vulns.append(v)
