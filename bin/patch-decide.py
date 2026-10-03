@@ -21,33 +21,87 @@ FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
 DOCKERFILES = re.compile(r"^build/docker/Dockerfile\.[a-z0-9-]+$")
 SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-VENDOR = re.compile(r"(?i)(?<![a-z])(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini)[\w.-]*")
+VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
+# no vendor or model names in public text (row 48; Codex #158 r1, B06: the wider set)
+VENDOR = re.compile(r"(?i)(?<![a-z])(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini|llama|mistral|mixtral|grok|"
+                    r"deepseek|qwen|copilot|cohere)[\w.-]*|\bmeta\b")
+# the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04)
+BUILD_INPUTS = re.compile(r"^\.github/workflows/(stage-[^/]+|release)\.ya?ml$|^\.goreleaser\.ya?ml$")
 
 
 def _changed_lines(diff):
     return [ln for ln in (diff or "").splitlines() if ln[:1] in "+-" and ln[1:].strip()]
 
 
-def _gomod_pins_only(diffs):
-    """go.mod / go.sum change only the versions of modules that were already required (no module added or removed)."""
-    for path in ("go.mod", "go.sum", "tools/requirements/go.mod", "tools/requirements/go.sum"):
-        lines = _changed_lines(diffs.get(path))
-        if not lines:
+GO_BLOCK = re.compile(r"^(require|replace|exclude|retract|tool|ignore|godebug)\s*\($")
+GO_REQ = re.compile(r"^(\S+)\s+(v\S+)(\s*//\s*indirect)?$")
+
+
+def _go_mod_changes(diff):
+    """{key: {sign: value}} for a go.mod diff that changes only require versions (in a require block known from the
+    diff's context, or a single-line require) and the go/toolchain line; None for anything else, including an absent
+    or empty diff (Codex #158 r1, B01/B02: replace, exclude, a line whose block is unknown — all fail closed)."""
+    if not diff or not diff.strip():
+        return None
+    block, ch = None, {}
+    for raw in diff.splitlines():
+        sign, body = (raw[0], raw[1:]) if raw[:1] in ("+", "-", " ") else (" ", raw)
+        t = body.strip()
+        if sign == " ":
+            if GO_BLOCK.match(t):
+                block = GO_BLOCK.match(t).group(1)
+            elif t == ")":
+                block = None
             continue
-        mods = {}
-        for ln in lines:
-            m = re.match(r"^[+-]\s*(?:require\s+)?(\S+)\s+v\S+", ln)
+        if not t or t.startswith("//"):
+            continue
+        m = re.match(r"^(go|toolchain)\s+(\S+)$", t)
+        if m:
+            key, val = "dir:" + m.group(1), m.group(2)
+        else:
+            m = re.match(r"^require\s+(\S+)\s+(v\S+)(\s*//\s*indirect)?$", t) or (block == "require" and GO_REQ.match(t))
             if not m:
-                return False
-            mods.setdefault(m.group(1), set()).add(ln[0])
-        if any(v != {"+", "-"} for v in mods.values()):        # a module only added or only removed
+                return None
+            key, val = "req:" + m.group(1), (m.group(2), bool(m.group(3)))
+        if sign in ch.setdefault(key, {}):
+            return None
+        ch[key][sign] = val
+    if not ch:
+        return None
+    for key, v in ch.items():
+        if set(v) != {"+", "-"} or v["+"] == v["-"]:
+            return None                     # added, removed or unchanged: not a version move of an existing pin
+        if key.startswith("req:") and v["+"][1] != v["-"][1]:
+            return None                     # the indirect marker changed
+    return ch
+
+
+def _go_sum_ok(diff, moved):
+    """go.sum lines only follow go.mod version moves of the same module tree: no go.sum-only edit, and never a
+    checksum rewrite of the same module version (Codex #158 r1, B02)."""
+    if not diff or not diff.strip() or not moved:
+        return False
+    seen = {}
+    for ln in _changed_lines(diff):
+        m = re.match(r"^([+-])(\S+) (v\S+?)(/go\.mod)? h1:\S+$", ln)
+        if not m:
             return False
-    return True
+        seen.setdefault(m.group(2, 3, 4), set()).add(m.group(1))
+    return all(signs != {"+", "-"} for signs in seen.values())
+
+
+FROM = re.compile(r"^FROM\s+((?:--\S+\s+)*)(\S+?)@sha256:([0-9a-f]{64})(\s+AS\s+\S+)?\s*$", re.I)
 
 
 def _digest_only(diff):
+    """Each FROM keeps its flags, image, tag and alias and only the digest moves; no stage added or removed
+    (Codex #158 r1, B03)."""
     lines = _changed_lines(diff)
-    return bool(lines) and all(re.match(r"^[+-]FROM\s+\S+@sha256:[0-9a-f]{64}(\s+AS\s+\S+)?\s*$", ln) for ln in lines)
+    old = [FROM.match(ln[1:].strip()) for ln in lines if ln[0] == "-"]
+    new = [FROM.match(ln[1:].strip()) for ln in lines if ln[0] == "+"]
+    if not lines or not old or len(old) != len(new) or not all(old) or not all(new):
+        return False
+    return all(o.group(1, 2, 4) == n.group(1, 2, 4) and o.group(3) != n.group(3) for o, n in zip(old, new))
 
 
 def _is_test(path):
@@ -61,16 +115,24 @@ def classify(commit):
     for f in files:
         if f in FIX_EXACT or f.startswith(FIX_PREFIX):
             kinds.add("fix")
-        elif f in ("go.mod", "go.sum", "tools/requirements/go.mod", "tools/requirements/go.sum"):
-            if _gomod_pins_only(diffs):
+        elif f in ("go.mod", "tools/requirements/go.mod"):
+            if _go_mod_changes(diffs.get(f)) is not None:
                 kinds.add("fix")
             else:
-                kinds.add("dirty"); why.append("%s changes more than existing modules' versions" % f)
+                kinds.add("dirty"); why.append("%s changes more than existing modules' versions (or has no diff)" % f)
+        elif f in ("go.sum", "tools/requirements/go.sum"):
+            mod = f[:-len("go.sum")] + "go.mod"
+            if _go_sum_ok(diffs.get(f), _go_mod_changes(diffs.get(mod)) if mod in files else None):
+                kinds.add("fix")
+            else:
+                kinds.add("dirty"); why.append("%s changes checksums its go.mod's version moves do not explain" % f)
         elif DOCKERFILES.match(f):
             if _digest_only(diffs.get(f)):
                 kinds.add("fix")
             else:
                 kinds.add("dirty"); why.append("%s changes more than the base-image digest pin" % f)
+        elif BUILD_INPUTS.match(f):
+            kinds.add("dirty"); why.append("%s builds or ships the release image" % f)
         elif f.startswith(NEUTRAL_PREFIX) or _is_test(f):
             kinds.add("neutral")
         else:
@@ -129,11 +191,22 @@ def notes(version, fixes, vex_changes):
     return _clean("\n".join(lines)) + "\n"
 
 
+def _precedence(tag):
+    """Semantic-version precedence including our -rc.N prereleases: vX.Y.Z-rc.N sorts below vX.Y.Z."""
+    m = VERSION.match(tag or "")
+    if not m:
+        return None
+    x, y, z, rc = m.groups()
+    return (int(x), int(y), int(z), 1, 0) if rc is None else (int(x), int(y), int(z), 0, int(rc))
+
+
 def floating(version, released):
-    """The floating tags a CI patch moves (amendment, owner Oct 2)."""
+    """The floating tags a CI patch moves (amendment, owner Oct 2): :X.Y always; :X and :latest only when it outranks
+    every released version, prereleases included (Codex #158 r1, B05)."""
     v = _semver(version)
-    others = [o for o in (_semver(t) for t in released) if o]
+    mine = _precedence(version)
+    others = [o for o in (_precedence(t) for t in released) if o]
     out = ["%d.%d" % v[:2]]
-    if all(v >= o for o in others):
+    if all(mine >= o for o in others):
         out += ["%d" % v[0], "latest"]
     return out
