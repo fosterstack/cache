@@ -141,9 +141,16 @@ jobs:
             ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/none.json" "$RUNNER_TEMP/probe/before.json"
             python3 bin/scout-selfcheck.py probe-doc "$RUNNER_TEMP/probe/before.json" "$author" "$RUNNER_TEMP/probe/forms.json"
             ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/forms.json" "$RUNNER_TEMP/probe/after.json"
+            echo "== Scout's default: which forms are applied" | tee -a "$GITHUB_STEP_SUMMARY"
             python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/after.json" \
-              "$RUNNER_TEMP/probe/forms.json.map" > "$RUNNER_TEMP/probe/report.txt"
-            cat "$RUNNER_TEMP/probe/report.txt" >> "$GITHUB_STEP_SUMMARY"
+              "$RUNNER_TEMP/probe/forms.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
+            # the same document with --only-vex-affected; the report's delta check also says whether the flag hides
+            # findings no statement covers (then: inconclusive, an uncovered finding disappeared)
+            docker scout cves --format gitlab --vex-location "$RUNNER_TEMP/probe/forms.json" --vex-author '^FosterStack LLC$' \
+              --only-vex-affected local://ghcr.io/fosterstack/cache:selfcheck > "$RUNNER_TEMP/probe/after-only.json"
+            echo "== with --only-vex-affected" | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/after-only.json" \
+              "$RUNNER_TEMP/probe/forms.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
           )
           rc=$?
           set -e

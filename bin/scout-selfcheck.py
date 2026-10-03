@@ -85,6 +85,15 @@ def probe_report(before_path, after_path, map_path):
     applied = [f for f, c in mapping.items() if c in gone]
     expected_after = Counter({k: n for k, n in before.items() if k[0] not in {mapping[f] for f in applied}})
     unmapped = bc - set(mapping.values())
+    # the advisor's question, answered on its own line (Codex #171 r1): which findings no statement covers were lost —
+    # by (CVE, package, version), duplicates counted — and which findings appeared; mapped changes are the matrix below
+    mapped = set(mapping.values())
+    unc_before = Counter({k: n for k, n in before.items() if k[0] not in mapped})
+    unc_after = Counter({k: n for k, n in after.items() if k[0] not in mapped})
+    lost = sorted((unc_before - unc_after).elements())
+    gained = sorted((after - before).elements())
+    print("uncovered findings lost: %s" % (json.dumps([list(k) for k in lost]) if lost else "none"))
+    print("findings gained: %s" % (json.dumps([list(k) for k in gained]) if gained else "none"))
     why = None
     if not unmapped:
         why = "no uncovered control finding in the fixture"
