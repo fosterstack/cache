@@ -1,0 +1,69 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "d82d46a4bc84c5dd9d1e448fdd07cf04f9344f0bff9d37d9f24456353405da64",
+ "change": "Auditor head binding (owner RATIFIED Oct 3, item a; advisor 0113, read-back 0136): the panel judges the newest COMPLETED rescan of main from the last day, bound to that run's head and the image digests of its evidence; main having moved past the scanned head is a warning, never a failure; a red conclusion is named in the owner report — PR #177",
+ "reviewed_commit": "f630054",
+ "closed_commit": "f630054",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "r1 (25b91f6)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "143daee42115fcf5931a14c9176b3bbc56a5b1256ce187a84956e3bd34b9b8b8"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b219f799bf8db009d8cb1ec9f091eebdb422e60bed8b04bf9bd5ce12b6e20700"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 2 round 2 (independent re-review) (40c8475)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "06757319168a6eaa7b90d07514d9c29790d6c2ed31e319c61b83eb55f75dc585"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "7c0ade6dfe0304e6ce94f2de283a7a05aaea7b91ffb6c7ac08a181316666abdf"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "closing verification at f630054 (B2 reopened, fixed)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "0f1559450daee7d8bcf2e0155fc5807884b4318c1a5389a39a35e47c39606228"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "7add15b4b29b000b72b2e00d239e0f31d0f25b969a966f96d551c69105021b1a"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none: codex reviewer rules (owner Oct 2) — unanimous green on the final verification",
+ "evidence_location": "private audit tree: audits/2026-10-03/head-binding/{r1,r2,r3}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": [
+  "Sonnet r2/r3 (non-blocking): the rescan step's own main_head output is now dead (the judge step refetches it live) — harmless, a cleanup follow-up",
+  "Sonnet r3 (non-blocking, informational): every image is now parsed twice per run (the new validation pass, then Bundles()) — an efficiency cost only, inherits no new risk",
+  "Codex r1/r2/r3 (environment limitation, every round): the read-only review sandbox forbids temp-file creation, so the committed test suites' exact pass counts were not independently re-run by Codex; re-verified directly in this session (339/339, 226/226, 100% coverage) and by Sonnet"
+ ]
+}
