@@ -643,6 +643,20 @@ for i, run in enumerate(['"if bash bin/driver.sh; then echo ok; fi"', "'while ! 
     g(r10, "add", "-A"); g(r10, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
     rch = P.release_chain_files(r10)
     check("r10 %r reaches the driver and the test it runs" % run, {"bin/driver.sh", "bin/panel-test.sh"} <= rch, sorted(rch))
+# Codex #159 r5a (B9): a quoted argument at the start of a continued line is data, and a fix-class file is judged by
+# its own rule even if something names it — a dependency-only bump stays possible
+b9 = tempfile.mkdtemp()
+g(b9, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(b9, ".github/workflows"))
+open(os.path.join(b9, ".github/workflows/release.yml"), "w").write("steps:\n  - run: |\n      printf '%s\\n' \\\n        'env bash go.mod'\n")
+open(os.path.join(b9, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+g(b9, "add", "-A"); g(b9, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(b9, "tag", "v0.1.0")
+open(os.path.join(b9, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(b9, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "bump")
+check("r5a/B9 a quoted continued-line argument is not an execution", "go.mod" not in P.release_chain_files(b9), sorted(P.release_chain_files(b9)))
+check("r5a/B9 a dependency-only bump stays patch-clean", P.patch_clean(P.gather_commits("v0.1.0", cwd=b9)) == (True, []))
+check("r5a/B9 a fix-class file named by the chain is still judged by its own rule",
+      P.classify(c("f", ["go.mod", "go.sum"], diffs=BUMP) | {"chain": ["go.mod"]})[0] == "fix")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
