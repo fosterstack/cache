@@ -1802,6 +1802,22 @@ def _writes(script, rel):
     return False
 
 
+def _made_executable(script, path):
+    """How the job makes path, if it does: downloads it (curl -o / wget -O), writes it (a redirection, cp, tee …), or
+    makes it executable (chmod). A program the job made this way is a script this check cannot read."""
+    p = re.escape(path)
+    if re.search(r"(?<![\w./-])chmod\b[^\n;&|]*\s[\"']?" + p + r"[\"']?(\s|$|;)", script):
+        return "makes executable (chmod)"
+    for chunk in _split_commands(_cut_substitutions(script)[0]):    # a downloader's output file (not go build -o)
+        words = _command_words(chunk.split())
+        if words and _base(words[-1]) in ("curl", "wget", "aria2c") and re.search(
+                r"(?:\s-o|\s-O|--output(?:-document)?(?:=|\s))\s*[\"']?" + p + r"[\"']?(\s|$)", chunk):
+            return "downloads"
+    if _writes(script, path.lstrip("./") if not path.startswith("/") else path):
+        return "writes"
+    return None
+
+
 def _run_scripts(text, tree, moved, depth=0, where="", job=""):
     """(the committed shell scripts this text runs, their bytes appended; findings). A script is what _commands names as
     run — bash/sh/dash/zsh <path>, source / . <path>, or a path executed directly that is a *.sh file or a committed file
@@ -1820,6 +1836,10 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
         if t[0] == "__exec__":
             rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", path)
             if entries.get(rel) != "file":
+                made = _made_executable(job or text, path)
+                if made:                                 # downloaded / written / chmod-ed by the job (Sonnet r23, NEW-35)
+                    found.append("runs %s, which the job %s; what it runs cannot be read, refused" % (path, made))
+                    continue
                 if not path.endswith(".sh"):
                     continue                             # a program, not a script of this repository
             elif tree.read(rel).startswith("#!") and not SHELL_SHEBANG.match(tree.read(rel)):
