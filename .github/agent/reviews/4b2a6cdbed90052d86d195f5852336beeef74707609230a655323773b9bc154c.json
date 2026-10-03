@@ -1,0 +1,35 @@
+{
+    "schema": "auditor-review-record/v1",
+    "tree": "4b2a6cdbed90052d86d195f5852336beeef74707609230a655323773b9bc154c",
+    "change": "auditor adjudicator: anthropic 1.8.0 -> 1.9.0 with its real PyPI hashes; dependencies unchanged \u2014 PR #175 (supersedes Dependabot #154, whose hashes were still 1.8.0's; advisor 0111)",
+    "reviewed_commit": "55313c3",
+    "closed_commit": "55313c3",
+    "rounds": [
+        {
+            "round": 1,
+            "label": "round 1 (security tier)",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 0,
+                    "evidence_sha256": "68eb64461de1dd5cc371f22ab612e443407ea9fa63b351fa5eeb38dc0a034f2a"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "4dd7a6fb89c6025779158187e2f426c97324dcaddefc551bcee41ff67cc369f3"
+                }
+            }
+        }
+    ],
+    "stop": {
+        "codex": "clear",
+        "sonnet": "clear"
+    },
+    "owner_decision": "none: codex reviewer rules (owner Oct 2) \u2014 both green on round 1. Codex's only blocker (B01) was this record's absence at the reviewed head, which this commit supplies; it verified the hashes, the dependency fit and no auditor behaviour change",
+    "evidence_location": "private audit tree: audits/2026-10-03/anthropic-190/r1/{codex,sonnet}/review.md",
+    "residuals_fixed_after_the_cap": [],
+    "residuals": [
+        "the installed SDK and the federation path are exercised only by the auditor's next real run, not in review (Codex R01)"
+    ]
+}

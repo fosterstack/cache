@@ -104,6 +104,34 @@ def run_block(block, mode):
             shutil.copy(x, keep)
             VEXCOPIES.append(keep)
         return r.returncode, open(log).read().splitlines()
+pr = step("product-form probe")
+if not pr or scout_steps.index(pr) > scout_steps.index(step("rule 4 self-check") or pr):
+    bad.append("no Scout product-form probe before the self-check (advisor 0106)")
+else:
+    prun = pr.get("run", "")
+    for need in ("./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck", "scout-selfcheck.py probe-doc",
+                 "scout-selfcheck.py probe-report", "--only-vex-affected", 'tee -a "$GITHUB_STEP_SUMMARY"',
+                 "scout-selfcheck.py probe-doc3", "docker scout sbom --format json local://ghcr.io/fosterstack/cache:selfcheck",
+                 "registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
+                 'cp -r "$RUNNER_TEMP/probe" /tmp/panel/scout-probe'):
+        if need not in prun:
+            bad.append("the probe lacks %s" % need)
+    if pr.get("if") != "github.event_name == 'workflow_dispatch'" or pr.get("continue-on-error"):
+        bad.append("the probe must run on a manual dispatch only, without continue-on-error (Codex #170 r1, R1)")
+    for failing in ("sudo", "skopeo", "mkdir", "docker"):   # Codex #170 r1, B1: a diagnostic failure never fails the step
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "stub"))
+            for tool in ("docker", "skopeo", "sudo", failing):   # the others succeed; only the one under test fails
+                with open(os.path.join(t, "stub", tool), "w") as fh:
+                    fh.write("#!/usr/bin/env bash\nexit 23\n" if tool == failing else STUB)
+                os.chmod(os.path.join(t, "stub", tool), 0o755)
+            open(os.path.join(t, "log"), "w").close()
+            r = subprocess.run(["bash", "-e", "-c", prun], cwd=ROOT, capture_output=True, text=True,
+                               env=dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"],
+                                        RUNNER_TEMP=t, GITHUB_STEP_SUMMARY=os.path.join(t, "sum"),
+                                        STUB_LOG=os.path.join(t, "log"), STUB_MODE="applies"))
+        if r.returncode != 0:
+            bad.append("the probe step fails the job when %s fails (exit %d)" % (failing, r.returncode))
 sc, scan = step("rule 4 self-check"), step("Docker Scout every image")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
@@ -180,7 +208,11 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         bad.append(f"{j} is conditional")
     for st in jobs[j].get("steps", []):
         cond = str(st.get("if", "")).replace(" ", "")
-        if cond and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        # the one exception: the Scout product-form probe, a manual-dispatch diagnostic that never decides the job
+        # (advisor 0106; its own containment and its place before the unconditional self-check are checked below)
+        diag = j == "panel-scout" and st.get("name") == "Scout product-form probe (rule 4 diagnostic, advisor 0106)" \
+            and cond == "github.event_name=='workflow_dispatch'"
+        if cond and not diag and not cond.startswith("${{always()") and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -246,6 +278,59 @@ helper_case() {   # name sed-expression
 }
 helper_case unquoted-author 's/--vex-author "\$re"/--vex-author $re/'
 helper_case merged-image    's/"\$re" "local:\/\/\$1"/"\$re local:\/\/\$1"/'
+# advisor 0106: the Scout product-form probe — one statement per candidate form, each on a different fixture CVE; it
+# reports which forms Scout applied and never decides the job (the self-check does)
+probe_case() {   # name want-substring before after
+  local d; d=$(mktemp -d "$work/p.XXXX"); printf '%s' "$3" > "$d/b"; printf '%s' "$4" > "$d/a"
+  python3 "$root/bin/scout-selfcheck.py" probe-doc "$d/b" "FosterStack LLC" "$d/v.json" >/dev/null 2>&1 || { failn=$((failn+1)); echo "FAIL probe-$1: no document"; return; }
+  out=$(python3 "$root/bin/scout-selfcheck.py" probe-report "$d/b" "$d/a" "$d/v.json.map" 2>&1); rc=$?
+  if [ "$rc" = 0 ] && grep -q -- "$2" <<<"$out"; then pass=$((pass+1)); echo "PASS probe-$1"; else failn=$((failn+1)); echo "FAIL probe-$1 → rc=$rc: $out"; fi
+}
+PB="{\"vulnerabilities\":[$(F CVE-2001-0001 a 1),$(F CVE-2001-0002 b 1),$(F CVE-2001-0003 c 1),$(F CVE-2001-0004 d 1),$(F CVE-2001-0005 e 1),$(F CVE-2001-0006 f 1),$(F CVE-2001-0007 g 1)]}"
+probe_case none-applied "applied: none" "$PB" "$PB"
+d0=$(mktemp -d "$work/p.XXXX"); printf '%s' "$PB" > "$d0/b"; python3 "$root/bin/scout-selfcheck.py" probe-doc "$d0/b" "FosterStack LLC" "$d0/v.json" >/dev/null
+first=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["pkg:docker/ghcr.io/fosterstack/cache@selfcheck"])' "$d0/v.json.map")
+PA=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["vulnerabilities"]=[v for v in d["vulnerabilities"] if v["identifiers"][0]["value"]!=sys.argv[2]]; print(json.dumps(d))' "$PB" "$first")
+probe_case all-vanished "inconclusive" "$PB" '{"vulnerabilities":[]}'
+PC=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); drop={sys.argv[2], "CVE-2001-0007"}; d["vulnerabilities"]=[v for v in d["vulnerabilities"] if v["identifiers"][0]["value"] not in drop]; print(json.dumps(d))' "$PB" "$first")
+probe_case control-lost "inconclusive" "$PB" "$PC"
+probe_case unc-pkg-lost "uncovered findings lost: \[\[\"CVE-2001-0007\", \"g2\"" "{\"vulnerabilities\":[$(F CVE-2001-0001 a 1),$(F CVE-2001-0002 b 1),$(F CVE-2001-0003 c 1),$(F CVE-2001-0004 d 1),$(F CVE-2001-0005 e 1),$(F CVE-2001-0006 f 1),$(F CVE-2001-0007 g 1),$(F CVE-2001-0007 g2 1)]}" "{\"vulnerabilities\":[$(F CVE-2001-0002 b 1),$(F CVE-2001-0003 c 1),$(F CVE-2001-0004 d 1),$(F CVE-2001-0005 e 1),$(F CVE-2001-0006 f 1),$(F CVE-2001-0007 g 1)]}"
+probe_case gained-only "uncovered findings lost: none" "$PB" "$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["vulnerabilities"].append({"identifiers":[{"value":"CVE-2009-0009"}],"location":{"dependency":{"package":{"name":"z"},"version":"1"}}}); print(json.dumps(d))' "$PB")"
+# advisor 0109: probe 3 — statements that name the finding's package (a subcomponent from Scout's own SBOM), the
+# platform-qualified image, and a registry image; each form on a different CVE with exactly one package
+d3=$(mktemp -d "$work/p3.XXXX")
+printf '%s' "$PB" > "$d3/b"
+python3 -c 'import json; print(json.dumps({"artifacts": [{"name": n, "version": "1", "purl": "pkg:deb/debian/%s@1?arch=amd64" % n} for n in "abcdefg"]}))' > "$d3/sbom"
+if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3/b" "$d3/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3/v.json" >/dev/null 2>&1 \
+   && python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[1] + ".map")); s = d["statements"]
+subs = [x for x in s if x["products"][0].get("subcomponents")]
+plat = [x for x in s if "platform=linux%2Famd64" in x["products"][0]["@id"]]
+assert d["author"] == "FosterStack LLC" and len({x["vulnerability"]["name"] for x in s}) == len(s) == len(m) >= 5
+assert subs and all(c["@id"].startswith("pkg:deb/debian/") for x in subs for c in x["products"][0]["subcomponents"])
+assert plat and any(x["products"][0]["@id"].startswith("pkg:oci/cache") for x in subs)
+' "$d3/v.json"; then pass=$((pass+1)); echo "PASS probe3-document: subcomponents from the SBOM, platform forms, one CVE each"
+else failn=$((failn+1)); echo "FAIL probe3-document"; fi
+# probe 3 run 1 found no (name, version) match between Scout's report and its SBOM: fall back to a unique name
+d3b=$(mktemp -d "$work/p3b.XXXX"); printf '%s' "$PB" > "$d3b/b"
+python3 -c 'import json; print(json.dumps({"artifacts": [{"name": n, "version": "1:1-deb12u1", "purl": "pkg:deb/debian/%s@1:1-deb12u1" % n} for n in "abcdefg"]}))' > "$d3b/sbom"
+if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3b/b" "$d3b/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3b/v.json" >/dev/null 2>&1; then
+  pass=$((pass+1)); echo "PASS probe3-name-fallback"; else failn=$((failn+1)); echo "FAIL probe3-name-fallback"; fi
+# advisor 0110: Scout's GitLab report puts the package purl in "name" (run 37126697443) — use it as the purl
+d3c=$(mktemp -d "$work/p3c.XXXX")
+python3 -c '
+import json
+f = lambda c, n: {"identifiers": [{"value": c}], "location": {"dependency": {"package": {"name": "pkg:deb/debian/%s@1?os_distro=bookworm" % n}, "version": "1"}}}
+print(json.dumps({"vulnerabilities": [f("CVE-2001-000%d" % i, n) for i, n in enumerate("abcdefg", 1)]}))' > "$d3c/b"
+echo '{"artifacts": []}' > "$d3c/sbom"
+if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3c/b" "$d3c/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3c/v.json" >/dev/null 2>&1 \
+   && grep -q '"pkg:deb/debian/a@1?os_distro=bookworm"' "$d3c/v.json"; then pass=$((pass+1)); echo "PASS probe3-name-is-purl"
+else failn=$((failn+1)); echo "FAIL probe3-name-is-purl"; fi
+probe_case one-applied "applied: pkg:docker/ghcr.io/fosterstack/cache@selfcheck" "$PB" "$PA"
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"]; assert d["author"]=="FosterStack LLC" and len(s)==len({x["vulnerability"]["name"] for x in s})>=5 and all(x["status"]=="not_affected" for x in s) and any(p["@id"]=="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" for x in s for p in x["products"])' "$d0/v.json"; then
+  pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
+else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
 case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
 case_ grype-five-images       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production debug fips', 'for v in production debug')"
