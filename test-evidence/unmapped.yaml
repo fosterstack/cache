@@ -28,8 +28,6 @@ unmapped:
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
   - ac: REQ-SCAN-012-AC5
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
-  - ac: REQ-REL-009-AC6
-    reason: "PR C: source admission accepting the CI identity for patch tags only (with the owner's ruleset and allowed-signers changes)"
   - ac: REQ-REL-009-AC7
     reason: "proven by the first real patch release (the full chain and identical GHCR/Docker Hub digests)"
   - ac: REQ-REL-009-AC9

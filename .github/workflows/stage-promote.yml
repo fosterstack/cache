@@ -28,6 +28,11 @@ name: 'Stage: promotion'
 on:
   workflow_call:
     inputs:
+      baseline-version:
+        description: 'the approved ACs baseline admission used (REQ-REL-009-AC13); empty = the tag''s own'
+        required: false
+        type: string
+        default: ''
       digests:
         description: 'JSON {production, debug, fips} candidate index digests'
         required: true
@@ -181,9 +186,11 @@ jobs:
       - name: assemble release-manifest.json (the release evidence bundle, design §3)
         env:
           GH_TOKEN: ${{ github.token }}
+          BASELINE: ${{ inputs.baseline-version }}
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME}"
+          base="${BASELINE:-$ver}"   # admission's baseline (REQ-REL-009-AC13); the tag's own for owner-signed tags
           ghcr="ghcr.io/${{ github.repository_owner }}/cache"
           hub="docker.io/fosterstack/cache"
           # per-AC results, copied from the verified acceptance predicate
@@ -206,8 +213,8 @@ jobs:
             --arg ghcr "$ghcr" --arg hub "$hub" \
             --arg repofull "${GITHUB_REPOSITORY}" \
             --arg ref "${GITHUB_REF}" \
-            --arg baseline "requirements/releases/${ver}.yaml" \
-            --arg baseline_sha "$(sha256sum "requirements/releases/${ver}.yaml" | cut -d' ' -f1)" \
+            --arg baseline "requirements/releases/${base}.yaml" \
+            --arg baseline_sha "$(sha256sum "requirements/releases/${base}.yaml" | cut -d' ' -f1)" \
             --arg evidence_sha "$(sha256sum test-evidence/mappings.yaml | cut -d' ' -f1)" \
             --arg vex_openvex_sha "$(sha256sum /tmp/vex/fosterstack-cache.openvex.json | cut -d' ' -f1)" \
             --arg vex_inspector_sha "$(sha256sum "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" | cut -d' ' -f1)" \

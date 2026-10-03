@@ -157,6 +157,10 @@ jobs:
           adm_tag=$(jq -r '.[0].verificationResult.statement.predicate.tag' <<<"$out")
           [ "$adm_sha" = "${GITHUB_SHA}" ] || { echo "::error::admission is for ${adm_sha}, chain runs at ${GITHUB_SHA}" >&2; exit 1; }
           [ "$adm_tag" = "${GITHUB_REF_NAME}" ] || { echo "::error::admission is for ${adm_tag}, chain runs for ${GITHUB_REF_NAME}" >&2; exit 1; }
+          # the ACs baseline admission chose and signed (REQ-REL-009-AC13: a CI patch uses its line's owner-approved one;
+          # an owner tag its own) — acceptance content is checked against it, never assumed to be the tag's (pin pass B01)
+          adm_base=$(jq -r '.[0].verificationResult.statement.predicate.baseline_version // empty' <<<"$out")
+          [[ "$adm_base" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::admission names no valid ACs baseline (${adm_base})" >&2; exit 1; }
           record "source-admission" "$out"
 
           # 2. build predicate + build provenance over EVERY archive.
@@ -213,7 +217,7 @@ jobs:
             # proves it attests a COMPLETE pass.
             jq '.[0].verificationResult.statement.predicate.ac_results // empty' <<<"$acc" \
               > "/tmp/authorize-ac-${v}.json"
-            python3 bin/authorize-acceptance-check.py "${GITHUB_REF_NAME}" "/tmp/authorize-ac-${v}.json" "$v" \
+            python3 bin/authorize-acceptance-check.py "${adm_base}" "/tmp/authorize-ac-${v}.json" "$v" \
               || { echo "::error::acceptance content invalid for variant ${v}" >&2; exit 1; }
           done
 

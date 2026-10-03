@@ -284,6 +284,8 @@ jobs:
         run: bash bin/panel-test.sh
       - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
         run: bash bin/patch-decide-test.sh
+      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
+        run: bash bin/admission-tag-signer-test.sh
 
       - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
         run: bash bin/release-patch-wiring-test.sh

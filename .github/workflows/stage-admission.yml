@@ -15,7 +15,11 @@ name: 'Stage: source admission'
 #   - the ref is an annotated v* tag whose SSH signature verifies against
 #     .github/policy/allowed_signers as fetched from origin/main, with
 #     non-empty signer principal and key fingerprint extracted from the
-#     verifier's actual output format;
+#     verifier's actual output format — OR, for a patch tag only (the next
+#     vX.Y.Z after a released vX.Y.(Z-1); REQ-REL-009-AC6), a gitsign
+#     keyless signature whose certificate is exactly release.yml on main of
+#     this repository, issued by GitHub Actions, for the tagged commit
+#     (bin/admission-tag-signer.py, read from main, picks the verifier);
 #   - the tagged commit's signature verifies against that list OR against
 #     the pinned GitHub web-flow key (squash merges made in the GitHub UI
 #     are GPG-signed by GitHub, not by the owner);
@@ -55,6 +59,9 @@ on:
       admission-artifact:
         description: 'artifact name carrying the signed admission.json'
         value: admission
+      baseline:
+        description: 'the approved ACs baseline admission used (the tag itself, or for a CI patch its line''s latest; REQ-REL-009-AC13)'
+        value: ${{ jobs.admit.outputs.baseline }}
 
 permissions:
   contents: read
@@ -73,6 +80,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
+      baseline: ${{ steps.baseline.outputs.version }}
     steps:
       - name: resolve and validate the tag from the trusted event payload
         id: resolve
@@ -109,31 +117,64 @@ jobs:
           git show origin/main:.github/policy/allowed_signers      > /tmp/policy/allowed_signers
           git show origin/main:.github/policy/github-web-flow.gpg  > /tmp/policy/github-web-flow.gpg
           git show origin/main:.github/policy/required-checks.json > /tmp/policy/required-checks.json
+          # automatic patch releases (REQ-REL-009-AC6): the signer route and the pinned gitsign installer, from main too
+          git show origin/main:bin/admission-tag-signer.py        > /tmp/policy/admission-tag-signer.py
+          git show origin/main:bin/install-scanner.sh             > /tmp/policy/install-scanner.sh
 
-      - name: verify the annotated tag signature against the allowed-signers list
+      - name: verify the annotated tag signature (the owner's SSH key on any tag; the release workflow's keyless identity on a patch tag)
         id: tagsig
+        # REQ-REL-009-AC6 (automatic patch releases rule 3; advisor 0057). The route (from main) only picks the verifier;
+        # the verifier must pass. ssh: git verify-tag against the allowed-signers list, as before. gitsign: gitsign
+        # verify-tag with the exact identity of release.yml on main, GitHub's issuer, this repository, refs/heads/main,
+        # and the tagged commit itself as the signing run's commit. Anything else is refused.
         run: |
           set -euo pipefail
           [ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag" ] \
             || { echo "::error::${GITHUB_REF_NAME} is not an annotated tag" >&2; exit 1; }
-          git config gpg.ssh.allowedSignersFile /tmp/policy/allowed_signers
-          git verify-tag "${GITHUB_REF_NAME}"
-          # git's SSH verification reports:
-          #   Good "git" signature for <principal> with <type> key SHA256:<fp>
-          # (probed against a real owner-key-signed tag; there is no
-          # GPG-style GOODSIG line for SSH signatures).
-          line=$(git verify-tag "${GITHUB_REF_NAME}" 2>&1 | grep '^Good "git" signature for ' || true)
-          principal=$(sed -n 's/^Good "git" signature for \([^ ]*\) with .* key \(SHA256:[^ ]*\)$/\1/p' <<<"$line")
-          fpr=$(sed -n 's/^Good "git" signature for \([^ ]*\) with .* key \(SHA256:[^ ]*\)$/\2/p' <<<"$line")
+          git cat-file tag "refs/tags/${GITHUB_REF_NAME}" > /tmp/tag-object
+          git tag -l 'v*' > /tmp/released-tags
+          r=$(python3 /tmp/policy/admission-tag-signer.py route --tag "${GITHUB_REF_NAME}" --tag-object /tmp/tag-object --tags /tmp/released-tags)
+          route="${r%% *}"
+          echo "signer route: ${r}"
+          case "${route}" in
+            ssh)
+              git config gpg.ssh.allowedSignersFile /tmp/policy/allowed_signers
+              git verify-tag "${GITHUB_REF_NAME}"
+              # git's SSH verification reports:
+              #   Good "git" signature for <principal> with <type> key SHA256:<fp>
+              # (probed against a real owner-key-signed tag; there is no
+              # GPG-style GOODSIG line for SSH signatures).
+              line=$(git verify-tag "${GITHUB_REF_NAME}" 2>&1 | grep '^Good "git" signature for ' || true)
+              principal=$(sed -n 's/^Good "git" signature for \([^ ]*\) with .* key \(SHA256:[^ ]*\)$/\1/p' <<<"$line")
+              fpr=$(sed -n 's/^Good "git" signature for \([^ ]*\) with .* key \(SHA256:[^ ]*\)$/\2/p' <<<"$line")
+              method=owner-ssh
+              ;;
+            gitsign)
+              bash /tmp/policy/install-scanner.sh gitsign
+              gitsign verify-tag "${GITHUB_REF_NAME}" \
+                --certificate-identity https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/main \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                --certificate-github-workflow-repository fosterstack/cache \
+                --certificate-github-workflow-ref refs/heads/main \
+                --certificate-github-workflow-sha "${GITHUB_SHA}"
+              principal="https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/main"
+              fpr=$(sed -n '/^-----BEGIN SIGNED MESSAGE-----$/,/^-----END SIGNED MESSAGE-----$/p' /tmp/tag-object \
+                | sed 's/SIGNED MESSAGE/PKCS7/' | openssl pkcs7 -print_certs \
+                | openssl x509 -noout -fingerprint -sha256 | sed -n 's/^sha256 Fingerprint=\(.*\)$/x509-sha256:\1/Ip')
+              method=release-workflow-keyless
+              ;;
+            *) echo "::error::tag ${GITHUB_REF_NAME} refused: ${r#* }" >&2; exit 1 ;;
+          esac
           if [ -z "$principal" ] || [ -z "$fpr" ]; then
             echo "::error::tag signature verified but signer metadata could not be extracted — refusing to admit with empty evidence" >&2
             exit 1
           fi
           {
+            echo "method=${method}"
             echo "principal=${principal}"
             echo "fingerprint=${fpr}"
           } >> "$GITHUB_OUTPUT"
-          echo "tag ${GITHUB_REF_NAME} signed by ${principal} (${fpr})"
+          echo "tag ${GITHUB_REF_NAME} signed by ${principal} (${fpr}; ${method})"
 
       - name: verify the tagged commit signature (owner SSH key or pinned web-flow key)
         id: commitsig
@@ -230,28 +271,58 @@ jobs:
           check-latest: false
 
       - name: an APPROVED, consistent requirements baseline must exist for this version
+        id: baseline
+        env:
+          TAG_METHOD: ${{ steps.tagsig.outputs.method }}
         run: |
           set -euo pipefail
-          f="requirements/releases/${GITHUB_REF_NAME}.yaml"
+          # Owner-signed tags need their own approved baseline, as always. A CI-signed patch tag (REQ-REL-009-AC13, owner
+          # RATIFIED Oct 2) uses the latest owner-approved baseline of its own X.Y line, and only if
+          # requirements/requirements.yaml at the tagged commit is byte-for-byte unchanged since it. "Owner-approved" is
+          # proven, not claimed (Codex #163 r1, B01; advisor 0093): baselines come only from release tags carrying the
+          # owner's SSH signature (git verify-tag against main's allowed signers, by main's copy of the script), each
+          # read from that tag's own tree; the tagged commit never vouches for its own baseline.
+          BASE="${GITHUB_REF_NAME}"
+          if [ "${TAG_METHOD}" = release-workflow-keyless ]; then
+            python3 /tmp/policy/admission-tag-signer.py owner-baselines --tag "${GITHUB_REF_NAME}" \
+              --allowed-signers /tmp/policy/allowed_signers --out /tmp/owner-baselines
+            git show "${GITHUB_SHA}:requirements/requirements.yaml" > /tmp/tagged-requirements.yaml
+            b=$(python3 /tmp/policy/admission-tag-signer.py baseline --tag "${GITHUB_REF_NAME}" \
+                  --owner-baselines /tmp/owner-baselines --requirements /tmp/tagged-requirements.yaml)
+            echo "baseline rule: ${b}"
+            case "$b" in
+              "use "*) BASE=$(cut -d' ' -f2 <<<"$b") ;;
+              *) echo "::error::${GITHUB_REF_NAME} has no usable ACs baseline: ${b#no }" >&2; exit 1 ;;
+            esac
+          fi
+          echo "version=${BASE}" >> "$GITHUB_OUTPUT"
+          f="requirements/releases/${BASE}.yaml"
           git show "${GITHUB_SHA}:${f}" > /tmp/release-baseline.yaml \
             || { echo "::error::${f} does not exist at the tagged commit — freeze the release baseline first" >&2; exit 1; }
+          if [ "${TAG_METHOD}" = release-workflow-keyless ]; then
+            # what verify-freeze reads below (the tagged commit's copy) must be exactly what the owner signed
+            git show "${BASE}:${f}" > /tmp/owner-baseline.yaml
+            cmp -s /tmp/owner-baseline.yaml /tmp/release-baseline.yaml \
+              || { echo "::error::${f} at the tagged commit differs from the copy in the owner-signed ${BASE}" >&2; exit 1; }
+          fi
           # R07: consistency (exact requirements hash + complete blocking
           # set) is proven by the requirements tool at the tagged commit -
           # the same check PR CI runs - so a stale or hand-edited freeze
           # cannot silently change what is enforced. Admission additionally
           # requires the baseline to be APPROVED (verify-freeze is
           # approval-agnostic).
-          GOTOOLCHAIN=local go -C tools/requirements run . verify-freeze "${GITHUB_REF_NAME}"
-          TAG="${GITHUB_REF_NAME}" python3 - <<'PY'
+          GOTOOLCHAIN=local go -C tools/requirements run . verify-freeze "${BASE}"
+          TAG="${GITHUB_REF_NAME}" BASE="${BASE}" python3 - <<'PY'
           import datetime, os, sys, yaml
           d = yaml.safe_load(open('/tmp/release-baseline.yaml'))
           tag = os.environ['TAG']
+          base = os.environ['BASE']
           errs = []
           if not isinstance(d, dict):
               errs.append('baseline is not a mapping')
           else:
-              if d.get('version') != tag:
-                  errs.append(f"version is {d.get('version')!r}, tag is {tag!r}")
+              if d.get('version') != base:
+                  errs.append(f"version is {d.get('version')!r}, the baseline used is {base!r} (tag {tag!r})")
               if d.get('approved') is not True:
                   errs.append(f"approved is {d.get('approved')!r}, not boolean true")
               try:
@@ -264,12 +335,14 @@ jobs:
           if errs:
               print('::error::release baseline invalid: ' + '; '.join(errs), file=sys.stderr)
               sys.exit(1)
-          print(f"baseline {tag}: approved {d['approved_on']}, requirements {d['requirements_sha256'][:12]}, {len(d['release_blocking_acs'])} blocking ACs")
+          print(f"baseline {base} for {tag}: approved {d['approved_on']}, requirements {d['requirements_sha256'][:12]}, {len(d['release_blocking_acs'])} blocking ACs")
           PY
 
       - name: write canonical admission.json
         id: admission
         env:
+          TAG_METHOD: ${{ steps.tagsig.outputs.method }}
+          BASELINE: ${{ steps.baseline.outputs.version }}
           TAG_PRINCIPAL: ${{ steps.tagsig.outputs.principal }}
           TAG_FPR: ${{ steps.tagsig.outputs.fingerprint }}
           COMMIT_SIGNER: ${{ steps.commitsig.outputs.signer }}
@@ -278,6 +351,8 @@ jobs:
           jq -S -n \
             --arg tag "${GITHUB_REF_NAME}" \
             --arg sha "${GITHUB_SHA}" \
+            --arg tag_method "${TAG_METHOD}" \
+            --arg baseline_version "${BASELINE}" \
             --arg tag_principal "${TAG_PRINCIPAL}" \
             --arg tag_fpr "${TAG_FPR}" \
             --arg commit_signer "${COMMIT_SIGNER}" \
@@ -288,11 +363,12 @@ jobs:
             '{
               tag: $tag,
               sha: $sha,
-              tag_signature: { principal: $tag_principal, key_fingerprint: $tag_fpr },
+              tag_signature: { method: $tag_method, principal: $tag_principal, key_fingerprint: $tag_fpr },
               commit_signature: $commit_signer,
               required_checks: $checks[0],
               informational_statuses: $statuses[0],
-              baseline: ("requirements/releases/" + $tag + ".yaml"),
+              baseline: ("requirements/releases/" + $baseline_version + ".yaml"),
+              baseline_version: $baseline_version,
               run: { id: ($run_id|tonumber), attempt: ($run_attempt|tonumber) }
             }' > admission.json
           sha256=$(sha256sum admission.json | cut -d' ' -f1)
