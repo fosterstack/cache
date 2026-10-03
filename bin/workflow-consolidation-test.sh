@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-008-AC2, REQ-REL-008-AC3
+# proves: REQ-REL-008-AC1, REQ-REL-008-AC2, REQ-REL-008-AC3
 # The ratified workflow consolidation (owner, Oct 2), mutation into go-freshness: the mutation job runs weekly on its
 # own schedule and the freshness check daily on its own, each guarded by the schedule that fired, a dispatch runs
 # both, mutation.yml is gone, the docs link points to go-freshness.yml. The real workflow must pass; each mutated
@@ -325,5 +325,191 @@ case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['m
 case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
 case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
 case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
+# assembly (which uploads oci-candidate) is assembly A, a verify-only assembly B uploads nothing (stage-image's artifact
+# name stays unique); the required check `reproducibility` stays a top-level job with its exact name, no condition and no
+# token beyond contents read; release.yml's own reproducibility stage is untouched and stays the one the release relies on.
+judge_scan() { python3 - "$1" "$root" <<'PY'
+import os, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+root = sys.argv[2]
+bad = []
+on = d.get("on") or {}
+# exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
+if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
+    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
+jobs = d.get("jobs") or {}
+builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
+if builds != ["build"]:
+    bad.append("not exactly one build feeds both: %s" % builds)
+imgs = {j: v for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-image.yml"}
+if sorted(imgs) != ["assemble", "assemble-b"]:
+    bad.append("the two assemblies are not assemble + assemble-b: %s" % sorted(imgs))
+want = {"mode": "pr", "dist-artifact": "dist-snapshot", "expected-checksums": "${{ needs.build.outputs.checksums }}"}
+for j, v in imgs.items():
+    w = dict(v.get("with") or {})
+    up = w.pop("upload-oci", "false")
+    if w != want or v.get("needs") != "build":
+        bad.append("%s is not a pr-mode assembly of the one build: %s" % (j, v.get("with")))
+    if (j == "assemble") != (up == "true"):
+        bad.append("oci-candidate must be uploaded by assemble only (%s upload-oci=%s)" % (j, up))
+r = jobs.get("reproducibility") or {}
+if r.get("name") != "reproducibility" or r.get("if") or sorted(r.get("needs") or []) != ["assemble", "assemble-b"]:
+    bad.append("reproducibility changed: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+if r.get("permissions") not in (None, {"contents": "read"}):
+    bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
+# the comparison is proven by running it (Codex #162 pin, R78-B2): no condition on it or on either assembly, one step,
+# and its script fails when A and B differ or A has no digest, and passes only when they agree
+import json, re, subprocess
+steps = r.get("steps") or []
+# fail closed (Sonnet #162 pin r2: continue-on-error also hides a failure): the comparison step and the jobs it rests on
+# carry exactly the keys reviewed here — any other key (if, continue-on-error, timeout, strategy, ...) is refused
+KEYS = {"build": {"permissions", "uses", "with"}, "assemble": {"needs", "permissions", "uses", "with"},
+        "assemble-b": {"needs", "permissions", "uses", "with"}, "reproducibility": {"name", "needs", "runs-on", "steps"}}
+for j, keys in KEYS.items():
+    if set(jobs.get(j) or {}) - keys:
+        bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
+# what the job inherits: the workflow's token and shell (Codex #162 pin r2, R78-B4/B5)
+if d.get("permissions") != {"contents": "read"} or set(d) != {"name", "on", "permissions", "jobs"}:
+    # fail closed: env (a PATH that fakes jq), defaults, concurrency … — every top-level key is reviewed (Sonnet #162
+    # pin r3, NEW-B6 / R2)
+    bad.append("the workflow's inherited settings changed: keys %s, permissions %s" % (sorted(d), d.get("permissions")))
+if (jobs.get("reproducibility") or {}).get("runs-on") != "ubuntu-latest":
+    bad.append("reproducibility runs elsewhere than a GitHub-hosted ubuntu runner: %s" % (jobs.get("reproducibility") or {}).get("runs-on"))
+if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
+    bad.append("the reproducibility comparison is not one plain step (name + run): %s" % [sorted(st) for st in steps])
+run = steps[0].get("run", "") if len(steps) == 1 else ""
+if "${{ needs.assemble.outputs.digests }}" not in run or "${{ needs.assemble-b.outputs.digests }}" not in run:
+    bad.append("reproducibility does not compare assembly A with assembly B")
+elif re.search(r"\$\{\{", run.replace("${{ needs.assemble.outputs.digests }}", "")
+               .replace("${{ needs.assemble-b.outputs.digests }}", "")):
+    # fail closed (Codex #162 pin r3, R78-B2): any other expression is rendered by GitHub before bash runs, so this test
+    # cannot execute what runs — `exit ${{ 0 }}` turns a failure into success. Only the two assemblies' outputs.
+    bad.append("the comparison carries a GitHub expression other than the two assemblies' digests")
+else:
+    def verdict(a, b):
+        script = run.replace("${{ needs.assemble.outputs.digests }}", json.dumps(a)) \
+                    .replace("${{ needs.assemble-b.outputs.digests }}", json.dumps(b))
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True).returncode
+    same = {v: "sha256:" + c * 64 for v, c in (("production", "a"), ("debug", "b"), ("fips", "c"))}
+    if verdict(same, same) != 0:
+        bad.append("reproducibility fails when A and B agree")
+    # every variant on its own: a comparator that skips one must fail here (Codex #162 pin r2, R78-B2)
+    cases = [("A and B differ in " + v, same, dict(same, **{v: "sha256:" + "d" * 64})) for v in same]
+    cases += [("A has no " + v, {k: x for k, x in same.items() if k != v}, same) for v in same]
+    cases += [("B has no " + v, same, {k: x for k, x in same.items() if k != v}) for v in same]
+    cases += [("A has no digest", {}, same), ("B has no digest", same, {})]
+    # both lack it: equal, so only the missing-entry guard can fail it (Codex #162 pin r3, R78-B7)
+    cases += [("neither A nor B has " + v, {k: x for k, x in same.items() if k != v}, {k: x for k, x in same.items() if k != v})
+              for v in same]
+    cases += [("neither A nor B has any digest", {}, {})]
+    # every variant, every empty form (Codex #162 pin r4, R78-B7: a guard limited to one variant must fail here)
+    cases += [("A and B both give %s as %s" % (v, why), dict(same, **{v: x}), dict(same, **{v: x}))
+              for v in same for why, x in (("null", None), ("empty", ""), ("the string null", "null"))]
+    for why, a, b in cases:
+        if verdict(a, b) == 0:
+            bad.append("reproducibility passes when %s" % why)
+a = jobs.get("artifact-acceptance") or {}
+if a.get("uses") != "./.github/workflows/stage-acceptance-artifacts.yml" or a.get("needs") != "build" or \
+        (a.get("with") or {}).get("dist-artifact") != "dist-snapshot":
+    bad.append("artifact-acceptance changed: %s" % a)
+if os.path.exists(os.path.join(root, ".github/workflows/release-chain-pr.yml")):
+    bad.append("release-chain-pr.yml still exists")
+rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
+if (rel.get("reproducibility") or {}).get("uses") != "./.github/workflows/stage-reproducibility.yml":
+    bad.append("release.yml's own reproducibility stage changed")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_scan() {
+  local f="$work/scan-$1.yml"
+  cp "$root/.github/workflows/scan.yml" "$f"
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_scan "$f" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS scan:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL scan:$1 → $got, want $2 ($out)"; fi
+}
+case_scan real                   ok  ""
+case_scan tags-dropped           bad "d['on']['push'].pop('tags')"
+case_scan event-added            bad "d['on']['workflow_dispatch'] = ''"
+case_scan second-build           bad "d['jobs']['build-b'] = dict(d['jobs']['build'])"
+case_scan b-uploads-oci          bad "d['jobs']['assemble-b']['with']['upload-oci'] = 'true'"
+case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
+case_scan repro-renamed          bad "d['jobs']['reproducibility']['name'] = 'reproducible'"
+case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'] = {'contents': 'read', 'packages': 'write'}"
+case_scan repro-never-fails      bad "[s.__setitem__('run', s['run'].replace('exit 1', 'true')) for s in d['jobs']['reproducibility']['steps']]"
+case_scan repro-one-assembly     bad "d['jobs']['reproducibility']['needs'] = ['assemble']"
+case_scan acceptance-lost        bad "d['jobs'].pop('artifact-acceptance')"
+case_scan pr-types-closed        bad "d['on']['pull_request'] = {'types': ['closed']}"
+case_scan pr-branches-ignore     bad "d['on']['pull_request'] = {'branches-ignore': ['main']}"
+case_scan pr-paths               bad "d['on']['pull_request'] = {'paths': ['never/**']}"
+case_scan compare-step-off       bad "d['jobs']['reproducibility']['steps'][0]['if'] = '\${{ false }}'"
+case_scan assembly-b-off         bad "d['jobs']['assemble-b']['if'] = '\${{ false }}'"
+case_scan step-continue-on-error  bad "d['jobs']['reproducibility']['steps'][0]['continue-on-error'] = 'true'"
+case_scan job-continue-on-error   bad "d['jobs']['reproducibility']['continue-on-error'] = 'true'"
+case_scan assembly-b-coe          bad "d['jobs']['assemble-b']['continue-on-error'] = 'true'"
+case_scan build-coe               bad "d['jobs']['build']['continue-on-error'] = 'true'"
+case_scan repro-matrix            bad "d['jobs']['reproducibility']['strategy'] = {'matrix': {'x': ['1']}}"
+case_scan compare-fips-only       bad "s=d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('for v in production debug fips;', 'for v in fips;')"
+case_scan defaults-shell-true    bad "d['defaults'] = {'run': {'shell': 'true {0}'}}"
+case_scan workflow-token-write   bad "d['permissions']['contents'] = 'write'"
+case_scan workflow-env-path      bad "d['env'] = {'PATH': '/tmp/evil:/usr/bin:/bin'}"
+case_scan workflow-concurrency   bad "d['concurrency'] = {'group': 'scan', 'cancel-in-progress': 'true'}"
+case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
+case_scan compare-comments-only  bad "d['jobs']['reproducibility']['steps'][0]['run'] = '# needs.assemble.outputs.digests\n# needs.assemble-b.outputs.digests\n# exit 1\ntrue'"
+case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['run'] += '\n: \${{ needs.assemble.outputs.digests }} \${{ needs.assemble-b.outputs.digests }}'; d['jobs']['reproducibility']['steps'][0]['run'] = d['jobs']['reproducibility']['steps'][0]['run'].replace('exit 1', 'true')"
+# Codex #162 pin r3: an expression other than the two assemblies' outputs can turn exit 1 into success (R78-B2), and the
+# missing-entry guard must be proven by running it when BOTH assemblies lack a variant (R78-B7)
+case_scan compare-expr-exit      bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('exit 1', '(exit 1) || exit \${{ 0 }}')"
+case_scan compare-expr-anywhere  bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('set -euo pipefail', 'set -euo pipefail\n: \${{ github.sha }}')"
+case_scan compare-guard-prod-only bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('[ -z \"\$da\" ] ||', '[ -z \"\$da\" ] && [ \"\$v\" = production ] ||'); assert 'production ] ||' in s['run']"
+case_scan compare-guard-fips-null bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('[ \"\$da\" = \"null\" ]', '{ [ \"\$da\" = \"null\" ] && [ \"\$v\" != fips ]; }'); assert 'fips ]; }' in s['run']"
+case_scan compare-no-guard       bad "import re; s = d['jobs']['reproducibility']['steps'][0]; s['run'] = re.sub(r'  if \[ -z \"\\\$da\" \].*?\n  fi\n', '', s['run'], flags=re.S); assert 'no digest' not in s['run']"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24): after the consolidation PRs the workflow directory holds exactly
+# the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
+# stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
+ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
+go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
+stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
+stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml"
+judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
+  python3 - "$1" "$ratified" <<'PY'
+import json, sys
+got, want = json.loads(sys.argv[1]), sys.argv[2].split()
+if len(want) != 24:
+    print("the ratified list is not 24 files"); sys.exit(1)
+odd = [n for n in got if "\n" in n or "/" in n]
+extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
+if odd or extra or missing or len(got) != len(set(got)):
+    print("extra: %s missing: %s odd names: %s" % (extra, missing, odd)); sys.exit(1)
+print("ok")
+PY
+}
+case_set() {
+  if out=$(judge_set "$3"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS set:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL set:$1 → $got, want $2 ($out)"; fi
+}
+# every entry of the directory, unfiltered: a non-YAML file or a name with a newline is a difference (Codex #162 pin, R78-B3)
+real_set=$(python3 -c 'import json, os, sys; print(json.dumps(sorted(os.listdir(sys.argv[1]))))' "$root/.github/workflows")
+edit_set() { python3 -c 'import json, sys; s = json.loads(sys.argv[1]); exec(sys.argv[2]); print(json.dumps(s))' "$real_set" "$1"; }
+case_set real          ok  "$real_set"
+case_set a-new-file    bad "$(edit_set 's.append("sprawl.yml")')"
+case_set a-non-yaml    bad "$(edit_set 's.append("README.txt")')"
+case_set one-missing   bad "$(edit_set 's.remove("codeql.yml")')"
+case_set newline-name  bad "$(edit_set 's.remove("codeql.yml"); s.remove("scorecard.yml"); s.append("codeql.yml\nscorecard.yml")')"
+case_set back-to-old   bad "$(edit_set 's.remove("acceptance.yml"); s.append("acceptance-gradle.yml")')"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

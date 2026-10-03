@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 70 |
 | Acceptance criteria | 144 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 127 |
+| ACs with mapped evidence | 128 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -655,7 +655,7 @@ The repository's workflows shall be consolidated from 32 files to the 23 the own
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 23 ratified files | ci-workflow |  | approved | none mapped |
+| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 24 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file) | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC3 | Given the mutation job, merged into go-freshness.yml; when the schedules fire or the workflow is dispatched; then the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml | ci-workflow |  | approved | 1 item(s) |
 
