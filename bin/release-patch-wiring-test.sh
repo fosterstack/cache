@@ -15,7 +15,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
-judge() { python3 - "$1" "${2:-$root/.github/workflows/stage-promote.yml}" <<'PY'
+judge() { ROOT="$root" python3 - "$1" "${2:-$root/.github/workflows/stage-promote.yml}" <<'PY'
 import re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 bad = []
@@ -125,7 +125,7 @@ elif "--next-notes docs/next-release-notes.md" not in nstep[0]["run"] or "--publ
     bad.append("the notes step skips the next-release entries, the published guard, or an unscannable release")
 # Sonnet #159 r2 B1: tag-notes trusts only decide's own tagger; the workflow's git identity is exactly RELEASE_TAGGER
 import os as _os
-_pd = open(_os.path.join(_os.path.dirname(_os.path.abspath(sys.argv[2])), "..", "..", "bin", "patch-decide.py")).read()
+_pd = open(_os.path.join(_os.environ["ROOT"], "bin", "patch-decide.py")).read()
 _who = re.search(r'RELEASE_TAGGER = "([^"<]+) <([^>]+)>"', _pd)
 if not _who or not sign or 'git config user.name "%s"' % _who.group(1) not in sign[0]["run"] or \
         'git config user.email "%s"' % _who.group(2) not in sign[0]["run"]:
