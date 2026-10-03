@@ -642,7 +642,7 @@ case_ run-local-tag            ok  "$head
     steps:
       - run: docker tag \"\$src\" fa-production
       - run: docker run --rm fa-production"
-case_ run-local-build          ok  "$(r 'docker build -t localimg . && docker run localimg')"
+case_ run-local-build          ok  "$(r 'docker build -t localimg . && docker run localimg')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ run-local-skopeo         ok  "$(r 'skopeo copy oci-archive:/tmp/a.oci docker-daemon:fa-debug:latest && docker run fa-debug:latest')"
 case_ run-comment              ok  "$(r 'true # docker run alpine')"
 case_ run-echo                 ok  "$(r 'echo docker run alpine')"
@@ -712,5 +712,56 @@ case_ pkg-hashed-stdin         ok  "$head
 case_ pkg-dry-run              ok  "$(rb 'python3 -m pip install --dry-run --ignore-installed --require-hashes --target /tmp/x -r r.txt')"
 case_ pkg-version-query        ok  "$(r 'pip --version; python3 -m pip --version; python3 bin/x.py install')"
 case_ pkg-echo                 ok  "$(r 'echo pip install requests')"
+
+# --- Sonnet #164 r1's eight bypasses (B1-B8), each a red case; the fixes keep our own forms green
+case_ b1-abs-path              bad "$(r '/usr/bin/docker run alpine:latest')"
+case_ b2-global-host           bad "$(r 'docker --host unix:///var/run/docker.sock run alpine:latest')"
+case_ b2-global-debug          bad "$(r 'docker -D run alpine:latest')"
+case_ b2-global-unknown        bad "$(r 'docker --frobnicate run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ b2-global-ok             ok  "$(r 'docker -H unix:///x --tls run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
+case_ b3-eval                  bad "$(rb 'eval "docker run alpine:latest"')"
+case_ b4-unknown-flag          bad "$(r 'docker run --quiet-pull alpine:latest')"
+case_ b4-unknown-short         bad "$(r 'docker run -Z alpine:latest')"
+case_ b4-known-forms           bad "$(r 'docker run -dit -p8080:80 -eA=b --sig-proxy=false --platform=linux/arm64 -v /a:/b alpine:3')"
+case_ b4-known-forms-pinned    ok  "$(r 'docker run -dit -p8080:80 -eA=b --sig-proxy=false --platform=linux/arm64 -v /a:/b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ b5-compose               bad "$(r 'docker compose up -d')"
+case_ b5-docker-compose        bad "$(r 'docker-compose up -d')"
+case_ b5-bake                  bad "$(r 'docker buildx bake')"
+case_ b6-build-unpinned        bad "$(r 'docker build -t myapp .')" "printf 'FROM alpine:latest\\n' > Dockerfile"
+case_ b6-build-pinned          ok  "$(r 'docker build -t myapp . && docker run myapp')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 AS b\\nFROM b\\nFROM scratch\\n' > Dockerfile"
+case_ b6-build-stdin           bad "$(r 'docker build -t x - < Dockerfile')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ b6-buildx-stdin-file     bad "$(r 'docker buildx build -f - .')"
+case_ b6-generated             bad "$(rb 'printf "FROM alpine:latest\\n" > Dockerfile.gen && docker build -f Dockerfile.gen .')"
+case_ b6-template-pinned       ok  "$(rb 'docker buildx build -f "Dockerfile.${v}" .')" "mkdir -p build; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/Dockerfile.a; printf 'FROM busybox@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/Dockerfile.b"
+case_ b6-template-one-bad      bad "$(rb 'docker buildx build -f "Dockerfile.${v}" .')" "mkdir -p build; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/Dockerfile.a; printf 'FROM busybox:1\\n' > build/Dockerfile.b"
+case_ b6-variable-from         bad "$(r 'docker build .')" "printf 'ARG B=alpine\\nFROM \${B}\\n' > Dockerfile"
+case_ b7-short-prefix          bad "$head
+    steps:
+      - run: docker tag \"\$src\" \"al\${v}\"
+      - run: docker run alpine true"
+case_ b7-decoy-after           bad "$head
+    steps:
+      - run: docker run --rm alpine:latest true
+      - run: docker build -t alpine:latest ." "printf 'FROM busybox@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ b8-pwsh                  bad "$head
+    steps:
+      - shell: pwsh
+        run: |
+          docker run \`
+            alpine:latest"
+case_ b8-default-shell-pwsh    bad "$head
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: echo x; docker pull alpine"
+case_ b8-pwsh-no-tools         ok  "$head
+    steps:
+      - shell: pwsh
+        run: Write-Output hello"
+case_ b8-bash-template-shell   bad "$head
+    steps:
+      - shell: bash --noprofile --norc -eo pipefail {0}
+        run: docker run alpine"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
