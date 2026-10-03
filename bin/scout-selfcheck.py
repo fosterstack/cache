@@ -116,10 +116,20 @@ def probe_doc3(before_path, sbom_path, author, image, tag, out_path):
     one package, so a drop is attributable."""
     before = findings(before_path)
     sbom = json.load(open(sbom_path))
-    purl = {}
+    purl, by_name = {}, {}
     for a in sbom.get("artifacts") or []:
         if isinstance(a, dict) and a.get("purl"):
             purl.setdefault((a.get("name"), a.get("version")), a["purl"])
+            by_name.setdefault(a.get("name"), set()).add(a["purl"])
+    for (cve, name, ver) in before:   # run 1 matched nothing by (name, version): a name with one SBOM purl is enough
+        if (name, ver) not in purl and len(by_name.get(name, ())) == 1:
+            purl[(name, ver)] = next(iter(by_name[name]))
+    miss = sorted({(n, v) for (_, n, v) in before if (n, v) not in purl})[:5]
+    if miss:
+        print("probe 3: no SBOM purl for %d package(s), e.g. %s; SBOM sample %s" % (
+            len({(n, v) for (_, n, v) in before if (n, v) not in purl}), miss,
+            [(a.get("name"), a.get("version")) for a in (sbom.get("artifacts") or [])[:5] if isinstance(a, dict)]),
+            file=sys.stderr)
     per_cve = {}
     for (cve, name, ver), n in before.items():
         per_cve.setdefault(cve, []).append((name, ver, n))
