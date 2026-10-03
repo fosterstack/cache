@@ -364,8 +364,15 @@ if r.get("permissions") not in (None, {"contents": "read"}):
 # and its script fails when A and B differ or A has no digest, and passes only when they agree
 import json, subprocess
 steps = r.get("steps") or []
-if len(steps) != 1 or any("if" in st for st in steps) or any("if" in (jobs.get(j) or {}) for j in ("build", "assemble", "assemble-b")):
-    bad.append("the reproducibility comparison or an assembly it compares can be skipped")
+# fail closed (Sonnet #162 pin r2: continue-on-error also hides a failure): the comparison step and the jobs it rests on
+# carry exactly the keys reviewed here — any other key (if, continue-on-error, timeout, strategy, ...) is refused
+KEYS = {"build": {"permissions", "uses", "with"}, "assemble": {"needs", "permissions", "uses", "with"},
+        "assemble-b": {"needs", "permissions", "uses", "with"}, "reproducibility": {"name", "needs", "runs-on", "steps"}}
+for j, keys in KEYS.items():
+    if set(jobs.get(j) or {}) - keys:
+        bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
+if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
+    bad.append("the reproducibility comparison is not one plain step (name + run): %s" % [sorted(st) for st in steps])
 run = steps[0].get("run", "") if len(steps) == 1 else ""
 if "${{ needs.assemble.outputs.digests }}" not in run or "${{ needs.assemble-b.outputs.digests }}" not in run:
     bad.append("reproducibility does not compare assembly A with assembly B")
@@ -425,6 +432,11 @@ case_scan pr-branches-ignore     bad "d['on']['pull_request'] = {'branches-ignor
 case_scan pr-paths               bad "d['on']['pull_request'] = {'paths': ['never/**']}"
 case_scan compare-step-off       bad "d['jobs']['reproducibility']['steps'][0]['if'] = '\${{ false }}'"
 case_scan assembly-b-off         bad "d['jobs']['assemble-b']['if'] = '\${{ false }}'"
+case_scan step-continue-on-error  bad "d['jobs']['reproducibility']['steps'][0]['continue-on-error'] = 'true'"
+case_scan job-continue-on-error   bad "d['jobs']['reproducibility']['continue-on-error'] = 'true'"
+case_scan assembly-b-coe          bad "d['jobs']['assemble-b']['continue-on-error'] = 'true'"
+case_scan build-coe               bad "d['jobs']['build']['continue-on-error'] = 'true'"
+case_scan repro-matrix            bad "d['jobs']['reproducibility']['strategy'] = {'matrix': {'x': ['1']}}"
 case_scan compare-comments-only  bad "d['jobs']['reproducibility']['steps'][0]['run'] = '# needs.assemble.outputs.digests\n# needs.assemble-b.outputs.digests\n# exit 1\ntrue'"
 case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['run'] += '\n: \${{ needs.assemble.outputs.digests }} \${{ needs.assemble-b.outputs.digests }}'; d['jobs']['reproducibility']['steps'][0]['run'] = d['jobs']['reproducibility']['steps'][0]['run'].replace('exit 1', 'true')"
 
