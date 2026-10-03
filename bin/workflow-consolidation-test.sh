@@ -179,5 +179,86 @@ case_ci top-level-widened        bad "d['permissions']['contents'] = 'write'"
 case_ci concurrency-added        bad "d['concurrency'] = {'group': 'ci', 'cancel-in-progress': 'true'}"
 case_ci events-changed           bad "d['on'].pop('pull_request')"
 case_ci required-check-gone      bad "d['jobs']['lint']['name'] = 'lint-go'"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR 3 of 4: main-candidate-rescan.yml absorbs daily-rescan.yml under its ONE schedule (the auditor finds its run by this
+# file's name and must never pick a run that lacks the candidate); rescan-v010.yml (a one-shot) is deleted and
+# SECURITY.md links its historical run instead of the vanished workflow page (REQ-REL-008-AC2).
+judge_rescan() { python3 - "$1" "$root" <<'PY'
+import os, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+root = sys.argv[2]
+bad = []
+jobs = d.get("jobs") or {}
+crons = [c.get("cron") for c in (d.get("on") or {}).get("schedule") or []]
+if crons != ["41 7 * * *"]:
+    bad.append("main-candidate-rescan.yml must keep exactly its one 07:41 schedule: %s" % crons)
+m, r = jobs.get("manifests") or {}, jobs.get("rescan") or {}
+if m.get("name") != "enumerate release manifests" or m.get("needs") or m.get("if"):
+    bad.append("the manifests job changed: %s" % {k: m.get(k) for k in ("name", "needs", "if")})
+if (r.get("needs"), r.get("if"), r.get("permissions")) != ("manifests", "needs.manifests.outputs.any == 'true'",
+                                                           {"contents": "read", "issues": "write", "packages": "read"}):
+    bad.append("the rescan job changed: %s" % {k: r.get(k) for k in ("needs", "if", "permissions")})
+if not r.get("strategy") or "fromJSON(needs.manifests.outputs.targets)" not in str(r.get("strategy")).replace(" ", ""):
+    bad.append("the rescan matrix no longer comes from the manifests job")
+for gone in ("daily-rescan.yml", "rescan-v010.yml"):
+    if os.path.exists(os.path.join(root, ".github/workflows", gone)):
+        bad.append("%s still exists" % gone)
+# Codex #160 pin pass (B78-01): release-manifest data must never become shell source. Every matrix value is checked for
+# its exact shape before the matrix is emitted (the collector's TARGET_SHAPE, run here against hostile targets), and no
+# run: script interpolates ${{ matrix.* }} or ${{ needs.* }} (they arrive through env, quoted)
+import json, re, subprocess
+mrun = "\n".join(st.get("run") or "" for st in m.get("steps") or [])
+shape = re.search(r"TARGET_SHAPE='([^']*)'", mrun)
+if not shape or 'jq -e "$TARGET_SHAPE"' not in mrun:
+    bad.append("the manifests job does not check every target's shape before emitting the matrix")
+else:
+    def ok(t):
+        return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True).returncode == 0
+    good = {"release": "v0.2.1", "variant": "production", "digest": "sha256:" + "a" * 64, "scanner": "grype"}
+    if not ok(good) or not ok(dict(good, release="v0.3.0-rc.1")):
+        bad.append("TARGET_SHAPE refuses a well-formed target")
+    hostile = [dict(good, digest=good["digest"] + "$(docker run alpine:latest true)"),
+               dict(good, variant="production'$(docker run alpine:latest true)'"),
+               dict(good, release="v0.2.1$(id)"), dict(good, scanner="grype;id"), dict(good, digest=None),
+               dict(good, digest="sha256:" + "A" * 64), {k: v for k, v in good.items() if k != "variant"}]
+    for t in hostile:
+        if ok(t):
+            bad.append("TARGET_SHAPE accepts %r" % t)
+for job in (m, r):
+    for st in job.get("steps") or []:
+        if re.search(r"\$\{\{\s*(matrix|needs)\.", st.get("run") or ""):
+            bad.append("a run: script interpolates matrix/needs data: %s" % (st.get("name") or st.get("id")))
+sec = open(os.path.join(root, "SECURITY.md")).read()
+if "actions/workflows/rescan-v010.yml" in sec or "actions/runs/34551059239" not in sec:
+    bad.append("SECURITY.md does not link the historical v0.1.0 rescan run")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_rescan() {
+  local f="$work/mcr-$1.yml"
+  cp "$root/.github/workflows/main-candidate-rescan.yml" "$f"
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_rescan "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS rescan:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL rescan:$1 → $got, want $2 ($out)"; fi
+}
+case_rescan real                  ok  ""
+case_rescan second-cron           bad "d['on']['schedule'].append({'cron': '11 7 * * *'})"
+case_rescan manifests-renamed     bad "d['jobs']['manifests']['name'] = 'manifests'"
+case_rescan rescan-widened        bad "d['jobs']['rescan']['permissions']['contents'] = 'write'"
+case_rescan rescan-unconditional  bad "d['jobs']['rescan'].pop('if')"
+case_rescan matrix-lost           bad "d['jobs']['rescan'].pop('strategy')"
+case_rescan shape-check-dropped   bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('jq -e \"\$TARGET_SHAPE\"', 'true')"
+case_rescan shape-digest-loose    bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('{64}\$', '{64}')"
+case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'] if x.get('name') == 'enumerate platform children'][0]; s['run'] = s['run'] + '\necho \${{ matrix.target.digest }}'"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -1,7 +1,7 @@
 name: Daily main-candidate rescan
 
-# The main-candidate half of the daily rescan (companion to daily-rescan.yml, which rescans every PUBLISHED
-# release's digests). main's candidate is never pushed to a package; this builds it from source through the
+# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), every PUBLISHED
+# release's digests (the manifests and rescan jobs at the end). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
 # 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
 # images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
@@ -11,7 +11,7 @@ name: Daily main-candidate rescan
 # its own inputs (REQ-AUD, unchanged).
 on:
   schedule:
-    - cron: '41 7 * * *' # 30m after daily-rescan, same offset-from-hour habit
+    - cron: '41 7 * * *' # offset from the hour; the published-release rescan runs in this same run
   workflow_dispatch: {}
 
 # Top level stays read-only; the two reusable-stage caller jobs carry
@@ -337,3 +337,374 @@ jobs:
           name: rescan-scanner-reports
           include-hidden-files: true
           path: /tmp/reports
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Merged from daily-rescan.yml (workflow consolidation 3 of 4, owner RATIFIED Oct 2): the daily rescan of every
+  # PUBLISHED release's digests (release-chain-design.md §3) — enumerate the release manifests and the legacy inventory,
+  # then scan each (release, variant, scanner) digest at the release gate's policy, VEX the only exception. It runs under
+  # this file's ONE schedule, so the auditor never selects a rescan run that lacks the candidate.
+  manifests:
+    name: enumerate release manifests
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.collect.outputs.targets }}
+      any: ${{ steps.collect.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: collect (release, variant, digest, scanner) targets
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scanners=$(jq -c '.scanners' .github/policy/scanners.json)
+          : > /tmp/targets.jsonl
+
+          # F12: legacy releases that predate release-manifest.json are
+          # covered from a committed inventory, so the daily rescan never
+          # silently stops covering the current public release.
+          jq -c --argjson scanners "$scanners" \
+            '.releases[] as $r | $r.images[] as $img | $scanners[] as $s |
+             {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: "legacy-inventory"}' \
+            .github/policy/legacy-releases.json >> /tmp/targets.jsonl
+          legacy_versions=$(jq -r '[.releases[].version] | join(" ")' .github/policy/legacy-releases.json)
+
+          # Manifest-bearing releases: enumerate ASSETS first, so we can
+          # tell an intentional legacy absence (no manifest asset) from a
+          # FAILED read of a manifest that is present (F13).
+          #
+          # R12: capture the release list with an EXPLICIT exit check. A
+          # `for tag in $(gh release list ...)` swallows the command
+          # substitution's failure (set -e does not catch it there), so an
+          # API outage would drop every manifest-bearing release while the
+          # legacy inventory kept the job green. Fail loudly instead; an
+          # empty-but-successful list (no releases yet) is fine.
+          if ! gh release list --limit 100 --json tagName,isDraft > /tmp/releases.json; then
+            echo "::error::could not enumerate releases (gh release list failed) - refusing to rescan a partial inventory" >&2
+            exit 1
+          fi
+          jq -e 'type == "array"' /tmp/releases.json >/dev/null \
+            || { echo "::error::gh release list did not return a JSON array" >&2; exit 1; }
+          for tag in $(jq -r '.[] | select(.isDraft | not) | .tagName' /tmp/releases.json); do
+            case " $legacy_versions " in *" $tag "*) continue ;; esac
+            has_manifest=$(gh release view "$tag" --json assets \
+              --jq '[.assets[] | select(.name == "release-manifest.json")] | length')
+            if [ "$has_manifest" -eq 0 ]; then
+              echo "note: ${tag} has no release-manifest.json asset and is not in the legacy inventory — skipping (add it to legacy-releases.json if it must be scanned)"
+              continue
+            fi
+            # The asset exists: a failed download/parse is an ERROR, not
+            # an empty result that would erase the release from coverage.
+            if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
+              echo "::error::release-manifest.json is present on ${tag} but could not be downloaded — refusing to drop it from the rescan" >&2
+              exit 1
+            fi
+            jq empty "/tmp/m-${tag}.json" 2>/dev/null \
+              || { echo "::error::release-manifest.json on ${tag} is not valid JSON" >&2; exit 1; }
+            imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
+            [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${tag} lists no images" >&2; exit 1; }
+            jq -c --arg tag "$tag" --argjson scanners "$scanners" \
+              '.images[] as $img | $scanners[] as $s |
+               {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
+              "/tmp/m-${tag}.json" >> /tmp/targets.jsonl
+          done
+
+          targets=$(jq -s -c '.' /tmp/targets.jsonl)
+          # Every matrix value reaches the rescan job: each must have its exact shape, or no matrix is emitted — a release
+          # manifest's data never becomes shell source (Codex #160 pin pass, B78-01)
+          TARGET_SHAPE='all(.[]; (.release | test("^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$")) and (.variant | test("^[a-z0-9][a-z0-9-]{0,31}$")) and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.scanner | test("^[a-z0-9][a-z0-9-]{0,31}$")))'
+          jq -e "$TARGET_SHAPE" <<<"$targets" > /dev/null \
+            || { echo "::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix" >&2; exit 1; }
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+          n=$(jq 'length' <<<"$targets")
+          # There is ALWAYS at least the legacy inventory, so an empty set
+          # means the inventory itself is broken - fail, do not no-op.
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no rescan targets at all - the legacy inventory is empty or unreadable" >&2
+            exit 1
+          fi
+          echo "any=true" >> "$GITHUB_OUTPUT"
+          echo "rescanning ${n} (release, variant, scanner) targets"
+
+  rescan:
+    name: ${{ matrix.target.scanner }} ${{ matrix.target.release }} ${{ matrix.target.variant }}
+    needs: manifests
+    if: needs.manifests.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.manifests.outputs.targets) }}
+    # matrix values reach scripts only through these, quoted (B78-01)
+    env:
+      TARGET_RELEASE: ${{ matrix.target.release }}
+      TARGET_VARIANT: ${{ matrix.target.variant }}
+      TARGET_DIGEST: ${{ matrix.target.digest }}
+      TARGET_SCANNER: ${{ matrix.target.scanner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Enumerate the platform CHILDREN of the index so both
+      # architectures are scanned by EVERY scanner, not just the runner's
+      # default (B04a: the ongoing rescan must cover each child for Trivy,
+      # Grype AND Snyk, like the release scanner). children.txt: one
+      # "os/arch<TAB>childref" per line; a recognized single-image
+      # manifest falls back to the index itself.
+      - name: enumerate platform children
+        run: |
+          set -euo pipefail
+          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
+          : > /tmp/children.txt
+          # A FAILED or MALFORMED enumeration must REJECT the run (B04): a
+          # lost platform inventory must never be silently downgraded to a
+          # single-arch index scan. Only a VALID manifest that genuinely has
+          # no platform children falls back to "scan the index as itself".
+          if ! docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
+            echo "::error::could not inspect ${ref} to enumerate platform children — refusing to rescan on an unknown platform inventory" >&2
+            cat /tmp/inspect.err >&2 || true
+            exit 1
+          fi
+          # B04c/B04f: shape + descriptor validation lives in the extracted,
+          # unit-tested bin/rescan-statement.py so the "every expected image
+          # descriptor must have a usable platform" rule is exercised by
+          # bin/rescan-statement-test.sh, not just an external probe. It
+          # rejects invalid JSON, `{}`, `{"manifests":null}`, and — crucially
+          # — a multi-platform index in which ANY plain image descriptor has a
+          # null/empty/"unknown" platform (a lost platform is never downgraded
+          # to a single-arch scan). A descriptor without a usable platform is
+          # tolerated only when it is EXPLICITLY an attestation/referrer
+          # descriptor. A recognized single-image manifest (.config + .layers)
+          # still falls back to scanning the index as itself.
+          python3 bin/rescan-statement.py enumerate \
+            --index /tmp/index.json \
+            --repo "ghcr.io/${{ github.repository_owner }}/cache" \
+            --ref "$ref" \
+            --out /tmp/children.txt
+          echo "children to scan:"; cat /tmp/children.txt
+
+      # ---- trivy (CLI: reliable version/db, by digest) -------------------
+      - name: Trivy rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'trivy'
+        id: trivy
+        continue-on-error: true
+        env:
+          TRIVY_VEX: ${{ github.workspace }}/.vex/fosterstack-cache.openvex.json
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh trivy
+          rc=0
+          child_no=0
+          : > /tmp/children-scanned.jsonl
+          # B04: a FINDING makes trivy exit nonzero (--exit-code 1). Capture
+          # that with `|| code=$?` so errexit does NOT abort the loop before
+          # the exit code is recorded, the platform is captured, or the next
+          # child is scanned. Every child is scanned, its OWN exit code and
+          # report path recorded per child; the merge, shape validation and
+          # exit-code classification happen once, in the unit-tested
+          # bin/rescan-statement.py, so no finding is dropped (deterministic,
+          # explicit per-child inputs — no glob).
+          while IFS=$'\t' read -r platform ref; do
+            [ -n "$platform" ] || continue
+            child_no=$((child_no + 1))
+            out="/tmp/findings-child-${child_no}.json"
+            echo "trivy: ${platform} ${ref}"
+            code=0
+            trivy image --quiet --exit-code 1 \
+              --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
+              --vex "${TRIVY_VEX}" \
+              --format json --output "$out" \
+              "${ref}" || code=$?
+            [ "$code" -gt "$rc" ] && rc=$code
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
+              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+          done < /tmp/children.txt
+          exit $rc
+
+      # ---- grype (CLI: reliable version/db, by digest) -------------------
+      - name: Grype rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'grype'
+        id: grype
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh grype
+          rc=0
+          child_no=0
+          : > /tmp/children-scanned.jsonl
+          # B04: `--fail-on negligible` makes grype exit nonzero on a
+          # FINDING. Grype returns 2 for a vulnerability match and
+          # 1 for an operational error (the reverse of its --help text;
+          # see cmd/grype/cli/cli.go, unchanged at the pinned v0.118.0) - the exit-code contract
+          # is in bin/rescan-statement.py. Capture it with `|| code=$?` so
+          # errexit does not abort the loop; the per-child exit code +
+          # report path are recorded and the merge/classification happens
+          # once in bin/rescan-statement.py.
+          while IFS=$'\t' read -r platform ref; do
+            [ -n "$platform" ] || continue
+            child_no=$((child_no + 1))
+            out="/tmp/grype-child-${child_no}.json"
+            echo "grype: ${platform} ${ref}"
+            plat_arg=""
+            case "$platform" in */*) plat_arg="--platform ${platform}";; esac
+            code=0
+            # shellcheck disable=SC2086
+            grype "registry:${ref}" $plat_arg \
+              --fail-on negligible \
+              --vex .vex/fosterstack-cache.openvex.json \
+              -o json --file "$out" || code=$?
+            [ "$code" -gt "$rc" ] && rc=$code
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
+              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+          done < /tmp/children.txt
+          exit $rc
+
+      # ---- osv-scanner (OSV.dev database, by digest) -------------------
+      - name: OSV-Scanner rescan (by digest, JSON findings)
+        if: matrix.target.scanner == 'osv-scanner'
+        id: osv
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ./bin/install-scanner.sh osv-scanner
+          rc=0
+          child_no=0
+          : > /tmp/children-scanned.jsonl
+          # osv-scanner exit codes: 0 clean, 1 findings, other nonzero =
+          # operational failure (contract in bin/rescan-statement.py). Captured
+          # per child with `|| code=$?` so errexit does not abort the loop; the
+          # merge/classification happens once, downstream.
+          while IFS=$'\t' read -r platform ref; do
+            [ -n "$platform" ] || continue
+            child_no=$((child_no + 1))
+            out="/tmp/osv-child-${child_no}.json"
+            echo "osv-scanner: ${platform} ${ref}"
+            code=0
+            osv-scanner scan image --format json --output "$out" "${ref}" || code=$?
+            [ "$code" -gt "$rc" ] && rc=$code
+            jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" \
+              '{platform:$p, ref:$r, exit:$e, report:$f}' >> /tmp/children-scanned.jsonl
+          done < /tmp/children.txt
+          exit $rc
+
+      # ---- scanner identity (F14) ----------------------------------------
+      - name: record scanner version and database state
+        run: |
+          set -euo pipefail
+          : > /tmp/scanner-meta
+          case "$TARGET_SCANNER" in
+            trivy)
+              echo "version=$(trivy --version 2>/dev/null | awk 'NR==1{print $2}')" >> /tmp/scanner-meta
+              echo "db=$(trivy version --format json 2>/dev/null | jq -r '.VulnerabilityDB.UpdatedAt // "unknown"')" >> /tmp/scanner-meta ;;
+            grype)
+              echo "version=$(grype version 2>/dev/null | awk '/^Version:/{print $2}')" >> /tmp/scanner-meta
+              echo "db=$(grype db status 2>/dev/null | awk '/Built|built/{print $NF; exit}')" >> /tmp/scanner-meta ;;
+            osv-scanner)
+              echo "version=$(osv-scanner --version 2>/dev/null | awk 'NR==1{print $NF}')" >> /tmp/scanner-meta
+              echo "db=OSV.dev (osv-scalibr; deps.dev)" >> /tmp/scanner-meta ;;
+          esac
+          cat /tmp/scanner-meta
+
+      # ---- statement -----------------------------------------------------
+      # The merge, OS+application normalization (B04d), and exit-code
+      # classification (B04e) live in the unit-tested bin/rescan-statement.py
+      # (exercised by bin/rescan-statement-test.sh in the requirements CI
+      # job), not inline here — so a regression is caught in PR CI. It reads
+      # the per-child manifest each scanner loop wrote (platform, ref, exit
+      # code, report path), applies each scanner's OWN exit-code contract
+      # INDEPENDENTLY of parse success, merges OS AND application findings
+      # from every child preserving platform + project context, and writes
+      # the statement, the merged raw report, and the outcome/has_findings
+      # step outputs.
+      - name: write the digest-keyed rescan statement
+        id: statement
+        run: |
+          set -euo pipefail
+          python3 bin/rescan-statement.py statement \
+            --scanner "$TARGET_SCANNER" \
+            --children /tmp/children-scanned.jsonl \
+            --meta /tmp/scanner-meta \
+            --vex .vex/fosterstack-cache.openvex.json \
+            --scope-file /tmp/scan-scope.json \
+            --release "$TARGET_RELEASE" \
+            --variant "$TARGET_VARIANT" \
+            --digest "$TARGET_DIGEST" \
+            --image-ref "ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}" \
+            --scanned-at "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
+            --raw-out /tmp/findings-raw.json \
+            --out /tmp/rescan-statement.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: stage the raw report AND the per-child reports beside the statement
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rescan-out
+          cp /tmp/rescan-statement.json /tmp/rescan-out/
+          [ -f /tmp/findings-raw.json ] && cp /tmp/findings-raw.json /tmp/rescan-out/ || true
+          # B04d: retain the ORIGINAL per-child reports too, so the raw
+          # evidence that carries e.g. an arm64 application-only finding
+          # survives artifact upload, not just the merged report. The child
+          # paths come from the deterministic per-child manifest (no glob).
+          if [ -f /tmp/children-scanned.jsonl ]; then
+            mkdir -p /tmp/rescan-out/children
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              f=$(jq -r '.report' <<<"$line")
+              [ -f "$f" ] && cp "$f" /tmp/rescan-out/children/ || true
+            done < /tmp/children-scanned.jsonl
+          fi
+
+      - name: upload the statement AND the raw report (evidence, clean or not)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rescan-${{ matrix.target.release }}-${{ matrix.target.variant }}-${{ matrix.target.scanner }}
+          path: /tmp/rescan-out/
+          retention-days: 90
+
+      # B04b: notify on ANY real finding, independently of completeness. This
+      # fires on has_findings (not outcome=='findings'), so a run that both
+      # found a CVE AND had an operational failure still files the issue —
+      # while the operational error still fails the run below.
+      - name: file/update a tracking issue on findings
+        if: steps.statement.outputs.has_findings == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const t = ${{ toJSON(matrix.target) }};
+            const short = t.digest.replace('sha256:', '').slice(0, 12);
+            const title = `Daily rescan: findings in ${t.release} ${t.variant} @${short} (${t.scanner})`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `The daily rescan found new findings.\n\n- release: \`${t.release}\`\n- variant: \`${t.variant}\`\n- digest: \`${t.digest}\`\n- scanner: \`${t.scanner}\`\n- statement artifact: \`rescan-${t.release}-${t.variant}-${t.scanner}\` on ${runUrl}\n\nThese bytes have not changed since release — this is a newly-disclosed CVE against previously-shipped code, the case the 24-48h response SLA targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation.`;
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
+            });
+            const match = existing.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
+            }
+
+      - name: a findings verdict fails the run (visible red, same bar as the gate)
+        if: steps.statement.outputs.outcome == 'findings'
+        run: |
+          echo "::error::rescan found findings for ${TARGET_RELEASE} ${TARGET_VARIANT} (${TARGET_SCANNER}) — see the tracking issue" >&2
+          exit 1
+
+      # An operational failure is NOT clean CVE evidence: fail the run with
+      # a distinct signal so a scanner that could not run is never recorded
+      # as a passing rescan (completion note).
+      - name: an operational error fails the run distinctly
+        if: steps.statement.outputs.outcome == 'error'
+        run: |
+          echo "::error::rescan scanner ${TARGET_SCANNER} failed to complete for ${TARGET_RELEASE} ${TARGET_VARIANT} — this is an operational failure, not a clean result" >&2
+          exit 1

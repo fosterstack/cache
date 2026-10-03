@@ -33,7 +33,7 @@ release pipeline. Its published images were not scanned before publication:
 the pipeline scanned a snapshot build and published a separate build of the
 same commit. The published v0.1.0 digests have been rescanned since, at <!-- pinned: historical -->
 every severity, with the published VEX applied — see the
-[rescan runs](https://github.com/fosterstack/cache/actions/workflows/rescan-v010.yml)
+[rescan run](https://github.com/fosterstack/cache/actions/runs/34551059239)
 for the verdicts. The next release is the first to carry the full evidence
 chain: one build, scanned and tested by digest, promoted without a rebuild.
 

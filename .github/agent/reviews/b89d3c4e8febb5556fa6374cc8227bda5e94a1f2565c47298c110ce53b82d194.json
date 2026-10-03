@@ -1,0 +1,68 @@
+{
+    "schema": "auditor-review-record/v1",
+    "tree": "b89d3c4e8febb5556fa6374cc8227bda5e94a1f2565c47298c110ce53b82d194",
+    "change": "workflow consolidation 3 of 4: main-candidate-rescan.yml absorbs daily-rescan.yml's manifests and rescan jobs (owner RATIFIED Oct 2); rescan targets shape-checked and passed through env (Codex B78-01) — PR #160",
+    "reviewed_commit": "28beb61",
+    "closed_commit": "3c3b617",
+    "rounds": [
+        {
+            "round": 1,
+            "label": "step 8 round 1 (b0b5394)",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 0,
+                    "evidence_sha256": "b1c9666cb3f6fad8bc40edbf038f22531c8bbe2dd0b5445f0033c9342c57ec0d"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "0860ffaee7cdfebed666fe561abb69f1b3bd67fc66e4f5e89e00f34352e0a6d0"
+                }
+            }
+        },
+        {
+            "round": 2,
+            "label": "row-78 pin pass round 1 (b0b5394)",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 1,
+                    "evidence_sha256": "4e6e9c75b12d101c3c236dac3e2ee0350ae47999ae1bdb164d13d5b7ab79cf42"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "ff244778a60938dac2727a8dddac4a93408efb9a8f7e7ebc9d7705fabc820a5c"
+                }
+            }
+        },
+        {
+            "round": 3,
+            "label": "pin pass round 2: verify the fix (28beb61)",
+            "reviewers": {
+                "codex": {
+                    "vendor": "openai",
+                    "blockers_open": 0,
+                    "evidence_sha256": "400c0508fcaed07f7c5d06ad1a3604807b24cc731fc7b5c0cfb7e361cd6b1828"
+                },
+                "sonnet": {
+                    "vendor": "anthropic",
+                    "blockers_open": 0,
+                    "evidence_sha256": "7f5fb2475f78e782f81933f90862d52b208fc14dd0f0bebbf42df21588ef1159"
+                }
+            }
+        }
+    ],
+    "stop": {
+        "codex": "clear",
+        "sonnet": "clear"
+    },
+    "owner_decision": "none: codex reviewer rules (owner Oct 2) — both green on the final verification; rebased onto main after #156 merged (no auditor path changed by the rebase)",
+    "evidence_location": "private audit tree: audits/2026-10-02/consolidate-rescans/{r1,pin,pin2}/{codex,sonnet}/review.md",
+    "residuals_fixed_after_the_cap": [],
+    "residuals": [
+        "inherited from daily-rescan.yml: skopeo installed from apt, gcloud and GoReleaser selected by version, ubuntu-latest runner label (documented exclusions in the pin checker)",
+        "policy files feeding the rescan targets (legacy-releases.json, scanners.json) change only by reviewed PR and are shape-checked too"
+    ]
+}

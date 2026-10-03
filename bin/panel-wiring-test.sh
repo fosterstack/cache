@@ -32,7 +32,10 @@ if "for v in production debug fips" not in tg or "arm64" in tg or "for arch" in 
         or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
     bad.append("panel-google does not scan exactly the three variants on linux/amd64 (and never arm64)")
 for j in jobs:
-    if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk")) and j != "scanner-reports":
+    # scanner-reports hands the auditor its inputs; manifests/rescan are the PUBLISHED-release rescan (merged from
+    # daily-rescan.yml, consolidation 3 of 4; REQ-REL-003), which runs only the scanners in .github/policy/scanners.json —
+    # none of the three is the scanner panel
+    if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk")) and j not in ("scanner-reports", "manifests", "rescan"):
         bad.append(f"{j} runs Trivy or Snyk")
 for gone in ("scan-main", "trivy-main", "snyk-main"):
     if gone in jobs:
