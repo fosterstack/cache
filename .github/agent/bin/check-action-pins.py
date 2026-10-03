@@ -907,6 +907,25 @@ WRAPPER_VAL = {"env": {"-u", "--unset"}, "sudo": {"-u", "-g", "-h", "-p", "-U", 
 WRAPPER_REFUSED = {"env": ("-S", "--split-string", "-C", "--chdir")}
 
 
+_ARRAY_LITERAL = re.compile(r"^\s*(?:(?:if|then|elif|else|while|until|do)\s+)?"
+                             r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=\(")
+
+
+def _skip_array_literal(chunk):
+    """chunk, or "" when it opens a NAME=(...) or NAME+=(...) array literal (an ordinary bash idiom for building
+    a flag list; never itself runs a program). Finding exactly where such a literal CLOSES was tried twice and
+    failed twice (Codex #164 r12, B2/B3): shlex has already stripped quotes by the time a token-level count can
+    run, so a literal '(' / ')' inside a quoted element is indistinguishable from the array's own; and a '#'
+    comment INSIDE the array (an ordinary, common idiom — this repo's own bin/check-file-allowlist.sh has one)
+    can itself contain an apostrophe that a quote-aware scanner misreads as opening a real quote, corrupting
+    everything after it (confirmed: ALLOW_PATTERNS's own comment "product's" did exactly this). Real bash's
+    comment and quoting rules together are not worth re-implementing a third time for this (advisor 0080):
+    the chunk this opens is simply treated as fully inert, including anything bash would actually run AFTER
+    the array literal closes on the same line (`a=(x) realcommand` — a genuine, if rare, bash idiom; not seen
+    anywhere plain in this repo) — an accepted residual, not a blocker, same trade as the trap rule's."""
+    return "" if _ARRAY_LITERAL.match(chunk) else chunk
+
+
 def _command_words(toks):
     """The words a simple command will run as a program: past redirections, assignments and shell keywords, and through
     wrappers (timeout 5, env -u X, xargs -n1, sudo -u u …) to their targets, each wrapper's value options consumed."""
@@ -915,18 +934,6 @@ def _command_words(toks):
         t = toks[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>>?|>&)", t):          # a redirection before the program (C02: > /dev/null bash x)
             i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>>?|>&)[^<>&]", t) else 2
-            continue
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=\(", t):
-            # an array literal (NAME=(...) or NAME+=(...), an ordinary bash idiom for building a flag list) never
-            # itself runs a program; a tokenizer with no notion of bash arrays otherwise reads the array's own
-            # elements as if they were a separate command's words the moment one contains a `$` (confirmed on
-            # release.yml's own `base_arg+=(--base-grype "$f")`: `$f)` was read as the program name). Skip every
-            # token through the one that balances this token's own already-open paren, not just this one token.
-            depth = t.count("(") - t.count(")")
-            i += 1
-            while depth > 0 and i < len(toks):
-                depth += toks[i].count("(") - toks[i].count(")")
-                i += 1
             continue
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*", t) or t in KEYWORDS:
             i += 1
@@ -960,6 +967,7 @@ def _commands(script, depth=0):
     elif inner:
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
+        chunk = _skip_array_literal(chunk)
         try:
             toks = shlex.split(chunk, comments=True)
         except ValueError:

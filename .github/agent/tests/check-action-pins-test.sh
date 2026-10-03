@@ -1455,5 +1455,37 @@ else
   failn=$((failn+1)); echo "FAIL real-auditor-plain-run-bad → ok (want bad)"
 fi
 
+# Codex #164 r11/r12: an ordinary bash array-append (arr+=(...), building a flag list -- release.yml's own
+# base_arg+=(--base-grype "$f")) was read element by element as a separate command the moment one element
+# contained a $variable, because a tokenizer with no notion of bash arrays can't tell the array's own parens
+# from a literal one inside a quoted element once quotes are stripped. The array literal is now simply inert.
+case_ r4b6-array-append-var-element-ok ok "$(rb 'base_arg+=(--base-grype "$f")')"
+# the same, as the real repo's trigger looked: an if/then branch, not a standalone statement
+case_ r4b6-array-append-in-if-ok ok "$head
+    steps:
+      - run: |
+          if true; then base_arg+=(--base-grype \"\$f\"); fi"
+# Codex #164 r12, B2 (adversarial, not a plain form -- advisor 0117): a literal quoted \"(\" or \")\" as an
+# array ELEMENT (not the array's own structural paren) can no longer throw off a closing-paren count, because
+# there is no longer a count at all -- the whole literal is inert either way
+case_ r4b6-array-element-is-a-paren-ok ok "$(rb 'a=(")" "$f")')"
+# a REAL command after the array literal closes, on a SEPARATE statement (the common, plain form), is still
+# fully checked -- the array literal does not swallow anything beyond its own statement
+case_ r4b6-array-then-separate-run-bad bad "$(rb 'arr=(a b c)
+          docker run --rm alpine:latest')"
+# Codex #164 r12 (the actual regression this round caught): a '#' COMMENT inside a multi-line array literal
+# -- an ordinary, common idiom (this repo's own bin/check-file-allowlist.sh has one) -- can contain an
+# apostrophe ("product's") that any quote-aware scanner misreads as opening a real quote, corrupting
+# everything scanned after it. The array literal is inert without needing to parse comments at all.
+case_ r4b6-array-comment-apostrophe-ok ok "$(rb 'ALLOW_PATTERNS=(
+          # a comment with an apostrophe, like product'"'"'s files
+          "a-regular-element"
+          )
+          echo done')"
+# accepted residual (advisor 0080/0117, documented in _skip_array_literal): a REAL command on the SAME
+# statement as the array literal, after it closes (a genuine but rare bash idiom -- not seen plain anywhere
+# in this repo), is not checked either. Not a blocker; pinned so this stays a deliberate, known trade-off.
+case_ r4b6-array-then-same-line-run-accepted-residual ok "$(rb 'a=(x) docker run --rm alpine:latest')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
