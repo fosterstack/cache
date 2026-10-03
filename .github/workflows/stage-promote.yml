@@ -275,9 +275,14 @@ jobs:
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME}"
+          # AC8: a generated patch tag carries its notes (bin/patch-decide.py tag-notes); any other tag has none
+          git fetch --no-tags origin "+refs/tags/${ver}:refs/tags/${ver}"
+          git cat-file tag "$ver" | python3 bin/patch-decide.py tag-notes > /tmp/notes.md || : > /tmp/notes.md
+          [ ! -s /tmp/notes.md ] || printf '\n' >> /tmp/notes.md
+          echo "See release-manifest.json for the full evidence bundle: image digests (GHCR canonical, Docker Hub mirror — identical digests), archive checksums, requirements baseline, per-AC acceptance results, and the Rekor log index of every verified statement in the release chain." >> /tmp/notes.md
           gh release create "$ver" --draft --verify-tag \
             --title "fscache ${ver}" \
-            --notes "See release-manifest.json for the full evidence bundle: image digests (GHCR canonical, Docker Hub mirror — identical digests), archive checksums, requirements baseline, per-AC acceptance results, and the Rekor log index of every verified statement in the release chain."
+            --notes-file /tmp/notes.md
           gh release upload "$ver" \
             dist/*.tar.gz dist/checksums.txt /tmp/checksums.txt.bundle \
             /tmp/release-manifest.json \
