@@ -59,15 +59,22 @@ check("CLI prints the route first", rc == 0 and buf.getvalue().split()[0] == "gi
 
 # --- REQ-REL-009-AC13 (owner RATIFIED, Oct 2) + 0126/0150: which approved ACs baseline a CI patch uses
 def req_yaml(entries):
-    """entries: [(req_id, ac_id, blocking)]. A minimal, real requirements.yaml _parse_requirements can read:
+    """entries: [(req_id, ac_id, blocking)] -- req_id may be a plain string, or (req_id, deprecated_bool) to
+    mark the WHOLE requirement deprecated. A minimal, real requirements.yaml _parse_requirements can read:
     one requirement per distinct req_id, one AC per entry, given/when/then/status fixed (irrelevant here
     except as "did this AC's content change")."""
     by_req = {}
+    deprecated = {}
     for req_id, ac_id, blocking in entries:
+        if isinstance(req_id, tuple):
+            req_id, dep = req_id
+            deprecated[req_id] = dep
         by_req.setdefault(req_id, []).append((ac_id, blocking))
     lines = ["requirements:"]
     for req_id, acs in by_req.items():
         lines.append("  - id: %s" % req_id)
+        if deprecated.get(req_id):
+            lines.append("    deprecated: true")
         lines.append("    acceptance_criteria:")
         for ac_id, blocking in acs:
             lines += ["      - id: %s" % ac_id, "        given: g", "        when: w", "        then: t",
@@ -100,6 +107,12 @@ for tag, bls, breqs, req, want, why in [
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [(not_pipe_req, pipe_req + "-AC1", False)]), None,
      "an AC spelled like a pipeline-only id but really under a product requirement: still refused"),
+    # Codex #163 r1, R02: a NEW, non-blocking product AC born deprecated must still be seen as a change
+    # needing pipeline-only classification -- deprecated requirements are excluded only from the BLOCKING
+    # set, never from the full AC comparison rule (b) runs
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
+     req_yaml(BASE + [((not_pipe_req, True), not_pipe_req + "-AC1", False)]), None,
+     "a new AC born deprecated under a product requirement: still a change, still refused"),
     # rule (b): a new PIPELINE-ONLY AC is fine, blocking set (a) still holds
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", False)]), "v0.2.1",
@@ -110,6 +123,13 @@ for tag, bls, breqs, req, want, why in [
      req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", True)]), None,
      "a pipeline-only AC BECOMING blocking changes the set (a): still refused"),
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {}, REQ, None, "the baseline's own requirements.yaml could not be read: no fallback"),
+    # Codex #163 r1, B01: rule (a) must compare the CANDIDATE against the owner's APPROVED, verified
+    # release_blocking_acs -- never a fresh re-derivation from the baseline's own tree, which might not match
+    # what was actually approved (a stale or forged freeze). Here the approved list claims a method the
+    # baseline's own requirements.yaml does not actually have: malformed, not usable, even if the candidate
+    # matches the baseline's tree exactly
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", acs=[{"id": "REQ-X-001-AC1", "method": "WRONG", "phase": "candidate"}])],
+     {"v0.2.1": REQ}, REQ, None, "the approved baseline's release_blocking_acs disagrees with its own tree: malformed"),
     # Codex #163 r1 B02: the latest OWNER-APPROVED baseline (an unapproved newer one is skipped, never a blocker)
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1", approved=False)], {"v0.2.0": REQ, "v0.2.1": REQ}, REQ, "v0.2.0",
      "an unapproved newer baseline is skipped: the latest approved is used"),
@@ -154,14 +174,15 @@ for k in ("owner", "other"):
 allowed = os.path.join(keys, "allowed_signers")
 open(allowed, "w").write("owner@x " + open(os.path.join(keys, "owner.pub")).read())
 run("git", "init", "-q", "-b", "main", cwd=g)
-def commit_baselines(vs, approved=True, req=REQ):
+def commit_baselines(vs, approved=True, req=REQ, acs=ACS):
     os.makedirs(os.path.join(g, "requirements", "releases"), exist_ok=True)
     open(os.path.join(g, "requirements", "requirements.yaml"), "wb").write(req)
+    acs_yaml = "".join("  - {id: %s, method: %s, phase: %s}\n" % (a["id"], a["method"], a["phase"]) for a in acs)
     for v in vs:
         open(os.path.join(g, "requirements", "releases", v + ".yaml"), "w").write(
             "version: %s\napproved: %s\napproved_on: 2026-09-29\nrequirements_sha256: %s\nfixed_at: %s\n"
-            "release_blocking_acs:\n  - {id: REQ-X-001-AC1, method: acceptance, phase: candidate}\n"
-            % (v, "true" if approved else "false", hashlib.sha256(req).hexdigest(), "a" * 40))
+            "release_blocking_acs:\n%s" % (v, "true" if approved else "false", hashlib.sha256(req).hexdigest(),
+                                           "a" * 40, acs_yaml))
     run("git", "add", "-A", cwd=g); run("git", "commit", "-qm", "c", cwd=g)
 def tag(v, key=None):
     if key:
@@ -187,6 +208,34 @@ rc = T.main(["owner-baselines", "--tag", "v0.2.6", "--repo", g, "--allowed-signe
 freeze2, reqs2 = T._load_baselines(out + "2")
 v, why = T.baseline("v0.2.6", freeze2, reqs2, open(os.path.join(g, "requirements", "requirements.yaml"), "rb").read())
 check("B01 requirements changed since the owner's baseline: no patch", v is None and "not on the pipeline-only list" in why, (v, why))
+# Codex #163 r1, B03: the latest approved tag's requirements.yaml missing at its OWN commit (freeze file still
+# readable) must not silently fall back to an older, fully-readable baseline -- it must appear as a candidate
+# so baseline() refuses outright ("no fallback")
+g2 = tempfile.mkdtemp(); run("git", "init", "-q", "-b", "main", cwd=g2)
+os.makedirs(os.path.join(g2, "requirements", "releases"), exist_ok=True)
+open(os.path.join(g2, "requirements", "requirements.yaml"), "wb").write(REQ)
+open(os.path.join(g2, "requirements", "releases", "v0.2.0.yaml"), "w").write(
+    "version: v0.2.0\napproved: true\napproved_on: 2026-09-29\nfixed_at: %s\nrelease_blocking_acs:\n%s"
+    % ("a" * 40, "".join("  - {id: %s, method: %s, phase: %s}\n" % (a["id"], a["method"], a["phase"]) for a in ACS)))
+run("git", "add", "-A", cwd=g2); run("git", "commit", "-qm", "c0", cwd=g2); tag_v020 = run("git", "rev-parse", "HEAD", cwd=g2)
+run("git", "-c", "gpg.format=ssh", "-c", "user.signingkey=" + os.path.join(keys, "owner"), "tag", "-s", "-m", "v0.2.0", "v0.2.0", cwd=g2)
+open(os.path.join(g2, "requirements", "releases", "v0.2.1.yaml"), "w").write(
+    "version: v0.2.1\napproved: true\napproved_on: 2026-09-29\nfixed_at: %s\nrelease_blocking_acs:\n%s"
+    % ("a" * 40, "".join("  - {id: %s, method: %s, phase: %s}\n" % (a["id"], a["method"], a["phase"]) for a in ACS)))
+os.remove(os.path.join(g2, "requirements", "requirements.yaml"))   # v0.2.1's own commit has NO requirements.yaml
+run("git", "add", "-A", cwd=g2); run("git", "commit", "-qm", "c1", cwd=g2)
+run("git", "-c", "gpg.format=ssh", "-c", "user.signingkey=" + os.path.join(keys, "owner"), "tag", "-s", "-m", "v0.2.1", "v0.2.1", cwd=g2)
+open(os.path.join(g2, "requirements", "requirements.yaml"), "wb").write(REQ)   # the tagged (v0.2.2) commit's own copy
+run("git", "add", "-A", cwd=g2); run("git", "commit", "-qm", "c2", cwd=g2)
+out3 = os.path.join(g2, "owner-baselines")
+rc = T.main(["owner-baselines", "--tag", "v0.2.2", "--repo", g2, "--allowed-signers", allowed, "--out", out3])
+got3 = sorted(os.listdir(out3)) if os.path.isdir(out3) else None
+check("B03 a readable freeze with an unreadable requirements.yaml still appears as a candidate",
+      got3 == ["v0.2.0.requirements.yaml", "v0.2.0.yaml", "v0.2.1.yaml"], got3)
+freeze3, reqs3 = T._load_baselines(out3)
+v, why = T.baseline("v0.2.2", freeze3, reqs3, REQ)
+check("B03 the latest approved baseline's unreadable requirements refuses outright, no fallback to v0.2.0",
+      v is None and "could not be read" in why, (v, why))
 try:
     T.main(["baseline", "--tag", "v0.2.2", "--releases-dir", rd, "--requirements", rq]); got = "accepted"
 except SystemExit:

@@ -78,14 +78,19 @@ def _parse_requirements(raw):
     d = yaml.safe_load(raw) or {}
     full, blocking = {}, set()
     for r in d.get("requirements") or []:
-        if not isinstance(r, dict) or r.get("deprecated"):
+        if not isinstance(r, dict):
             continue
-        req_id = r.get("id")
+        # a deprecated requirement's ACs still enter `full` (Codex #163 r1, R02: a brand-new AC born
+        # deprecated, or an existing one BECOMING deprecated, must still be seen as a change needing pipeline-
+        # only classification under rule (b) — only the BLOCKING set, below, drops deprecated requirements
+        deprecated, req_id = bool(r.get("deprecated")), r.get("id")
         for ac in r.get("acceptance_criteria") or []:
             v = ac.get("verification") or {}
             key = (ac.get("given"), ac.get("when"), ac.get("then"), v.get("method"), v.get("release_blocking"),
-                   ac.get("status"))
+                   ac.get("status"), deprecated)
             full[ac["id"]] = (req_id, key)
+            if deprecated:
+                continue
             if v.get("release_blocking"):
                 phase = "publication" if ac["id"] in PUBLICATION_ACS else "candidate"
                 blocking.add((ac["id"], v.get("method"), phase))
@@ -126,14 +131,24 @@ def baseline(tag, baselines, baseline_requirements, requirements):
     acs = d.get("release_blocking_acs")
     if not isinstance(acs, list) or not acs or not re.fullmatch(r"[0-9a-f]{40}", str(d.get("fixed_at"))):
         return None, "%s, the latest owner-approved baseline, is malformed (no blocking ACs or no fixed_at commit)" % v
+    try:
+        approved_blocking = {(e["id"], e["method"], e["phase"]) for e in acs}
+    except (TypeError, KeyError):
+        return None, "%s's release_blocking_acs entries are malformed" % v
     base_req = baseline_requirements.get(v)
     if base_req is None:
         return None, "%s's requirements/requirements.yaml at its own tag could not be read: no fallback" % v
     base_full, base_blocking = _parse_requirements(base_req)
     have_full, have_blocking = _parse_requirements(requirements)
-    if base_blocking != have_blocking:
+    # rule (a) compares the CANDIDATE against the owner's APPROVED, verify-freeze-checked set (Codex #163 r1,
+    # B01) -- never a fresh re-derivation from the baseline's own tree, which this function must not assume
+    # already matches what was actually approved. The re-derivation (base_blocking) is still checked against
+    # it as a sanity bound: a freeze whose own commit disagrees with what it claims is malformed, not a baseline.
+    if base_blocking != approved_blocking:
+        return None, "%s's approved release_blocking_acs does not match its own tag's requirements.yaml: malformed" % v
+    if have_blocking != approved_blocking:
         return None, ("the release-blocking AC set changed since %s (%d ACs then, %d now): no automatic "
-                      "patch; it waits for the owner" % (v, len(base_blocking), len(have_blocking)))
+                      "patch; it waits for the owner" % (v, len(approved_blocking), len(have_blocking)))
     changed = [acid for acid in set(base_full) | set(have_full) if base_full.get(acid) != have_full.get(acid)]
     # the owning requirement comes from whichever side actually has this AC (its real parent in the YAML
     # structure, per _parse_requirements -- never re-derived from the AC's own id string, Sonnet #163 r1 F1)
@@ -171,13 +186,19 @@ def owner_baselines(tag, repo, allowed_signers, out):
         if kind(git("cat-file", "tag", "refs/tags/" + v).stdout) != "ssh" or git("verify-tag", v).returncode != 0:
             continue
         f = git("show", "%s:requirements/releases/%s.yaml" % (v, v))
+        if f.returncode != 0:
+            continue
+        with open(os.path.join(out, v + ".yaml"), "w") as fh:
+            fh.write(f.stdout)
+        got.append(v)
+        # the requirements.yaml write is independent (Codex #163 r1, B03): if IT fails while the freeze file
+        # itself reads fine, this version must still appear as a candidate -- so baseline(), if it picks this
+        # as the latest approved one, correctly refuses outright (no requirements to compare) rather than
+        # silently falling back to an older, fully-readable baseline instead
         req = git("show", "%s:requirements/requirements.yaml" % v)
-        if f.returncode == 0 and req.returncode == 0:
-            with open(os.path.join(out, v + ".yaml"), "w") as fh:
-                fh.write(f.stdout)
+        if req.returncode == 0:
             with open(os.path.join(out, v + ".requirements.yaml"), "w") as fh:
                 fh.write(req.stdout)
-            got.append(v)
     return got
 
 
