@@ -113,6 +113,22 @@ else:
                  "scout-selfcheck.py probe-report"):
         if need not in prun:
             bad.append("the probe lacks %s" % need)
+    if pr.get("if") != "github.event_name == 'workflow_dispatch'" or pr.get("continue-on-error"):
+        bad.append("the probe must run on a manual dispatch only, without continue-on-error (Codex #170 r1, R1)")
+    for failing in ("sudo", "skopeo", "mkdir", "docker"):   # Codex #170 r1, B1: a diagnostic failure never fails the step
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "stub"))
+            for tool in ("docker", "skopeo", "sudo", failing):   # the others succeed; only the one under test fails
+                with open(os.path.join(t, "stub", tool), "w") as fh:
+                    fh.write("#!/usr/bin/env bash\nexit 23\n" if tool == failing else STUB)
+                os.chmod(os.path.join(t, "stub", tool), 0o755)
+            open(os.path.join(t, "log"), "w").close()
+            r = subprocess.run(["bash", "-e", "-c", prun], cwd=ROOT, capture_output=True, text=True,
+                               env=dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"],
+                                        RUNNER_TEMP=t, GITHUB_STEP_SUMMARY=os.path.join(t, "sum"),
+                                        STUB_LOG=os.path.join(t, "log"), STUB_MODE="applies"))
+        if r.returncode != 0:
+            bad.append("the probe step fails the job when %s fails (exit %d)" % (failing, r.returncode))
 sc, scan = step("rule 4 self-check"), step("Docker Scout every image")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
@@ -189,7 +205,11 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         bad.append(f"{j} is conditional")
     for st in jobs[j].get("steps", []):
         cond = str(st.get("if", "")).replace(" ", "")
-        if cond and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        # the one exception: the Scout product-form probe, a manual-dispatch diagnostic that never decides the job
+        # (advisor 0106; its own containment and its place before the unconditional self-check are checked below)
+        diag = j == "panel-scout" and st.get("name") == "Scout product-form probe (rule 4 diagnostic, advisor 0106)" \
+            and cond == "github.event_name=='workflow_dispatch'"
+        if cond and not diag and not cond.startswith("${{always()") and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -268,6 +288,9 @@ probe_case none-applied "applied: none" "$PB" "$PB"
 d0=$(mktemp -d "$work/p.XXXX"); printf '%s' "$PB" > "$d0/b"; python3 "$root/bin/scout-selfcheck.py" probe-doc "$d0/b" "FosterStack LLC" "$d0/v.json" >/dev/null
 first=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print(m["pkg:docker/ghcr.io/fosterstack/cache@selfcheck"])' "$d0/v.json.map")
 PA=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["vulnerabilities"]=[v for v in d["vulnerabilities"] if v["identifiers"][0]["value"]!=sys.argv[2]]; print(json.dumps(d))' "$PB" "$first")
+probe_case all-vanished "inconclusive" "$PB" '{"vulnerabilities":[]}'
+PC=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); drop={sys.argv[2], "CVE-2001-0007"}; d["vulnerabilities"]=[v for v in d["vulnerabilities"] if v["identifiers"][0]["value"] not in drop]; print(json.dumps(d))' "$PB" "$first")
+probe_case control-lost "inconclusive" "$PB" "$PC"
 probe_case one-applied "applied: pkg:docker/ghcr.io/fosterstack/cache@selfcheck" "$PB" "$PA"
 if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"]; assert d["author"]=="FosterStack LLC" and len(s)==len({x["vulnerability"]["name"] for x in s})>=5 and all(x["status"]=="not_affected" for x in s) and any(p["@id"]=="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" for x in s for p in x["products"])' "$d0/v.json"; then
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"

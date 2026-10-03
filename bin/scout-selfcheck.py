@@ -75,10 +75,26 @@ def probe_doc(before_path, author, out_path):
 
 
 def probe_report(before_path, after_path, map_path):
+    """Which forms Scout applied — only from a consistent delta (Codex #170 r1, B2): the findings that disappeared must be
+    exactly the findings of the mapped CVEs that disappeared, every other finding (the uncovered control included) must
+    remain as it was; anything else is reported as inconclusive, never as an applied form."""
     before, after = findings(before_path), findings(after_path)
-    bc, ac = {k[0] for k in before}, {k[0] for k in after}
     mapping = json.load(open(map_path))
-    applied = [f for f, c in mapping.items() if c in bc and c not in ac]
+    bc, ac = {k[0] for k in before}, {k[0] for k in after}
+    gone = bc - ac
+    applied = [f for f, c in mapping.items() if c in gone]
+    expected_after = Counter({k: n for k, n in before.items() if k[0] not in {mapping[f] for f in applied}})
+    unmapped = bc - set(mapping.values())
+    why = None
+    if not unmapped:
+        why = "no uncovered control finding in the fixture"
+    elif not unmapped <= ac:
+        why = "an uncovered finding disappeared too: %s" % sorted(unmapped - ac)
+    elif after != expected_after:
+        why = "findings changed beyond the mapped CVEs"
+    if why:
+        print("inconclusive: %s — no form reported as applied" % why)
+        return []
     for f, c in mapping.items():
         print("%-9s %s  (%s)" % ("APPLIED" if f in applied else "ignored", f, c))
     print("applied: " + (", ".join(applied) or "none"))
