@@ -1064,5 +1064,15 @@ case_ n23-variable-context     bad "$(rb 'docker build -t x "$CTX"')" "printf 'F
 case_ n23-build-context-image  bad "$(r 'docker buildx build --build-context base=docker-image://alpine:latest -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ n23-build-context-local-ok ok "$(r 'docker buildx build --build-context src=./src -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ n23-local-subdir-ok      ok  "$(r 'docker build -f build/Dockerfile -t x build')" "mkdir -p build; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/Dockerfile"
+# --- Sonnet #164 r16 (NEW-24): the default Dockerfile is <context>/Dockerfile; a moved working directory makes literal paths unresolvable
+case_ n24-context-dockerfile   bad "$(r 'docker build ./subdir -t x')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p subdir; printf 'FROM alpine:latest\\n' > subdir/Dockerfile"
+case_ n24-context-pinned-ok    ok  "$(r 'docker build ./subdir -t x')" "mkdir -p subdir; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > subdir/Dockerfile"
+case_ n24-cd-literal           bad "$(rb 'cd sub && docker build -f Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p sub; printf 'FROM alpine:latest\\n' > sub/Dockerfile"
+case_ n24-working-directory    bad "$head
+    steps:
+      - working-directory: sub
+        run: docker build -f Dockerfile -t x ." "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p sub; printf 'FROM alpine:latest\\n' > sub/Dockerfile"
+case_ n24-cd-template-ok       ok  "$(rb 'cp build/docker/Dockerfile.* /tmp/ctx/ && cd /tmp/ctx && docker build -f Dockerfile.$v .')" "mkdir -p build/docker; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/docker/Dockerfile.a"
+case_ n24-dot-slash-ok          ok  "$(r 'docker build -f ./Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
