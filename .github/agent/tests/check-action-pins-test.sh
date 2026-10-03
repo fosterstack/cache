@@ -1528,6 +1528,28 @@ case_ r4b6-unconditional-keyword-in-comment-bad bad "$(rb "arr=( # if
           )
           if false; then docker tag alpine@\$DIG alpine:latest; fi
           docker run alpine:latest")"
+# Codex #164 r15, B1/B2: any array literal anywhere now denies trust to the WHOLE script (same posture as
+# trap) -- not just when a comment is involved. _unconditional()'s own if/case keyword regex has no quote OR
+# comment awareness at all (quoted array DATA like "# if" is just as exploitable as a real comment was), and
+# teaching it every construct one at a time is the same trap the trap rule already walked away from once; no
+# real workflow in this repo combines an array with a local-build-then-run pattern (confirmed by direct grep)
+case_ r4b6-array-with-quoted-keyword-data-bad bad "$(rb "arr=(\"# if\"
+          \"# fi\"
+          docker build -t alpine:latest .
+          )
+          if false; then docker build -t alpine:latest .; fi
+          docker run alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Codex #164 r15, B3: the NESTED \$(...) substitution scanner (used when a command substitution recurses into
+# another one) is a SEPARATE scanner from the top-level one, and had never learned the comment rule either --
+# a comment with an unbalanced ')' AND the escaped-apostrophe idiom together closed the substitution early,
+# leaving the real docker run inside what looked like unextracted array data
+case_ r4b6-nested-subst-comment-paren-apostrophe-bad bad "$(rb "arr=(\$( # ) 'x'\\''y'
+          docker run --rm alpine:latest
+          ))")"
+# Codex #164 r15, B5 (regression from r14's own B2 fix): an ESCAPED paren (\\() immediately followed by '#' is
+# not a real '(' starting a new word -- it's data inside an array element -- so the '#' right after it is NOT
+# a comment, and a REAL \$(...) substitution right after that must still be read
+case_ r4b6-escaped-paren-before-hash-not-a-comment-bad bad "$(rb 'arr=(\(#$(docker run --rm alpine:latest)))')"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
