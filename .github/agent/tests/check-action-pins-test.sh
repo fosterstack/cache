@@ -1550,6 +1550,17 @@ case_ r4b6-nested-subst-comment-paren-apostrophe-bad bad "$(rb "arr=(\$( # ) 'x'
 # not a real '(' starting a new word -- it's data inside an array element -- so the '#' right after it is NOT
 # a comment, and a REAL \$(...) substitution right after that must still be read
 case_ r4b6-escaped-paren-before-hash-not-a-comment-bad bad "$(rb 'arr=(\(#$(docker run --rm alpine:latest)))')"
+# Sonnet #164 r16, B1: an ORDINARY, non-adversarial quoted scalar containing one of the if/case/trap keyword
+# words as plain data (no array, no comment -- just a log message or variable) corrupted _unconditional()'s
+# if/case tracking the same way a comment did, because the keyword regex has no quote-awareness at all
+case_ r4b6-quoted-scalar-contains-keyword-word-bad bad "$(rb 'if [ "$x" = y ]; then
+          PROFILE="release notes fi"
+          docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" 'printf "FROM scratch\n" > Dockerfile'
+# the same quoted-keyword-word text must NOT disturb a genuinely safe script's own trust computation --
+# proven against the real repo's existing dynamic-tag-name forms (n13/n21), which quote a $variable template
+# as the tag target and must keep working
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
