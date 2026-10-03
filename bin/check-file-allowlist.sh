@@ -93,6 +93,7 @@ ALLOW_PATTERNS=(
   '^bin/panel\.py$'
   '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
+  '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
   '^bin/workflow-consolidation-test\.sh$'

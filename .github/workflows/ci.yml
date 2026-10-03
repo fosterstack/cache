@@ -303,6 +303,9 @@ jobs:
       - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
         run: bash bin/vex-forms-test.sh
 
+      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
+        run: bash bin/scout-root-cause-test.sh
+
       - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
         run: bash bin/go-bump-open-pr-test.sh
 

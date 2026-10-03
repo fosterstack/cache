@@ -704,7 +704,7 @@ Our published OpenVEX file shall be the only exception for all four scanners: Gr
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-004-AC1 | Given the four panel scanners; when they scan; then no scanner-specific ignore list and no suppression configured in any vendor account applies; the published OpenVEX file is the only exception | ci-workflow |  | approved | 1 item(s) |
-| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 2 item(s) |
+| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 3 item(s) |
 
 ### REQ-SCAN-005 — Reporting
 
