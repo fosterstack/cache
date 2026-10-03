@@ -12,11 +12,7 @@ unmapped:
     reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-SCAN-011-AC1
     reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-011-AC2
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
   - ac: REQ-SCAN-011-AC3
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-011-AC4
     reason: rule 11 (customer guide) ships with rule 10's files, a later PR
   - ac: REQ-SCAN-012-AC1
     reason: rule 12 (live tests) waits on the ops-lane Terraform for the test repositories and identities (owner, Oct 2)
