@@ -112,7 +112,8 @@ else:
     for need in ("./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck", "scout-selfcheck.py probe-doc",
                  "scout-selfcheck.py probe-report", "--only-vex-affected", 'tee -a "$GITHUB_STEP_SUMMARY"',
                  "scout-selfcheck.py probe-doc3", "docker scout sbom --format json local://ghcr.io/fosterstack/cache:selfcheck",
-                 "registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"):
+                 "registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
+                 'cp -r "$RUNNER_TEMP/probe" /tmp/panel/scout-probe'):
         if need not in prun:
             bad.append("the probe lacks %s" % need)
     if pr.get("if") != "github.event_name == 'workflow_dispatch'" or pr.get("continue-on-error"):
@@ -311,6 +312,11 @@ assert subs and all(c["@id"].startswith("pkg:deb/debian/") for x in subs for c i
 assert plat and any(x["products"][0]["@id"].startswith("pkg:oci/cache") for x in subs)
 ' "$d3/v.json"; then pass=$((pass+1)); echo "PASS probe3-document: subcomponents from the SBOM, platform forms, one CVE each"
 else failn=$((failn+1)); echo "FAIL probe3-document"; fi
+# probe 3 run 1 found no (name, version) match between Scout's report and its SBOM: fall back to a unique name
+d3b=$(mktemp -d "$work/p3b.XXXX"); printf '%s' "$PB" > "$d3b/b"
+python3 -c 'import json; print(json.dumps({"artifacts": [{"name": n, "version": "1:1-deb12u1", "purl": "pkg:deb/debian/%s@1:1-deb12u1" % n} for n in "abcdefg"]}))' > "$d3b/sbom"
+if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3b/b" "$d3b/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3b/v.json" >/dev/null 2>&1; then
+  pass=$((pass+1)); echo "PASS probe3-name-fallback"; else failn=$((failn+1)); echo "FAIL probe3-name-fallback"; fi
 probe_case one-applied "applied: pkg:docker/ghcr.io/fosterstack/cache@selfcheck" "$PB" "$PA"
 if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"]; assert d["author"]=="FosterStack LLC" and len(s)==len({x["vulnerability"]["name"] for x in s})>=5 and all(x["status"]=="not_affected" for x in s) and any(p["@id"]=="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" for x in s for p in x["products"])' "$d0/v.json"; then
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
