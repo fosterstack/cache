@@ -242,8 +242,9 @@ class RunScriptImages(unittest.TestCase):              # handoff 0068: literal i
         self.assertEqual(M.check_dockerfile("FROM --platform=x\n"), [])
 
     def test_build_option_forms(self):
-        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set()))
-        self.assertEqual(M._build(["-f"]), ("-", ".", set()))
+        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set(), []))
+        self.assertEqual(M._build(["-f"]), ("-", ".", set(), []))
+        self.assertEqual(M._build(["--build-context=a=./x", "."])[3], ["./x"])
 
     def test_short_option_forms(self):
         self.assertEqual(M._options(["-dit", "img"], M.RUN_VAL, M.RUN_BOOL), (1, None))
