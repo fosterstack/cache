@@ -688,6 +688,10 @@ def _ansi_c_hidden(text):
                 q = None
         elif c == "\\":
             i += 1
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;|&("):
+            j = text.find("\n", i)                       # a comment: its apostrophes open nothing (rescan probe step)
+            i = len(text) if j < 0 else j
+            continue
         elif c in "'\"":
             q = c
         elif c == "$" and text[i + 1:i + 2] == "'":
@@ -1239,7 +1243,7 @@ def script_installs(script):
 
 
 SCOUT_VAL = {"--format", "--vex-location", "--output", "-o", "--platform", "--org", "--env", "--only-severity",
-             "--only-package-type", "--only-cve-id", "--only-base", "--ref", "--tag"}
+             "--only-package-type", "--only-cve-id", "--only-base", "--ref", "--tag", "--vex-author"}
 SCOUT_BOOL = {"--ignore-base", "--only-fixed", "--only-unfixed", "--exit-code", "-e", "--details", "--multi-stage",
               "--only-vex-affected", "--vex", "--locations"}
 SCOUT_LOCAL = ("local://", "oci-dir://", "archive://", "fs://", "sbom://")
