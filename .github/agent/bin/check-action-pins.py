@@ -548,12 +548,32 @@ TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "po
 UNREAD_CONTAINER = {"buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor"}
 PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 # package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
-PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba"
+PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|bun|conda|mamba|micromamba"
                       r"|pipenv|poetry|pdm|hatch|flit|pip-sync|pip-compile|rye|choco|winget|scoop|brew)$")
 # Python installers / build frontends that cannot be held to hashes here (Sonnet #164 r3): any use is a finding
 UNREAD_PY = {"pipenv", "poetry", "pdm", "hatch", "flit", "pip-sync", "pip-compile", "rye"}
 # OS package managers of Windows / macOS runners (Sonnet #164 r8, NEW-9): installs cannot be held to hashes here
 OS_PKG = {"choco", "winget", "scoop", "brew"}
+# Package managers this repository does not use: ANY invocation is refused — their many verb aliases and option forms
+# (npm in, npm --prefix x install, uv --no-cache pip install, pipx --verbose install) cannot be read reliably (Codex #164
+# adversarial r1, C04). pip, through `python -m pip` or pip itself, is read by a strict parser instead.
+REFUSED_PKG = {"pipx", "uv", "uvx", "npm", "npx", "gem", "yarn", "pnpm", "bun", "conda", "mamba", "micromamba"}
+# pip install / download / wheel options (pip 24-26): the ones that take a value, and the flags. Any other option is
+# refused, and --require-hashes counts only as a flag of its own, never as another option's value (C05).
+PIP_VAL = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-t", "--target", "-d", "--dest", "-w",
+           "--wheel-dir", "--prefix", "--root", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
+           "--platform", "--python-version", "--implementation", "--abi", "--src", "--report", "--progress-bar",
+           "--only-binary", "--no-binary", "--log", "--log-file", "--cache-dir", "--proxy", "--timeout", "--retries",
+           "--trusted-host", "--cert", "--client-cert", "--root-user-action", "--upgrade-strategy", "--python",
+           "--exists-action", "--keyring-provider", "--config-settings", "-C", "--global-option", "--use-feature",
+           "--use-deprecated", "--resume-retries", "--group"}
+PIP_BOOL = {"-q", "--quiet", "-v", "--verbose", "--dry-run", "-I", "--ignore-installed", "--break-system-packages",
+            "--no-deps", "-U", "--upgrade", "--force-reinstall", "--user", "--no-cache-dir", "--disable-pip-version-check",
+            "--no-input", "--isolated", "--pre", "--no-build-isolation", "--no-warn-script-location", "--compile",
+            "--no-compile", "--prefer-binary", "--require-virtualenv", "--no-color", "--no-python-version-warning",
+            "--no-index", "--require-hashes", "--ignore-requires-python", "--no-clean", "--no-warn-conflicts",
+            "--check-build-dependencies", "--ignore-installed", "--no-deps", "--quiet", "-qq", "-qqq", "-vv", "-vvv"}
+PIP_READ = {"list", "freeze", "show", "check", "hash", "inspect", "help", "--version", "-V", "cache", "uninstall", "debug"}
 FORWARD = {"$@", "$*", "${@}", "${*}"}   # a wrapper forwarding its own arguments (Sonnet #164 r2, N1)
 TOOL_WORDS = r"(docker|podman|skopeo|crane|pip3?|pipx|uvx?|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba|python3?)"
 # a tool binary copied, linked or aliased under another name (N2): the renamed command is invisible to name matching
@@ -568,14 +588,15 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 
 
 # A parameter expansion with a default, assign or alternate word (${x:-docker}, ${x-docker}, ${x:=docker}, ${x:+docker},
-# nested) can run that literal word: every check reads it as the word (Sonnet #164 r19, NEW-29, fail closed). ${x:?msg}
-# runs nothing (its word is an error message): read as empty. A bare $x / ${x} stays the documented variable boundary.
+# nested) can run that literal word: every check reads it as the word (Sonnet #164 r19, NEW-29, fail closed). ${x:?word}
+# too: bash expands the word, and any substitution in it runs, before it reports the error (Codex #164 adversarial r1,
+# C03). A bare $x / ${x} stays the documented variable boundary.
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
 def _expand_defaults(text):
     while True:   # each pass removes at least one ${...}: it ends
-        new = PARAM_WORD.sub(lambda m: "" if m.group(3) == "?" else m.group(4), text)
+        new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
             return new
         text = new
@@ -766,7 +787,7 @@ def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
-    text, inner = _cut_substitutions(re.sub(r"\\\n", " ", script))
+    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
     if depth < 6:
         for sub in inner:
@@ -797,6 +818,13 @@ def _commands(script, depth=0):
             out.append(["__computed__", computed[0]])
             continue
         # the tool word anywhere in the command (`if docker …`, `timeout 30 docker …`, `xargs docker …`): fail closed
+        if toks[0] == "hash" and any(t.startswith("-") and "p" in t for t in toks[1:]):
+            out.append(["__hash_p__", " ".join(toks)])   # hash -p binds a name to a program (Codex #164 adversarial r1, C12)
+            continue
+        globbed = [w for w in _command_words(toks) if re.search(r"[*?\[]", w) and _glob_guarded(_base(w))]
+        if globbed:           # a glob in a program name resolves to a file this check cannot see (C01)
+            out.append(["__glob__", globbed[0]])
+            continue
         if toks[0] in ("which", "type", "hash") or (toks[0] == "command" and toks[1:2] and toks[1] in ("-v", "-V")):
             continue          # a PATH lookup names a tool without running it
         # exact case: on an ubuntu runner (the scope) `Docker` is "command not found"; prose in a quoted string is not a run
@@ -804,6 +832,20 @@ def _commands(script, depth=0):
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
     return out
+
+
+GUARDED = ("docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose", "buildah", "ctr",
+           "crictl", "pip", "pip3", "pipx", "python", "python3", "uv", "uvx", "npm", "npx", "gem", "yarn", "pnpm", "bun",
+           "conda", "mamba", "micromamba", "bash", "sh", "dash", "zsh", "cd", "pushd", "alias", "hash", "eval", "source",
+           "cp", "ln", "install", "mv", "rsync")
+
+
+def _glob_guarded(pattern):
+    """True when a glob used as a program name could match a name this check guards (docke[r], dock?r). A pattern with
+    no literal letter (`*)` case labels, `**` in quoted text the splitter cut) names no particular program: not refused."""
+    import fnmatch
+    return bool(re.search(r"[A-Za-z]", re.sub(r"\[[^]]*\]", "", pattern))) and \
+        any(fnmatch.fnmatchcase(name, pattern) for name in GUARDED)
 
 
 def _stdin_shell(toks):
@@ -863,6 +905,8 @@ def _build(args):
             continue
         if a.startswith("--file="):
             dockerfile = a.split("=", 1)[1]
+        elif a.startswith("-f") and not a.startswith("--") and len(a) > 2:
+            dockerfile = a[2:][1:] if a[2] == "=" else a[2:]       # -fFILE / -f=FILE (Codex #164 adversarial r1, C07)
         elif a in ("-t", "--tag") and i + 1 < len(args):
             tags.add(args[i + 1]); i += 2
             continue
@@ -885,32 +929,58 @@ def _build(args):
 
 
 def _pip_install(args):
-    """True when a pip install's every package comes from a -r file checked with --require-hashes."""
-    reqs, specs, i = 0, 0, 0
+    """True when a pip install / download / wheel takes every package from a -r file with --require-hashes in force:
+    the options are read with their values, an unknown option fails closed (Codex #164 adversarial r1, C05)."""
+    reqs, specs, hashes, i = 0, 0, False, 0
     while i < len(args):
         a = args[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a redirection (<<'EOF', 2>/dev/null, > f)
             i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
             continue
-        if a in ("-r", "--requirement"):
-            reqs, i = reqs + 1, i + 2
-            continue
-        if a.startswith(("--requirement=", "-r=")) or (a.startswith("-r") and len(a) > 2 and not a.startswith("--")):
+        name = a.split("=", 1)[0] if a.startswith("--") else a
+        if a.startswith("-r") and not a.startswith("--") and len(a) > 2:
+            reqs += 1                                    # -rFILE / -r=FILE
+        elif name in ("-r", "--requirement"):
             reqs += 1
-        elif a in ("-e", "--editable"):
-            specs, i = specs + 1, i + 2
+            i += 1 if "=" in a else 2
             continue
-        elif a in ("-c", "--constraint", "-t", "--target", "-d", "--dest", "-w", "--wheel-dir", "--prefix", "--root", "-i", "--index-url",
-                   "--extra-index-url", "-f", "--find-links", "--platform", "--python-version", "--implementation",
-                   "--abi", "--src", "--report", "--progress-bar", "--only-binary", "--no-binary", "--log",
-                   "--cache-dir", "--proxy", "--timeout", "--retries", "--trusted-host", "--cert", "--client-cert",
-                   "--root-user-action", "--upgrade-strategy", "--python", "--exists-action", "--keyring-provider"):
-            i += 2
+        elif name in ("-e", "--editable"):
+            specs += 1
+            i += 1 if "=" in a else 2
             continue
-        elif not a.startswith("-"):
+        elif name in PIP_VAL:
+            i += 1 if "=" in a else 2
+            continue
+        elif a == "--require-hashes":
+            hashes = True
+        elif a in PIP_BOOL:
+            pass
+        elif a.startswith("-"):
+            return False                                 # an option this check does not know: fail closed
+        else:
             specs += 1
         i += 1
-    return "--require-hashes" in args and reqs > 0 and specs == 0
+    return hashes and reqs > 0 and specs == 0
+
+
+def _python_run(args):
+    """(kind, rest) for a python invocation: ("module", name, rest) for -m, ("inline", None, []) for -c (refused, handoff
+    0094), ("script", path, rest) for a script operand (stdin `-` included), ("none", None, []) otherwise."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("-m"):
+            return ("module", a[2:], args[i + 1:]) if len(a) > 2 else (
+                ("module", args[i + 1], args[i + 2:]) if i + 1 < len(args) else ("none", None, []))
+        if a.startswith("-c") or (a.startswith("-") and not a.startswith("--") and "c" in a[1:]):
+            return "inline", None, []
+        if a in ("-X", "-W", "--check-hash-based-pycs"):
+            i += 2
+            continue
+        if a == "-" or not a.startswith("-"):
+            return "script", a, args[i + 1:]
+        i += 1
+    return "none", None, []
 
 
 def script_installs(script):
@@ -924,49 +994,43 @@ def script_installs(script):
         if cmd in UNREAD_PY:
             found.append((cmd, "a Python installer this check cannot hold to hashes"))
             continue
-        if re.match(r"^python3?(\.[0-9]+)?$", cmd):
-            if args[:1] == ["setup.py"] or (args[:1] and args[0].endswith("/setup.py")):
-                found.append(("python setup.py", "setuptools fetches and builds packages without hashes"))
-                continue
-            if "-m" not in args or args.index("-m") + 1 >= len(args):
-                continue
-            mod = args[args.index("-m") + 1]
-            if mod in ("build", "pipx", "poetry", "pipenv", "pdm", "hatch", "flit", "uv"):
-                found.append(("python -m " + mod, "a Python installer or build frontend this check cannot hold to hashes"))
-                continue
-            if mod != "pip":
-                continue
-            cmd, args = "python -m pip", args[args.index("-m") + 2:]
-        if cmd == "uv" and args[:1] == ["pip"]:
-            cmd, args = "uv pip", args[1:]
-        elif cmd == "uv" and args[:1] and args[0] in ("add", "sync", "lock", "run"):   # each resolves and installs
-            found.append(("uv " + args[0], "uv's project and ad-hoc installs cannot be held to hashes here"))
+        if cmd in REFUSED_PKG:
+            found.append((cmd, "a package manager this repository does not use; any invocation is refused"))
             continue
+        if re.match(r"^python3?(\.[0-9]+)?$", cmd):
+            kind, what, rest = _python_run(args)
+            if kind == "inline":
+                found.append((cmd + " -c", "inline code in the workflow is not read; put it in a committed file "
+                                            "(handoff 0094)"))
+                continue
+            if kind == "script":
+                if what.rsplit("/", 1)[-1] == "setup.py":
+                    found.append(("python setup.py", "setuptools fetches and builds packages without hashes"))
+                continue                                 # a committed .py file or a heredoc: the documented boundary
+            if kind != "module":
+                continue
+            top = what.split(".")[0]
+            if top in ("build", "pipx", "poetry", "pipenv", "pdm", "hatch", "flit", "uv"):
+                found.append(("python -m " + what, "a Python installer or build frontend this check cannot hold to hashes"))
+                continue
+            if top != "pip":
+                continue
+            cmd, args = "python -m pip", rest
         if FORWARD & set(args):
             found.append((cmd, "forwards its caller's arguments; the packages cannot be seen"))
             continue
-        if re.match(r"^pip3?(\.[0-9]+)?$", cmd) or cmd in ("python -m pip", "uv pip"):
-            sub = next((a for a in args if not a.startswith("-")), None)
-            if sub is not None and _variable(sub):
+        if re.match(r"^pip3?(\.[0-9]+)?$", cmd) or cmd == "python -m pip":
+            verb = next((a for a in args if not a.startswith("-")), None)
+            if verb is not None and _variable(verb):
                 found.append((cmd, "its subcommand is a variable; the packages cannot be seen"))
-            for verb in ("install", "download", "wheel", "sync"):     # download/wheel build from source (N3); uv pip sync
-                if verb in args:
-                    rest = args[args.index(verb) + 1:]
-                    if not _pip_install(rest):
-                        found.append((cmd + " " + verb, "not every package from a -r file checked with --require-hashes"))
-                    break
-        elif cmd == "pipx" and args[:1] and args[0] in ("install", "run", "inject", "upgrade", "reinstall"):
-            found.append(("pipx " + args[0], "pipx cannot check hashes"))
-        elif cmd == "uv" and args[:1] == ["tool"] and args[1:2] and args[1] in ("install", "run", "upgrade"):
-            found.append(("uv tool " + args[1], "uv tool cannot check hashes"))
-        elif cmd in ("conda", "mamba", "micromamba") and args[:1] and args[0] in ("install", "create", "update", "env", "run"):
-            found.append((cmd + " " + args[0], "a %s package install (none is reviewed for hashes here)" % cmd))
-        elif cmd in ("uvx", "npx"):
-            found.append((cmd, "runs a package fetched by name"))
-        elif cmd in ("npm", "yarn", "pnpm", "gem") and args[:1] and args[0] in ("install", "i", "ci", "add", "update", "exec", "dlx"):
-            found.append((cmd + " " + args[0], "a %s package install (none is reviewed for hashes here)" % cmd))
-        elif cmd in ("yarn", "pnpm") and not args:
-            found.append((cmd, "a %s package install" % cmd))
+            elif verb in ("install", "download", "wheel"):     # download/wheel build from source (N3)
+                pre = args[:args.index(verb)]
+                if any(a not in PIP_BOOL for a in pre) or not _pip_install(args[args.index(verb) + 1:]):
+                    found.append((cmd + " " + verb, "not every package from a -r file checked with --require-hashes"))
+            elif verb is None and any(a not in PIP_READ | PIP_BOOL for a in args):
+                found.append((cmd, "an option this check does not know"))
+            elif verb is not None and verb not in PIP_READ:
+                found.append((cmd + " " + verb, "a pip subcommand this check does not read"))
     return found
 
 
@@ -1014,6 +1078,11 @@ def script_images(script):
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
             continue
+        if cmd in ("__glob__", "__hash_p__"):
+            ev.append(("finding", ("a program name is a glob (%s); the file it runs cannot be seen" if cmd == "__glob__"
+                                   else "`%s` binds a command name to a program; the renamed command cannot be checked")
+                       % args[0]))
+            continue
         if cmd == "__stdin_shell__":
             ev.append(("finding", "`%s` reads its script from stdin, a herestring or a process substitution; text this "
                        "check never reads, refused" % args[0]))
@@ -1035,6 +1104,10 @@ def script_images(script):
                                       % cmd))
                 continue
             verb, rest = rest[0], rest[1:]
+            if verb == "rmi" or (verb == "image" and rest[:1] in (["rm"], ["remove"], ["prune"])):
+                gone = [a for a in (rest if verb == "rmi" else rest[1:]) if not a.startswith("-")]
+                ev += [("unlocal", x) for x in gone] or [("unlocal", "*")]   # prune: every local name (C10)
+                continue
             if verb in ("container", "image", "builder", "manifest") and rest and (verb, rest[0]) in DOCKER_SAFE_SUB:
                 continue
             if verb == "buildx" and len(rest) >= 2 and rest[0] == "imagetools" and ("buildx imagetools", rest[1]) in DOCKER_SAFE_SUB:
@@ -1072,7 +1145,11 @@ def script_images(script):
                     ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "
                                           "which word is the image" % (verb, unknown)))
                 else:
-                    ev.append(("use", "docker " + verb, rest[k] if k < len(rest) else None))
+                    # pull, and run/create --pull=always, fetch from the registry whatever is local (Codex #164
+                    # adversarial r1, C10): never excused by a name the job made
+                    fetch = verb == "pull" or any(re.fullmatch(r"--pull(=always)?", a) and (
+                        "=" in a or rest[rest.index(a) + 1:rest.index(a) + 2] == ["always"]) for a in rest[:k])
+                    ev.append(("fetch" if fetch else "use", "docker " + verb, rest[k] if k < len(rest) else None))
             elif verb == "scout":
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
@@ -1084,12 +1161,21 @@ def script_images(script):
                                       "it is refused" % (cmd, verb)))
             elif verb == "build":
                 dockerfile, context, tags, named = _build(rest)
+                # a BUILDKIT_SYNTAX build argument selects the frontend image that runs the build (C09)
+                for k, b in enumerate(rest):
+                    v = rest[k + 1] if b == "--build-arg" and k + 1 < len(rest) else (
+                        b.split("=", 1)[1] if b.startswith("--build-arg=") else "")
+                    if v.startswith("BUILDKIT_SYNTAX=") and not (DIGEST_REF.search(v) and not _variable(v)):
+                        ev.append(("finding", "a build sets its frontend image by tag (%s)" % v))
                 ev.append(("build", dockerfile, context, named))
                 ev += [("local", x) for x in tags]
         elif cmd == "skopeo" and args and args[0] not in ("copy", "inspect") + tuple(SKOPEO_SAFE):
             ev.append(("finding", "`skopeo %s` is not a verb this check reads; it is refused" % args[0]))
         elif cmd == "skopeo" and args and args[0] in ("copy", "inspect"):
-            pos = [a for a in args[1:] if not a.startswith("-")]
+            pos, unknown = _operands(args[1:], SKOPEO_VAL, SKOPEO_BOOL)
+            if unknown:
+                ev.append(("finding", "`skopeo %s` has an option this check does not know (%s)" % (args[0], unknown)))
+                continue
             if pos and pos[0].startswith("docker://"):
                 ev.append(("use", "skopeo " + args[0], pos[0][len("docker://"):]))
             elif pos and SUBST in pos[0]:                         # a substituted source could be docker://…
@@ -1105,25 +1191,93 @@ def script_images(script):
             ev.append(("finding", "`crane %s` is not a verb this check reads (it may take a base image); it is refused"
                        % args[0]))
         elif cmd == "crane" and args and args[0] in ("copy", "cp", "pull", "export"):
-            pos = [a for a in args[1:] if not a.startswith("-")]
+            pos, unknown = _operands(args[1:], CRANE_VAL, CRANE_BOOL)
+            if unknown:
+                ev.append(("finding", "`crane %s` has an option this check does not know (%s)" % (args[0], unknown)))
+                continue
             if pos:
                 ev.append(("use", "crane " + args[0], pos[0]))
     return ev
 
 
+# skopeo copy / inspect and crane copy / pull / export options: a value option's value is never an image operand, and an
+# option outside these reviewed sets is refused (Codex #164 adversarial r1, C06)
+SKOPEO_VAL = {"--override-arch", "--override-os", "--override-variant", "--format", "-f", "--retry-times",
+              "--authfile", "--src-authfile", "--dest-authfile", "--digestfile", "--additional-tag", "--retry-delay"}
+SKOPEO_BOOL = {"--all", "-a", "--quiet", "-q", "--remove-signatures", "--preserve-digests", "--raw", "--config",
+               "--dest-precompute-digests", "--src-tls-verify", "--dest-tls-verify", "--tls-verify", "--no-tags"}
+CRANE_VAL = {"--platform", "--format", "-j", "--jobs", "--cache_path"}
+CRANE_BOOL = {"--insecure", "-v", "--verbose", "--no-clobber", "-a", "--all-tags", "--allow-nondistributable-artifacts"}
+
+
+def _operands(args, val, boolean):
+    """(positional operands, unknown option or None) of a skopeo / crane verb's arguments."""
+    pos, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a redirection
+            i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
+            continue
+        if a.startswith("-") and a != "-":
+            name = a.split("=", 1)[0]
+            if name in val:
+                i += 1 if "=" in a else 2
+                continue
+            if name in boolean:
+                i += 1
+                continue
+            return pos, a
+        pos.append(a)
+        i += 1
+    return pos, None
+
+
 def _local(ref, local):
-    """A name the job made EARLIER: exactly, as name:latest, or by a template (`fa-${v}`) whose literal prefix is at
-    least three characters and ends in a separator (- _ .) — a shorter one could cover a public image (Sonnet B7)."""
-    if ref in local or (":" not in ref.rsplit("/", 1)[-1] and ref + ":latest" in local):
-        return True
-    for name in local:
-        if "$" in name:
-            prefix = name.split("$", 1)[0]
-            # never a registry path: a template under ghcr.io/org/… would vouch for every sibling tag (NEW-13)
-            if "/" not in prefix and len(prefix) >= 3 and prefix[-1] in "-_." \
-                    and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]+", ref):
-                return True
-    return False
+    """A name the job made EARLIER, exactly or as name:latest. A template (`fa-${v}`) was expanded when it was registered
+    to the words of its literal `for v in …` list; it never vouches for any other name (Codex #164 adversarial r1, C10)."""
+    return ref in local or (":" not in ref.rsplit("/", 1)[-1] and ref + ":latest" in local)
+
+
+def _expand_names(name, text):
+    """A local name's concrete values: itself when literal; a template's expansions over the literal word lists of the
+    `for VAR in w1 w2 …` loops in the job (every variable must have one); otherwise none."""
+    found = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", name)
+    if not found:
+        return {name}
+    out = {name}
+    for var in dict.fromkeys(found):
+        lists = re.findall(r"(?m)\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b", text)
+        words = [w for lst in lists for w in lst.split()]
+        if not lists or any(re.search(r"[$`*?\[\]\"']", w) for w in words):
+            return set()
+        out = {re.sub(r"\$\{?" + var + r"\}?(?![A-Za-z0-9_])", w, n) for n in out for w in words}
+    return out
+
+
+def _unconditional(text):
+    """The script with every line that may not run removed: inside if/case/while/until, or after && / || on its line.
+    A build there registers no local name (C10); a literal for-loop always runs and is kept."""
+    keep, stack = [], []
+    for line in text.splitlines():
+        words = re.findall(r"[A-Za-z]+|[;&|]{1,2}", line.strip())
+        first = words[0] if words else ""
+        if first in ("fi", "esac", "done"):
+            if stack:
+                stack.pop()
+            continue
+        if first in ("if", "case", "while", "until", "elif", "else"):
+            if first in ("if", "case", "while", "until") and not re.search(r"\b(fi|esac|done)\s*;?\s*$", line):
+                stack.append(first)
+            continue
+        if first == "for":
+            if not re.search(r"\bdone\s*;?\s*$", line):
+                stack.append("for")
+            line = re.sub(r"^\s*for\b[^;]*;\s*do\b", "", line)
+            line = re.sub(r"\bdone\s*;?\s*$", "", line)
+        if any(x != "for" for x in stack):
+            continue
+        keep.append(re.split(r"&&|\|\|", line)[0])
+    return "\n".join(keep)
 
 
 def _dockerfiles(tree, dockerfile):
@@ -1157,7 +1311,7 @@ def _touches(script, name, consumer):
     python -c, dd of=, sed -i, rsync … all count (Sonnet #164 r5, NEW-5/NEW-6)."""
     import shlex
     mention = re.compile(r"(^|[^A-Za-z0-9._-])" + _name_pattern(name) + r"($|[^A-Za-z0-9._-])")
-    text, inner = _cut_substitutions(re.sub(r"\\\n", " ", script))
+    text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     for sub in inner:
         if _touches(sub, name, consumer):
             return True
@@ -1166,9 +1320,13 @@ def _touches(script, name, consumer):
             toks = shlex.split(chunk, comments=True)
         except ValueError:
             toks = chunk.split()
+        if _fills_dir(toks, name, script):     # writes into the file's directory without naming it (C11)
+            return True
         if not any(mention.search(t) for t in toks):
             continue
-        if consumer(toks):
+        redirects = any(re.match(r"^[0-9]*>>?", t) and (mention.search(t) or (k + 1 < len(toks) and mention.search(toks[k + 1])))
+                        for k, t in enumerate(toks))
+        if consumer(toks) and not redirects:   # the consumer itself must not write the file (C11)
             continue
         words = [t for t in toks if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*", t) and t != "sudo"]
         while words and words[0] in ("if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"):
@@ -1192,12 +1350,62 @@ def _touches(script, name, consumer):
     return False
 
 
+OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/")   # roots outside the checkout: never the file's directory
+
+
+def _outside(target, script):
+    """A destination that cannot be the checkout's directory: an absolute path, $RUNNER_TEMP/…, or a variable every
+    assignment of which in the job is one of those."""
+    if target.startswith(OUTSIDE):
+        return True
+    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?", target)
+    if not m:
+        return False
+    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
+    return bool(values) and all(v.startswith(OUTSIDE) for v in values)
+
+
+def _fills_dir(toks, name, script=""):
+    """True when a copy, move, sync, archive extraction, git checkout or patch writes into the directory that holds
+    `name` (or into a directory this check cannot place): it can replace the file without spelling its name (Codex #164
+    adversarial r1, C11)."""
+    words = _command_words(toks)
+    if not words:
+        return False
+    cmd, rest = _base(words[0]), toks[toks.index(words[0]) + 1:]
+    where = os.path.normpath(os.path.dirname(name) or ".")
+    pos = [t for t in rest if not t.startswith("-") and not re.match(r"^[0-9]*[<>]", t)]
+
+    def hits(target):
+        if _outside(target, script):
+            return False
+        return _variable(target) or SUBST in target or os.path.normpath(target.rstrip("/") or "/") == where
+    if cmd in ("cp", "mv", "rsync", "install", "ln") and len(pos) >= 2:
+        return hits(pos[-1])
+    if cmd == "tar" and any(re.match(r"^-?[a-zA-Z]*x", t) or t == "--extract" for t in rest[:2]):
+        c = rest[rest.index("-C") + 1] if "-C" in rest[:-1] else next(
+            (t.split("=", 1)[1] for t in rest if t.startswith("--directory=")), ".")
+        return hits(c)
+    if cmd == "unzip":
+        return hits(rest[rest.index("-d") + 1] if "-d" in rest[:-1] else ".")
+    if cmd == "git" and pos[:1] and pos[0] in ("checkout", "restore", "apply", "am", "pull", "merge", "reset", "stash",
+                                               "switch", "cherry-pick", "rebase", "revert", "clone", "worktree"):
+        return pos[0] != "clone" or len(pos) < 3 or hits(pos[-1])
+    if cmd == "patch":
+        return True
+    return False
+
+
 def _is_build(toks):
-    return any(_base(t) in ("docker", "podman", "nerdctl") for t in toks) and "build" in toks
+    """The consuming build: its program is docker / podman / nerdctl with `build`, and it writes nothing (C11)."""
+    words = _command_words(toks)
+    return bool(words) and _base(words[0]) in ("docker", "podman", "nerdctl") and "build" in toks
 
 
 def _is_pip_reading(toks):
-    return any(t in ("-r", "--requirement") or t.startswith(("--requirement=", "-r")) for t in toks) and \
+    words = _command_words(toks)
+    return bool(words) and re.match(r"^(pip3?|python3?)(\.[0-9]+)?$", _base(words[0])) is not None and \
+        any(t in ("-r", "--requirement") or t.startswith(("--requirement=", "-r")) for t in toks) and \
         any(t in ("install", "download", "wheel", "sync") for t in toks)
 
 
@@ -1232,21 +1440,43 @@ def _local_path(x):
 
 
 def check_dockerfile(text):
-    """Every FROM is a digest, scratch or an earlier stage; anything else (a tag, a variable) is returned."""
-    stages, bad = set(), []
-    for line in text.splitlines():
-        m = re.match(r"(?i)^\s*FROM\s+(.*)$", line)
-        if not m:
+    """Every image a build fetches is a digest, scratch or an earlier stage; anything else (a tag, a variable) is
+    returned. Read as BuildKit reads it (Codex #164 adversarial r1, C08/C09): a FROM's base is resolved against the stages
+    BEFORE its own name is added; COPY/ADD --from and RUN --mount from= name images too; a `# syntax=` parser directive
+    and an ARG BUILDKIT_SYNTAX select the frontend image that runs the build; ONBUILD instructions are read as well."""
+    stages, bad, n, header = set(), [], 0, True
+
+    def ok(ref):
+        r = ref.lower()
+        return r in stages or r == "scratch" or (r.isdigit() and int(r) < n) or (
+            DIGEST_REF.search(ref) is not None and not _variable(ref))
+    for line in re.sub(r"\\\n", " ", text).splitlines():
+        directive = re.match(r"(?i)^\s*#\s*syntax\s*=\s*(\S+)", line)
+        if directive and header:
+            if not ok(directive.group(1)):
+                bad.append(directive.group(1))
             continue
-        words = [w for w in m.group(1).split() if not w.startswith("--")]
-        if not words:
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        img = words[0]
-        if len(words) >= 3 and words[1].lower() == "as":
-            stages.add(words[2].lower())
-        if img.lower() in stages or img.lower() == "scratch" or (DIGEST_REF.search(img) and not _variable(img)):
+        header = False
+        body = re.sub(r"(?i)^\s*ONBUILD\s+", "", line)
+        m = re.match(r"(?i)^\s*FROM\s+(.*)$", body)
+        if m:
+            words = [w for w in m.group(1).split() if not w.startswith("--")]
+            if not words:
+                continue
+            if not ok(words[0]):
+                bad.append(words[0])
+            if len(words) >= 3 and words[1].lower() == "as":
+                stages.add(words[2].lower())
+            n += 1
             continue
-        bad.append(img)
+        arg = re.match(r"(?i)^\s*ARG\s+BUILDKIT_SYNTAX=(\S+)", body)
+        if arg and not ok(arg.group(1).strip("'\"")):
+            bad.append(arg.group(1))
+        for src in re.findall(r"(?i)--from=(\S+)", body) + re.findall(r"(?i)--mount=\S*?\bfrom=([^,\s]+)", body):
+            if not ok(src.strip("'\"")):
+                bad.append(src)
     return bad
 
 
@@ -1275,13 +1505,13 @@ def check_runs(where_job, scripts, bad, tree=None):
                          if not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]))
     for item in scripts:
         where, raw, shell = item[:3]
-        text = _decode_dollar_quotes(_expand_defaults(raw))
+        text = _decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw)))
         wdir = item[3] if len(item) > 3 else None
         # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
         # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
-        for name in daemon_redirects(text):
+        for name in daemon_redirects(_unquoted(text)):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
         if ALIASING.search(_unquoted(text)):
             bad.append(f"{where}: defines an alias; the command it hides cannot be checked, refused")
@@ -1295,13 +1525,19 @@ def check_runs(where_job, scripts, bad, tree=None):
             # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
             bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
             continue
+        sure = {e[1] for e in script_images(_unconditional(text)) if e[0] == "local"} | {
+            e[2] for e in script_images(_unconditional(text)) if e[0] == "tag"}
         for ev in script_images(text):
             if ev[0] == "local":
-                local.add(ev[1])
+                if ev[1] in sure:
+                    local.update(_expand_names(ev[1], job_text))
+            elif ev[0] == "unlocal":
+                local.clear() if ev[1] == "*" else local.discard(ev[1])
             elif ev[0] == "tag":
                 src, dst = ev[1], ev[2]
                 if _variable(src) or DIGEST_REF.search(src) or _local(src, local):
-                    local.add(dst)
+                    if dst in sure:
+                        local.update(_expand_names(dst, job_text))
                 else:     # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21)
                     bad.append(f"{where}: `docker tag` makes {dst!r} from {src!r}, which is neither pinned by digest nor an "
                                f"image this job made; refused")
@@ -1347,7 +1583,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if img is not None and SUBST in img:
                     bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
                     continue
-                if img is None or _variable(img) or DIGEST_REF.search(img) or _local(img, local):
+                if img is None or _variable(img) or DIGEST_REF.search(img) or (ev[0] == "use" and _local(img, local)):
                     continue
                 bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
         for c, why in script_installs(text):
