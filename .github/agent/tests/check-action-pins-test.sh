@@ -1277,5 +1277,11 @@ case_ r2c10-localhost-cond-ok   ok  "$head
       - if: \${{ inputs.mode == 'build' }}
         run: docker build -t localhost/fa-production .
       - run: docker run localhost/fa-production" "printf 'FROM scratch\\n' > Dockerfile"
+# --- Sonnet #164 r23 (NEW-35): a program the job downloads, writes or makes executable, then runs directly, is a script
+#     this check cannot read: refused
+case_ n35-curl-chmod-run       bad "$(rb 'curl -sL -o /tmp/setup https://example.com/ci/setup; chmod +x /tmp/setup; /tmp/setup')"
+case_ n35-base64-chmod-run     bad "$(rb "printf '%s\\n' 'docker pull alpine:latest' | base64 > /tmp/x.b64; base64 -d /tmp/x.b64 > /tmp/x; chmod +x /tmp/x; /tmp/x")"
+case_ n35-wget-run             bad "$(rb 'wget -O /tmp/inst https://example.com/i; chmod 755 /tmp/inst; /tmp/inst --flag')"
+case_ n35-built-binary-ok      ok  "$(rb 'mkdir -p /tmp/bins; tar xzf dist/fscache.tgz -C /tmp/bins fscache; /tmp/bins/fscache --version')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
