@@ -338,7 +338,7 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
         # when it is a file of the tree, and walked through
         # only at command position — the first word of a command: a line start (after "- " / "run:" / a quote), after
         # ; & | ( `, or after a keyword or wrapper — so "osv-scanner scan source go.mod" names no program (Codex r9)
-        cmdpos = (r"(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*)?[|>]?[ \t]*|[;&|(`][ \t]*)"
+        cmdpos = (r"(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*)?[|>]?[ \t]*[\"']?|[;&|(`][ \t]*)"   # a quoted scalar (B8)
                   # any chain of keywords and wrappers (if ! …, while ! …, env …; Codex #159 r10, B7) and VAR=value
                   r"(?:(?:(?:then|do|else|if|elif|while|until|exec|env|nohup|time|sudo|command|builtin)|!)[ \t]+"
                   r"|[A-Za-z_]\w*=\S*[ \t]+|(?:/[\w.-]+)*/env[ \t]+)*[\"']?")

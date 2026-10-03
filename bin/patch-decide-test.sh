@@ -630,7 +630,9 @@ check("r9 on this repository no data file is in the chain (go.mod bumps stay fix
       not [f for f in P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), "..")) if f == "go.mod" or f.endswith((".json", ".yaml", ".md", ".mod", ".sum"))])
 # Codex #159 r10 (B7, R1): keyword chains (if !, while !) keep the command position; an interpreter may be quoted, an
 # absolute path, or another language's
-for i, run in enumerate(["if ! bash bin/driver.sh; then exit 1; fi", "while ! sh bin/driver.sh; do sleep 1; done",
+for i, run in enumerate(['"if bash bin/driver.sh; then echo ok; fi"', "'while ! sh bin/driver.sh; do :; done'",
+                         '"env FOO=1 bash bin/driver.sh"',
+                         "if ! bash bin/driver.sh; then exit 1; fi", "while ! sh bin/driver.sh; do sleep 1; done",
                          "/bin/bash bin/driver.sh", '"bash" bin/driver.sh', "node bin/driver.sh", "/usr/bin/env perl bin/driver.sh"]):
     r10 = tempfile.mkdtemp()
     g(r10, "init", "-q")
