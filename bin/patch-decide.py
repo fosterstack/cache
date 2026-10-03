@@ -11,7 +11,8 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   next_patch              rule 1: vX.Y.Z -> vX.Y.(Z+1); CI never makes a minor or major.
   daily_cut               rule 2: at most one daily patch (a critical/high fix may cut at once, outside this rule).
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
-                          no-behavior-change line; no vendor or model names.
+                          no-behavior-change line, or (advisor 0130) the behavior changes listed in
+                          docs/next-release-notes.md, each citing the handoff that judged it; no vendor or model names.
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
 import re
@@ -241,7 +242,26 @@ def _clean(s):
     return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
 
 
-def notes(version, fixes, vex_changes):
+CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
+
+
+def behavior_entries(text):
+    """The entries of docs/next-release-notes.md (advisor 0130): each "- " bullet, its indented continuation lines joined.
+    An entry is only a change the owner or the advisor judged unable to affect supported clients, so each must end by
+    citing that handoff, "(... advisor NNNN)"; an entry without one is refused (ValueError) and nothing is cut."""
+    out = []
+    for ln in text.splitlines():
+        if ln.startswith("- "):
+            out.append(ln[2:].strip())
+        elif out and ln.startswith("  ") and ln.strip():
+            out[-1] += " " + ln.strip()
+    for e in out:
+        if not CITED.search(e):
+            raise ValueError("next-release-notes entry cites no handoff: %r" % e)
+    return out
+
+
+def notes(version, fixes, vex_changes, behavior=()):
     lines = ["## %s — patch release" % version, "", "### Fixes"]
     for f in fixes:
         lines.append("- %s in %s: %s → %s (severity %s; variants: %s)" % (
@@ -250,7 +270,10 @@ def notes(version, fixes, vex_changes):
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
     lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
-    lines += ["", "No behavior change: this release contains fixes only."]
+    if behavior:
+        lines += ["", "### Behavior changes"] + ["- %s" % b for b in behavior]
+    else:
+        lines += ["", "No behavior change: this release contains fixes only."]
     return _clean("\n".join(lines)) + "\n"
 
 
