@@ -260,5 +260,70 @@ case_rescan matrix-lost           bad "d['jobs']['rescan'].pop('strategy')"
 case_rescan shape-check-dropped   bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('jq -e \"\$TARGET_SHAPE\"', 'true')"
 case_rescan shape-digest-loose    bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('{64}\$', '{64}')"
 case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'] if x.get('name') == 'enumerate platform children'][0]; s['run'] = s['run'] + '\necho \${{ matrix.target.digest }}'"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2). Same events; both jobs
+# keep their check names (acceptance-gradle; acceptance-maven (1.2.0) / (1.2.3) from the matrix), permissions and
+# results outputs; maven's scenario environment moves onto its job unchanged; release.yml calls the one file and hands
+# both results to the acceptance predicate.
+judge_acc() { python3 - "$1" "$root" <<'PY'
+import os, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+root = sys.argv[2]
+bad = []
+on = d.get("on") or {}
+if on.get("push") != {"branches": ["main"]} or "pull_request" not in on or "workflow_call" not in on:
+    bad.append("acceptance.yml's events changed: %s" % list(on))
+outs = (on.get("workflow_call") or {}).get("outputs") or {}
+if {k: v.get("value") for k, v in outs.items()} != {"gradle-results": "${{ jobs.acceptance-gradle.outputs.results }}",
+                                                   "maven-results": "${{ jobs.acceptance-maven.outputs.results }}"}:
+    bad.append("the workflow_call outputs are not both suites' results: %s" % outs)
+jobs = d.get("jobs") or {}
+g, m = jobs.get("acceptance-gradle") or {}, jobs.get("acceptance-maven") or {}
+if g.get("name") != "acceptance-gradle" or g.get("permissions") != {"contents": "read", "packages": "read"}:
+    bad.append("acceptance-gradle changed: %s" % {k: g.get(k) for k in ("name", "permissions")})
+if m.get("name") != "acceptance-maven" or m.get("permissions") != {"contents": "read", "packages": "read"} or \
+        (m.get("strategy") or {}).get("matrix", {}).get("extension-version") != ["1.2.0", "1.2.3"]:
+    bad.append("acceptance-maven changed: %s" % {k: m.get(k) for k in ("name", "permissions", "strategy")})
+if m.get("env") != {"COLD_LOOKUPS": "2", "COLD_UPLOADS": "5", "MODULES": "2"} or d.get("env"):
+    bad.append("maven's scenario environment did not move onto its job unchanged")
+if d.get("permissions") != {"contents": "read"}:
+    bad.append("top-level permissions changed")
+for gone in ("acceptance-gradle.yml", "acceptance-maven.yml"):
+    if os.path.exists(os.path.join(root, ".github/workflows", gone)):
+        bad.append("%s still exists" % gone)
+rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
+calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", "")) and "stage-" not in str(v.get("uses", ""))]
+if calls != ["acceptance"] or rel["acceptance"].get("uses") != "./.github/workflows/acceptance.yml":
+    bad.append("release.yml does not call acceptance.yml once: %s" % calls)
+pred = (rel.get("acceptance-predicate") or {}).get("with") or {}
+if pred.get("gradle-results") != "${{ needs.acceptance.outputs.gradle-results }}" or \
+        pred.get("maven-results") != "${{ needs.acceptance.outputs.maven-results }}":
+    bad.append("the predicate does not receive both results")
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
+}
+case_acc() {
+  local f="$work/acc-$1.yml"
+  cp "$root/.github/workflows/acceptance.yml" "$f" 2>/dev/null || : > "$f"
+  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  fi
+  if out=$(judge_acc "$f" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS acc:$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL acc:$1 → $got, want $2 ($out)"; fi
+}
+case_acc real                  ok  ""
+case_acc gradle-renamed        bad "d['jobs']['acceptance-gradle']['name'] = 'gradle'"
+case_acc maven-matrix-cut      bad "d['jobs']['acceptance-maven']['strategy']['matrix']['extension-version'] = ['1.2.3']"
+case_acc env-at-top            bad "d['env'] = d['jobs']['acceptance-maven'].pop('env')"
+case_acc output-lost           bad "d['on']['workflow_call']['outputs'].pop('maven-results')"
+case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

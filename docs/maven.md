@@ -26,8 +26,8 @@ In `.mvn/extensions.xml` (create the file if it doesn't exist):
 
 Check [Maven Central](https://search.maven.org/artifact/org.apache.maven.extensions/maven-build-cache-extension)
 for the current version. The versions our CI acceptance-tests against are
-the ones in [`acceptance-maven.yml`](../.github/workflows/acceptance-maven.yml)'s
-matrix; a version outside that matrix is not something we claim to have
+the ones in the `acceptance-maven` job's matrix in
+[`acceptance.yml`](../.github/workflows/acceptance.yml); a version outside that matrix is not something we claim to have
 tested.
 
 ## 2. Point it at your FosterStack Cache server
