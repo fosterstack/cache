@@ -356,6 +356,97 @@ def removed_critical_high(release_findings, head):
     return out
 
 
+def _fixed(f, head):
+    """The version HEAD fixes f at, or None: a Go module at or past the fixed version; a distribution package the new base
+    image no longer reports (only with base evidence)."""
+    if f.get("type") == "go-module":
+        have = (head.get("go") or {}).get(f.get("package"))
+        return have if have and f.get("fixed") and _at_least(have, f["fixed"]) else None
+    if f.get("type") == "deb":
+        base = head.get("base_findings")
+        if base is not None and f.get("fixed") and not any(
+                b.get("id") == f["id"] and b.get("package") == f["package"] for b in base):
+            return f["fixed"]
+    return None
+
+
+def fixed_findings(release_by_variant, head):
+    """AC8: every finding of the latest release (any severity) that HEAD fixes, one per CVE and package, with the image
+    variants it was found in ("" is the default image). release_by_variant: {variant: [grype findings]}."""
+    out = {}
+    for variant in sorted(release_by_variant):
+        for f in release_by_variant[variant]:
+            new = _fixed(f, head)
+            if new is None:
+                continue
+            k = (f["id"], f["package"])
+            e = out.setdefault(k, {"cve": f["id"], "package": f["package"], "old": f.get("installed", ""), "new": new,
+                                   "severity": f.get("severity", ""), "variants": []})
+            name = variant or "default"
+            if name not in e["variants"]:
+                e["variants"].append(name)
+    for e in out.values():
+        e["variants"].sort()
+    return [out[k] for k in sorted(out)]
+
+
+def vex_changes(old_doc, new_doc):
+    """AC8: each VEX statement added, changed (its status) or removed since the latest tag, by CVE."""
+    def by_cve(doc):
+        return {s_["vulnerability"]["name"]: s_.get("status", "") for s_ in (doc or {}).get("statements", [])}
+    old, new = by_cve(old_doc), by_cve(new_doc)
+    out = []
+    for cve in sorted(set(old) | set(new)):
+        if cve not in old:
+            out.append({"cve": cve, "status": new[cve], "change": "added"})
+        elif cve not in new:
+            out.append({"cve": cve, "status": old[cve], "change": "removed"})
+        elif old[cve] != new[cve]:
+            out.append({"cve": cve, "status": new[cve], "change": "changed from %s" % old[cve]})
+    return out
+
+
+def unpublished(entries, published_text):
+    """Advisor 0135: an entry an earlier patch already published (any v* tag message, CHANGELOG.md) is not published
+    again — the clear-and-changelog PR may not have merged when the next patch is decided."""
+    return [e for e in entries if ("- %s" % _clean(e)) not in published_text]
+
+
+PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
+
+
+def tag_notes(raw):
+    """AC8: the notes a generated patch tag carries (`git cat-file tag` output), or None for any other tag (an owner's
+    release keeps the fixed release text). The heading must name the tag itself; the signature block is dropped."""
+    head, _, body = raw.partition("\n\n")
+    tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
+    body = body.split("-----BEGIN ", 1)[0]
+    m = PATCH_HEAD.match(body.split("\n", 1)[0])
+    return body if m and m.group(1) == tag else None
+
+
+def changelog(notes_text, changelog_text, next_notes_text):
+    """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
+    entries these notes published — an entry added since stays)."""
+    title = "# Changelog\n"
+    rest = (changelog_text or title)
+    rest = rest[len(title):].lstrip("\n") if rest.startswith(title) else rest
+    new_cl = title + "\n" + notes_text.rstrip("\n") + "\n" + ("\n" + rest if rest.strip() else "")
+    lines, keep, i = next_notes_text.splitlines(keepends=True), [], 0
+    while i < len(lines):
+        j = i + 1
+        if lines[i].startswith("- "):                      # an entry and its indented continuation lines
+            while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
+                j += 1
+            entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
+            if ("- %s" % _clean(entry)) in notes_text:
+                i = j
+                continue
+        keep += lines[i:j]
+        i = j
+    return new_cl, "".join(keep)
+
+
 def decide(event, commits, tags, cut_today, removed):
     """{cut, version, reason, not_clean}: rule 1 (patch-clean, fix-only), rule 2 (a critical/high fix at once on push;
     otherwise at most one daily patch on the schedule)."""
@@ -495,7 +586,57 @@ def main(argv=None):
     r.add_argument("--gomod", required=True)
     r.add_argument("--base-grype", action="append", help="one per scanned base image")
     r.add_argument("--out", required=True)
+    n = sub.add_parser("notes")
+    n.add_argument("--version", required=True)
+    n.add_argument("--variant-grype", required=True, action="append", help="VARIANT=scan.json; '' is the default image")
+    n.add_argument("--gomod", required=True)
+    n.add_argument("--base-grype", action="append", help="one per scanned base image; none: no deb fix is claimed")
+    n.add_argument("--vex-old", help="the VEX document at the latest tag (absent: every statement is added)")
+    n.add_argument("--vex-new", required=True)
+    n.add_argument("--next-notes", required=True)
+    n.add_argument("--published", required=True, help="every v* tag message and CHANGELOG.md, concatenated")
+    n.add_argument("--out", required=True)
+    sub.add_parser("tag-notes", help="stdin: git cat-file tag; stdout: a generated patch tag's notes, else exit 1")
+    c = sub.add_parser("changelog")
+    c.add_argument("--notes", required=True)
+    c.add_argument("--changelog", required=True)
+    c.add_argument("--next-notes", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "notes":
+        try:
+            rel = {}
+            for v in a.variant_grype:
+                name, _, path = v.partition("=")
+                rel[name] = grype_findings(json.load(open(path)))
+            base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
+            nn = open(a.next_notes).read() if os.path.exists(a.next_notes) else ""     # no file: no entries
+            behavior = unpublished(behavior_entries(nn), open(a.published).read())
+            old = json.load(open(a.vex_old)) if a.vex_old else None
+            fixes = fixed_findings(rel, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
+            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior)
+        except (ValueError, OSError, KeyError, TypeError) as e:
+            print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
+            return 2
+        with open(a.out, "w") as fh:
+            fh.write(text)
+        return 0
+    if a.cmd == "tag-notes":
+        t = tag_notes(sys.stdin.read())
+        if t is None:
+            return 1
+        sys.stdout.write(t)
+        return 0
+    if a.cmd == "changelog":
+        cl_path = a.changelog
+        old_cl = open(cl_path).read() if os.path.exists(cl_path) else None
+        has_nn = os.path.exists(a.next_notes)
+        new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "")
+        with open(cl_path, "w") as fh:
+            fh.write(new_cl)
+        if has_nn:
+            with open(a.next_notes, "w") as fh:
+                fh.write(new_nn)
+        return 0
     if a.cmd == "ready":
         verdict, why = ready(json.load(open(a.required)), json.load(open(a.check_runs)))
         print(verdict, _clean(why))

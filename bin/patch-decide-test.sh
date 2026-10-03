@@ -513,6 +513,79 @@ check("0130 notes list behavior changes under their heading", "### Behavior chan
 check("0130 with behavior changes the no-behavior-change line is dropped", "No behavior change" not in nb, nb)
 check("0130 without them the no-behavior-change line stays", "No behavior change" in P.notes("v0.2.2", fixes, vex, behavior=[]))
 check("0130 behavior entries are cleaned of vendor names too", "Gemini" not in P.notes("v0.2.2", [], [], behavior=["Gemini x (advisor 0130)."]))
+# --- AC8 wired (advisor 0135): the notes are built from the scans, the VEX diff and docs/next-release-notes.md
+rel_v = {"": [{"id": "CVE-2099-1", "package": "golang.org/x/net", "installed": "v0.30.0", "fixed": "v0.33.0", "severity": "High", "type": "go-module"},
+              {"id": "CVE-2099-2", "package": "golang.org/x/text", "installed": "v0.20.0", "fixed": "v0.21.0", "severity": "Low", "type": "go-module"},
+              {"id": "CVE-2099-3", "package": "golang.org/x/sys", "installed": "v0.40.0", "fixed": "v0.50.0", "severity": "Medium", "type": "go-module"}],
+         "fips": [{"id": "CVE-2099-1", "package": "golang.org/x/net", "installed": "v0.30.0", "fixed": "v0.33.0", "severity": "High", "type": "go-module"}],
+         "debug": [{"id": "CVE-2099-4", "package": "libc6", "installed": "2.36-9", "fixed": "2.36-10", "severity": "Medium", "type": "deb"}]}
+fx = P.fixed_findings(rel_v, {"go": {"golang.org/x/net": "v0.33.0", "golang.org/x/text": "v0.22.0", "golang.org/x/sys": "v0.41.0"}, "base_findings": []})
+check("AC8w every severity a release fixes is a note (low too), merged across variants",
+      [(f["cve"], f["old"], f["new"], f["severity"], f["variants"]) for f in fx] == [
+          ("CVE-2099-1", "v0.30.0", "v0.33.0", "High", ["default", "fips"]),
+          ("CVE-2099-2", "v0.20.0", "v0.22.0", "Low", ["default"]),
+          ("CVE-2099-4", "2.36-9", "2.36-10", "Medium", ["debug"])], fx)
+check("AC8w a finding HEAD does not fix is not a note", all(f["cve"] != "CVE-2099-3" for f in fx))
+check("AC8w no base evidence: no deb fix is claimed", all(f["cve"] != "CVE-2099-4" for f in P.fixed_findings(rel_v, {"go": {}, "base_findings": None})))
+def vdoc(*st):
+    return {"statements": [{"vulnerability": {"name": n}, "status": stt, "products": [{"@id": "pkg:oci/cache"}]} for n, stt in st]}
+vc = P.vex_changes(vdoc(("CVE-1", "under_investigation"), ("CVE-2", "not_affected"), ("CVE-9", "not_affected")),
+                   vdoc(("CVE-1", "not_affected"), ("CVE-2", "not_affected"), ("CVE-3", "affected")))
+check("AC8w VEX: added, changed and removed statements, unchanged ones left out", vc == [
+    {"cve": "CVE-1", "status": "not_affected", "change": "changed from under_investigation"},
+    {"cve": "CVE-3", "status": "affected", "change": "added"},
+    {"cve": "CVE-9", "status": "not_affected", "change": "removed"}], vc)
+check("AC8w VEX: no old document (first patch) lists every statement as added",
+      [v["change"] for v in P.vex_changes(None, vdoc(("CVE-1", "affected")))] == ["added"])
+pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
+check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
+      P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
+check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
+tagraw = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <r@x> 1 +0000\n\n" + pub
+          + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+check("AC8w tag-notes: a generated patch tag's message is its notes, the signature dropped", P.tag_notes(tagraw) == pub, P.tag_notes(tagraw))
+check("AC8w tag-notes: an owner's tag message is not taken as notes",
+      P.tag_notes("object 1\ntype commit\ntag v0.3.0\ntagger o <o@x> 1 +0000\n\nv0.3.0\n") is None)
+check("AC8w tag-notes: a look-alike heading for another version is refused",
+      P.tag_notes(tagraw.replace("tag v0.2.2", "tag v0.2.3")) is None)
+cl, nn = P.changelog(pub, "# Changelog\n\n## v0.2.1 — patch release\n\nold\n", NRN)
+check("AC8w changelog: the notes go on top, newest first", cl.startswith("# Changelog\n\n## v0.2.2 — patch release\n") and cl.index("v0.2.2") < cl.index("v0.2.1"), cl)
+check("0130 changelog: the published entry leaves next-release-notes, an unpublished one stays",
+      "Go 1.27" not in nn and "Second change, one line (advisor 0130)." in nn and nn.startswith("# Notes for the next release"), nn)
+cl0, _ = P.changelog(pub, None, NRN)
+check("AC8w changelog: a missing CHANGELOG.md is created with its heading", cl0.startswith("# Changelog\n\n## v0.2.2"), cl0)
+nts = P.notes("v0.2.2", fx, vc, behavior=["Gemini helper changed (advisor 0130)."])
+check("AC8w/row 48 the built notes name no vendor or model", not re.search(r"(?i)gemini|claude|openai", nts), nts)
+# the signed tag keeps the notes' markdown headings: git tag's default cleanup would strip every '#' line
+tg = tempfile.mkdtemp(); g(tg, "init", "-q", "-b", "main"); open(os.path.join(tg, "f"), "w").write("x")
+g(tg, "add", "-A"); g(tg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+open(os.path.join(tg, "n.md"), "w").write(pub)
+g(tg, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "--cleanup=verbatim", "-F", os.path.join(tg, "n.md"), "v0.2.2")
+check("AC8w the tag made with --cleanup=verbatim round-trips through tag-notes",
+      P.tag_notes(subprocess.run(["git", "cat-file", "tag", "v0.2.2"], cwd=tg, capture_output=True, text=True).stdout) == pub)
+# the notes CLI end to end: scans per variant, the VEX pair, the next-release file, the published guard
+cd_ = tempfile.mkdtemp(); J_ = lambda n, o: (json.dump(o, open(os.path.join(cd_, n), "w")), os.path.join(cd_, n))[1]
+gr = lambda fs: {"matches": [{"vulnerability": {"id": f["id"], "severity": f["severity"], "fix": {"versions": [f["fixed"]]}},
+                              "artifact": {"name": f["package"], "version": f["installed"], "type": f["type"]}} for f in fs]}
+open(os.path.join(cd_, "go.mod"), "w").write("module x\n\nrequire golang.org/x/net v0.33.0\n")
+open(os.path.join(cd_, "nrn.md"), "w").write(NRN); open(os.path.join(cd_, "pub.txt"), "w").write(pub)
+args = ["notes", "--version", "v0.2.3", "--variant-grype", "=" + J_("r.json", gr(rel_v[""])), "--variant-grype",
+        "fips=" + J_("f.json", gr(rel_v["fips"])), "--gomod", os.path.join(cd_, "go.mod"), "--vex-old", J_("o.json", vdoc(("CVE-1", "affected"))),
+        "--vex-new", J_("n.json", vdoc(("CVE-1", "not_affected"))), "--next-notes", os.path.join(cd_, "nrn.md"),
+        "--published", os.path.join(cd_, "pub.txt"), "--out", os.path.join(cd_, "notes.md")]
+rc = P.main(args); out_ = open(os.path.join(cd_, "notes.md")).read() if rc == 0 else ""
+check("AC8w CLI notes: heading, the fix with its variants, the VEX change, only the unpublished entry",
+      rc == 0 and out_.startswith("## v0.2.3 — patch release\n") and "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: default, fips)" in out_
+      and "CVE-1: not_affected (changed from affected)" in out_ and "- Second change, one line (advisor 0130)." in out_ and "Go 1.27" not in out_, out_)
+open(os.path.join(cd_, "nrn.md"), "w").write("- uncited change\n")
+check("0130 CLI notes: an uncited entry refuses the notes (exit 2, so no tag)", P.main(args) == 2)
+os.remove(os.path.join(cd_, "nrn.md"))
+check("0130 CLI notes: no next-release-notes file means no behavior entries, not a refusal",
+      P.main(args) == 0 and "No behavior change" in open(os.path.join(cd_, "notes.md")).read())
+open(os.path.join(cd_, "n2.md"), "w").write(pub)
+P.main(["changelog", "--notes", os.path.join(cd_, "n2.md"), "--changelog", os.path.join(cd_, "CL.md"), "--next-notes", os.path.join(cd_, "nrn.md")])
+check("0130 CLI changelog: no next-release-notes file is not created", not os.path.exists(os.path.join(cd_, "nrn.md"))
+      and open(os.path.join(cd_, "CL.md")).read().startswith("# Changelog\n\n## v0.2.2"))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC10
+# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
@@ -7,13 +7,15 @@
 #   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release and the new base;
 # - the tag is signed keylessly by gitsign (pinned by checksum, no key) under release.yml's identity and pushed with the
 #   auditor App's token (exactly the auditor's scope), which reaches only the push step;
-# - a failed patch-tag run opens one issue and is never retried.
+# - a failed patch-tag run opens one issue and is never retried;
+# - AC8 wired (advisor 0135): the notes are built before signing and are the signed tag's message; a separate job opens
+#   the changelog-and-clear PR (auto-merge on green) with its own App token; stage-promote posts a patch tag's notes.
 # The real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
-judge() { python3 - "$1" <<'PY'
+judge() { python3 - "$1" "${2:-$root/.github/workflows/stage-promote.yml}" <<'PY'
 import re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 bad = []
@@ -26,7 +28,7 @@ jobs = d.get("jobs") or {}
 adm = jobs.get("admission") or {}
 if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v')}}":
     bad.append("admission is not guarded to v* tags: %s" % adm.get("if"))
-chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed")]
+chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes")]
 for j in chain:
     if "if" in jobs[j] or not jobs[j].get("needs"):
         bad.append("chain job %s does not hang off admission unconditionally" % j)
@@ -112,6 +114,48 @@ elif wait[0]["run"].index("git show origin/main:") < wait[0]["run"].index("while
 # scan failure is the base's alone (NEW-1)
 if scan and ("jq -s" in scan[0]["run"] or "base_ok" not in scan[0]["run"] or "--release-grype" not in scan[0]["run"]):
     bad.append("the scans are aggregated before validation, or a base failure is read as a release failure")
+# AC8 wired (advisor 0135)
+nstep = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
+sign = [s for s in steps if "tag -s" in (s.get("run") or "")]
+if len(nstep) != 1 or "steps.decide.outputs.cut == 'true'" not in nstep[0].get("if", "") or not sign or \
+        names.index(nstep[0].get("name")) > names.index(sign[0].get("name")):
+    bad.append("the notes are not built (on a cut) before signing")
+elif "--next-notes docs/next-release-notes.md" not in nstep[0]["run"] or "--published" not in nstep[0]["run"] or \
+        "removed-unknown" not in nstep[0]["run"]:
+    bad.append("the notes step skips the next-release entries, the published guard, or an unscannable release")
+if sign and ("--cleanup=verbatim" not in sign[0]["run"] or '-F "$RUNNER_TEMP/notes.md"' not in sign[0]["run"]):
+    bad.append("the signed tag does not carry the notes verbatim")
+if scan and "event_name" in scan[0].get("if", ""):
+    bad.append("the release is scanned on push only: a daily patch's notes would list no fixes")
+push = [s for s in steps if "git push" in (s.get("run") or "")]
+if (dec.get("outputs") or {}).get("tagged") != "${{ steps.push.outputs.tagged }}" or not push or \
+        push[0].get("id") != "push" or "tagged=true" not in push[0]["run"]:
+    bad.append("decide does not say that it tagged")
+pn = jobs.get("patch-notes") or {}
+if pn.get("needs") != "decide" or pn.get("if", "").replace(" ", "") != "${{needs.decide.outputs.tagged=='true'}}":
+    bad.append("the notes PR job does not run exactly when decide tagged")
+for ref in set(re.findall(r"needs\.decide\.outputs\.([\w-]+)", yaml.safe_dump(pn))):
+    if ref not in (dec.get("outputs") or {}):
+        bad.append("the notes PR job reads decide output %s, which decide does not export" % ref)
+if pn.get("permissions") != {"contents": "read"}:
+    bad.append("the notes PR job's own token is not contents read: %s" % pn.get("permissions"))
+psteps = pn.get("steps") or []
+ptext = "\n".join(s.get("run") or "" for s in psteps)
+pmint = [s for s in psteps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+if len(pmint) != 1 or pmint[0].get("with") != dict(want, **{"permission-pull-requests": "write"}):
+    bad.append("the notes PR job's App token is not exactly contents + pull-requests write on cache")
+for w in ("patch-decide.py tag-notes", "patch-decide.py changelog", "gh pr create", "gh pr merge --auto --squash"):
+    if w not in ptext:
+        bad.append("the notes PR job lacks %s" % w)
+if re.search(r"git push(?![^\n]*\"\$branch\"\s*$)[^\n]*", ptext, re.M):
+    bad.append("the notes PR job pushes something other than its own branch")
+pco = [s for s in psteps if str(s.get("uses", "")).startswith("actions/checkout@")]
+if not pco or (pco[0].get("with") or {}).get("persist-credentials") != "false" or (pco[0].get("with") or {}).get("ref") != "main":
+    bad.append("the notes PR job's checkout is not main without a credential")
+sp = yaml.load(open(sys.argv[2]), Loader=yaml.BaseLoader)
+create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "gh release create" in (st.get("run") or "")]
+if len(create) != 1 or "patch-decide.py tag-notes" not in create[0]["run"] or "--notes-file" not in create[0]["run"]:
+    bad.append("stage-promote does not post a patch tag's notes")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -158,5 +202,19 @@ case_ fail-no-repo            bad "[s['env'].pop('GH_REPO') for s in $J['patch-f
 case_ baseline-latest-tag     bad "[s.__setitem__('run', s['run'].replace('--released ', '--x ')) for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"
 case_ scan-failure-dropped    bad "[s.__setitem__('run', s['run'].replace('removed-unknown', 'removed-x')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ ready-checkout-policy   bad "[s.__setitem__('run', s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
+N="$J['patch-notes']"
+case_ notes-after-sign        bad "st=$D['steps']; i=[k for k,x in enumerate(st) if 'patch-decide.py notes' in (x.get('run') or '')][0]; st.append(st.pop(i))"
+case_ tag-default-cleanup     bad "[s.__setitem__('run', s['run'].replace('--cleanup=verbatim ', '')) for s in $D['steps'] if 'tag -s' in (s.get('run') or '')]"
+case_ scan-push-only          bad "[s.__setitem__('if', \"\${{ github.event_name == 'push' && steps.facts.outputs.since != '' }}\") for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ notes-no-guard          bad "[s.__setitem__('run', s['run'].replace('--published', '--x')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
+case_ notes-unknown-scan      bad "[s.__setitem__('run', s['run'].replace('removed-unknown', 'x')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
+case_ notes-job-wide-token    bad "[s['with'].__setitem__('permission-issues', 'write') for s in $N['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
+case_ notes-job-pushes-main   bad "[s.__setitem__('run', s['run'] + '\ngit push origin HEAD:main') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ notes-job-no-automerge  bad "[s.__setitem__('run', s['run'].replace('gh pr merge --auto --squash', 'true')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ notes-version-unexported bad "$D['outputs'].pop('version')"
+case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
+sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
+if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"
+else pass=$((pass+1)); echo "PASS stage-promote-fixed-notes → bad ($out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

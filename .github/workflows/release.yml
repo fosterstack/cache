@@ -56,17 +56,20 @@ jobs:
       checks: read              # wait for the tagged commit's required checks (advisor 0063)
       id-token: write           # gitsign signs with this workflow's own OIDC identity (no key)
       issues: write             # the standing "main is not patch-clean" issue
+    outputs:
+      tagged: ${{ steps.push.outputs.tagged }}   # the patch-notes job opens the changelog PR (advisor 0135)
+      version: ${{ steps.decide.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: install the pinned tools (gitsign; grype on push)
+      - name: install the pinned tools (gitsign; grype)
         run: |
           set -euo pipefail
           ./bin/install-scanner.sh gitsign
-          [ "${GITHUB_EVENT_NAME}" != push ] || ./bin/install-scanner.sh grype
+          ./bin/install-scanner.sh grype
 
       - name: what changed since the latest tag (the PR labels of each commit) and whether a patch was cut today
         id: facts
@@ -92,8 +95,9 @@ jobs:
           cut=$(git for-each-ref --format='%(creatordate:short) %(refname:short)' 'refs/tags/v*' | awk -v t="$today" '$1==t' | grep -c . || true)
           echo "cut_today=$([ "${cut:-0}" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - name: on push, the latest release's critical/high findings this commit removes (release vs. HEAD)
-        if: ${{ github.event_name == 'push' && steps.facts.outputs.since != '' }}
+      # every event scans: the decision uses the result on push only; the notes need it for a daily patch too (AC8)
+      - name: the latest release's findings this commit removes (release vs. HEAD)
+        if: ${{ steps.facts.outputs.since != '' }}
         env:
           SINCE: ${{ steps.facts.outputs.since }}
         run: |
@@ -115,6 +119,7 @@ jobs:
               if grype "$b" -o json > "$f"; then base_arg+=(--base-grype "$f"); else base_ok=0; fi
             done
             [ "$base_ok" = 1 ] || base_arg=()           # no base evidence: no deb finding counts as removed
+            [ "$base_ok" != 1 ] || touch "$RUNNER_TEMP/base-ok"
           fi
           if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed "${rel_args[@]}" --gomod go.mod \
                "${base_arg[@]}" --out "$RUNNER_TEMP/removed.json"; then
@@ -177,6 +182,30 @@ jobs:
           echo "::notice::no cut: the required checks did not finish within 60 minutes; the daily run tries again"
           echo "ready=false" >> "$GITHUB_OUTPUT"
 
+      # AC8 (advisor 0130/0135): the fixes from the release scans, the VEX changes since the latest tag and the
+      # next-release entries no earlier patch published; an incomplete scan or an uncited entry fails here: no tag
+      - name: the patch notes (bin/patch-decide.py notes)
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        env:
+          SINCE: ${{ steps.facts.outputs.since }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/removed-unknown" ]; then
+            echo "::error::the latest release could not be scanned: its fixes cannot be listed, so no patch"; exit 1
+          fi
+          ver="${SINCE#v}"
+          var=(--variant-grype "=$RUNNER_TEMP/rel-${ver}.json" --variant-grype "debug=$RUNNER_TEMP/rel-${ver}-debug.json"
+               --variant-grype "fips=$RUNNER_TEMP/rel-${ver}-fips.json")
+          base=(); if [ -f "$RUNNER_TEMP/base-ok" ]; then for f in "$RUNNER_TEMP"/base-*.json; do base+=(--base-grype "$f"); done; fi
+          old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
+            old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi
+          { git for-each-ref 'refs/tags/v*' --format='%(contents)'; cat docs/quality/releases/CHANGELOG.md 2>/dev/null || true; } > "$RUNNER_TEMP/published.txt"
+          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${base[@]}" "${old[@]}" \
+            --vex-new .vex/fosterstack-cache.openvex.json --next-notes docs/next-release-notes.md \
+            --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
       - name: sign the patch tag keylessly (gitsign, this workflow's identity)
         if: ${{ steps.checks.outputs.ready == 'true' }}
         env:
@@ -185,7 +214,7 @@ jobs:
           set -euo pipefail
           git config user.name "fosterstack release"
           git config user.email "release@users.noreply.github.com"
-          git -c gpg.format=x509 -c gpg.x509.program=gitsign tag -s "$VERSION" -m "automatic patch release ${VERSION}"
+          git -c gpg.format=x509 -c gpg.x509.program=gitsign tag -s --cleanup=verbatim -F "$RUNNER_TEMP/notes.md" "$VERSION"
           git -c gpg.format=x509 -c gpg.x509.program=gitsign verify-tag "$VERSION" 2>&1 | tail -2 || true
 
       - name: mint the auditor App's token (contents write on cache only)
@@ -199,6 +228,7 @@ jobs:
           permission-contents: write
 
       - name: push the signed tag (the App transports it)
+        id: push
         if: ${{ steps.checks.outputs.ready == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -207,6 +237,56 @@ jobs:
           set -euo pipefail
           gh auth setup-git
           git push origin "refs/tags/${VERSION}"
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+  # AC8 + advisor 0130/0135: the pushed tag's notes go on top of docs/quality/releases/CHANGELOG.md and leave docs/next-release-notes.md,
+  # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
+  patch-notes:
+    needs: decide
+    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: mint the auditor App's token (contents + pull requests on cache only)
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: the changelog-and-clear PR (auto-merge on green)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ needs.decide.outputs.version }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --no-tags origin "+refs/tags/${VERSION}:refs/tags/${VERSION}"
+          git cat-file tag "$VERSION" | python3 bin/patch-decide.py tag-notes > "$RUNNER_TEMP/notes.md"
+          python3 bin/patch-decide.py changelog --notes "$RUNNER_TEMP/notes.md" --changelog docs/quality/releases/CHANGELOG.md \
+            --next-notes docs/next-release-notes.md
+          branch="patch-notes/${VERSION}"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_SLUG}[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add docs/quality/releases/CHANGELOG.md
+          [ ! -f docs/next-release-notes.md ] || git add docs/next-release-notes.md
+          git commit -q -m "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
+            --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
+          gh pr merge --auto --squash "$branch"
 
   admission:
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
