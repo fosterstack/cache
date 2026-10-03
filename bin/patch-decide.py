@@ -234,20 +234,33 @@ SAFE_INDIRECT = {"rm", "sha256sum", "sha1sum", "md5sum", "chmod", "chown", "touc
                  "grep", "test", "du", "basename", "dirname"}
 
 
-def _indirect_exec(text):
-    """True when a find -exec/-execdir/-ok/-okdir or an xargs runs anything but a bare SAFE_INDIRECT command. Every line
-    that mentions one is tokenized as the shell reads it (shlex: quotes honoured, a quoted ; or | is a word); a line that
-    cannot be tokenized fails closed (Codex #159 r8, B3)."""
+def _shell_tokens(line):
+    """The words of a shell line, with | ; & ( ) as their own tokens (no spaces needed), quotes honoured; None when it
+    cannot be tokenized."""
     import shlex
+    lex = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+    lex.whitespace_split = True
+    lex.commenters = "#"
+    try:
+        return list(lex)
+    except ValueError:
+        return None
+
+
+def _indirect_exec(text, depth=0):
+    """True when a find -exec/-execdir/-ok/-okdir or an xargs runs anything but a bare SAFE_INDIRECT command. Every line
+    that mentions one is tokenized as the shell reads it (quotes honoured, | ; & split without spaces); a quoted word that
+    is itself a command (a YAML scalar, bash -c '…') is read again; an untokenizable line fails closed (Codex #159 r8/r9)."""
+    op = re.compile(r"(?<![\w-])[\"']?-(?:exec|execdir|ok|okdir)[\"']?(?![\w-])|(?<![\w-])xargs(?![\w-])")
     for line in re.sub(r"\\\n", " ", text).splitlines():
-        # only the operators themselves (quoted or not) — never "kubectl exec" or "docker exec"
-        if not re.search(r"(?<![\w-])[\"']?-(?:exec|execdir|ok|okdir)[\"']?(?![\w-])|(?<![\w-])xargs(?![\w-])", line):
+        if not op.search(line):
             continue
-        try:
-            toks = shlex.split(line, comments=True)
-        except ValueError:
+        toks = _shell_tokens(line)
+        if toks is None or depth > 3:
             return True
         for k, t in enumerate(toks):
+            if " " in t and op.search(t) and _indirect_exec(t, depth + 1):
+                return True                                       # a command inside a quoted word
             cmd = None
             if t in ("-exec", "-execdir", "-ok", "-okdir"):
                 cmd = toks[k + 1] if k + 1 < len(toks) else ""
@@ -256,7 +269,7 @@ def _indirect_exec(text):
                 while i < len(toks) and toks[i].startswith("-"):
                     i += 2 if re.fullmatch(r"-[nLPsdIEaJ]", toks[i]) else 1      # an option with a separate value
                 cmd = toks[i] if i < len(toks) else "echo"
-                if cmd in ("|", ";", "&&", "||", ">", "<"):
+                if re.fullmatch(r"[|;&()]+|[<>]", cmd):
                     cmd = "echo"                                                 # xargs with no command runs echo
             if cmd is not None and ("/" in cmd or cmd not in SAFE_INDIRECT):
                 return True
@@ -321,16 +334,18 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
             # action (Sonnet #159 r5, F1): its steps run too
         # an interpreter only at the start of a command (after whitespace or a separator) — never the "sh" that ends a
         # file name such as x-test.sh (Codex #159 r6, B1: a list of test names is data, not executions)
+        # any file executed, whatever its extension (Codex #159 r9, B4: bash docs/gate, bash docs/gate.txt) — kept only
+        # when it is a file of the tree, and walked through
         cands = re.findall(r"(?:^|[\s;&|(`\"'])(?:bash|sh|python3?|source)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
-                           r"([\w./-]+\.(?:sh|py))\b", text, re.M)
-        cands += re.findall(r"(?<![\w/.$-])\./([\w./-]+\.(?:sh|py))\b", text)
-        cands += re.findall(r"\$\{?\w+\}?/([\w./-]+\.(?:sh|py))\b", text)
+                           r"([\w./-]*[\w-])", text, re.M)
+        cands += re.findall(r"(?<![\w/.$-])\./([\w./-]*[\w-])", text)
+        cands += re.findall(r"\$\{?\w+\}?/([\w./-]*[\w-])", text)
         for c in cands:
             for r in (os.path.normpath(c), os.path.normpath(os.path.join(here, c))):
                 if r in tree:
                     refs.add(r)
                     break
-        todo += [r for r in refs if EXECUTABLE.search(r) and r not in seen]
+        todo += [r for r in refs if r not in seen]
     return seen
 
 

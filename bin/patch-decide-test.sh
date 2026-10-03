@@ -611,6 +611,21 @@ check("r8/B3 kubectl exec / docker exec with an open quote are not find -exec", 
 real_cs = P.gather_commits("HEAD~1", cwd=os.path.join(os.path.dirname(sys.argv[1]), ".."))
 check("r8 on this repository a decision keeps the listed tests neutral (45 of 46)",
       real_cs and len(real_cs[0]["neutral"]) == len(P.NEUTRAL_TESTS) - 1, real_cs and len(real_cs[0]["neutral"]))
+# Codex #159 r9 (B3): a command inside a quoted YAML scalar, and a pipe with no spaces, are still read
+for txt in ["run: \"find bin -name '*-test.sh' -exec bash {} ';'\"\n", "run: \"ls bin/*-test.sh | xargs -n1 sh\"\n",
+            "run: ls bin/*-test.sh|xargs -n1 sh\n", "run: find bin -exec bash {} ';'|cat\n"]:
+    check("r9/B3 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"s.yml": txt}) == set())
+# Codex #159 r9 (B4): any file an interpreter executes is in the chain, whatever its extension, and is walked through
+w_repo = tempfile.mkdtemp()
+g(w_repo, "init", "-q")
+os.makedirs(os.path.join(w_repo, ".github/workflows")); os.makedirs(os.path.join(w_repo, "docs")); os.makedirs(os.path.join(w_repo, "bin"))
+for path, body in {".github/workflows/release.yml": "steps:\n  - run: bash docs/gate\n  - run: bash docs/gate.txt\n  - run: ./test-evidence-gate\n",
+                   "docs/gate": "bash bin/panel-test.sh\n", "docs/gate.txt": "echo hi\n", "test-evidence-gate": "", "bin/panel-test.sh": ""}.items():
+    open(os.path.join(w_repo, path), "w").write(body)
+g(w_repo, "add", "-A"); g(w_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+wch = P.release_chain_files(w_repo)
+check("r9/B4 an extensionless or data-suffixed file an interpreter runs is in the chain, and walked through",
+      {"docs/gate", "docs/gate.txt", "test-evidence-gate", "bin/panel-test.sh"} <= wch, sorted(wch))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
