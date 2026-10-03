@@ -1563,27 +1563,62 @@ def _expand_names(name, text):
     return out
 
 
+def _close_quote(s, qc):
+    """s is text that starts already inside a quote of type qc ("'" or '"'); return the index just
+    past its matching close, or None if it never closes within s. A single quote has no escaping at
+    all in real bash; inside a double quote, a backslash escapes the very next character (Codex #164
+    r9, B1: a same-line '-count parity check sees an opening quote plus its own escaped \\" as two
+    characters — even, "closed" — when bash leaves it open)."""
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if qc == '"' and c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c == qc:
+            return i + 1
+        i += 1
+    return None
+
+
+def _open_quote(s):
+    """s is text with no quote open yet; scan left to right and return whichever quote type (if any)
+    is still open at the end of s — None if everything that opens in s also closes in s. Handles a
+    quote of one type containing a literal character of the other type (the embedded-apostrophe
+    idiom '"'"' closes and reopens single-quote mode three times in a row, closing fully — but one
+    character short of that, mid-idiom, it is genuinely still open, exactly as in real bash)."""
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c in ("'", '"'):
+            after = _close_quote(s[i + 1:], c)
+            if after is None:
+                return c
+            i += 1 + after
+            continue
+        i += 1
+    return None
+
+
 def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
     line, Codex #164 r2 C10), after && / || on its line, or a `trap` command's own body — deferred to a future signal,
     not run in line order, so a build/tag inside one registers no local name either (Codex #164 fresh r5, B1). The
-    body stays excluded for the REST OF THE SCRIPT once a multi-line quoted trap body is seen (Sonnet r8, B-new-1/
-    B-new-2): real bash's quote-closing rules are not worth re-implementing here — a double-quoted body, or a
-    single-quoted one using the `'"'"'` embedded-apostrophe idiom, both defeat a same-line '-count parity check,
-    and any fix narrow enough to name a specific idiom just invites the next one. Once a `trap` line opens either
-    kind of quote without closing it on that same line, every later line is excluded, unconditionally, for good —
-    a usability cost (a legitimate later line loses local-name trust) traded for closing the whole bypass class
-    (advisor 0080: fail closed on an open-ended finding class, don't chase it line by line). A literal for-loop
-    always runs and is kept."""
-    keep, stack, after_multiline_trap = [], [], False
+    body stays excluded across lines for as long as a quote the trap's own line opened stays open — tracked with the
+    same per-character, escape-aware rules real bash uses (Codex #164 r9, B1; Sonnet r8, B-new-1/B-new-2), not a
+    same-line character count, so a double-quoted body, an escaped quote, and the `'"'"'` embedded-apostrophe idiom
+    are all read the way bash reads them rather than chased one idiom at a time. Trust resumes the line AFTER the
+    one the quote actually closes on, same as a single-line trap — a legitimate script keeps its local-name trust
+    past a trap that really does close (Codex #164 r9, R1). A literal for-loop always runs and is kept."""
+    keep, stack, open_quote = [], [], None
     for line in text.splitlines():
-        if after_multiline_trap:
+        if open_quote is not None:
+            if _close_quote(line, open_quote) is not None:
+                open_quote = None
             continue
         m = re.search(r"(?<![\w$.-])trap(?![\w.-])", line)
         if m:
-            rest = line[m.end():]
-            if rest.count("'") % 2 == 1 or rest.count('"') % 2 == 1:
-                after_multiline_trap = True
+            open_quote = _open_quote(line[m.end():])
             continue
         words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
         opened = False
