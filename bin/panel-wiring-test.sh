@@ -317,6 +317,16 @@ d3b=$(mktemp -d "$work/p3b.XXXX"); printf '%s' "$PB" > "$d3b/b"
 python3 -c 'import json; print(json.dumps({"artifacts": [{"name": n, "version": "1:1-deb12u1", "purl": "pkg:deb/debian/%s@1:1-deb12u1" % n} for n in "abcdefg"]}))' > "$d3b/sbom"
 if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3b/b" "$d3b/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3b/v.json" >/dev/null 2>&1; then
   pass=$((pass+1)); echo "PASS probe3-name-fallback"; else failn=$((failn+1)); echo "FAIL probe3-name-fallback"; fi
+# advisor 0110: Scout's GitLab report puts the package purl in "name" (run 37126697443) — use it as the purl
+d3c=$(mktemp -d "$work/p3c.XXXX")
+python3 -c '
+import json
+f = lambda c, n: {"identifiers": [{"value": c}], "location": {"dependency": {"package": {"name": "pkg:deb/debian/%s@1?os_distro=bookworm" % n}, "version": "1"}}}
+print(json.dumps({"vulnerabilities": [f("CVE-2001-000%d" % i, n) for i, n in enumerate("abcdefg", 1)]}))' > "$d3c/b"
+echo '{"artifacts": []}' > "$d3c/sbom"
+if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3c/b" "$d3c/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3c/v.json" >/dev/null 2>&1 \
+   && grep -q '"pkg:deb/debian/a@1?os_distro=bookworm"' "$d3c/v.json"; then pass=$((pass+1)); echo "PASS probe3-name-is-purl"
+else failn=$((failn+1)); echo "FAIL probe3-name-is-purl"; fi
 probe_case one-applied "applied: pkg:docker/ghcr.io/fosterstack/cache@selfcheck" "$PB" "$PA"
 if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"]; assert d["author"]=="FosterStack LLC" and len(s)==len({x["vulnerability"]["name"] for x in s})>=5 and all(x["status"]=="not_affected" for x in s) and any(p["@id"]=="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" for x in s for p in x["products"])' "$d0/v.json"; then
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
