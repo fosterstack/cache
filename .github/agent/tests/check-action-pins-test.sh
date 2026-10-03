@@ -1555,6 +1555,18 @@ case_ r4b6-escaped-paren-before-hash-not-a-comment-bad bad "$(rb 'arr=(\(#$(dock
 # real boundary, so the '#' after it is not a comment either
 case_ r4b6-escaped-space-before-hash-not-a-comment-bad bad "$(rb 'arr=(\ #$(docker run --rm alpine:latest))')"
 case_ r4b6-escaped-semicolon-before-hash-not-a-comment-bad bad "$(rb 'arr=(\;#$(docker run --rm alpine:latest))')"
+# Codex #164 r16, B1: _expand_names() (a SEPARATE trust mechanism from _unconditional(), scanning job-wide
+# text for a "for VAR in ...; do ... done" loop whose body builds the same template a tag command uses) can't
+# tell a REAL loop from one planted purely as quoted, never-executed array DATA in an EARLIER, unrelated step
+case_ r4b6-expand-names-fake-loop-in-array-bad bad "$head
+    steps:
+      - run: |
+          arr=('for v in latest; do alpine:\${v}; done')
+      - run: |
+          read -r v <<< safe
+          docker pull alpine@\$DIG
+          docker tag alpine@\$DIG \"alpine:\${v}\"
+          docker run alpine:latest"
 # Sonnet #164 r16, B1: an ORDINARY, non-adversarial quoted scalar containing one of the if/case/trap keyword
 # words as plain data (no array, no comment -- just a log message or variable) corrupted _unconditional()'s
 # if/case tracking the same way a comment did, because the keyword regex has no quote-awareness at all

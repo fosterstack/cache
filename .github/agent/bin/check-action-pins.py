@@ -1596,10 +1596,17 @@ def _local(ref, local):
 def _expand_names(name, text):
     """A local name's concrete values: itself when literal; a template's expansions over the literal word list of the
     `for VAR in w1 w2 …; do … done` loop whose body builds or tags that very template — the variable assigned nowhere
-    else in the job (Codex #164 r2, C10: an unrelated loop or a reassignment proves nothing); otherwise none."""
+    else in the job (Codex #164 r2, C10: an unrelated loop or a reassignment proves nothing); otherwise none. A `for`
+    loop's own text, sitting inert as quoted data inside an array literal, is indistinguishable from a real one to
+    the regex below (Codex #164 r16, B1: `arr=('for v in latest; do alpine:${v}; done')` — never executed, planted
+    purely to make this function expand an UNRELATED tag command's template to a value its own loop never produces)
+    — same posture as _unconditional(), deny the expansion outright rather than try to tell real code from array
+    data here too."""
     found = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", name)
     if not found:
         return {name}
+    if _ARRAY_OPEN_RE.search(text):
+        return set()
     out = {name}
     for var in dict.fromkeys(found):
         loops = [(lst, body) for lst, body in re.findall(r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b",
