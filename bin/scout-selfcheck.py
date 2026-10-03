@@ -121,6 +121,9 @@ def probe_doc3(before_path, sbom_path, author, image, tag, out_path):
         if isinstance(a, dict) and a.get("purl"):
             purl.setdefault((a.get("name"), a.get("version")), a["purl"])
             by_name.setdefault(a.get("name"), set()).add(a["purl"])
+    for (cve, name, ver) in before:   # Scout's GitLab report puts the package purl in "name" (run 37126697443, 0110)
+        if name.startswith("pkg:"):
+            purl[(name, ver)] = name
     for (cve, name, ver) in before:   # run 1 matched nothing by (name, version): a name with one SBOM purl is enough
         if (name, ver) not in purl and len(by_name.get(name, ())) == 1:
             purl[(name, ver)] = next(iter(by_name[name]))
