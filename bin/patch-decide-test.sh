@@ -628,6 +628,19 @@ check("r9/B4 an extensionless or data-suffixed file an interpreter runs is in th
       {"docs/gate", "docs/gate.txt", "test-evidence-gate", "bin/panel-test.sh"} <= wch, sorted(wch))
 check("r9 on this repository no data file is in the chain (go.mod bumps stay fix-class)",
       not [f for f in P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), "..")) if f == "go.mod" or f.endswith((".json", ".yaml", ".md", ".mod", ".sum"))])
+# Codex #159 r10 (B7, R1): keyword chains (if !, while !) keep the command position; an interpreter may be quoted, an
+# absolute path, or another language's
+for i, run in enumerate(["if ! bash bin/driver.sh; then exit 1; fi", "while ! sh bin/driver.sh; do sleep 1; done",
+                         "/bin/bash bin/driver.sh", '"bash" bin/driver.sh', "node bin/driver.sh", "/usr/bin/env perl bin/driver.sh"]):
+    r10 = tempfile.mkdtemp()
+    g(r10, "init", "-q")
+    os.makedirs(os.path.join(r10, ".github/workflows")); os.makedirs(os.path.join(r10, "bin"))
+    for path, body in {".github/workflows/release.yml": "steps:\n  - run: %s\n" % run, "bin/driver.sh": "bash bin/panel-test.sh\n",
+                       "bin/panel-test.sh": ""}.items():
+        open(os.path.join(r10, path), "w").write(body)
+    g(r10, "add", "-A"); g(r10, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+    rch = P.release_chain_files(r10)
+    check("r10 %r reaches the driver and the test it runs" % run, {"bin/driver.sh", "bin/panel-test.sh"} <= rch, sorted(rch))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

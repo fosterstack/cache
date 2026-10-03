@@ -338,10 +338,13 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
         # when it is a file of the tree, and walked through
         # only at command position — the first word of a command: a line start (after "- " / "run:" / a quote), after
         # ; & | ( `, or after a keyword or wrapper — so "osv-scanner scan source go.mod" names no program (Codex r9)
-        cmdpos = (r"(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*)?[|>]?[ \t]*|[;&|(`][ \t]*|"
-                  r"\b(?:then|do|else|if|elif|while|until|exec|env|nohup|time|sudo|!)[ \t]+)"
-                  r"(?:[A-Za-z_]\w*=\S*[ \t]+)*[\"']?")          # VAR=value prefixes keep the command position
-        cands = re.findall(cmdpos + r"(?:bash|sh|python3?|source|\.)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
+        cmdpos = (r"(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*)?[|>]?[ \t]*|[;&|(`][ \t]*)"
+                  # any chain of keywords and wrappers (if ! …, while ! …, env …; Codex #159 r10, B7) and VAR=value
+                  r"(?:(?:(?:then|do|else|if|elif|while|until|exec|env|nohup|time|sudo|command|builtin)|!)[ \t]+"
+                  r"|[A-Za-z_]\w*=\S*[ \t]+|(?:/[\w.-]+)*/env[ \t]+)*[\"']?")
+        # an interpreter by name or absolute path, quoted or not, in any of the languages a runner has (r10, R1)
+        cands = re.findall(cmdpos + r"(?:/[\w.-]+)*/?(?:bash|sh|dash|zsh|ksh|python[\d.]*|source|\.|node|nodejs|deno|bun|"
+                           r"perl|ruby|php|pwsh|lua|Rscript|awk|gawk)[\"']?[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
                            r"([\w./-]*[\w-])", text, re.M)
         cands += re.findall(cmdpos + r"\./([\w./-]*[\w-])", text, re.M)
         cands += re.findall(cmdpos + r"\$\{?\w+\}?/([\w./-]*[\w-])", text, re.M)
