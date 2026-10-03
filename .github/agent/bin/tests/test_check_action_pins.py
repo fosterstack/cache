@@ -273,3 +273,9 @@ class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwar
 
     def test_other_python_modules_are_not_installs(self):     # r3: only installers and build frontends are flagged
         self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])
+
+    def test_the_non_posix_catch_all_knows_every_tool(self):          # Sonnet #164 r7, NEW-8: no drift
+        for t in M.TOOLS | M.UNREAD_CONTAINER | M.UNREAD_PY:
+            bad = []
+            M.check_runs("j", [("w", "%s run x" % t, "pwsh")], bad)
+            self.assertTrue(bad, t)
