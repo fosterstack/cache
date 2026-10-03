@@ -24,9 +24,15 @@ SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
 # no vendor or model names in public text (row 48; Codex #158 r1, B06: the wider set)
 VENDOR = re.compile(r"(?i)(?<![a-z])(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini|llama|mistral|mixtral|grok|"
-                    r"deepseek|qwen|copilot|cohere)[\w.-]*|\bmeta\b")
-# the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04)
-BUILD_INPUTS = re.compile(r"^\.github/workflows/(stage-[^/]+|release)\.ya?ml$|^\.goreleaser\.ya?ml$")
+                    r"deepseek|qwen|copilot|cohere|bard|sonnet|opus|haiku)[\w.-]*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
+# the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
+# NEW-01): a workflow is neutral only when it is reviewed as outside the release chain (release.yml calls stage-*.yml and
+# the acceptance workflows); any other — including one added later — is not patch-clean until it is reviewed here.
+NEUTRAL_WORKFLOWS = {"agent-review-gate.yml", "auditor.yml", "ci.yml", "codeql.yml", "daily-rescan.yml",
+                     "dependabot-auto-merge.yml", "dependabot-reviewer.yml", "dependency-review.yml", "go-freshness.yml",
+                     "hygiene.yml", "main-candidate-rescan.yml", "release-chain-pr.yml", "requirements.yml",
+                     "rescan-v010.yml", "reserved-branch-guard.yml", "scan.yml", "scorecard.yml"}
+BUILD_INPUTS = re.compile(r"^\.goreleaser\.ya?ml$")
 
 
 def _changed_lines(diff):
@@ -131,7 +137,7 @@ def classify(commit):
                 kinds.add("fix")
             else:
                 kinds.add("dirty"); why.append("%s changes more than the base-image digest pin" % f)
-        elif BUILD_INPUTS.match(f):
+        elif BUILD_INPUTS.match(f) or (f.startswith(".github/workflows/") and f.split("/")[-1] not in NEUTRAL_WORKFLOWS):
             kinds.add("dirty"); why.append("%s builds or ships the release image" % f)
         elif f.startswith(NEUTRAL_PREFIX) or _is_test(f):
             kinds.add("neutral")

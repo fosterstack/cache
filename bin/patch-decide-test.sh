@@ -116,6 +116,16 @@ check("B05 the final release outranks its own rc", P.floating("v1.0.0", ["v1.0.0
 txt = P.notes("v0.2.2", [], [{"cve": "CVE-2099-0001", "status": "fixed", "change": "confirmed by Meta Llama, Mistral, Grok, DeepSeek, Qwen and Copilot"}])
 check("B06 notes name no vendor or model (wider set)", not re.search(r"(?i)meta|llama|mistral|grok|deepseek|qwen|copilot", txt), txt)
 check("B06 ordinary words survive (metadata, opusculum?)", "metadata" in P._clean("the release metadata"), P._clean("the release metadata"))
+# --- Sonnet #158 r2 (NEW-01, NEW-02)
+for f in (".github/workflows/acceptance-gradle.yml", ".github/workflows/acceptance-maven.yml",
+          ".github/workflows/acceptance.yml", ".github/workflows/some-new-workflow.yml"):
+    check("NEW-01 %s (in the release chain, or not reviewed as neutral) is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
+for f in (".github/workflows/ci.yml", ".github/workflows/codeql.yml", ".github/workflows/auditor.yml"):
+    check("NEW-01 %s (reviewed as outside the release) stays neutral" % f, P.classify(c("x", [f]))[0] == "neutral")
+for name in ("o3", "o1-mini", "o4-mini", "Sonnet", "Opus", "Haiku", "Bard"):
+    out = P._clean("confirmed by %s today" % name)
+    check("NEW-02 %s is redacted" % name, name.lower() not in out.lower(), out)
+check("NEW-02 an o-series pattern inside other words survives (go3, so3)", P._clean("go3 so3") == "go3 so3", P._clean("go3 so3"))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
