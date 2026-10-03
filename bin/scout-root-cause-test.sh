@@ -56,3 +56,15 @@ check("pick: a finding whose package has exactly one CVE, deterministic",
       == ("CVE-3", "pkg:deb/debian/c@3"))
 print("scout-root-cause: %d passed, %d failed" % (passed, failed)); sys.exit(1 if failed else 0)
 PY
+# the runner writes only the scratch package: any other target is refused before anything runs, and the workflow names it
+pass=0; fail=0
+for target in ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache-scout-probe2 docker.io/fosterstack/cache; do
+  if out=$(SCOUT_DIR=/nonexistent PROBE_REPO="$target" RELEASE_TAG=x bash "$here/scout-root-cause.sh" "$(mktemp -d)" 2>&1); then
+    echo "FAIL: $target accepted"; fail=$((fail+1))
+  elif grep -q "refusing to write to $target" <<<"$out"; then echo "ok: $target refused"; pass=$((pass+1))
+  else echo "FAIL: $target: $out"; fail=$((fail+1)); fi
+done
+if grep -q "PROBE_REPO: ghcr.io/fosterstack/cache-scout-probe$" "$here/../.github/workflows/main-candidate-rescan.yml"; then
+  echo "ok: the workflow targets the scratch package"; pass=$((pass+1))
+else echo "FAIL: the workflow's PROBE_REPO is not the scratch package"; fail=$((fail+1)); fi
+echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]

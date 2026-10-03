@@ -11,6 +11,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 RC="$here/scout-root-cause.py"
 out=${1:?usage: scout-root-cause.sh OUT}
 : "${SCOUT_DIR:?}" "${PROBE_REPO:?}" "${RELEASE_TAG:?}"
+# the only package this round writes is the scratch one; the release package is read, never written (Sonnet #176 r1, F1)
+[ "$PROBE_REPO" = ghcr.io/fosterstack/cache-scout-probe ] || { echo "::error::refusing to write to ${PROBE_REPO}" >&2; exit 2; }
 mkdir -p "$out"; summ="$out/summary.md"
 FIXTURE=docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab
 AUTHOR="author@example.com"; AUTHOR_RE='^author@example\.com$'

@@ -227,7 +227,9 @@ jobs:
     environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
     permissions:
       contents: read
-      packages: write    # the scratch package ghcr.io/fosterstack/cache-scout-probe only
+      # packages: write reaches every package linked to this repository (the token cannot be narrower); the job runs only
+      # from main (the agent environment), and bin/scout-root-cause.sh refuses any target but the scratch package
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
