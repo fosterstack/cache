@@ -529,6 +529,17 @@ try:
 except ValueError as e:
     got = str(e)
 check("0107 on this repository the cross-check holds", got == "ok", got)
+# Codex #159 r6 (B1): a newline-separated list of test file names is data — the "sh" ending one name followed by the
+# next name is not an execution
+data_repo = tempfile.mkdtemp()
+g(data_repo, "init", "-q")
+os.makedirs(os.path.join(data_repo, ".github/workflows")); os.makedirs(os.path.join(data_repo, "bin"))
+for path, body in {".github/workflows/release.yml": "steps:\n  - run: python3 bin/decide.py\n",
+                   "bin/decide.py": 'LIST = """\nbin/a-test.sh\nbin/b-test.sh\n"""\n', "bin/a-test.sh": "", "bin/b-test.sh": ""}.items():
+    open(os.path.join(data_repo, path), "w").write(body)
+g(data_repo, "add", "-A"); g(data_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+dch = P.release_chain_files(data_repo)
+check("r6 a list of test names in a chain program is not an execution", "bin/b-test.sh" not in dch and "bin/a-test.sh" not in dch, sorted(dch))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -266,7 +266,10 @@ def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
         for d in re.findall(r"uses:\s*\./((?!\.github/workflows/)[\w./-]+?)/?\s*$", text, re.M):   # a local composite
             refs |= {d.rstrip("/") + "/" + a for a in ("action.yml", "action.yaml") if d.rstrip("/") + "/" + a in tree}
             # action (Sonnet #159 r5, F1): its steps run too
-        cands = re.findall(r"(?:\bbash|\bsh|\bpython3?|\bsource)\s+(?:-[\w-]+\s+)*[\"']?(?:\$\{?\w+\}?/)?([\w./-]+\.(?:sh|py))\b", text)
+        # an interpreter only at the start of a command (after whitespace or a separator) — never the "sh" that ends a
+        # file name such as x-test.sh (Codex #159 r6, B1: a list of test names is data, not executions)
+        cands = re.findall(r"(?:^|[\s;&|(`])(?:bash|sh|python3?|source)[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
+                           r"([\w./-]+\.(?:sh|py))\b", text, re.M)
         cands += re.findall(r"(?<![\w/.$-])\./([\w./-]+\.(?:sh|py))\b", text)
         cands += re.findall(r"\$\{?\w+\}?/([\w./-]+\.(?:sh|py))\b", text)
         for c in cands:
