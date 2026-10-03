@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 70 |
-| Acceptance criteria | 144 |
+| Active requirements | 71 |
+| Acceptance criteria | 156 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 131 |
+| ACs with mapped evidence | 139 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 27 |
+| Confidence: implementation-only | 28 |
 
 ## Cache protocol
 
@@ -659,6 +659,27 @@ The repository's workflows shall be consolidated from 32 files to the 23 the own
 | REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC3 | Given the mutation job, merged into go-freshness.yml; when the schedules fire or the workflow is dispatched; then the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml | ci-workflow |  | approved | 1 item(s) |
 
+### REQ-REL-009 — Automatic patch releases
+
+Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at once for a critical or high fix, otherwise at most once a day, signed keylessly by release.yml's own identity, run through the full release chain, with generated notes, VEX updated, floating tags moved by the owner's rule, and a failed stage abandoned without retry. Minor and major releases stay the owner's.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/release.yml; .github/workflows/stage-admission.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-009-AC1 | Given the commits on main since the latest release tag; when release.yml's decide job classifies them; then each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue "auditor: main is not patch-clean" is opened or updated with the commits and why | unit |  | approved | 1 item(s) |
+| REQ-REL-009-AC2 | Given a patch is cut; when its tag is chosen; then it is vX.Y.(Z+1) after the latest vX.Y.Z: a real semantic version with no build number or suffix; CI never creates a minor or major tag | unit |  | approved | 1 item(s) |
+| REQ-REL-009-AC3 | Given a push to main that removes a critical or high finding present in the latest release, on a patch-clean main; when release.yml runs on that push; then it cuts the patch in that run | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-009-AC4 | Given the daily schedule, main ahead of the latest tag in shipped bytes and patch-clean; when release.yml runs; then it cuts one patch that day; it never cuts a second patch the same day except for a critical or high fix | unit |  | approved | 1 item(s) |
+| REQ-REL-009-AC5 | Given a patch tag; when CI creates it; then it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-009-AC6 | Given a release tag; when source admission verifies it; then it accepts the owner's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity for patch tags only; any other signer, or that identity on a minor or major tag, is refused | unit |  | approved | none mapped |
+| REQ-REL-009-AC7 | Given a patch tag; when the release runs; then it runs the full chain (admission, build, assembly, reproducibility, scans, acceptance, authorization, promotion) and lands on GHCR and the Docker Hub mirror with identical digests | ci-workflow |  | approved | none mapped |
+| REQ-REL-009-AC8 | Given a patch release; when its notes are generated; then they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release and in the changelog, and name no vendor or model | unit |  | approved | 2 item(s) |
+| REQ-REL-009-AC9 | Given a patch that fixes CVEs; when it is released; then the VEX statements for those CVEs change to fixed in that version, and the customer suppression files regenerate with the release | ci-workflow |  | approved | none mapped |
+| REQ-REL-009-AC10 | Given a stage of a patch release; when it fails; then one issue is opened, that attempt is abandoned with no retry, the next daily run tries again once the cause is fixed, and the owner is told as information | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
+| REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
+
 ## SCAN
 
 ### REQ-SCAN-001 — The four-scanner panel on the daily rescan
@@ -704,7 +725,7 @@ Our published OpenVEX file shall be the only exception for all four scanners: Gr
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-004-AC1 | Given the four panel scanners; when they scan; then no scanner-specific ignore list and no suppression configured in any vendor account applies; the published OpenVEX file is the only exception | ci-workflow |  | approved | 1 item(s) |
-| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 2 item(s) |
+| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 3 item(s) |
 
 ### REQ-SCAN-005 — Reporting
 

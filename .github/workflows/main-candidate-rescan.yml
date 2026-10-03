@@ -218,6 +218,67 @@ jobs:
           path: /tmp/panel/
           if-no-files-found: warn
 
+  # The Docker Scout root-cause round (advisor 0120/0121/0122), dispatch only: the attestation path on a scratch package
+  # (never the release package; the digests before and after are recorded), then Docker's documented control, one field
+  # changed at a time, and our forms, on Scout 1.26.0 and the two previous minors. Results in the job summary.
+  scout-root-cause:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
+    permissions:
+      contents: read
+      # packages: write reaches every package linked to this repository (the token cannot be narrower); the job runs only
+      # from main (the agent environment), and bin/scout-root-cause.sh refuses any target but the scratch package
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: the containerd image store (Docker's documented requirement for attestations)
+        run: |
+          set -euo pipefail
+          echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info -f '{{ .DriverStatus }}'
+
+      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 (each pinned by checksum) and skopeo
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
+          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do
+            mkdir -p "$RUNNER_TEMP/$t"      # install-scanner.sh never creates its DEST (Codex #176 r2, B2)
+            ./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"
+          done
+          mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"
+          mv "$RUNNER_TEMP/docker-scout-1.25.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.25.0"
+          mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+
+      - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: the root-cause round
+        env:
+          SCOUT_DIR: ${{ runner.temp }}/scout
+          PROBE_REPO: ghcr.io/fosterstack/cache-scout-probe
+          RELEASE_TAG: '0.2.1'
+        run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: scout-root-cause
+          path: ${{ runner.temp }}/rc/
+          retention-days: 30
+
   panel-inspector:
     name: panel — Amazon Inspector (six images)
     needs: [build, assemble]

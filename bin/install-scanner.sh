@@ -27,15 +27,16 @@ SNYK_VER=1.1307.0
 OSV_VER=2.6.0
 SBOMGEN_VER=1.16.0
 SCOUT_VER=1.26.0
+GITSIGN_VER=0.17.1
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -54,6 +55,11 @@ case "${TOOL}:${arch}" in
   inspector-sbomgen:aarch64|inspector-sbomgen:arm64) SUM=c0ee096fe6e25123b8420bdd09a14d0dbd15333c017825c6cc815ce68e465d0d ;;
   docker-scout:x86_64|docker-scout:amd64) SUM=47daa9ac442816316c65389f516b847146bb9f45e8d6afdcbb9ce835c4e138bd ;;
   docker-scout:aarch64|docker-scout:arm64) SUM=34282a50d6787eec46e44a377a1ed9e70342adf078135cca8617c9199852725c ;;
+  # the two previous minors, for the Scout root-cause round only (advisor 0120/0122; amd64 runners)
+  docker-scout-1.25.0:x86_64|docker-scout-1.25.0:amd64) SUM=34971682f9d2507f02d4e0e86ae0416bfe53ad40c644819eaeab348a9bae8602 ;;
+  docker-scout-1.24.0:x86_64|docker-scout-1.24.0:amd64) SUM=f4e2814bd61040365153d5b964b144cb2dc6ee536a68b5bac4cadf00fc0ec34b ;;
+  gitsign:x86_64|gitsign:amd64) SUM=69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae ;;
+  gitsign:aarch64|gitsign:arm64) SUM=477018736a80b36e703dd58db8d6e158a2c1b8b727af0ab8ffdcce9fdf610ada ;;
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -64,6 +70,7 @@ SNYK_BASE="${SNYK_BASE_URL:-https://github.com/snyk/cli/releases/download}"
 OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/download}"
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
 SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
+GITSIGN_BASE="${GITSIGN_BASE_URL:-https://github.com/sigstore/gitsign/releases/download}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -123,7 +130,8 @@ case "$TOOL" in
     install -m 0755 "$tmp/inspector-sbomgen" "${DEST}/inspector-sbomgen" || pipeline_fail "install failed for inspector-sbomgen"
     "${DEST}/inspector-sbomgen" --version >/dev/null || pipeline_fail "inspector-sbomgen does not run after install"
     ;;
-  docker-scout)
+  docker-scout|docker-scout-1.25.0|docker-scout-1.24.0)
+    [ "$TOOL" = docker-scout ] || SCOUT_VER="${TOOL#docker-scout-}"
     # a Docker CLI plugin: installed as DEST/docker-scout; the caller links it into ~/.docker/cli-plugins
     url="${SCOUT_BASE}/v${SCOUT_VER}/docker-scout_${SCOUT_VER}_${A_SCOUT}.tar.gz"
     curl -fsSL -o "$tmp/d.tgz" "$url" || pipeline_fail "download failed: $url"
@@ -132,8 +140,16 @@ case "$TOOL" in
     install -m 0755 "$tmp/docker-scout" "${DEST}/docker-scout" || pipeline_fail "install failed for docker-scout"
     "${DEST}/docker-scout" docker-cli-plugin-metadata >/dev/null || pipeline_fail "docker-scout does not run after install"
     ;;
+  gitsign)
+    # keyless git signing with the workflow's OIDC identity (automatic patch releases; owner, Oct 2): a single binary
+    url="${GITSIGN_BASE}/v${GITSIGN_VER}/gitsign_${GITSIGN_VER}_${A_GITSIGN}"
+    curl -fsSL -o "$tmp/gitsign" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/gitsign"
+    install -m 0755 "$tmp/gitsign" "${DEST}/gitsign" || pipeline_fail "install failed for gitsign"
+    "${DEST}/gitsign" --version >/dev/null || pipeline_fail "gitsign does not run after install"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

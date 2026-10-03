@@ -375,6 +375,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }   # requires the rescan's Scout self-check (real Scout, real VEX)
+      - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
   - ac: REQ-SCAN-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
@@ -483,3 +484,29 @@ mappings:
   - ac: REQ-SCAN-010-AC4
     evidence:
       - { type: inspection, ref: ".vex/README.md section \"The same statements, three ways\": the Google VEX upload is a preview feature" }
+  - ac: REQ-REL-009-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-009-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-009-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-009-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
