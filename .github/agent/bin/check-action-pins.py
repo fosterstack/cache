@@ -823,11 +823,13 @@ def _cut_substitutions(text, data=False):
             out.append(c)
             i += 1
         elif c == "#" and q is None and (
-            i == 0 or text[i - 1] in " \t\n;"
-            or (text[i - 1] == "(" and not (out and out[-1] == "\\("))
+            i == 0 or (text[i - 1] in " \t\n;(" and not (out and len(out[-1]) == 2 and out[-1][0] == "\\"))
         ):
             # a '#' right after '(' starts a comment too (Codex #164 r14, B2): an array literal's opening
-            # paren, or a subshell's, both begin a new word there, same as whitespace/;/newline already did
+            # paren, or a subshell's, both begin a new word there, same as whitespace/;/newline already did.
+            # Any of those boundary characters can itself be escaped (Codex #164 r16, B3: \ , \;, a literal
+            # tab) -- then it's data inside the current word, not a real boundary, and the '#' right after
+            # it is not a comment either; out[-1] is the literal 2-char escape pair when that happened
             j = text.find("\n", i)                      # a comment: no quotes, no substitutions
             j = n if j < 0 else j
             out.append(text[i:j])

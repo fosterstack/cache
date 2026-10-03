@@ -1550,6 +1550,11 @@ case_ r4b6-nested-subst-comment-paren-apostrophe-bad bad "$(rb "arr=(\$( # ) 'x'
 # not a real '(' starting a new word -- it's data inside an array element -- so the '#' right after it is NOT
 # a comment, and a REAL \$(...) substitution right after that must still be read
 case_ r4b6-escaped-paren-before-hash-not-a-comment-bad bad "$(rb 'arr=(\(#$(docker run --rm alpine:latest)))')"
+# Codex #164 r16, B3: the same escape-awareness is needed for every comment-boundary character, not just
+# '(' -- an escaped space or escaped semicolon right before '#' is also data inside the current word, not a
+# real boundary, so the '#' after it is not a comment either
+case_ r4b6-escaped-space-before-hash-not-a-comment-bad bad "$(rb 'arr=(\ #$(docker run --rm alpine:latest))')"
+case_ r4b6-escaped-semicolon-before-hash-not-a-comment-bad bad "$(rb 'arr=(\;#$(docker run --rm alpine:latest))')"
 # Sonnet #164 r16, B1: an ORDINARY, non-adversarial quoted scalar containing one of the if/case/trap keyword
 # words as plain data (no array, no comment -- just a log message or variable) corrupted _unconditional()'s
 # if/case tracking the same way a comment did, because the keyword regex has no quote-awareness at all
