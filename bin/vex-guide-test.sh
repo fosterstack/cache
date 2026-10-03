@@ -81,11 +81,30 @@ check("R1-01 says the Inspector file carries only the suppressing statements",
 check("R1-02 says Google's loader reads only whole-image statements",
       re.search(r"Google[^.]*(loader|upload)[^.]*whole-image", doc, re.I | re.S) is not None)
 rm = next((b for b in blocks if "delete-filter" in b), "")
-check("R1-03 the removal command fails when listing fails (pipefail)", rm.lstrip().startswith("set -o pipefail;"), rm)
+check("R1-03 the removal command fails when listing fails (pipefail)", rm.lstrip().startswith("(set -o pipefail;"), rm)
 check("R1-04 the Inspector command appears once, and only as the constant",
       code.count("create-filter") == 1 and V.GUIDE_INSPECTOR_COMMAND.replace("<file>", '"%s"' % insp) in code)
 check("R1-04 the Google command appears once, and only as the constant",
       code.count("load-vex") == 1 and V.GUIDE_GOOGLE_COMMAND.replace("<file>", '"%s"' % csaf) in code)
+# Sonnet #167 r3 (R3-01): a pasted command never ends the reader's shell. zsh (the macOS default) runs a pipeline's last
+# stage in the current shell, so `| while …; do … || exit 1; done` would close the terminal. Each looping command runs in
+# its own ( … ) subshell: it reports the failure and the reader's shell — and its options (pipefail) — are untouched.
+import shutil, subprocess, tempfile
+stub = ('aws() { case "$*" in *list-filters*) printf "arn:a\\tarn:b\\n" ;; *delete-filter*|*create-filter*) echo denied >&2; return 1 ;; esac; }\n'
+        'jq() { printf "%s\\n" "{}"; }\n')
+for name, cmd in (("Inspector load", next(l for b in blocks for l in b.splitlines() if "create-filter" in l).strip()),
+                  ("filter removal", next(l for b in blocks for l in b.splitlines() if "delete-filter" in l).strip())):
+    check("R3-01 the %s command is one ( … ) subshell" % name, cmd.startswith("(") and cmd.endswith(")"), cmd)
+    shells = [("bash with lastpipe (zsh's semantics)", ["bash", "-c", "shopt -s lastpipe; set +m; " + stub + cmd + '; echo "NEXT rc=$?"; set -o | grep -c "pipefail *on"'])]
+    if shutil.which("zsh"):
+        shells.append(("zsh", ["zsh", "-c", stub + cmd + '; echo "NEXT rc=$?"; [[ -o pipefail ]] && echo 1 || echo 0']))
+    for sname, argv in shells:
+        with tempfile.TemporaryDirectory() as t:
+            open(os.path.join(t, "fosterstack-cache-vX.Y.Z.inspector-filters.json"), "w").write("{}")
+            r = subprocess.run(argv, cwd=t, capture_output=True, text=True, env=dict(os.environ, VER="X.Y.Z"))
+        out = r.stdout.split()
+        check("R3-01 under %s, a failed %s call is reported and the shell goes on, its options unchanged" % (sname, name),
+              "NEXT" in r.stdout and "rc=0" not in r.stdout and out[-1:] == ["0"], (r.returncode, r.stdout, r.stderr[-200:]))
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

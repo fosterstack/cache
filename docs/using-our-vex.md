@@ -81,7 +81,7 @@ Run with credentials allowed to call `inspector2:CreateFilter` in the account an
 our image:
 
 ```sh
-set -o pipefail; jq -ce '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done
+(set -o pipefail; jq -ce '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done)
 ```
 
 What it does in your account: it creates one Inspector suppression rule per *not affected* or *fixed* statement,
@@ -122,7 +122,7 @@ When a statement turns *affected*, the new release's files say so, and a suppres
 - **Amazon Inspector:** delete our earlier rules, then load the new file:
 
   ```sh
-  set -o pipefail; aws inspector2 list-filters --action SUPPRESS --query "filters[?starts_with(name, 'fosterstack-cache-')].arn" --output text | tr '\t' '\n' | while read -r arn; do if [ -n "$arn" ]; then aws inspector2 delete-filter --arn "$arn" || exit 1; fi; done
+  (set -o pipefail; aws inspector2 list-filters --action SUPPRESS --query "filters[?starts_with(name, 'fosterstack-cache-')].arn" --output text | tr '\t' '\n' | while read -r arn; do if [ -n "$arn" ]; then aws inspector2 delete-filter --arn "$arn" || exit 1; fi; done)
   ```
 
   This deletes only rules whose names start with `fosterstack-cache-`.
