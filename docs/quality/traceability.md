@@ -562,7 +562,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 
-Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request.
+Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request. The check enforces plain forms only (owner, Oct 3): a deliberately hidden form is out of its scope; reviewers judge intent, and an obfuscation-only finding is information, not a blocker.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 

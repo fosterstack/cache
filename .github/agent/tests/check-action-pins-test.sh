@@ -1104,6 +1104,11 @@ case_ n27-ansi-c               bad "$(rb "\$'\\x64ocker' run alpine:3.20")"
 case_ n27-ansi-c-octal         bad "$(rb "\$'\\144ocker' run alpine:3.20")"
 case_ n27-ansi-c-tab-ok        ok  "$(rb "IFS=\$'\\t' read -r a b <<< \"x\"; printf '%s' \"\$a\$'\\n'\"")"
 case_ n27-regex-anchor-ok      ok  "$(rb "grep -oE '[^ ]+\$' f.txt; echo \"a\$'b\"")"
+# a shell comment's apostrophe does not open a quote: a later 'regex$' is not an ANSI-C string (rescan's probe step)
+case_ ansi-comment-apostrophe-ok ok "$(rb "# the report's delta check
+          grep -q '^x\$' \\
+            /dev/null || true")"
+case_ scout-vex-author-ok   ok  "$(rb "docker scout cves --format gitlab --vex-location ./v --vex-author '^A B\$' --only-vex-affected local://ghcr.io/x/y:t")"
 case_ n27-ansi-in-dquote-text  bad "$(rb "echo \"x\" \$'\\x41'")"
 case_ n27-cp-split             bad "$(rb 'cp "$(command -v d""ocker)" /usr/local/bin/foo; foo run alpine:3.20')"
 case_ n28-cd-split-pip         bad "$(rb 'c""d sub; pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p sub; printf 'evil==9 --hash=sha256:11\\n' > sub/requirements.txt"
