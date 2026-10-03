@@ -788,6 +788,10 @@ def _commands(script, depth=0):
                 if w == "eval" and toks[i + 1:]:
                     out += _commands(" ".join(toks[i + 1:]), depth + 1)
                     break
+        stdin = _stdin_shell(toks)
+        if stdin:             # a shell fed by a pipe, a herestring or a process substitution (Sonnet #164 r21, NEW-32)
+            out.append(["__stdin_shell__", stdin])
+            continue
         computed = [w for w in _command_words(toks) if SUBST in w]
         if computed:          # a program name built by a substitution (d$()ocker): it cannot be resolved (NEW-11)
             out.append(["__computed__", computed[0]])
@@ -800,6 +804,42 @@ def _commands(script, depth=0):
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
     return out
+
+
+def _stdin_shell(toks):
+    """The shell word when a program word of this command is a shell that would read its script from stdin, a
+    herestring, a process substitution or /dev/stdin, instead of `-c "…"` (read as a script) or a file operand; and
+    `source` / `.` of a process substitution or stdin. (A bare `.` without an operand is a bash error, not a run.)"""
+    words = _command_words(toks)
+    for w in words:
+        dot = _base(w) in ("source", ".")
+        if not (_base(w) in SHELLS or (dot and w == words[0])):
+            continue
+        rest = toks[toks.index(w) + 1:]
+        if "-c" in rest and not dot:
+            return None
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if a.startswith("<("):                         # the script is a process substitution's output
+                return w
+            if a.startswith("<"):                          # a redirection or herestring: not an operand
+                i += 1 if re.match(r"^<(<<?|&)?[^<>&]", a) else 2
+                continue
+            if re.match(r"^[0-9]*(>>?|<>|&>)", a):
+                i += 1 if re.match(r"^[0-9]*(>>?|<>|&>)[^<>]", a) else 2
+                continue
+            if not dot and a.startswith("-") and a not in ("-", "--"):
+                if re.fullmatch(r"-[a-z]*s[a-z]*", a):
+                    return w                              # -s: the script comes from stdin
+                i += 1 + bool(re.fullmatch(r"[-+][a-zA-Z]*[oO]", a))   # -o / -eo / +O take a value
+                continue
+            if a == "--":
+                i += 1
+                continue
+            return w if a in ("-", "/dev/stdin") or a.startswith(("/dev/fd/", "/proc/self/fd/")) else None
+        return None if dot else w
+    return None
 
 
 def _base(word):
@@ -973,6 +1013,10 @@ def script_images(script):
             continue
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
+            continue
+        if cmd == "__stdin_shell__":
+            ev.append(("finding", "`%s` reads its script from stdin, a herestring or a process substitution; text this "
+                       "check never reads, refused" % args[0]))
             continue
         if cmd == "__computed__":
             ev.append(("finding", "a program name is built by a command substitution (%s); it cannot be resolved"
