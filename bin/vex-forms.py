@@ -55,6 +55,20 @@ def _status(statement):
     return s
 
 
+def _purl_of(component, cve):
+    """The one purl a product or subcomponent names (Codex #165 r3, SEC-165-01): its @id or identifiers.purl — equal when
+    both are given. Any other identifier (CPE …), two purls that differ, or no purl at all cannot be read here, and a
+    statement this check cannot place must stop generation rather than drop out of scope."""
+    ids = component.get("identifiers") or {}
+    if not isinstance(ids, dict) or set(ids) - {"purl"}:
+        raise ValueError("%s: %r carries an identifier these forms cannot read" % (cve, component))
+    at = component.get("@id", "")
+    purls = {x for x in (at if at.startswith("pkg:") else None, ids.get("purl")) if x}
+    if len(purls) != 1 or (at and not at.startswith("pkg:")):
+        raise ValueError("%s: %r does not name exactly one purl" % (cve, component))
+    return purls.pop()
+
+
 def _scopes(statement, digests):
     """[(digests, package)] a statement covers in this release (Codex #165 r1, SEC-165-01): each product that is this
     repository's OCI image (`pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache`, or one digest of it), with each of
@@ -62,7 +76,7 @@ def _scopes(statement, digests):
     Go module) is not an image of this release: no scope here. A qualifier the forms cannot represent stops generation."""
     out = []
     for prod in statement.get("products") or []:
-        pid = prod.get("@id", "")
+        pid = _purl_of(prod, _cve(statement))
         if not pid.startswith("pkg:oci/"):
             continue                                     # not an image (a Go module …)
         # read as the purl spec orders it — #subpath, then ?qualifiers (decoded), then @version — so an encoding never
@@ -81,8 +95,10 @@ def _scopes(statement, digests):
         if not subs:
             out.append((ds, None))
         for sub in subs:
-            pm = re.fullmatch(r"pkg:[a-z]+/(?:[^/@?#]+/)*([^/@?#]+)(?:@([^?#]+))?", sub.get("@id", ""))
-            if not pm:                                   # a qualifier or subpath restricts it further: not represented
+            # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen
+            # to every "busybox" (Codex #165 r3, SEC-165-01) — refused, as is a qualifier or subpath
+            pm = re.fullmatch(r"pkg:[a-z]+/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
+            if not pm:                                   # a namespace, qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             out.append((ds, (urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or ""))))
     return out

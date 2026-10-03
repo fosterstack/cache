@@ -261,6 +261,38 @@ check("SEC-165-01 a percent-encoded repository_url without subpath is still our 
       V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]) == [([D("1")], None)])
 check("SEC-165-01 a fork whose name extends ours is another repository, not ours",
       V._scopes(scoped("CVE-FORK", "affected", [{"@id": "pkg:oci/cache-fork?repository_url=ghcr.io/fosterstack/cache-fork#x"}]), [D("1")]) == [])
+# Codex #165 r3 (SEC-165-01): identity is never discarded — a namespaced package and an identifiers-only product stop
+# generation instead of widening a suppression or dropping an affected statement
+OURS = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def refused(prod):
+    try:
+        V._scopes(scoped("CVE-ID", "affected", [prod]), [D("1")]); return False
+    except ValueError:
+        return True
+for sub in ("pkg:golang/github.com/acme/busybox@1.37.0", "pkg:npm/%40acme/busybox@1.37.0", "pkg:deb/debian/libssl3@3.0.15-1"):
+    check("SEC-165-01 a namespaced subcomponent stops generation: " + sub, refused({"@id": OURS, "subcomponents": [{"@id": sub}]}))
+for name, prod in [("an IRI @id with our purl in identifiers", {"@id": "https://example.com/x", "identifiers": {"purl": OURS}}),
+                   ("@id and identifiers.purl that differ", {"@id": OURS, "identifiers": {"purl": "pkg:oci/other?repository_url=ghcr.io/x/other"}}),
+                   ("a CPE identifier", {"@id": OURS, "identifiers": {"purl": OURS, "cpe23": "cpe:2.3:a:x:y:1:*:*:*:*:*:*:*"}}),
+                   ("a product with no purl at all", {"@id": "https://example.com/our-image"})]:
+    check("SEC-165-01 %s stops generation" % name, refused(prod))
+check("SEC-165-01 a product known only by identifiers.purl is resolved to our image",
+      V._scopes(scoped("CVE-IO", "affected", [{"identifiers": {"purl": OURS}}]), [D("1")]) == [([D("1")], None)])
+check("SEC-165-01 a subcomponent known only by identifiers.purl keeps its package",
+      V._scopes(scoped("CVE-IS", "affected", [{"@id": OURS, "subcomponents": [{"identifiers": {"purl": "pkg:generic/busybox@1.37.0"}}]}]), [D("1")])
+      == [([D("1")], ("busybox", "1.37.0"))])
+pair = {"statements": [scoped("CVE-PAIR", "not_affected", [{"@id": OURS}]), scoped("CVE-PAIR", "affected", [{"identifiers": {"purl": OURS}}])]}
+try:
+    V._check_conflicts(pair, [D("1")]); got = "accepted"
+except ValueError:
+    got = "refused"
+check("SEC-165-01 the reviewer's pair (not_affected by @id, affected by identifiers) is a contradiction: refused", got == "refused", got)
+check("SEC-165-01 @id and an equal identifiers.purl (the real file's form) is our image",
+      V._scopes(scoped("CVE-EQ", "affected", [{"@id": OURS, "identifiers": {"purl": OURS}}]), [D("1")]) == [([D("1")], None)])
+check("SEC-165-01 another repository's image named both ways is still not ours",
+      V._scopes(scoped("CVE-OT", "affected", [{"@id": "pkg:oci/x?repository_url=ghcr.io/a/x", "identifiers": {"purl": "pkg:oci/x?repository_url=ghcr.io/a/x"}}]), [D("1")]) == [])
+check("SEC-165-01 a Go module product stays out of image scope",
+      V._scopes(scoped("CVE-GO", "affected", [{"@id": "pkg:golang/github.com/fosterstack/cache"}]), [D("1")]) == [])
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
