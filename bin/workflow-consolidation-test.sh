@@ -404,9 +404,10 @@ else:
     # both lack it: equal, so only the missing-entry guard can fail it (Codex #162 pin r3, R78-B7)
     cases += [("neither A nor B has " + v, {k: x for k, x in same.items() if k != v}, {k: x for k, x in same.items() if k != v})
               for v in same]
-    cases += [("neither A nor B has any digest", {}, {}),
-              ("A and B both give production as null", dict(same, production=None), dict(same, production=None)),
-              ("A and B both give production as empty", dict(same, production=""), dict(same, production=""))]
+    cases += [("neither A nor B has any digest", {}, {})]
+    # every variant, every empty form (Codex #162 pin r4, R78-B7: a guard limited to one variant must fail here)
+    cases += [("A and B both give %s as %s" % (v, why), dict(same, **{v: x}), dict(same, **{v: x}))
+              for v in same for why, x in (("null", None), ("empty", ""), ("the string null", "null"))]
     for why, a, b in cases:
         if verdict(a, b) == 0:
             bad.append("reproducibility passes when %s" % why)
@@ -471,6 +472,8 @@ case_scan compare-always-true    bad "d['jobs']['reproducibility']['steps'][0]['
 # missing-entry guard must be proven by running it when BOTH assemblies lack a variant (R78-B7)
 case_scan compare-expr-exit      bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('exit 1', '(exit 1) || exit \${{ 0 }}')"
 case_scan compare-expr-anywhere  bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('set -euo pipefail', 'set -euo pipefail\n: \${{ github.sha }}')"
+case_scan compare-guard-prod-only bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('[ -z \"\$da\" ] ||', '[ -z \"\$da\" ] && [ \"\$v\" = production ] ||'); assert 'production ] ||' in s['run']"
+case_scan compare-guard-fips-null bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('[ \"\$da\" = \"null\" ]', '{ [ \"\$da\" = \"null\" ] && [ \"\$v\" != fips ]; }'); assert 'fips ]; }' in s['run']"
 case_scan compare-no-guard       bad "import re; s = d['jobs']['reproducibility']['steps'][0]; s['run'] = re.sub(r'  if \[ -z \"\\\$da\" \].*?\n  fi\n', '', s['run'], flags=re.S); assert 'no digest' not in s['run']"
 
 # ---------------------------------------------------------------------------------------------------------------------
