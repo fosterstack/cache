@@ -822,7 +822,10 @@ def _cut_substitutions(text, data=False):
         elif data and c in "'\"#":
             out.append(c)
             i += 1
-        elif c == "#" and q is None and (i == 0 or text[i - 1] in " \t\n;("):
+        elif c == "#" and q is None and (
+            i == 0 or text[i - 1] in " \t\n;"
+            or (text[i - 1] == "(" and not (out and out[-1] == "\\("))
+        ):
             # a '#' right after '(' starts a comment too (Codex #164 r14, B2): an array literal's opening
             # paren, or a subshell's, both begin a new word there, same as whitespace/;/newline already did
             j = text.find("\n", i)                      # a comment: no quotes, no substitutions
@@ -851,6 +854,13 @@ def _cut_substitutions(text, data=False):
                     continue
                 elif d in "'\"":
                     iq = d
+                elif d == "#" and (j == i + 2 or text[j - 1] in " \t\n;("):
+                    # the same comment rule the top-level scanner has (Codex #164 r15, B3): a ')' or
+                    # apostrophe inside a comment here is not real syntax either, and this nested scan had
+                    # never learned that rule at all
+                    while j < n and text[j] != "\n":
+                        j += 1
+                    continue
                 elif d == "(":
                     depth += 1
                 elif d == ")":
@@ -1631,25 +1641,29 @@ def _strip_line_comment(line):
     return line
 
 
+_ARRAY_OPEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=\(")
+
+
 def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
     line, Codex #164 r2 C10), after && / || on its line, or anywhere a `trap` command appears. A trap's body is
     deferred to a future signal, not run in line order, so a build/tag inside one must never register a local
     name an unconditional command elsewhere can then rely on (Codex #164 fresh r5, B1). Scoping that exclusion to
     just the trap's own body — by line, by quote state, however carefully — kept reopening new bypasses every
-    round (Codex #164 r9/r10/r11, Sonnet r8: a double-quoted body, an escaped quote, the embedded-apostrophe
-    idiom, a close-then-reopen on one line, a command substitution, an apostrophe in an EARLIER trap's comment
-    confusing a LATER trap's own body, a quoted spelling of the word `trap` itself evading detection entirely —
-    each fix chased the last one's specific construct and opened a new one). None of that is worth re-fighting:
-    the instant the word `trap` appears anywhere in the script, nothing in the whole script is trusted as a
-    local name (advisor 0080 — fail closed on an open-ended finding class, don't chase it construct by
-    construct). A script that genuinely has no use for `trap` is unaffected. An array literal (NAME=(...)) is
-    handled downstream, where this output is re-scanned by _commands() for local names — fixed at the source
-    (_split_commands's own array sub-scanner, which now skips a '#' comment the same way the outer loop does;
-    Codex #164 r13, B1) rather than blanket-excluded here, since the array is an ordinary, common idiom and a
-    blanket rule here would cost real scripts their trust for no reason. A literal for-loop always runs and is
-    kept."""
-    if _TRAP_RE.search(text):
+    round (Codex #164 r9/r10/r11/r14/r15, Sonnet r8/r14: a double-quoted body, an escaped quote, the embedded-
+    apostrophe idiom, a close-then-reopen on one line, a command substitution, an apostrophe or "if"/"fi" in a
+    comment confusing a LATER trap's own body or this function's own if/case tracking, a quoted spelling of the
+    word `trap` itself, a QUOTED STRING simply containing the words "if"/"fi" as ordinary data — each fix
+    chased the last one's specific construct and opened a new one, because this function's per-line keyword
+    regex has no quote or comment awareness at all, and teaching it both, completely, for every construct that
+    might appear is the same re-implement-bash's-grammar trap the trap rule already walked away from once).
+    None of that is worth re-fighting: the instant the word `trap` appears anywhere, OR an array literal opens
+    anywhere (NAME=( / NAME+=(, whose body is exactly the raw text that keeps feeding this class of bypass —
+    confirmed no real workflow in this repo combines one with a local-build-then-run pattern), nothing in the
+    whole script is trusted as a local name (advisor 0080 — fail closed on an open-ended finding class, don't
+    chase it construct by construct). A script that genuinely has no use for either is unaffected. A literal
+    for-loop always runs and is kept."""
+    if _TRAP_RE.search(text) or _ARRAY_OPEN_RE.search(text):
         return ""
     keep, stack = [], []
     for line in text.splitlines():
