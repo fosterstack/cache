@@ -722,7 +722,7 @@ DOCKER_SAFE_SUB = {("image", "ls"), ("image", "rm"), ("image", "inspect"), ("ima
                    ("buildx imagetools", "inspect"), ("builder", "prune"), ("builder", "ls")}
 SKOPEO_SAFE = {"login", "logout", "list-tags", "manifest-digest", "delete", "standalone-verify", "--version", "-v"}
 CRANE_SAFE = {"digest", "manifest", "ls", "tag", "auth", "config", "validate", "catalog", "delete", "push", "blob",
-              "version", "index"}
+              "version"}   # "index" is split below: append/filter fetch their sources, list is read-only (Codex r1, B5)
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
 def _split_commands(text):
     """The simple commands of a shell text, split as bash splits them: at ; & | ( ) and newlines OUTSIDE quotes ('…',
@@ -949,11 +949,17 @@ def _commands(script, depth=0):
         for i, w in enumerate(toks):
             c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
                 if _base(w) in SHELLS else None
-            if c is not None or (w == "eval" and toks[i + 1:]):
+            # `trap 'CMD' SIGSPEC...` runs CMD on the signal; a literal, non-option command argument is read like an
+            # eval body (Codex #164 adversarial r1, B2) — `trap -p`, `trap -l` and a bare `trap SIGSPEC` (listing or
+            # resetting, no separate command) run nothing
+            trap_cmd = toks[i + 1] if w == "trap" and i + 2 < len(toks) and not toks[i + 1].startswith("-") else None
+            if c is not None or (w == "eval" and toks[i + 1:]) or trap_cmd is not None:
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
                 elif c is not None:
                     out += _commands(toks[c + 1], depth + 1) if c + 1 < len(toks) else []
+                elif trap_cmd is not None:
+                    out += _commands(trap_cmd, depth + 1)
                 else:
                     out += _commands(" ".join(toks[i + 1:]), depth + 1)
                 break
@@ -1085,8 +1091,9 @@ def _variable(tok):
 
 
 def _build(args):
-    """(dockerfile, context, tags) of a docker build / buildx build: dockerfile None = the default name."""
-    dockerfile, tags, pos, named, i = None, set(), [], [], 0
+    """(dockerfile, context, tags, named, cache_from) of a docker build / buildx build: dockerfile None = the default
+    name. cache_from: each --cache-from registry image (a type=local/gha/... source names nothing remote)."""
+    dockerfile, tags, pos, named, cache_from, i = None, set(), [], [], [], 0
     while i < len(args):
         a = args[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument (`- < Dockerfile`)
@@ -1109,6 +1116,11 @@ def _build(args):
             continue
         elif a.startswith("--build-context="):
             named.append(a.split("=", 2)[-1])
+        elif a == "--cache-from" and i + 1 < len(args):
+            cache_from.append(args[i + 1]); i += 2
+            continue
+        elif a.startswith("--cache-from="):
+            cache_from.append(a.split("=", 1)[1])
         elif a.startswith("-") and a != "-":
             if "=" not in a and i + 1 < len(args) and not args[i + 1].startswith("-") and a not in (
                     "--push", "--load", "--no-cache", "--pull", "-q", "--quiet", "--rm", "--force-rm"):
@@ -1117,7 +1129,7 @@ def _build(args):
         else:
             pos.append(a)
         i += 1
-    return dockerfile, (pos[-1] if pos else "."), tags, named
+    return dockerfile, (pos[-1] if pos else "."), tags, named, cache_from
 
 
 def _pip_install(args):
@@ -1368,11 +1380,16 @@ def script_images(script):
                                           "which word is the image" % (verb, unknown)))
                 else:
                     # pull, and run/create --pull=always, fetch from the registry whatever is local (Codex #164
-                    # adversarial r1, C10): never excused by a name the job made
-                    fetch = verb == "pull" or any(re.fullmatch(r"--pull(=always)?", a) and (
-                        "=" in a or rest[rest.index(a) + 1:rest.index(a) + 2] == ["always"]) for a in rest[:k])
-                    never = verb != "pull" and any(a == "--pull=never" or (a == "--pull" and rest[i + 1:i + 2] == ["never"])
-                                                   for i, a in enumerate(rest[:k]))
+                    # adversarial r1, C10; r1 B3: a string flag's value is whichever --pull was LAST on the line, not
+                    # whether --pull=never appears anywhere — Docker/pflag keep only the final assignment)
+                    pull_state = None
+                    for j, a in enumerate(rest[:k]):
+                        if a == "--pull" and rest[j + 1:j + 2] and rest[j + 1] in ("always", "missing", "never"):
+                            pull_state = rest[j + 1]
+                        elif a.startswith("--pull="):
+                            pull_state = a.split("=", 1)[1]
+                    never = verb != "pull" and pull_state == "never"
+                    fetch = verb == "pull" or (pull_state == "always" if pull_state is not None else False)
                     if not never:     # --pull=never can only use an image already in the daemon (Codex r3, C10)
                         ev.append(("fetch" if fetch else "use", "docker " + verb, rest[k] if k < len(rest) else None))
             elif verb == "scout":
@@ -1385,7 +1402,7 @@ def script_images(script):
                 ev.append(("finding", "`%s %s` is not a verb this check reads or has reviewed as pulling nothing; "
                                       "it is refused" % (cmd, verb)))
             elif verb == "build":
-                dockerfile, context, tags, named = _build(rest)
+                dockerfile, context, tags, named, cache_from = _build(rest)
                 # a BUILDKIT_SYNTAX build argument selects the frontend image that runs the build (C09)
                 for k, b in enumerate(rest):
                     v = rest[k + 1] if b == "--build-arg" and k + 1 < len(rest) else (
@@ -1404,6 +1421,18 @@ def script_images(script):
                         ev.append(("finding", "a build runs a generator image not pinned by digest (%s)" % gen))
                 ev.append(("build", dockerfile, context, named))
                 ev += [("local", x) for x in tags]
+                for cf in cache_from:
+                    # a bare ref or type=registry,ref=... names a registry image; any other type (local/gha/...)
+                    # reads from something this check does not treat as a remote pull (Codex r1, B4)
+                    m = re.match(r"type=([^,]+)(?:,(.*))?$", cf)
+                    img = (dict(p.split("=", 1) for p in m.group(2).split(",") if "=" in p).get("ref")
+                           if m and m.group(2) else None) if m else cf
+                    if m and m.group(1) != "registry":
+                        continue
+                    if img is None:
+                        ev.append(("finding", "a build's --cache-from registry source names no ref (%s)" % cf))
+                    else:
+                        ev.append(("use", "docker build --cache-from", img))
         elif cmd == "skopeo" and args and args[0] not in ("copy", "inspect") + tuple(SKOPEO_SAFE):
             ev.append(("finding", "`skopeo %s` is not a verb this check reads; it is refused" % args[0]))
         elif cmd == "skopeo" and args and args[0] in ("copy", "inspect"):
@@ -1422,6 +1451,20 @@ def script_images(script):
                     ev.append(("local", a[len("docker-daemon:"):]))
                 # an archive copied into the daemon (oci-archive:, dir:, docker-archive:) is NOT the job's own bytes: it
                 # may be scanned, but running it is a finding (Sonnet #164 r14, NEW-22)
+        elif cmd == "crane" and args and args[0] == "index" and args[1:2] == ["list"]:
+            pass    # read-only: lists an index's own manifests, fetches no new source (Codex r1, B5)
+        elif cmd == "crane" and args and args[0] == "index" and args[1:2] not in (["append"], ["filter"]):
+            ev.append(("finding", "`crane index %s` is not a subcommand this check reads; it is refused"
+                       % (args[1] if args[1:2] else "")))
+        elif cmd == "crane" and args and args[0] == "index" and args[1:2] in (["append"], ["filter"]):
+            pos, unknown = _operands(args[2:], CRANE_INDEX_VAL, CRANE_INDEX_BOOL)
+            if unknown:
+                ev.append(("finding", "`crane index %s` has an option this check does not know (%s)" % (args[1], unknown)))
+                continue
+            manifests = [args[2:][i + 1] for i, a in enumerate(args[2:]) if a in ("-m", "--manifest")] + \
+                        [a.split("=", 1)[1] for a in args[2:] if a.startswith(("-m=", "--manifest="))]
+            for img in ([pos[0]] if pos else []) + manifests:
+                ev.append(("fetch", "crane index " + args[1], img))
         elif cmd == "crane" and args and args[0] not in ("copy", "cp", "pull", "export") + tuple(CRANE_SAFE):
             ev.append(("finding", "`crane %s` is not a verb this check reads (it may take a base image); it is refused"
                        % args[0]))
@@ -1443,6 +1486,8 @@ SKOPEO_BOOL = {"--all", "-a", "--quiet", "-q", "--remove-signatures", "--preserv
                "--dest-precompute-digests", "--src-tls-verify", "--dest-tls-verify", "--tls-verify", "--no-tags"}
 CRANE_VAL = {"--platform", "--format", "-j", "--jobs", "--cache_path"}
 CRANE_BOOL = {"--insecure", "-v", "--verbose", "--no-clobber", "-a", "--all-tags", "--allow-nondistributable-artifacts"}
+CRANE_INDEX_VAL = {"-m", "--manifest", "-t", "--tag", "--platform"}
+CRANE_INDEX_BOOL = {"--insecure", "-v", "--verbose", "--allow-nondistributable-artifacts", "--docker-empty-base", "--flatten"}
 
 
 def _operands(args, val, boolean):
