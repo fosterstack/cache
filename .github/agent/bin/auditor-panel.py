@@ -983,13 +983,24 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     if why:
         sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % why)
         return 2
-    # every image the verdict judges must have its own readable evidence — a missing archive must never fall through
-    # to "no evidence, false by default" as if that image had simply cleared (Codex #177 r1, B2)
-    named = {f.get("image", "").rsplit("-", 1)[0] for f in verdict.get("findings") or [] if f.get("image")}
-    missing = sorted(v for v in named if v and v not in rescan["digests"])
-    if missing:
-        sys.stderr.write("::error::auditor-panel: the rescan's evidence is missing for %s; nothing was judged\n"
-                          % ", ".join(missing))
+    # every image the verdict judges must have its own READABLE evidence (Codex #177 r1/r2, B2) — a missing archive,
+    # or one whose manifest/layers do not actually read, must never fall through to "no evidence, false by default"
+    # as if that image had simply cleared. A present-but-unreadable blob (getmember alone proves nothing: truncated
+    # JSON, a missing nested manifest or layer, the wrong architecture) is read the same way Bundles() will read it.
+    images = sorted({f.get("image", "") for f in verdict.get("findings") or [] if f.get("image")})
+    unreadable = []
+    for img in images:
+        variant, _, arch = img.rpartition("-")
+        if variant not in rescan["digests"]:
+            unreadable.append(img)
+            continue
+        try:
+            read_image(os.path.join(a.oci, variant + ".oci"), arch)
+        except (OSError, ValueError, KeyError, tarfile.TarError):
+            unreadable.append(img)
+    if unreadable:
+        sys.stderr.write("::error::auditor-panel: the rescan's evidence is missing or unreadable for %s; nothing was "
+                         "judged\n" % ", ".join(unreadable))
         return 2
     budget = Budget(a.token_budget)
     seats = {s: budget.wrap(ask) for s, ask in (seats or make_seats(a.seats)).items()}

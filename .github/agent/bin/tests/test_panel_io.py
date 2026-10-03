@@ -316,16 +316,29 @@ MAIN = "b" * 40
 DIGEST = "sha256:" + "c" * 64
 
 
-def rescan_oci(d, variant="fips", digest=DIGEST, blob=True):
-    """A rescan OCI archive whose index names one image digest, with the manifest blob it points to present (unless
-    blob=False, for a probe that needs a syntactically valid digest over missing/unreadable evidence)."""
-    raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
-    with tarfile.open(os.path.join(d, variant + ".oci"), "w") as t:
-        ti = tarfile.TarInfo("index.json"); ti.size = len(raw)
-        t.addfile(ti, io.BytesIO(raw))
-        if blob:
-            bi = tarfile.TarInfo("blobs/" + digest.replace(":", "/")); bi.size = 2
-            t.addfile(bi, io.BytesIO(b"{}"))
+def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readable=True):
+    """A rescan OCI archive whose top-level index names exactly one manifest at `digest` — genuinely readable by
+    read_image() for `arch` (Codex #177 r2, B2: a present member alone proves nothing; the evidence must actually
+    parse the same way Bundles() reads it), unless blob=False (no blob at all) or readable=False (present but not a
+    real manifest — the getmember-only check of r1's fix passed this, r2 correctly still refuses it)."""
+    path = os.path.join(d, variant + ".oci")
+    if not readable:
+        with tarfile.open(path, "w") as t:
+            ti = tarfile.TarInfo("index.json")
+            raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
+            ti.size = len(raw); t.addfile(ti, io.BytesIO(raw))
+            if blob:
+                bi = tarfile.TarInfo("blobs/" + digest.replace(":", "/")); bi.size = 1
+                t.addfile(bi, io.BytesIO(b"{"))   # present, but not parseable JSON
+        return
+    man = json.dumps({"layers": []}).encode()
+    man_digest = "sha256:" + hashlib.sha256(man).hexdigest()
+    index = json.dumps({"manifests": [{"digest": digest, "platform": {"os": "linux", "architecture": arch}}]}).encode()
+    files = [("index.json", index, 0o644), ("blobs/" + digest.replace(":", "/"), man, 0o644)]
+    if digest != man_digest:
+        files.append(("blobs/" + man_digest.replace(":", "/"), man, 0o644))
+    with open(path, "wb") as fh:
+        fh.write(tar_bytes(files, gz=False))
 
 
 def binding(d, **kw):
@@ -394,10 +407,19 @@ class Judge(Tmp):
     # for an image the verdict judges, must refuse — never fall through to "no evidence, false by default"
     def test_a_digest_whose_blob_is_missing_is_refused(self):
         unreadable = os.path.join(self.d, "unreadable"); os.makedirs(unreadable)
-        rescan_oci(unreadable, blob=False)
+        rescan_oci(unreadable, readable=False, blob=False)
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=unreadable)), 2)
         self.assertIn("no image digest", err.getvalue())
+
+    # Codex #177 r2, B2 (reopened): a member present in the archive (passes getmember) but not a real, parseable
+    # manifest must still refuse — read_image() is actually tried, the same way Bundles() reads it for real
+    def test_a_present_but_unparseable_blob_is_refused(self):
+        unparseable = os.path.join(self.d, "unparseable"); os.makedirs(unparseable)
+        rescan_oci(unparseable, readable=False, blob=True)   # the blob exists, but its bytes are "{" (truncated JSON)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(P.cmd_judge(self.a(oci=unparseable)), 2)
+        self.assertIn("missing or unreadable for fips-arm64", err.getvalue())
 
     def test_an_image_the_verdict_judges_with_no_archive_at_all_is_refused(self):
         no_production = os.path.join(self.d, "no-production"); os.makedirs(no_production)
@@ -406,7 +428,7 @@ class Judge(Tmp):
         verdict_file(self.d, [UNIQUE, dict(UNIQUE, image="production-arm64")])   # args.verdict is this same path
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(args), 2)
-        self.assertIn("missing for production", err.getvalue())
+        self.assertIn("missing or unreadable for production-arm64", err.getvalue())
 
     def test_missing_verdict_is_a_failure(self):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
