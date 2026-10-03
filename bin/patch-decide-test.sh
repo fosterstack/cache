@@ -657,6 +657,21 @@ check("r5a/B9 a quoted continued-line argument is not an execution", "go.mod" no
 check("r5a/B9 a dependency-only bump stays patch-clean", P.patch_clean(P.gather_commits("v0.1.0", cwd=b9)) == (True, []))
 check("r5a/B9 a fix-class file named by the chain is still judged by its own rule",
       P.classify(c("f", ["go.mod", "go.sum"], diffs=BUMP) | {"chain": ["go.mod"]})[0] == "fix")
+# Codex #159 r5b (B8 below run:, B10): a quoted scalar on the line below run: is still a command; and the fix-class
+# directories (.vex/, .auditor/) make only data fix-class — an executable there is not
+for i, run in enumerate(['\n          "if bash bin/driver.sh; then echo ok; fi"', "\n          'while ! sh bin/driver.sh; do :; done'",
+                         '\n          "env FOO=1 bash bin/driver.sh"']):
+    r5 = tempfile.mkdtemp()
+    g(r5, "init", "-q")
+    os.makedirs(os.path.join(r5, ".github/workflows")); os.makedirs(os.path.join(r5, "bin"))
+    for path, body in {".github/workflows/release.yml": "jobs:\n  r:\n    steps:\n      - run:%s\n" % run,
+                       "bin/driver.sh": "bash bin/panel-test.sh\n", "bin/panel-test.sh": ""}.items():
+        open(os.path.join(r5, path), "w").write(body)
+    g(r5, "add", "-A"); g(r5, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+    check("r5b/B8 a quoted run value on the next line reaches the driver (%d)" % i, {"bin/driver.sh", "bin/panel-test.sh"} <= P.release_chain_files(r5))
+check("r5b/B10 an executable under .vex/ is not fix-class", P.classify(c("v", [".vex/gate.sh"], diffs={".vex/gate.sh": "-exit 1\n+exit 0\n"}))[0] == "dirty")
+check("r5b/B10 ... nor when the chain runs it", P.classify(c("v2", [".vex/gate.sh"], diffs={".vex/gate.sh": "+x\n"}) | {"chain": [".vex/gate.sh"]})[0] == "dirty")
+check("r5b/B10 an auditor output that is data stays fix-class", P.classify(c("v3", [".vex/fosterstack-cache.openvex.json"], diffs={".vex/fosterstack-cache.openvex.json": "+x\n"}))[0] == "fix")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
