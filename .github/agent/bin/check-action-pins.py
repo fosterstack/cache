@@ -768,8 +768,13 @@ def _split_commands(text):
             depth, j, aq = 1, i + 1, None
             while j < n and depth:
                 d = text[j]
-                if aq:
-                    aq = None if d == aq else aq
+                if aq == "'":                              # no escaping at all inside a single quote
+                    aq = None if d == "'" else aq
+                elif aq == '"' or d == "\\":                # a backslash escapes the next char, inside a
+                    if d == "\\" and j + 1 < n:              # double quote OR outside any quote (Sonnet #164
+                        j += 2                                # r14, B1: the classic 'x'\''y' idiom embeds a
+                        continue                             # literal apostrophe this way — the backslash is
+                    aq = None if d == '"' else aq            # NOT a new quote opening)
                 elif d in "'\"":
                     aq = d
                 elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
