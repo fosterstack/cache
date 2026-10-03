@@ -1,0 +1,33 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "2393fe391d8a53a4781567d9f3f23f0eb54c31f39e86d66c5c3c99c3d9bd9299",
+ "change": "PR #158: merge origin/main into patch-releases to clear auto-merge's behind-base check. Conflict-free: this tree's .github/agent content is the union of two independently, already-reviewed trees — PR #158's own change (tree 3a4be412..., review record of that name, already committed on this branch) and main's own history up to d1de43c, each already through its own review/merge process before this merge. No new .github/agent content is introduced by the merge itself.",
+ "reviewed_commit": "a016129",
+ "closed_commit": "a016129",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "union of two already-reviewed trees (conflict-free merge, no new content)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "74b02d8feb4d40315e4c4a52f620c11d1d8fea318e54a5f8e32fe362f91326d3"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "540b42fb809d9a73f1c4628e03e33ffd3a69c32e9adff45db6b21e016dab8fdb"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none: a conflict-free merge of two already-independently-reviewed trees introduces no new auditor content to review; evidence cited is #158's own final round (tree 3a4be412...), already committed as .github/agent/reviews/3a4be41211ce3336e12ea8833694864a21478863c745cf8fa46b94b099fb2130.json on this same branch",
+ "evidence_location": "private audit tree: audits/2026-10-03/patch-a-exempt/{r1,r2,r2b,r2c}/{codex,sonnet}/review.md; see also .github/agent/reviews/3a4be412....json in this tree",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": []
+}
