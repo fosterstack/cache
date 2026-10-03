@@ -373,6 +373,7 @@ mappings:
   - ac: REQ-SCAN-004-AC2
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }   # requires the rescan's Scout self-check (real Scout, real VEX)
   - ac: REQ-SCAN-005-AC1
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }

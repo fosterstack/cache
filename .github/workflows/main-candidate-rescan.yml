@@ -112,16 +112,41 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+      # Scout applies only statements whose author --vex-author accepts (default Docker's own): the scan and its self-check
+      # both run bin/scout-vex-scan.sh (our author, GitLab format, local://). The self-check scans the pinned debian 12.0
+      # fixture under our image's name with a VEX of our author covering only a CVE it does not have, then with one covering CVE-2023-4911;
+      # bin/scout-selfcheck.py passes only when exactly that CVE drops and every other finding stays (rule 4,
+      # REQ-SCAN-004-AC2), and refuses an empty or malformed report.
+      - name: Scout applies a statement by our author to our image name (rule 4 self-check)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab \
+            docker-daemon:ghcr.io/fosterstack/cache:selfcheck
+          mkdir -p "$RUNNER_TEMP/selfcheck"
+          vex() {   # <statements json> <out>: a VEX document of our author
+            jq -n --arg a "$(jq -er .author .vex/fosterstack-cache.openvex.json)" --argjson s "$1" '{"@context": "https://openvex.dev/ns/v0.2.0",
+              "@id": "https://github.com/fosterstack/cache/scout-selfcheck", "author": $a, "timestamp": "2026-10-03T00:00:00Z",
+              "version": 1, "statements": $s}' > "$2"
+          }
+          # "none": one statement for a CVE the fixture does not have (a VEX file with no statement may not be valid OpenVEX)
+          vex '[{"vulnerability": {"name": "CVE-1999-0001"}, "status": "not_affected", "justification": "vulnerable_code_not_present",
+                 "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]' "$RUNNER_TEMP/selfcheck/none.json"
+          vex '[{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected", "justification": "vulnerable_code_not_present",
+                 "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]' "$RUNNER_TEMP/selfcheck/one.json"
+          ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/selfcheck/none.json" "$RUNNER_TEMP/selfcheck/before.json"
+          ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/selfcheck/one.json" "$RUNNER_TEMP/selfcheck/after.json"
+          docker image rm ghcr.io/fosterstack/cache:selfcheck >/dev/null
+          python3 bin/scout-selfcheck.py "$RUNNER_TEMP/selfcheck/before.json" "$RUNNER_TEMP/selfcheck/after.json" CVE-2023-4911
       - name: Docker Scout every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           for v in production debug fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
               skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
               docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
-                && docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json "local://${ref}" > "${d}/cves.json" \
+                && ./bin/scout-vex-scan.sh "${ref}" .vex/fosterstack-cache.openvex.json "${d}/cves.json" \
                 || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
           done
