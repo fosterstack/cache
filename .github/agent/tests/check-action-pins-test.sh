@@ -1486,6 +1486,20 @@ case_ r4b6-array-comment-apostrophe-ok ok "$(rb 'ALLOW_PATTERNS=(
 # statement as the array literal, after it closes (a genuine but rare bash idiom -- not seen plain anywhere
 # in this repo), is not checked either. Not a blocker; pinned so this stays a deliberate, known trade-off.
 case_ r4b6-array-then-same-line-run-accepted-residual ok "$(rb 'a=(x) docker run --rm alpine:latest')"
+# Codex #164 r13, B1: a MULTI-LINE array literal's content reaches _commands()'s shared chunk-splitter
+# unprotected -- a '#' comment line inside it containing a bare ')' ends the "array" chunk right there,
+# spilling the deferred docker tag out as its own top-level, wrongly-trusted statement
+case_ r4b6-multiline-array-comment-paren-spills-tag-bad bad "$(rb 'arr=(
+          # )
+          docker tag alpine@$DIG alpine:latest
+          )
+          docker run alpine:latest')"
+# Codex #164 r13, B1 (second form): a comment containing an apostrophe can instead make the splitter MERGE
+# the array with a real command AFTER it into one chunk, swallowing that real command as array data
+case_ r4b6-multiline-array-comment-apostrophe-swallows-run-bad bad "$(rb "arr=(
+          # product's files
+          x
+          ); docker run alpine:latest")"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

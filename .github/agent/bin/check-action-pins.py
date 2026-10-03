@@ -772,6 +772,12 @@ def _split_commands(text):
                     aq = None if d == aq else aq
                 elif d in "'\"":
                     aq = d
+                elif d == "#" and (j == i + 1 or text[j - 1] in " \t\n"):
+                    # a comment inside the array (Codex #164 r13, B1): its own ')' or apostrophe is not real
+                    # syntax and must not move depth or open a quote — same rule as the outer loop's own #
+                    while j < n and text[j] != "\n":
+                        j += 1
+                    continue
                 elif d == "(":
                     depth += 1
                 elif d == ")":
@@ -1604,8 +1610,12 @@ def _unconditional(text):
     each fix chased the last one's specific construct and opened a new one). None of that is worth re-fighting:
     the instant the word `trap` appears anywhere in the script, nothing in the whole script is trusted as a
     local name (advisor 0080 — fail closed on an open-ended finding class, don't chase it construct by
-    construct). A script that genuinely has no use for `trap` is unaffected. A literal for-loop always runs and
-    is kept."""
+    construct). A script that genuinely has no use for `trap` is unaffected. An array literal (NAME=(...)) is
+    handled downstream, where this output is re-scanned by _commands() for local names — fixed at the source
+    (_split_commands's own array sub-scanner, which now skips a '#' comment the same way the outer loop does;
+    Codex #164 r13, B1) rather than blanket-excluded here, since the array is an ordinary, common idiom and a
+    blanket rule here would cost real scripts their trust for no reason. A literal for-loop always runs and is
+    kept."""
     if _TRAP_RE.search(text):
         return ""
     keep, stack = [], []
