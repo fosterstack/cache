@@ -104,6 +104,10 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
+Round 12 (NEW-14/15): every verb of docker/podman/nerdctl, skopeo and crane is either read (run/create/pull/build/
+scout/…), on a reviewed list of verbs that pull or run nothing remote, or refused (podman kube play, skopeo sync, crane
+append/mutate, …). Tool words match by exact case (the scope is ubuntu runners, where `Docker` is not found); PATH
+lookups (command -v, which, type) are not runs.
 Round 10 (NEW-12): a step in any non-POSIX shell (pwsh, python, node, …; pwsh ships on ubuntu runners too) is refused
 outright, whatever it contains — this check reads POSIX shell only.
 Round 8 (before the ubuntu-only scope made it moot; kept as defense in depth): choco, winget, scoop and brew installs are findings; tool words and their verbs match case-insensitively
@@ -538,10 +542,6 @@ PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|n
 UNREAD_PY = {"pipenv", "poetry", "pdm", "hatch", "flit", "pip-sync", "pip-compile", "rye"}
 # OS package managers of Windows / macOS runners (Sonnet #164 r8, NEW-9): installs cannot be held to hashes here
 OS_PKG = {"choco", "winget", "scoop", "brew"}
-# verbs matched case-insensitively (NEW-10: Windows resolves `Docker RUN` / `Pip install` regardless of case)
-VERB_WORDS = {"run", "create", "pull", "build", "buildx", "b", "tag", "image", "container", "builder", "compose",
-              "manifest", "imagetools", "bake", "stack", "install", "download", "wheel", "sync", "add", "lock", "copy",
-              "cp", "inspect", "export", "upgrade", "reinstall", "update", "env", "tool", "pip", "dlx", "exec", "ci", "i"}
 FORWARD = {"$@", "$*", "${@}", "${*}"}   # a wrapper forwarding its own arguments (Sonnet #164 r2, N1)
 TOOL_WORDS = r"(docker|podman|skopeo|crane|pip3?|pipx|uvx?|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba|python3?)"
 # a tool binary copied, linked or aliased under another name (N2): the renamed command is invisible to name matching
@@ -549,6 +549,21 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
                      + TOOL_WORDS + r"[\"']?\)|/" + TOOL_WORDS + r"(?=[\s\"']|$))"
                      r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
 SHELLS = {"bash", "sh", "dash", "zsh"}
+# Verbs reviewed as running or pulling nothing remote (Sonnet #164 r12: every verb is checked, reviewed here, or refused)
+DOCKER_SAFE = {"login", "logout", "images", "ps", "rm", "rmi", "stop", "kill", "start", "restart", "logs", "inspect",
+               "exec", "cp", "version", "info", "push", "load", "save", "import", "export", "wait", "top", "port",
+               "stats", "events", "history", "pause", "unpause", "rename", "update", "attach", "diff", "commit",
+               "network", "volume", "system", "context", "search", "plugin", "trust", "secret", "config"}
+DOCKER_SAFE_SUB = {("image", "ls"), ("image", "rm"), ("image", "inspect"), ("image", "prune"), ("image", "history"),
+                   ("image", "save"), ("image", "load"), ("image", "push"), ("image", "tag"), ("container", "ls"),
+                   ("container", "rm"), ("container", "inspect"), ("container", "logs"), ("container", "stop"),
+                   ("container", "prune"), ("manifest", "inspect"), ("manifest", "push"), ("manifest", "annotate"),
+                   ("manifest", "rm"), ("buildx", "create"), ("buildx", "use"), ("buildx", "inspect"), ("buildx", "ls"),
+                   ("buildx", "rm"), ("buildx", "stop"), ("buildx", "version"), ("buildx", "du"), ("buildx", "prune"),
+                   ("buildx imagetools", "inspect"), ("builder", "prune"), ("builder", "ls")}
+SKOPEO_SAFE = {"login", "logout", "list-tags", "manifest-digest", "delete", "standalone-verify", "--version", "-v"}
+CRANE_SAFE = {"digest", "manifest", "ls", "tag", "auth", "config", "validate", "catalog", "delete", "push", "blob",
+              "version", "index"}
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
 SUBST = "$__SUBST__"   # stands where a command substitution was cut out (Sonnet #164 r4, NEW-4): fails closed
 
@@ -675,9 +690,12 @@ def _commands(script, depth=0):
             out.append(["__computed__", computed[0]])
             continue
         # the tool word anywhere in the command (`if docker …`, `timeout 30 docker …`, `xargs docker …`): fail closed
-        at = next((i for i, w in enumerate(toks) if _base(w).lower() in TOOLS or PKG_TOOL.match(_base(w).lower())), None)
+        if toks[0] in ("which", "type", "hash") or (toks[0] == "command" and toks[1:2] and toks[1] in ("-v", "-V")):
+            continue          # a PATH lookup names a tool without running it
+        # exact case: on an ubuntu runner (the scope) `Docker` is "command not found"; prose in a quoted string is not a run
+        at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
-            out.append([_base(toks[at]).lower()] + [t.lower() if t.lower() in VERB_WORDS else t for t in toks[at + 1:]])
+            out.append([_base(toks[at])] + toks[at + 1:])
     return out
 
 
@@ -804,6 +822,39 @@ def script_installs(script):
     return found
 
 
+SCOUT_VAL = {"--format", "--vex-location", "--output", "-o", "--platform", "--org", "--env", "--only-severity",
+             "--only-package-type", "--only-cve-id", "--only-base", "--ref", "--tag"}
+SCOUT_BOOL = {"--ignore-base", "--only-fixed", "--only-unfixed", "--exit-code", "-e", "--details", "--multi-stage",
+              "--only-vex-affected", "--vex", "--locations"}
+SCOUT_LOCAL = ("local://", "oci-dir://", "archive://", "fs://", "sbom://")
+
+
+def _scout(args):
+    """docker scout <sub> [options] <image>: a local:// (or file) image is ours; a registry image must be a digest; an
+    unknown option fails closed."""
+    if not args:
+        return []
+    sub, rest, ev, i = args[0], args[1:], [], 0
+    while i < len(rest):
+        a = rest[i]
+        if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument
+            i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
+            continue
+        if a.startswith("-"):
+            name = a.split("=", 1)[0]
+            if name in SCOUT_BOOL or (name in SCOUT_VAL and "=" in a):
+                i += 1
+            elif name in SCOUT_VAL:
+                i += 2
+            else:
+                return [("finding", "`docker scout %s` has an option this check does not know (%s)" % (sub, a))]
+            continue
+        if not a.startswith(SCOUT_LOCAL):
+            ev.append(("use", "docker scout " + sub, a.split("://", 1)[1] if a.startswith(("registry://", "image://")) else a))
+        i += 1
+    return ev
+
+
 def script_images(script):
     """Events, in order, for the images a script names: ("use", command, image), ("local", name), ("finding", why)."""
     ev = []
@@ -832,6 +883,12 @@ def script_images(script):
                                       % cmd))
                 continue
             verb, rest = rest[0], rest[1:]
+            if verb in ("container", "image", "builder", "manifest") and rest and (verb, rest[0]) in DOCKER_SAFE_SUB:
+                continue
+            if verb == "buildx" and len(rest) >= 2 and rest[0] == "imagetools" and ("buildx imagetools", rest[1]) in DOCKER_SAFE_SUB:
+                continue
+            if verb == "buildx" and rest and ("buildx", rest[0]) in DOCKER_SAFE_SUB:
+                continue
             if verb in ("container", "image", "builder") and rest:
                 verb, rest = rest[0], rest[1:]
             if verb == "buildx" and rest:
@@ -864,12 +921,21 @@ def script_images(script):
                                           "which word is the image" % (verb, unknown)))
                 else:
                     ev.append(("use", "docker " + verb, rest[k] if k < len(rest) else None))
+            elif verb == "scout":
+                ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
                 ev.append(("local", rest[-1]))
+            elif verb in DOCKER_SAFE:
+                pass
+            elif verb not in ("build",):
+                ev.append(("finding", "`%s %s` is not a verb this check reads or has reviewed as pulling nothing; "
+                                      "it is refused" % (cmd, verb)))
             elif verb == "build":
                 dockerfile, context, tags = _build(rest)
                 ev.append(("build", dockerfile, context))
                 ev += [("local", x) for x in tags]
+        elif cmd == "skopeo" and args and args[0] not in ("copy", "inspect") + tuple(SKOPEO_SAFE):
+            ev.append(("finding", "`skopeo %s` is not a verb this check reads; it is refused" % args[0]))
         elif cmd == "skopeo" and args and args[0] in ("copy", "inspect"):
             pos = [a for a in args[1:] if not a.startswith("-")]
             if pos and pos[0].startswith("docker://"):
@@ -879,6 +945,9 @@ def script_images(script):
             for a in pos[1:]:
                 if a.startswith("docker-daemon:"):
                     ev.append(("local", a[len("docker-daemon:"):]))
+        elif cmd == "crane" and args and args[0] not in ("copy", "cp", "pull", "export") + tuple(CRANE_SAFE):
+            ev.append(("finding", "`crane %s` is not a verb this check reads (it may take a base image); it is refused"
+                       % args[0]))
         elif cmd == "crane" and args and args[0] in ("copy", "cp", "pull", "export"):
             pos = [a for a in args[1:] if not a.startswith("-")]
             if pos:
