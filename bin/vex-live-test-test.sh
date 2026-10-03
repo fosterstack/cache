@@ -157,8 +157,8 @@ for name, d in (("release.yml", rel), ("ci.yml", ci)):
     check("%s: never on a schedule" % name, "schedule" not in d["on"], d["on"])
 # --- Codex #169 r1
 # SEC-169-04: a settings line is a plain value; anything else is a command the plan must run (or refuse)
-for bad_line in ("VER=0.3.0; false", "VER=$(false)", "VER=0.3.0 && false", "IMAGE=x`false`", "VER=0.3.0\nfalse"):
-    g = guide.replace("```sh\nVER=0.3.0\n```", "```sh\n%s\n```" % bad_line, 1)
+for bad_line in ("VER=X.Y.Z; false", "VER=$(false)", "VER=X.Y.Z && false", "IMAGE=x`false`", "VER=X.Y.Z\nfalse"):
+    g = guide.replace("```sh\nVER=X.Y.Z\n```", "```sh\n%s\n```" % bad_line, 1)
     try:
         kinds = [b["kind"] for b in L.guide_blocks(g)]
         got = "settings" if g != guide and kinds.count("settings") == 2 else "refused-or-run"
