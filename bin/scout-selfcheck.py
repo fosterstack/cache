@@ -110,12 +110,61 @@ def probe_report(before_path, after_path, map_path):
     return applied
 
 
+def probe_doc3(before_path, sbom_path, author, image, tag, out_path):
+    """Advisor 0109, probe 3: statements that also name the finding's package — a subcomponent purl taken from Scout's
+    own SBOM of the image — and platform-qualified image identifiers. Each form on a different CVE that affects exactly
+    one package, so a drop is attributable."""
+    before = findings(before_path)
+    sbom = json.load(open(sbom_path))
+    purl = {}
+    for a in sbom.get("artifacts") or []:
+        if isinstance(a, dict) and a.get("purl"):
+            purl.setdefault((a.get("name"), a.get("version")), a["purl"])
+    per_cve = {}
+    for (cve, name, ver), n in before.items():
+        per_cve.setdefault(cve, []).append((name, ver, n))
+    single = sorted(c for c, ps in per_cve.items() if len(ps) == 1 and ps[0][2] == 1 and (ps[0][0], ps[0][1]) in purl
+                    and c != "CVE-1999-0001")
+    plat = "?platform=linux%2Famd64"
+    repo = image.rsplit("/", 1)[-1]
+    forms = [  # (label, product @id, with the package as a subcomponent)
+        ("oci+repo, package", "pkg:oci/%s?repository_url=%s" % (repo, image), True),
+        ("docker tag, package", "pkg:docker/%s@%s" % (image, tag), True),
+        ("docker tag+platform", "pkg:docker/%s@%s%s" % (image, tag, plat), False),
+        ("docker tag+platform, package", "pkg:docker/%s@%s%s" % (image, tag, plat), True),
+        ("docker digest+platform, package", "pkg:docker/%s@%s%s" % (image, FIXTURE_DIGEST, plat), True),
+        ("docker name, package", "pkg:docker/%s" % image, True),
+    ]
+    if len(single) < len(forms) + 1:
+        raise ValueError("the fixture has too few single-package findings with an SBOM purl (%d)" % len(single))
+    mapping, statements = {}, []
+    for (label, pid, sub), cve in zip(forms, single):
+        name, ver, _ = per_cve[cve][0]
+        prod = {"@id": pid}
+        if sub:
+            prod["subcomponents"] = [{"@id": purl[(name, ver)]}]
+        statements.append({"vulnerability": {"name": cve}, "status": "not_affected",
+                           "justification": "vulnerable_code_not_present", "products": [prod]})
+        mapping["%s: %s%s" % (label, pid, " + " + purl[(name, ver)] if sub else "")] = cve
+    doc = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://github.com/fosterstack/cache/scout-probe-3",
+           "author": author, "timestamp": "2026-10-03T00:00:00Z", "version": 1, "statements": statements}
+    json.dump(doc, open(out_path, "w"), indent=1)
+    json.dump(mapping, open(out_path + ".map", "w"), indent=1)
+
+
 def main(argv):
     if argv[1:2] == ["probe-doc"]:
         try:
             probe_doc(argv[2], argv[3], argv[4])
         except ValueError as e:
             print("::warning::Scout probe: %s" % e, file=sys.stderr)
+            return 1
+        return 0
+    if argv[1:2] == ["probe-doc3"]:
+        try:
+            probe_doc3(argv[2], argv[3], argv[4], argv[5], argv[6], argv[7])
+        except (ValueError, OSError, KeyError) as e:
+            print("::warning::Scout probe 3: %s" % e, file=sys.stderr)
             return 1
         return 0
     if argv[1:2] == ["probe-report"]:

@@ -110,7 +110,9 @@ if not pr or scout_steps.index(pr) > scout_steps.index(step("rule 4 self-check")
 else:
     prun = pr.get("run", "")
     for need in ("./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck", "scout-selfcheck.py probe-doc",
-                 "scout-selfcheck.py probe-report", "--only-vex-affected", 'tee -a "$GITHUB_STEP_SUMMARY"'):
+                 "scout-selfcheck.py probe-report", "--only-vex-affected", 'tee -a "$GITHUB_STEP_SUMMARY"',
+                 "scout-selfcheck.py probe-doc3", "docker scout sbom --format json local://ghcr.io/fosterstack/cache:selfcheck",
+                 "registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"):
         if need not in prun:
             bad.append("the probe lacks %s" % need)
     if pr.get("if") != "github.event_name == 'workflow_dispatch'" or pr.get("continue-on-error"):
@@ -293,6 +295,22 @@ PC=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); drop={sys.argv[2], 
 probe_case control-lost "inconclusive" "$PB" "$PC"
 probe_case unc-pkg-lost "uncovered findings lost: \[\[\"CVE-2001-0007\", \"g2\"" "{\"vulnerabilities\":[$(F CVE-2001-0001 a 1),$(F CVE-2001-0002 b 1),$(F CVE-2001-0003 c 1),$(F CVE-2001-0004 d 1),$(F CVE-2001-0005 e 1),$(F CVE-2001-0006 f 1),$(F CVE-2001-0007 g 1),$(F CVE-2001-0007 g2 1)]}" "{\"vulnerabilities\":[$(F CVE-2001-0002 b 1),$(F CVE-2001-0003 c 1),$(F CVE-2001-0004 d 1),$(F CVE-2001-0005 e 1),$(F CVE-2001-0006 f 1),$(F CVE-2001-0007 g 1)]}"
 probe_case gained-only "uncovered findings lost: none" "$PB" "$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d["vulnerabilities"].append({"identifiers":[{"value":"CVE-2009-0009"}],"location":{"dependency":{"package":{"name":"z"},"version":"1"}}}); print(json.dumps(d))' "$PB")"
+# advisor 0109: probe 3 — statements that name the finding's package (a subcomponent from Scout's own SBOM), the
+# platform-qualified image, and a registry image; each form on a different CVE with exactly one package
+d3=$(mktemp -d "$work/p3.XXXX")
+printf '%s' "$PB" > "$d3/b"
+python3 -c 'import json; print(json.dumps({"artifacts": [{"name": n, "version": "1", "purl": "pkg:deb/debian/%s@1?arch=amd64" % n} for n in "abcdefg"]}))' > "$d3/sbom"
+if python3 "$root/bin/scout-selfcheck.py" probe-doc3 "$d3/b" "$d3/sbom" "FosterStack LLC" ghcr.io/fosterstack/cache selfcheck "$d3/v.json" >/dev/null 2>&1 \
+   && python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[1] + ".map")); s = d["statements"]
+subs = [x for x in s if x["products"][0].get("subcomponents")]
+plat = [x for x in s if "platform=linux%2Famd64" in x["products"][0]["@id"]]
+assert d["author"] == "FosterStack LLC" and len({x["vulnerability"]["name"] for x in s}) == len(s) == len(m) >= 5
+assert subs and all(c["@id"].startswith("pkg:deb/debian/") for x in subs for c in x["products"][0]["subcomponents"])
+assert plat and any(x["products"][0]["@id"].startswith("pkg:oci/cache") for x in subs)
+' "$d3/v.json"; then pass=$((pass+1)); echo "PASS probe3-document: subcomponents from the SBOM, platform forms, one CVE each"
+else failn=$((failn+1)); echo "FAIL probe3-document"; fi
 probe_case one-applied "applied: pkg:docker/ghcr.io/fosterstack/cache@selfcheck" "$PB" "$PA"
 if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"]; assert d["author"]=="FosterStack LLC" and len(s)==len({x["vulnerability"]["name"] for x in s})>=5 and all(x["status"]=="not_affected" for x in s) and any(p["@id"]=="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" for x in s for p in x["products"])' "$d0/v.json"; then
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
