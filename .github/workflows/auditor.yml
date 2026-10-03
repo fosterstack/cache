@@ -134,8 +134,9 @@ jobs:
           set -uo pipefail
           command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true
           for s in grype trivy osv-scanner snyk; do ./bin/install-scanner.sh "$s" || echo "::warning::${s} install failed; it will be recorded 'did not run'"; done
-          # govulncheck + syft pinned by version (best-effort; syft is grype's cataloguer and
-          # reads distroless status.d, so grype's package inventory is real even on distroless)
+          # govulncheck pinned by module version; syft a pinned, checksummed release binary (below). Both
+          # best-effort: syft is grype's cataloguer and reads distroless status.d, so grype's package inventory is
+          # real even on distroless; without it grype falls back and the OS quorum decides
           GOBIN="${RUNNER_TEMP}/gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 \
             || echo "::warning::could not install govulncheck; reachability will be recorded 'did not run'"
           # syft: a pinned, checksum-verified release binary (no run-time module download: Sep 30's run failed on
