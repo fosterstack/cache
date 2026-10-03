@@ -97,4 +97,51 @@ out=$(digest "ghcr.io/x/y:z")
 if [ "$out" = READ-FAILED ]; then echo "ok: a failed registry read reports READ-FAILED, not a digest"; pass=$((pass+1))
 else echo "FAIL: a failed read produced $out"; fail=$((fail+1)); fi
 unset -f skopeo
+# advisor 0145: the scan() wrapper (forwarded "$@" into `docker scout cves`, hiding the real image argument from a
+# static reader) was inlined at every call site -- same docker invocations, same redirects, same exit-code capture.
+# Run the real script end to end (every external tool stubbed; bin/scout-root-cause.py runs for real, pure stdlib)
+# and prove every expected `docker scout cves`/`attestation add` invocation still happens, with the same arguments.
+e2e=$(mktemp -d); LOG="$e2e/docker.log"
+cat > "$e2e/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $*" >> "$LOG"
+case "$1 $2" in
+  "scout cves") echo '{"vulnerabilities": []}' ;;
+  "scout attestation") echo "attestation added" ;;
+  "scout version") echo "v1.26.0" ;;
+esac
+STUB
+cat > "$e2e/skopeo" <<'STUB'
+#!/usr/bin/env bash
+echo "skopeo $*" >> "$LOG"
+case "$1" in
+  inspect) echo '{"manifests": []}' ;;
+esac
+STUB
+cat > "$e2e/install" <<'STUB'
+#!/usr/bin/env bash
+: > "${@: -1}"
+STUB
+chmod +x "$e2e/docker" "$e2e/skopeo" "$e2e/install"
+SCOUT_DIR="$e2e" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$LOG" HOME="$e2e/home" \
+  PATH="$e2e:$PATH" bash "$here/scout-root-cause.sh" "$e2e/out" > "$e2e/run.log" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then echo "ok: the inlined script still runs end to end, exit 0"; pass=$((pass+1))
+else echo "FAIL: the inlined script exited $rc: $(tail -5 "$e2e/run.log")"; fail=$((fail+1)); fi
+no_scan=$(grep -c '^scan(' "$here/scout-root-cause.sh" || true)
+if [ "$no_scan" -eq 0 ]; then echo "ok: the scan() wrapper is gone"; pass=$((pass+1))
+else echo "FAIL: scan() wrapper still defined"; fail=$((fail+1)); fi
+cves=$(grep -c '^docker scout cves' "$LOG" 2>/dev/null || true)
+if [ "${cves:-0}" -eq 36 ]; then echo "ok: 36 docker scout cves invocations (2 attestation-path + 3 control-after + 1 release-author + 6 version warm-up + 24 matrix)"; pass=$((pass+1))
+else echo "FAIL: expected 36 docker scout cves invocations, got ${cves:-0}"; fail=$((fail+1)); fi
+if grep -qF 'docker scout cves --format gitlab registry://ghcr.io/fosterstack/cache-scout-probe:control' "$LOG"; then
+  echo "ok: the control-before scan still names the scratch package over the registry"; pass=$((pass+1))
+else echo "FAIL: the control-before scan invocation is missing or changed"; fail=$((fail+1)); fi
+if grep -qF 'docker scout cves --format gitlab --vex-author ^author@example\.com$ registry://ghcr.io/fosterstack/cache-scout-probe:control' "$LOG"; then
+  echo "ok: the tag+author control-after scan still carries --vex-author"; pass=$((pass+1))
+else echo "FAIL: the tag+author control-after scan is missing or changed"; fail=$((fail+1)); fi
+if grep -qF "docker scout attestation add --file $e2e/out/attest/control.vex.json --predicate-type https://openvex.dev/ns/v0.2.0 ghcr.io/fosterstack/cache-scout-probe:control" "$LOG"; then
+  echo "ok: the control attestation add still runs with the same flags"; pass=$((pass+1))
+else echo "FAIL: the control attestation add is missing or changed"; fail=$((fail+1)); fi
+rm -rf "$e2e"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
