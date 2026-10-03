@@ -66,28 +66,30 @@ PUBLICATION_ACS = frozenset(["REQ-REL-001-AC1", "REQ-REL-002-AC1"])
 
 def _parse_requirements(raw):
     """requirements/requirements.yaml bytes to (full, blocking): full maps every non-deprecated requirement's AC
-    id to a comparable tuple (so "changed since the baseline" means ANY field differs, the same fail-closed
-    reading verify-freeze's byte-for-byte sha256 already gave non-pipeline content); blocking is the release-
-    blocking subset as {(id, method, phase)}, the same shape release_blocking_acs already records."""
+    id to (its REAL parent requirement's own id, a comparable tuple) — the parent id comes from the YAML
+    structure (r["id"]), never re-derived by splitting the AC's own id string (Sonnet #163 r1, Finding 1: an
+    AC's id is just text an author chose; nothing stops a product AC being named REQ-SCAN-001-AC1, which
+    would otherwise be classified pipeline-only by string shape alone — a separate Go validator enforces the
+    ac.ID-starts-with-r.ID+"-AC" invariant in CI, but this function must not assume that ran). "Changed since
+    the baseline" means ANY field in the tuple differs, the same fail-closed reading verify-freeze's byte-for-
+    byte sha256 already gave non-pipeline content. blocking is the release-blocking subset as {(id, method,
+    phase)}, the same shape release_blocking_acs already records."""
     import yaml
     d = yaml.safe_load(raw) or {}
     full, blocking = {}, set()
     for r in d.get("requirements") or []:
-        if r.get("deprecated") or not isinstance(r, dict):
+        if not isinstance(r, dict) or r.get("deprecated"):
             continue
+        req_id = r.get("id")
         for ac in r.get("acceptance_criteria") or []:
             v = ac.get("verification") or {}
             key = (ac.get("given"), ac.get("when"), ac.get("then"), v.get("method"), v.get("release_blocking"),
                    ac.get("status"))
-            full[ac["id"]] = key
+            full[ac["id"]] = (req_id, key)
             if v.get("release_blocking"):
                 phase = "publication" if ac["id"] in PUBLICATION_ACS else "candidate"
                 blocking.add((ac["id"], v.get("method"), phase))
     return full, blocking
-
-
-def _req_id(ac_id):
-    return ac_id.rsplit("-AC", 1)[0]
 
 
 def baseline(tag, baselines, baseline_requirements, requirements):
@@ -133,10 +135,14 @@ def baseline(tag, baselines, baseline_requirements, requirements):
         return None, ("the release-blocking AC set changed since %s (%d ACs then, %d now): no automatic "
                       "patch; it waits for the owner" % (v, len(base_blocking), len(have_blocking)))
     changed = [acid for acid in set(base_full) | set(have_full) if base_full.get(acid) != have_full.get(acid)]
-    not_pipeline = sorted(acid for acid in changed if _req_id(acid) not in PIPELINE_ONLY)
+    # the owning requirement comes from whichever side actually has this AC (its real parent in the YAML
+    # structure, per _parse_requirements -- never re-derived from the AC's own id string, Sonnet #163 r1 F1)
+    not_pipeline = sorted((acid, (have_full.get(acid) or base_full.get(acid))[0]) for acid in changed
+                          if (have_full.get(acid) or base_full.get(acid))[0] not in PIPELINE_ONLY)
     if not_pipeline:
-        return None, ("%s changed since %s and %s is not on the pipeline-only list: no automatic patch; it "
-                      "waits for the owner" % (not_pipeline[0], v, _req_id(not_pipeline[0])))
+        acid, req_id = not_pipeline[0]
+        return None, ("%s (requirement %s) changed since %s and is not on the pipeline-only list: no "
+                      "automatic patch; it waits for the owner" % (acid, req_id, v))
     return v, "%s's approved ACs baseline; blocking set unchanged, every other change is pipeline-only" % v
 
 

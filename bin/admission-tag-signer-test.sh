@@ -94,6 +94,12 @@ for tag, bls, breqs, req, want, why in [
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [(not_pipe_req, not_pipe_req + "-AC1", False)]), None,
      "a new product AC since the baseline: no automatic patch"),
+    # Sonnet #163 r1, F1: classification must come from the AC's REAL parent requirement (the YAML structure),
+    # never from re-deriving it by splitting the AC's own id string -- a product AC spelled to LOOK
+    # pipeline-only (nested under a product requirement, but named "<pipeline-only-id>-AC1") must still refuse
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
+     req_yaml(BASE + [(not_pipe_req, pipe_req + "-AC1", False)]), None,
+     "an AC spelled like a pipeline-only id but really under a product requirement: still refused"),
     # rule (b): a new PIPELINE-ONLY AC is fine, blocking set (a) still holds
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", False)]), "v0.2.1",
