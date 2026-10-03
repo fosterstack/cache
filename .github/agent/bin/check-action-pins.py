@@ -91,7 +91,11 @@ poetry, pdm, hatch, flit, pip-sync, pip-compile, rye, python setup.py and python
 hashes); uv pip sync follows the install rule. Round 4: a command substitution ($(…), `…`) is cut out and read
 as its own script, and where it stands for an image or package it is a finding; a build's Dockerfile must be the
 exact repository path (or every file matching its template) — an absolute path, a substituted name, or a file the
-script itself writes under that name is a finding. What static reading cannot see is the
+script itself writes under that name is a finding. Round 5: "writes" is an allow-list, not a blocklist — any
+command naming a build's Dockerfile or a pip -r file is a finding unless it is the consuming build/install, a
+read-only command without a write redirection, or a copy of the committed file into a context (relative sources,
+destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step. What
+static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
 a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
@@ -852,18 +856,87 @@ def _dockerfiles(tree, dockerfile):
     return [name] if name in entries else []   # a literal path names exactly one repository file (NEW-3: no decoys)
 
 
-def _writes(script, name):
-    """True when the script writes a file whose name matches the Dockerfile argument (> / >> / tee / cp / mv / install
-    destination), literal or templated (Sonnet #164 r4, NEW-3: a decoy repository file must not stand in for it)."""
+READ_ONLY = {"cat", "head", "tail", "grep", "egrep", "fgrep", "diff", "cmp", "sha256sum", "shasum", "sha1sum",
+             "md5sum", "wc", "test", "[", "ls", "stat", "file", "echo", "printf", ":"}
+READ_ONLY_GIT = {"show", "diff", "log", "ls-files", "cat-file", "hash-object", "status"}
+
+
+def _name_pattern(name):
     base = _base(name)
     if _variable(base):
         parts = re.split(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", base)
-        pat = ".+".join(re.escape(x) for x in parts)
-    else:
-        pat = re.escape(base)
-    target = r"[\"']?(?:[^\s\"';|&]*/)?" + pat + r"[\"']?(?=[\s;|&)]|$)"
-    return bool(re.search(r"(>>?|\btee(\s+-a)?)\s*" + target, script)
-                or re.search(r"(?m)(^|[;&|(\s])(cp|mv|install|ln)\s[^\n;&|]*\s" + target, script))
+        return ".+".join(re.escape(x) for x in parts)
+    return re.escape(base)
+
+
+def _touches(script, name, consumer):
+    """True when any command other than the consumer (the build that reads this Dockerfile, the pip install that
+    reads this -r file) or a read-only command without a write redirection names the file — an allow-list, so curl -o,
+    python -c, dd of=, sed -i, rsync … all count (Sonnet #164 r5, NEW-5/NEW-6)."""
+    import shlex
+    mention = re.compile(r"(^|[^A-Za-z0-9._-])" + _name_pattern(name) + r"($|[^A-Za-z0-9._-])")
+    text, inner = _cut_substitutions(re.sub(r"\\\n", " ", script))
+    for sub in inner:
+        if _touches(sub, name, consumer):
+            return True
+    for chunk in SEPARATORS.split(text):
+        try:
+            toks = shlex.split(chunk, comments=True)
+        except ValueError:
+            toks = chunk.split()
+        if not any(mention.search(t) for t in toks):
+            continue
+        if consumer(toks):
+            continue
+        words = [t for t in toks if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t) and t != "sudo"]
+        cmd = _base(words[0]) if words else ""
+        writes = any(re.match(r"^[0-9]*>>?", t) and (mention.search(t) or (k + 1 < len(toks) and mention.search(toks[k + 1])))
+                     for k, t in enumerate(toks))
+        read_only = cmd in READ_ONLY or (cmd == "git" and len(words) > 1 and words[1] in READ_ONLY_GIT)
+        if cmd in ("cp", "rsync", "install") and not writes:
+            pos = [t for t in words[1:] if not t.startswith("-")]
+            # copying the repository's own file INTO a build context (cp build/docker/Dockerfile.* /tmp/ctx/): the name
+            # appears only in relative, non-variable sources, never in the destination; any other write under the name
+            # is itself a finding, so a relative source can only be the committed file
+            if len(pos) >= 2 and not mention.search(pos[-1]) and all(
+                    not mention.search(t) or (not t.startswith("/") and not _variable(t) and SUBST not in t) for t in pos[:-1]):
+                continue
+        if writes or not read_only:
+            return True
+    return False
+
+
+def _is_build(toks):
+    return any(_base(t) in ("docker", "podman", "nerdctl") for t in toks) and "build" in toks
+
+
+def _is_pip_reading(toks):
+    return any(t in ("-r", "--requirement") or t.startswith(("--requirement=", "-r")) for t in toks) and \
+        any(t in ("install", "download", "wheel", "sync") for t in toks)
+
+
+def _pip_req_files(script):
+    """(command, path) for every -r file a pip / python -m pip / uv pip install reads."""
+    out = []
+    for t in _commands(script):
+        cmd, args = t[0], t[1:]
+        if re.match(r"^python3?(\.[0-9]+)?$", cmd) and args[args.index("-m") + 1:args.index("-m") + 2] == ["pip"] \
+                if "-m" in args else False:
+            cmd, args = "python -m pip", args[args.index("-m") + 2:]
+        if cmd == "uv" and args[:1] == ["pip"]:
+            cmd, args = "uv pip", args[1:]
+        if not (re.match(r"^pip3?(\.[0-9]+)?$", cmd) or cmd in ("python -m pip", "uv pip")):
+            continue
+        if not any(v in args for v in ("install", "download", "wheel", "sync")):
+            continue
+        for k, a in enumerate(args):
+            if a in ("-r", "--requirement") and k + 1 < len(args):
+                out.append((cmd, args[k + 1]))
+            elif a.startswith("--requirement="):
+                out.append((cmd, a.split("=", 1)[1]))
+            elif a.startswith("-r") and len(a) > 2 and not a.startswith("--"):
+                out.append((cmd, a[2:]))
+    return out
 
 
 def check_dockerfile(text):
@@ -915,7 +988,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                     bad.append(f"{where}: a build's Dockerfile ({name}) is outside the repository, so its FROM lines "
                                f"cannot be checked")
                     continue
-                if _writes(text, name):
+                if _touches(text, name, _is_build):
                     bad.append(f"{where}: the script writes a file named like its Dockerfile ({name}); the build "
                                f"cannot be bound to a reviewed file")
                     continue
@@ -936,6 +1009,20 @@ def check_runs(where_job, scripts, bad, tree=None):
                 bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
         for c, why in script_installs(text):
             bad.append(f"{where}: `{c}`: {why}")
+        for c, path in _pip_req_files(text):     # NEW-6: the hashes are only as good as the file they come from
+            if SUBST in path:
+                bad.append(f"{where}: `{c}` reads -r from a command substitution; it cannot be checked")
+            elif _variable(path):
+                continue                       # a variable: the review pass (documented boundary)
+            elif path == "/dev/stdin":
+                if "<<" not in text:
+                    bad.append(f"{where}: `{c}` reads -r from stdin that is not a heredoc in this step")
+            elif path.startswith("/"):
+                bad.append(f"{where}: `{c}` reads -r from {path}, outside the repository")
+            elif tree is not None and path.lstrip("./") not in getattr(tree, "entries", {}) and path not in getattr(tree, "entries", {}):
+                bad.append(f"{where}: `{c}` reads -r from {path}, which is not a file in the repository")
+            elif _touches(text, path, _is_pip_reading):
+                bad.append(f"{where}: the script writes or changes {path}, the -r file `{c}` reads")
 
 
 def _default_shell(node):
