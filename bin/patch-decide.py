@@ -23,7 +23,9 @@ DOCKERFILES = re.compile(r"^build/docker/Dockerfile\.[a-z0-9-]+$")
 SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
 # no vendor or model names in public text (row 48; Codex #158 r1, B06: the wider set)
-VENDOR = re.compile(r"(?i)(?<![a-z])(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini|llama|mistral|mixtral|grok|"
+# A platform name that qualifies a model goes with it (Codex #158 phase-2 r2, B06: "Google Gemini" left "Google").
+VENDOR = re.compile(r"(?i)(?<![a-z])((google|microsoft|amazon|aws|azure|xai|x\.ai|meta|github)\s+)?"
+                    r"(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini|llama|mistral|mixtral|grok|bedrock|"
                     r"deepseek|qwen|copilot|cohere|bard|sonnet|opus|haiku)[\w.-]*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
 # the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
 # NEW-01): a workflow is neutral only when it is reviewed as outside the release chain (release.yml calls stage-*.yml and
@@ -33,6 +35,10 @@ NEUTRAL_WORKFLOWS = {"agent-review-gate.yml", "auditor.yml", "ci.yml", "codeql.y
                      "hygiene.yml", "main-candidate-rescan.yml", "release-chain-pr.yml", "requirements.yml",
                      "rescan-v010.yml", "reserved-branch-guard.yml", "scan.yml", "scorecard.yml"}
 BUILD_INPUTS = re.compile(r"^\.goreleaser\.ya?ml$")
+# Outside workflows, .github/ is release-chain input by default: the stage workflows run .github/agent/bin and read
+# .github/policy (Codex #158 phase-2 r2, B04). Neutral only what is reviewed as never read by the release chain.
+NEUTRAL_GITHUB = {".github/dependabot.yml", ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md"}
+NEUTRAL_GITHUB_PREFIX = (".github/agent/reviews/", ".github/agent/tests/", ".github/agent/bin/tests/", ".github/agent/docs/")
 
 
 def _changed_lines(diff):
@@ -51,6 +57,9 @@ def _go_mod_changes(diff):
         return None
     block, ch = None, {}
     for raw in diff.splitlines():
+        if raw.startswith("@@"):
+            block = None                    # a new hunk: its block is known only from its own context (r2, B02)
+            continue
         sign, body = (raw[0], raw[1:]) if raw[:1] in ("+", "-", " ") else (" ", raw)
         t = body.strip()
         if sign == " ":
@@ -87,10 +96,16 @@ def _go_sum_ok(diff, moved):
     checksum rewrite of the same module version (Codex #158 r1, B02)."""
     if not diff or not diff.strip() or not moved:
         return False
+    # each line is the old version (removed) or the new version (added) of a module whose require moved; a go or
+    # toolchain move explains no go.sum line (Codex #158 phase-2 r2, B02)
+    allowed = {("-" if s == "-" else "+", k[4:], v[0]) for k, vs in moved.items() if k.startswith("req:")
+               for s, v in vs.items()}
+    if not allowed:
+        return False
     seen = {}
     for ln in _changed_lines(diff):
         m = re.match(r"^([+-])(\S+) (v\S+?)(/go\.mod)? h1:\S+$", ln)
-        if not m:
+        if not m or m.group(1, 2, 3) not in allowed:
             return False
         seen.setdefault(m.group(2, 3, 4), set()).add(m.group(1))
     return all(signs != {"+", "-"} for signs in seen.values())
@@ -102,12 +117,24 @@ FROM = re.compile(r"^FROM\s+((?:--\S+\s+)*)(\S+?)@sha256:([0-9a-f]{64})(\s+AS\s+
 def _digest_only(diff):
     """Each FROM keeps its flags, image, tag and alias and only the digest moves; no stage added or removed
     (Codex #158 r1, B03)."""
-    lines = _changed_lines(diff)
-    old = [FROM.match(ln[1:].strip()) for ln in lines if ln[0] == "-"]
-    new = [FROM.match(ln[1:].strip()) for ln in lines if ln[0] == "+"]
-    if not lines or not old or len(old) != len(new) or not all(old) or not all(new):
+    # each change is a removed FROM directly followed by its replacement, so the instruction keeps its place
+    # (Codex #158 phase-2 r2, B03)
+    raw = [ln for ln in (diff or "").splitlines() if not ln.startswith(("+++", "---"))]
+    pairs, i = 0, 0
+    while i < len(raw):
+        if raw[i][:1] == "+":
+            return False                    # an added line not directly replacing a removed FROM
+        if raw[i][:1] == "-":
+            o = FROM.match(raw[i][1:].strip())
+            n = FROM.match(raw[i + 1][1:].strip()) if i + 1 < len(raw) and raw[i + 1][:1] == "+" else None
+            if not o or not n or o.group(1, 2, 4) != n.group(1, 2, 4) or o.group(3) == n.group(3):
+                return False
+            pairs, i = pairs + 1, i + 2
+            continue
+        i += 1
+    if not pairs:
         return False
-    return all(o.group(1, 2, 4) == n.group(1, 2, 4) and o.group(3) != n.group(3) for o, n in zip(old, new))
+    return True
 
 
 def _is_test(path):
@@ -139,6 +166,9 @@ def classify(commit):
                 kinds.add("dirty"); why.append("%s changes more than the base-image digest pin" % f)
         elif BUILD_INPUTS.match(f) or (f.startswith(".github/workflows/") and f.split("/")[-1] not in NEUTRAL_WORKFLOWS):
             kinds.add("dirty"); why.append("%s builds or ships the release image" % f)
+        elif f.startswith(".github/") and not f.startswith(".github/workflows/") \
+                and f not in NEUTRAL_GITHUB and not f.startswith(NEUTRAL_GITHUB_PREFIX):
+            kinds.add("dirty"); why.append("%s is read by the release chain (or not reviewed as outside it)" % f)
         elif f.startswith(NEUTRAL_PREFIX) or _is_test(f):
             kinds.add("neutral")
         else:
