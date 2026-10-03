@@ -256,9 +256,21 @@ def behavior_entries(text):
         elif out and ln.startswith("  ") and ln.strip():
             out[-1] += " " + ln.strip()
     for e in out:
-        if not CITED.search(e):
-            raise ValueError("next-release-notes entry cites no handoff: %r" % e)
+        _check_entry(e)
     return out
+
+
+def _check_entry(e):
+    """An entry cites the handoff that judged it (advisor 0130), and no vendor or model name hides in it split by a
+    space or the line wrap — refused, not redacted (Sonnet #158 r2, SEC-1/SEC-2)."""
+    if not CITED.search(e):
+        raise ValueError("next-release-notes entry cites no handoff: %r" % e)
+    words = re.findall(r"[A-Za-z0-9]+", e)
+    for w1, w2 in zip(words, words[1:]):
+        joined = w1 + w2
+        if (VENDOR.fullmatch(joined) or VENDOR_ALONE.fullmatch(joined)) and not (
+                VENDOR.fullmatch(w1) or VENDOR.fullmatch(w2) or VENDOR_ALONE.fullmatch(w1) or VENDOR_ALONE.fullmatch(w2)):
+            raise ValueError("next-release-notes entry names a vendor or model split in two: %r" % e)
 
 
 def notes(version, fixes, vex_changes, behavior=()):
@@ -270,6 +282,8 @@ def notes(version, fixes, vex_changes, behavior=()):
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
     lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
+    for b in behavior:
+        _check_entry(b)
     if behavior:
         lines += ["", "### Behavior changes"] + ["- %s" % b for b in behavior]
     else:
