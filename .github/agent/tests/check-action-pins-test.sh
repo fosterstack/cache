@@ -1507,6 +1507,27 @@ case_ r4b6-multiline-array-comment-apostrophe-swallows-run-bad bad "$(rb "arr=(
 # through end of script, including a REAL command on a wholly separate, later statement
 case_ r4b6-array-escaped-apostrophe-idiom-swallows-run-bad bad "$(rb "arr=('a'\\''b' c)
           docker run --rm alpine:latest")"
+# Codex #164 r14, B2: _cut_substitutions() (which runs BEFORE the array sub-scanner) only recognized a '#'
+# comment when preceded by whitespace/;/newline -- not '(' -- so a comment right after an array's own opening
+# paren was read as real text, its apostrophe treated as a quote-open that then swallowed a REAL $(...)
+# substitution immediately after it, missing the command inside
+case_ r4b6-array-comment-right-after-paren-hides-subst-bad bad "$(rb "arr=(# product's files
+          \$(docker run --rm alpine:latest)
+          )")"
+# Codex #164 r14, B2 (false-positive form): the same comment-boundary gap meant a \$(...) that only EVER
+# appears inside a comment (never real code) was wrongly read as a live substitution
+case_ r4b6-array-comment-only-subst-ok ok "$(rb "arr=(# \$(docker run --rm alpine:latest)
+          x
+          )")"
+# Codex #164 r14, B3: _unconditional()'s own if/case/trap keyword regex has no comment-awareness at all, so a
+# comment reading literally "# if" / "# fi" was read as real control-flow, corrupting the if/case tracking
+# stack and letting an array's inert tag content leak into the trusted, unconditional set
+case_ r4b6-unconditional-keyword-in-comment-bad bad "$(rb "arr=( # if
+          # fi
+          docker tag alpine@\$DIG alpine:latest
+          )
+          if false; then docker tag alpine@\$DIG alpine:latest; fi
+          docker run alpine:latest")"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

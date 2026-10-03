@@ -822,7 +822,9 @@ def _cut_substitutions(text, data=False):
         elif data and c in "'\"#":
             out.append(c)
             i += 1
-        elif c == "#" and q is None and (i == 0 or text[i - 1] in " \t\n;"):
+        elif c == "#" and q is None and (i == 0 or text[i - 1] in " \t\n;("):
+            # a '#' right after '(' starts a comment too (Codex #164 r14, B2): an array literal's opening
+            # paren, or a subshell's, both begin a new word there, same as whitespace/;/newline already did
             j = text.find("\n", i)                      # a comment: no quotes, no substitutions
             j = n if j < 0 else j
             out.append(text[i:j])
@@ -1603,6 +1605,32 @@ def _expand_names(name, text):
 _TRAP_RE = re.compile(r"(?<![\w$.-])trap(?![\w.-])")
 
 
+def _strip_line_comment(line):
+    """line with a trailing '#' comment (preceded by whitespace or the start of the line, outside any quote)
+    removed — bash's comments never span more than one line, so a per-line scan is enough here (Codex #164
+    r14, B3: _unconditional()'s own if/fi keyword regex had no comment-awareness at all, so a comment reading
+    "# if" or "# fi" was read as real control flow, corrupting its if/case tracking stack)."""
+    i, n, q = 0, len(line), None
+    while i < n:
+        c = line[i]
+        if q == "'":
+            q = None if c == "'" else q
+        elif q == '"':
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            q = None if c == '"' else q
+        elif c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        elif c in "'\"":
+            q = c
+        elif c == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i]
+        i += 1
+    return line
+
+
 def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
     line, Codex #164 r2 C10), after && / || on its line, or anywhere a `trap` command appears. A trap's body is
@@ -1625,6 +1653,7 @@ def _unconditional(text):
         return ""
     keep, stack = [], []
     for line in text.splitlines():
+        line = _strip_line_comment(line)   # Codex #164 r14, B3: "if"/"fi" WRITTEN INSIDE A COMMENT must not
         words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
         opened = False
         if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line):
