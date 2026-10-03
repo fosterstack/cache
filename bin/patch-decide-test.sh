@@ -461,6 +461,32 @@ check("NEW-1 a base scan with a malformed nested field leaves only the deb infer
       rc == 0 and sorted(f["id"] for f in json.load(open(os.path.join(repo, "rm6.json")))) == ["CVE-2099-1", "CVE-2099-2"], rc)
 check("B6 scope 0 is a policy error, never push", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": 0}]}, [run("test")])[0] == "no")
 check("B6 scope '' is a policy error", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": ""}]}, [run("test")])[0] == "no")
+# advisor 0105: a file a release stage executes — a program, a script or a test it runs as a gate — is not patch-clean;
+# a test no stage runs stays neutral
+GATE = "bin/analyze-egress-trace-test.sh"
+check("0105 a gate test the release chain runs is not patch-clean",
+      P.classify(c("g1", [GATE], diffs={GATE: "+x\n"}) | {"chain": [GATE]})[0] == "dirty")
+check("0105 the same test, run by no stage, stays neutral", P.classify(c("g2", [GATE], diffs={GATE: "+x\n"}))[0] == "neutral")
+rc_repo = tempfile.mkdtemp()
+g(rc_repo, "init", "-q")
+os.makedirs(os.path.join(rc_repo, ".github/workflows")); os.makedirs(os.path.join(rc_repo, "bin"))
+for path, body in {".github/workflows/release.yml": "jobs:\n  a:\n    uses: ./.github/workflows/stage-x.yml\n  b:\n    uses: ./.github/workflows/acceptance-y.yml\n",
+                   ".github/workflows/stage-x.yml": "steps:\n  - run: bash bin/gate-test.sh\n",
+                   ".github/workflows/acceptance-y.yml": "steps:\n  - run: ./bin/accept.sh --x\n",
+                   ".github/workflows/ci.yml": "steps:\n  - run: bash bin/other-test.sh\n",
+                   "bin/gate-test.sh": "python3 \"$here/helper.py\"\npython3 bin/helper2.py\n",
+                   "bin/helper.py": "", "bin/helper2.py": "", "bin/accept.sh": "", "bin/other-test.sh": ""}.items():
+    open(os.path.join(rc_repo, path), "w").write(body)
+g(rc_repo, "add", "-A"); g(rc_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+ch = P.release_chain_files(rc_repo)
+check("0105 the chain: release.yml, the workflows it calls, what they run, and what that runs",
+      {".github/workflows/release.yml", ".github/workflows/stage-x.yml", ".github/workflows/acceptance-y.yml",
+       "bin/gate-test.sh", "bin/helper2.py", "bin/accept.sh"} <= ch, sorted(ch))
+check("0105 a script found next to its caller ($here/helper.py) is in the chain", "bin/helper.py" in ch, sorted(ch))
+check("0105 a test only ci.yml runs is not in the chain", "bin/other-test.sh" not in ch and ".github/workflows/ci.yml" not in ch, sorted(ch))
+real = P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), ".."))
+check("0105 on this repository the egress gate test is in the chain, and this test is not",
+      GATE in real and "bin/patch-decide-test.sh" not in real, sorted(x for x in real if x.startswith("bin/")))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

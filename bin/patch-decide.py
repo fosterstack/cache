@@ -172,12 +172,51 @@ def _is_test(path):
     return path.endswith("_test.go") or bool(re.match(r"^bin/[^/]+-test\.sh$", path))
 
 
+EXECUTABLE = re.compile(r"\.(sh|py|ya?ml)$")
+
+
+def release_chain_files(cwd="."):
+    """Every workflow and script the release chain executes at HEAD (advisor 0105): release.yml, the workflows it calls
+    (uses: ./…, transitively), every script or program they name, and every script those name in turn — found by path
+    or next to their caller ($here/x.py). A test a stage runs as a gate is in it; a test no stage runs is not."""
+    tree = set(_git("ls-tree", "-r", "--name-only", "HEAD", cwd=cwd).split())
+    start = ".github/workflows/release.yml"
+    seen, todo = set(), [start] if start in tree else []
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            text = _git("show", "HEAD:" + f, cwd=cwd)
+        except subprocess.CalledProcessError:
+            continue
+        here = os.path.dirname(f)
+        # executed, not merely named: a workflow by uses:, a script by an interpreter, by ./path or by $dir/path —
+        # a path read as data (git show main:…/ci.yml, a fixture, a policy file) is not followed
+        refs = set(re.findall(r"uses:\s*\./(\.github/workflows/[\w.-]+\.ya?ml)", text))
+        cands = re.findall(r"(?:\bbash|\bsh|\bpython3?|\bsource)\s+(?:-[\w-]+\s+)*[\"']?(?:\$\{?\w+\}?/)?([\w./-]+\.(?:sh|py))\b", text)
+        cands += re.findall(r"(?<![\w/.$-])\./([\w./-]+\.(?:sh|py))\b", text)
+        cands += re.findall(r"\$\{?\w+\}?/([\w./-]+\.(?:sh|py))\b", text)
+        for c in cands:
+            for r in (os.path.normpath(c), os.path.normpath(os.path.join(here, c))):
+                if r in tree:
+                    refs.add(r)
+                    break
+        todo += [r for r in refs if EXECUTABLE.search(r) and r not in seen]
+    return seen
+
+
 def classify(commit):
-    """('fix' | 'neutral' | 'dirty', reason) for one commit."""
+    """('fix' | 'neutral' | 'dirty', reason) for one commit. commit["chain"]: the files the release chain executes
+    (release_chain_files) — any of them is not patch-clean, whatever its path (advisor 0105)."""
     files, diffs = commit.get("files") or [], commit.get("diffs") or {}
+    chain = set(commit.get("chain") or ())
     kinds, why = set(), []
     for f in files:
-        if f in FIX_EXACT or f.startswith(FIX_PREFIX):
+        if f in chain:
+            kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
+        elif f in FIX_EXACT or f.startswith(FIX_PREFIX):
             kinds.add("fix")
         elif f in ("go.mod", "tools/requirements/go.mod"):
             if _go_mod_changes(diffs.get(f)) is not None:
@@ -394,13 +433,14 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
+    chain = sorted(release_chain_files(cwd))       # what the release chain executes at HEAD (advisor 0105)
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
         diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
-        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha))})
+        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha)), "chain": chain})
     return out
 
 
