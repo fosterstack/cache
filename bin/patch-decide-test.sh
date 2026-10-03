@@ -463,241 +463,69 @@ check("NEW-1 a base scan with a malformed nested field leaves only the deb infer
       rc == 0 and sorted(f["id"] for f in json.load(open(os.path.join(repo, "rm6.json")))) == ["CVE-2099-1", "CVE-2099-2"], rc)
 check("B6 scope 0 is a policy error, never push", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": 0}]}, [run("test")])[0] == "no")
 check("B6 scope '' is a policy error", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": ""}]}, [run("test")])[0] == "no")
-# advisor 0105: a file a release stage executes — a program, a script or a test it runs as a gate — is not patch-clean;
-# a test no stage runs stays neutral
-GATE = "bin/analyze-egress-trace-test.sh"
-check("0105 a gate test the release chain runs is not patch-clean",
-      P.classify(c("g1", [GATE], diffs={GATE: "+x\n"}) | {"chain": [GATE]})[0] == "dirty")
-check("0105/0107 a listed test no stage runs stays neutral", P.classify(c("g2", ["bin/panel-test.sh"], diffs={"bin/panel-test.sh": "+x\n"}))[0] == "neutral")
-rc_repo = tempfile.mkdtemp()
-g(rc_repo, "init", "-q")
-os.makedirs(os.path.join(rc_repo, ".github/workflows")); os.makedirs(os.path.join(rc_repo, "bin"))
-for path, body in {".github/workflows/release.yml": "jobs:\n  a:\n    uses: ./.github/workflows/stage-x.yml\n  b:\n    uses: ./.github/workflows/acceptance-y.yml\n",
-                   ".github/workflows/stage-x.yml": "steps:\n  - run: bash bin/gate-test.sh\n",
-                   ".github/workflows/acceptance-y.yml": "steps:\n  - run: ./bin/accept.sh --x\n",
-                   ".github/workflows/ci.yml": "steps:\n  - run: bash bin/other-test.sh\n",
-                   "bin/gate-test.sh": "python3 \"$here/helper.py\"\npython3 bin/helper2.py\n",
-                   "bin/helper.py": "", "bin/helper2.py": "", "bin/accept.sh": "", "bin/other-test.sh": ""}.items():
-    open(os.path.join(rc_repo, path), "w").write(body)
-g(rc_repo, "add", "-A"); g(rc_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-ch = P.release_chain_files(rc_repo)
-check("0105 the chain: release.yml, the workflows it calls, what they run, and what that runs",
-      {".github/workflows/release.yml", ".github/workflows/stage-x.yml", ".github/workflows/acceptance-y.yml",
-       "bin/gate-test.sh", "bin/helper2.py", "bin/accept.sh"} <= ch, sorted(ch))
-check("0105 a script found next to its caller ($here/helper.py) is in the chain", "bin/helper.py" in ch, sorted(ch))
-check("0105 a test only ci.yml runs is not in the chain", "bin/other-test.sh" not in ch and ".github/workflows/ci.yml" not in ch, sorted(ch))
-real = P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), ".."))
-check("0105 on this repository the egress gate test is in the chain, and this test is not",
-      GATE in real and "bin/patch-decide-test.sh" not in real, sorted(x for x in real if x.startswith("bin/")))
-# advisor 0107: a test is neutral only when it is on the reviewed NEUTRAL_TESTS list; any other test is not patch-clean;
-# the walk cross-checks the list (a listed test a stage runs, or a chain that runs go test, is an error), and follows
-# local composite actions (Sonnet #159 r5, F1)
-check("0107 an unlisted test is not patch-clean", P.classify(c("t1", ["bin/brand-new-test.sh"], diffs={"bin/brand-new-test.sh": "+x\n"}))[0] == "dirty")
-listed = sorted(P.NEUTRAL_TESTS)[0]
-check("0107 a listed test stays neutral", P.classify(c("t2", [listed], diffs={listed: "+x\n"}))[0] == "neutral", listed)
-check("0107 a listed test the chain runs is not patch-clean", P.classify(c("t3", [listed], diffs={listed: "+x\n"}) | {"chain": [listed]})[0] == "dirty")
-try:
-    P.cross_check([listed], ""); got = "accepted"
-except ValueError:
-    got = "refused"
-check("0107 the cross-check refuses a listed test that a release stage runs", got == "refused", got)
-try:
-    P.cross_check([".github/workflows/stage-x.yml"], "steps:\n  - run: go test ./...\n"); got = "accepted"
-except ValueError:
-    got = "refused"
-check("0107 the cross-check refuses a chain that runs go test (Go tests are listed as neutral)", got == "refused", got)
-ca_repo = tempfile.mkdtemp()
-g(ca_repo, "init", "-q")
-os.makedirs(os.path.join(ca_repo, ".github/workflows")); os.makedirs(os.path.join(ca_repo, ".github/actions/gate")); os.makedirs(os.path.join(ca_repo, "bin"))
-for path, body in {".github/workflows/release.yml": "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/gate\n",
-                   ".github/actions/gate/action.yml": "runs:\n  using: composite\n  steps:\n    - run: bash bin/gate-test.sh\n      shell: bash\n",
-                   "bin/gate-test.sh": ""}.items():
-    open(os.path.join(ca_repo, path), "w").write(body)
-g(ca_repo, "add", "-A"); g(ca_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-ch = P.release_chain_files(ca_repo)
-check("0107/F1 a local composite action and what it runs are in the chain",
-      {".github/actions/gate/action.yml", "bin/gate-test.sh"} <= ch, sorted(ch))
+# advisor 0112 (replacing the release-chain walk of 0105/0107; advisor reading of AC1, conservative): no parsing —
+# (1) an executable or unknown file is never neutral unless it is a listed test; (2) a listed test loses neutrality when
+# any file that can execute something (a workflow other than ci.yml, an action, a non-data non-test file) names it, and
+# a test-shaped glob there takes them all, `go test` the Go tests; (3) data rules unchanged
+def mrepo(files):
+    r = tempfile.mkdtemp()
+    g(r, "init", "-q", "-b", "main")
+    for path, body in files.items():
+        os.makedirs(os.path.join(r, os.path.dirname(path)) or r, exist_ok=True)
+        open(os.path.join(r, path), "w").write(body)
+    g(r, "add", "-A"); g(r, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
+    return r
+LT = "bin/panel-test.sh"
+base = {LT: "", "bin/other-test.sh": "", ".github/workflows/ci.yml": "steps:\n  - run: bash bin/panel-test.sh\n"}
+check("0112 a listed test no executing file names stays neutral", LT in P.neutral_tests(mrepo(base)))
+for why, extra in [("a release workflow runs it", {".github/workflows/release.yml": "steps:\n  - run: bash bin/panel-test.sh\n"}),
+                   ("a stage names it in an env value", {".github/workflows/stage-x.yml": "env:\n  S: bin/panel-test.sh\n"}),
+                   ("a helper names it by file name", {"bin/driver": "cd bin && bash panel-test.sh\n"}),
+                   ("a Python program runs it", {"bin/drv.py": 'subprocess.run(["bash", "bin/panel-test.sh"])\n'}),
+                   ("a composite action runs it", {".github/actions/g/action.yml": "runs:\n  steps:\n    - run: bash bin/panel-test.sh\n"}),
+                   ("a docs script runs it", {"docs/gate": "bash bin/panel-test.sh\n"})]:
+    check("0112 a listed test is not neutral when %s" % why, LT not in P.neutral_tests(mrepo(dict(base, **extra))))
+for why, extra in [("ci.yml", {}), ("a data file (mappings)", {"test-evidence/mappings.yaml": "ref: bin/panel-test.sh\n"}),
+                   ("another test", {"bin/other-test.sh": "bash bin/panel-test.sh\n"})]:
+    check("0112 a mention in %s keeps it neutral" % why, LT in P.neutral_tests(mrepo(dict(base, **extra))))
+for why, txt in [("find -exec over a glob", "run: find bin -name '*-test.sh' -exec bash {} \;\n"),
+                 ("a for loop over a glob", "run: for t in bin/*-test.sh; do bash $t; done\n"),
+                 ("a tests directory glob", "run: for t in .github/agent/tests/*; do bash $t; done\n")]:
+    check("0112 %s in a stage leaves no test neutral" % why,
+          P.neutral_tests(mrepo(dict(base, **{".github/workflows/stage-x.yml": "steps:\n  - " + txt})) ) == set())
+gt = P.neutral_tests(mrepo(dict(base, **{".github/workflows/stage-x.yml": "steps:\n  - run: go test ./...\n"})))
+check("0112 go test in a stage takes the Go tests, keeps the others", LT in gt and not any(t.endswith("_test.go") for t in gt))
+check("0112 'go test' in a Go comment is not a run", any(t.endswith("_test.go") for t in P.neutral_tests(mrepo(dict(base, **{"x/a.go": "// see go test\n"})))))
+# (1) executables and unknown files; (3) data
+for f, want in [("bin/brand-new-test.sh", "dirty"), ("docs/tool.py", "dirty"), ("test-evidence/gate", "dirty"),
+                ("requirements/x.lua", "dirty"), (".vex/gate.sh", "dirty"), (".vex/gate.txt", "fix"),
+                (".vex/fosterstack-cache.openvex.json", "fix"), (".auditor/accepted-items.json", "fix"),
+                ("docs/a.md", "neutral"), ("test-evidence/mappings.yaml", "neutral"), (".github/CODEOWNERS", "neutral"),
+                (".github/agent/tests/x.sh", "dirty")]:
+    check("0112 %s classifies %s" % (f, want), P.classify(c("q", [f], diffs={f: "+x\n"}))[0] == want, P.classify(c("q", [f], diffs={f: "+x\n"})))
+check("0112 a listed test neutral in the decision stays neutral", P.classify(c("n", [LT], diffs={LT: "+x\n"}) | {"neutral": [LT]})[0] == "neutral")
+check("0112 a listed test the decision took away is not neutral", P.classify(c("n2", [LT], diffs={LT: "+x\n"}) | {"neutral": []})[0] == "dirty")
+check("0112 an unlisted test is never neutral", P.classify(c("n3", ["bin/zz-test.sh"], diffs={"bin/zz-test.sh": "+x\n"}) | {"neutral": ["bin/zz-test.sh"]})[0] == "dirty")
+# a dependency-only bump stays possible whatever names it
+dep = mrepo(dict(base, **{".github/workflows/release.yml": "steps:\n  - run: printf '%s' 'env bash go.mod'\n",
+                         "go.mod": "module x\n\nrequire golang.org/x/sys v0.46.0\n"}))
+g(dep, "tag", "v0.1.0")
+open(os.path.join(dep, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(dep, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "bump")
+check("0112 a dependency-only bump stays patch-clean", P.patch_clean(P.gather_commits("v0.1.0", cwd=dep)) == (True, []))
+# this repository: the list, its seed, and the CI guard named in the PR
 real_root = os.path.join(os.path.dirname(sys.argv[1]), "..")
 real_tree = set(subprocess.run(["git", "-C", real_root, "ls-files"], capture_output=True, text=True).stdout.split())
 check("0107 every listed test exists", P.NEUTRAL_TESTS <= real_tree, sorted(P.NEUTRAL_TESTS - real_tree))
-ci_run = P.release_chain_files(real_root, start=".github/workflows/ci.yml") | {f for f in real_tree if f.endswith("_test.go")}
-check("0107 every listed test is one ci.yml runs (the seed rule)", P.NEUTRAL_TESTS <= ci_run, sorted(P.NEUTRAL_TESTS - ci_run))
-real_chain = P.release_chain_files(real_root)
-try:
-    P.cross_check(real_chain, {f: open(os.path.join(real_root, f)).read() for f in real_chain if os.path.exists(os.path.join(real_root, f))})
-    got = "ok"
-except ValueError as e:
-    got = str(e)
-check("0107 on this repository the cross-check holds", got == "ok", got)
-# Codex #159 r6 (B1): a newline-separated list of test file names is data — the "sh" ending one name followed by the
-# next name is not an execution
-data_repo = tempfile.mkdtemp()
-g(data_repo, "init", "-q")
-os.makedirs(os.path.join(data_repo, ".github/workflows")); os.makedirs(os.path.join(data_repo, "bin"))
-for path, body in {".github/workflows/release.yml": "steps:\n  - run: python3 bin/decide.py\n",
-                   "bin/decide.py": 'LIST = """\nbin/a-test.sh\nbin/b-test.sh\n"""\n', "bin/a-test.sh": "", "bin/b-test.sh": ""}.items():
-    open(os.path.join(data_repo, path), "w").write(body)
-g(data_repo, "add", "-A"); g(data_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-dch = P.release_chain_files(data_repo)
-check("r6 a list of test names in a chain program is not an execution", "bin/b-test.sh" not in dch and "bin/a-test.sh" not in dch, sorted(dch))
-# Sonnet #159 r6 (B2): a listed test a chain file names in any form (env value, subprocess list) is not neutral at
-# decision time; a chain file that runs an interpreter through find -exec or xargs makes no test neutral (fail closed)
-LT = "bin/panel-test.sh"
-for why, texts in [("named in an env value", {"stage-x.yml": "env:\n  SCRIPT: bin/panel-test.sh\nrun: bash \"$SCRIPT\"\n"}),
-                   ("named in a subprocess list", {"bin/drv.py": 'subprocess.run(["bash", "bin/panel-test.sh"])\n'}),
-                   ("named by its file name alone", {"stage-x.yml": "run: cd bin && bash panel-test.sh\n"})]:
-    eff = P.effective_neutral(texts)
-    check("r6/B2 a listed test %s in a chain file is not neutral" % why, LT not in eff and len(eff) == len(P.NEUTRAL_TESTS) - 1)
-for why, txt in [("find -exec bash", "run: find bin -name '*-test.sh' -exec bash {} \;\n"),
-                 ("xargs sh", "run: ls bin/*-test.sh | xargs -n1 sh\n")]:
-    check("r6/B2 %s in the chain leaves no test neutral" % why, P.effective_neutral({"stage-x.yml": txt}) == set())
-check("r6/B2 find -exec rm and xargs sha256sum keep the list", P.effective_neutral(
-    {"a.yml": "run: find . -name build -exec rm -rf {} +\nrun: ls | xargs -0 sha256sum\n"}) == set(P.NEUTRAL_TESTS))
-check("r6/B2 the classifier's own list is not a mention", P.effective_neutral({"bin/patch-decide.py": open(sys.argv[1]).read()}) == set(P.NEUTRAL_TESTS))
-check("r6/B2 classify uses the decision-time list", P.classify(c("e1", [LT], diffs={LT: "+x\n"}) | {"neutral": []})[0] == "dirty")
-# Sonnet #159 r7 (B3): find -exec / -execdir / -ok and xargs with any command beyond a short safe list (quoted, wrapped
-# by env, or an interpreter) leave no test neutral
-for txt in ['run: find . -name "*-test.sh" -exec "bash" {} \;\n', 'run: ls bin/*-test.sh | xargs -n1 "sh"\n',
-            'run: find . -execdir "bash" {} +\n', 'run: find . -exec env bash {} \;\n', "run: find . -ok sh {} \;\n",
-            "run: xargs -0 env python3 < list\n", "run: find . -exec ./runner {} \;\n"]:
-    check("r7/B3 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"stage-x.yml": txt}) == set())
-check("r7/B3 the safe commands keep the list", P.effective_neutral({"a.yml": 'run: find . -name build -exec "rm" -rf {} +\nrun: ls | xargs -0 sha256sum\n'}) == set(P.NEUTRAL_TESTS))
-# Sonnet #159 r7 (B4): a quoted run line is still an execution, and an executable is never neutral by its directory
-q_repo = tempfile.mkdtemp()
-g(q_repo, "init", "-q")
-os.makedirs(os.path.join(q_repo, ".github/workflows")); os.makedirs(os.path.join(q_repo, "test-evidence"))
-for path, body in {".github/workflows/release.yml": 'steps:\n  - run: "bash test-evidence/gate-test.sh"\n  - run: \'bash test-evidence/b.sh\'\n',
-                   "test-evidence/gate-test.sh": "", "test-evidence/b.sh": ""}.items():
-    open(os.path.join(q_repo, path), "w").write(body)
-g(q_repo, "add", "-A"); g(q_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-qch = P.release_chain_files(q_repo)
-check("r7/B4 a quoted run line's script is in the chain", {"test-evidence/gate-test.sh", "test-evidence/b.sh"} <= qch, sorted(qch))
-for f in ("test-evidence/x.sh", "docs/tool.py", "requirements/gen.sh", ".github/agent/docs/run.sh"):
-    check("r7/B4 an executable under a neutral directory (%s) is not neutral" % f, P.classify(c("q", [f], diffs={f: "+x\n"}))[0] == "dirty")
-check("r7/B4 data under a neutral directory stays neutral", P.classify(c("q2", ["docs/a.md"], diffs={"docs/a.md": "+x\n"}))[0] == "neutral")
-# Sonnet #159 r8: a "safe" find -exec / xargs command is a bare command name, never a path (./rm, bin/cat); and under a
-# neutral directory only data is neutral — anything without a data extension (extensionless, .run, .lua …) is not
-for txt in ["run: find . -exec ./rm {} \;\n", "run: ls | xargs bin/cat\n", 'run: find . -exec "./echo" {} +\n']:
-    check("r8/1 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"s.yml": txt}) == set())
-for f in ("test-evidence/gate", "docs/tool.run", "requirements/x.lua", ".github/agent/docs/runner"):
-    check("r8/2 %s (not data) is not neutral" % f, P.classify(c("d", [f], diffs={f: "+x\n"}))[0] == "dirty")
-for f in ("docs/a.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml", "docs/x.json", ".github/agent/reviews/a.json"):
-    check("r8/2 data (%s) stays neutral" % f, P.classify(c("d2", [f], diffs={f: "+x\n"}))[0] == "neutral")
-# Codex #159 r8 (B3 variants): quoted operators and quoted separators do not hide an indirect execution
-for txt in ["run: find bin -name '*-test.sh' '-exec' bash {} \;\n", "run: ls bin/*-test.sh | xargs -I ';' bash ';'\n",
-            "run: ls bin/*-test.sh | xargs -I '|' bash '|'\n", "run: find . \"-execdir\" sh {} +\n",
-            "run: xargs -n 1 -P 4 python3 < x\n", "run: find . -exec 'unterminated {} \;\n"]:
-    check("r8/B3 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"s.yml": txt}) == set())
-check("r8/B3 the real safe forms keep the list", P.effective_neutral({"a.yml": "run: find . -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +\nrun: find /tmp -print0 | xargs -0 sha256sum > /tmp/x\n"}) == set(P.NEUTRAL_TESTS))
-# Codex #159 r8 (B6): an inert string naming a listed test never aborts a decision; the test just is not neutral
-b6 = tempfile.mkdtemp()
-g(b6, "init", "-q", "-b", "main")
-os.makedirs(os.path.join(b6, ".github/workflows")); os.makedirs(os.path.join(b6, "bin"))
-open(os.path.join(b6, ".github/workflows/release.yml"), "w").write('steps:\n  - run: echo "bash bin/panel-test.sh"\n')
-open(os.path.join(b6, "bin/panel-test.sh"), "w").write("")
-open(os.path.join(b6, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
-g(b6, "add", "-A"); g(b6, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(b6, "tag", "v0.1.0")
-open(os.path.join(b6, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
-g(b6, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "bump")
-try:
-    cs = P.gather_commits("v0.1.0", cwd=b6); got = P.patch_clean(cs)
-except ValueError as e:
-    got = "raised: %s" % e
-check("r8/B6 an inert string naming a listed test does not make a dependency patch impossible", got == (True, []), got)
-check("r8/B6 ... and that listed test is not neutral in that decision",
-      P.classify(cs[0] | {"files": ["bin/panel-test.sh"], "diffs": {"bin/panel-test.sh": "+x\n"}})[0] == "dirty" if isinstance(got, tuple) else False)
-check("r8/B3 kubectl exec / docker exec with an open quote are not find -exec", P.effective_neutral(
-    {"k.yml": "run: kubectl exec runner -- sh -c '\n  echo hi\n'\nrun: docker exec \"$c\" pgrep x\n"}) == set(P.NEUTRAL_TESTS))
-real_cs = P.gather_commits("HEAD~1", cwd=os.path.join(os.path.dirname(sys.argv[1]), ".."))
-check("r8 on this repository a decision keeps the listed tests neutral (45 of 46)",
-      real_cs and len(real_cs[0]["neutral"]) == len(P.NEUTRAL_TESTS) - 1, real_cs and len(real_cs[0]["neutral"]))
-# Codex #159 r9 (B3): a command inside a quoted YAML scalar, and a pipe with no spaces, are still read
-for txt in ["run: \"find bin -name '*-test.sh' -exec bash {} ';'\"\n", "run: \"ls bin/*-test.sh | xargs -n1 sh\"\n",
-            "run: ls bin/*-test.sh|xargs -n1 sh\n", "run: find bin -exec bash {} ';'|cat\n"]:
-    check("r9/B3 %r leaves no test neutral" % txt.strip(), P.effective_neutral({"s.yml": txt}) == set())
-# Codex #159 r9 (B4): any file an interpreter executes is in the chain, whatever its extension, and is walked through
-w_repo = tempfile.mkdtemp()
-g(w_repo, "init", "-q")
-os.makedirs(os.path.join(w_repo, ".github/workflows")); os.makedirs(os.path.join(w_repo, "docs")); os.makedirs(os.path.join(w_repo, "bin"))
-for path, body in {".github/workflows/release.yml": "steps:\n  - run: bash docs/gate\n  - run: bash docs/gate.txt\n  - run: ./test-evidence-gate\n",
-                   "docs/gate": "bash bin/panel-test.sh\n", "docs/gate.txt": "echo hi\n", "test-evidence-gate": "", "bin/panel-test.sh": ""}.items():
-    open(os.path.join(w_repo, path), "w").write(body)
-g(w_repo, "add", "-A"); g(w_repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-wch = P.release_chain_files(w_repo)
-check("r9/B4 an extensionless or data-suffixed file an interpreter runs is in the chain, and walked through",
-      {"docs/gate", "docs/gate.txt", "test-evidence-gate", "bin/panel-test.sh"} <= wch, sorted(wch))
-check("r9 on this repository no data file is in the chain (go.mod bumps stay fix-class)",
-      not [f for f in P.release_chain_files(os.path.join(os.path.dirname(sys.argv[1]), "..")) if f == "go.mod" or f.endswith((".json", ".yaml", ".md", ".mod", ".sum"))])
-# Codex #159 r10 (B7, R1): keyword chains (if !, while !) keep the command position; an interpreter may be quoted, an
-# absolute path, or another language's
-for i, run in enumerate(['"if bash bin/driver.sh; then echo ok; fi"', "'while ! sh bin/driver.sh; do :; done'",
-                         '"env FOO=1 bash bin/driver.sh"',
-                         "if ! bash bin/driver.sh; then exit 1; fi", "while ! sh bin/driver.sh; do sleep 1; done",
-                         "/bin/bash bin/driver.sh", '"bash" bin/driver.sh', "node bin/driver.sh", "/usr/bin/env perl bin/driver.sh"]):
-    r10 = tempfile.mkdtemp()
-    g(r10, "init", "-q")
-    os.makedirs(os.path.join(r10, ".github/workflows")); os.makedirs(os.path.join(r10, "bin"))
-    for path, body in {".github/workflows/release.yml": "steps:\n  - run: %s\n" % run, "bin/driver.sh": "bash bin/panel-test.sh\n",
-                       "bin/panel-test.sh": ""}.items():
-        open(os.path.join(r10, path), "w").write(body)
-    g(r10, "add", "-A"); g(r10, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-    rch = P.release_chain_files(r10)
-    check("r10 %r reaches the driver and the test it runs" % run, {"bin/driver.sh", "bin/panel-test.sh"} <= rch, sorted(rch))
-# Codex #159 r5a (B9): a quoted argument at the start of a continued line is data, and a fix-class file is judged by
-# its own rule even if something names it — a dependency-only bump stays possible
-b9 = tempfile.mkdtemp()
-g(b9, "init", "-q", "-b", "main")
-os.makedirs(os.path.join(b9, ".github/workflows"))
-open(os.path.join(b9, ".github/workflows/release.yml"), "w").write("steps:\n  - run: |\n      printf '%s\\n' \\\n        'env bash go.mod'\n")
-open(os.path.join(b9, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
-g(b9, "add", "-A"); g(b9, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(b9, "tag", "v0.1.0")
-open(os.path.join(b9, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
-g(b9, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "bump")
-check("r5a/B9 a quoted continued-line argument is not an execution", "go.mod" not in P.release_chain_files(b9), sorted(P.release_chain_files(b9)))
-check("r5a/B9 a dependency-only bump stays patch-clean", P.patch_clean(P.gather_commits("v0.1.0", cwd=b9)) == (True, []))
-check("r5a/B9 a fix-class file named by the chain is still judged by its own rule",
-      P.classify(c("f", ["go.mod", "go.sum"], diffs=BUMP) | {"chain": ["go.mod"]})[0] == "fix")
-# Codex #159 r5b (B8 below run:, B10): a quoted scalar on the line below run: is still a command; and the fix-class
-# directories (.vex/, .auditor/) make only data fix-class — an executable there is not
-for i, run in enumerate(['\n          "if bash bin/driver.sh; then echo ok; fi"', "\n          'while ! sh bin/driver.sh; do :; done'",
-                         '\n          "env FOO=1 bash bin/driver.sh"']):
-    r5 = tempfile.mkdtemp()
-    g(r5, "init", "-q")
-    os.makedirs(os.path.join(r5, ".github/workflows")); os.makedirs(os.path.join(r5, "bin"))
-    for path, body in {".github/workflows/release.yml": "jobs:\n  r:\n    steps:\n      - run:%s\n" % run,
-                       "bin/driver.sh": "bash bin/panel-test.sh\n", "bin/panel-test.sh": ""}.items():
-        open(os.path.join(r5, path), "w").write(body)
-    g(r5, "add", "-A"); g(r5, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-    check("r5b/B8 a quoted run value on the next line reaches the driver (%d)" % i, {"bin/driver.sh", "bin/panel-test.sh"} <= P.release_chain_files(r5))
-check("r5b/B10 an executable under .vex/ is not fix-class", P.classify(c("v", [".vex/gate.sh"], diffs={".vex/gate.sh": "-exit 1\n+exit 0\n"}))[0] == "dirty")
-check("r5b/B10 ... nor when the chain runs it", P.classify(c("v2", [".vex/gate.sh"], diffs={".vex/gate.sh": "+x\n"}) | {"chain": [".vex/gate.sh"]})[0] == "dirty")
-check("r5b/B10 an auditor output that is data stays fix-class", P.classify(c("v3", [".vex/fosterstack-cache.openvex.json"], diffs={".vex/fosterstack-cache.openvex.json": "+x\n"}))[0] == "fix")
-# Codex #159 r5c (B8 variants): workflows are read as decoded YAML — folded >, literal | with a \ continuation, plain
-# and quoted multi-line scalars resolve to the shell text GitHub runs
-for i, step in enumerate(["- run: >\n          if bash\n          bin/driver.sh; then echo ok; fi\n",
-                          "- run: |\n          if bash \\\n            bin/driver.sh; then echo ok; fi\n",
-                          "- run: if bash\n          bin/driver.sh; then echo ok; fi\n",
-                          '- run:\n          "if bash\n          bin/driver.sh; then echo ok; fi"\n']):
-    y5 = tempfile.mkdtemp()
-    g(y5, "init", "-q")
-    os.makedirs(os.path.join(y5, ".github/workflows")); os.makedirs(os.path.join(y5, "bin"))
-    for path, body in {".github/workflows/release.yml": "jobs:\n  r:\n    steps:\n      " + step,
-                       "bin/driver.sh": "bash bin/panel-test.sh\n", "bin/panel-test.sh": ""}.items():
-        open(os.path.join(y5, path), "w").write(body)
-    g(y5, "add", "-A"); g(y5, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x")
-    check("r5c/B8 a folded or continued run scalar reaches the driver (%d)" % i, {"bin/driver.sh", "bin/panel-test.sh"} <= P.release_chain_files(y5), sorted(P.release_chain_files(y5)))
-# without a YAML reader the walk cannot resolve scalars: no test is neutral (fail closed)
-saved = P._yaml
-try:
-    P._yaml = None
-    cs_noyaml = P.gather_commits("HEAD~1", cwd=os.path.join(os.path.dirname(sys.argv[1]), ".."))
-finally:
-    P._yaml = saved
-check("r5c/B8 without PyYAML a decision keeps no test neutral", cs_noyaml and cs_noyaml[0]["neutral"] == [], cs_noyaml and len(cs_noyaml[0]["neutral"]))
-# Codex #159 r5c (B10 data suffix): a file the chain executes is dirty whatever its suffix — only go.mod, go.sum and the
-# digest-pinned Dockerfiles keep their own rule when named
-for f in (".vex/gate.txt", ".auditor/gate.yaml", ".vex/fosterstack-cache.openvex.json"):
-    check("r5c/B10 %s executed by the chain is not fix-class" % f, P.classify(c("x", [f], diffs={f: "-exit 1\n+exit 0\n"}) | {"chain": [f]})[0] == "dirty")
+ci_text = open(os.path.join(real_root, ".github/workflows/ci.yml")).read()
+check("0107 every listed test is one ci.yml runs (the seed rule)",
+      all(t in ci_text or t.endswith("_test.go") or t.startswith(".github/agent/bin/tests/") or
+          any(t in open(os.path.join(real_root, f)).read() for f in real_tree if f.startswith((".github/agent/tests/", "bin/")) and f.endswith(".sh") and f in P.NEUTRAL_TESTS)
+          for t in P.NEUTRAL_TESTS), sorted(t for t in P.NEUTRAL_TESTS if t not in ci_text))
+check("0112 CI guard: ci.yml runs nothing release-like (no release/stage workflow, no release environment, no tag push, no promotion)",
+      not re.search(r"uses:\s*\./\.github/workflows/(release|stage-)|environment:\s*release\b|git\s+push\s+[^\n]*\bv\d|gh\s+release\s+(create|edit|upload)|cosign\s+(sign|attest)\b", ci_text))
+rn = P.neutral_tests(real_root)
+check("0112 on this repository 40 of 46 listed tests stay neutral (the rest are named by files that can run them)", len(rn) == 40, (len(rn), sorted(P.NEUTRAL_TESTS - rn)))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

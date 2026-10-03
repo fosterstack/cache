@@ -18,11 +18,6 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
 import argparse, json, os, re, subprocess, sys
-try:
-    import yaml as _yaml          # workflows are read as decoded YAML (Codex #159 r5c, B8); without it: fail closed
-except ImportError:
-    _yaml = None
-
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
@@ -174,7 +169,8 @@ def _digest_only(diff):
 
 # Advisor 0107 (AC1's "tests" = tests no release stage runs, written down): a test is neutral only when it is listed here
 # — seeded with the tests only ci.yml runs (its scripts and `go test ./...`); additions only by a reviewed change. Any
-# other test is not patch-clean. cross_check turns red when a listed test is found run by a release stage.
+# other test is not patch-clean. neutral_tests() takes a listed test out of a decision whenever a file that can execute
+# it names it (advisor 0112, which replaced the release-chain walk of 0105).
 NEUTRAL_TESTS = frozenset("""
 .github/agent/tests/auditor-matrix-test.sh
 .github/agent/tests/auditor-parser-tests.sh
@@ -229,192 +225,56 @@ DATA_FILE = re.compile(r"\.(md|txt|json|ya?ml|toml|csv)$")
 
 
 def _is_test(path, neutral=None):
-    return path in (NEUTRAL_TESTS if neutral is None else neutral)
+    """Neutral only when reviewed (listed) AND kept by this decision's neutral_tests (advisor 0107, 0112)."""
+    return path in NEUTRAL_TESTS and (neutral is None or path in neutral)
 
 
-# commands find -exec / xargs may run without making every test chain input (Sonnet #159 r7, B3): anything else —
-# an interpreter, quoted or wrapped (env), a script, a variable — fails closed
-SAFE_INDIRECT = {"rm", "sha256sum", "sha1sum", "md5sum", "chmod", "chown", "touch", "cat", "ls", "stat", "wc", "echo",
-                 "grep", "test", "du", "basename", "dirname"}
+TEST_FILE = re.compile(r"(^bin/[^/]+-test\.sh$|^\.github/agent/(bin/)?tests/|_test\.go$)")
+TEST_GLOB = re.compile(r"\*-test\.sh|\*_test\.go|/tests/\*|-test\.sh\*")
 
 
-def _shell_tokens(line):
-    """The words of a shell line, with | ; & ( ) as their own tokens (no spaces needed), quotes honoured; None when it
-    cannot be tokenized."""
-    import shlex
-    lex = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-    lex.whitespace_split = True
-    lex.commenters = "#"
-    try:
-        return list(lex)
-    except ValueError:
-        return None
+def _scanned(path):
+    """Files that can execute something, whose mention of a listed test takes its neutrality away (advisor 0112): every
+    workflow but ci.yml (which runs the listed tests by definition — 0107's seed), every composite action, and every
+    file without a data extension — except tests themselves and this classifier (whose list names them all)."""
+    if path in (".github/workflows/ci.yml", "bin/patch-decide.py") or path in NEUTRAL_TESTS or TEST_FILE.search(path):
+        return False
+    if path.startswith(".github/workflows/") or re.search(r"(^|/)action\.ya?ml$", path):
+        return True
+    return not DATA_FILE.search(path)
 
 
-def _indirect_exec(text, depth=0):
-    """True when a find -exec/-execdir/-ok/-okdir or an xargs runs anything but a bare SAFE_INDIRECT command. Every line
-    that mentions one is tokenized as the shell reads it (quotes honoured, | ; & split without spaces); a quoted word that
-    is itself a command (a YAML scalar, bash -c '…') is read again; an untokenizable line fails closed (Codex #159 r8/r9)."""
-    op = re.compile(r"(?<![\w-])[\"']?-(?:exec|execdir|ok|okdir)[\"']?(?![\w-])|(?<![\w-])xargs(?![\w-])")
-    for line in re.sub(r"\\\n", " ", text).splitlines():
-        if not op.search(line):
-            continue
-        toks = _shell_tokens(line)
-        if toks is None or depth > 3:
-            return True
-        for k, t in enumerate(toks):
-            if " " in t and op.search(t) and _indirect_exec(t, depth + 1):
-                return True                                       # a command inside a quoted word
-            cmd = None
-            if t in ("-exec", "-execdir", "-ok", "-okdir"):
-                cmd = toks[k + 1] if k + 1 < len(toks) else ""
-            elif os.path.basename(t) == "xargs":
-                i = k + 1
-                while i < len(toks) and toks[i].startswith("-"):
-                    i += 2 if re.fullmatch(r"-[nLPsdIEaJ]", toks[i]) else 1      # an option with a separate value
-                cmd = toks[i] if i < len(toks) else "echo"
-                if re.fullmatch(r"[|;&()]+|[<>]", cmd):
-                    cmd = "echo"                                                 # xargs with no command runs echo
-            if cmd is not None and ("/" in cmd or cmd not in SAFE_INDIRECT):
-                return True
-    return False
-
-
-def effective_neutral(texts):
-    """NEUTRAL_TESTS at decision time (Sonnet #159 r6, B2): a listed test that any release-chain file names — by path
-    or by file name, in any form (an env value, a subprocess list) — is not neutral; and when a chain file runs an
-    interpreter through find -exec or xargs (it executes files it never names) no test is neutral. texts: {path:
-    content} of the chain; the classifier's own list (this file) is not a mention."""
+def neutral_tests(cwd="."):
+    """The listed tests that stay neutral in this decision — no parsing (advisor 0112; AC1's "tests", read
+    conservatively): a listed test is not neutral when any scanned file names it (its path or its file name, in any
+    form); a scanned file with a test-shaped glob (*-test.sh, *_test.go, …/tests/*) takes all of them, and one that runs
+    `go test` (shell, workflow, Python; the argv form in Go) takes the Go tests. Mentions over-count executions, so a
+    miss cannot make a test the release runs neutral."""
     out = set(NEUTRAL_TESTS)
-    for path, text in texts.items():
-        if path == "bin/patch-decide.py":
+    for f in _git("ls-files", cwd=cwd).split():
+        if not _scanned(f):
             continue
-        if _indirect_exec(text):
+        r = subprocess.run(["git", "-C", cwd, "show", "HEAD:" + f], capture_output=True)
+        if r.returncode != 0:
+            return set()                                    # cannot read a file that might run a test: fail closed
+        if b"\0" in r.stdout:
+            continue                                        # binary: names nothing
+        text = r.stdout.decode("utf-8", "replace")
+        if TEST_GLOB.search(text):
             return set()
+        if (re.search(r"\bgo\s+test\b", text) and not f.endswith(".go")) or re.search(r"[\"']go[\"']\s*,\s*[\"']test[\"']", text):
+            out = {t for t in out if not t.endswith("_test.go")}
         out -= {t for t in out if t in text or re.search(r"(?<![\w.-])" + re.escape(t.rsplit("/", 1)[-1]) + r"(?![\w.-])", text)}
     return out
 
 
-def cross_check(chain, texts):
-    """The walk as a cross-check of NEUTRAL_TESTS (advisor 0107): ValueError when a listed test is in the release chain,
-    or a chain file runs `go test` (the listed Go tests would then be gates). texts: {path: content} of the chain (or
-    one workflow/shell text); shell and YAML are read without comments, Python by an argv list naming go then test."""
-    run = sorted(NEUTRAL_TESTS & set(chain))
-    if run:
-        raise ValueError("listed neutral tests are run by the release chain: %s" % ", ".join(run))
-    for path, text in (texts.items() if isinstance(texts, dict) else [("chain.yml", texts or "")]):
-        if path.endswith(".py"):
-            hit = re.search(r"[\"']go[\"']\s*,\s*[\"']test[\"']", text)
-        else:
-            hit = any(re.search(r"\bgo\s+test\b", ln.split(" #")[0]) for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-        if hit:
-            raise ValueError("%s runs go test: the listed Go tests would be gates" % path)
-
-
-EXECUTABLE = re.compile(r"\.(sh|py|ya?ml)$")
-
-
-def _decoded(path, text):
-    """What the shell runs, for scanning: a workflow's uses: lines and its run: values as YAML decodes them (folded,
-    literal, quoted and plain scalars resolved), with backslash-newline continuations joined. None when a workflow cannot be
-    decoded (no PyYAML, or invalid YAML) — the caller then fails closed."""
-    if not re.search(r"\.ya?ml$", path):
-        return re.sub(r"\\\n", " ", text)
-    if _yaml is None:
-        return None
-    try:
-        doc = _yaml.safe_load(text)
-    except _yaml.YAMLError:
-        return None
-    runs, uses = [], []
-    def walk(node):
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if k == "run" and isinstance(v, str):
-                    runs.append(re.sub(r"\\\n", " ", v))
-                elif k == "uses" and isinstance(v, str):
-                    uses.append("uses: " + v)
-                else:
-                    walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-    walk(doc)
-    return "\n".join(uses + runs)
-
-
-CHAIN_DECODED = {"ok": True}       # set by release_chain_files: False when a workflow could not be decoded
-
-
-def release_chain_files(cwd=".", start=".github/workflows/release.yml"):
-    """Every workflow and script the release chain executes at HEAD (advisor 0105): release.yml, the workflows it calls
-    (uses: ./…, transitively), every script or program they name, and every script those name in turn — found by path
-    or next to their caller ($here/x.py). A test a stage runs as a gate is in it; a test no stage runs is not."""
-    tree = set(_git("ls-tree", "-r", "--name-only", "HEAD", cwd=cwd).split())
-    CHAIN_DECODED["ok"] = True
-    seen, todo = set(), [start] if start in tree else []
-    while todo:
-        f = todo.pop()
-        if f in seen:
-            continue
-        seen.add(f)
-        try:
-            text = _git("show", "HEAD:" + f, cwd=cwd)
-        except subprocess.CalledProcessError:
-            continue
-        decoded = _decoded(f, text)
-        if decoded is None:
-            CHAIN_DECODED["ok"] = False          # fall back to the raw text, and the decision keeps no test neutral
-        else:
-            text = decoded
-        here = os.path.dirname(f)
-        # executed, not merely named: a workflow by uses:, a script by an interpreter, by ./path or by $dir/path —
-        # a path read as data (git show main:…/ci.yml, a fixture, a policy file) is not followed
-        refs = set(re.findall(r"uses:\s*\./(\.github/workflows/[\w.-]+\.ya?ml)", text))
-        for d in re.findall(r"uses:\s*\./((?!\.github/workflows/)[\w./-]+?)/?\s*$", text, re.M):   # a local composite
-            refs |= {d.rstrip("/") + "/" + a for a in ("action.yml", "action.yaml") if d.rstrip("/") + "/" + a in tree}
-            # action (Sonnet #159 r5, F1): its steps run too
-        # an interpreter only at the start of a command (after whitespace or a separator) — never the "sh" that ends a
-        # file name such as x-test.sh (Codex #159 r6, B1: a list of test names is data, not executions)
-        # any file executed, whatever its extension (Codex #159 r9, B4: bash docs/gate, bash docs/gate.txt) — kept only
-        # when it is a file of the tree, and walked through
-        # only at command position — the first word of a command: a line start (after "- " / "run:" / a quote), after
-        # ; & | ( `, or after a keyword or wrapper — so "osv-scanner scan source go.mod" names no program (Codex r9)
-        # a quoted scalar opens only right after "run:" (B8) — never at the start of a continued line, where a quote
-        # starts an argument (Codex #159 r5a, B9)
-        cmdpos = (r"(?:^[ \t]*(?:-[ \t]+)?(?:run:[ \t]*(?:\n[ \t]*)?[\"']|run:[ \t]*)?[|>]?[ \t]*|[;&|(`][ \t]*)"
-                  # any chain of keywords and wrappers (if ! …, while ! …, env …; Codex #159 r10, B7) and VAR=value
-                  r"(?:(?:(?:then|do|else|if|elif|while|until|exec|env|nohup|time|sudo|command|builtin)|!)[ \t]+"
-                  r"|[A-Za-z_]\w*=\S*[ \t]+|(?:/[\w.-]+)*/env[ \t]+)*[\"']?")
-        # an interpreter by name or absolute path, quoted or not, in any of the languages a runner has (r10, R1)
-        cands = re.findall(cmdpos + r"(?:/[\w.-]+)*/?(?:bash|sh|dash|zsh|ksh|python[\d.]*|source|\.|node|nodejs|deno|bun|"
-                           r"perl|ruby|php|pwsh|lua|Rscript|awk|gawk)[\"']?[ \t]+(?:-[\w-]+[ \t]+)*[\"']?(?:\$\{?\w+\}?/)?"
-                           r"([\w./-]*[\w-])", text, re.M)
-        cands += re.findall(cmdpos + r"\./([\w./-]*[\w-])", text, re.M)
-        cands += re.findall(cmdpos + r"\$\{?\w+\}?/([\w./-]*[\w-])", text, re.M)
-        for c in cands:
-            for r in (os.path.normpath(c), os.path.normpath(os.path.join(here, c))):
-                if r in tree:
-                    refs.add(r)
-                    break
-        todo += [r for r in refs if r not in seen]
-    return seen
-
-
 def classify(commit):
-    """('fix' | 'neutral' | 'dirty', reason) for one commit. commit["chain"]: the files the release chain executes
-    (release_chain_files) — any of them is not patch-clean, whatever its path (advisor 0105)."""
+    """('fix' | 'neutral' | 'dirty', reason) for one commit. commit["neutral"]: the listed tests neutral in this
+    decision (neutral_tests); an executable or unknown file is never neutral otherwise (advisor 0112)."""
     files, diffs = commit.get("files") or [], commit.get("diffs") or {}
-    chain = set(commit.get("chain") or ())
     kinds, why = set(), []
     for f in files:
-        if f in chain and not (f in ("go.mod", "go.sum", "tools/requirements/go.mod", "tools/requirements/go.sum")
-                               or DOCKERFILES.match(f)):
-            # only these keep their own line-level rule when named — anything else the chain executes is dirty, a
-            # .vex/.auditor data suffix included (Codex #159 r5c, B10)
-            # a fix-class file keeps its own strict, line-level rule even when something names it (Codex #159 r5a, B9)
-            kinds.add("dirty"); why.append("%s is executed by the release chain" % f)
-        elif _is_test(f, commit.get("neutral")):
+        if _is_test(f, commit.get("neutral")):
             kinds.add("neutral")
         elif f.startswith(NEUTRAL_PREFIX) and not DATA_FILE.search(f) and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB:
@@ -639,29 +499,14 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
-    chain = sorted(release_chain_files(cwd))       # what the release chain executes at HEAD (advisor 0105)
-    texts = {f: _git("show", "HEAD:" + f, cwd=cwd) for f in chain}
-    # advisor 0107's cross-check never aborts a decision (Codex #159 r8, B6: an inert string naming a listed test made a
-    # dependency patch impossible): what it finds only narrows the neutral list for this decision; the repository's own
-    # test (bin/patch-decide-test.sh, in CI) keeps it red
-    neutral = effective_neutral(texts) - set(chain)
-    try:
-        cross_check([], texts)
-    except ValueError:
-        neutral = {t for t in neutral if not t.endswith("_test.go")}          # the chain runs go test
-    if not CHAIN_DECODED["ok"]:
-        print("::notice::patch-decide: a release workflow could not be read as YAML (PyYAML missing or invalid YAML); "
-              "no test is neutral in this decision", file=sys.stderr)
-        neutral = set()
-    neutral = sorted(neutral)
+    neutral = sorted(neutral_tests(cwd))           # the listed tests no file that can run them names (advisor 0112)
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
         files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
         diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
-        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha)), "chain": chain,
-                    "neutral": neutral})
+        out.append({"sha": sha, "files": files, "diffs": diffs, "labels": list(labels(sha)), "neutral": neutral})
     return out
 
 
