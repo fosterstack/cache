@@ -119,8 +119,8 @@ is excepted by name.
 Outside this check, each a documented exclusion with its reason (row 78):
   - an image a `run:` script names through a shell variable or an expression: the shell is not evaluated here, so
     the row-78 review pass answers it (on Oct 2 every such image in the workflows is bound to a digest);
-  - a name the same job made locally (docker tag / build -t / skopeo docker-daemon:, or a template like `fa-${v}`
-    with a literal prefix of two or more characters): those are our own bytes, pinned where they were pulled;
+  - a name the same job made EARLIER (docker tag / build -t / skopeo docker-daemon:, or an unqualified template
+    like `fa-${v}` whose prefix is 3+ characters ending in - _ . and names no registry path): our own bytes;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -894,7 +894,9 @@ def _local(ref, local):
     for name in local:
         if "$" in name:
             prefix = name.split("$", 1)[0]
-            if len(prefix) >= 3 and prefix[-1] in "-_." and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]+", ref):
+            # never a registry path: a template under ghcr.io/org/… would vouch for every sibling tag (NEW-13)
+            if "/" not in prefix and len(prefix) >= 3 and prefix[-1] in "-_." \
+                    and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9._-]+", ref):
                 return True
     return False
 
