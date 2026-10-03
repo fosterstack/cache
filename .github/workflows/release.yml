@@ -105,13 +105,18 @@ jobs:
             if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
             else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
           done
-          [ "$ok" = 1 ] && jq -s '{matches: [.[].matches[]]}' "${rel[@]}" > "$RUNNER_TEMP/release.json" || ok=0
-          base_arg=()
+          # each scan goes to the decision on its own and is validated there — no aggregation that turns a malformed
+          # document into an empty one; a base-image failure is the base's alone (Codex #159 r2, B2 / NEW-1)
+          rel_args=(); for f in "${rel[@]}"; do rel_args+=(--release-grype "$f"); done
+          base_arg=(); base_ok=1
           if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n "$bases" ]; then
-            ok=1; for b in $bases; do grype "$b" -o json > "$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json" || ok=0; done
-            if [ "$ok" = 1 ]; then jq -s '{matches: [.[].matches[]]}' "$RUNNER_TEMP"/base-*.json > "$RUNNER_TEMP/base.json"; base_arg=(--base-grype "$RUNNER_TEMP/base.json"); fi
+            for b in $bases; do
+              f="$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json"
+              if grype "$b" -o json > "$f"; then base_arg+=(--base-grype "$f"); else base_ok=0; fi
+            done
+            [ "$base_ok" = 1 ] || base_arg=()           # no base evidence: no deb finding counts as removed
           fi
-          if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed --release-grype "$RUNNER_TEMP/release.json" --gomod go.mod \
+          if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed "${rel_args[@]}" --gomod go.mod \
                "${base_arg[@]}" --out "$RUNNER_TEMP/removed.json"; then
             touch "$RUNNER_TEMP/removed-unknown"
           fi

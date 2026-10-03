@@ -350,7 +350,8 @@ def decide(event, commits, tags, cut_today, removed):
 
 def _scope(req):
     """admission reads `.scope // "push"`: absent, null or false is push (Codex #159 pin pass, B01)."""
-    return "push" if req.get("scope") in (None, False) else req.get("scope")
+    s = req.get("scope")
+    return "push" if s is None or s is False else s      # identity, not ==: scope 0 is not push (Codex #159 r2, B6)
 
 
 def ready(required, check_runs):
@@ -410,7 +411,9 @@ def grype_findings(doc):
         raise ValueError("not a grype scan: no matches list")
     out = []
     for m in doc["matches"]:
-        v, a = m.get("vulnerability") or {}, m.get("artifact") or {}
+        v, a = (m.get("vulnerability") or {}, m.get("artifact") or {}) if isinstance(m, dict) else ({}, {})
+        if not all(isinstance(x, str) and x for x in (v.get("id"), a.get("name"), a.get("version"))):
+            raise ValueError("not a grype scan: a match without its id, package or version")   # Codex #159 r2, B2
         out.append({"id": v.get("id"), "package": a.get("name"), "installed": a.get("version"), "severity": v.get("severity"),
                     "fixed": list((v.get("fix") or {}).get("versions") or []),
                     "type": "go-module" if a.get("type") in ("go-module", "golang") else a.get("type")})
@@ -444,9 +447,9 @@ def main(argv=None):
     k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
     k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
     r = sub.add_parser("removed")
-    r.add_argument("--release-grype", required=True)
+    r.add_argument("--release-grype", required=True, action="append", help="one per scanned release image")
     r.add_argument("--gomod", required=True)
-    r.add_argument("--base-grype")
+    r.add_argument("--base-grype", action="append", help="one per scanned base image")
     r.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "ready":
@@ -455,12 +458,12 @@ def main(argv=None):
         return 0
     if a.cmd == "removed":
         try:
-            release = grype_findings(json.load(open(a.release_grype)))
+            release = [f for p in a.release_grype for f in grype_findings(json.load(open(p)))]
         except (ValueError, OSError) as e:
             print("removed: the release scan is unusable: %s" % e, file=sys.stderr)
             return 2
         try:
-            base = grype_findings(json.load(open(a.base_grype))) if a.base_grype else None
+            base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
         except (ValueError, OSError):
             base = None                     # an unusable base scan removes no deb finding
         found = removed_critical_high(release, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})

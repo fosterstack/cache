@@ -419,6 +419,24 @@ with contextlib.redirect_stdout(io.StringIO()):
 D = json.load(open(o5))
 check("0092 a failed minor tag's feature is measured from the published baseline: not patch-clean, no cut",
       not D["cut"] and D["since"] == "v0.2.1" and any("main.go" in w for w in D["not_clean"]), D)
+# Codex #159 r2: each scan is validated on its own, records included (B2); scope 0 is not push (B6)
+for doc, why in [({"matches": [{}]}, "a match without vulnerability or artifact"),
+                 ({"matches": [{"vulnerability": {"id": "CVE-1"}, "artifact": {}}]}, "a match without package or version"),
+                 ({"matches": {}}, "matches as an object")]:
+    try:
+        P.grype_findings(doc); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("B2 grype_findings refuses %s" % why, got == "refused", got)
+v1 = os.path.join(repo, "v1.json"); json.dump({"matches": []}, open(v1, "w"))
+v2 = os.path.join(repo, "v2.json"); json.dump({"matches": {}}, open(v2, "w"))
+rc = P.main(["removed", "--release-grype", v1, "--release-grype", v2, "--gomod", gomod, "--out", os.path.join(repo, "rm4.json")])
+check("B2 one malformed release variant among valid ones makes the release unusable", rc != 0)
+rc = P.main(["removed", "--release-grype", rel, "--gomod", gomod, "--base-grype", v1, "--base-grype", v2, "--out", os.path.join(repo, "rm5.json")])
+check("B2 one malformed base scan makes the base unknown (no deb finding removed), the Go removals stand",
+      rc == 0 and sorted(f["id"] for f in json.load(open(os.path.join(repo, "rm5.json")))) == ["CVE-2099-1", "CVE-2099-2"])
+check("B6 scope 0 is a policy error, never push", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": 0}]}, [run("test")])[0] == "no")
+check("B6 scope '' is a policy error", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": ""}]}, [run("test")])[0] == "no")
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
