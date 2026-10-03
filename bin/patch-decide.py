@@ -22,14 +22,22 @@ NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
 DOCKERFILES = re.compile(r"^build/docker/Dockerfile\.[a-z0-9-]+$")
 SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
+def _sep(*words):
+    """An alternation of names in which - _ or . may split any two letters: open-ai, co_here, deep.seek are the same
+    names (Sonnet #159 r2, BLOCKER-1)."""
+    return "|".join("[-_.]?".join(re.escape(c) for c in w) for w in words)
+
+
 # no vendor or model names in public text (row 48; Codex #158 r1, B06: the wider set)
 # A platform name that qualifies a model goes with it (Codex #158 phase-2 r2, B06: "Google Gemini" left "Google").
-VENDOR = re.compile(r"(?i)(?<![a-z])((google|microsoft|amazon|aws|azure|xai|x\.ai|meta|github)\s+)?"
-                    r"(anthropic|claude|openai|chat\s*gpt|gpt|codex|gemini|llama|mistral|mixtral|grok|bedrock|"
-                    r"deepseek|qwen|copilot|cohere|bard|sonnet|opus|haiku)[\w.-]*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
+VENDOR = re.compile(r"(?i)(?<![a-z])((google|microsoft|amazon|aws|azure|xai|x\.ai|meta|github)\s+)?(chat[-_.\s]*gpt|"
+                    + _sep("anthropic", "claude", "openai", "gpt", "codex", "gemini", "llama", "mistral", "mixtral", "grok",
+                           "bedrock", "deepseek", "qwen", "copilot", "cohere", "bard", "sonnet", "opus", "haiku", "xai")
+                    + r")(?:[\w-]|\.(?=\w))*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
 # a vendor named alone (Sonnet #158 r3: rule 5 forbids vendor OR model names); a module path or domain that contains the
 # word (google.golang.org/protobuf, github.com/aws/aws-sdk-go-v2) stays readable
-VENDOR_ALONE = re.compile(r"(?i)(?<![\w./@-])(google|microsoft|amazon|aws|azure|xai|x\.ai)(?![\w/-])(?!\.[a-z0-9])")
+VENDOR_ALONE = re.compile(r"(?i)(?<![\w./@-])(" + _sep("google", "microsoft", "amazon", "aws", "azure")
+                          + r")(?![\w/-])(?!\.[a-z0-9])")
 # the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
 # NEW-01): a workflow is neutral only when it is reviewed as outside the release chain (release.yml calls stage-*.yml and
 # the acceptance workflows); any other — including one added later — is not patch-clean until it is reviewed here.

@@ -153,6 +153,11 @@ for name in ("Google", "Microsoft", "Amazon", "AWS", "Azure", "xAI", "x.ai", "Me
     check("NEW-BLOCKER-1 %s alone is redacted" % name, out == "confirmed by <redacted>.", out)
 for kept in ("google.golang.org/protobuf v1.36.9", "cloud.google.com/go/storage", "github.com/aws/aws-sdk-go-v2"):
     check("NEW-BLOCKER-1 the module path %s stays readable" % kept, P._clean(kept) == kept, P._clean(kept))
+# Sonnet #159 r2 (BLOCKER-1): a name split by - _ or . is the same name
+for s_ in ("internal/open-ai-client.go", "internal/open_ai_client.go", "internal/co_here.go", "internal/deep-seek.go",
+           "x-ai-sdk", "chat-gpt", "mis_tral", "open.ai"):
+    out = P._clean("confirmed by " + s_)
+    check("BLOCKER-1 %s is redacted" % s_, not re.search(r"(?i)open.?ai|co.?here|deep.?seek|x.?ai|chat.?gpt|mis.?tral", out), out)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
