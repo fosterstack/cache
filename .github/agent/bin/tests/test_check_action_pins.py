@@ -207,9 +207,6 @@ def urllib_request():
     return urllib.request
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class RunScriptImages(unittest.TestCase):              # handoff 0068: literal images a run: script names
     def test_double_dash_ends_the_options(self):
@@ -259,7 +256,8 @@ class RunScriptInstalls(unittest.TestCase):             # handoff 0070: package 
         self.assertEqual(M.script_installs("pip install --require-hashes -rr.txt"), [])
 
     def test_a_bare_yarn_or_pnpm_installs(self):
-        self.assertEqual(M.script_installs("yarn"), [("yarn", "a yarn package install")])
+        self.assertEqual(M.script_installs("yarn"),          # Codex #164 adversarial r1 C04: any use is refused
+                         [("yarn", "a package manager this repository does not use; any invocation is refused")])
         self.assertEqual([c for c, _ in M.script_installs("pnpm")], ["pnpm"])
 
     def test_redirections_are_not_packages(self):
@@ -285,3 +283,7 @@ class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwar
         bad = []
         M.check_runners("w", M.yaml.compose("on: push\n", Loader=M.StrLoader), bad)
         self.assertEqual(bad, [])
+
+
+if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
+    unittest.main()

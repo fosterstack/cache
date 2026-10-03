@@ -1148,8 +1148,8 @@ case_ n32-bash-s               bad "$(rb 'bash -s < /tmp/gen.sh')"
 case_ n32-bash-dev-stdin       bad "$(rb 'bash /dev/stdin < /tmp/gen.sh')"
 case_ n32-sudo-bash-pipe       bad "$(rb 'echo x | sudo bash')"
 case_ n32-combined-o-stdin     bad "$(rb 'echo x | bash -eo pipefail')"
-case_ n32-combined-o-file-ok   ok  "$(rb 'bash -eo pipefail bin/x.sh')"
-case_ n32-repo-script-ok       ok  "$(rb 'bash bin/x.sh --flag; sh ./tools/y.sh')"
+case_ n32-combined-o-file-ok   ok  "$(rb 'bash -eo pipefail bin/x.sh')" "mkdir -p bin; printf 'echo x\\n' > bin/x.sh"
+case_ n32-repo-script-ok       ok  "$(rb 'bash bin/x.sh --flag; sh ./tools/y.sh')" "mkdir -p bin tools; printf 'echo x\\n' > bin/x.sh; printf 'echo y\\n' > tools/y.sh"
 case_ n32-bash-c-ok            ok  "$(rb 'bash -c "echo hi"')"
 case_ n32-docker-shell-arg-ok  ok  "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c true')"
 # --- Codex #164 adversarial r1 (C01, C03-C13): each a fail-closed reading of what bash, pip, docker or BuildKit does
@@ -1189,5 +1189,38 @@ case_ c11-printf-consumer      bad "$(rb 'printf "FROM alpine\\n" > Dockerfile d
 case_ c12-hash-p               bad "$(rb 'hash -p /usr/bin/docker d; d run alpine:3.20')"
 case_ c13-quoted-export        bad "$(rb 'export "DOCKER_HOST=tcp://other:2375"; docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 case_ c13-quoted-assign        bad "$(rb "'DOCKER_HOST=tcp://other:2375' docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667")"
+# --- Codex #164 adversarial r1 C02 (advisor ruling 0094): a committed shell script a step runs is read at its committed
+#     bytes, recursively; a script that is not a committed file is refused; nesting past the depth limit is refused;
+#     inline code for another interpreter (-c / -e) is refused; a heredoc or committed file in another language is the
+#     documented boundary
+case_ c02-bash-ec              bad "$(rb 'bash -ec "docker run alpine"')"
+case_ c02-sh-ec                bad "$(rb 'sh -ec "docker run alpine"')"
+case_ c02-committed-script     bad "$(rb 'bash ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ c02-committed-direct     bad "$(rb './ci-image.sh')" "printf '#!/bin/sh\\ndocker run alpine\\n' > ci-image.sh"
+case_ c02-committed-source     bad "$(rb 'source ci-image.sh')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ c02-script-calls-script  bad "$(rb 'bash a.sh')" "printf 'bash b.sh\\n' > a.sh; printf 'pip install requests\\n' > b.sh"
+case_ c02-committed-script-ok  ok  "$(rb 'bash ci-ok.sh')" "printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > ci-ok.sh"
+case_ c02-uncommitted-script   bad "$(rb 'printf x > /tmp/gen.sh; bash /tmp/gen.sh')"
+case_ c02-variable-script      bad "$(rb 'bash "$script"')"
+case_ c02-eval-deep            bad "$(rb "eval 'eval '\"'\"'eval '\"'\"'\"'\"'\"'\"'\"'\"'eval docker run alpine'\"'\"'\"'\"'\"'\"'\"'\"''\"'\"''")"
+case_ c02-node-e               bad "$(rb 'node -e "require(\"child_process\").execFileSync(\"docker\", [\"run\", \"alpine\"])"')"
+case_ c02-perl-e               bad "$(rb "perl -e 'system(\"docker run alpine\")'")"
+case_ c02-ruby-e               bad "$(rb "ruby -e 'system(\"docker run alpine\")'")"
+case_ c02-python-c             bad "$(rb "python3 -c 'import subprocess; subprocess.run([\"docker\", \"run\", \"alpine\"])'")"
+case_ c02-python-heredoc-ok    ok  "$(rb "python3 - <<'PY'
+          print('boundary')
+          PY")"
+case_ c02-committed-py-ok      ok  "$(rb 'python3 bin/tool.py --x')" "mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
+case_ c02-arith-ok             ok  "$(rb 'age=$(( $(date -u +%s) - 1 ))')"
+case_ c02-arith-inner-run      bad "$(rb 'x=$(( $(docker run alpine) + 1 ))')"
+case_ c02-workspace-script     bad "$(rb 'bash "${GITHUB_WORKSPACE}/ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
+case_ c02-main-copy-bad        bad "$(rb 'gh api "repos/x/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine\\n' > bin/g.sh"
+case_ c02-main-copy-ok         ok  "$(rb 'gh api "repos/x/contents/bin/g.sh?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"; bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
+          import os
+          os.system('docker run alpine')
+          PY")"
+case_ c02-test-harness-ok      ok  "$(rb 'bash tests/t-test.sh')" "mkdir -p tests; printf 'printf %%s \"DOCKER_HOST=x\"; alias q=r\\n' > tests/t-test.sh"
+case_ c02-generated-elsewhere  bad "$(rb 'printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

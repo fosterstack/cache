@@ -241,7 +241,7 @@ jobs:
             --candidate .auditor/accepted-items.json --vex-dir .vex \
             --issues "${RUNNER_TEMP}/auditor-issues.json" --today "$(date -u +%F)" \
             --out "${RUNNER_TEMP}/authz.json"
-          decision=$(python3 -c 'import json;print(json.load(open("'"${RUNNER_TEMP}"'/authz.json"))["decision"])')
+          decision=$(jq -er '.decision' "${RUNNER_TEMP}/authz.json")   # no inline interpreter code (handoff 0094)
           echo "auditor release authorization: ${decision}"
           [ "$decision" = "promote" ] || { echo "::error::held: a carried affected item lacks a complete inventory with recorded owner acceptance" >&2; exit 1; }
 
