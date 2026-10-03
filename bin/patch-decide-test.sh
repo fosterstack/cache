@@ -435,6 +435,30 @@ check("B2 one malformed release variant among valid ones makes the release unusa
 rc = P.main(["removed", "--release-grype", rel, "--gomod", gomod, "--base-grype", v1, "--base-grype", v2, "--out", os.path.join(repo, "rm5.json")])
 check("B2 one malformed base scan makes the base unknown (no deb finding removed), the Go removals stand",
       rc == 0 and sorted(f["id"] for f in json.load(open(os.path.join(repo, "rm5.json")))) == ["CVE-2099-1", "CVE-2099-2"])
+# Codex #159 r3 (NEW-1): nested fields of the wrong type are refused through the handled path, never a crash
+M = lambda v, a: {"matches": [{"vulnerability": v, "artifact": a}]}
+OKV, OKA = {"id": "CVE-2099-3", "severity": "High"}, {"name": "libssl3", "version": "3.0.15-1", "type": "deb"}
+for doc, why in [(M(dict(OKV, fix={"versions": 1}), OKA), "fix.versions as a number"),
+                 (M(dict(OKV, fix=["1"]), OKA), "fix as a list"),
+                 (M(["x"], OKA), "vulnerability as a list"), (M(OKV, ["x"]), "artifact as a list"),
+                 (M(dict(OKV, fix={"versions": [1]}), OKA), "a fix version that is not a string"),
+                 (M(dict(OKV, severity=3), OKA), "severity as a number"),
+                 (M(OKV, dict(OKA, type=["deb"])), "artifact type as a list"),
+                 ({"matches": ["x"]}, "a match that is not an object")]:
+    try:
+        P.grype_findings(doc); got = "accepted"
+    except ValueError:
+        got = "refused"
+    except Exception as e:
+        got = "crashed: %r" % e
+    check("NEW-1 grype_findings refuses %s" % why, got == "refused", got)
+v3 = os.path.join(repo, "v3.json"); json.dump(M(dict(OKV, fix={"versions": 1}), OKA), open(v3, "w"))
+try:
+    rc = P.main(["removed", "--release-grype", rel, "--gomod", gomod, "--base-grype", v3, "--out", os.path.join(repo, "rm6.json")])
+except Exception as e:
+    rc = "crashed: %r" % e
+check("NEW-1 a base scan with a malformed nested field leaves only the deb inference unknown; the Go removals stand",
+      rc == 0 and sorted(f["id"] for f in json.load(open(os.path.join(repo, "rm6.json")))) == ["CVE-2099-1", "CVE-2099-2"], rc)
 check("B6 scope 0 is a policy error, never push", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": 0}]}, [run("test")])[0] == "no")
 check("B6 scope '' is a policy error", P.ready({"required_checks": [{"context": "test", "integration_id": 15368, "scope": ""}]}, [run("test")])[0] == "no")
 print("patch-decide: %d passed, %d failed" % (passed, failed))

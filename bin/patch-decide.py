@@ -411,11 +411,21 @@ def grype_findings(doc):
         raise ValueError("not a grype scan: no matches list")
     out = []
     for m in doc["matches"]:
-        v, a = (m.get("vulnerability") or {}, m.get("artifact") or {}) if isinstance(m, dict) else ({}, {})
+        # every field this decision reads has its type checked, so a malformed scan takes the handled path (refused
+        # here) and never crashes the caller into a release-wide unknown (Codex #159 r3, NEW-1)
+        v, a = (m.get("vulnerability"), m.get("artifact")) if isinstance(m, dict) else (None, None)
+        if not isinstance(v, dict) or not isinstance(a, dict):
+            raise ValueError("not a grype scan: a match without its vulnerability or artifact object")
         if not all(isinstance(x, str) and x for x in (v.get("id"), a.get("name"), a.get("version"))):
             raise ValueError("not a grype scan: a match without its id, package or version")   # Codex #159 r2, B2
+        fix = v.get("fix") or {}
+        fixed = fix.get("versions") or [] if isinstance(fix, dict) else None
+        if not isinstance(fixed, list) or not all(isinstance(x, str) for x in fixed):
+            raise ValueError("not a grype scan: fix.versions is not a list of versions")
+        if not all(x is None or isinstance(x, str) for x in (v.get("severity"), a.get("type"))):
+            raise ValueError("not a grype scan: a severity or package type that is not a string")
         out.append({"id": v.get("id"), "package": a.get("name"), "installed": a.get("version"), "severity": v.get("severity"),
-                    "fixed": list((v.get("fix") or {}).get("versions") or []),
+                    "fixed": list(fixed),
                     "type": "go-module" if a.get("type") in ("go-module", "golang") else a.get("type")})
     return out
 
