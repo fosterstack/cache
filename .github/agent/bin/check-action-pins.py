@@ -104,6 +104,8 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
+Round 15 (NEW-23): a build's context and every --build-context must be a local path; a URL, git address, variable or
+substitution builds from bytes this check never sees and is refused.
 Round 14 (NEW-21/22): a name counts as the job's own only when it is built (docker build, its FROM lines checked),
 tagged from a digest-pinned, local or variable source, or copied into the daemon from a digest-pinned docker:// source;
 a loaded tarball's image ID or an archive copied into the daemon may be scanned, but tagging or running it is a finding.
@@ -716,7 +718,7 @@ def _variable(tok):
 
 def _build(args):
     """(dockerfile, context, tags) of a docker build / buildx build: dockerfile None = the default name."""
-    dockerfile, tags, pos, i = None, set(), [], 0
+    dockerfile, tags, pos, named, i = None, set(), [], [], 0
     while i < len(args):
         a = args[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument (`- < Dockerfile`)
@@ -732,6 +734,11 @@ def _build(args):
             continue
         elif a.startswith(("--tag=", "-t=")):
             tags.add(a.split("=", 1)[1])
+        elif a == "--build-context" and i + 1 < len(args):
+            named.append(args[i + 1].split("=", 1)[-1]); i += 2
+            continue
+        elif a.startswith("--build-context="):
+            named.append(a.split("=", 2)[-1])
         elif a.startswith("-") and a != "-":
             if "=" not in a and i + 1 < len(args) and not args[i + 1].startswith("-") and a not in (
                     "--push", "--load", "--no-cache", "--pull", "-q", "--quiet", "--rm", "--force-rm"):
@@ -740,7 +747,7 @@ def _build(args):
         else:
             pos.append(a)
         i += 1
-    return dockerfile, (pos[-1] if pos else "."), tags
+    return dockerfile, (pos[-1] if pos else "."), tags, named
 
 
 def _pip_install(args):
@@ -938,8 +945,8 @@ def script_images(script):
                 ev.append(("finding", "`%s %s` is not a verb this check reads or has reviewed as pulling nothing; "
                                       "it is refused" % (cmd, verb)))
             elif verb == "build":
-                dockerfile, context, tags = _build(rest)
-                ev.append(("build", dockerfile, context))
+                dockerfile, context, tags, named = _build(rest)
+                ev.append(("build", dockerfile, context, named))
                 ev += [("local", x) for x in tags]
         elif cmd == "skopeo" and args and args[0] not in ("copy", "inspect") + tuple(SKOPEO_SAFE):
             ev.append(("finding", "`skopeo %s` is not a verb this check reads; it is refused" % args[0]))
@@ -1080,6 +1087,12 @@ def _pip_req_files(script):
     return out
 
 
+def _local_path(x):
+    """A plain relative or absolute filesystem path: no scheme, no git address, no variable or substitution."""
+    return not (_variable(x) or "://" in x or x.startswith(("git@", "github.com/", "gitlab.com/", "bitbucket.org/"))
+                or re.search(r"\.git(#.*)?$", x) or re.match(r"^[A-Za-z0-9.-]+\.[a-z]{2,}/", x))
+
+
 def check_dockerfile(text):
     """Every FROM is a digest, scratch or an earlier stage; anything else (a tag, a variable) is returned."""
     stages, bad = set(), []
@@ -1145,7 +1158,14 @@ def check_runs(where_job, scripts, bad, tree=None):
             elif ev[0] == "finding":
                 bad.append(f"{where}: {ev[1]}")
             elif ev[0] == "build":
-                dockerfile, context = ev[1], ev[2]
+                dockerfile, context, named = ev[1], ev[2], ev[3]
+                # the context, and every named context, must be a local path in this checkout (Sonnet #164 r15, NEW-23):
+                # a URL, a git address or a computed value builds from bytes this check never sees
+                remote = [x for x in [context] + named if x != "-" and not _local_path(x)]
+                if remote:
+                    bad.append(f"{where}: a build context is not a local path ({', '.join(repr(x) for x in remote)}); "
+                               f"refused")
+                    continue
                 if dockerfile == "-" or (dockerfile is None and context == "-"):
                     bad.append(f"{where}: a build reads its Dockerfile from stdin; its FROM lines cannot be checked")
                     continue
