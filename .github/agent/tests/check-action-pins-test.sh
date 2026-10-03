@@ -1010,5 +1010,9 @@ case_ n12-bash-template-ok     ok  "$head
     steps:
       - shell: bash --noprofile --norc -eo pipefail {0}
         run: echo hi"
+# --- Sonnet #164 r11 (NEW-13): a registry-qualified template never stands for "our own bytes"
+case_ n13-registry-template    bad "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved-${GITHUB_SHA}; docker run ghcr.io/myorg/approved-other')"
+case_ n13-registry-exact-ok    ok  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved; docker run ghcr.io/myorg/approved')"
+case_ n13-local-template-ok    ok  "$(rb 'for v in a b; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
