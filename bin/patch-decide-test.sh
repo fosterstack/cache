@@ -601,6 +601,13 @@ for split in ("- Goo\n  gle now rejects long headers (advisor 0130).\n", "- Op e
     except ValueError:
         raised = True
     check("SEC-1 a vendor name split by whitespace is refused: %r" % split, raised)
+for split in ("- G o o g l e rejects long headers (advisor 0130).\n", "- the D e e p S e e k path (advisor 0130).\n",
+              "- An thro pic changed (advisor 0130).\n", "- C\n  l a u\n  de helper (advisor 0130).\n"):
+    try:
+        P.behavior_entries(split); raised = False
+    except ValueError:
+        raised = True
+    check("SEC-1 (Sonnet r2b) a name split into three or more pieces is refused: %r" % split, raised)
 check("SEC-1 the real entries still pass (Go 1.27; metadata; to 1.2)", len(P.behavior_entries(NRN)) == 2 and
       P.behavior_entries("- metadata handling for a meta tag moved to 1.2 (advisor 0130).\n") != [])
 # Codex #159 AC1(h) r1, B01: data is not executable — a changed file Git records as executable or as a symlink, or whose
