@@ -88,7 +88,10 @@ another name is a finding; pip download/wheel follow the install rule; conda/mam
 docker manifest create and buildx imagetools create sources must be digests. After round 3: nerdctl is read as docker;
 buildah, ctr, crictl, apptainer, singularity and kaniko are findings on use (not read); uv add/sync/lock/run, pipenv,
 poetry, pdm, hatch, flit, pip-sync, pip-compile, rye, python setup.py and python -m build are findings (not holdable to
-hashes); uv pip sync follows the install rule. What static reading cannot see is the
+hashes); uv pip sync follows the install rule. Round 4: a command substitution ($(…), `…`) is cut out and read
+as its own script, and where it stands for an image or package it is a finding; a build's Dockerfile must be the
+exact repository path (or every file matching its template) — an absolute path, a substituted name, or a file the
+script itself writes under that name is a finding. What static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
 a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
@@ -522,7 +525,40 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
                      + TOOL_WORDS + r"[\"']?\)|/" + TOOL_WORDS + r"(?=[\s\"']|$))"
                      r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
 SHELLS = {"bash", "sh", "dash", "zsh"}
-SEPARATORS = re.compile(r"&&|\|\||[;|&\n`]|\$\(|\)")
+SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
+SUBST = "$__SUBST__"   # stands where a command substitution was cut out (Sonnet #164 r4, NEW-4): fails closed
+
+
+def _cut_substitutions(text):
+    """Replace every $(…) and `…` (nesting respected) with SUBST, returning (text, [inner scripts]). Splitting on `$(`
+    used to sever an image or package argument from its command; now the argument stays, as a value no reader can
+    know, and the inner command is read as a script of its own."""
+    out, inner, i, n = [], [], 0, len(text)
+    while i < n:
+        if text.startswith("$(", i) and not text.startswith("$((", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("$(", j):
+                    depth, j = depth + 1, j + 2
+                    continue
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                j += 1
+            inner.append(text[i + 2:j - 1] if depth == 0 else text[i + 2:])
+            out.append(SUBST)
+            i = j
+        elif text[i] == "`":
+            j = text.find("`", i + 1)
+            j = n if j < 0 else j
+            inner.append(text[i + 1:j])
+            out.append(SUBST)
+            i = j + 1
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out), inner
 
 
 def _options(args, val, boolean):
@@ -564,8 +600,11 @@ def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
-    text = re.sub(r"\\\n", " ", script)
+    text, inner = _cut_substitutions(re.sub(r"\\\n", " ", script))
     out = []
+    if depth < 6:
+        for sub in inner:
+            out += _commands(sub, depth + 1)
     for chunk in SEPARATORS.split(text):
         try:
             toks = shlex.split(chunk, comments=True)
@@ -776,6 +815,8 @@ def script_images(script):
             pos = [a for a in args[1:] if not a.startswith("-")]
             if pos and pos[0].startswith("docker://"):
                 ev.append(("use", "skopeo " + args[0], pos[0][len("docker://"):]))
+            elif pos and SUBST in pos[0]:                         # a substituted source could be docker://…
+                ev.append(("use", "skopeo " + args[0], pos[0]))
             for a in pos[1:]:
                 if a.startswith("docker-daemon:"):
                     ev.append(("local", a[len("docker-daemon:"):]))
@@ -800,17 +841,29 @@ def _local(ref, local):
 
 
 def _dockerfiles(tree, dockerfile):
-    """The tree's files a build's Dockerfile argument names: a literal path (or, from another working directory,
-    the same file name), or a template (`Dockerfile.${v}`) matched against every file name in the tree."""
+    """The tree's files a build's Dockerfile argument names: a literal path exactly, or a template (`Dockerfile.${v}`)
+    matched against every file name in the tree (all of which must then be pinned)."""
     entries = [e for e, kind in (getattr(tree, "entries", {}) or {}).items() if kind == "file"]
     name = dockerfile or "Dockerfile"
     if _variable(name):
         parts = re.split(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", _base(name))
         pat = re.compile(".+".join(re.escape(x) for x in parts) + "$")
         return [e for e in entries if pat.match(_base(e))]
-    if name in entries:
-        return [name]
-    return [e for e in entries if _base(e) == _base(name)]
+    return [name] if name in entries else []   # a literal path names exactly one repository file (NEW-3: no decoys)
+
+
+def _writes(script, name):
+    """True when the script writes a file whose name matches the Dockerfile argument (> / >> / tee / cp / mv / install
+    destination), literal or templated (Sonnet #164 r4, NEW-3: a decoy repository file must not stand in for it)."""
+    base = _base(name)
+    if _variable(base):
+        parts = re.split(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", base)
+        pat = ".+".join(re.escape(x) for x in parts)
+    else:
+        pat = re.escape(base)
+    target = r"[\"']?(?:[^\s\"';|&]*/)?" + pat + r"[\"']?(?=[\s;|&)]|$)"
+    return bool(re.search(r"(>>?|\btee(\s+-a)?)\s*" + target, script)
+                or re.search(r"(?m)(^|[;&|(\s])(cp|mv|install|ln)\s[^\n;&|]*\s" + target, script))
 
 
 def check_dockerfile(text):
@@ -857,6 +910,15 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if dockerfile == "-" or (dockerfile is None and context == "-"):
                     bad.append(f"{where}: a build reads its Dockerfile from stdin; its FROM lines cannot be checked")
                     continue
+                name = dockerfile or "Dockerfile"
+                if name.startswith("/") or SUBST in name:
+                    bad.append(f"{where}: a build's Dockerfile ({name}) is outside the repository, so its FROM lines "
+                               f"cannot be checked")
+                    continue
+                if _writes(text, name):
+                    bad.append(f"{where}: the script writes a file named like its Dockerfile ({name}); the build "
+                               f"cannot be bound to a reviewed file")
+                    continue
                 files = _dockerfiles(tree, dockerfile) if tree is not None else []
                 if not files:
                     bad.append(f"{where}: a build's Dockerfile ({dockerfile or 'Dockerfile'}) is not a file in the "
@@ -866,6 +928,9 @@ def check_runs(where_job, scripts, bad, tree=None):
                         bad.append(f"{where}: {f} builds FROM an image not pinned by digest: {img!r}")
             else:
                 _, c, img = ev
+                if img is not None and SUBST in img:
+                    bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
+                    continue
                 if img is None or _variable(img) or DIGEST_REF.search(img) or _local(img, local):
                     continue
                 bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
