@@ -245,6 +245,15 @@ try:                                # the installed SDK's own parser, as gcloud 
               len(notes) == len(whole) and uris == {"https://%s@%s" % (IMAGE, DIG)}, (len(notes), whole, uris))
 except Exception as e:
     check("the installed gcloud parser loads the guide's file", False, repr(e))
+# Sonnet #165 r3 (SEC-165-01, image level): a product naming OUR image in any form must parse exactly, or generation stops
+D1 = D("1").replace(":", "%3A")
+for pid in ("pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache#bin/foo" % D1,
+            "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache#sub"):
+    try:
+        V._scopes(scoped("CVE-SUB2", "affected", [{"@id": pid}]), [D("1")]); ok = False
+    except ValueError:
+        ok = True
+    check("SEC-165-01 our image's purl with an unrepresentable part stops generation: " + pid, ok)
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -62,7 +62,12 @@ def _scopes(statement, digests):
     Go module) is not an image of this release: no scope here. A qualifier the forms cannot represent stops generation."""
     out = []
     for prod in statement.get("products") or []:
-        m = re.fullmatch(r"pkg:oci/([^@?]+)(?:@([^?]+))?(?:\?(.*))?", prod.get("@id", ""))
+        pid = prod.get("@id", "")
+        if "#" in pid and pid.startswith("pkg:oci/cache") and REPO in pid:
+            # a subpath on our own image: a restriction the forms cannot represent — never read as "another
+            # repository", which would drop an affected statement silently (Sonnet #165 r3, SEC-165-01)
+            raise ValueError("%s: product %s has a subpath these forms cannot represent" % (_cve(statement), pid))
+        m = re.fullmatch(r"pkg:oci/([^@?#]+)(?:@([^?#]+))?(?:\?([^#]*))?", pid)
         if not m:
             continue
         quals = urllib.parse.parse_qs(m.group(3) or "", keep_blank_values=True)
