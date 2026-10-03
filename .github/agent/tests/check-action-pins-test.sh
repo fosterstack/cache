@@ -1222,5 +1222,17 @@ case_ c02-foreign-heredoc-ok   ok  "$(rb "python3 - <<'PY'
           PY")"
 case_ c02-test-harness-ok      ok  "$(rb 'bash tests/t-test.sh')" "mkdir -p tests; printf 'printf %%s \"DOCKER_HOST=x\"; alias q=r\\n' > tests/t-test.sh"
 case_ c02-generated-elsewhere  bad "$(rb 'printf x > /tmp/smoke-assert.sh; bash /tmp/smoke-assert.sh')"
+# --- Sonnet #164 r22 (NEW-33, NEW-34) + advisor 0084 (2): a program named by a variable — eval "$x", bash -c "$x", a bare
+#     $x as the command — runs text this check cannot read: refused (fail closed); < <(…) feeding a shell is stdin
+case_ n33-eval-var             bad "$(rb 'SCRIPT="docker run alpine:latest"; eval "$SCRIPT"')"
+case_ n33-eval-var-pip         bad "$(rb 'SCRIPT="pip install requests"; eval "$SCRIPT"')"
+case_ n33-bash-c-var           bad "$(rb 'SCRIPT=$(cat payload/cmd.txt); bash -c "$SCRIPT"')" "mkdir -p payload; printf 'docker run alpine:latest\\n' > payload/cmd.txt"
+case_ n33-bare-var             bad "$(rb 'SCRIPT=$(cat payload/cmd.txt); $SCRIPT')" "mkdir -p payload; printf 'docker run alpine:latest\\n' > payload/cmd.txt"
+case_ n33-quoted-var-program   bad "$(rb 'gosec="$(go env GOPATH)/bin/gosec"; "$gosec" ./...')"
+case_ n33-sudo-var             bad "$(rb 'sudo "$tool" run alpine')"
+case_ n33-var-args-ok          ok  "$(rb 'go test -run "$PATTERN" ./...; echo "$x"')"
+case_ n34-spaced-subst-sh      bad "$(rb 'sh < <(echo "docker run alpine:latest")')"
+case_ n34-fd-subst-bash        bad "$(rb 'bash 0< <(cat payload/cmd.txt)')" "mkdir -p payload; printf 'docker run alpine:latest\\n' > payload/cmd.txt"
+case_ n34-spaced-subst-source  bad "$(rb 'source < <(echo "docker run alpine:latest")')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

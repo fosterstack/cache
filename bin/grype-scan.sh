@@ -13,10 +13,9 @@ set -uo pipefail
 target="${1:?usage: grype-scan.sh <target> <label>}"; label="${2:?usage: grype-scan.sh <target> <label>}"
 here="$(cd "$(dirname "$0")" && pwd)"
 vex="${VEX:-${here}/../.vex/fosterstack-cache.openvex.json}"
-grype="${GRYPE:-grype}"
 cdx="$(mktemp)"; trap 'rm -f "$cdx"' EXIT
 
-"$grype" "$target" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}"; rc=$?
+"${GRYPE:-grype}" "$target" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}"; rc=$?
 # A grype that failed before writing leaves the file empty, and jq exits 0
 # with no output on empty input: anything but a number is 0 packages.
 n=$(jq '[.components[]?] | length' "$cdx" 2>/dev/null); [[ "$n" =~ ^[0-9]+$ ]] || n=0

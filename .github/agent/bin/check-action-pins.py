@@ -734,6 +734,22 @@ def _split_commands(text):
             while i < n and text[i] != "\n":
                 i += 1
             continue
+        elif c == "(" and cur and cur[-1] == "=":         # NAME=( … ): an array's words, not commands
+            depth, j, aq = 1, i + 1, None
+            while j < n and depth:
+                d = text[j]
+                if aq:
+                    aq = None if d == aq else aq
+                elif d in "'\"":
+                    aq = d
+                elif d == "(":
+                    depth += 1
+                elif d == ")":
+                    depth -= 1
+                j += 1
+            cur.append(text[i:j].replace("\n", " "))
+            i = j
+            continue
         elif c in ";&|()\n":
             out.append("".join(cur)); cur = []
         else:
@@ -749,31 +765,62 @@ SUBST = "$__SUBST__"   # stands where a command substitution was cut out (Sonnet
 def _cut_substitutions(text):
     """Replace every $(…) and `…` (nesting respected) with SUBST, returning (text, [inner scripts]). Splitting on `$(`
     used to sever an image or package argument from its command; now the argument stays, as a value no reader can
-    know, and the inner command is read as a script of its own."""
-    out, inner, i, n = [], [], 0, len(text)
+    know, and the inner command is read as a script of its own. Read as bash reads it: nothing inside '…' is a
+    substitution, an escaped \\` or \\$ is a character, and quotes inside $(…) do not end it (Codex #164 r1 C02 noise)."""
+    out, inner, i, n, q = [], [], 0, len(text), None
     while i < n:
-        if text.startswith("$(", i):             # $(…) and arithmetic $((…)) alike: a value, its inside read too
-            depth, j = 1, i + 2
+        c = text[i]
+        if q == "'":
+            out.append(c)
+            q = None if c == "'" else q
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            out.append(text[i:i + 2])
+            i += 2
+        elif c == "#" and q is None and (i == 0 or text[i - 1] in " \t\n;"):
+            j = text.find("\n", i)                      # a comment: no quotes, no substitutions
+            j = n if j < 0 else j
+            out.append(text[i:j])
+            i = j
+        elif c == "'" and q is None:
+            out.append(c)
+            q = "'"
+            i += 1
+        elif c == '"':
+            out.append(c)
+            q = None if q == '"' else '"'
+            i += 1
+        elif text.startswith("$(", i):            # $(…) and arithmetic $((…)) alike: a value, its inside read too
+            depth, j, iq = 1, i + 2, None
             while j < n and depth:
-                if text.startswith("$(", j):
-                    depth, j = depth + 1, j + 2
+                d = text[j]
+                if iq:
+                    if d == "\\" and iq == '"':
+                        j += 2
+                        continue
+                    iq = None if d == iq else iq
+                elif d == "\\":
+                    j += 2
                     continue
-                if text[j] == "(":
+                elif d in "'\"":
+                    iq = d
+                elif d == "(":
                     depth += 1
-                elif text[j] == ")":
+                elif d == ")":
                     depth -= 1
                 j += 1
             inner.append(text[i + 2:j - 1] if depth == 0 else text[i + 2:])
             out.append(SUBST)
             i = j
-        elif text[i] == "`":
-            j = text.find("`", i + 1)
-            j = n if j < 0 else j
-            inner.append(text[i + 1:j])
+        elif c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            inner.append(text[i + 1:min(j, n)])
             out.append(SUBST)
             i = j + 1
         else:
-            out.append(text[i])
+            out.append(c)
             i += 1
     return "".join(out), inner
 
@@ -878,6 +925,10 @@ def _commands(script, depth=0):
         if stdin:             # a shell fed by a pipe, a herestring or a process substitution (Sonnet #164 r21, NEW-32)
             out.append(["__stdin_shell__", stdin])
             continue
+        named = [w for w in _command_words(toks) if re.search(r"\$[{A-Za-z_0-9@*#?!]", _base(w)) and SUBST not in w]
+        if named:             # a program named by a variable runs text this check cannot read (advisor 0084 (2);
+            out.append(["__variable_program__", named[0]])   # Sonnet #164 r22, NEW-33): refused
+            continue
         computed = [w for w in _command_words(toks) if SUBST in w]
         if computed:          # a program name built by a substitution (d$()ocker): it cannot be resolved (NEW-11)
             out.append(["__computed__", computed[0]])
@@ -936,8 +987,8 @@ def _stdin_shell(toks):
         i = 0
         while i < len(rest):
             a = rest[i]
-            if a.startswith("<(") or (a == "<" and i + 1 == len(rest)):
-                return w                                  # the script is a process substitution's output
+            if a.startswith("<(") or (re.fullmatch(r"[0-9]*<", a) and (i + 1 == len(rest) or rest[i + 1] == "<")):
+                return w                                  # the script is a process substitution's output (NEW-34)
             if a.startswith("<"):                          # a redirection or herestring: not an operand
                 i += 1 if re.match(r"^<(<<?|&)?[^<>&]", a) else 2
                 continue
@@ -1150,6 +1201,10 @@ def script_images(script):
             continue
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
+            continue
+        if cmd == "__variable_program__":
+            ev.append(("finding", "a program is named by a variable (%s); what it runs cannot be read, refused "
+                                  "(name the program literally)" % args[0]))
             continue
         if cmd == "__too_deep__":
             ev.append(("finding", "`%s` nests scripts deeper than this check reads; refused" % args[0]))
@@ -1582,21 +1637,40 @@ def daemon_redirects(text):
 TEST_HARNESS = re.compile(r"(^|/)tests?/|-tests?\.sh$|(^|/)test_[^/]*$")
 
 
-FOREIGN_HEREDOC = re.compile(r"(?m)^[^\n#]*\b(python3?(\.[0-9]+)?|node|nodejs|perl|ruby)\b[^\n]*<<-?\s*(['\"]?)(\w+)\3[^\n]*\n"
-                             r"(.*?\n)?\s*\4\s*$", re.S)
+HEREDOC = re.compile(r"<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 
 
 def _drop_foreign_heredocs(text):
-    """A heredoc fed to python / node / perl / ruby is code in another language — the documented boundary (handoff
-    0094): its body is not shell and is not parsed as shell."""
-    return FOREIGN_HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0] + "\n", text)
+    """A heredoc body is data for its command, not commands (advisor 0084 (1)): it is not parsed as shell. Only what
+    bash runs inside it stays — the $( … ) and `…` substitutions of an unquoted-delimiter body. A heredoc fed to a shell
+    (bash <<EOF) is refused as a shell reading stdin; other-language heredocs are the documented boundary (0094)."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in HEREDOC.finditer(_cut_substitutions(line)[0]):
+            body = []
+            while i < len(lines) and (lines[i].strip() if m.group(1) else lines[i]) != m.group(3):
+                body.append(lines[i])
+                i += 1
+            i += 1                                       # the delimiter line
+            if not m.group(2):                           # unquoted: substitutions in the body run
+                out += ["$(%s)" % x for x in _cut_substitutions("\n".join(body))[1]]
+    return "\n".join(out)
 
 
 # Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023):
+# Fenced (advisor 0084 (4)): exactly these two files of that one workflow; bin/k8s-harness-fence-test.sh proves both
+# are written only from docs/kubernetes.md at the checked-out commit (no env, no network, no other input), and any
+# other eval of a variable, anywhere, is refused by the variable-program rule.
 GENERATED_OK = {
     (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
         "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
         "heredoc; they assert against the kind cluster and fetch nothing",
+    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
+        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
+        "because rule 12 tests the customer's commands exactly as published",
 }
 
 

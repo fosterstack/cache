@@ -106,19 +106,25 @@ jobs:
       - name: fips posture is truthful in all three runtime configurations
         run: |
           set -euo pipefail
-          run_and_capture() { # binary, extra env, port
+          run_and_capture() { # configuration (fips | std | forced), port
             # The server's own stdout must NOT leak into this function's
             # command substitution — redirect it to a log file, or the
             # captured "posture" is the startup line, not the field.
-            FSCACHE_ADDR=":$3" FSCACHE_DATA_DIR="/tmp/fa-$3" $2 "$1" > "/tmp/fa-$3.log" 2>&1 & pid=$!
-            for _ in $(seq 1 20); do curl -sf "localhost:$3/healthz" >/dev/null && break; sleep 0.5; done
-            posture=$(curl -s "localhost:$3/statusz" | jq -r '.fips140_note')
-            kill $pid 2>/dev/null || true
+            # Each binary is named literally (pin checker: advisor 0084).
+            export FSCACHE_ADDR=":$2" FSCACHE_DATA_DIR="/tmp/fa-$2"
+            case "$1" in
+              fips)   /tmp/bins/fscache-fips > "/tmp/fa-$2.log" 2>&1 & pid=$! ;;
+              std)    /tmp/bins/fscache > "/tmp/fa-$2.log" 2>&1 & pid=$! ;;
+              forced) GODEBUG=fips140=on /tmp/bins/fscache > "/tmp/fa-$2.log" 2>&1 & pid=$! ;;
+            esac
+            for _ in $(seq 1 20); do curl -sf "localhost:$2/healthz" >/dev/null && break; sleep 0.5; done
+            posture=$(curl -s "localhost:$2/statusz" | jq -r '.fips140_note')
+            kill "$pid" 2>/dev/null || true
             echo "$posture"
           }
-          p_fips=$(run_and_capture /tmp/bins/fscache-fips "env" 19001)
-          p_std=$(run_and_capture /tmp/bins/fscache "env" 19002)
-          p_forced=$(run_and_capture /tmp/bins/fscache "env GODEBUG=fips140=on" 19003)
+          p_fips=$(run_and_capture fips 19001)
+          p_std=$(run_and_capture std 19002)
+          p_forced=$(run_and_capture forced 19003)
           echo "fips build:      ${p_fips}"
           echo "standard:        ${p_std}"
           echo "forced standard: ${p_forced}"

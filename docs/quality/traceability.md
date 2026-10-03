@@ -568,7 +568,7 @@ Every GitHub Action a workflow uses shall be pinned to a full commit digest with
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 3 item(s) |
+| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 4 item(s) |
 
 ### REQ-REL-006 — Frozen release baselines stay fixed
 
