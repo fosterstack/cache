@@ -264,3 +264,9 @@ class RunScriptInstalls(unittest.TestCase):             # handoff 0070: package 
     def test_redirections_are_not_packages(self):
         self.assertEqual(M.script_installs("pip install --require-hashes -r r.txt 2>/dev/null > log"), [])
         self.assertEqual(M.script_installs("pip install --require-hashes -r r.txt > log"), [])
+
+
+class RunScriptRound2(unittest.TestCase):               # Sonnet #164 r2: forwarding, variable subcommands
+    def test_a_variable_pip_subcommand(self):
+        self.assertEqual([w for _, w in M.script_installs('pip "$sub" requests')],
+                         ["its subcommand is a variable; the packages cannot be seen"])
