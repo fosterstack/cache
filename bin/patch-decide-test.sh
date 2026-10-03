@@ -403,6 +403,22 @@ NUL = {"required_checks": [{"context": "test", "integration_id": 15368, "scope":
 check("B01 a null-scoped check is push-scoped: absent -> wait, never ready", P.ready(NUL, [run("scan")])[0] == "wait", P.ready(NUL, [run("scan")]))
 check("B01 a null-scoped check green -> ready", P.ready(NUL, [run("scan"), run("test")])[0] == "ready")
 check("B01 scope 'pusH' is a policy error", P.ready({"required_checks": [{"context": "t", "integration_id": 1, "scope": "pusH"}]}, [])[0] == "no")
+# handoff 0092 (advisor reading, AC text unchanged): patch-clean is measured from the same baseline — a failed or
+# unpublished minor tag with a feature in it can never ride out as a patch
+m5 = tempfile.mkdtemp()
+g(m5, "init", "-q", "-b", "main")
+open(os.path.join(m5, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.46.0\n")
+g(m5, "add", "-A"); g(m5, "commit", "-q", "-m", "base"); g(m5, "tag", "v0.2.1")
+open(os.path.join(m5, "main.go"), "w").write("package main\n")
+g(m5, "add", "-A"); g(m5, "commit", "-q", "-m", "feature"); g(m5, "tag", "v0.3.0")     # the owner's minor; its release failed
+open(os.path.join(m5, "go.mod"), "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+g(m5, "commit", "-qam", "bump")
+r5 = os.path.join(m5, "released.json"); json.dump(["v0.2.1"], open(r5, "w")); o5 = os.path.join(m5, "d.json")
+with contextlib.redirect_stdout(io.StringIO()):
+    P.main(["decide", "--event", "schedule", "--repo", m5, "--cut-today", "false", "--released", r5, "--out", o5])
+D = json.load(open(o5))
+check("0092 a failed minor tag's feature is measured from the published baseline: not patch-clean, no cut",
+      not D["cut"] and D["since"] == "v0.2.1" and any("main.go" in w for w in D["not_clean"]), D)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
