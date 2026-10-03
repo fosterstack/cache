@@ -105,6 +105,24 @@ for name, cmd in (("Inspector load", next(l for b in blocks for l in b.splitline
         out = r.stdout.split()
         check("R3-01 under %s, a failed %s call is reported and the shell goes on, its options unchanged" % (sname, name),
               "NEXT" in r.stdout and "rc=0" not in r.stdout and out[-1:] == ["0"], (r.returncode, r.stdout, r.stderr[-200:]))
+# Codex #167 r3 (R3-02): pasted in order, a failed cosign stops the verification — nothing after it runs
+vstub = ('cosign() { echo verifier_error >&2; return 7; }\njq() { printf "%s\\n" "{}"; }\nbase64() { cat; }\n'
+         'sha256sum() { echo REACHED_CHECKSUM; return 0; }\n')
+for sname, argv0 in (("bash", ["bash", "-c"]), ("zsh", ["zsh", "-c"])):
+    if not shutil.which(argv0[0]):
+        continue
+    with tempfile.TemporaryDirectory() as t:
+        r = subprocess.run(argv0 + [vstub + verify + '\necho "AFTER rc=$?"'], cwd=t, capture_output=True, text=True,
+                           env=dict(os.environ, VER="1.2.3", DIGEST="sha256:" + "a" * 64))
+    check("R3-02 under %s a failed cosign stops the verification and reports it" % sname,
+          "REACHED_CHECKSUM" not in r.stdout and "AFTER rc=0" not in r.stdout and "AFTER" in r.stdout,
+          (r.stdout[-200:], r.stderr[-200:]))
+# residual R1-04: the runnable line IS the constant, nothing appended or prepended
+lines = [l.strip() for b in blocks for l in b.splitlines()]
+check("R1-04 the Inspector line is exactly the constant",
+      [l for l in lines if "create-filter" in l] == [V.GUIDE_INSPECTOR_COMMAND.replace("<file>", '"%s"' % insp)])
+check("R1-04 the Google line is exactly the constant",
+      [l for l in lines if "load-vex" in l] == [V.GUIDE_GOOGLE_COMMAND.replace("<file>", '"%s"' % csaf)])
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
