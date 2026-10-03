@@ -34,10 +34,23 @@ VENDOR = re.compile(r"(?i)(?<![a-z])((google|microsoft|amazon|aws|azure|xai|x\.a
                     + _sep("anthropic", "claude", "openai", "gpt", "codex", "gemini", "llama", "mistral", "mixtral", "grok",
                            "bedrock", "deepseek", "qwen", "copilot", "cohere", "bard", "sonnet", "opus", "haiku", "xai")
                     + r")(?:[\w-]|\.(?=\w))*|\bmeta\b|\bo[1-9](-(mini|pro|preview))?\b")
-# a vendor named alone (Sonnet #158 r3: rule 5 forbids vendor OR model names); a module path or domain that contains the
-# word (google.golang.org/protobuf, github.com/aws/aws-sdk-go-v2) stays readable
-VENDOR_ALONE = re.compile(r"(?i)(?<![\w./@-])(" + _sep("google", "microsoft", "amazon", "aws", "azure")
-                          + r")(?![\w/-])(?!\.[a-z0-9])")
+# a vendor named alone (Sonnet #158 r3: rule 5 forbids vendor OR model names) is redacted wherever it stands, next to a
+# hyphen or slash too (Sonnet #158 r3b, NEW-BLOCKER-2: "AWS-reported", "Google/Microsoft"); fail closed — only a whole token
+# that is a lowercase domain or module path stays readable (google.golang.org/protobuf, github.com/Azure/azure-sdk-for-go)
+VENDOR_ALONE = re.compile(r"(?i)(?<![a-z0-9])(" + _sep("google", "microsoft", "amazon", "aws", "azure") + r")(?![a-z0-9])")
+MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[\w.@~+-]+)*/?$")
+
+
+def _alone(m):
+    text, i, j = m.string, m.start(), m.end()
+    while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;":
+        i -= 1
+    while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;":
+        j += 1
+    token = text[i:j].rstrip(".:")
+    return m.group(0) if MODULE_PATH.match(token) else "<redacted>"
+
+
 # the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
 # NEW-01): a workflow is neutral only when it is reviewed as outside the release chain (release.yml calls stage-*.yml and
 # the acceptance workflows); any other — including one added later — is not patch-clean until it is reviewed here.
@@ -222,7 +235,7 @@ def daily_cut(ships, cut_today):
 
 
 def _clean(s):
-    return VENDOR_ALONE.sub("<redacted>", VENDOR.sub("<redacted>", str(s)))
+    return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
 
 
 def notes(version, fixes, vex_changes):

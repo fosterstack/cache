@@ -158,6 +158,16 @@ for s_ in ("internal/open-ai-client.go", "internal/open_ai_client.go", "internal
            "x-ai-sdk", "chat-gpt", "mis_tral", "open.ai"):
     out = P._clean("confirmed by " + s_)
     check("BLOCKER-1 %s is redacted" % s_, not re.search(r"(?i)open.?ai|co.?here|deep.?seek|x.?ai|chat.?gpt|mis.?tral", out), out)
+# Sonnet #158 r3b (NEW-BLOCKER-2): a vendor named alone is redacted wherever it stands — hyphen or slash next to it too;
+# only a whole token that is a lowercase domain or module path stays (fail closed)
+for s_ in ("an AWS-reported CVE", "a Google-disclosed vulnerability", "Microsoft-patched upstream",
+           "jointly disclosed by Google/Microsoft", "affects AWS/Azure/GCP deployments", "(per Amazon)", "Azure, AWS; Google:"):
+    out = P._clean(s_)
+    check("NEW-BLOCKER-2 %r is redacted" % s_, not re.search(r"(?i)aws|google|microsoft|azure|amazon", out), out)
+for kept in ("github.com/aws/aws-sdk-go-v2 v1.30.0", "bump google.golang.org/grpc to v1.70.0", "cloud.google.com/go/storage,",
+             "sigs.k8s.io/x and github.com/Azure/azure-sdk-for-go"):
+    out = P._clean(kept)
+    check("NEW-BLOCKER-2 module path stays readable: %r" % kept, out == kept, out)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
