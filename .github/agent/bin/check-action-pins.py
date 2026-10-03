@@ -1141,8 +1141,9 @@ def check_runs(where_job, scripts, bad, tree=None):
         where, text, shell = item[:3]
         wdir = item[3] if len(item) > 3 else None
         # a working directory this check cannot place in the repository: a step/job/workflow working-directory, or a
-        # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24)
-        moved = bool(wdir) or bool(re.search(r"(^|[;&|(\s])(cd|pushd)\s", text))
+        # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
+        # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
+        moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", text))
         for name in daemon_redirects(text):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
         if RENAMED.search(text):
@@ -1220,6 +1221,9 @@ def check_runs(where_job, scripts, bad, tree=None):
                     bad.append(f"{where}: `{c}` reads -r from stdin that is not a heredoc in this step")
             elif path.startswith("/"):
                 bad.append(f"{where}: `{c}` reads -r from {path}, outside the repository")
+            elif moved:                        # Sonnet #164 r17, NEW-26: resolved from a directory this check cannot place
+                bad.append(f"{where}: `{c}` reads -r from {path}, a literal path read from a working directory this "
+                           f"check cannot place (cd / working-directory); refused")
             elif tree is not None and path.lstrip("./") not in getattr(tree, "entries", {}) and path not in getattr(tree, "entries", {}):
                 bad.append(f"{where}: `{c}` reads -r from {path}, which is not a file in the repository")
             elif _touches(job_text, path, _is_pip_reading):

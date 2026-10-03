@@ -1074,5 +1074,16 @@ case_ n24-working-directory    bad "$head
         run: docker build -f Dockerfile -t x ." "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p sub; printf 'FROM alpine:latest\\n' > sub/Dockerfile"
 case_ n24-cd-template-ok       ok  "$(rb 'cp build/docker/Dockerfile.* /tmp/ctx/ && cd /tmp/ctx && docker build -f Dockerfile.$v .')" "mkdir -p build/docker; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > build/docker/Dockerfile.a"
 case_ n24-dot-slash-ok          ok  "$(r 'docker build -f ./Dockerfile -t x .')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+# --- Sonnet #164 r17 (NEW-25, NEW-26): a cd / pushd anywhere in the step, quoted or nested, moves the working directory;
+#     a pip -r file read from a moved working directory is refused like a Dockerfile
+case_ n25-sh-c-quoted-cd       bad "$(rb "sh -c 'cd evil && docker build -f Dockerfile -t x .'")" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
+case_ n25-eval-quoted-cd       bad "$(rb 'eval "cd evil && docker build -f Dockerfile -t x ."')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
+case_ n25-quoted-cd-word       bad "$(rb "'cd' evil; docker build -f Dockerfile -t x .")" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile; mkdir -p evil; printf 'FROM ubuntu:latest\\n' > evil/Dockerfile"
+case_ n26-cd-pip-r             bad "$(rb 'cd sub; pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p sub; printf 'evil==9 --hash=sha256:11\\n' > sub/requirements.txt"
+case_ n26-wd-pip-r             bad "$head
+    steps:
+      - working-directory: sub
+        run: pip install --require-hashes -r requirements.txt" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt; mkdir -p sub; printf 'evil==9 --hash=sha256:11\\n' > sub/requirements.txt"
+case_ n26-pip-r-root-ok        ok  "$(rb 'pip install --require-hashes -r requirements.txt')" "printf 'x==1 --hash=sha256:00\\n' > requirements.txt"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
