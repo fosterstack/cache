@@ -916,6 +916,18 @@ def _command_words(toks):
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>>?|>&)", t):          # a redirection before the program (C02: > /dev/null bash x)
             i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>>?|>&)[^<>&]", t) else 2
             continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=\(", t):
+            # an array literal (NAME=(...) or NAME+=(...), an ordinary bash idiom for building a flag list) never
+            # itself runs a program; a tokenizer with no notion of bash arrays otherwise reads the array's own
+            # elements as if they were a separate command's words the moment one contains a `$` (confirmed on
+            # release.yml's own `base_arg+=(--base-grype "$f")`: `$f)` was read as the program name). Skip every
+            # token through the one that balances this token's own already-open paren, not just this one token.
+            depth = t.count("(") - t.count(")")
+            i += 1
+            while depth > 0 and i < len(toks):
+                depth += toks[i].count("(") - toks[i].count(")")
+                i += 1
+            continue
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*", t) or t in KEYWORDS:
             i += 1
             continue
@@ -1267,7 +1279,8 @@ def script_installs(script):
 
 
 SCOUT_VAL = {"--format", "--vex-location", "--output", "-o", "--platform", "--org", "--env", "--only-severity",
-             "--only-package-type", "--only-cve-id", "--only-base", "--ref", "--tag", "--vex-author"}
+             "--only-package-type", "--only-cve-id", "--only-base", "--ref", "--tag", "--vex-author",
+             "--file", "--predicate-type"}   # `docker scout attestation add` (#176, main-candidate-rescan.yml)
 SCOUT_BOOL = {"--ignore-base", "--only-fixed", "--only-unfixed", "--exit-code", "-e", "--details", "--multi-stage",
               "--only-vex-affected", "--vex", "--locations"}
 SCOUT_LOCAL = ("local://", "oci-dir://", "archive://", "fs://", "sbom://")
@@ -1278,7 +1291,12 @@ def _scout(args):
     unknown option fails closed."""
     if not args:
         return []
-    sub, rest, ev, i = args[0], args[1:], [], 0
+    sub, rest = args[0], args[1:]
+    if sub == "attestation" and rest[:1] and not rest[0].startswith("-"):
+        # `docker scout attestation add|rm|ls ...` (#176, main-candidate-rescan.yml): attestation's own verb is a
+        # second bare word, not the image -- fold it into the subcommand name so parsing resumes at the real args
+        sub, rest = sub + " " + rest[0], rest[1:]
+    ev, i = [], 0
     while i < len(rest):
         a = rest[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument
@@ -1563,72 +1581,27 @@ def _expand_names(name, text):
     return out
 
 
-class _AmbiguousQuote(Exception):
-    """Raised when a line's quoting cannot be read with bash's plain, ordinary rules alone (Codex
-    #164 r10, B2/B3) — a command substitution or a stray backslash outside any quote. Real bash's
-    full grammar is not worth re-implementing for a security control (advisor 0080): only the plain,
-    ordinary quoted forms a trap body actually uses in practice are worth reading precisely; anything
-    cleverer fails closed, forever, rather than risk being read wrong."""
-
-
-def _quote_step(line, qc):
-    """Scan line left to right, starting already inside a quote of type qc ("'", '"', or None for no
-    quote open yet), using only bash's plain rules: inside a single quote nothing is special; inside
-    a double quote (or outside any quote) a backslash escapes the very next character — so a quote can
-    close AND reopen on the very same line (Codex #164 r10, B1: `''` right after an open quote closes
-    it, then immediately opens a new one) and the loop must keep scanning the whole line to see that,
-    not stop at the first close. Returns the quote left open at the end of line, or None if everything
-    closed. Raises _AmbiguousQuote on a command substitution ($( or a backtick) or a backslash outside
-    any quote — bash still runs expansions inside a double-quoted string, so a $( there cannot be
-    skipped over as plain text either."""
-    i, n = 0, len(line)
-    while i < n:
-        c = line[i]
-        if c == "`" or (c == "$" and i + 1 < n and line[i + 1] == "("):
-            raise _AmbiguousQuote
-        if qc is None:
-            if c in ("'", '"'):
-                qc = c
-            elif c == "\\":
-                raise _AmbiguousQuote
-        else:
-            if qc == '"' and c == "\\" and i + 1 < n:
-                i += 2
-                continue
-            if c == qc:
-                qc = None
-        i += 1
-    return qc
+_TRAP_RE = re.compile(r"(?<![\w$.-])trap(?![\w.-])")
 
 
 def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
-    line, Codex #164 r2 C10), after && / || on its line, or a `trap` command's own body — deferred to a future signal,
-    not run in line order, so a build/tag inside one registers no local name either (Codex #164 fresh r5, B1). The
-    body stays excluded across lines for as long as a quote the trap's own line opened stays open, tracked with
-    bash's own plain quoting rules one character at a time (Codex #164 r9/r10, Sonnet r8) rather than a per-line
-    count. Anything _quote_step can't read with those plain rules — a command substitution, a stray backslash —
-    excludes everything from that point on, for good (advisor 0080: fail closed on what a security control can't
-    resolve, don't chase every clever construct one round at a time); the same permanent exclusion is what a
-    shell comment containing an apostrophe costs a later, legitimate build (Codex #164 r10, R2) — an accepted,
-    documented usability cost, not a bypass. A literal for-loop always runs and is kept."""
-    keep, stack, open_quote, ambiguous_forever = [], [], None, False
+    line, Codex #164 r2 C10), after && / || on its line, or anywhere a `trap` command appears. A trap's body is
+    deferred to a future signal, not run in line order, so a build/tag inside one must never register a local
+    name an unconditional command elsewhere can then rely on (Codex #164 fresh r5, B1). Scoping that exclusion to
+    just the trap's own body — by line, by quote state, however carefully — kept reopening new bypasses every
+    round (Codex #164 r9/r10/r11, Sonnet r8: a double-quoted body, an escaped quote, the embedded-apostrophe
+    idiom, a close-then-reopen on one line, a command substitution, an apostrophe in an EARLIER trap's comment
+    confusing a LATER trap's own body, a quoted spelling of the word `trap` itself evading detection entirely —
+    each fix chased the last one's specific construct and opened a new one). None of that is worth re-fighting:
+    the instant the word `trap` appears anywhere in the script, nothing in the whole script is trusted as a
+    local name (advisor 0080 — fail closed on an open-ended finding class, don't chase it construct by
+    construct). A script that genuinely has no use for `trap` is unaffected. A literal for-loop always runs and
+    is kept."""
+    if _TRAP_RE.search(text):
+        return ""
+    keep, stack = [], []
     for line in text.splitlines():
-        if ambiguous_forever:
-            continue
-        if open_quote is not None:
-            try:
-                open_quote = _quote_step(line, open_quote)
-            except _AmbiguousQuote:
-                ambiguous_forever = True
-            continue
-        m = re.search(r"(?<![\w$.-])trap(?![\w.-])", line)
-        if m:
-            try:
-                open_quote = _quote_step(line[m.end():], None)
-            except _AmbiguousQuote:
-                ambiguous_forever = True
-            continue
         words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
         opened = False
         if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line):
