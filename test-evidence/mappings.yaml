@@ -469,3 +469,15 @@ mappings:
   - ac: REQ-REL-008-AC1
     evidence:
       - { type: shell-test, ref: "bin/workflow-consolidation-test.sh" }
+  - ac: REQ-SCAN-010-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC4
+    evidence:
+      - { type: inspection, ref: ".vex/README.md section \"The same statements, three ways\": the Google VEX upload is a preview feature" }

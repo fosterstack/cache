@@ -155,6 +155,29 @@ jobs:
             cosign sign --yes "${hub}@${d}"
           done
 
+      # Scanner-panel rule 10 (owner RATIFIED Oct 2; REQ-SCAN-010): our VEX in three forms, generated from the ONE OpenVEX
+      # file and this release's image digests (each variant's index and its linux children), BEFORE the manifest is
+      # assembled, so the manifest records all three files' sha256 and the release's existing signing covers them.
+      - name: generate the VEX in three forms (OpenVEX, Inspector suppression rules, CSAF 2.0)
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          src="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          echo '{}' > /tmp/vex-images.json
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' <<<"${DIGESTS}")
+            kids=$(crane manifest "${src}@${d}" | jq -c '[.manifests[] | select(.platform.os == "linux") | {key: ("linux/" + .platform.architecture), value: .digest}] | from_entries')
+            [ "$(jq 'length' <<<"$kids")" = 2 ] || { echo "::error::${v} index ${d} does not name exactly the two linux children" >&2; exit 1; }
+            jq --arg v "$v" --arg d "$d" --argjson k "$kids" '. + {($v): {index: $d, children: $k}}' /tmp/vex-images.json > /tmp/vex-images.tmp
+            mv /tmp/vex-images.tmp /tmp/vex-images.json
+          done
+          mkdir -p /tmp/vex
+          cp .vex/fosterstack-cache.openvex.json /tmp/vex/
+          python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images /tmp/vex-images.json \
+            --version "$ver" --out-dir /tmp/vex
+
       - name: assemble release-manifest.json (the release evidence bundle, design §3)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -186,6 +209,9 @@ jobs:
             --arg baseline "requirements/releases/${ver}.yaml" \
             --arg baseline_sha "$(sha256sum "requirements/releases/${ver}.yaml" | cut -d' ' -f1)" \
             --arg evidence_sha "$(sha256sum test-evidence/mappings.yaml | cut -d' ' -f1)" \
+            --arg vex_openvex_sha "$(sha256sum /tmp/vex/fosterstack-cache.openvex.json | cut -d' ' -f1)" \
+            --arg vex_inspector_sha "$(sha256sum "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" | cut -d' ' -f1)" \
+            --arg vex_csaf_sha "$(sha256sum "/tmp/vex/fosterstack-cache-${ver}.csaf.json" | cut -d' ' -f1)" \
             --argjson digests '${{ inputs.digests }}' \
             --slurpfile archives /tmp/archives.json \
             --slurpfile acs /tmp/ac-results.json \
@@ -198,6 +224,9 @@ jobs:
               archives: $archives[0],
               requirements_baseline: {path: $baseline, sha256: $baseline_sha},
               test_evidence: {path: "test-evidence/mappings.yaml", sha256: $evidence_sha},
+              vex: [{file: "fosterstack-cache.openvex.json", form: "openvex", sha256: $vex_openvex_sha},
+                    {file: ("fosterstack-cache-" + $version + ".inspector-filters.json"), form: "inspector-suppression-rules", sha256: $vex_inspector_sha},
+                    {file: ("fosterstack-cache-" + $version + ".csaf.json"), form: "csaf-2.0-vex", sha256: $vex_csaf_sha}],
               verified_statements: $statements[0],
               ac_results: $acs[0],
               publication_evidence: {
@@ -252,7 +281,8 @@ jobs:
           gh release upload "$ver" \
             dist/*.tar.gz dist/checksums.txt /tmp/checksums.txt.bundle \
             /tmp/release-manifest.json \
-            .vex/fosterstack-cache.openvex.json
+            /tmp/vex/fosterstack-cache.openvex.json \
+            "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" "/tmp/vex/fosterstack-cache-${ver}.csaf.json"
           if compgen -G 'dist/*.sbom.json' >/dev/null; then
             gh release upload "$ver" dist/*.sbom.json
           else
