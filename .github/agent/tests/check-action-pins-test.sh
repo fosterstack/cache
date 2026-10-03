@@ -1404,6 +1404,19 @@ case_ r4b1-trap-multiline-local-bad bad "$(rb "trap -- '
           docker build -t alpine:latest .
           ' EXIT
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Sonnet #164 r8, B-new-1: a multi-line trap body delimited by DOUBLE quotes is the same deferred hazard --
+# the old tracker only ever counted single quotes
+case_ r4b1-trap-multiline-dquote-local-bad bad "$(rb "trap -- \"
+          docker build -t alpine:latest .
+          \" EXIT
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Sonnet #164 r8, B-new-2: the standard shell concatenation idiom for an embedded apostrophe ('\"'\"') puts an
+# EVEN count of ' characters on the trap line while the quote stays open in real bash past that line -- a naive
+# per-line parity count sees it as closed and wrongly stops excluding
+case_ r4b1-trap-embedded-apostrophe-local-bad bad "$(rb "trap -- 'echo '\"'\"'dont stop'\"'\"'
+          docker build -t alpine:latest .
+          ' EXIT
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
