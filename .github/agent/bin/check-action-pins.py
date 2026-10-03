@@ -128,10 +128,12 @@ non-POSIX catch-all) unless it declares a POSIX shell. What
 static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). An
-image a pinned action's own manifest names is NOT fixed by our pin (Codex #164 adversarial r1, R01): the commit fixes
-the manifest's text, not a registry tag's resolution — ossf/scorecard-action's pinned action.yaml runs
-docker://ghcr.io/ossf/scorecard-action:v2.4.4, a mutable tag. That executor is the upstream's supply chain; it is
-listed here so it is not mistaken for pinned, and no action is excepted by name.
+image a pinned action's own manifest names is NOT fixed by our pin (Codex #164 adversarial r1, R01; closed in our
+own tree r1 B1/0140 by invoking the executor directly, `docker://<image>@sha256:…`, which this check's own DIGEST
+rule then covers): the commit fixes the manifest's text, not a registry tag's resolution — ossf/scorecard-action's
+pinned action.yaml runs docker://ghcr.io/ossf/scorecard-action:v2.4.4, a mutable tag, if used in its composite form.
+That executor is the upstream's supply chain; it is listed here so it is not mistaken for pinned, and no action is
+excepted by name.
 
 Scripts a step runs (Codex #164 adversarial r1 C02; advisor ruling 0094): a committed shell script (bash/sh x.sh,
 source x.sh, ./x.sh, a $RUNNER_TEMP copy of main's committed script) is read at its committed bytes, recursively; a
