@@ -581,6 +581,15 @@ raw2 = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <relea
         + "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH\n-----END SSH SIGNATURE-----\n")
 check("B1 (r2b) a fake signature block embedded earlier in the message does not stand in for the real, LAST one",
       P.tag_notes(raw2) is None, P.tag_notes(raw2))
+# Codex #159 fresh r2d: more than one signature-shaped block anywhere, in either order, is never a genuine tag —
+# ssh-keygen's own signature check does not require the signature to be the object's literal last bytes, so "the real
+# signature is last" alone is not fail-closed against a hand-crafted object with trailing bytes appended after it
+fake_ = "-----BEGIN SIGNED MESSAGE-----\nAAAA\n-----END SIGNED MESSAGE-----\n"
+real_sig_ = tagraw[tagraw.index("-----BEGIN SIGNED MESSAGE-----"):]
+raw_after = tagraw[:tagraw.index("-----BEGIN SIGNED MESSAGE-----")] + real_sig_ + fake_
+check("B1 (fresh r2d) a second signature-shaped block appended AFTER the real one is refused, not read as notes",
+      P.tag_notes(raw_after) is None, P.tag_notes(raw_after))
+check("B1 (fresh r2d) exactly one signature block, genuinely last, is still read", P.tag_notes(tagraw) == pub)
 check("B1 (r2b) the real signature is still read when it is genuinely the last block", P.tag_notes(tagraw) == pub)
 check("B1 another tagger with a gitsign signature carries no notes",
       P.tag_notes(tagraw.replace("fosterstack release <release@users.noreply.github.com>", "fosterstack release <x@evil>")) is None)

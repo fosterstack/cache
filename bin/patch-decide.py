@@ -450,10 +450,12 @@ def tag_notes(raw):
     head, _, body = raw.partition("\n\n")
     tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
     tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
-    # the real signature git appends is always the LAST such block (Sonnet #159 r2b: an attacker's message can embed
-    # an earlier, fake one); no block at all is an unsigned message, kept whole with no signature
-    if "-----BEGIN " in body:
-        body, _, sig = body.rpartition("-----BEGIN ")
+    # exactly one signature-shaped block, genuinely last (Codex #159 fresh r2d): "the real signature is last" alone
+    # is not fail-closed — ssh-keygen's own check does not require a signature to be an object's literal last bytes,
+    # so a hand-crafted object could carry a real signature then append a second, fake block after it. No block, or
+    # more than one anywhere, is refused; exactly one is read if it is the message's own last bytes.
+    if body.count("-----BEGIN ") == 1:
+        body, _, sig = body.partition("-----BEGIN ")
     else:
         sig = ""
     # only the release workflow's own patch tag: its tagger and a gitsign (x509) signature — an owner's tag is SSH-signed
