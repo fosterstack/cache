@@ -73,7 +73,9 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
 Scope (advisor 0080): ubuntu runners only. Every job that runs steps must name an ubuntu runner literally
 (ubuntu-latest, ubuntu-<version>, ubuntu-<version>-arm); any other runs-on — Windows, macOS, self-hosted labels, a
 group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal. Inside
-the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options).
+the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options,
+a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
+outside the check today: the repository uses it (ci.yml, go-freshness.yml), so failing it closed is an outbox question.
 
 The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
 is a fix or a documented exclusion in the check's own allowlist with a reason". So this check pins every `uses:`,
@@ -562,7 +564,7 @@ def _cut_substitutions(text):
     know, and the inner command is read as a script of its own."""
     out, inner, i, n = [], [], 0, len(text)
     while i < n:
-        if text.startswith("$(", i) and not text.startswith("$((", i):
+        if text.startswith("$(", i):             # $(…) and arithmetic $((…)) alike: a value, its inside read too
             depth, j = 1, i + 2
             while j < n and depth:
                 if text.startswith("$(", j):
@@ -623,6 +625,30 @@ def _options(args, val, boolean):
     return i, None
 
 
+KEYWORDS = {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"}
+WRAPPERS = {"sudo", "env", "nohup", "nice", "timeout", "xargs", "exec", "command", "stdbuf", "ionice", "setsid",
+            "unbuffer", "chronic", "time", "doas"}
+
+
+def _command_words(toks):
+    """The words a simple command will run as a program: past assignments and shell keywords, and through wrappers
+    (timeout 5, env A=b, xargs -n1, sudo …) to their targets."""
+    words, i = [], 0
+    while i < len(toks):
+        t = toks[i]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*", t) or t in KEYWORDS:
+            i += 1
+            continue
+        words.append(t)
+        if _base(t).lower() not in WRAPPERS:
+            break
+        i += 1
+        while i < len(toks) and (toks[i].startswith("-") or re.fullmatch(r"[0-9.]+[smhd]?", toks[i])
+                                 or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*", toks[i])):
+            i += 1
+    return words
+
+
 def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
@@ -649,6 +675,10 @@ def _commands(script, depth=0):
                 if w == "eval" and toks[i + 1:]:
                     out += _commands(" ".join(toks[i + 1:]), depth + 1)
                     break
+        computed = [w for w in _command_words(toks) if SUBST in w]
+        if computed:          # a program name built by a substitution (d$()ocker): it cannot be resolved (NEW-11)
+            out.append(["__computed__", computed[0]])
+            continue
         # the tool word anywhere in the command (`if docker …`, `timeout 30 docker …`, `xargs docker …`): fail closed
         at = next((i for i, w in enumerate(toks) if _base(w).lower() in TOOLS or PKG_TOOL.match(_base(w).lower())), None)
         if at is not None:
@@ -790,6 +820,10 @@ def script_images(script):
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
             continue
+        if cmd == "__computed__":
+            ev.append(("finding", "a program name is built by a command substitution (%s); it cannot be resolved"
+                       % args[0].replace(SUBST, "$(…)")))
+            continue
         if cmd in ("docker", "podman", "nerdctl") and args:
             k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
             if unknown:
@@ -914,7 +948,7 @@ def _touches(script, name, consumer):
             continue
         if consumer(toks):
             continue
-        words = [t for t in toks if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", t) and t != "sudo"]
+        words = [t for t in toks if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=.*", t) and t != "sudo"]
         while words and words[0] in ("if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"):
             words = words[1:]                   # a shell keyword arranges the command after it
         if words and words[0] in ("for", "select", "case"):

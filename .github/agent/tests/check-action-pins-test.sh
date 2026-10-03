@@ -986,5 +986,12 @@ case_ ro-reusable-call-ok      ok  "on: push
 jobs:
   j:
     uses: ./.github/workflows/w2.yml" "printf 'on: workflow_call\\njobs:\\n  x:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: true\\n' > .github/workflows/w2.yml"
+# --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
+case_ n11-fused-docker         bad "$(rb 'd$()ocker run alpine')"
+case_ n11-fused-pip            bad "$(rb 'pi$()p install requests')"
+case_ n11-fused-backtick       bad "$(rb 'doc``ker pull alpine')"
+case_ n11-wrapper-fused        bad "$(rb 'timeout 5 d$()ocker run alpine')"
+case_ n11-whole-subst-command  bad "$(rb '$(echo docker) run alpine')"
+case_ n11-subst-in-argument-ok ok  "$(rb 'echo "built at $(date)"; tag="v$(cat VERSION)"')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
