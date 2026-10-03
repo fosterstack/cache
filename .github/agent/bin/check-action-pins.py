@@ -97,7 +97,10 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
-Round 7: the non-POSIX catch-all is built from the same tool sets the POSIX scanner reads, so they cannot drift. What
+Round 7: the non-POSIX catch-all is built from the same tool sets the POSIX scanner reads, so they cannot drift.
+Round 8: choco, winget, scoop and brew installs are findings; tool words and their verbs match case-insensitively
+(Windows resolves `Docker RUN`); a job on a Windows runner, or one named by an expression, defaults to pwsh (the
+non-POSIX catch-all) unless it declares a POSIX shell. What
 static reading cannot see is the
 review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
 network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
@@ -522,9 +525,15 @@ UNREAD_CONTAINER = {"buildah", "ctr", "crictl", "apptainer", "singularity", "kan
 PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 # package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
 PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba"
-                      r"|pipenv|poetry|pdm|hatch|flit|pip-sync|pip-compile|rye)$")
+                      r"|pipenv|poetry|pdm|hatch|flit|pip-sync|pip-compile|rye|choco|winget|scoop|brew)$")
 # Python installers / build frontends that cannot be held to hashes here (Sonnet #164 r3): any use is a finding
 UNREAD_PY = {"pipenv", "poetry", "pdm", "hatch", "flit", "pip-sync", "pip-compile", "rye"}
+# OS package managers of Windows / macOS runners (Sonnet #164 r8, NEW-9): installs cannot be held to hashes here
+OS_PKG = {"choco", "winget", "scoop", "brew"}
+# verbs matched case-insensitively (NEW-10: Windows resolves `Docker RUN` / `Pip install` regardless of case)
+VERB_WORDS = {"run", "create", "pull", "build", "buildx", "b", "tag", "image", "container", "builder", "compose",
+              "manifest", "imagetools", "bake", "stack", "install", "download", "wheel", "sync", "add", "lock", "copy",
+              "cp", "inspect", "export", "upgrade", "reinstall", "update", "env", "tool", "pip", "dlx", "exec", "ci", "i"}
 FORWARD = {"$@", "$*", "${@}", "${*}"}   # a wrapper forwarding its own arguments (Sonnet #164 r2, N1)
 TOOL_WORDS = r"(docker|podman|skopeo|crane|pip3?|pipx|uvx?|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba|python3?)"
 # a tool binary copied, linked or aliased under another name (N2): the renamed command is invisible to name matching
@@ -533,7 +542,7 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
                      r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
 SHELLS = {"bash", "sh", "dash", "zsh"}
 # every tool name the POSIX scanner knows, so the non-POSIX catch-all can never drift from it (Sonnet #164 r7, NEW-8)
-ALL_TOOL_NAMES = sorted(TOOLS | UNREAD_CONTAINER | UNREAD_PY | {
+ALL_TOOL_NAMES = sorted(TOOLS | UNREAD_CONTAINER | UNREAD_PY | OS_PKG | {
     "pip", "pip3", "python", "python3", "pipx", "uv", "uvx", "npm", "npx", "gem", "yarn", "pnpm", "conda", "mamba",
     "micromamba"}, key=len, reverse=True)
 NONPOSIX_TOOL = re.compile(r"(?i)(^|[^A-Za-z0-9_.-])(" + "|".join(re.escape(t) for t in ALL_TOOL_NAMES)
@@ -636,9 +645,9 @@ def _commands(script, depth=0):
                     out += _commands(" ".join(toks[i + 1:]), depth + 1)
                     break
         # the tool word anywhere in the command (`if docker …`, `timeout 30 docker …`, `xargs docker …`): fail closed
-        at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
+        at = next((i for i, w in enumerate(toks) if _base(w).lower() in TOOLS or PKG_TOOL.match(_base(w).lower())), None)
         if at is not None:
-            out.append([_base(toks[at])] + toks[at + 1:])
+            out.append([_base(toks[at]).lower()] + [t.lower() if t.lower() in VERB_WORDS else t for t in toks[at + 1:]])
     return out
 
 
@@ -713,6 +722,9 @@ def script_installs(script):
     found = []
     for t in _commands(script):
         cmd, args = t[0], t[1:]
+        if cmd in OS_PKG and args[:1] and args[0] in ("install", "upgrade", "reinstall", "add", "update", "bundle"):
+            found.append((cmd + " " + args[0], "an OS package manager install (none is held to hashes here)"))
+            continue
         if cmd in UNREAD_PY:
             found.append((cmd, "a Python installer this check cannot hold to hashes"))
             continue
@@ -1070,6 +1082,10 @@ def run_scripts(doc):
         for k, j in jobs.value:
             if isinstance(j, yaml.MappingNode):
                 inherited = _default_shell(j) or _default_shell(doc)
+                ro = {key_of(kk): vv for kk, vv in j.value}.get("runs-on")
+                ro_text = yaml.serialize(ro) if ro is not None else ""
+                if inherited is None and ("windows" in ro_text.lower() or "${{" in ro_text):
+                    inherited = "pwsh"   # NEW-10: a Windows (or not statically known) runner's default shell is pwsh
                 for kk, vv in j.value:
                     if key_of(kk) == "steps":
                         steps_of(vv, f".jobs.{k.value}.steps", "jobs." + k.value, inherited)
