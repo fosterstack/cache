@@ -40,7 +40,7 @@ release's own image digests — never edited by hand:
 | File | For | Statements |
 |---|---|---|
 | `fosterstack-cache.openvex.json` | scanners that read OpenVEX | the source |
-| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. busybox 1.37.0), by that package and version |
+| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. busybox 1.37.0), by that package and version | <!-- pinned: upstream -->
 | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement about this release's images, as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
 In other words: the CSAF file carries every OpenVEX statement; the Inspector file
