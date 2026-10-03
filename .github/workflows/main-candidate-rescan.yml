@@ -413,6 +413,11 @@ jobs:
           done
 
           targets=$(jq -s -c '.' /tmp/targets.jsonl)
+          # Every matrix value reaches the rescan job: each must have its exact shape, or no matrix is emitted — a release
+          # manifest's data never becomes shell source (Codex #160 pin pass, B78-01)
+          TARGET_SHAPE='all(.[]; (.release | test("^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$")) and (.variant | test("^[a-z0-9][a-z0-9-]{0,31}$")) and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.scanner | test("^[a-z0-9][a-z0-9-]{0,31}$")))'
+          jq -e "$TARGET_SHAPE" <<<"$targets" > /dev/null \
+            || { echo "::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix" >&2; exit 1; }
           echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           n=$(jq 'length' <<<"$targets")
           # There is ALWAYS at least the legacy inventory, so an empty set
@@ -437,6 +442,12 @@ jobs:
       fail-fast: false
       matrix:
         target: ${{ fromJSON(needs.manifests.outputs.targets) }}
+    # matrix values reach scripts only through these, quoted (B78-01)
+    env:
+      TARGET_RELEASE: ${{ matrix.target.release }}
+      TARGET_VARIANT: ${{ matrix.target.variant }}
+      TARGET_DIGEST: ${{ matrix.target.digest }}
+      TARGET_SCANNER: ${{ matrix.target.scanner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -452,7 +463,7 @@ jobs:
         run: |
           set -euo pipefail
           echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
-          ref="ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}"
+          ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
           : > /tmp/children.txt
           # A FAILED or MALFORMED enumeration must REJECT the run (B04): a
           # lost platform inventory must never be silently downgraded to a
@@ -590,7 +601,7 @@ jobs:
         run: |
           set -euo pipefail
           : > /tmp/scanner-meta
-          case '${{ matrix.target.scanner }}' in
+          case "$TARGET_SCANNER" in
             trivy)
               echo "version=$(trivy --version 2>/dev/null | awk 'NR==1{print $2}')" >> /tmp/scanner-meta
               echo "db=$(trivy version --format json 2>/dev/null | jq -r '.VulnerabilityDB.UpdatedAt // "unknown"')" >> /tmp/scanner-meta ;;
@@ -619,15 +630,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 bin/rescan-statement.py statement \
-            --scanner '${{ matrix.target.scanner }}' \
+            --scanner "$TARGET_SCANNER" \
             --children /tmp/children-scanned.jsonl \
             --meta /tmp/scanner-meta \
             --vex .vex/fosterstack-cache.openvex.json \
             --scope-file /tmp/scan-scope.json \
-            --release '${{ matrix.target.release }}' \
-            --variant '${{ matrix.target.variant }}' \
-            --digest '${{ matrix.target.digest }}' \
-            --image-ref 'ghcr.io/${{ github.repository_owner }}/cache@${{ matrix.target.digest }}' \
+            --release "$TARGET_RELEASE" \
+            --variant "$TARGET_VARIANT" \
+            --digest "$TARGET_DIGEST" \
+            --image-ref "ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}" \
             --scanned-at "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
             --raw-out /tmp/findings-raw.json \
             --out /tmp/rescan-statement.json \
@@ -686,7 +697,7 @@ jobs:
       - name: a findings verdict fails the run (visible red, same bar as the gate)
         if: steps.statement.outputs.outcome == 'findings'
         run: |
-          echo "::error::rescan found findings for ${{ matrix.target.release }} ${{ matrix.target.variant }} (${{ matrix.target.scanner }}) — see the tracking issue" >&2
+          echo "::error::rescan found findings for ${TARGET_RELEASE} ${TARGET_VARIANT} (${TARGET_SCANNER}) — see the tracking issue" >&2
           exit 1
 
       # An operational failure is NOT clean CVE evidence: fail the run with
@@ -695,5 +706,5 @@ jobs:
       - name: an operational error fails the run distinctly
         if: steps.statement.outputs.outcome == 'error'
         run: |
-          echo "::error::rescan scanner ${{ matrix.target.scanner }} failed to complete for ${{ matrix.target.release }} ${{ matrix.target.variant }} — this is an operational failure, not a clean result" >&2
+          echo "::error::rescan scanner ${TARGET_SCANNER} failed to complete for ${TARGET_RELEASE} ${TARGET_VARIANT} — this is an operational failure, not a clean result" >&2
           exit 1

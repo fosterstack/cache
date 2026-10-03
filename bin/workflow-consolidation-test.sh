@@ -204,6 +204,31 @@ if not r.get("strategy") or "fromJSON(needs.manifests.outputs.targets)" not in s
 for gone in ("daily-rescan.yml", "rescan-v010.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
         bad.append("%s still exists" % gone)
+# Codex #160 pin pass (B78-01): release-manifest data must never become shell source. Every matrix value is checked for
+# its exact shape before the matrix is emitted (the collector's TARGET_SHAPE, run here against hostile targets), and no
+# run: script interpolates ${{ matrix.* }} or ${{ needs.* }} (they arrive through env, quoted)
+import json, re, subprocess
+mrun = "\n".join(st.get("run") or "" for st in m.get("steps") or [])
+shape = re.search(r"TARGET_SHAPE='([^']*)'", mrun)
+if not shape or 'jq -e "$TARGET_SHAPE"' not in mrun:
+    bad.append("the manifests job does not check every target's shape before emitting the matrix")
+else:
+    def ok(t):
+        return subprocess.run(["jq", "-e", shape.group(1)], input=json.dumps([t]), capture_output=True, text=True).returncode == 0
+    good = {"release": "v0.2.1", "variant": "production", "digest": "sha256:" + "a" * 64, "scanner": "grype"}
+    if not ok(good) or not ok(dict(good, release="v0.3.0-rc.1")):
+        bad.append("TARGET_SHAPE refuses a well-formed target")
+    hostile = [dict(good, digest=good["digest"] + "$(docker run alpine:latest true)"),
+               dict(good, variant="production'$(docker run alpine:latest true)'"),
+               dict(good, release="v0.2.1$(id)"), dict(good, scanner="grype;id"), dict(good, digest=None),
+               dict(good, digest="sha256:" + "A" * 64), {k: v for k, v in good.items() if k != "variant"}]
+    for t in hostile:
+        if ok(t):
+            bad.append("TARGET_SHAPE accepts %r" % t)
+for job in (m, r):
+    for st in job.get("steps") or []:
+        if re.search(r"\$\{\{\s*(matrix|needs)\.", st.get("run") or ""):
+            bad.append("a run: script interpolates matrix/needs data: %s" % (st.get("name") or st.get("id")))
 sec = open(os.path.join(root, "SECURITY.md")).read()
 if "actions/workflows/rescan-v010.yml" in sec or "actions/runs/34551059239" not in sec:
     bad.append("SECURITY.md does not link the historical v0.1.0 rescan run")
@@ -232,5 +257,8 @@ case_rescan manifests-renamed     bad "d['jobs']['manifests']['name'] = 'manifes
 case_rescan rescan-widened        bad "d['jobs']['rescan']['permissions']['contents'] = 'write'"
 case_rescan rescan-unconditional  bad "d['jobs']['rescan'].pop('if')"
 case_rescan matrix-lost           bad "d['jobs']['rescan'].pop('strategy')"
+case_rescan shape-check-dropped   bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('jq -e \"\$TARGET_SHAPE\"', 'true')"
+case_rescan shape-digest-loose    bad "s=[x for x in d['jobs']['manifests']['steps'] if 'TARGET_SHAPE' in (x.get('run') or '')][0]; s['run'] = s['run'].replace('{64}\$', '{64}')"
+case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'] if x.get('name') == 'enumerate platform children'][0]; s['run'] = s['run'] + '\necho \${{ matrix.target.digest }}'"
 echo "workflow-consolidation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
