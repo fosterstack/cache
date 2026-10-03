@@ -104,7 +104,8 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
-Round 7: the non-POSIX catch-all is built from the same tool sets the POSIX scanner reads, so they cannot drift.
+Round 10 (NEW-12): a step in any non-POSIX shell (pwsh, python, node, …; pwsh ships on ubuntu runners too) is refused
+outright, whatever it contains — this check reads POSIX shell only.
 Round 8 (before the ubuntu-only scope made it moot; kept as defense in depth): choco, winget, scoop and brew installs are findings; tool words and their verbs match case-insensitively
 (Windows resolves `Docker RUN`); a job on a Windows runner, or one named by an expression, defaults to pwsh (the
 non-POSIX catch-all) unless it declares a POSIX shell. What
@@ -548,12 +549,6 @@ RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\(
                      + TOOL_WORDS + r"[\"']?\)|/" + TOOL_WORDS + r"(?=[\s\"']|$))"
                      r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
 SHELLS = {"bash", "sh", "dash", "zsh"}
-# every tool name the POSIX scanner knows, so the non-POSIX catch-all can never drift from it (Sonnet #164 r7, NEW-8)
-ALL_TOOL_NAMES = sorted(TOOLS | UNREAD_CONTAINER | UNREAD_PY | OS_PKG | {
-    "pip", "pip3", "python", "python3", "pipx", "uv", "uvx", "npm", "npx", "gem", "yarn", "pnpm", "conda", "mamba",
-    "micromamba"}, key=len, reverse=True)
-NONPOSIX_TOOL = re.compile(r"(?i)(^|[^A-Za-z0-9_.-])(" + "|".join(re.escape(t) for t in ALL_TOOL_NAMES)
-                           + r")(\.[0-9]+)?([^A-Za-z0-9_-]|$)")
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
 SUBST = "$__SUBST__"   # stands where a command substitution was cut out (Sonnet #164 r4, NEW-4): fails closed
 
@@ -1034,9 +1029,9 @@ def check_runs(where_job, scripts, bad, tree=None):
             bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
                        f"renamed command cannot be checked")
         if shell and not re.match(r"^(bash|sh)(\s|$)", shell):
-            if NONPOSIX_TOOL.search(text):
-                bad.append(f"{where}: a `{shell}` step names a container or package tool; this check reads POSIX "
-                           f"shell only")
+            # this check reads POSIX shell only, and pwsh / python / node ship on ubuntu runners too: a step in any
+            # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
+            bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
             continue
         for ev in script_images(text):
             if ev[0] == "local":
