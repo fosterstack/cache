@@ -32,6 +32,12 @@ check("verifies the release manifest attestation, pinned to the promotion workfl
       "cosign verify-attestation" in code and "--type https://fosterstack.com/attestations/release-manifest/v1" in code
       and "stage-promote.yml@refs/tags/v${VER}$" in code and "token.actions.githubusercontent.com" in code)
 check("checks each file against the manifest's sha256", ".vex[]" in code and "sha256sum -c" in code)
+# a failed cosign must stop the reader in any shell (Codex #169 r1, SEC-169-03): its output is saved to a file by the
+# command itself, never piped onward, so the command's own exit status is what the reader sees
+verify = next((b for b in blocks if "cosign verify-attestation" in b), "")
+check("cosign's output goes to a file, not into a pipe", re.search(r"cosign verify-attestation[^|]*?> \S+\n", verify, re.S) is not None
+      and not re.search(r"cosign verify-attestation[^>]*\|", verify, re.S), verify)
+check("no head/tail truncation that could hide a failure or a second attestation", not re.search(r"\| *(head|tail)\b", verify))
 check("no new key or signature is introduced", "--key" not in code and "sign-blob" not in code)
 # the exact commands: the generator's constants, with <file> bound to the named file (copy-pasteable, run verbatim by
 # the rule-12 live test)

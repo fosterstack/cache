@@ -45,12 +45,12 @@ it:
 cosign verify-attestation "ghcr.io/fosterstack/cache@${DIGEST}" \
   --type https://fosterstack.com/attestations/release-manifest/v1 \
   --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-  | head -n 1 | jq -r '.payload' | base64 -d | jq '.predicate' > release-manifest.verified.json
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' > release-manifest.attestation.json
+jq -r '.payload' release-manifest.attestation.json | base64 -d | jq '.predicate' > release-manifest.verified.json
 jq -r '.vex[] | "\(.sha256)  \(.file)"' release-manifest.verified.json | sha256sum -c
 ```
 
-Every line must say `OK`. If `cosign` fails or a line says `FAILED`, do not load the file.
+Every line must say `OK`. If `cosign` reports an error, or a line says `FAILED`, stop: do not load the files.
 
 ## 2. Load them into your scanner
 
