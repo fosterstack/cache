@@ -1431,6 +1431,32 @@ case_ r4b1-trap-closes-then-legit-build-ok ok "$(rb "trap -- '
           ' EXIT
           docker build -t alpine:latest .
           docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Codex #164 r10, B1: a continuation line can close the trap's quote AND immediately reopen a new one
+# ('' right after the close) -- the scanner must keep reading the whole line, not stop at the first close
+case_ r4b1-trap-reopen-same-line-bad bad "$(rb "trap -- '
+          ''
+          docker build -t alpine:latest .
+          ' USR1
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
+# Codex #164 r10, B2/B3: a command substitution, or a backslash outside any quote, on the trap's own line
+# makes its quoting unsafe to read with plain rules -- fails closed (excluded forever) rather than risk
+# misreading it, same treatment on either side of the quote boundary
+case_ r4b1-trap-command-subst-bad bad "$(rb 'trap -- "#$(printf %s '"'"'"'"'"')
+          # comment
+          docker build -t alpine:latest .
+          " USR1
+          docker run --rm alpine:latest')" 'printf "FROM scratch\n" > Dockerfile'
+case_ r4b1-trap-stray-backslash-bad bad "$(rb 'trap -- \"'"'"'echo
+          docker build -t alpine:latest .
+          '"'"' USR1
+          docker run --rm alpine:latest')" 'printf "FROM scratch\n" > Dockerfile'
+# Codex #164 r10, R2 (accepted residual, advisor 0080): an apostrophe inside a shell COMMENT on the trap's
+# own line is not a real quote, but this checker does not parse comments -- it reads it as still-open and
+# excludes the rest of the script, costing a later legitimate build its local-name trust. A documented,
+# fail-closed usability cost, not a bypass; this pins the current (conservative) behavior against regressions.
+case_ r4b1-trap-apostrophe-in-comment-bad bad "$(rb "trap -- 'true' USR1 # don't discard later builds
+          docker build -t alpine:latest .
+          docker run --rm alpine:latest")" 'printf "FROM scratch\n" > Dockerfile'
 
 
 # advisor 0143: a plain `docker run <mutable tag>` step inserted into the REAL, full-size auditor.yml (not a
