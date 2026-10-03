@@ -73,7 +73,10 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
 The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
 is a fix or a documented exclusion in the check's own allowlist with a reason". So this check pins every `uses:`,
 every image a workflow or action names (container:, services:, image:, executor inputs), and every LITERAL image a
-`run:` script runs or pulls (docker/podman run|create|pull, skopeo copy|inspect docker://, crane copy|pull). What
+`run:` script runs or pulls (docker/podman run|create|pull, skopeo copy|inspect docker://, crane copy|pull),
+and every package a `run:` script installs (handoff 0070): a Python install (pip, python -m pip, uv pip, a venv's
+bin/pip) passes only when every package comes from a -r file checked with --require-hashes; pipx, uv tool, uvx,
+npx and npm/yarn/pnpm/gem installs are always flagged (they cannot be held to hashes here). What
 a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
 fixed by our pin to that commit and is that action's supply chain, not ours; it is not read here, and no action
 is excepted by name.
@@ -469,12 +472,20 @@ DOCKER_BOOL = {"-d", "--detach", "--rm", "-i", "--interactive", "-t", "--tty", "
                "--oom-kill-disable", "--sig-proxy", "--disable-content-trust", "-q", "--quiet", "-a", "--all-tags"}
 PULL_ONLY_BOOL = {"-a", "--all-tags"}
 TOOLS = {"docker", "podman", "skopeo", "crane"}
+# package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
+PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm)$")
+SHELLS = {"bash", "sh", "dash", "zsh"}
 PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n`]|\$\(|\)")
 
 
-def _commands(script):
-    """The simple commands of a shell script, each a token list (quotes removed, comments dropped)."""
+def _base(word):
+    return word.rsplit("/", 1)[-1]
+
+
+def _commands(script, depth=0):
+    """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
+    first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
     text = re.sub(r"\\\n", " ", script)
     out = []
@@ -485,11 +496,79 @@ def _commands(script):
             toks = chunk.split()
         if not toks or toks[0] in PRINTERS:
             continue
+        if depth < 4:
+            for i, w in enumerate(toks):
+                if _base(w) in SHELLS and "-c" in toks[i + 1:]:
+                    j = toks.index("-c", i + 1)
+                    if j + 1 < len(toks):
+                        out += _commands(toks[j + 1], depth + 1)
+                    break
+                if w == "eval" and toks[i + 1:]:
+                    out += _commands(" ".join(toks[i + 1:]), depth + 1)
+                    break
         # the tool word anywhere in the command (`if docker …`, `timeout 30 docker …`, `xargs docker …`): fail closed
-        at = next((i for i, w in enumerate(toks) if w in TOOLS), None)
+        at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
-            out.append(toks[at:])
+            out.append([_base(toks[at])] + toks[at + 1:])
     return out
+
+
+def _pip_install(args):
+    """True when a pip install's every package comes from a -r file checked with --require-hashes."""
+    reqs, specs, i = 0, 0, 0
+    while i < len(args):
+        a = args[i]
+        if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a redirection (<<'EOF', 2>/dev/null, > f)
+            i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
+            continue
+        if a in ("-r", "--requirement"):
+            reqs, i = reqs + 1, i + 2
+            continue
+        if a.startswith(("--requirement=", "-r=")) or (a.startswith("-r") and len(a) > 2 and not a.startswith("--")):
+            reqs += 1
+        elif a in ("-e", "--editable"):
+            specs, i = specs + 1, i + 2
+            continue
+        elif a in ("-c", "--constraint", "-t", "--target", "--prefix", "--root", "-i", "--index-url",
+                   "--extra-index-url", "-f", "--find-links", "--platform", "--python-version", "--implementation",
+                   "--abi", "--src", "--report", "--progress-bar", "--only-binary", "--no-binary", "--log",
+                   "--cache-dir", "--proxy", "--timeout", "--retries", "--trusted-host", "--cert", "--client-cert",
+                   "--root-user-action", "--upgrade-strategy", "--python", "--exists-action", "--keyring-provider"):
+            i += 2
+            continue
+        elif not a.startswith("-"):
+            specs += 1
+        i += 1
+    return "--require-hashes" in args and reqs > 0 and specs == 0
+
+
+def script_installs(script):
+    """(command, why) for every package install the script makes that is not hash-pinned (handoff 0070)."""
+    found = []
+    for t in _commands(script):
+        cmd, args = t[0], t[1:]
+        if re.match(r"^python3?(\.[0-9]+)?$", cmd):
+            if "-m" not in args or args.index("-m") + 1 >= len(args) or args[args.index("-m") + 1] != "pip":
+                continue
+            cmd, args = "python -m pip", args[args.index("-m") + 2:]
+        if cmd == "uv" and args[:1] == ["pip"]:
+            cmd, args = "uv pip", args[1:]
+        if re.match(r"^pip3?(\.[0-9]+)?$", cmd) or cmd in ("python -m pip", "uv pip"):
+            if "install" in args:
+                rest = args[args.index("install") + 1:]
+                if not _pip_install(rest):
+                    found.append((cmd + " install", "not every package from a -r file checked with --require-hashes"))
+        elif cmd == "pipx" and args[:1] and args[0] in ("install", "run", "inject", "upgrade", "reinstall"):
+            found.append(("pipx " + args[0], "pipx cannot check hashes"))
+        elif cmd == "uv" and args[:1] == ["tool"] and args[1:2] and args[1] in ("install", "run", "upgrade"):
+            found.append(("uv tool " + args[1], "uv tool cannot check hashes"))
+        elif cmd in ("uvx", "npx"):
+            found.append((cmd, "runs a package fetched by name"))
+        elif cmd in ("npm", "yarn", "pnpm", "gem") and args[:1] and args[0] in ("install", "i", "ci", "add", "update", "exec", "dlx"):
+            found.append((cmd + " " + args[0], "a %s package install (none is reviewed for hashes here)" % cmd))
+        elif cmd in ("yarn", "pnpm") and not args:
+            found.append((cmd, "a %s package install" % cmd))
+    return found
 
 
 def _variable(tok):
@@ -570,6 +649,9 @@ def check_runs(where_job, scripts, bad):
         if img is None or _variable(img) or DIGEST_REF.search(img) or _local(img, local):
             continue
         bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
+    for where, text in scripts:
+        for c, why in script_installs(text):
+            bad.append(f"{where}: `{c}`: {why}")
 
 
 def run_scripts(doc):

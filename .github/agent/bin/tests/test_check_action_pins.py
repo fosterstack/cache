@@ -228,3 +228,17 @@ class RunScriptImages(unittest.TestCase):              # handoff 0068: literal i
 
     def test_a_document_that_is_not_a_mapping_has_no_scripts(self):
         self.assertEqual(M.run_scripts(M.yaml.compose("- a\n- b\n", Loader=M.StrLoader)), {})
+
+
+class RunScriptInstalls(unittest.TestCase):             # handoff 0070: package installs a run: script makes
+    def test_attached_requirement_forms_count(self):
+        self.assertEqual(M.script_installs("pip install --require-hashes --requirement=r.txt"), [])
+        self.assertEqual(M.script_installs("pip install --require-hashes -rr.txt"), [])
+
+    def test_a_bare_yarn_or_pnpm_installs(self):
+        self.assertEqual(M.script_installs("yarn"), [("yarn", "a yarn package install")])
+        self.assertEqual([c for c, _ in M.script_installs("pnpm")], ["pnpm"])
+
+    def test_redirections_are_not_packages(self):
+        self.assertEqual(M.script_installs("pip install --require-hashes -r r.txt 2>/dev/null > log"), [])
+        self.assertEqual(M.script_installs("pip install --require-hashes -r r.txt > log"), [])
