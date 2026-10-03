@@ -1567,18 +1567,23 @@ def _unconditional(text):
     """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
     line, Codex #164 r2 C10), after && / || on its line, or a `trap` command's own body — deferred to a future signal,
     not run in line order, so a build/tag inside one registers no local name either (Codex #164 fresh r5, B1). The
-    body stays excluded across lines when it is a multi-line single-quoted string (Sonnet r7: the "trap" keyword's own
-    line is not the only one inside the quote). A literal for-loop always runs and is kept."""
-    keep, stack, in_trap_quote = [], [], False
+    body stays excluded for the REST OF THE SCRIPT once a multi-line quoted trap body is seen (Sonnet r8, B-new-1/
+    B-new-2): real bash's quote-closing rules are not worth re-implementing here — a double-quoted body, or a
+    single-quoted one using the `'"'"'` embedded-apostrophe idiom, both defeat a same-line '-count parity check,
+    and any fix narrow enough to name a specific idiom just invites the next one. Once a `trap` line opens either
+    kind of quote without closing it on that same line, every later line is excluded, unconditionally, for good —
+    a usability cost (a legitimate later line loses local-name trust) traded for closing the whole bypass class
+    (advisor 0080: fail closed on an open-ended finding class, don't chase it line by line). A literal for-loop
+    always runs and is kept."""
+    keep, stack, after_multiline_trap = [], [], False
     for line in text.splitlines():
-        if in_trap_quote:
-            if line.count("'") % 2 == 1:
-                in_trap_quote = False
+        if after_multiline_trap:
             continue
         m = re.search(r"(?<![\w$.-])trap(?![\w.-])", line)
         if m:
-            if line[m.end():].count("'") % 2 == 1:
-                in_trap_quote = True
+            rest = line[m.end():]
+            if rest.count("'") % 2 == 1 or rest.count('"') % 2 == 1:
+                after_multiline_trap = True
             continue
         words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
         opened = False
