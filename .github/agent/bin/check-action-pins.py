@@ -104,6 +104,9 @@ read-only command without a write redirection, or a copy of the committed file i
 destination not named); a pip -r file must be an exact repository file or a heredoc on stdin in the same step.
 Round 6: that judgment covers every POSIX step of the job (steps share a workspace), and a shell keyword or a loop's
 word list is not a write. Across jobs (a fresh runner each), a file passed through an artifact is the review pass's.
+Round 14 (NEW-21/22): a name counts as the job's own only when it is built (docker build, its FROM lines checked),
+tagged from a digest-pinned, local or variable source, or copied into the daemon from a digest-pinned docker:// source;
+a loaded tarball's image ID or an archive copied into the daemon may be scanned, but tagging or running it is a finding.
 Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or context — -H/--host, -c/--context and
 --config are refused, and so are DOCKER_HOST, DOCKER_CONTEXT, BUILDKIT_HOST and any DOCKER_CONFIG but a fresh
 $(mktemp -d), in scripts or env blocks; plugin, context, import, system, trust, secret, config and buildx create/use
@@ -928,7 +931,7 @@ def script_images(script):
             elif verb == "scout":
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
-                ev.append(("local", rest[-1]))
+                ev.append(("tag", rest[-2], rest[-1]))      # judged in check_runs: the source must be ours (NEW-21)
             elif verb in DOCKER_SAFE:
                 pass
             elif verb not in ("build",):
@@ -946,9 +949,13 @@ def script_images(script):
                 ev.append(("use", "skopeo " + args[0], pos[0][len("docker://"):]))
             elif pos and SUBST in pos[0]:                         # a substituted source could be docker://…
                 ev.append(("use", "skopeo " + args[0], pos[0]))
+            src = pos[0] if pos else ""
+            trusted = (src.startswith("docker://") and DIGEST_REF.search(src)) or _variable(src)
             for a in pos[1:]:
-                if a.startswith("docker-daemon:"):
+                if a.startswith("docker-daemon:") and trusted:
                     ev.append(("local", a[len("docker-daemon:"):]))
+                # an archive copied into the daemon (oci-archive:, dir:, docker-archive:) is NOT the job's own bytes: it
+                # may be scanned, but running it is a finding (Sonnet #164 r14, NEW-22)
         elif cmd == "crane" and args and args[0] not in ("copy", "cp", "pull", "export") + tuple(CRANE_SAFE):
             ev.append(("finding", "`crane %s` is not a verb this check reads (it may take a base image); it is refused"
                        % args[0]))
@@ -1128,6 +1135,13 @@ def check_runs(where_job, scripts, bad, tree=None):
         for ev in script_images(text):
             if ev[0] == "local":
                 local.add(ev[1])
+            elif ev[0] == "tag":
+                src, dst = ev[1], ev[2]
+                if _variable(src) or DIGEST_REF.search(src) or _local(src, local):
+                    local.add(dst)
+                else:     # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21)
+                    bad.append(f"{where}: `docker tag` makes {dst!r} from {src!r}, which is neither pinned by digest nor an "
+                               f"image this job made; refused")
             elif ev[0] == "finding":
                 bad.append(f"{where}: {ev[1]}")
             elif ev[0] == "build":

