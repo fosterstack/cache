@@ -1619,7 +1619,9 @@ def _strip_line_comment(line):
     """line with a trailing '#' comment (preceded by whitespace or the start of the line, outside any quote)
     removed — bash's comments never span more than one line, so a per-line scan is enough here (Codex #164
     r14, B3: _unconditional()'s own if/fi keyword regex had no comment-awareness at all, so a comment reading
-    "# if" or "# fi" was read as real control flow, corrupting its if/case tracking stack)."""
+    "# if" or "# fi" was read as real control flow, corrupting its if/case tracking stack). Used for the line
+    this function KEEPS (local-build-name extraction downstream still needs a real quoted image/tag name
+    intact), unlike _blank_quotes, which is for the keyword regex only."""
     i, n, q = 0, len(line), None
     while i < n:
         c = line[i]
@@ -1639,6 +1641,40 @@ def _strip_line_comment(line):
             return line[:i]
         i += 1
     return line
+
+
+def _blank_quotes(line):
+    """line (already comment-stripped) with every quoted string's own CONTENT blanked to spaces — the quote
+    characters and everything else stay put, so positions are undisturbed. Only ever fed to the if/case/trap
+    keyword regex: that regex has no quote-awareness of its own, so an ORDINARY, non-adversarial quoted
+    scalar containing one of its words as plain data (`PROFILE="release notes fi"`, Sonnet #164 r16, B1)
+    corrupted its tracking stack exactly like the comment case did. The line _unconditional() actually KEEPS
+    is the comment-stripped-only one from _strip_line_comment — local-build-name extraction downstream still
+    needs the real quoted image/tag name intact, which blanking here would destroy."""
+    out, i, n, q = [], 0, len(line), None
+    while i < n:
+        c = line[i]
+        if q == "'":
+            out.append(c if c == "'" else " ")
+            q = None if c == "'" else q
+        elif q == '"':
+            if c == "\\" and i + 1 < n:
+                out.append("  ")
+                i += 2
+                continue
+            out.append(c if c == '"' else " ")
+            q = None if c == '"' else q
+        elif c == "\\" and i + 1 < n:
+            out.append("  ")
+            i += 2
+            continue
+        elif c in "'\"":
+            out.append(c)
+            q = c
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 _ARRAY_OPEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=\(")
@@ -1668,7 +1704,8 @@ def _unconditional(text):
     keep, stack = [], []
     for line in text.splitlines():
         line = _strip_line_comment(line)   # Codex #164 r14, B3: "if"/"fi" WRITTEN INSIDE A COMMENT must not
-        words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])", line)
+        words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])",
+                           _blank_quotes(line))   # Sonnet #164 r16, B1: nor as ordinary quoted DATA
         opened = False
         if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line):
             stack.append("if")                           # a function body or an empty for-list may never run (r3, C10)
