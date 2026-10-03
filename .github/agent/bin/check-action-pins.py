@@ -960,9 +960,11 @@ def _commands(script, depth=0):
             # `trap 'CMD' SIGSPEC...` runs CMD on the signal; a literal, non-option command argument is read like an
             # eval body (Codex #164 adversarial r1, B2) — `trap -p`, `trap -l` and a bare `trap SIGSPEC` (listing or
             # resetting, no separate command) run nothing; `trap -- CMD SIG` (Codex r2, B2) is the option terminator,
-            # not an option itself
-            j_ = i + 2 if w == "trap" and toks[i + 1:i + 2] == ["--"] else i + 1
-            trap_cmd = toks[j_] if w == "trap" and j_ + 1 < len(toks) and not toks[j_].startswith("-") else None
+            # not an option itself, and once consumed CMD is unconditional — it may itself start with "-" as literal
+            # text, not a trap option (Sonnet r5: that dash check must not survive past --)
+            dashdash = w == "trap" and toks[i + 1:i + 2] == ["--"]
+            j_ = i + 2 if dashdash else i + 1
+            trap_cmd = toks[j_] if w == "trap" and j_ + 1 < len(toks) and (dashdash or not toks[j_].startswith("-")) else None
             if c is not None or (w == "eval" and toks[i + 1:]) or trap_cmd is not None:
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
