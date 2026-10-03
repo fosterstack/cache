@@ -763,5 +763,22 @@ case_ b8-bash-template-shell   bad "$head
     steps:
       - shell: bash --noprofile --norc -eo pipefail {0}
         run: docker run alpine"
+
+# --- Sonnet #164 r2 (N1-N4, R1): forwarded arguments, renamed tool binaries, pip download/wheel, conda, manifests
+case_ n1-forward-docker        bad "$(rb 'log_docker() { echo x; docker "$@"; }; log_docker run alpine')"
+case_ n1-forward-pip           bad "$(rb 'log_pip() { pip "$@"; }; log_pip install requests')"
+case_ n1-variable-verb         bad "$(rb 'v=run; docker "$v" alpine')"
+case_ n2-copied-binary         bad "$(rb 'cp "$(command -v docker)" /tmp/d && /tmp/d run alpine:latest')"
+case_ n2-linked-binary         bad "$(rb 'ln -s "$(which docker)" /tmp/d')"
+case_ n2-copied-pip            bad "$(rb 'cp /usr/bin/pip3 /tmp/p')"
+case_ n2-copy-other-file       ok  "$(rb 'cp Dockerfile.production /tmp/Dockerfile && ln -s /tmp/a /tmp/b')"
+case_ n3-pip-download          bad "$(r 'pip download requests')"
+case_ n3-pip-wheel             bad "$(r 'python3 -m pip wheel requests')"
+case_ n3-download-hashed       ok  "$(rb 'pip download --require-hashes -r r.txt -d /tmp/w')"
+case_ n4-conda                 bad "$(r 'conda install -y requests')"
+case_ n4-mamba                 bad "$(r 'micromamba create -n x python')"
+case_ r1-manifest              bad "$(r 'docker manifest create multi alpine:latest busybox@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ r1-imagetools            bad "$(r 'docker buildx imagetools create -t ghcr.io/x/out:1 alpine:latest')"
+case_ r1-imagetools-pinned     ok  "$(r 'docker buildx imagetools create -t ghcr.io/x/out:1 alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 busybox@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

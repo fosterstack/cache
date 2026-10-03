@@ -82,7 +82,12 @@ word is the image); docker compose / docker-compose / buildx bake / stack are fi
 check does not read); a build's Dockerfile — a literal path, or a template like Dockerfile.${v} matched against the
 tree — must exist in the repository and every FROM be a digest, scratch or an earlier stage (stdin or a generated
 Dockerfile is a finding); a local name counts only if the job made it EARLIER; a step in a non-POSIX shell that names
-a container or package tool is a finding (this check reads POSIX shell only). What
+a container or package tool is a finding (this check reads POSIX shell only). Round 2 (Sonnet #164): a tool
+given forwarded arguments ("$@", $*) or a variable verb is a finding; copying, linking or aliasing a tool binary under
+another name is a finding; pip download/wheel follow the install rule; conda/mamba/micromamba installs are flagged;
+docker manifest create and buildx imagetools create sources must be digests. What static reading cannot see is the
+review pass's (documented boundary): a tool named only through a shell variable, a tool binary fetched from the
+network under another name, and OS packages the runner installs from its signed distribution archives (apt). What
 a pinned commit references on its own (e.g. the container image inside ossf/scorecard-action's action.yaml) is
 fixed by our pin to that commit and is that action's supply chain, not ours; it is not read here, and no action
 is excepted by name.
@@ -499,7 +504,13 @@ PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "skopeo", "crane", "docker-compose", "podman-compose"}
 PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 # package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
-PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm)$")
+PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba)$")
+FORWARD = {"$@", "$*", "${@}", "${*}"}   # a wrapper forwarding its own arguments (Sonnet #164 r2, N1)
+TOOL_WORDS = r"(docker|podman|skopeo|crane|pip3?|pipx|uvx?|npm|npx|gem|yarn|pnpm|conda|mamba|micromamba|python3?)"
+# a tool binary copied, linked or aliased under another name (N2): the renamed command is invisible to name matching
+RENAMED = re.compile(r"(?m)(^|[;&|(\s])(cp|ln|install|mv|rsync)\s[^\n;&|]*?(\$\((command\s+-v|which|type\s+-p)\s+[\"']?"
+                     + TOOL_WORDS + r"[\"']?\)|/" + TOOL_WORDS + r"(?=[\s\"']|$))"
+                     r"|(^|[;&|\s])alias\s+[A-Za-z0-9_.-]+=[\"']?" + TOOL_WORDS + r"\b")
 SHELLS = {"bash", "sh", "dash", "zsh"}
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n`]|\$\(|\)")
 
@@ -622,7 +633,7 @@ def _pip_install(args):
         elif a in ("-e", "--editable"):
             specs, i = specs + 1, i + 2
             continue
-        elif a in ("-c", "--constraint", "-t", "--target", "--prefix", "--root", "-i", "--index-url",
+        elif a in ("-c", "--constraint", "-t", "--target", "-d", "--dest", "-w", "--wheel-dir", "--prefix", "--root", "-i", "--index-url",
                    "--extra-index-url", "-f", "--find-links", "--platform", "--python-version", "--implementation",
                    "--abi", "--src", "--report", "--progress-bar", "--only-binary", "--no-binary", "--log",
                    "--cache-dir", "--proxy", "--timeout", "--retries", "--trusted-host", "--cert", "--client-cert",
@@ -646,15 +657,25 @@ def script_installs(script):
             cmd, args = "python -m pip", args[args.index("-m") + 2:]
         if cmd == "uv" and args[:1] == ["pip"]:
             cmd, args = "uv pip", args[1:]
+        if FORWARD & set(args):
+            found.append((cmd, "forwards its caller's arguments; the packages cannot be seen"))
+            continue
         if re.match(r"^pip3?(\.[0-9]+)?$", cmd) or cmd in ("python -m pip", "uv pip"):
-            if "install" in args:
-                rest = args[args.index("install") + 1:]
-                if not _pip_install(rest):
-                    found.append((cmd + " install", "not every package from a -r file checked with --require-hashes"))
+            sub = next((a for a in args if not a.startswith("-")), None)
+            if sub is not None and _variable(sub):
+                found.append((cmd, "its subcommand is a variable; the packages cannot be seen"))
+            for verb in ("install", "download", "wheel"):     # download and wheel build from source too (N3)
+                if verb in args:
+                    rest = args[args.index(verb) + 1:]
+                    if not _pip_install(rest):
+                        found.append((cmd + " " + verb, "not every package from a -r file checked with --require-hashes"))
+                    break
         elif cmd == "pipx" and args[:1] and args[0] in ("install", "run", "inject", "upgrade", "reinstall"):
             found.append(("pipx " + args[0], "pipx cannot check hashes"))
         elif cmd == "uv" and args[:1] == ["tool"] and args[1:2] and args[1] in ("install", "run", "upgrade"):
             found.append(("uv tool " + args[1], "uv tool cannot check hashes"))
+        elif cmd in ("conda", "mamba", "micromamba") and args[:1] and args[0] in ("install", "create", "update", "env", "run"):
+            found.append((cmd + " " + args[0], "a %s package install (none is reviewed for hashes here)" % cmd))
         elif cmd in ("uvx", "npx"):
             found.append((cmd, "runs a package fetched by name"))
         elif cmd in ("npm", "yarn", "pnpm", "gem") and args[:1] and args[0] in ("install", "i", "ci", "add", "update", "exec", "dlx"):
@@ -680,11 +701,33 @@ def script_images(script):
             rest = args[k:]
             if not rest:
                 continue
+            if FORWARD & set(args) or _variable(rest[0]):
+                ev.append(("finding", "`%s` is given forwarded arguments or a variable verb; its image cannot be seen"
+                                      % cmd))
+                continue
             verb, rest = rest[0], rest[1:]
             if verb in ("container", "image", "builder") and rest:
                 verb, rest = rest[0], rest[1:]
             if verb == "buildx" and rest:
                 verb, rest = ("build" if rest[0] in ("build", "b") else "buildx " + rest[0]), rest[1:]
+                if verb == "buildx imagetools" and rest[:1] == ["create"]:
+                    verb, rest = "imagetools create", rest[1:]
+            if verb == "manifest" and rest[:1] == ["create"]:
+                pos = [a for a in rest[1:] if not a.startswith("-")]
+                ev += [("use", "docker manifest create", x) for x in pos[1:]]
+                continue
+            if verb == "imagetools create":
+                i, pos = 0, []
+                while i < len(rest):
+                    a = rest[i]
+                    if a in ("-t", "--tag", "-f", "--file", "--progress", "--builder", "--annotation", "--platform"):
+                        i += 2
+                        continue
+                    if not a.startswith("-"):
+                        pos.append(a)
+                    i += 1
+                ev += [("use", "docker buildx imagetools create", x) for x in pos]
+                continue
             if verb in ("compose", "buildx bake", "stack"):
                 ev.append(("finding", "`docker %s` runs images named in files this check does not read" % verb))
             elif verb in ("run", "create", "pull"):
@@ -767,6 +810,9 @@ def check_runs(where_job, scripts, bad, tree=None):
     check reads POSIX shell only (Sonnet B8)."""
     local = set()
     for where, text, shell in scripts:
+        if RENAMED.search(text):
+            bad.append(f"{where}: copies, links or aliases a container or package tool under another name; the "
+                       f"renamed command cannot be checked")
         if shell and not re.match(r"^(bash|sh)(\s|$)", shell):
             if re.search(r"(?i)(^|[^A-Za-z0-9_-])(docker|podman|skopeo|crane|pipx?|pip3|uvx?|npm|npx|gem|yarn|pnpm)"
                          r"([^A-Za-z0-9_-]|$)", text):
