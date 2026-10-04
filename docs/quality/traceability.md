@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 71 |
-| Acceptance criteria | 156 |
+| Acceptance criteria | 157 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 139 |
+| ACs with mapped evidence | 141 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -672,13 +672,14 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC3 | Given a push to main that removes a critical or high finding present in the latest release, on a patch-clean main; when release.yml runs on that push; then it cuts the patch in that run | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-009-AC4 | Given the daily schedule, main ahead of the latest tag in shipped bytes and patch-clean; when release.yml runs; then it cuts one patch that day; it never cuts a second patch the same day except for a critical or high fix | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC5 | Given a patch tag; when CI creates it; then it is signed keylessly with release.yml's own OIDC identity on main (gitsign); no signing key is stored anywhere | ci-workflow |  | approved | 1 item(s) |
-| REQ-REL-009-AC6 | Given a release tag; when source admission verifies it; then it accepts the owner's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity for patch tags only; any other signer, or that identity on a minor or major tag, is refused | unit |  | approved | none mapped |
+| REQ-REL-009-AC6 | Given a release tag; when source admission verifies it; then it accepts the owner's SSH signature (allowed-signers) for any tag, and the release.yml-on-main identity for patch tags only; any other signer, or that identity on a minor or major tag, is refused | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC7 | Given a patch tag; when the release runs; then it runs the full chain (admission, build, assembly, reproducibility, scans, acceptance, authorization, promotion) and lands on GHCR and the Docker Hub mirror with identical digests | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC8 | Given a patch release; when its notes are generated; then they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release and in the changelog, and name no vendor or model | unit |  | approved | 2 item(s) |
 | REQ-REL-009-AC9 | Given a patch that fixes CVEs; when it is released; then the VEX statements for those CVEs change to fixed in that version, and the customer suppression files regenerate with the release | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC10 | Given a stage of a patch release; when it fails; then one issue is opened, that attempt is abandoned with no retry, the next daily run tries again once the cause is fixed, and the owner is told as information | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
+| REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
 
 ## SCAN
 

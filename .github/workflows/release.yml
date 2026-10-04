@@ -151,12 +151,45 @@ jobs:
           n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
 
+      # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
+      # if the requirements are byte-for-byte unchanged since it. Admission applies this rule; decide applies the SAME
+      # rule to the same sources first (owner-signed tags), so it never cuts a tag admission must refuse. Otherwise no
+      # cut: it waits for the owner.
+      - name: pre-check the ACs baseline admission will require (bin/admission-tag-signer.py baseline)
+        id: basecheck
+        if: ${{ steps.decide.outputs.cut == 'true' }}
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          # baselines only from owner-SSH-signed tags of the line, verified against protected main's allowed signers —
+          # exactly what admission reads (Codex #163 r1, B01; advisor 0093)
+          git fetch -q --no-tags origin main
+          git show origin/main:.github/policy/allowed_signers > "$RUNNER_TEMP/allowed_signers"
+          python3 bin/admission-tag-signer.py owner-baselines --tag "${VERSION}" \
+            --allowed-signers "$RUNNER_TEMP/allowed_signers" --out "$RUNNER_TEMP/owner-baselines"
+          b=$(python3 bin/admission-tag-signer.py baseline --tag "${VERSION}" --owner-baselines "$RUNNER_TEMP/owner-baselines" \
+                --requirements requirements/requirements.yaml)
+          echo "$b"
+          case "$b" in
+            "use "*)
+              # admission will read the tagged commit's copy and refuse it unless it equals the owner tag's (pin pass B03)
+              base=$(cut -d' ' -f2 <<<"$b")
+              if git show "${base}:requirements/releases/${base}.yaml" | cmp -s - "requirements/releases/${base}.yaml"; then
+                echo "ok=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "::notice::no cut: requirements/releases/${base}.yaml differs from the owner-signed ${base}"
+                echo "ok=false" >> "$GITHUB_OUTPUT"
+              fi ;;
+            *) echo "::notice::no cut: ${b#no }"; echo "ok=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       # Admission requires every push-scoped required check green on the exact tagged commit; on a push, that commit's
       # checks are still running when decide runs. Wait for them (bounded: a wait, never a retry, rule 7); cut only if they
       # are all green, judged as admission judges them. Otherwise no cut, and the daily run picks the patch up.
       - name: wait for the tagged commit's required checks (as admission judges them; bounded)
         id: checks
-        if: ${{ steps.decide.outputs.cut == 'true' }}
+        if: ${{ steps.basecheck.outputs.ok == 'true' }}
         timeout-minutes: 65
         env:
           GH_TOKEN: ${{ github.token }}
@@ -352,7 +385,7 @@ jobs:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-predicate:
-    needs: [image, acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
+    needs: [admission, image, acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
     uses: ./.github/workflows/stage-acceptance-predicate.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
@@ -361,6 +394,7 @@ jobs:
       maven-results: ${{ needs.acceptance.outputs.maven-results }}
       egress-results: ${{ needs.acceptance-egress.outputs.results }}
       k8s-results: ${{ needs.acceptance-k8s.outputs.results }}
+      baseline-version: ${{ needs.admission.outputs.baseline }}
 
   authorization:
     needs: [admission, build, image, scans, acceptance-predicate]
@@ -382,9 +416,10 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
 
   promotion:
-    needs: [build, image, authorization]
+    needs: [admission, build, image, authorization]
     uses: ./.github/workflows/stage-promote.yml
     with:
+      baseline-version: ${{ needs.admission.outputs.baseline }}
       digests: ${{ needs.image.outputs.digests }}
       dist-artifact: dist-release
       expected-checksums: ${{ needs.build.outputs.checksums }}

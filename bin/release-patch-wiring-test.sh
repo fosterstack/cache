@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10
+# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
@@ -13,6 +13,7 @@
 # The real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+export WIRING_ROOT="$root"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 judge() { ROOT="$root" python3 - "$1" "${2:-$root/.github/workflows/stage-promote.yml}" <<'PY'
@@ -64,10 +65,23 @@ if "patch-decide.py removed" not in text or "grype" not in text:
 # advisor 0063: before signing, wait (bounded) for the tagged commit's push-scoped required checks, judged as admission
 # judges them; sign, mint and push only when they are ready
 names = [s.get("name") for s in steps]
+# REQ-REL-009-AC13 (owner RATIFIED Oct 2): decide pre-checks the baseline admission will require — the same rule
+# (bin/admission-tag-signer.py baseline) on the same files — and waits/cuts only when it holds
+pre = [s for s in steps if s.get("id") == "basecheck"]
+# advisor 0093: the pre-check reads baselines the way admission does — only from owner-SSH-signed tags, verified against
+# protected main's allowed signers — never from the checkout's requirements/releases/
+prun = pre[0].get("run") or "" if pre else ""
+if "bin/admission-tag-signer.py owner-baselines" not in prun or "git show origin/main:.github/policy/allowed_signers" not in prun \
+        or "--releases-dir" in prun or "--owner-baselines" not in prun:
+    bad.append("decide's pre-check does not read baselines only from owner-signed tags (as admission does)")
+if len(pre) != 1 or "bin/admission-tag-signer.py baseline" not in (pre[0].get("run") or "") or \
+        "steps.decide.outputs.cut == 'true'" not in pre[0].get("if", "") or \
+        "--requirements requirements/requirements.yaml" not in (pre[0].get("run") or ""):
+    bad.append("decide does not pre-check the ACs baseline with admission's rule")
 wait = [s for s in steps if s.get("id") == "checks"]
 if len(wait) != 1 or "patch-decide.py ready" not in (wait[0].get("run") or "") or \
         not (wait[0].get("timeout-minutes") or "").isdigit() or int(wait[0]["timeout-minutes"]) > 70 or \
-        "steps.decide.outputs.cut == 'true'" not in wait[0].get("if", "") or \
+        "steps.basecheck.outputs.ok == 'true'" not in wait[0].get("if", "") or \
         "check-runs?filter=latest" not in (wait[0].get("run") or ""):
     bad.append("no bounded wait for the tagged commit's required checks (patch-decide.py ready) before a cut")
 gated = [s.get("name") or s.get("id") for s in steps
@@ -163,6 +177,27 @@ sp = yaml.load(open(sys.argv[2]), Loader=yaml.BaseLoader)
 create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "gh release create" in (st.get("run") or "")]
 if len(create) != 1 or "patch-decide.py tag-notes" not in create[0]["run"] or "--notes-file" not in create[0]["run"]:
     bad.append("stage-promote does not post a patch tag's notes")
+# REQ-REL-009-AC13 downstream (found while wiring rule 10): admission's chosen baseline reaches every stage that reads a
+# baseline — the acceptance predicate and the release manifest — instead of each assuming requirements/releases/<tag>.yaml
+for job in ("acceptance-predicate", "promotion"):
+    j = jobs.get(job) or {}
+    if (j.get("with") or {}).get("baseline-version") != "${{ needs.admission.outputs.baseline }}" or "admission" not in (j.get("needs") or []):
+        bad.append("%s does not receive admission's baseline" % job)
+# Codex #163 pin pass B01: authorization checks acceptance against the baseline the SIGNED admission predicate names, not
+# the tag's own file (a CI patch has none); B03: decide's pre-check refuses what admission refuses — the checkout's copy of
+# the chosen baseline must equal the owner tag's, as admission's cmp requires
+import os
+auth = open(os.path.join(os.environ["WIRING_ROOT"], ".github/workflows/stage-authorize.yml")).read()
+if "predicate.baseline_version" not in auth or 'authorize-acceptance-check.py "${adm_base}"' not in auth \
+        or 'authorize-acceptance-check.py "${GITHUB_REF_NAME}"' in auth:
+    bad.append("authorization does not check acceptance against admission's baseline")
+# Codex #163 r2 B04: the baseline's shape check accepts exactly admission's tag grammar (owner rc tags included)
+shape = re.search(r'\[\[ "\$adm_base" =~ (\S+) \]\]', auth)
+if not shape or not all(bool(re.fullmatch(shape.group(1), v)) == want for v, want in
+                        (("v0.2.2", True), ("v0.3.0-rc.1", True), ("v0.2.2;x", False), ("0.2.2", False), ("v0.2", False))):
+    bad.append("authorization's baseline shape check is not admission's tag grammar (vX.Y.Z[-rc.N])")
+if pre and ("cmp -s" not in prun or 'git show "${base}:requirements/releases/${base}.yaml"' not in prun):
+    bad.append("decide's pre-check does not require the checkout's copy of the baseline to equal the owner tag's")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -195,6 +230,11 @@ case_ a-rerun-path            bad "$J['patch-failed']['steps'][0]['run'] += '\\n
 case_ gitsign-unpinned        bad "[s.__setitem__('run', s['run'].replace('bin/install-scanner.sh gitsign', 'go install github.com/sigstore/gitsign@latest')) for s in $D['steps'] if 'install-scanner.sh gitsign' in (s.get('run') or '')]"
 case_ no-failure-issue        bad "$J.pop('patch-failed')"
 case_ decide-concurrent       bad "$D.pop('concurrency')"
+case_ precheck-copy-unchecked bad "[s.__setitem__('run', s['run'].replace('cmp -s', 'true')) for s in $D['steps'] if s.get('id') == 'basecheck']"
+case_ precheck-own-files     bad "[s.__setitem__('run', s['run'].replace('owner-baselines --tag', 'owner-baselinez --tag')) for s in $D['steps'] if s.get('id') == 'basecheck']"
+case_ precheck-local-signers bad "[s.__setitem__('run', s['run'].replace('git show origin/main:.github/policy/allowed_signers', 'cat .github/policy/allowed_signers')) for s in $D['steps'] if s.get('id') == 'basecheck']"
+case_ no-baseline-check       bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'basecheck']"
+case_ wait-ignores-baseline   bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if s.get('id') == 'checks']"
 case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
 case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
@@ -202,6 +242,8 @@ case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ predicate-own-baseline  bad "$J['acceptance-predicate']['with'].pop('baseline-version')"
+case_ promotion-own-baseline  bad "$J['promotion']['with']['baseline-version'] = '\${{ github.ref_name }}'"
 case_ no-schedule             bad "d['on'].pop('schedule')"
 case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('base_ok', 'ok')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
@@ -224,5 +266,25 @@ case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
 sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
 if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"
 else pass=$((pass+1)); echo "PASS stage-promote-fixed-notes → bad ($out)"; fi
+# the stages themselves read the baseline they are given (empty = the tag's own baseline, as for owner-signed tags)
+stages_out=$(python3 - "$root" <<'PY'
+import os, sys, yaml
+root = sys.argv[1]
+bad = []
+adm = yaml.load(open(os.path.join(root, ".github/workflows/stage-admission.yml")), Loader=yaml.BaseLoader)
+if (adm["on"]["workflow_call"].get("outputs") or {}).get("baseline", {}).get("value") != "${{ jobs.admit.outputs.baseline }}" \
+        or adm["jobs"]["admit"]["outputs"].get("baseline") != "${{ steps.baseline.outputs.version }}":
+    bad.append("stage-admission does not output the baseline it used")
+for f, needle in (("stage-acceptance-predicate.yml", 'frozen_path = f"requirements/releases/{base}.yaml"'),
+                  ("stage-promote.yml", '--arg baseline "requirements/releases/${base}.yaml"')):
+    d = yaml.load(open(os.path.join(root, ".github/workflows", f)), Loader=yaml.BaseLoader)
+    inp = d["on"]["workflow_call"]["inputs"].get("baseline-version") or {}
+    text = open(os.path.join(root, ".github/workflows", f)).read()
+    if inp.get("default") != "" or needle not in text or "inputs.baseline-version" not in text:
+        bad.append("%s does not read the baseline it is given" % f)
+print("; ".join(bad) or "ok")
+PY
+)
+if [ "$stages_out" = ok ]; then pass=$((pass+1)); echo "PASS stages-read-baseline → ok"; else failn=$((failn+1)); echo "FAIL stages-read-baseline ($stages_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
