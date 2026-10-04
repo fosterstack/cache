@@ -52,17 +52,17 @@ def route(tag, tag_object, released):
 
 
 # REQ-REL-009-AC13 (owner RATIFIED amendment, Oct 2) + the owner's 0126 amendment (Oct 3) + advisor 0150's
-# validated classification table: a requirement ID whose changes since a baseline never need the owner's fresh
-# review to cut an automatic patch. Mirrors tools/requirements/main.go's publicationACs/blockingSet treatment
-# in spirit, not by import (this module has no Go dependency) — keep the two lists in sync by hand; a REQ id
-# not on this list, or not yet introduced at all, is product by default (fail-closed). REQ-SCAN-010 (ships
-# OpenVEX/Inspector/CSAF) and REQ-SCAN-011 (the customer guide) are deliberately NOT on this list (Codex #163
-# r1, B02, fail-closed pending the owner's Monday confirmation) — both are customer-facing deliverables, not
-# pipeline/CI tooling, despite matching every other v0.3.0 requirement's introduced-version/non-blocking shape.
+# validated classification table, amended again by the owner (Oct 4, handoff 0155): REQ-SCAN-010 (ships
+# OpenVEX/Inspector/CSAF) and REQ-SCAN-011 (the customer guide) may ride automatic patches after all (Codex
+# #163 r1, B02's concern considered and overruled by the owner). A requirement ID whose changes since a
+# baseline never need the owner's fresh review to cut an automatic patch. Mirrors tools/requirements/main.go's
+# publicationACs/blockingSet treatment in spirit, not by import (this module has no Go dependency) — keep the
+# two lists in sync by hand; a REQ id not on this list, or not yet introduced at all, is product by default
+# (fail-closed).
 PIPELINE_ONLY = frozenset([
     "REQ-REL-004", "REQ-REL-005", "REQ-REL-006", "REQ-REL-007", "REQ-REL-008", "REQ-REL-009",
     "REQ-DEP-001", "REQ-DEP-002", "REQ-DEP-003", "REQ-DEP-004",
-] + ["REQ-SCAN-%03d" % n for n in range(1, 15) if n not in (10, 11)])
+] + ["REQ-SCAN-%03d" % n for n in range(1, 15)])
 # mirrors tools/requirements/main.go's own publicationACs (kept in sync by hand, same reason)
 PUBLICATION_ACS = frozenset(["REQ-REL-001-AC1", "REQ-REL-002-AC1"])
 
