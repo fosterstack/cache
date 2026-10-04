@@ -109,10 +109,12 @@ for tag, bls, breqs, req, want, why in [
      "an AC spelled like a pipeline-only id but really under a product requirement: still refused"),
     # Codex #163 r1, R02: a NEW, non-blocking product AC born deprecated must still be seen as a change
     # needing pipeline-only classification -- deprecated requirements are excluded only from the BLOCKING
-    # set, never from the full AC comparison rule (b) runs
+    # set, never from the full AC comparison rule (b) runs. Codex #163 r2c, R01: this must use a DISTINCT
+    # requirement/AC id from BASE's own, or the fixture accidentally clobbers BASE's blocking AC (same id,
+    # overwritten by dict assignment) and rule (a) refuses first, never exercising rule (b) at all
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
-     req_yaml(BASE + [((not_pipe_req, True), not_pipe_req + "-AC1", False)]), None,
-     "a new AC born deprecated under a product requirement: still a change, still refused"),
+     req_yaml(BASE + [((not_pipe_req + "-NEW", True), not_pipe_req + "-NEW-AC1", False)]), None,
+     "a new AC born deprecated under a DIFFERENT product requirement: still a change, still refused"),
     # rule (b): a new PIPELINE-ONLY AC is fine, blocking set (a) still holds
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", False)]), "v0.2.1",
