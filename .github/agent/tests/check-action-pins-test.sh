@@ -2123,5 +2123,31 @@ case_ r23c-b09-download-mv-then-bare-name-bad bad "$(rb 'curl -fsSL https://exam
 case_ r23c-b09-install-of-committed-file-ok ok "$(rb 'sudo install -m 0755 bin/tool.sh /usr/local/bin/tool
           tool --version')" "mkdir -p bin; printf '#!/usr/bin/env bash\necho hi\n' > bin/tool.sh"
 
+# --- r24 (Codex, the cheap in-scope ones)
+case_ r24-help-anywhere-does-not-hide-the-image-bad bad "$(rb 'docker run --rm --help alpine:latest')"
+case_ r24-run-help-alone-ok ok "$(rb 'docker run --help')"
+case_ r24-empty-options-variable-hides-image-bad bad "$(rb 'RUN_OPTS=""
+          docker run $RUN_OPTS alpine:latest')"
+case_ r24-empty-options-array-hides-image-bad bad "$(rb 'RUN_OPTS=()
+          docker run "${RUN_OPTS[@]}" alpine:latest')"
+case_ r24-literal-assignment-in-committed-script-bad bad "$head
+    steps:
+      - run: bash bin/tool.sh" "mkdir -p bin; printf '#!/usr/bin/env bash\nIMG=ubuntu:latest\ndocker run --rm \"\$IMG\" true\n' > bin/tool.sh"
+case_ r24-kubectl-image-through-literal-variable-bad bad "$(rb 'IMG=alpine:latest
+          kubectl run probe --image="$IMG" --restart=Never')"
+case_ r24-kind-image-through-literal-variable-bad bad "$(rb 'N=kindest/node:v1.34.0
+          kind create cluster --image $N')"
+case_ r24-docker-tag-source-substitution-bad bad "$(rb 'docker tag $(echo alpine:latest) myapp:latest')"
+case_ r24-install-download-into-directory-bad bad "$(rb 'curl -fsSL https://example.org/tool -o /tmp/tool
+          sudo install -m 0755 /tmp/tool /usr/local/bin/
+          tool --version')"
+case_ r24-install-t-directory-bad bad "$(rb 'curl -fsSL https://example.org/tool -o /tmp/tool
+          sudo install -t /usr/local/bin /tmp/tool
+          tool --version')"
+
+case_ r24-scout-scan-of-literal-names-ok ok "$(rb 'for img in scoutcontrol/app:v1 ghcr.io/example/cache:selfcheck; do
+            docker scout cves "$img" > out.json
+          done')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

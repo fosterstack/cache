@@ -1167,7 +1167,7 @@ def _variable(tok):
 def _options_variables(script):
     """Names this script assigns OPTIONS (a literal starting with a dash, or an array whose first element does): `RUN_OPTS=--rm` and
     `RUN_OPTS=(--rm)`. As docker run's first word such a variable is options, and the image is the word after it (r23, B4)."""
-    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*)?[\"']?-", script))
+    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*\)|[\"']{2}(?![\w])|(?:\(\s*)?[\"']?-)", script))   # also EMPTY (""/()): r24
 
 
 def _is_optvar(tok, optvars):
@@ -1192,18 +1192,27 @@ def _downloaded_commands(script):
                 elif a.startswith(("--output=", "--output-document=")):
                     downloads.add(a.split("=", 1)[1].strip("\"'"))
         elif base in ("install", "cp", "mv", "ln"):
-            skip, pos = False, []
+            skip, pos, tdir = False, [], False
             for a in toks[toks.index(words[-1]) + 1:]:
                 if skip:
                     skip = False
                     continue
-                if a in ("-m", "-o", "-g", "-t", "-S", "--mode", "--owner", "--group", "--target-directory"):
+                if a in ("-m", "-o", "-g", "-S", "--mode", "--owner", "--group"):
                     skip = True
+                elif a in ("-t", "--target-directory"):
+                    skip, tdir = True, True               # install -t DIR SRC...: every positional is a source
+                elif a.startswith("--target-directory="):
+                    tdir = True
                 elif not a.startswith("-"):
                     pos.append(a.strip("\"'"))
-            if len(pos) >= 2 and any(x in downloads for x in pos[:-1]):
-                names.add(_base(pos[-1]))
-                downloads.add(pos[-1])
+            srcs = pos if tdir else pos[:-1]
+            if srcs and any(x in downloads for x in srcs):
+                for x in srcs:
+                    if x in downloads:
+                        names.add(_base(x))              # installed into a directory it keeps its name
+                if not tdir:
+                    names.add(_base(pos[-1]))
+                    downloads.add(pos[-1])
     return names
 
 
@@ -1448,6 +1457,9 @@ def script_images(script):
                 val = a.split("=", 1)[1] if a.startswith("--image=") else (args[j + 1] if a == "--image" and j + 1 < len(args) else None)
                 if val is not None and not (_variable(val) or DIGEST_REF.search(val)):
                     ev.append(("finding", f"`{cmd}` is given an image not pinned by digest: {val!r}"))
+                elif val is not None and _variable(val) and _var_unpinned_literal(val, _mask_shell(script)[0]) is not None:
+                    ev.append(("finding", f"`{cmd}` is given {val!r}, which this script assigns the unpinned name "
+                                          f"{_var_unpinned_literal(val, _mask_shell(script)[0])!r}"))
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
             continue
@@ -1526,8 +1538,8 @@ def script_images(script):
             elif verb in ("run", "create", "pull"):
                 val, boolean = (PULL_VAL, PULL_BOOL) if verb == "pull" else (RUN_VAL, RUN_BOOL)
                 rest = [a for a in rest if not _is_optvar(a, optvars)]     # a variable that holds OPTIONS is not the image (r23, B4)
-                if "--help" in rest:
-                    continue                                                # prints usage; names no image
+                had_help = "--help" in rest
+                rest = [a for a in rest if a != "--help"]                  # --help prints usage, but an image named beside it is still checked (r24)
                 k, unknown = _options(rest, val, boolean)
                 if unknown:
                     ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "
@@ -1545,7 +1557,9 @@ def script_images(script):
                     never = verb != "pull" and pull_state == "never"
                     fetch = verb == "pull" or (pull_state == "always" if pull_state is not None else False)
                     if not never:     # --pull=never can only use an image already in the daemon (Codex r3, C10)
-                        if k >= len(rest) and not ({"--help", "-h", "--version"} & set(rest)):
+                        if k >= len(rest) and had_help:
+                            pass                                            # `docker run --help`: usage only
+                        elif k >= len(rest) and not ({"-h", "--version"} & set(rest)):
                             ev.append(("finding", f"`docker {verb}` has no image operand: it comes from stdin or a wrapper (xargs) this "
                                                   f"check cannot read (Codex #164 r23, B5)"))
                         else:
@@ -2358,9 +2372,9 @@ def check_runs(where_job, scripts, bad, tree=None):
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
         own = read(raw)
-        own_nc = _mask_shell(own)[0]          # the step's text without comments, for reading a variable's literal value
         raw = raw + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own
         text = read(raw)
+        own_nc = _mask_shell(text)[0]         # the step's text AND the committed scripts it runs, without comments, for reading a literal value (r24)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
         for name in daemon_redirects(_unquoted(text)):
             bad.append(f"{where}: sets {name}, which points docker or buildx at another daemon or context; refused")
@@ -2381,7 +2395,9 @@ def check_runs(where_job, scripts, bad, tree=None):
             if ev[0] == "tag":
                 src, dst = ev[1], ev[2]
                 lit = _var_unpinned_literal(src, own_nc) if _variable(src) else None
-                if lit is not None:
+                if SUBST in src:
+                    bad.append(f"{where}: `docker tag` takes its source from a command substitution; it cannot be checked")
+                elif lit is not None:
                     bad.append(f"{where}: `docker tag` takes {src!r}, which this script assigns the unpinned name {lit!r}; refused")
                 elif not (_variable(src) or DIGEST_REF.search(src)):
                     # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21); a name this job built is
@@ -2429,7 +2445,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if img is not None and SUBST in img:
                     bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
                     continue
-                lit = _var_unpinned_literal(img, own_nc) if img is not None and _variable(img) else None
+                lit = (_var_unpinned_literal(img, own_nc) if img is not None and _variable(img)
+                       and re.fullmatch(r"(?:docker|podman|nerdctl) (?:run|create|pull)", c) else None)   # not a scan (docker scout) or a read
                 if lit is not None:
                     bad.append(f"{where}: `{c}` names {img!r}, which this script assigns the unpinned name {lit!r}; pin it by digest")
                     continue
