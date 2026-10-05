@@ -74,6 +74,7 @@ with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
                          "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links}) + "\n")
 if p.get("crash"):
+    sys.stderr.write("PARTIAL-TRANSCRIPT for " + req["persona"] + "\n")
     sys.exit(7)
 if "raw_out" in p:
     sys.stdout.write(p["raw_out"]); sys.exit(0)
@@ -108,32 +109,59 @@ case "$1" in
 esac
 exit 0
 SH
-# gh is a python stub: it VALIDATES issue create/edit (a --title, a --body-file that exists and is non-empty at the moment of the
-# call) and logs the body so tests assert what was actually published; DOCKER/GH_FAIL_MATCH simulate failures
+# gh is a python stub that validates ARGV STRUCTURALLY (every token accounted for: a title split into words is refused, as the real gh would),
+# validates issue create/edit bodies at the moment of the call, and logs each call both as text and as JSON; GH_FAIL_MATCH simulates a failure
 cat >"$work/gh" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys
 a = sys.argv[1:]
 line = " ".join(a)
 log = open(os.environ["GH_LOG"], "a")
-log.write(line + "\n")
+log.write(line + "\n"); log.write("ARGV " + json.dumps(a) + "\n")
 fm = os.environ.get("GH_FAIL_MATCH")
+def die(msg, rc=1):
+    sys.stderr.write("gh: %s\n" % msg); sys.exit(rc)
+def parse(rest, opts, multi=(), flags=()):
+    """returns ({opt: value or [values]}, positionals); an unknown option or a missing value is an error"""
+    got, pos, i = {}, [], 0
+    while i < len(rest):
+        t = rest[i]
+        if t in flags: got[t] = True; i += 1
+        elif t in opts:
+            if i + 1 >= len(rest): die("flag needs an argument: " + t)
+            if t in multi: got.setdefault(t, []).append(rest[i + 1])
+            else: got[t] = rest[i + 1]
+            i += 2
+        elif t.startswith("-"): die("unknown flag: " + t)
+        else: pos.append(t); i += 1
+    return got, pos
 if fm and fm in line:
-    sys.stderr.write("gh: simulated failure\n"); sys.exit(1)
-if a[:2] in (["issue", "create"], ["issue", "edit"]):
-    if "--body-file" not in a:
-        sys.stderr.write("gh: no --body-file\n"); sys.exit(1)
-    bf = a[a.index("--body-file") + 1]
+    die("simulated failure")
+cmd = a[:2]
+if cmd == ["issue", "create"]:
+    o, pos = parse(a[2:], ("--title", "--label", "--body-file"), multi=("--label",))
+    if pos or "--title" not in o or "--body-file" not in o: die("accepts 0 arg(s), received %d / missing flags" % len(pos))
+    bf = o["--body-file"]
     if not os.path.isfile(bf) or os.path.getsize(bf) == 0:
-        log.write("BODY-MISSING " + bf + "\n"); sys.stderr.write("gh: body file missing or empty\n"); sys.exit(1)
-    if a[:2] == ["issue", "create"] and "--title" not in a:
-        sys.stderr.write("gh: no --title\n"); sys.exit(1)
+        log.write("BODY-MISSING " + bf + "\n"); die("body file missing or empty")
     log.write("BODY: " + open(bf).read().replace("\n", " | ") + "\n")
     print("https://github.com/x/y/issues/99")
-elif a[:2] == ["issue", "list"]:
-    if "--json" not in a or a[a.index("--json") + 1] != "number,title":
-        sys.stderr.write("gh: this caller cannot parse a list (no --json number,title)\n"); sys.exit(1)
+elif cmd == ["issue", "edit"]:
+    o, pos = parse(a[2:], ("--body-file", "--title"))
+    if len(pos) != 1 or not pos[0].isdigit() or "--body-file" not in o: die("expects one issue number and --body-file")
+    bf = o["--body-file"]
+    if not os.path.isfile(bf) or os.path.getsize(bf) == 0:
+        log.write("BODY-MISSING " + bf + "\n"); die("body file missing or empty")
+    log.write("BODY: " + open(bf).read().replace("\n", " | ") + "\n")
+elif cmd == ["issue", "list"]:
+    o, pos = parse(a[2:], ("--label", "--state", "--search", "--json", "--limit"))
+    if pos or o.get("--json") != "number,title": die("this caller cannot parse a list (needs --json number,title)")
     print(os.environ.get("GH_STUB_LIST", "[]"))
+elif cmd == ["label", "create"]:
+    o, pos = parse(a[2:], ("--description", "--color"), flags=("--force",))
+    if len(pos) != 1: die("label create takes exactly one name")
+else:
+    die("unexpected gh call: " + line)
 sys.exit(0)
 PY
 chmod +x "$work/gh"
@@ -141,7 +169,23 @@ chmod +x "$work/gh"
 python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV1=$!
 python3 -m http.server 18081 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV2=$!
 trap 'kill $SRV1 $SRV2 2>/dev/null; rm -rf "$work"' EXIT
-for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18080');urllib.request.urlopen('http://127.0.0.1:18081')" 2>/dev/null && break; sleep 0.3; done
+echo ours-18080 >"$work/ours-18080.txt"; echo ours-18081 >"$work/ours-18081.txt"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  python3 - "$work" 2>/dev/null <<'PY' && break
+import sys, urllib.request
+for p in (18080, 18081):
+    assert urllib.request.urlopen("http://127.0.0.1:%d/ours-%d.txt" % (p, p)).read().decode().strip() == "ours-%d" % p
+PY
+  sleep 0.3
+done
+python3 - <<'PY' || { echo "the fixture servers did not start, or another process owns ports 18080/18081/18099: refusing to run" >&2; exit 3; }
+import socket, sys
+s = socket.socket(); s.settimeout(0.5)
+assert s.connect_ex(("127.0.0.1", 18099)) != 0, "18099 is in use"
+for p in (18080, 18081):
+    import urllib.request
+    assert urllib.request.urlopen("http://127.0.0.1:%d/ours-%d.txt" % (p, p)).read().decode().strip() == "ours-%d" % p
+PY
 
 # run <name> <plan-json> <mode> [VAR=val ...]  (sets rc; dirs under $work/<name>/)
 run() {
@@ -267,6 +311,8 @@ for l in open(sys.argv[1]):
     t = l.split()
     if t[0] == "pull":
         raise AssertionError("the driver must not pull explicitly: " + l)
+    if t[0] == "run":
+        assert t[:2] == ["run", "-d"], ("every container the driver starts is `run -d ...`: " + l)
     if t[:2] != ["run", "-d"]:
         continue
     ref, flags = t[-1], t[2:-1]
@@ -365,8 +411,9 @@ failclosed tokens-gone  maven-jenkins-ci         '{"drop":["tokens"]}'
 failclosed transcript-gone compliance-reviewer   '{"drop":["transcript"]}'
 failclosed transcript-notstr compliance-reviewer '{"override":{"transcript":["a"]}}'
 failclosed findings-gone readme-evaluator        '{"drop":["findings"]}'
-CASE="a failed agent leaves its transcript file present (empty or partial) so the artifact exists for diagnosis"
+CASE="a failed agent leaves its transcript file present AND holding what it had written to stderr, so the artifact can diagnose it"
 check test -e "$(out fc-crash)/compliance-reviewer.transcript.txt"
+check grep -q 'PARTIAL-TRANSCRIPT for compliance-reviewer' "$(out fc-crash)/compliance-reviewer.transcript.txt"
 
 # --- AC3: friction is information, one issue per run, blocks nothing -------------------------------------------
 FR='{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"the proxy URL is easy to mistype"}]},"on-call-engineer":{"findings":[{"kind":"friction","text":"no log level hint"},{"kind":"friction","text":"rollback needs two reads"}]}}'
@@ -391,8 +438,10 @@ assert "--body-file" in c and "friction-issue.md" in c, c
 assert not [x for x in calls if x.startswith("issue edit") or x.startswith("issue comment")], calls
 PY
 CASE="a failing gh while publishing FRICTION also fails the run: the information issue is never silently lost"
-PUBLISH=1 GH_FAIL_MATCH="persona-uat-friction" run frictionfail "$FR" rc
+PUBLISH=1 GH_FAIL_MATCH="issue create" run frictionfail "$FR" rc
 check test "$rc" -ne 0
+check grep -q '^issue create' "$work/frictionfail/gh.log"
+check grep -q '^label create persona-uat-friction' "$work/frictionfail/gh.log"
 PUBLISH=1 GH_FAIL_MATCH="issue edit" GH_STUB_LIST='[{"number":55,"title":"Persona UAT friction: rc run 4242"}]' run frictionfail2 "$FR" rc
 check test "$rc" -ne 0
 PUBLISH=1 GH_FAIL_MATCH="issue list" run frictionfail3 "$FR" rc
@@ -503,6 +552,15 @@ import sys
 assert not [l for l in open(sys.argv[1]) if l.startswith("issue create") or l.startswith("issue edit")]
 PY
 
+CASE="weekly with friction only exits 0 and opens only the friction issue (AC3: friction blocks nothing, on either schedule)"
+IMAGE="$IMG2" PUBLISH=1 run weeklyfr '{"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"f"}]}}' weekly
+check test "$rc" -eq 0
+check python3 - "$work/weeklyfr/gh.log" <<'PY'
+import sys
+calls = [l.strip() for l in open(sys.argv[1]) if not l.startswith("ARGV ") and not l.startswith("BODY")]
+assert len([c for c in calls if c.startswith("issue create")]) == 1 and "persona-uat-friction" in [c for c in calls if c.startswith("issue create")][0], calls
+assert not [c for c in calls if "--label blocking" in c], calls
+PY
 CASE="weekly: an agent that crashes also counts as blocking (it opens the blocking issue naming the persona), never a silent pass"
 IMAGE="$IMG2" PUBLISH=1 run weeklycrash '{"on-call-engineer":{"crash":true}}' weekly
 check python3 - "$work/weeklycrash/gh.log" "$(out weeklycrash)/blocking-issue.md" <<'PY'
@@ -716,20 +774,24 @@ class _Msg:
         self.usage = type("U", (), {"input_tokens": 120, "output_tokens": 30})()
 class Anthropic:
     def __init__(self, *a, **k):
+        tf = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+        if not tf or not os.path.isfile(tf) or open(tf).read().strip() != "FIXTURE-OIDC-TOKEN":
+            raise RuntimeError("identity token file missing or wrong: federated authentication is not usable")
         open(LOG, "a").write(json.dumps({"init": {"has_key": "ANTHROPIC_API_KEY" in os.environ,
             "token_file": os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"), "fed": [os.environ.get(x) for x in
             ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID")],
             "leaked": sorted(k for k in os.environ if k in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SOME_UNKNOWN_SECRET"))}}) + "\n")
         self.messages = self
     def create(self, **kw):
-        open(LOG, "a").write(json.dumps({"model": kw["model"], "turn": len(kw["messages"])}) + "\n")
+        open(LOG, "a").write(json.dumps({"model": kw["model"], "turn": len(kw["messages"]), "system": kw.get("system", ""),
+            "first": kw["messages"][0]["content"] if isinstance(kw["messages"][0]["content"], str) else json.dumps(kw["messages"][0]["content"])}) + "\n")
         if len(kw["messages"]) == 1:
             return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7))"}))
         return _Msg(json.dumps({"action": "finish", "findings": [{"kind": "friction", "text": "integration friction"}]}))
 PY
 # a python3 first on PATH that makes the fake SDK importable WITHOUT any environment variable reaching the scrubbed agent
 printf '#!/bin/sh\nPYTHONPATH="%s" exec %s "$@"\n' "$work/sdk" "$(command -v python3)" >"$work/pybin/python3"; chmod +x "$work/pybin/python3"
-mkdir -p "$work/integ"; : >"$work/integ/docker.log"; : >"$work/integ/gh.log"; : >"$work/sdk.log"; rc=0
+mkdir -p "$work/integ"; echo FIXTURE-OIDC-TOKEN >"$work/integ/token"; : >"$work/integ/docker.log"; : >"$work/integ/gh.log"; : >"$work/sdk/sdk.log"; rc=0
 sed "s#__LOG__#$work/integ/docker.log#" "$work/docker.tmpl" >"$work/integ/docker"; chmod +x "$work/integ/docker"
 ( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY GH_LOG="$work/integ/gh.log" PATH="$work/pybin:$PATH" GITHUB_RUN_ID=4242 \
     PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE \
@@ -751,12 +813,19 @@ for t in ts:
     assert "# fscache README" in c and "\n42" in c.replace("\r", ""), t
 PY
 CASE="integrated: every provider call (two per persona) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
-check python3 - "$work/sdk.log" <<'PY'
+check python3 - "$work/sdk/sdk.log" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 inits = [r["init"] for r in rows if "init" in r]
 assert len(inits) == 10, len(inits)
 assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") and i["leaked"] == [] for i in inits), inits
+calls = [r for r in rows if "model" in r]
+for r in calls:
+    ctx = (r["system"] + " " + r["first"]).lower()
+    assert "http://127.0.0.1:18080" in ctx, "the persona is never told its endpoint"
+    assert "only the public documentation" in ctx and "do not clone" in ctx and "source" in ctx, "the restriction is not in the prompt"
+assert any("http://127.0.0.1:18081" in (r["system"] + r["first"]) for r in calls), "Jenkins' endpoint never reaches the Maven persona"
+assert any("kubeconfig" in (r["system"] + r["first"]).lower() for r in calls), "the kubeconfig never reaches the on-call persona"
 models = [r["model"] for r in rows if "model" in r]
 assert len(models) == 10 and models.count("INTEG-COMPLIANCE") == 2 and models.count("INTEG-DEFAULT") == 8, models
 PY

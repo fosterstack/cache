@@ -135,6 +135,13 @@ assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"k
 assert a["tokens"] == 550, a
 assert "42" in a["transcript"] and "step 2 fails" in a["transcript"], a
 PY
+CASE="the first model call carries the restriction: only the public documentation, do not clone the repository, do not read its source"
+check python3 - "$work/finish/fp.log" <<'PY'
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())["req"]
+s = (r["system"] + json.dumps(r["messages"])).lower()
+assert "only the public documentation" in s and "do not clone" in s and "source" in s, s
+PY
 CASE="the first model call carries the persona's instructions and the endpoint"
 check python3 - "$work/finish/fp.log" <<'PY'
 import json, sys
