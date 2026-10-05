@@ -1786,5 +1786,61 @@ case_ r19-control-multiple-literal-loop-ok ok "$(rb 'for v in a b c; do
           done
           docker run alpine:b')" "$DF"
 
+# --- r20 (Sonnet B2): main's own stage-admission.yml writes main's copy of a committed script to /tmp/policy in ONE step and runs it in
+# ANOTHER (#163's design). A /tmp copy that a step of the job writes ONCE from `git show origin/main:<committed file>` resolves to that
+# committed file, exactly like the $RUNNER_TEMP copy; every other shape stays refused.
+mkdir_bin='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh && printf "print(1)\n" > bin/tool.py'
+case_ r20-tmp-copy-bash-ok ok "$head
+    steps:
+      - run: |
+          mkdir -p /tmp/policy
+          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh
+      - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
+case_ r20-tmp-copy-python-ok ok "$head
+    steps:
+      - run: |
+          mkdir -p /tmp/policy
+          git show origin/main:bin/tool.py > /tmp/policy/tool.py
+      - run: python3 /tmp/policy/tool.py" "$mkdir_bin"
+case_ r20-tmp-copy-from-other-ref-bad bad "$head
+    steps:
+      - run: |
+          git show attacker:bin/tool.sh > /tmp/policy/tool.sh
+      - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
+case_ r20-tmp-copy-never-written-bad bad "$head
+    steps:
+      - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
+case_ r20-tmp-copy-written-twice-bad bad "$head
+    steps:
+      - run: |
+          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh
+          curl -sSf https://example.invalid/x > /tmp/policy/tool.sh
+      - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
+case_ r20-tmp-copy-not-a-committed-file-bad bad "$head
+    steps:
+      - run: |
+          git show origin/main:bin/missing.sh > /tmp/policy/missing.sh
+      - run: bash /tmp/policy/missing.sh" "$mkdir_bin"
+case_ r20-tmp-copy-name-mismatch-bad bad "$head
+    steps:
+      - run: |
+          git show origin/main:bin/tool.sh > /tmp/policy/other.sh
+      - run: bash /tmp/policy/other.sh" "$mkdir_bin"
+# --- r20 (Sonnet B1): a pipeline continued across lines inside an && / || chain is conditional too
+case_ r20-and-pipeline-continued-bad bad "$(rb 'false && echo x |
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-and-newline-pipeline-continued-bad bad "$(rb 'false &&
+          echo x |
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-or-pipeline-continued-bad bad "$(rb 'true ||
+          echo x |
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-control-plain-continued-pipeline-ok ok "$(rb 'docker build -t alpine:latest . |
+          cat
+          docker run alpine:latest')" "$DF"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -1819,7 +1819,11 @@ def _unconditional(text):
     for line in body.splitlines():
         cond_line = after_chain
         if line.strip():
-            after_chain = line.rstrip().endswith(("&&", "||"))
+            tail = line.rstrip()
+            # a line ending in && / || guards the next one; so does a line ending in | when the pipeline it continues belongs to a
+            # chain's right-hand side (the line itself holds an && / ||, or the line before was already conditional): the pipeline's
+            # later commands may never run (Sonnet #164 r20, B1)
+            after_chain = tail.endswith(("&&", "||")) or (tail.endswith("|") and (cond_line or "&&" in tail or "||" in tail))
         if cond_line:
             continue
         line = re.sub(r"(?<![\w$.-])for\b[^;]*;\s*do(?![\w.-])|(?<![\w$.-])done(?![\w.-])|^\s*do(?![\w.-])", "", line)
@@ -2189,28 +2193,30 @@ GENERATED_OK = {
 
 
 def _resolve_script(path, text, entries):
-    """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a $RUNNER_TEMP copy that a real
-    `git show <ref>:<file> > "$RUNNER_TEMP/<name>"` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main`
-    command of this step writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another
-    repository, or a second write of the copy do not count). None otherwise."""
+    """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
+    `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` command of the
+    job writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
+    write of the copy do not count). <dir> is $RUNNER_TEMP or a directory under /tmp, and the write may be in another step
+    of the job than the run (main's own stage-admission.yml writes /tmp/policy/<name> in one step and runs it in the next;
+    Sonnet #164 r20, B2). None otherwise."""
     rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", path)
     if entries.get(rel) == "file":
         return rel
-    m = re.match(r"^\$\{?RUNNER_TEMP\}?/([\w.-]+)$", path)
+    m = re.match(r"^(\$\{?RUNNER_TEMP\}?|/tmp(?:/[\w.-]+)*)/([\w.-]+)$", path)
     if not m:
         return None
-    base = m.group(1)
-    writes = len(re.findall(r">\s*\"?\$\{?RUNNER_TEMP\}?/(" + re.escape(base) + r"|\$\(basename[^)]*\))\"?", text))
+    d, base = m.group(1), m.group(2)
+    dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
+    dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
+    writes = len(re.findall(dst + r"\"?", text))
     if writes != 1:
         return None
-    lines = [ln for ln in re.sub(r"\\\n", " ", text).splitlines()
-             if re.search(r">\s*\"?\$\{?RUNNER_TEMP\}?/(" + re.escape(base) + r"|\$\(basename[^)]*\))", ln)]
-    pipes = [p for ln in lines for p in re.split(r"\s*(?:;|&&|\|\|)\s*", ln)
-             if re.search(r">\s*\"?\$\{?RUNNER_TEMP\}?/(" + re.escape(base) + r"|\$\(basename[^)]*\))", p)]
+    lines = [ln for ln in re.sub(r"\\\n", " ", text).splitlines() if re.search(dst, ln)]
+    pipes = [p for ln in lines for p in re.split(r"\s*(?:;|&&|\|\|)\s*", ln) if re.search(dst, p)]
     for chunk in [c for p in pipes for c in _split_commands(p)]:  # the fetch must be in the pipeline that writes it (r3)
         toks = chunk.split()
         if toks[:2] == ["git", "show"]:
-            g = re.search(r"(\S+?):([\w./-]+)\s*>\s*\"?\$\{?RUNNER_TEMP\}?/" + re.escape(base) + r"\"?\s*$", chunk.strip())
+            g = re.search(r"(\S+?):([\w./-]+)\s*>\s*\"?" + dpat + r"/" + re.escape(base) + r"\"?\s*$", chunk.strip())
             # only main's copy (or the checked commit's) is the reviewed file (Codex #164 r3, C02: git show attacker:x)
             if g and g.group(1) in ("origin/main", "main", "HEAD", "$GITHUB_SHA", "${GITHUB_SHA}") \
                     and entries.get(g.group(2)) == "file" and _base(g.group(2)) == base:
@@ -2327,7 +2333,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
             continue
         if t[0] == "__foreign__":
             rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", t[1])
-            if entries.get(rel) != "file":
+            if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
             continue
@@ -2355,7 +2361,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
                 found.append("%s is fenced as written only by its python heredoc, and a shell command of the job "
                              "writes it; refused" % path)
             continue
-        rel = _resolve_script(path, text, entries)
+        rel = _resolve_script(path, job or text, entries)
         if rel is None and (_variable(path) or SUBST in path):
             found.append("runs a shell script named by a variable (%s); it cannot be read, refused" % path)
             continue
