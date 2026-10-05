@@ -105,7 +105,7 @@ fi
 case "$1" in
   run) n=$(grep -c '^run ' "$DOCKER_LOG"); echo "cid-$n" ;;
   inspect) if [ -n "${DOCKER_INSPECT_FALSE:-}" ]; then echo false; else echo true; fi ;;
-  exec) echo "apiVersion: v1 # kubeconfig-for-test" ;;
+  exec) printf 'apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: kind\n' ;;
 esac
 exit 0
 SH
@@ -156,7 +156,11 @@ elif cmd == ["issue", "edit"]:
 elif cmd == ["issue", "list"]:
     o, pos = parse(a[2:], ("--label", "--state", "--search", "--json", "--limit"))
     if pos or o.get("--json") != "number,title": die("this caller cannot parse a list (needs --json number,title)")
-    print(os.environ.get("GH_STUB_LIST", "[]"))
+    st = o.get("--state", "open")
+    items = json.loads(os.environ.get("GH_STUB_LIST", "[]"))
+    if st == "all":
+        items += json.loads(os.environ.get("GH_STUB_CLOSED", "[]"))
+    print(json.dumps(items))
 elif cmd == ["label", "create"]:
     o, pos = parse(a[2:], ("--description", "--color"), flags=("--force",))
     if len(pos) != 1: die("label create takes exactly one name")
@@ -289,8 +293,19 @@ for name, v in {**rows["maven-jenkins-ci"], **rows["on-call-engineer"]}.items():
     assert sorted(v)[:2] == ["container", "endpoint"] and v["container"].startswith("cid-"), (name, v)
 assert rows["maven-jenkins-ci"]["jenkins"]["endpoint"] == "http://127.0.0.1:18081", rows
 assert rows["on-call-engineer"]["kind"]["kubeconfig"] == "kubeconfig", rows
+assert rows["on-call-engineer"]["kind"]["endpoint"] == "https://127.0.0.1:18082", rows
 for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator"):
     assert rows[p] == {}, (p, rows[p])
+PY
+CASE="the kubeconfig the on-call persona gets points at the PUBLISHED kind port (https://127.0.0.1:18082), not the container's internal 6443"
+check python3 - "$work/clean/log" <<'PY'
+import json, sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["persona"] == "on-call-engineer":
+        assert "kubeconfig" in r["content"], r["content"].keys()
+        kc = r["content"]["kubeconfig"]
+        assert "server: https://127.0.0.1:18082" in kc and "6443" not in kc, kc
 PY
 CASE="the agent is told to run every shell action in the pinned shell image through the driver's docker, and nothing else"
 check python3 - "$work/clean/log" "$work/clean/docker.log" "$SHL" "x" <<'PY'
@@ -324,7 +339,11 @@ for l in open(sys.argv[1]):
         if f in ("--rm",): i += 1
         elif f == "--name": i += 2
         elif f == "-p":
-            assert re.fullmatch(r"127\.0\.0\.1:\d+:\d+", flags[i + 1]), ("only loopback publishing", l); i += 2
+            assert re.fullmatch(r"127\.0\.0\.1:\d+:\d+", flags[i + 1]), ("only loopback publishing", l)
+            host, cport = flags[i + 1].split(":")[1:]
+            want = {img: ("18080", "8080"), jen: ("18081", "8080"), knd: ("18082", "6443")}.get(ref)
+            assert want is None or (host, cport) == want, ("the published port mapping for this image is wrong", ref, flags[i + 1], want)
+            i += 2
         elif f == "--privileged": assert ref == knd, ("privileged is for kind only", l); i += 1
         else: raise AssertionError(("a flag outside the allowlist (no -v/--mount/-e/--env/--network/--cap-add/--user ...)", f, l))
 assert sorted(seen) == sorted(allowed), seen
@@ -711,6 +730,28 @@ check none_match 'MODEL-(DEFAULT|COMPLIANCE)-X|OTHER-(DEFAULT|COMPLIANCE)' "$(ou
 CASE="no model name is written in the driver: neither a vendor family nor a model-version pattern"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-' "$root/bin/persona-uat.py"
 
+# --- symlinks at the roots: a symlinked README.md or a symlinked docs directory must never carry other bytes into the sandbox
+for kind in readme docs; do
+  rp="$work/symrepo-$kind"; rm -rf "$rp"; mkdir -p "$rp/internal" "$rp/docs"; echo "SECRET-ROOT-TARGET" >"$rp/internal/secret.md"
+  if [ "$kind" = readme ]; then ln -s internal/secret.md "$rp/README.md"; echo "install steps" >"$rp/docs/install.md"
+  else echo "# README" >"$rp/README.md"; rm -rf "$rp/docs"; ln -s internal "$rp/docs"; fi
+  mkdir -p "$work/sym-$kind"; : >"$work/sym-$kind/log"; : >"$work/sym-$kind/docker.log"; echo '{}' >"$work/sym-$kind/plan.json"
+  sed "s#__LOG__#$work/sym-$kind/docker.log#" "$work/docker.tmpl" >"$work/sym-$kind/docker"; chmod +x "$work/sym-$kind/docker"; rc=0
+  env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/sym-$kind/gh.log" PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$rp" \
+    --out "$work/sym-$kind/out" --tools "$work/tools.json" --docker "$work/sym-$kind/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py $work/sym-$kind" \
+    >/dev/null 2>"$work/sym-$kind/stderr" || rc=$?
+  CASE="a symlinked $kind root: its target's bytes never reach any agent or output"
+  check none_match 'SECRET-ROOT-TARGET' "$work/sym-$kind/log" "$work/sym-$kind/out"
+done
+CASE="a symlinked README.md is not a README: the run refuses (non-zero) and starts nothing"
+check test -s "$work/sym-readme/stderr" -a ! -s "$work/sym-readme/docker.log"
+CASE="a symlinked docs directory contributes nothing: the personas get the README only, and the run still works"
+check python3 - "$work/sym-docs/log" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 5 and all(r["docs"] == ["README.md"] for r in rows), [r["docs"] for r in rows]
+PY
+
 # --- the docs the personas read must actually be there
 mkdir -p "$work/emptyrepo"; : >"$work/emptyrepo/placeholder"
 CASE="a --repo with no README.md and no docs: the run refuses (non-zero), every persona is did-not-run, and nothing is started"
@@ -758,6 +799,18 @@ assert not [c for c in calls if c.startswith("issue create") and "persona-uat-fr
 edits = [c for c in calls if c.startswith("issue edit")]
 assert len(edits) == 1 and " 55 " in (" " + edits[0] + " "), calls
 PY
+CASE="a retry of the same run AFTER its friction issue was closed still finds and edits it (the lookup spans all states): never a second issue"
+PUBLISH=1 GH_STUB_LIST='[]' GH_STUB_CLOSED='[{"number":56,"title":"Persona UAT friction: rc run 4242"}]' run frictionclosed "$FR" rc
+check test "$rc" -eq 0
+check python3 - "$work/frictionclosed/gh.log" <<'PY'
+import json, sys
+calls = [l.strip() for l in open(sys.argv[1]) if not l.startswith("ARGV ") and not l.startswith("BODY")]
+lst = [c for c in calls if c.startswith("issue list") and "persona-uat-friction" in c]
+assert lst and "--state all" in lst[0], calls
+assert not [c for c in calls if c.startswith("issue create") and "persona-uat-friction" in c], calls
+edits = [c for c in calls if c.startswith("issue edit")]
+assert len(edits) == 1 and " 56 " in (" " + edits[0] + " "), calls
+PY
 CASE="a friction issue of ANOTHER run that carries the label is never edited: a new run opens its own"
 PUBLISH=1 GH_STUB_LIST='[{"number":54,"title":"Persona UAT friction: rc run 4100"}]' run frictionother "$FR" rc
 check python3 - "$work/frictionother/gh.log" <<'PY'
@@ -794,9 +847,16 @@ class Anthropic:
     def create(self, **kw):
         open(LOG, "a").write(json.dumps({"model": kw["model"], "turn": len(kw["messages"]), "system": kw.get("system", ""),
             "first": kw["messages"][0]["content"] if isinstance(kw["messages"][0]["content"], str) else json.dumps(kw["messages"][0]["content"])}) + "\n")
-        if len(kw["messages"]) == 1:
+        msgs = kw["messages"]
+        if len(msgs) == 1:
             return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7))"}))
-        return _Msg(json.dumps({"action": "finish", "findings": [{"kind": "friction", "text": "integration friction"}]}))
+        last = msgs[-1]["content"] if isinstance(msgs[-1]["content"], str) else json.dumps(msgs[-1]["content"])
+        if len(msgs) == 3:
+            return _Msg(json.dumps({"action": "shell", "command": "cat docs/documented-step-that-does-not-exist.md"}))
+        # the finding is driven by what the failing step REALLY returned: its exit status and its stderr
+        if "exit status: 1" in last and "No such file" in last:
+            return _Msg(json.dumps({"action": "finish", "findings": [{"kind": "blocking", "text": "documented step failed as written: No such file"}]}))
+        return _Msg(json.dumps({"action": "finish", "findings": []}))
 PY
 # a python3 first on PATH that makes the fake SDK importable WITHOUT any environment variable reaching the scrubbed agent
 printf '#!/bin/sh\nPYTHONPATH="%s" exec %s "$@"\n' "$work/sdk" "$(command -v python3)" >"$work/pybin/python3"; chmod +x "$work/pybin/python3"
@@ -810,8 +870,15 @@ sed "s#__LOG__#$work/integ/docker.log#" "$work/docker.tmpl" >"$work/integ/docker
     python3 bin/persona-uat.py --mode rc --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
       --docker "$work/integ/docker" --gh "$work/gh" --port 18080 --ready-timeout 5 --agent "python3 bin/persona-uat-agent.py" ) \
   >"$work/integ/stdout" 2>"$work/integ/stderr" || rc=$?
-CASE="integrated: the real driver, agent (given by a RELATIVE path) and provider complete a clean run with five reports"
-check test "$rc" -eq 0 -a "$(ls "$work/integ/out"/*.report.md | wc -l | tr -d ' ')" -eq 5
+CASE="integrated: the real driver, agent (given by a RELATIVE path) and provider run to completion with five reports, and the run FAILS because a documented step failed as written"
+check test "$rc" -ne 0 -a "$(ls "$work/integ/out"/*.report.md | wc -l | tr -d ' ')" -eq 5
+CASE="integrated: every persona's blocking finding came from the failing step's REAL exit status and stderr (the fake provider only says so when it saw both)"
+check python3 - "$work/integ/out" <<'PY'
+import glob, sys
+for r in glob.glob(sys.argv[1] + "/*.report.md"):
+    c = open(r).read()
+    assert "VERDICT: blocking" in c and "No such file" in c, r
+PY
 CASE="integrated: each persona really ran a shell action in its sandbox, and the COMPUTED output (42, which is not in the command text) came back into its transcript"
 check python3 - "$work/integ/out" <<'PY'
 import glob, sys
@@ -821,12 +888,12 @@ for t in ts:
     c = open(t).read()
     assert "# fscache README" in c and "\n42" in c.replace("\r", ""), t
 PY
-CASE="integrated: every provider call (two per persona) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
+CASE="integrated: every provider call (three per persona) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
 check python3 - "$work/sdk/sdk.log" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 inits = [r["init"] for r in rows if "init" in r]
-assert len(inits) == 10, len(inits)
+assert len(inits) == 15, len(inits)
 assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") and i["leaked"] == [] for i in inits), inits
 calls = [r for r in rows if "model" in r]
 for r in calls:
@@ -836,7 +903,7 @@ for r in calls:
 assert any("http://127.0.0.1:18081" in (r["system"] + r["first"]) for r in calls), "Jenkins' endpoint never reaches the Maven persona"
 assert any("kubeconfig" in (r["system"] + r["first"]).lower() for r in calls), "the kubeconfig never reaches the on-call persona"
 models = [r["model"] for r in rows if "model" in r]
-assert len(models) == 10 and models.count("INTEG-COMPLIANCE") == 2 and models.count("INTEG-DEFAULT") == 8, models
+assert len(models) == 15 and models.count("INTEG-COMPLIANCE") == 3 and models.count("INTEG-DEFAULT") == 12, models
 PY
 CASE="integrated: no GitHub credential reached the shell containers or the provider's environment"
 check none_match 'SECRET-GH-TOKEN' "$work/integ/out" "$work/integ/docker.log"

@@ -56,6 +56,9 @@ def literal_false(v):
 
 def common(name, job, bad):
     steps = job.get("steps", [])
+    weekly = name.startswith("weekly")
+    pre = "harness/" if weekly else ""                    # the weekly job keeps TODAY's tested harness apart from the release's docs
+    repo_dir = "release-docs" if weekly else "."
     if not literal_false(job.get("continue-on-error")):
         bad.append(f"{name}: continue-on-error on the job lets a persona failure pass")
     if str(job.get("defaults", {}).get("run", {}).get("shell", "bash")) != "bash":
@@ -74,7 +77,7 @@ def common(name, job, bad):
     # conditional, no negation, no second command; $(...) substitutions inside its arguments are allowed
     body = "\n".join(l for l in run.replace("\\\n", " ").splitlines() if l.strip() and not l.strip().startswith("#"))
     flat = re.sub(r"\$\([^()]*\)", "SUBST", body)
-    if not re.match(r"^python3 bin/persona-uat\.py\b", flat.strip()) or re.search(r"[|&;!<>`]|\bif\b|\bthen\b|\|\||\n", flat.strip()):
+    if not re.match(r"^python3 " + re.escape(pre) + r"bin/persona-uat\.py\b", flat.strip()) or re.search(r"[|&;!<>`]|\bif\b|\bthen\b|\|\||\n", flat.strip()):
         bad.append(f"{name}: the driver step is not exactly one bare driver command (pipe, &, ;, if, !, a second command or redirect can swallow its exit status)")
     if not literal_false(d.get("continue-on-error")):
         bad.append(f"{name}: the driver step has continue-on-error: its failure would not fail the run")
@@ -95,12 +98,12 @@ def common(name, job, bad):
         bad.append(f"{name}: the driver is given options outside the contract: {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--publish'})}")
     def optval(f):
         return argv[argv.index(f) + 1] if f in argv[:-1] else None
-    if optval("--tools") != "bin/persona-uat-tools.json":
-        bad.append(f"{name}: --tools is not bin/persona-uat-tools.json")
-    if optval("--repo") != ".":
-        bad.append(f"{name}: --repo is not the checkout (.)")
-    if optval("--agent") != "python3 bin/persona-uat-agent.py":
-        bad.append(f"{name}: the driver is not given 'python3 bin/persona-uat-agent.py' as its agent")
+    if optval("--tools") != pre + "bin/persona-uat-tools.json":
+        bad.append(f"{name}: --tools is not {pre}bin/persona-uat-tools.json")
+    if optval("--repo") != repo_dir:
+        bad.append(f"{name}: --repo is not the docs checkout ({repo_dir})")
+    if optval("--agent") != f"python3 {pre}bin/persona-uat-agent.py":
+        bad.append(f"{name}: the driver is not given 'python3 {pre}bin/persona-uat-agent.py' as its agent")
     for k in list(job.get("env", {})):
         if k in CREDS or k in VARS or k.startswith("ANTHROPIC_"):
             bad.append(f"{name}: {k} is set at job level: the secrets and owner variables belong on the driver step only")
@@ -110,9 +113,9 @@ def common(name, job, bad):
                 if k in CREDS or k in VARS:
                     bad.append(f"{name}: {k} is set on a step other than the driver")
     env = d.get("env", {})
-    extra_env = sorted(set(env) - set(VARS) - set(CREDS) - {"GH_TOKEN", "ANTHROPIC_IDENTITY_TOKEN_FILE"})
+    extra_env = sorted(set(env) - set(VARS) - set(CREDS) - {"GH_TOKEN"})
     if extra_env:
-        bad.append(f"{name}: the driver step carries environment outside the contract (no other credential, no override): {extra_env}")
+        bad.append(f"{name}: the driver step carries environment outside the contract (no other credential, and no override of the identity token file the identity step exports): {extra_env}")
     for v in VARS:
         if not expr_is(env.get(v, ""), f"vars.{v}"):
             bad.append(f"{name}: {v} is not exactly vars.{v} on the driver step (the owner's variable)")
@@ -161,13 +164,30 @@ def common(name, job, bad):
         if s is d: continue
         isrun = "run" in s
         is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
+        is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
+                                         str(s.get("run", "")).strip()) is not None
         if i > di and "upload-artifact" not in str(s.get("uses", "")):
             bad.append(f"{name}: a step after the driver other than the transcript upload could alter the files before upload")
-        if i < di and isrun and not is_resolver:
-            bad.append(f"{name}: a run step before the driver other than the latest-release resolver (it could change what the driver sees)")
+        if i < di and isrun and not is_resolver and not is_boot:
+            bad.append(f"{name}: a run step before the driver other than the latest-release resolver and the one hash-pinned SDK install (it could change what the driver sees)")
     cos = [s for s in steps if "actions/checkout" in str(s.get("uses", ""))]
-    if len(cos) != 1 or steps.index(cos[0]) > di:
-        bad.append(f"{name}: expected exactly one actions/checkout before the driver (the personas read the docs it brings; without it --repo . is empty)")
+    if len(cos) != (2 if weekly else 1) or any(steps.index(c) > di for c in cos):
+        bad.append(f"{name}: expected exactly {2 if weekly else 1} actions/checkout step(s) before the driver (the personas read the docs they bring; without them the docs directory is empty)")
+    for c in cos:
+        wi = c.get("with", {}) or {}
+        if "repository" in wi:
+            bad.append(f"{name}: a checkout of another repository: the personas must read THIS repository's docs")
+    if not weekly and cos:
+        wi = cos[0].get("with", {}) or {}
+        if "path" in wi or ("ref" in wi and not expr_is(wi["ref"], "github.sha")):
+            bad.append(f"{name}: the release-candidate checkout is not of the candidate commit (no path, no ref other than github.sha): the personas would read other docs than the candidate's")
+    if weekly and len(cos) == 2:
+        paths = sorted(str((c.get("with", {}) or {}).get("path", "")) for c in cos)
+        if paths != ["harness", "release-docs"]:
+            bad.append(f"{name}: the two checkouts must be path: harness (today's tested driver) and path: release-docs (the released docs): {paths}")
+        for c in cos:
+            if str((c.get("with", {}) or {}).get("path", "")) == "harness" and "ref" in (c.get("with", {}) or {}):
+                bad.append(f"{name}: the harness checkout must be today's main (no ref): an old release has no driver")
     ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
     if len(ups) != 1:
         bad.append(f"{name}: expected exactly one transcript upload step, found {len(ups)}")
@@ -189,6 +209,74 @@ def common(name, job, bad):
             bad.append(f"{name}: a persona step has an if: {s.get('if')!r}")
     return d
 
+def run_resolver(script):
+    """EXECUTE the weekly resolver against recording gh/docker stubs: it must ask gh for the latest release's tag in THIS repository (GH_REPO),
+    inspect <registry>/<owner>/cache:<tag without the leading v> (the published image tags are unprefixed) with a digest-only --format, and
+    write tag=<the release tag, with its v> and image=<registry>/<owner>/cache@<that digest> to GITHUB_OUTPUT."""
+    import subprocess
+    out = []
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(d + "/bin")
+        open(d + "/bin/gh", "w").write("#!/bin/sh\n[ -n \"$GH_REPO\" ] || { echo 'no repo' >&2; exit 1; }\n"
+                                       "echo \"gh $*\" >> \"$REC\"\n"
+                                       "case \"$*\" in 'release view --json tagName -q .tagName') echo v0.2.1;; *) echo \"unexpected gh call: $*\" >&2; exit 1;; esac\n")
+        open(d + "/bin/docker", "w").write("#!/bin/sh\necho \"docker $*\" >> \"$REC\"\n"
+                                           "[ \"$1 $2 $3\" = 'buildx imagetools inspect' ] || { echo 'unexpected docker call' >&2; exit 1; }\n"
+                                           "[ \"$4\" = 'ghcr.io/own/cache:0.2.1' ] || { echo \"wrong image reference: $4\" >&2; exit 1; }\n"
+                                           "case \"$*\" in *\"--format '{{.Manifest.Digest}}'\"*|*'--format {{.Manifest.Digest}}'*) echo sha256:" + "d" * 64 + ";; *) echo wrong-format;; esac\n")
+        for f in ("gh", "docker"):
+            os.chmod(d + "/bin/" + f, 0o755)
+        open(d + "/script.sh", "w").write(script)
+        env = {"PATH": d + "/bin:" + os.environ["PATH"], "GH_REPO": "own/cache", "REGISTRY_OWNER": "own", "GITHUB_OUTPUT": d + "/out", "REC": d + "/rec", "HOME": d}
+        open(d + "/out", "w").close(); open(d + "/rec", "w").close()
+        r = subprocess.run(["bash", "-e", d + "/script.sh"], env=env, capture_output=True, text=True)
+        outs = open(d + "/out").read()
+        if r.returncode != 0:
+            out.append("weekly persona-uat's resolver failed against recording gh/docker (wrong repository, wrong image reference, or a bad call): " + r.stderr.strip()[:200])
+        elif "tag=v0.2.1" not in outs.splitlines() or ("image=ghcr.io/own/cache@sha256:" + "d" * 64) not in outs.splitlines():
+            out.append("weekly persona-uat's resolver does not write tag=<release tag> and image=<registry>/<owner>/cache@<inspected digest> to GITHUB_OUTPUT: " + repr(outs))
+    return out
+
+def run_identity(step):
+    """EXECUTE the identity step's script in node against a fake core: the token is minted (awaited), masked, written to a file, and
+    that file is what ANTHROPIC_IDENTITY_TOKEN_FILE is exported as."""
+    import subprocess, shutil
+    if not shutil.which("node"):
+        return []
+    body = str((step.get("with", {}) or {}).get("script", ""))
+    with tempfile.TemporaryDirectory() as d:
+        open(d + "/s.js", "w").write(body)
+        open(d + "/run.js", "w").write("""
+const fs = require('fs'); const body = fs.readFileSync(process.argv[2], 'utf8');
+const calls = {exported: {}, masked: []};
+const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN:' + aud), 5)), setSecret: (t) => calls.masked.push(t),
+               exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {} };
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+new AsyncFunction('core', 'require', 'process', body)(core, require, process).then(() => {
+  const f = calls.exported.ANTHROPIC_IDENTITY_TOKEN_FILE; let content = null; try { content = fs.readFileSync(f, 'utf8'); } catch (e) {}
+  fs.writeFileSync(process.argv[3], JSON.stringify({file: f || null, content, masked: calls.masked}));
+}).catch((e) => fs.writeFileSync(process.argv[3], JSON.stringify({error: String(e)})));
+""")
+        env = dict(os.environ, RUNNER_TEMP=d)
+        subprocess.run(["node", d + "/run.js", d + "/s.js", d + "/res.json"], env=env, capture_output=True, text=True)
+        try:
+            res = json.load(open(d + "/res.json"))
+        except Exception:
+            return ["the identity step's script could not be executed"]
+        if res.get("error") or not res.get("file") or res.get("content") != "FIXTURE-TOKEN:https://api.anthropic.com" or not res.get("masked"):
+            return [f"the identity step does not mint (await), mask and write the token to the file it exports: {res}"]
+    return []
+
+def judge_requirements(bad):
+    p = os.path.join(root, "bin/persona-uat-requirements.txt")
+    try:
+        txt = open(p).read()
+    except OSError:
+        bad.append("bin/persona-uat-requirements.txt is missing (the one hash-pinned SDK install the persona jobs run)"); return
+    reqs = [l for l in re.sub(r"\\\n", " ", txt).splitlines() if l.strip() and not l.strip().startswith("#")]
+    if not any(l.startswith("anthropic==") for l in reqs) or any("--hash=sha256:" not in l for l in reqs):
+        bad.append("bin/persona-uat-requirements.txt must pin anthropic== and every requirement by --hash=sha256:")
+
 def judge_release(r, bad):
     tags = (r.get("on", {}).get("push", {}) or {}).get("tags", []) if isinstance(r.get("on"), dict) else []
     if "v*" not in ([tags] if isinstance(tags, str) else tags):
@@ -197,6 +285,9 @@ def judge_release(r, bad):
     if not j:
         bad.append("release.yml has no persona-uat job"); return
     d = common("release persona-uat", j, bad)
+    for s_ in j.get("steps", []):
+        if "actions/github-script" in str(s_.get("uses", "")):
+            bad.extend(run_identity(s_))
     needs = j.get("needs", [])
     needs = [needs] if isinstance(needs, str) else needs
     for n in ("image", "promotion"):
@@ -228,9 +319,14 @@ def judge_weekly(f, bad):
     if not j:
         bad.append("go-freshness.yml has no persona-uat job"); return
     d = common("weekly persona-uat", j, bad)
+    for s_ in j.get("steps", []):
+        if "actions/github-script" in str(s_.get("uses", "")):
+            bad.extend(run_identity(s_))
     cron = [c.get("cron") for c in (f.get("on", {}).get("schedule") or [])] if isinstance(f.get("on"), dict) else []
     if norm(j.get("if", "")) != norm("github.event.schedule == '43 6 * * 1'") or "43 6 * * 1" not in cron:
         bad.append(f"weekly persona-uat does not run only on the Monday cron (if: {j.get('if')!r})")
+    if "needs" in j:
+        bad.append("weekly persona-uat has needs: a skipped dependency (the daily check job is skipped on the Monday cron) would skip every persona")
     env_ = j.get("environment")
     if (env_ if isinstance(env_, str) else (env_ or {}).get("name")) != "persona-uat":
         bad.append("weekly persona-uat does not run in the persona-uat environment")
@@ -243,7 +339,10 @@ def judge_weekly(f, bad):
     if len(res) != 1:
         bad.append("weekly persona-uat does not resolve the LATEST release's image digest (expected exactly one gh release view step)")
     else:
-        r = res[0]; rrun = str(r.get("run", ""))
+        r = res[0]; rrun = "\n".join(l for l in str(r.get("run", "")).splitlines() if not l.strip().startswith("#"))
+        if not expr_is((r.get("env", {}) or {}).get("GH_REPO", ""), "github.repository") or not expr_is((r.get("env", {}) or {}).get("REGISTRY_OWNER", ""), "github.repository_owner"):
+            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs before any checkout)")
+        bad.extend(run_resolver(rrun))
         m = re.search(r"(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)", rrun)
         if not m:
             bad.append("weekly persona-uat does not resolve the LATEST release's image digest (gh release view --json tagName -q .tagName, no fixed tag)")
@@ -264,7 +363,7 @@ def judge_weekly(f, bad):
         if d is not None:
             if steps.index(r) > steps.index(d):
                 bad.append("weekly persona-uat resolves the latest release AFTER running the driver")
-            cos = [s for s in steps if "actions/checkout" in str(s.get("uses", ""))]
+            cos = [s for s in steps if "actions/checkout" in str(s.get("uses", "")) and str((s.get("with", {}) or {}).get("path", "")) == "release-docs"]
             if cos and (steps.index(cos[0]) < steps.index(r) or not re.fullmatch(r"\$\{\{\s*steps\." + re.escape(str(r.get("id"))) + r"\.outputs\.tag\s*\}\}", str(cos[0].get("with", {}).get("ref", "")).strip())):
                 bad.append("weekly persona-uat's checkout is not of the resolved release's tag (ref: steps.<resolver>.outputs.tag, after the resolver): the personas would read the wrong docs")
             if not re.search(r"tag=[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
@@ -283,10 +382,11 @@ def judge_tools(t, bad):
     for k, v in t.items():
         if not PIN_IMG.match(str(v)):
             bad.append(f"tool {k} is not pinned by digest ({v!r})")
-    want = {"jenkins": "jenkins", "gitlab-runner": "gitlab-runner", "kind": "kind"}
-    for k, frag in want.items():
-        if frag not in str(t.get(k, "")).split("@")[0].lower():
-            bad.append(f"tool {k} does not name its own image (expected {frag!r} in the repository): {t.get(k)!r}")
+    want = {"jenkins": "jenkins/jenkins", "gitlab-runner": "gitlab/gitlab-runner", "kind": "kindest/node"}
+    for k, repo in want.items():
+        got = str(t.get(k, "")).split("@")[0].split(":")[0]
+        if not (got == repo or got.endswith("/" + repo)):
+            bad.append(f"tool {k} does not name its own image (expected the repository {repo!r}): {t.get(k)!r}")
     if len({str(v).split("@")[0] for v in t.values()}) != 4:
         bad.append("the persona tools are not four distinct images")
 
@@ -306,7 +406,7 @@ def judge_source(bad):
 
 def judge(r, f, t):
     bad = []
-    judge_release(r, bad); judge_weekly(f, bad); judge_tools(t, bad); judge_source(bad)
+    judge_release(r, bad); judge_weekly(f, bad); judge_tools(t, bad); judge_source(bad); judge_requirements(bad)
     return bad
 
 R, F, T = load(REL), load(FRESH), json.load(open(TOOLS)) if os.path.exists(TOOLS) else None
@@ -401,8 +501,8 @@ mutate("rc upload may fail without failing the job", "without retaining its tran
 mutate("rc driver step carries an extra credential", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(AWS_SECRET_ACCESS_KEY="x"))
 mutate("rc identity step writes one file and exports another", "for THAT file",
        lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="const p='/a'; const q='/b'; fs.writeFileSync(p, token); core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', q)"))
-mutate("rc job has no checkout", "expected exactly one actions/checkout before the driver", lambda j: j.update(steps=[s for s in j["steps"] if "actions/checkout" not in str(s.get("uses", ""))]))
-mutate("rc job checks out after the driver", "expected exactly one actions/checkout before the driver",
+mutate("rc job has no checkout", "actions/checkout step(s) before the driver", lambda j: j.update(steps=[s for s in j["steps"] if "actions/checkout" not in str(s.get("uses", ""))]))
+mutate("rc job checks out after the driver", "actions/checkout step(s) before the driver",
        lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(j["steps"].index(drv(j)) + 1, c)))(next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")))))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
@@ -425,8 +525,27 @@ mutate("weekly driver image argument fully replaced", "does not hand the resolve
        lambda j: set_image(j, "ghcr.io/x/cache@sha256:" + "a" * 64), "fresh")
 mutate("weekly image is the literal text, not an expression", "does not hand the resolved latest-release image digest",
        lambda j: set_image(j, "steps." + next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))["id"] + ".outputs.image"), "fresh")
-mutate("weekly checkout is of main, not the resolved tag", "checkout is not of the resolved release's tag",
-       lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).update(**{"with": {"persist-credentials": "false"}}), "fresh")
+def _docs_checkout(j): return next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")) and str((s.get("with", {}) or {}).get("path", "")) == "release-docs")
+def _harness_checkout(j): return next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")) and str((s.get("with", {}) or {}).get("path", "")) == "harness")
+def _resolver(j): return next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))
+mutate("weekly docs checkout is of main, not the resolved tag", "checkout is not of the resolved release's tag", lambda j: _docs_checkout(j)["with"].pop("ref"), "fresh")
+mutate("weekly harness checkout takes a ref (an old release has no driver)", "harness checkout must be today's main", lambda j: _harness_checkout(j)["with"].update(ref="v0.2.1"), "fresh")
+mutate("weekly job has a single checkout", "expected exactly 2 actions/checkout", lambda j: j.update(steps=[s for s in j["steps"] if s is not _harness_checkout(j)]), "fresh")
+mutate("weekly job gains needs (skipped on the Monday cron)", "has needs", lambda j: j.update(needs=["check"]), "fresh")
+mutate("weekly resolver emits tag=main", "does not write tag=<release tag>", lambda j: _resolver(j).update(run=re.sub(r"tag=\S*\s*>>", "tag=main >>", _resolver(j)["run"].replace('"tag=${tag}"', "tag=main"))), "fresh")
+mutate("weekly resolver inspects the v-prefixed image tag", "resolver failed against recording gh/docker",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${tag#v}", "${tag}")), "fresh")
+mutate("weekly resolver asks for the wrong digest format", "does not extract the digest",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("{{.Manifest.Digest}}", "{{.Name}}")), "fresh")
+mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
+mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
+mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
+mutate("rc checkout of another repository", "checkout of another repository", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(repository="evil/cache"))
+mutate("rc driver step overrides the identity token file", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(ANTHROPIC_IDENTITY_TOKEN_FILE="/missing"))
+mutate("rc identity step never awaits the token", "does not mint (await)",
+       lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"].replace("await core.getIDToken", "core.getIDToken")))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
+mutate("rc SDK install without hashes", "a run step before the driver other than",
+       lambda j: next(s for s in j["steps"] if "pip install" in str(s.get("run", ""))).update(run="python3 -m pip install anthropic"))
 mutate("tools: all four point at one image", "not four distinct images", lambda t: t.update({k: t["shell"] for k in ("jenkins", "gitlab-runner", "kind")}), "tools")
 mutate("tools: jenkins names another image", "does not name its own image", lambda t: t.update(jenkins=t["shell"]), "tools")
 mutate("weekly job leaves the persona-uat environment", "does not run in the persona-uat environment", lambda j: j.pop("environment"), "fresh")

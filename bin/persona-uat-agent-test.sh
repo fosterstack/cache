@@ -53,7 +53,7 @@ host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
 cmd = a[a.index("-c") + 1]
 try:
     p = subprocess.run(["sh", "-c", cmd], cwd=host, capture_output=True, text=True, timeout=60)
-    sys.stdout.write(p.stdout + p.stderr); sys.exit(p.returncode)
+    sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); sys.exit(p.returncode)
 except subprocess.TimeoutExpired:
     sys.exit(124)
 PY
@@ -149,6 +149,20 @@ r = json.loads(open(sys.argv[1]).readline())["req"]
 s = r["system"] + json.dumps(r["messages"])
 assert "evaluator with only the README" in s and "http://127.0.0.1:18080" in s, s
 PY
+
+# --- a FAILING documented step: its exit status and stderr (not merged into stdout) reach the model, and the model's finding is driven by them
+agent failcmd '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo before; echo oops-on-stderr >&2; exit 3"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[{"kind":"blocking","text":"step failed"}]}}]'
+CASE="a command that fails: the model receives its exit status (3), its stdout AND its stderr, labelled, in the next request"
+check python3 - "$work/failcmd/fp.log" <<'PY'
+import json, sys
+calls = [json.loads(l) for l in open(sys.argv[1])]
+m = json.dumps(calls[1]["req"]["messages"])
+assert "exit status: 3" in m and "before" in m and "oops-on-stderr" in m, m
+assert "stderr" in m.lower(), "stderr is not labelled as such"
+PY
+CASE="and the transcript keeps the failing command's status and stderr too"
+check grep -q 'exit status: 3' "$work/failcmd/out.json"
+check grep -q 'oops-on-stderr' "$work/failcmd/out.json"
 
 # --- AC5 (and AC4): the shell is a pinned, unprivileged container that can see ONLY the sandbox -------------------
 CASE="every shell action's docker call is EXACTLY: run --rm --network host -v <sandbox>:/work -w /work <pinned shell image> sh -c <command>"
