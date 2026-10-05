@@ -2331,7 +2331,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                     continue
                 if img is None or _variable(img) or DIGEST_REF.search(img) or False:
                     continue
-                bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
+                bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r} (an image this job built or tagged is not trusted by "
+                           f"name either: run a build by the image id it wrote with --iidfile, or by a digest)")
         for c, why in script_installs(text):
             bad.append(f"{where}: `{c}`: {why}")
         for c, path in _pip_req_files(text):     # NEW-6: the hashes are only as good as the file they come from
