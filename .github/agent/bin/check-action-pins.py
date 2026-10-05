@@ -1658,7 +1658,7 @@ def _expand_names(name, text):
 _TRAP_RE = re.compile(r"(?<![\w$.-])trap(?![\w.-])")
 
 
-def _mask_shell(text):
+def _mask_shell(text, info=None):
     """(no_comments, blanked, open_quote): TWO copies of `text`, each the same length with every newline in place so
     positions and line numbers line up. no_comments has every real comment replaced by spaces; blanked also has every
     quoted string's CONTENT (and every backslash-escaped character) replaced by spaces. Quote state runs across the whole
@@ -1673,6 +1673,8 @@ def _mask_shell(text):
             bl[k] = " "
     while i < n:
         c = text[i]
+        if q is not None and c == "\n" and info is not None:
+            info["nl_in_quote"] = True
         if q == "'":
             if c == "'":
                 q = None
@@ -1719,9 +1721,10 @@ def _straight_line(text):
     function defined after a command, an empty multi-line list ...); the owner's rule for a security control (advisor 0080) is
     to refuse what the check cannot resolve, not to chase constructs. A script that genuinely needs one of these forms simply
     does not get local trust: its `docker run` must name a pinned image."""
-    no_comments, blanked, open_quote = _mask_shell(text)
-    if open_quote:
-        return None
+    info = {}
+    no_comments, blanked, open_quote = _mask_shell(text, info)
+    if open_quote or info.get("nl_in_quote"):
+        return None          # a quote that spans lines: its inside cannot be told from commands line by line (Sonnet #164 r22, B1)
     b = blanked
     if _FORBIDDEN_WORD.search(re.sub(r"\bfor\b|\bdo\b|\bdone\b", " ", b)):
         return None
@@ -1733,7 +1736,8 @@ def _straight_line(text):
         return None                                   # a heredoc body is not masked: refuse
     if _ARRAY_OPEN_RE.search(b):
         return None
-    flat = re.sub(r"\$\{[^}]*\}", "V", b)             # ${NAME} / ${#NAME} / ${NAME:-x}: parameter expansion, not a group
+    flat = re.sub(r"\$\{\{.*?\}\}", "V", b)           # a GitHub expression is a value, not a group
+    flat = re.sub(r"\$\{[^}]*\}", "V", flat)          # ${NAME} / ${#NAME} / ${NAME:-x}: parameter expansion, not a group
     for _ in range(8):                                # $( ... ) command substitutions, innermost first
         flat = re.sub(r"\$\(\([^()]*\)\)|\$\([^()]*\)", "S", flat)
     if re.search(r"[(){}]", flat):
@@ -1758,11 +1762,11 @@ def _straight_line(text):
         return None
     for m in re.finditer(r"(?<![\w.-])docker(?=\s|$)", b):
         prev = b[:m.start()].rstrip(" \t")
-        while re.search(r"(?<![\w.-])(?:sudo|do)$", prev):
-            prev = re.sub(r"(?:sudo|do)$", "", prev).rstrip(" \t")      # the wrapper before it must itself be a command start
+        while re.search(r"(?<![\w.-])(?:sudo|do)$", prev) or re.search(r"(?<![\w.-])[A-Za-z_]\w*=\S*$", prev):
+            prev = re.sub(r"(?:sudo|do)$|[A-Za-z_]\w*=\S*$", "", prev).rstrip(" \t")   # a wrapper or a VAR=value prefix before it
         if prev and not re.search(r"(?:;|&&|\n|^)$", prev):
             return None                               # `docker` that is not the command itself (xargs/env/printf/command ... docker build)
-    if re.search(r"(?<![\w.-])set\s+(?:-\S+\s+)*\+(?:\w*e\w*\b|o\s+errexit\b)", b):
+    if re.search(r"(?<![\w.-])set\s+(?:[-+]\w+\s+)*\+(?:\w*e\w*\b|o\s+errexit\b)", b):
         return None                                   # errexit off: a failed build no longer stops the script (Codex #164 r21, B1)
     for ln in b.splitlines():
         if re.search(r"(?<![\w.-])docker\b[^\n;&|]*\b(?:build|b)\b", ln):
@@ -2495,6 +2499,10 @@ def check_runs(where_job, scripts, bad, tree=None):
     for item, (more, also) in zip(scripts, inlined):
         where, raw, shell = item[:3]
         conditional = bool(item[4]) if len(item) > 4 else False
+        if_text = item[5] if len(item) > 5 else ""
+        # a step that can run AFTER a failure (always() / failure() / cancelled() / !success()) must not rely on an image an earlier step
+        # may have failed to build (Sonnet #164 r22, B2)
+        after_failure = bool(re.search(r"\b(?:always|failure|cancelled)\s*\(|!\s*success\s*\(", if_text))
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
         own = read(raw)
@@ -2515,6 +2523,10 @@ def check_runs(where_job, scripts, bad, tree=None):
             # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
             bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
             continue
+        # `shell: bash {0}` (or sh {0}) has no errexit: a failed build no longer stops the script, so nothing it builds is certain
+        # (Sonnet #164 r22, B3); a plain `bash`/`sh` default or any template with -e keeps it
+        if shell and not (shell.strip() in ("bash", "sh") or re.search(r"(?:^|\s)-\w*e", shell)):
+            conditional = True
         # names count only from the step's own unconditional commands, never from a $( ) that may run later (Codex r3,
         # C10); a committed script it runs is judged against the names that existed before the step, and its builds
         # register nothing (its commands are not in their execution order here)
@@ -2526,6 +2538,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         # a step's `if:` (Codex r2, C10); and a name counts only when EVERY command that makes it in this step is unconditional,
         # compared by number (Codex #164 r20, B1: a skipped first build must not be vouched for by a later unconditional one)
         sure = set() if conditional else {n for n, c in firm_made.items() if own_made.get(n, 0) == c}
+        use_local = set() if after_failure else local
         for ev in [e for e in script_images(read(more)) if e[0] != "local"] + script_images(own) if more else \
                 script_images(own):
             if ev[0] == "local":
@@ -2538,7 +2551,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                     local -= {x for x in local if _canon(x) == _canon(ev[1])}
             elif ev[0] == "tag":
                 src, dst = ev[1], ev[2]
-                if _variable(src) or DIGEST_REF.search(src) or _local(src, local):
+                if _variable(src) or DIGEST_REF.search(src) or _local(src, use_local):
                     if dst in sure:
                         local.update(_expand_names(dst, job_text))
                 else:     # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21)
@@ -2586,7 +2599,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if img is not None and SUBST in img:
                     bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
                     continue
-                if img is None or _variable(img) or DIGEST_REF.search(img) or (ev[0] == "use" and _local(img, local)):
+                if img is None or _variable(img) or DIGEST_REF.search(img) or (ev[0] == "use" and _local(img, use_local)):
                     continue
                 bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
         for c, why in script_installs(text):
@@ -2648,7 +2661,9 @@ def run_scripts(doc):
                         wdir = wd.value if isinstance(wd, yaml.ScalarNode) else inherited_wd
                         coe = m.get("continue-on-error")
                         soft = coe is not None and not (isinstance(coe, yaml.ScalarNode) and coe.value.strip() == "false")
-                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft))
+                        ifn = m.get("if")
+                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft,
+                                                              ifn.value if isinstance(ifn, yaml.ScalarNode) else ""))
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:

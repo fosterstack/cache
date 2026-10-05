@@ -1621,7 +1621,7 @@ case_ r17-for-without-in-bad bad "$(rb 'for v; do
 case_ r17-hash-inside-word-bad bad "$(rb 'NOTE=hello#world docker run alpine:latest')"
 case_ r17-hash-inside-word-arg-bad bad "$(rb 'echo a#b; docker run alpine:latest')"
 # controls: the same idioms, used innocently, must NOT disturb a genuinely safe script
-case_ r17-control-closed-multiline-quote-ok ok "$(rb 'MSG="hello
+case_ r22-failclosed-closed-multiline-quote-bad bad "$(rb 'MSG="hello
           world"
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
@@ -1993,5 +1993,57 @@ case_ r21-control-set-euo-ok ok "$(rb 'set -euo pipefail
           docker run alpine:latest')" "$DF"
 case_ r21-control-podman-all-pinned-ok ok "$(rb 'podman run --rm docker.io/library/alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
 
+# --- r22 (Sonnet 3 blockers): a quote that spans lines, a step that runs after a failure, and a shell without errexit
+case_ r22-b01-fake-build-in-multiline-string-bad bad "$head
+    steps:
+      - run: |
+          test -f nothing && docker build -t alpine:latest . ; echo \"
+          docker build -t alpine:latest .
+          \"
+          docker run --rm alpine:latest true" "$DF"
+case_ r22-b02-use-in-always-step-bad bad "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - if: always()
+        run: docker run --rm alpine:latest true" "$DF"
+case_ r22-b02-use-in-failure-step-bad bad "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - if: \${{ failure() }}
+        run: docker run --rm alpine:latest true" "$DF"
+case_ r22-b02-use-in-cancelled-step-bad bad "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - if: \${{ cancelled() }}
+        run: docker run --rm alpine:latest true" "$DF"
+case_ r22-b03-shell-no-errexit-bad bad "$head
+    defaults:
+      run:
+        shell: bash {0}
+    steps:
+      - run: |
+          docker build -t alpine:latest .
+          docker run --rm alpine:latest true" "$DF"
+case_ r22-r1-set-plus-x-plus-e-bad bad "$(rb 'set +x +e
+          docker build -t alpine:latest . < /__missing__
+          docker run alpine:latest')" "$DF"
+# controls
+case_ r22-control-if-success-step-ok ok "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - if: success()
+        run: docker run --rm alpine:latest true" "$DF"
+case_ r22-control-shell-bash-e-ok ok "$head
+    steps:
+      - shell: bash -e {0}
+        run: |
+          docker build -t alpine:latest .
+          docker run --rm alpine:latest true" "$DF"
+case_ r22-control-buildkit-env-prefix-ok ok "$(rb 'DOCKER_BUILDKIT=1 docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r22-control-github-expression-ok ok "$(rb 'echo built ${{ github.sha }}
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+# fail closed (declared): a closed multi-line quoted string no longer grants local trust (the text inside it cannot be told from commands line by line)
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
