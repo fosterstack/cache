@@ -1415,7 +1415,10 @@ def script_images(script):
             verb, rest = rest[0], rest[1:]
             if verb == "rmi" or (verb == "image" and rest[:1] in (["rm"], ["remove"], ["prune"])):
                 gone = [a for a in (rest if verb == "rmi" else rest[1:]) if not a.startswith("-")]
-                ev += [("unlocal", x) for x in gone] or [("unlocal", "*")]   # prune: every local name (C10)
+                if any(_variable(a) or SUBST in a or re.search(r"[*?\[]", a) for a in gone):
+                    ev.append(("unlocal", "*"))      # a computed or globbed name removes SOME local tag: none stays trusted (Sonnet #164 r21, B1)
+                else:
+                    ev += [("unlocal", x) for x in gone] or [("unlocal", "*")]   # prune: every local name (C10)
                 continue
             if verb in ("container", "image", "builder", "manifest") and rest and (verb, rest[0]) in DOCKER_SAFE_SUB:
                 continue
@@ -1747,10 +1750,10 @@ def _straight_line(text):
         if prev and not re.search(r"(?:;|&&|\n|^)$", prev) and not re.search(r"(?<![\w.-])(?:sudo|do)$", prev):
             return None                               # `docker` that is not the command itself (xargs/env/printf/command ... docker build)
     for ln in b.splitlines():
-        if re.search(r"(?<![\w.-])docker\b[^\n;&|]*\bbuild\b", ln):
-            if re.search(r"(?<![\w-])(?:-o|--output)(?![\w-])", ln):
-                return None                           # an exporter: the image need not enter the daemon
-            if re.search(r"\bbuildx\s+build\b", ln) and not re.search(r"--load\b", ln):
+        if re.search(r"(?<![\w.-])docker\b[^\n;&|]*\b(?:build|b)\b", ln):
+            if re.search(r"(?<![\w-])(?:-o\S|-o(?=\s)|--output|--push|--check)(?![\w-])", ln) or re.search(r"(?<![\w-])-o\S", ln):
+                return None                           # an exporter, a push or a check-only build: the image need not enter the daemon
+            if re.search(r"\bbuildx\s+(?:build|b)\b", ln) and not re.search(r"--load\b", ln):
                 return None                           # buildx without --load may leave the image out of the daemon
     for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in[^;\n]*(?:;|\n)\s*do(?![\w.-])(.*?)(?<![\w$.-])done(?![\w.-])", b, re.S):
         if re.search(r"(?<![\w.-])docker\s+(?:container\s+)?(?:run|create|exec|start|compose)\b|(?<![\w.-])docker-compose\b", m.group(1)):

@@ -1892,5 +1892,42 @@ case_ r20-control-loop-then-run-after-ok ok "$(rb 'for v in a b; do
           done
           docker run alpine:b')" "$DF"
 
+# --- r21 (Sonnet B1): `docker rmi` with a COMPUTED argument removes a local tag the checker cannot name: no local trust survives it
+case_ r21-rmi-substitution-arg-bad bad "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - run: |
+          docker rmi \$(docker images -q alpine:latest)
+          docker run --rm alpine:latest true" "$DF"
+case_ r21-rmi-variable-arg-bad bad "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - run: |
+          IMGS=\$(docker images -q)
+          docker rmi -f \$IMGS
+          docker run --rm alpine:latest true" "$DF"
+case_ r21-image-rm-glob-bad bad "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - run: |
+          docker image rm alpine:*
+          docker run --rm alpine:latest true" "$DF"
+case_ r21-control-rmi-other-literal-ok ok "$head
+    steps:
+      - run: docker build -t alpine:latest .
+      - run: |
+          docker rmi unrelated:tag
+          docker run --rm alpine:latest true" "$DF"
+
+# --- r21 (Sonnet R2): more builds that never load an image into the daemon
+case_ r21-buildx-b-alias-bad bad "$(rb 'docker buildx b -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-attached-output-type-bad bad "$(rb 'docker build -otype=tar,dest=/tmp/o.tar -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-push-bad bad "$(rb 'docker build --push -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-check-only-bad bad "$(rb 'docker build --check -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
