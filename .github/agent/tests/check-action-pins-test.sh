@@ -1669,17 +1669,122 @@ case_ r18-case-pattern-spelled-done-bad bad "$(rb 'case "$X" in
           esac
           docker run alpine:latest')" "$DF"
 # controls: the same shapes, harmless, must NOT disturb a genuinely safe script
-case_ r18-control-unconditional-brace-group-ok ok "$(rb '{
+case_ r19-failclosed-unconditional-brace-group-bad bad "$(rb '{
             docker build -t alpine:latest .
           }
           docker run alpine:latest')" "$DF"
 case_ r18-control-literal-for-list-ok ok "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
           docker run alpine:latest')" "$DF"
-case_ r18-control-and-then-closed-group-ok ok "$(rb 'docker build -t alpine:latest .
+case_ r19-failclosed-group-after-and-bad bad "$(rb 'docker build -t alpine:latest .
           [ -n "$X" ] && {
             echo hello
           }
           docker run alpine:latest')" "$DF"
+
+# --- r19 (Codex 12 blockers, Sonnet 1): the straight-line gate. Local-build trust is granted only to a script of simple commands,
+# && / || chains, pipelines and literal for-loops; every probe below hides a build behind a compound construct, so none grants trust
+# (each refused for the intended reason: the unpinned `docker run`). Controls after them must keep passing.
+case_ r19-b01-and-newline-brace-bad bad "$(rb 'false &&
+          {
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r19-b01-and-brace-same-line-bad bad "$(rb 'false && { echo building
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r19-b01-and-for-bad bad "$(rb 'false && for v in latest; do
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r19-b02-case-alternative-pattern-bad bad "$(rb 'case pending in
+            done|finished) docker build -t alpine:latest . ;;
+          esac
+          docker run alpine:latest')" "$DF"
+case_ r19-b03-bang-if-bad bad "$(rb '! if false; then
+            docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" "$DF"
+case_ r19-b03-time-if-bad bad "$(rb 'time if false; then
+            docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" "$DF"
+case_ r19-b04-loop-list-comment-bad bad "$(rb 'for v in debug # latest is built separately
+          do
+            docker build -t "alpine:$v" .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r19-b05-positional-loop-bad bad "$(rb 'set --
+          for v; do echo "Building ${v}"
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r19-b05-uncalled-function-bad bad "$(rb 'build_image() { echo "Building ${1}"
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r19-b06-empty-list-with-comment-bad bad "$(rb 'for v in # nothing selected
+          do
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r19-b07-loop-continue-bad bad "$(rb 'for v in latest; do
+            [ -f missing-build-input ] || continue
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r19-b07-loop-break-bad bad "$(rb 'for v in a b; do
+            break
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r19-b08-bash-c-conditional-bad bad "$(rb "bash -c 'if false; then docker build -t alpine:latest .; fi'
+          docker run alpine:latest")" "$DF"
+case_ r19-b08-eval-conditional-bad bad "$(rb "eval 'if false; then docker build -t alpine:latest .; fi'
+          docker run alpine:latest")" "$DF"
+case_ r19-b09-function-after-command-bad bad "$(rb 'echo "Preparing build"; build_image() {
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r19-b10-case-in-substitution-bad bad "$(rb 'id="$(case x in x) docker run -d alpine:latest ;; esac)"
+          printf "%s\n" "$id"')"
+case_ r19-b11-background-build-bad bad "$(rb 'docker build -t alpine:latest . &
+          docker run alpine:latest
+          wait')" "$DF"
+case_ r19-b12-later-build-same-name-bad bad "$(rb 'if false; then
+            docker build -t alpine:latest .
+          fi
+          docker run alpine:latest
+          docker build -t alpine:latest .')" "$DF"
+# Sonnet r19 B1 / R1: a keyword after ${...} or $(...) is an ordinary word; a conditional group opener on the next line
+case_ r19-s1-keyword-after-expansion-bad bad "$(rb 'if [ -f x ]; then
+            echo building ${NAME} done
+            docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" "$DF"
+case_ r19-s1-keyword-after-substitution-bad bad "$(rb 'if [ -f x ]; then
+            echo built at $(date) done
+            docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" "$DF"
+case_ r19-s-r1-opener-on-next-line-bad bad "$(rb '[ -f x ] &&
+          {
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+# controls that MUST keep passing: straight-line scripts, chains, pipelines, literal loops, expansions, comments, closed quotes
+case_ r19-control-straight-line-ok ok "$(rb 'docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r19-control-build-and-run-chain-ok ok "$(rb 'docker build -t alpine:latest . && docker run alpine:latest')" "$DF"
+case_ r19-control-pipeline-ok ok "$(rb 'docker build -t alpine:latest . | cat
+          docker run alpine:latest')" "$DF"
+case_ r19-control-expansion-and-redirect-ok ok "$(rb 'echo "built ${NAME:-x} at $(date)" >log 2>&1
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r19-control-multiple-literal-loop-ok ok "$(rb 'for v in a b c; do
+            docker build -t "alpine:${v}" .
+          done
+          docker run alpine:b')" "$DF"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

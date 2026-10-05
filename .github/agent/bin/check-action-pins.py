@@ -996,6 +996,8 @@ def _commands(script, depth=0):
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
+    if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
+        out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
     if depth < 6:
         for sub in inner:
             if sub.startswith("(") and sub.endswith(")"):     # $(( … )) arithmetic: only its own $( … ) run
@@ -1617,15 +1619,15 @@ def _expand_names(name, text):
         return {name}
     if _ARRAY_OPEN_RE.search(text):
         return set()
-    _, blanked, open_quote = _mask_shell(text)
-    if open_quote:
-        return set()
+    no_comments, blanked, open_quote = _mask_shell(text)
+    if open_quote or _straight_line(text) is None:
+        return set()                  # not a straight-line script: no expansion is trusted (see _straight_line)
     out = {name}
     for var in dict.fromkeys(found):
         # a loop counts only where its `for` is LIVE shell text, not inside a comment or a quoted string (Sonnet #164
         # r17, B1 / Codex r17, B03: loop text sitting inert as data proved an expansion nothing ever ran)
         loops = [(m.group(1), m.group(2)) for m in re.finditer(
-            r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b", text, re.S)
+            r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b", no_comments, re.S)   # a comment in the list is not a word (Codex #164 r19, B04)
             if name in m.group(2) and blanked[m.start():m.start() + 3] == "for"]
         assigned = re.search(r"(?<![\w$])" + var + r"\+?=", text)
         if len(loops) != 1 or assigned:
@@ -1684,25 +1686,60 @@ def _mask_shell(text):
     return "".join(nc), "".join(bl), q is not None
 
 
-_KEYWORDS = ("if", "case", "while", "until", "fi", "esac", "done", "for", "elif", "else", "then", "do")
+_FORBIDDEN_WORD = re.compile(
+    r"(?<![\w$.-])(?:if|then|elif|else|fi|case|esac|while|until|select|function|trap|time|coproc|eval|source|exec|break|continue|return|"
+    r"exit|let|do|done)(?![\w.-])")
 
 
-def _keywords_in(blanked_line):
-    """The shell keywords a (comment-stripped, quote-blanked) line really uses: a keyword counts only in COMMAND position,
-    the first word of a command (after `;`, `&`, `|`, `(`, `{` or the start of the line) or right after another keyword
-    (`then if`, `else if`), never as an ordinary argument (Codex #164 r17, B02: `printf '%s\n' fi` is data)."""
-    out = []
-    parts = re.split(r"([;&|(){}])", blanked_line)
-    for i in range(0, len(parts), 2):
-        words = parts[i].split()
-        if i + 1 < len(parts) and parts[i + 1] == ")" and len(words) == 1:
-            continue                    # `done)` / `fi)` is a case PATTERN, not a command (Sonnet #164 r18, R1)
-        for w in words:
-            if w in _KEYWORDS:
-                out.append(w)
-            else:
-                break
-    return out
+def _straight_line(text):
+    """The script with its comments removed (same length, newlines kept), or None when it is not a STRAIGHT-LINE script this
+    check can read with confidence. Local-build trust (a tag an earlier command made, still present when a later `docker run`
+    names it) is granted only to a straight-line script: a sequence of simple commands, `a && b` / `a || b` chains (only the
+    FIRST command of a chain is certain to run), pipelines, and `for NAME in <literal words>; do ... done` loops. Everything
+    else is refused: no if/case/while/until/select, no function, no { } group or ( ) subshell or array, no background `&`,
+    no heredoc, no quote left open, no eval/source/exec, no break/continue/return/exit, no `!`/`time` before a command, and
+    none of those words even as an ARGUMENT. Nineteen review rounds of Codex and Sonnet kept finding one more construct a
+    hand-written conditional tracker mis-read (a keyword after ${..}, `a|b)` case patterns, `! if`, a background build, a
+    function defined after a command, an empty multi-line list ...); the owner's rule for a security control (advisor 0080) is
+    to refuse what the check cannot resolve, not to chase constructs. A script that genuinely needs one of these forms simply
+    does not get local trust: its `docker run` must name a pinned image."""
+    no_comments, blanked, open_quote = _mask_shell(text)
+    if open_quote:
+        return None
+    b = blanked
+    if _FORBIDDEN_WORD.search(re.sub(r"\bfor\b|\bdo\b|\bdone\b", " ", b)):
+        return None
+    if re.search(r"(?:^|[;&|(){}]|\n)\s*!", b):
+        return None
+    if re.search(r"(?<![\w.-])(?:ba|z|da|k|a|c|tc|fi)?sh\s+(?:-\S+\s+)*-[A-Za-z]*c\b", no_comments):
+        return None                                   # `bash -c '...'`: a program inside a string, read recursively, loses its structure
+    if re.search(r"<<(?!<)", b):
+        return None                                   # a heredoc body is not masked: refuse
+    if _ARRAY_OPEN_RE.search(b):
+        return None
+    flat = re.sub(r"\$\{[^}]*\}", "V", b)             # ${NAME} / ${#NAME} / ${NAME:-x}: parameter expansion, not a group
+    for _ in range(8):                                # $( ... ) command substitutions, innermost first
+        flat = re.sub(r"\$\(\([^()]*\)\)|\$\([^()]*\)", "S", flat)
+    if re.search(r"[(){}]", flat):
+        return None                                   # a group, a subshell, a function, an array, an unbalanced substitution
+    redir = re.sub(r"[0-9]*>&[0-9-]*|&>>?|<&[0-9-]*|&&", " ", flat)
+    if "&" in redir:
+        return None                                   # a background job: its result is not there when the next command runs
+    if re.search(r"(?:&&|\|\||\|)\s*for(?![\w.-])", b):
+        return None                                   # a loop that is itself only conditionally (or pipe-)started
+    fors = len(re.findall(r"(?<![\w$.-])for(?![\w.-])", b))
+    dones = len(re.findall(r"(?<![\w$.-])done(?![\w.-])", b))
+    loops = []
+    for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do(?![\w.-])", no_comments):
+        if b[m.start():m.start() + 3] != "for":
+            continue
+        words = m.group(1)
+        if not words.strip() or re.search(r"[$`*?\[\]()<>|&{}\\]", words):
+            return None                               # not a non-empty LITERAL word list: it may run zero times
+        loops.append(m)
+    if fors != len(loops) or dones != fors:
+        return None                                   # a `for` of any other shape, or loops that do not pair up
+    return no_comments
 
 
 def _strip_line_comment(line):
@@ -1771,70 +1808,21 @@ _ARRAY_OPEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=\(")
 
 
 def _unconditional(text):
-    """The script with every command that may not run removed: inside if/case/while/until (an opener anywhere on a
-    line, Codex #164 r2 C10), after && / || on its line, or anywhere a `trap` command appears. A trap's body is
-    deferred to a future signal, not run in line order, so a build/tag inside one must never register a local
-    name an unconditional command elsewhere can then rely on (Codex #164 fresh r5, B1). Scoping that exclusion to
-    just the trap's own body — by line, by quote state, however carefully — kept reopening new bypasses every
-    round (Codex #164 r9/r10/r11/r14/r15, Sonnet r8/r14: a double-quoted body, an escaped quote, the embedded-
-    apostrophe idiom, a close-then-reopen on one line, a command substitution, an apostrophe or "if"/"fi" in a
-    comment confusing a LATER trap's own body or this function's own if/case tracking, a quoted spelling of the
-    word `trap` itself, a QUOTED STRING simply containing the words "if"/"fi" as ordinary data — each fix
-    chased the last one's specific construct and opened a new one, because this function's per-line keyword
-    regex has no quote or comment awareness at all, and teaching it both, completely, for every construct that
-    might appear is the same re-implement-bash's-grammar trap the trap rule already walked away from once).
-    None of that is worth re-fighting: the instant the word `trap` appears anywhere, OR an array literal opens
-    anywhere (NAME=( / NAME+=(, whose body is exactly the raw text that keeps feeding this class of bypass —
-    confirmed no real workflow in this repo combines one with a local-build-then-run pattern), nothing in the
-    whole script is trusted as a local name (advisor 0080 — fail closed on an open-ended finding class, don't
-    chase it construct by construct). A script that genuinely has no use for either is unaffected. A literal
-    for-loop always runs and is kept."""
-    if _TRAP_RE.search(text) or _ARRAY_OPEN_RE.search(text):
+    """The script's commands that are certain to run, or "" when it is not a straight-line script (see _straight_line: anything
+    it cannot read with confidence grants no local trust). In a straight-line script the only thing left that may not run is
+    the part of a `a && b` / `a || b` chain after its first command, and the command on the line after one that ends in
+    && or ||; a literal for-loop always runs, so its header and `done` are dropped and its body kept."""
+    body = _straight_line(text)
+    if body is None:
         return ""
-    no_comments, blanked, open_quote = _mask_shell(text)
-    if open_quote:
-        return ""        # a quote still open at the end: nothing here can be read with confidence (fail closed)
-    keep, stack, after_and_or = [], [], False
-    for line, blank in zip(no_comments.splitlines(), blanked.splitlines()):
-        words = _keywords_in(blank)
-        cond_line = after_and_or                # the command a trailing && / || on the line before guards (Codex r17, B05)
+    keep, after_chain = [], False
+    for line in body.splitlines():
+        cond_line = after_chain
         if line.strip():
-            after_and_or = line.rstrip().endswith(("&&", "||"))
-        opened = False
-        if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line) \
-                or re.search(r"\bfor\s+\w+\s*(?:;|$)", blank):
-            stack.append("if")                           # a function body, an empty for-list, or `for v;` (the positional
-            if "}" in line.split("{", 1)[-1] or re.search(r"\bdone\b", line):   # parameters) may never run (r3, C10; r17, B07)
-                stack.pop()
+            after_chain = line.rstrip().endswith(("&&", "||"))
+        if cond_line:
             continue
-        closers = len(re.findall(r"(?:^|[;&|])\s*[})]", blank))     # a group's closer ends the conditional group it closes,
-        balanced = len(re.findall(r"(?:^|[;&|])\s*[{(](?=\s)(?!\s*$)", blank))   # unless the group opened and closed on this line
-        for _ in range(max(0, closers - balanced)):
-            if stack and stack[-1] == "grp":
-                stack.pop()
-        unsafe_for = False
-        for w in words:
-            if w in ("if", "case", "while", "until"):
-                stack.append(w)
-                opened = True
-            elif w == "for":
-                lst = re.search(r"\bfor\s+\w+\s+in\s+([^;]*)", line)
-                # only a NON-EMPTY LITERAL word list always runs: a "$@", a $variable, a glob, a $(command) or a C-style
-                # ((...)) loop may run zero times (Sonnet #164 r18, B2)
-                if not lst or re.search(r"[$`*?\[]|\(\(", lst.group(1)) or re.search(r"\bfor\s*\(\(", line):
-                    stack.append("if")
-                    unsafe_for = True
-                else:
-                    stack.append("for")
-            elif w in ("fi", "esac", "done") and stack:
-                stack.pop()
-        tail = re.split(r"&&|\|\|", blank)
-        if (len(tail) > 1 or any(x != "for" for x in stack)) and re.search(r"[{(]\s*$", tail[-1]):
-            stack.append("grp")                # a multi-line group opened after && / || (or inside a conditional one) may never run
-            opened = True                      # (Sonnet #164 r18, B1)
-        if opened or cond_line or unsafe_for or any(x != "for" for x in stack) or re.match(r"^\s*(elif|else|then)\b", line):
-            continue
-        line = re.sub(r"\bfor\b[^;]*;\s*do\b|\bdone\b", "", line)
+        line = re.sub(r"(?<![\w$.-])for\b[^;]*;\s*do(?![\w.-])|(?<![\w$.-])done(?![\w.-])|^\s*do(?![\w.-])", "", line)
         keep.append(re.split(r"&&|\|\|", line)[0])
     return "\n".join(keep)
 
