@@ -101,6 +101,8 @@ ALLOW_PATTERNS=(
   '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
+  '^bin/pin-(inventory|age-check|audit)\.py$'
+  '^bin/(pin-age-check|pin-audit|supply-chain-wiring)-test\.sh$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
