@@ -1166,6 +1166,8 @@ def cmd_deliver(a, run=subprocess.run):
         if n:                   # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", n, "--body", day["issue"]], plan, real, run, env=ienv)
         else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
+            for lab in ("daily-rescan", "security"):    # a missing label would lose the issue: create it first (not forced)
+                _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
             _sh(["gh", "issue", "create", "--title", policy.subject(ISSUE_TITLE), "--label", "daily-rescan",
                  "--label", "security", "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
@@ -1175,6 +1177,7 @@ def cmd_deliver(a, run=subprocess.run):
         if n:
             _sh(["gh", "issue", "comment", n, "--body", body], plan, real, run, env=ienv)
         else:
+            _sh(policy.label_create_cmd(policy.OWNER_LABEL), plan, real, run, check=False, env=ienv)
             _sh(["gh", "issue", "create", "--title", OWNER_TITLE, "--label", policy.OWNER_LABEL,
                  "--assignee", policy.OWNER_LOGIN, "--body", body], plan, real, run, env=ienv)
     with open(os.path.join(a.out, "plan.json"), "w") as fh:

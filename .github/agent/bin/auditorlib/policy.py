@@ -29,6 +29,21 @@ NOTIFY_CHANNEL = "owner-decision-issue"
 OWNER_LABEL = "owner-decision"
 OWNER_LOGIN = "fosterstack-admin"
 
+# The labels the auditor's issues carry. `gh issue create --label X` FAILS when X does not exist, and the first live run (Oct 5)
+# lost its owner report to exactly that, so every delivery path creates the labels it passes first (label_create_cmd). Creation is
+# NOT forced: --force would overwrite the colour and description of a label that already exists (security, daily-rescan).
+LABELS = {
+    "owner-decision": ("Needs an owner decision (auditor lane)", "B60205"),
+    "daily-rescan": ("The daily rescan's tracking issue", "0E8A16"),
+    "security": ("Security finding", "D93F0B"),
+}
+
+
+def label_create_cmd(name):
+    """The gh command that creates one of the auditor's labels; KeyError for a label that is not the auditor's own."""
+    desc, color = LABELS[name]
+    return ["gh", "label", "create", name, "--description", desc, "--color", color]
+
 # REQ-AUD-17 AC1: the fixed subject-prefix FAMILY. Every PR and issue the auditor opens leads
 # with this token so one mail filter catches them all; owner-decision issues keep their own
 # "owner-decision:" prefix after it (so an existing filter on that prefix still matches).

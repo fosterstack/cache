@@ -377,6 +377,7 @@ mappings:
       - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
   - ac: REQ-SCAN-005-AC1
     evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-labels-test.sh" }
       - { type: shell-test, ref: "bin/panel-test.sh" }
   - ac: REQ-SCAN-005-AC2
     evidence:
@@ -389,6 +390,7 @@ mappings:
       - { type: shell-test, ref: "bin/panel-test.sh" }
   - ac: REQ-SCAN-009-AC5
     evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-labels-test.sh" }
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }

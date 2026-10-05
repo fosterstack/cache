@@ -258,6 +258,7 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
           bash .github/agent/tests/auditor-matrix-test.sh
+          bash .github/agent/tests/auditor-labels-test.sh
 
       # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
       # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).

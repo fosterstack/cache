@@ -416,7 +416,14 @@ jobs:
           { cat /tmp/panel-out/issue.md; echo; echo "commit \`${GITHUB_SHA}\` — run ${RUN_URL}"; } > /tmp/panel-out/issue-body.md
           n=$(gh issue list --state open --label daily-rescan --json number,title --jq "[.[] | select(.title == \"${title}\")][0].number // empty")
           if [ -n "$n" ]; then gh issue comment "$n" --body-file /tmp/panel-out/issue-body.md
-          else gh issue create --title "$title" --label daily-rescan --label security --body-file /tmp/panel-out/issue-body.md; fi
+          else
+            # `gh issue create --label X` fails when X does not exist, and a lost tracking issue is a lost finding: make sure both
+            # labels exist first (created without forcing, so an existing label's colour and description are never overwritten; the values are
+            # policy.LABELS', and a test pins them equal)
+            gh label create daily-rescan --description "The daily rescan's tracking issue" --color 0E8A16 2>/dev/null || true
+            gh label create security --description "Security finding" --color D93F0B 2>/dev/null || true
+            gh issue create --title "$title" --label daily-rescan --label security --body-file /tmp/panel-out/issue-body.md
+          fi
       - name: keep the verdict — the auditor's input (every finding, seen by N of M, the unique ones listed)
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -838,6 +845,12 @@ jobs:
             if (match) {
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
             } else {
+              // issues.create fails (422) when a label does not exist, and a lost tracking issue is a lost finding: make sure both
+              // labels exist first. An existing label is left as it is (a 422 here is fine); any other failure shows up in the create below.
+              // The values are policy.LABELS', and a test pins them equal.
+              for (const [name, description, color] of [['daily-rescan', "The daily rescan's tracking issue", '0E8A16'], ['security', 'Security finding', 'D93F0B']]) {
+                try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ }
+              }
               await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
             }
 
