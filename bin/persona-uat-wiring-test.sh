@@ -1,157 +1,253 @@
 #!/usr/bin/env bash
 # proves: REQ-UAT-001-AC1, REQ-UAT-001-AC2, REQ-UAT-001-AC3, REQ-UAT-001-AC4, REQ-UAT-001-AC5
-# Where the persona UAT runs (owner ratified Oct 3 and Oct 4; point 9): a persona-uat job in the release chain that runs
-# only for release-candidate tags, after promotion, by digest, in the persona-uat environment, and fails the run;
-# a persona-uat job in the weekly maintenance workflow that runs only on its Monday schedule and hands its blocking
-# findings to ONE labelled issue; the model and budget read from owner-set variables (never written in the workflow);
-# the CI tools a persona needs (Jenkins, a GitLab runner, kind) named only as digest-pinned images, and nothing in either
-# job or the driver that provisions anything in a cloud. The real workflows must pass; each mutated copy must be caught.
+# Where the persona UAT runs (owner ratified Oct 3 and Oct 4; point 9). The wiring is read from the PARSED workflows, never
+# from substrings: a persona-uat job in the release chain that runs only for v*-rc.* tags, after the image and promotion,
+# in the persona-uat environment, taking the image by the chain's digests, running the driver as a step that nothing can
+# skip or make non-fatal, with the owner's model/budget variables and the model identity on THAT step, uploading the
+# driver's output directory (transcripts and reports) even when personas fail; and a persona-uat job in the weekly
+# workflow that runs only on its Monday cron, resolves the LATEST release's image digest, and runs the same driver with
+# --publish. The pinned CI tools file holds exactly Jenkins, a GitLab runner, kind and the persona shell, each by digest.
+# Neither job nor the driver, agent or provider may name a cloud CLI. The real workflows must pass; each of ~30 mutations
+# (structurally valid YAML/JSON, made through the parsed document) must be rejected FOR THE REASON NAMED, so a checker
+# crash or an unrelated failure cannot count as a catch.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 export PERSONA_ROOT="$root"
-work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0
-judge() { python3 - "$1" "$2" "$3" <<'PY'
-import json, re, sys, yaml
-rel, fresh, tools = sys.argv[1:4]
-bad = []
-def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
-def steps(job): return job.get("steps", [])
-def text(job): return "\n".join((s.get("run") or "") + "\n" + json.dumps(s.get("env", {})) + "\n" + json.dumps(s.get("with", {})) for s in steps(job))
-CLOUD = re.compile(r"terraform|tofu |pulumi|eksctl|doctl|aws (ec2|ecs|eks|lightsail|cloudformation)|gcloud (compute|container)|az (vm|aks)|kubectl create cluster", re.I)
-MODEL = re.compile(r"claude-(opus|sonnet|haiku|fable)|\b(opus|sonnet|haiku)-[0-9]|gpt-[0-9]", re.I)
-PIN_USES = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+python3 - <<'PY'
+import copy, json, os, re, sys, tempfile, yaml
 
-def common(name, job, mode):
-    t = text(job)
-    if "persona-uat.py" not in t or f"--mode {mode}" not in t:
-        bad.append(f"{name}: does not run bin/persona-uat.py --mode {mode}")
+root = os.environ["PERSONA_ROOT"]
+REL = os.path.join(root, ".github/workflows/release.yml")
+FRESH = os.path.join(root, ".github/workflows/go-freshness.yml")
+TOOLS = os.path.join(root, "bin/persona-uat-tools.json")
+SRC = [os.path.join(root, "bin", f) for f in ("persona-uat.py", "persona-uat-agent.py", "persona-uat-provider.py")]
+
+def load(path): return yaml.load(open(path), Loader=yaml.BaseLoader)
+
+CLOUD = re.compile(r"\b(terraform|tofu|pulumi|eksctl|doctl|az|gcloud|aws|kubectl|helm|ibmcloud|oci|linode-cli|vultr-cli)\b")
+MODEL = re.compile(r"[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-")
+PIN_USES = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+PIN_IMG = re.compile(r"^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$")
+CREDS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID")
+VARS = ("PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "PERSONA_UAT_TOKEN_BUDGET")
+
+def norm(expr):
+    """a workflow expression with the ${{ }} wrapper and all whitespace removed, for an EXACT comparison"""
+    e = str(expr).strip()
+    m = re.fullmatch(r"\$\{\{(.*)\}\}", e, re.S)
+    return re.sub(r"\s+", "", m.group(1) if m else e)
+
+def common(name, job, bad):
+    steps = job.get("steps", [])
     if str(job.get("continue-on-error", "false")).lower() == "true":
-        bad.append(f"{name}: continue-on-error would let a persona failure pass")
-    for v in ("PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "PERSONA_UAT_TOKEN_BUDGET"):
-        if not re.search(v + r"\W+.*\$\{\{\s*vars\." + v + r"\s*\}\}", t, re.S):
-            bad.append(f"{name}: {v} is not read from the owner's variable vars.{v}")
+        bad.append(f"{name}: continue-on-error on the job lets a persona failure pass")
+    for k in ("container", "services"):
+        if k in job:
+            bad.append(f"{name}: the job declares {k}: the CI tools run only inside the driver, by digest, never as job {k}")
+    drivers = [s for s in steps if "persona-uat.py" in str(s.get("run", ""))]
+    if len(drivers) != 1:
+        bad.append(f"{name}: expected exactly one step running bin/persona-uat.py, found {len(drivers)}"); return None
+    d = drivers[0]
+    run = str(d.get("run", ""))
+    if str(d.get("continue-on-error", "false")).lower() == "true":
+        bad.append(f"{name}: the driver step has continue-on-error: its failure would not fail the run")
+    if "if" in d:
+        bad.append(f"{name}: the driver step has an if: the persona run could be skipped")
+    if re.search(r"\|\||set\s+\+e|&&\s*false|;\s*true\b|\bexit\s+0\b|\btrue\s*$", run, re.M):
+        bad.append(f"{name}: the driver step swallows the driver's exit status (|| / set +e / exit 0)")
+    for flag in ("--out ", "--repo ", "--tools bin/persona-uat-tools.json", "--agent ", "--publish", "--image "):
+        if flag not in run:
+            bad.append(f"{name}: the driver is not run with {flag.strip()}")
+    if "bin/persona-uat-agent.py" not in run:
+        bad.append(f"{name}: the driver is not given bin/persona-uat-agent.py as its agent")
+    env = {**job.get("env", {}), **d.get("env", {})}
+    for v in VARS:
+        if norm(env.get(v, "")) != f"vars.{v}":
+            bad.append(f"{name}: {v} is not exactly vars.{v} on the driver step (the owner's variable)")
+    for c in CREDS:
+        if norm(env.get(c, "")) != f"secrets.{c}":
+            bad.append(f"{name}: {c} is not exactly secrets.{c} on the driver step")
+    if "ANTHROPIC_IDENTITY_TOKEN_FILE" not in env and not any("ANTHROPIC_IDENTITY_TOKEN_FILE" in json.dumps(s) for s in steps):
+        bad.append(f"{name}: nothing provides ANTHROPIC_IDENTITY_TOKEN_FILE (the OIDC identity for the model)")
+    before = steps[:steps.index(d)]
+    if not any("getIDToken" in json.dumps(s) and "ANTHROPIC_IDENTITY_TOKEN_FILE" in json.dumps(s) for s in before):
+        bad.append(f"{name}: no step before the driver mints the model identity token (OIDC, no keys)")
     if MODEL.search(json.dumps(job)):
         bad.append(f"{name}: a model name is written in the workflow")
-    if CLOUD.search(t):
-        bad.append(f"{name}: provisions something in a cloud")
-    for s in steps(job):
+    if CLOUD.search("\n".join(str(s.get("run", "")) for s in steps)):
+        bad.append(f"{name}: a run step names a cloud CLI: nothing is provisioned in a cloud")
+    for s in steps:
         u = str(s.get("uses", ""))
         if u and not PIN_USES.match(u):
             bad.append(f"{name}: action {u} is not pinned to a commit digest")
-    for m in re.finditer(r"(?:^|\s)(?:docker run|docker pull|image:|container:)\s+(\S+)", t):
-        if "@sha256:" not in m.group(1) and not m.group(1).startswith(("$", "\"$", "'$")):
-            bad.append(f"{name}: image {m.group(1)} is not pinned by digest")
-    if not any("upload-artifact" in str(s.get("uses", "")) for s in steps(job)):
-        bad.append(f"{name}: transcripts are not uploaded as an artifact")
-    for s in steps(job):
-        if "upload-artifact" in str(s.get("uses", "")) and "always()" not in str(s.get("if", "")):
-            bad.append(f"{name}: the transcript upload does not run when personas fail")
+    for s in steps:
+        if "actions/checkout" in str(s.get("uses", "")) and str(s.get("with", {}).get("persist-credentials", "")).lower() != "false":
+            bad.append(f"{name}: checkout keeps the job's credentials (persist-credentials must be false)")
+    ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
+    if len(ups) != 1:
+        bad.append(f"{name}: expected exactly one transcript upload step, found {len(ups)}")
+    for u in ups:
+        if norm(u.get("if", "")) != "always()":
+            bad.append(f"{name}: the transcript upload must run always() (found {u.get('if')!r})")
+        outdir = re.search(r"--out\s+(\S+)", run)
+        path = str(u.get("with", {}).get("path", "")).strip()
+        if not outdir or outdir.group(1).strip("\"'").rstrip("/") != path.rstrip("/"):
+            bad.append(f"{name}: the upload path {path!r} is not the driver's --out directory")
+        if str(u.get("with", {}).get("if-no-files-found", "")) != "error":
+            bad.append(f"{name}: the upload must fail on missing files (if-no-files-found: error)")
+    for s in steps:
+        if s is not d and s not in ups and "if" in s and "persona" in json.dumps(s).lower():
+            bad.append(f"{name}: a persona step has an if: {s.get('if')!r}")
+    return d
 
-# --- the release chain (AC1) ---
-r = load(rel); j = r.get("jobs", {}).get("persona-uat")
-if not j:
-    bad.append("release.yml has no persona-uat job")
-else:
-    common("release persona-uat", j, "rc")
+def judge_release(r, bad):
+    j = r.get("jobs", {}).get("persona-uat")
+    if not j:
+        bad.append("release.yml has no persona-uat job"); return
+    d = common("release persona-uat", j, bad)
     needs = j.get("needs", [])
     needs = [needs] if isinstance(needs, str) else needs
     for n in ("image", "promotion"):
-        if n not in needs: bad.append(f"release persona-uat does not wait for {n}")
-    cond = str(j.get("if", ""))
-    if "-rc." not in cond or "refs/tags/v" not in cond:
-        bad.append("release persona-uat does not run only for v*-rc.* tags")
-    if j.get("environment") != "persona-uat" and (j.get("environment") or {}).get("name") != "persona-uat":
+        if n not in needs:
+            bad.append(f"release persona-uat does not wait for {n}")
+    if norm(j.get("if", "")) != "startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc.')":
+        bad.append(f"release persona-uat does not run only for v*-rc.* tags (if: {j.get('if')!r})")
+    env = j.get("environment")
+    if (env if isinstance(env, str) else (env or {}).get("name")) != "persona-uat":
         bad.append("release persona-uat does not run in the persona-uat environment")
-    if "needs.image.outputs.digests" not in text(j) and "needs.image.outputs.digests" not in json.dumps(j):
-        bad.append("release persona-uat does not take the image by the chain's digests")
     p = j.get("permissions", {})
-    if p.get("id-token") != "write" or p.get("contents") != "read":
-        bad.append("release persona-uat permissions are not id-token: write + contents: read")
-    if "issues" in p and p["issues"] == "write" and "friction" not in text(j):
-        bad.append("release persona-uat can write issues but never files the friction issue")
-    if "friction-issue.md" not in text(j):
-        bad.append("release persona-uat does not file the one friction issue per run (AC3)")
-    if "blocking-issue" in text(j):
-        bad.append("release persona-uat opens a blocking issue: on a release candidate a blocking finding fails the run")
+    want = {"contents": "read", "id-token": "write", "issues": "write", "packages": "read"}
+    if any(p.get(k) != v for k, v in want.items()) or set(p) - set(want):
+        bad.append(f"release persona-uat permissions are not exactly {want} (found {p})")
+    if d is not None:
+        run = str(d.get("run", ""))
+        m = re.search(r"--image\s+(\S+(?:\s*\"[^\"]*\")?)", run)
+        img = m.group(1) if m else ""
+        if "needs.image.outputs.digests" not in img + run.split("--image", 1)[-1].split("--", 1)[0] or "@" not in run.split("--image", 1)[-1].split("--", 1)[0]:
+            bad.append("release persona-uat takes the image from something other than the chain's digests (needs.image.outputs.digests)")
+        if "--mode rc" not in run:
+            bad.append("release persona-uat does not run the driver with --mode rc")
 
-# --- the weekly workflow (AC2) ---
-f = load(fresh); j = f.get("jobs", {}).get("persona-uat")
-if not j:
-    bad.append("go-freshness.yml has no persona-uat job")
-else:
-    common("weekly persona-uat", j, "weekly")
-    cond = str(j.get("if", ""))
-    cron = [c.get("cron") for c in f.get("on", {}).get("schedule", [])] if isinstance(f.get("on"), dict) else []
-    if "github.event.schedule" not in cond or "* * 1'" not in cond.replace('"', "'") or "43 6 * * 1" not in cron:
-        bad.append("weekly persona-uat does not run only on the Monday schedule")
-    t = text(j)
-    if "gh issue" not in t or "--label blocking" not in t and "blocking-issue.md" not in t:
-        bad.append("weekly persona-uat does not open or update the one blocking issue")
-    if "gh issue edit" not in t and "gh issue comment" not in t:
-        bad.append("weekly persona-uat never updates an open blocking issue (it would duplicate)")
-    if "friction-issue.md" not in t:
-        bad.append("weekly persona-uat does not file the one friction issue per run (AC3)")
+def judge_weekly(f, bad):
+    j = f.get("jobs", {}).get("persona-uat")
+    if not j:
+        bad.append("go-freshness.yml has no persona-uat job"); return
+    d = common("weekly persona-uat", j, bad)
+    cron = [c.get("cron") for c in (f.get("on", {}).get("schedule") or [])] if isinstance(f.get("on"), dict) else []
+    if norm(j.get("if", "")) != "github.event.schedule=='43 6 * * 1'".replace(" ", "") or "43 6 * * 1" not in cron:
+        bad.append(f"weekly persona-uat does not run only on the Monday cron (if: {j.get('if')!r})")
+    p = j.get("permissions", {})
+    want = {"contents": "read", "id-token": "write", "issues": "write", "packages": "read"}
+    if any(p.get(k) != v for k, v in want.items()) or set(p) - set(want):
+        bad.append(f"weekly persona-uat permissions are not exactly {want} (found {p})")
+    steps = j.get("steps", [])
+    res = [s for s in steps if "gh release view" in str(s.get("run", ""))]
+    if len(res) != 1 or re.search(r"gh release view\s+[\"']?[vV]?\d", str(res[0].get("run", ""))) or "imagetools inspect" not in str(res[0].get("run", "")):
+        bad.append("weekly persona-uat does not resolve the LATEST release's image digest (gh release view with no fixed tag, then imagetools inspect)")
+    elif d is not None:
+        rid = res[0].get("id")
+        run = str(d.get("run", ""))
+        if not rid or f"steps.{rid}.outputs" not in run.split("--image", 1)[-1].split("--", 1)[0] or "@" not in run.split("--image", 1)[-1].split("--", 1)[0]:
+            bad.append("weekly persona-uat does not hand the resolved latest-release image digest to --image")
+    if d is not None and "--mode weekly" not in str(d.get("run", "")):
+        bad.append("weekly persona-uat does not run the driver with --mode weekly")
 
-# --- the pinned CI tools (AC4) ---
-try:
-    tl = json.load(open(tools))
-except Exception as e:
-    bad.append(f"the persona tools file is missing or unreadable: {e}"); tl = {}
-for k in ("jenkins", "gitlab-runner", "kind"):
-    v = tl.get(k, "")
-    if not re.search(r"@sha256:[0-9a-f]{64}$", v):
-        bad.append(f"tool {k} is not a digest-pinned image ({v!r})")
-for k, v in tl.items():
-    if not re.search(r"@sha256:[0-9a-f]{64}$", str(v)):
-        bad.append(f"tool {k} is not pinned by digest")
-import os
-for fn in ("persona-uat.py", "persona-uat-agent.py"):
+def judge_tools(t, bad):
+    if not isinstance(t, dict) or sorted(t) != ["gitlab-runner", "jenkins", "kind", "shell"]:
+        bad.append(f"the persona tools file must hold exactly the keys gitlab-runner, jenkins, kind, shell (found {sorted(t) if isinstance(t, dict) else t})")
+        return
+    for k, v in t.items():
+        if not PIN_IMG.match(str(v)):
+            bad.append(f"tool {k} is not pinned by digest ({v!r})")
+
+def judge_source(bad):
+    for p in SRC:
+        try:
+            src = open(p).read()
+        except OSError:
+            bad.append(f"{os.path.relpath(p, root)} is missing"); continue
+        code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+        if CLOUD.search(code):
+            bad.append(f"{os.path.relpath(p, root)} names a cloud CLI: {CLOUD.search(code).group(0)}")
+        for m in re.finditer(r"[\"']((?:[a-z0-9.-]+/)+[a-z0-9._-]+(?::[\w.-]+)?)[\"']", code):
+            if re.search(r"(docker\.io|ghcr\.io|quay\.io|library|jenkins|gitlab|kindest)", m.group(1)) and "@sha256:" not in m.group(1):
+                bad.append(f"{os.path.relpath(p, root)} names an image not pinned by digest: {m.group(1)}")
+
+def judge(r, f, t):
+    bad = []
+    judge_release(r, bad); judge_weekly(f, bad); judge_tools(t, bad); judge_source(bad)
+    return bad
+
+R, F, T = load(REL), load(FRESH), json.load(open(TOOLS)) if os.path.exists(TOOLS) else None
+passed = failed = 0
+def result(ok, msg):
+    global passed, failed
+    if ok: passed += 1; print("ok  ", msg)
+    else: failed += 1; print("FAIL", msg)
+
+bad = judge(R, F, T if T is not None else "missing")
+result(not bad, "the real workflows, tools file and sources satisfy the persona UAT wiring" + ("" if not bad else ": " + "; ".join(bad)))
+
+def mutate(name, expect, fn, which="rel"):
+    r, f, t = copy.deepcopy(R), copy.deepcopy(F), copy.deepcopy(T)
     try:
-        src = open(os.path.join(os.environ["PERSONA_ROOT"], "bin", fn)).read()
-    except OSError:
-        bad.append(f"bin/{fn} is missing"); continue
-    if CLOUD.search(src):
-        bad.append(f"bin/{fn} provisions something in a cloud")
-print("; ".join(bad)); sys.exit(1 if bad else 0)
+        {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t)}[which]()
+    except Exception as e:     # the real file lacks the thing being mutated: the real-file case above already failed
+        result(False, f"mutation could not be applied ({name}): {type(e).__name__}: {e}"); return
+    # round-trip through YAML text so the mutated document is valid YAML, not just a dict
+    for doc in (r, f):
+        yaml.safe_load(yaml.safe_dump(doc))
+    found = judge(r, f, t)
+    result(any(expect in b for b in found), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in found) else f"; saw {found}"))
+
+def drv(job): return next(s for s in job["steps"] if "persona-uat.py" in str(s.get("run", "")))
+def up(job): return next(s for s in job["steps"] if "upload-artifact" in str(s.get("uses", "")))
+
+# release job
+mutate("rc job no longer waits for promotion", "does not wait for promotion", lambda j: j.update(needs=[n for n in j["needs"] if n != "promotion"]))
+mutate("rc job runs for every tag", "does not run only for v*-rc.* tags", lambda j: j.update({"if": "${{ startsWith(github.ref, 'refs/tags/v') }}"}))
+mutate("rc job's predicate gains && false", "does not run only for v*-rc.* tags", lambda j: j.update({"if": str(j["if"]).rstrip("} ") + " && false }}"}))
+mutate("rc job continue-on-error", "continue-on-error on the job", lambda j: j.update({"continue-on-error": "true"}))
+mutate("rc driver step continue-on-error", "the driver step has continue-on-error", lambda j: drv(j).update({"continue-on-error": "true"}))
+mutate("rc driver step if: false", "the driver step has an if", lambda j: drv(j).update({"if": "false"}))
+mutate("rc driver step ends with || true", "swallows the driver's exit status", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
+mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
+       lambda j: drv(j).update(run=re.sub(r"needs\.image\.outputs\.digests", "github.ref_name", drv(j)["run"])))
+mutate("rc job leaves the persona-uat environment", "persona-uat environment", lambda j: j.update(environment="release"))
+mutate("rc model variable hard-coded", "PERSONA_UAT_MODEL is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
+mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly vars.PERSONA_UAT_MODEL",
+       lambda j: (up(j).update(env={v: drv(j)["env"].pop(v) for v in VARS if v in drv(j).get("env", {})})))
+mutate("rc budget variable dropped", "PERSONA_UAT_TOKEN_BUDGET is not exactly vars.PERSONA_UAT_TOKEN_BUDGET", lambda j: drv(j)["env"].pop("PERSONA_UAT_TOKEN_BUDGET"))
+mutate("rc compliance variable replaced by the default one", "PERSONA_UAT_COMPLIANCE_MODEL is not exactly vars.PERSONA_UAT_COMPLIANCE_MODEL",
+       lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ vars.PERSONA_UAT_MODEL }}"))
+mutate("rc federation secret dropped", "ANTHROPIC_WORKSPACE_ID is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].pop("ANTHROPIC_WORKSPACE_ID"))
+mutate("rc upload path is not the driver's output", "is not the driver's --out directory", lambda j: up(j)["with"].update(path="/tmp/unrelated"))
+mutate("rc upload skipped on failure", "must run always()", lambda j: up(j).update({"if": "${{ always() && false }}"}))
+mutate("rc upload tolerates no files", "if-no-files-found: error", lambda j: up(j)["with"].update({"if-no-files-found": "ignore"}))
+mutate("rc job provisions a cloud instance (plain form)", "names a cloud CLI",
+       lambda j: j["steps"].insert(0, {"run": "aws --region us-east-1 ec2 run-instances --image-id ami-1"}))
+mutate("rc job declares an unpinned job container", "declares container", lambda j: j.update(container="jenkins/jenkins:lts"))
+mutate("rc job declares an unpinned service", "declares services", lambda j: j.update(services={"jenkins": {"image": "jenkins/jenkins:lts"}}))
+mutate("rc checkout keeps credentials", "persist-credentials must be false", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {}}))
+mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
+mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
+mutate("rc job permissions gain contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"))
+mutate("rc job loses issues: write (friction could not be filed)", "permissions are not exactly", lambda j: j["permissions"].pop("issues"))
+mutate("rc job mints no model identity token", "mints the model identity token", lambda j: j.update(steps=[s for s in j["steps"] if "getIDToken" not in json.dumps(s)]))
+# weekly job
+mutate("weekly job runs on every cron", "does not run only on the Monday cron", lambda j: j.update({"if": "${{ github.event_name == 'schedule' }}"}), "fresh")
+mutate("weekly job resolves a fixed release tag", "does not resolve the LATEST release's image digest",
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run="gh release view v0.2.0 --json tagName; docker buildx imagetools inspect x"), "fresh")
+mutate("weekly driver is handed a fixed image", "does not hand the resolved latest-release image digest",
+       lambda j: drv(j).update(run=re.sub(r"--image\s+\S+", "--image ghcr.io/x/cache@sha256:" + "a" * 64, drv(j)["run"])), "fresh")
+mutate("weekly driver runs in rc mode", "--mode weekly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode rc")), "fresh")
+mutate("weekly driver step is non-fatal", "swallows the driver's exit status", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")
+# tools file
+mutate("tools: jenkins by tag", "tool jenkins is not pinned by digest", lambda t: t.update(jenkins="docker.io/jenkins/jenkins:lts"), "tools")
+mutate("tools: the persona shell by tag", "tool shell is not pinned by digest", lambda t: t.update(shell="docker.io/library/debian:12"), "tools")
+mutate("tools: the kind entry is missing", "must hold exactly the keys", lambda t: t.pop("kind"), "tools")
+mutate("tools: an extra tool appears", "must hold exactly the keys", lambda t: t.update(terraform="docker.io/hashicorp/terraform@sha256:" + "5" * 64), "tools")
+
+print(f"persona-uat wiring: {passed} passed, {failed} failed")
+sys.exit(0 if failed == 0 else 1)
 PY
-}
-ROOT_REL="$root/.github/workflows/release.yml"
-ROOT_FRESH="$root/.github/workflows/go-freshness.yml"
-ROOT_TOOLS="$root/bin/persona-uat-tools.json"
-expect_ok()  { local m; if m=$(judge "$1" "$2" "$3"); then pass=$((pass+1)); echo "ok   $4"; else failn=$((failn+1)); echo "FAIL $4: $m"; fi; }
-expect_bad() { if judge "$1" "$2" "$3" >/dev/null 2>&1; then failn=$((failn+1)); echo "FAIL mutation not caught: $4"; else pass=$((pass+1)); echo "ok   caught: $4"; fi; }
-
-expect_ok "$ROOT_REL" "$ROOT_FRESH" "$ROOT_TOOLS" "the real workflows and tools file satisfy the persona UAT wiring"
-
-# --- mutations: each must be caught ------------------------------------------------------------------------------
-mutate() { # <name> <file: rel|fresh|tools> <python expression editing text variable s>
-  local name=$1 which=$2 expr=$3
-  cp "$ROOT_REL" "$work/rel.yml"; cp "$ROOT_FRESH" "$work/fresh.yml"; cp "$ROOT_TOOLS" "$work/tools.json"
-  local target; case "$which" in rel) target="$work/rel.yml";; fresh) target="$work/fresh.yml";; tools) target="$work/tools.json";; esac
-  python3 - "$target" "$expr" <<'PY'
-import re, sys
-p, expr = sys.argv[1], sys.argv[2]
-s = open(p).read()
-before = s
-s = eval(expr)
-assert s != before, "mutation changed nothing: " + expr
-open(p, "w").write(s)
-PY
-  expect_bad "$work/rel.yml" "$work/fresh.yml" "$work/tools.json" "$name"
-}
-mutate "rc job no longer waits for promotion"        rel   're.sub(r"(persona-uat:\n(?:.*\n)*?\s+needs:\s*\[)([^\]]*)(\])", lambda m: m.group(1)+m.group(2).replace(", promotion","").replace("promotion, ","").replace("promotion","")+m.group(3), s, count=1)'
-mutate "rc job runs for every tag, not only -rc."    rel   're.sub(r"(persona-uat:\n(?:.*\n)*?\s+if:\s*).*\n", lambda m: m.group(1)+"${{ startsWith(github.ref, \x27refs/tags/v\x27) }}\n", s, count=1)'
-mutate "rc job may fail without failing the run"     rel   're.sub(r"(persona-uat:\n)", r"\1    continue-on-error: true\n", s, count=1)'
-mutate "rc job leaves the persona-uat environment"   rel   're.sub(r"environment: persona-uat", "environment: release", s)'
-mutate "rc job hard-codes a model name"              rel   's.replace("${{ vars.PERSONA_UAT_MODEL }}", "claude-sonnet-5-5", 1)'
-mutate "rc job drops the budget variable"            rel   's.replace("${{ vars.PERSONA_UAT_TOKEN_BUDGET }}", "400000", 1)'
-mutate "rc job's transcript upload skips failures"   rel   're.sub(r"(persona-uat:\n(?:.*\n)*?)(\s+if: \$\{\{ always\(\) \}\}\n)", r"\1\n", s, count=1)'
-mutate "rc job provisions a cloud instance"          rel   're.sub(r"(persona-uat:\n(?:.*\n)*?\s+steps:\n)", r"\1      - run: aws ec2 run-instances --image-id ami-1\n", s, count=1)'
-mutate "weekly job runs on every cron, not Mondays"  fresh  're.sub(r"(persona-uat:\n(?:.*\n)*?\s+if:\s*).*\n", lambda m: m.group(1)+"${{ github.event_name == \x27schedule\x27 }}\n", s, count=1)'
-mutate "weekly job would duplicate the issue"        fresh  's.replace("gh issue edit", "gh issue create")'
-mutate "tools file: jenkins by tag, not digest"      tools  're.sub(r"(\"jenkins\":\s*\"[^\"@]*)@sha256:[0-9a-f]{64}", r"\1", s)'
-mutate "tools file: a persona tool is missing"       tools  're.sub(r"\"kind\":[^\n]*\n", "", s)'
-
-echo "persona-uat wiring: $pass passed, $failn failed"
-test "$failn" -eq 0
