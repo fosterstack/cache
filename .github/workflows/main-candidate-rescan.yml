@@ -845,6 +845,12 @@ jobs:
             if (match) {
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
             } else {
+              // issues.create fails (422) when a label does not exist, and a lost tracking issue is a lost finding: make sure both
+              // labels exist first. An existing label is left as it is (a 422 here is fine); any other failure shows up in the create below.
+              // The values are policy.LABELS', and a test pins them equal.
+              for (const [name, description, color] of [['daily-rescan', "The daily rescan's tracking issue", '0E8A16'], ['security', 'Security finding', 'D93F0B']]) {
+                try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ }
+              }
               await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] });
             }
 
