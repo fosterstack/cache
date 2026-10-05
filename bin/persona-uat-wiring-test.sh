@@ -47,6 +47,10 @@ def norm(expr):
             out.append(c)
     return "".join(out)
 
+def expr_is(val, expr):
+    """val is exactly the GitHub expression ${{ expr }} (whitespace inside the braces free), never the literal text expr"""
+    return re.fullmatch(r"\$\{\{\s*" + re.escape(expr) + r"\s*\}\}", str(val).strip()) is not None
+
 def literal_false(v):
     return str(v).strip() in ("", "false") if v is not None else True
 
@@ -78,11 +82,25 @@ def common(name, job, bad):
         bad.append(f"{name}: the driver step's shell is {d.get('shell')!r}, not plain bash (a custom shell can swallow the exit status)")
     if "timeout-minutes" not in job or not str(job.get("timeout-minutes", "")).isdigit() or int(job["timeout-minutes"]) > 180:
         bad.append(f"{name}: the job has no timeout-minutes (<= 180): a hung persona must not hold the runner")
-    for flag in ("--out ", "--repo ", "--tools bin/persona-uat-tools.json", "--agent ", "--publish", "--image "):
-        if flag not in run:
-            bad.append(f"{name}: the driver is not run with {flag.strip()}")
-    if "bin/persona-uat-agent.py" not in run:
-        bad.append(f"{name}: the driver is not given bin/persona-uat-agent.py as its agent")
+    import shlex
+    try:
+        argv = shlex.split(flat.replace("SUBST", "SUBSTVAL"))
+    except ValueError:
+        argv = []
+    opts = [t for t in argv if t.startswith("--")]
+    for flag in ("--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"):
+        if opts.count(flag) != 1:
+            bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
+    if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"}):
+        bad.append(f"{name}: the driver is given options outside the contract: {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--publish'})}")
+    def optval(f):
+        return argv[argv.index(f) + 1] if f in argv[:-1] else None
+    if optval("--tools") != "bin/persona-uat-tools.json":
+        bad.append(f"{name}: --tools is not bin/persona-uat-tools.json")
+    if optval("--repo") != ".":
+        bad.append(f"{name}: --repo is not the checkout (.)")
+    if optval("--agent") != "python3 bin/persona-uat-agent.py":
+        bad.append(f"{name}: the driver is not given 'python3 bin/persona-uat-agent.py' as its agent")
     for k in list(job.get("env", {})):
         if k in CREDS or k in VARS or k.startswith("ANTHROPIC_"):
             bad.append(f"{name}: {k} is set at job level: the secrets and owner variables belong on the driver step only")
@@ -93,10 +111,12 @@ def common(name, job, bad):
                     bad.append(f"{name}: {k} is set on a step other than the driver")
     env = d.get("env", {})
     for v in VARS:
-        if norm(env.get(v, "")) != f"vars.{v}":
+        if not expr_is(env.get(v, ""), f"vars.{v}"):
             bad.append(f"{name}: {v} is not exactly vars.{v} on the driver step (the owner's variable)")
+    if not expr_is(env.get("GH_TOKEN", ""), "github.token"):
+        bad.append(f"{name}: GH_TOKEN is not exactly github.token on the driver step (its gh calls need it)")
     for c in CREDS:
-        if norm(env.get(c, "")) != f"secrets.{c}":
+        if not expr_is(env.get(c, ""), f"secrets.{c}"):
             bad.append(f"{name}: {c} is not exactly secrets.{c} on the driver step")
     if "ANTHROPIC_IDENTITY_TOKEN_FILE" not in env and not any("ANTHROPIC_IDENTITY_TOKEN_FILE" in json.dumps(s) for s in steps):
         bad.append(f"{name}: nothing provides ANTHROPIC_IDENTITY_TOKEN_FILE (the OIDC identity for the model)")
@@ -107,6 +127,19 @@ def common(name, job, bad):
         bad.append(f"{name}: a model name is written in the workflow")
     if CLOUD.search("\n".join(str(s.get("run", "")) for s in steps)):
         bad.append(f"{name}: a run step names a cloud CLI: nothing is provisioned in a cloud")
+    for s in steps:
+        if "actions/github-script" in str(s.get("uses", "")):
+            body = str(s.get("with", {}).get("script", ""))
+            if CLOUD.search(body) or re.search(r"\bexec\b|child_process|require\(['\"](?!fs['\"])", body):
+                bad.append(f"{name}: the github-script body runs a command or names a cloud CLI (it may only mint and write the identity token)")
+            if "if" in s or str(s.get("continue-on-error", "false")) not in ("false",):
+                bad.append(f"{name}: the identity step has an if or continue-on-error: the persona job could run without its identity")
+            if not re.search(r"fs\.writeFileSync\(\s*(\w+)\s*,\s*token\s*\)", body) or "exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE'" not in body.replace('"', "'"):
+                bad.append(f"{name}: the identity step does not write the token to a file and export ANTHROPIC_IDENTITY_TOKEN_FILE for it")
+    for s in steps:
+        for k, v in (s.get("with") or {}).items():
+            if k != "script" and CLOUD.search(str(v)):
+                bad.append(f"{name}: a step input names a cloud CLI ({k})")
     ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact")
     for s in steps:
         u = str(s.get("uses", ""))
@@ -123,7 +156,7 @@ def common(name, job, bad):
     for i, s in enumerate(steps):
         if s is d: continue
         isrun = "run" in s
-        is_resolver = isrun and "gh release view" in str(s.get("run", ""))
+        is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
         if i > di and "upload-artifact" not in str(s.get("uses", "")):
             bad.append(f"{name}: a step after the driver other than the transcript upload could alter the files before upload")
         if i < di and isrun and not is_resolver:
@@ -185,7 +218,7 @@ def judge_weekly(f, bad):
         bad.append("go-freshness.yml has no persona-uat job"); return
     d = common("weekly persona-uat", j, bad)
     cron = [c.get("cron") for c in (f.get("on", {}).get("schedule") or [])] if isinstance(f.get("on"), dict) else []
-    if norm(j.get("if", "")) != "github.event.schedule=='43 6 * * 1'".replace(" ", "") or "43 6 * * 1" not in cron:
+    if norm(j.get("if", "")) != norm("github.event.schedule == '43 6 * * 1'") or "43 6 * * 1" not in cron:
         bad.append(f"weekly persona-uat does not run only on the Monday cron (if: {j.get('if')!r})")
     p = j.get("permissions", {})
     want = {"contents": "read", "id-token": "write", "issues": "write", "packages": "read"}
@@ -205,8 +238,11 @@ def judge_weekly(f, bad):
             insp = [l for l in rrun.splitlines() if "imagetools inspect" in l]
             if not insp or not re.search(r"\$\{?" + var + r"\}?", insp[0]):
                 bad.append("weekly persona-uat does not inspect the image of the release it just resolved (imagetools inspect must use the resolved tag)")
-            if not re.search(r"image=.*>>\s*\"?\$GITHUB_OUTPUT", rrun):
-                bad.append("weekly persona-uat's resolver does not write its image= output")
+            dm = re.search(r"(\w+)=\$\([^\n]*imagetools inspect[^\n]*\)", rrun)
+            if not dm or not re.search(r"image=[^\n]*\$\{?" + dm.group(1) + r"\}?[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
+                bad.append("weekly persona-uat's resolver does not write an image= output built from the digest it inspected")
+            if not expr_is(r.get("env", {}).get("GH_TOKEN", ""), "github.token"):
+                bad.append("weekly persona-uat's resolver does not get GH_TOKEN = github.token")
         if d is not None:
             if steps.index(r) > steps.index(d):
                 bad.append("weekly persona-uat resolves the latest release AFTER running the driver")
@@ -295,7 +331,9 @@ mutate("rc driver command is only echoed", "not exactly one bare driver command"
 mutate("rc owner model overridden in the command", "not exactly one bare driver command", lambda j: drv(j).update(run="PERSONA_UAT_MODEL=m-1 " + drv(j)["run"].strip()))
 mutate("rc budget overridden in the command", "not exactly one bare driver command", lambda j: drv(j).update(run="PERSONA_UAT_TOKEN_BUDGET=1000 " + drv(j)["run"].strip()))
 mutate("rc transcripts deleted before upload", "after the driver other than the transcript upload", lambda j: j["steps"].insert(j["steps"].index(up(j)), {"run": "rm -f persona-uat-out/*.transcript.txt"}))
-mutate("rc upload runs before the driver", "immediately after the driver", lambda j: (j["steps"].remove(up(j)), j["steps"].insert(j["steps"].index(drv(j)), up(j))))
+def _upload_before_driver(j):
+    u = up(j); j["steps"].remove(u); j["steps"].insert(j["steps"].index(drv(j)), u)
+mutate("rc upload runs before the driver", "immediately after the driver", _upload_before_driver)
 mutate("rc a setup step runs before the driver", "a run step before the driver other than", lambda j: j["steps"].insert(j["steps"].index(drv(j)), {"run": "echo hi"}))
 mutate("rc driver step ends with || true", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
 mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
@@ -330,11 +368,24 @@ mutate("weekly driver is handed a fixed image", "does not hand the resolved late
 mutate("weekly cron literal reformatted", "does not run only on the Monday cron", lambda j: j.update({"if": "${{ github.event.schedule == '436**1' }}"}), "fresh")
 mutate("weekly resolver moved after the driver", "AFTER running the driver", lambda j: (lambda r: (j["steps"].remove(r), j["steps"].insert(j["steps"].index(drv(j)) + 1, r)))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("weekly resolver uses a fixed tag variable", "does not resolve the LATEST release's image digest",
-       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run='tag=v0.1.0; gh release view "$tag" --json tagName; docker buildx imagetools inspect "ghcr.io/x/cache:$tag"; echo "image=x" >> "$GITHUB_OUTPUT"'), "fresh")
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run='tag=v0.1.0; gh release view "$tag" --json tagName; d=$(docker buildx imagetools inspect "ghcr.io/x/cache:$tag"); echo "image=$d" >> "$GITHUB_OUTPUT"'), "fresh")
 mutate("weekly resolver inspects an unrelated tag", "does not inspect the image of the release it just resolved",
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run=re.sub(r"imagetools inspect \S+", "imagetools inspect ghcr.io/x/cache:latest", next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))["run"])), "fresh")
 mutate("weekly driver image argument fully replaced", "does not hand the resolved latest-release image digest",
        lambda j: drv(j).update(run=re.sub(r"--image\s+(\"[^\"]*\"|\S+)", "--image ghcr.io/x/cache@sha256:" + "a" * 64, drv(j)["run"])), "fresh")
+mutate("weekly resolver emits an unrelated fixed digest", "built from the digest it inspected",
+       lambda j: (lambda r: r.update(run=re.sub(r'image=[^\n]*>>', 'image=ghcr.io/x/cache@sha256:' + 'a' * 64 + ' >>', r["run"])))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
+mutate("rc driver is given a second --mode (last wins)", "--mode exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --mode weekly"))
+mutate("rc driver is given a second --image (last wins)", "--image exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --image ghcr.io/x/cache@sha256:" + "b" * 64))
+mutate("rc driver --repo points elsewhere", "--repo is not the checkout", lambda j: drv(j).update(run=re.sub(r"--repo\s+\S+", "--repo /tmp/empty", drv(j)["run"])))
+mutate("rc owner variable is the literal text", "is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="vars.PERSONA_UAT_MODEL"))
+mutate("rc secret is the literal text", "is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].update(ANTHROPIC_WORKSPACE_ID="secrets.ANTHROPIC_WORKSPACE_ID"))
+mutate("rc GH_TOKEN missing", "GH_TOKEN is not exactly github.token", lambda j: drv(j)["env"].pop("GH_TOKEN"))
+mutate("rc identity step provisions cloud inside github-script", "runs a command or names a cloud CLI",
+       lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="await exec.exec('aws', ['ec2','run-instances'])"))
+mutate("rc identity step is conditional", "identity step has an if", lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).update({"if": "false"}))
+mutate("rc identity step exports a path it never writes", "does not write the token to a file",
+       lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', '/nonexistent')"))
 mutate("release.yml loses its v* tag trigger", "no longer starts on v* tags", lambda j: None, "rel_top")
 mutate("weekly driver runs in rc mode", "--mode weekly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode rc")), "fresh")
 mutate("weekly driver step is non-fatal", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")

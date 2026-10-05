@@ -56,7 +56,8 @@ cat >"$work/stub.py" <<'PY'
 import json, os, sys
 raw = sys.stdin.read()
 req = json.loads(raw)
-plan = json.load(open(os.environ["STUB_PLAN"]))
+case = sys.argv[1]
+plan = json.load(open(os.path.join(case, "plan.json")))
 p = plan.get(req["persona"], {})
 seen = sorted(os.path.relpath(os.path.join(d, f), req["docs_dir"]) for d, _, fs in os.walk(req["docs_dir"]) for f in fs)
 content = {}
@@ -69,9 +70,9 @@ for f in seen:
         content[f] = open(fp, errors="replace").read()
     except OSError as e:
         content[f] = "UNREADABLE " + str(e)
-with open(os.environ["STUB_LOG"], "a") as fh:
+with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
-                         "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[1:], "content": content, "links": links}) + "\n")
+                         "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links}) + "\n")
 if p.get("crash"):
     sys.exit(7)
 if "raw_out" in p:
@@ -85,8 +86,9 @@ for k in p.get("drop", []):
 print(json.dumps(ans))
 PY
 # A recording docker: `run -d ...` prints a container id and logs the whole line; every other call is only logged.
-cat >"$work/docker" <<'SH'
+cat >"$work/docker.tmpl" <<'SH'
 #!/usr/bin/env bash
+DOCKER_LOG="__LOG__"
 echo "$*" >>"$DOCKER_LOG"
 if [ -n "${DOCKER_FAIL_MATCH:-}" ] && [[ "$*" == *"$DOCKER_FAIL_MATCH"* ]]; then echo "docker: simulated failure" >&2; exit 125; fi
 if [ "$1" = run ] && [ "$2" = --rm ]; then
@@ -129,6 +131,8 @@ if a[:2] in (["issue", "create"], ["issue", "edit"]):
     log.write("BODY: " + open(bf).read().replace("\n", " | ") + "\n")
     print("https://github.com/x/y/issues/99")
 elif a[:2] == ["issue", "list"]:
+    if "--json" not in a or a[a.index("--json") + 1] != "number,title":
+        sys.stderr.write("gh: this caller cannot parse a list (no --json number,title)\n"); sys.exit(1)
     print(os.environ.get("GH_STUB_LIST", "[]"))
 sys.exit(0)
 PY
@@ -143,18 +147,18 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.reque
 run() {
   local name=$1 plan=$2 mode=$3; shift 3
   mkdir -p "$work/$name"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
+  sed "s#__LOG__#$work/$name/docker.log#" "$work/docker.tmpl" >"$work/$name/docker"; chmod +x "$work/$name/docker"
   rc=0
-  env -u PERSONA_UAT_TOKEN_BUDGET STUB_PLAN="$work/$name/plan.json" STUB_LOG="$work/$name/log" \
-      DOCKER_LOG="$work/$name/docker.log" GH_LOG="$work/$name/gh.log" GITHUB_RUN_ID=4242 \
+  env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/$name/gh.log" GITHUB_RUN_ID=4242 \
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
       GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid \
-      ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE=/x/token \
+      ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE=/x/token SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 \
       ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
       GITHUB_REPOSITORY=x/y GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X "$@" \
       bash -c 'cd "$1" && shift && exec "$@"' _ "$repo" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
-        --tools "${TOOLS:-$work/tools.json}" --docker "$work/docker" --gh "$work/gh" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
-        --agent "python3 $work/stub.py" ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${PUBLISH+--publish} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
+        --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --gh "$work/gh" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
+        --agent "python3 $work/stub.py $work/$name" ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${PUBLISH+--publish} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
 }
 out() { echo "$work/$1/out"; }
 nlines() { wc -l <"$1" | tr -d ' '; }
@@ -232,7 +236,7 @@ jen, glr, knd = sys.argv[3:6]
 for ref in (jen, glr, knd):
     runs = [l for l in log.splitlines() if l.startswith("run ") and ref in l]
     assert len(runs) == 1, (ref, log)
-    assert " -d " in " " + runs[0] + " " or " -d" in runs[0], runs[0]
+    assert runs[0].split()[:2] == ["run", "-d"], runs[0]
 rows = {json.loads(l)["persona"]: json.loads(l)["request"]["tools"] for l in open(sys.argv[2])}
 assert sorted(rows["maven-jenkins-ci"]) == ["gitlab-runner", "jenkins"], rows
 assert sorted(rows["on-call-engineer"]) == ["kind"], rows
@@ -245,23 +249,39 @@ for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator")
     assert rows[p] == {}, (p, rows[p])
 PY
 CASE="the agent is told to run every shell action in the pinned shell image through the driver's docker, and nothing else"
-check python3 - "$work/clean/log" "$work/clean/docker.log" "$SHL" "$work/docker" <<'PY'
+check python3 - "$work/clean/log" "$work/clean/docker.log" "$SHL" "x" <<'PY'
 import json, sys
 for ln in open(sys.argv[1]):
     a = json.loads(ln)["argv"]
     assert a[a.index("--shell-image") + 1] == sys.argv[3], a
-    assert a[a.index("--docker") + 1] == sys.argv[4], a
+    assert a[a.index("--docker") + 1].endswith("/docker"), a
 assert sys.argv[3] not in open(sys.argv[2]).read(), "the driver itself must not start the shell image: the agent does, per action"
 PY
-CASE="every image a docker run or pull names is exactly one of the four pinned references: nothing else is ever started"
-check python3 - "$work/clean/docker.log" "$work/clean/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
+CASE="every container the driver starts is `run -d` with the pinned image as its LAST argument, only loopback-published ports, no mount, no env, no network override; privileged only for kind"
+check python3 - "$work/clean/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
 import re, sys
-allowed = set(sys.argv[3:7])
-for path in sys.argv[1:3]:
-    for l in open(path):
-        if l.split()[0] in ("run", "pull"):
-            imgs = [t for t in l.split() if "/" in t and "@" in t or re.fullmatch(r"[\w.-]+(/[\w.-]+)+(:[\w.-]+)?", t)]
-            assert len(imgs) == 1 and imgs[0] in allowed, (l, imgs)
+img, jen, glr, knd = sys.argv[2:6]
+allowed = {img, jen, glr, knd}
+seen = []
+for l in open(sys.argv[1]):
+    t = l.split()
+    if t[0] == "pull":
+        raise AssertionError("the driver must not pull explicitly: " + l)
+    if t[:2] != ["run", "-d"]:
+        continue
+    ref, flags = t[-1], t[2:-1]
+    assert ref in allowed, ("the image is the last argument and must be one of the four pinned references", l)
+    seen.append(ref)
+    i = 0
+    while i < len(flags):
+        f = flags[i]
+        if f in ("--rm",): i += 1
+        elif f == "--name": i += 2
+        elif f == "-p":
+            assert re.fullmatch(r"127\.0\.0\.1:\d+:\d+", flags[i + 1]), ("only loopback publishing", l); i += 2
+        elif f == "--privileged": assert ref == knd, ("privileged is for kind only", l); i += 1
+        else: raise AssertionError(("a flag outside the allowlist (no -v/--mount/-e/--env/--network/--cap-add/--user ...)", f, l))
+assert sorted(seen) == sorted(allowed), seen
 PY
 for key in jenkins gitlab-runner kind shell; do
   python3 - "$work/tools.json" "$work/tools-unpinned-$key.json" "$key" <<'PY'
@@ -370,6 +390,13 @@ assert "4242" in c, "the title names the run, so two runs never share an issue: 
 assert "--body-file" in c and "friction-issue.md" in c, c
 assert not [x for x in calls if x.startswith("issue edit") or x.startswith("issue comment")], calls
 PY
+CASE="a failing gh while publishing FRICTION also fails the run: the information issue is never silently lost"
+PUBLISH=1 GH_FAIL_MATCH="persona-uat-friction" run frictionfail "$FR" rc
+check test "$rc" -ne 0
+PUBLISH=1 GH_FAIL_MATCH="issue edit" GH_STUB_LIST='[{"number":55,"title":"Persona UAT friction: rc run 4242"}]' run frictionfail2 "$FR" rc
+check test "$rc" -ne 0
+PUBLISH=1 GH_FAIL_MATCH="issue list" run frictionfail3 "$FR" rc
+check test "$rc" -ne 0
 CASE="friction blocks nothing: a mixed run (blocking in one persona, friction in another) still publishes its friction issue, then fails (rc)"
 PUBLISH=1 run mixed '{"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"jenkins step fails"}]},"gradle-platform-engineer":{"findings":[{"kind":"friction","text":"confusing proxy text"}]}}' rc
 check test "$rc" -ne 0
@@ -538,11 +565,11 @@ check python3 - "$work/clean/log" <<'PY'
 import json, sys
 for ln in open(sys.argv[1]):
     env = json.loads(ln)["env"]
-    for bad in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "REPO_CHECKOUT", "GITHUB_WORKSPACE", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    for bad in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SOME_UNKNOWN_SECRET", "AWS_SESSION_TOKEN", "REPO_CHECKOUT", "GITHUB_WORKSPACE", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
                 "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL"):
         assert bad not in env, bad
     # an ALLOWLIST: only a minimal shell environment and the model identity the provider needs, nothing else
-    ok = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"}
+    ok = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING", "DOCKER_HOST", "DOCKER_CONFIG"}
     extra = [k for k in env if k not in ok and not k.startswith("ANTHROPIC_")]
     assert not extra, extra
     for need in ("ANTHROPIC_API_KEY", "ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
@@ -592,9 +619,9 @@ CASE="an unset model variable refuses to run anything (exit 2); there is no buil
 check test "$rc" -eq 2 -a ! -s "$work/nomodel/log" -a ! -s "$work/nomodel/docker.log"
 CASE="a model variable that is not set at all (unset, not just empty) also refuses, and stderr names it"
 mkdir -p "$work/unsetmodel"; : >"$work/unsetmodel/log"; : >"$work/unsetmodel/docker.log"; echo '{}' >"$work/unsetmodel/plan.json"; rc=0
-env -u PERSONA_UAT_MODEL -u PERSONA_UAT_TOKEN_BUDGET STUB_PLAN="$work/unsetmodel/plan.json" STUB_LOG="$work/unsetmodel/log" DOCKER_LOG="$work/unsetmodel/docker.log" \
-  GH_LOG="$work/unsetmodel/gh.log" PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X python3 "$driver" --mode rc --image "$IMG" --repo "$repo" \
-  --out "$work/unsetmodel/out" --tools "$work/tools.json" --docker "$work/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py" \
+sed "s#__LOG__#$work/unsetmodel/docker.log#" "$work/docker.tmpl" >"$work/unsetmodel/docker"; chmod +x "$work/unsetmodel/docker"
+env -u PERSONA_UAT_MODEL -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/unsetmodel/gh.log" PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X python3 "$driver" --mode rc --image "$IMG" --repo "$repo" \
+  --out "$work/unsetmodel/out" --tools "$work/tools.json" --docker "$work/unsetmodel/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py $work/unsetmodel" \
   >/dev/null 2>"$work/unsetmodel/stderr" || rc=$?
 check test "$rc" -eq 2 -a ! -s "$work/unsetmodel/log" -a ! -s "$work/unsetmodel/docker.log"
 check grep -q 'PERSONA_UAT_MODEL' "$work/unsetmodel/stderr"
@@ -679,50 +706,59 @@ for l in open(sys.argv[1]):
 PY
 
 # --- the integrated path: the REAL driver, the REAL agent and the REAL provider (over a fake SDK), workflow-shaped -----
-mkdir -p "$work/sdk/anthropic"
+mkdir -p "$work/sdk/anthropic" "$work/pybin"
 cat >"$work/sdk/anthropic/__init__.py" <<'PY'
 import json, os
+LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "sdk.log")
 class _Msg:
     def __init__(self, text):
         self.content = [type("B", (), {"type": "text", "text": text})()]
         self.usage = type("U", (), {"input_tokens": 120, "output_tokens": 30})()
 class Anthropic:
     def __init__(self, *a, **k):
-        open(os.environ["SDK_LOG"], "a").write(json.dumps({"init": {"has_key": "ANTHROPIC_API_KEY" in os.environ,
+        open(LOG, "a").write(json.dumps({"init": {"has_key": "ANTHROPIC_API_KEY" in os.environ,
             "token_file": os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"), "fed": [os.environ.get(x) for x in
-            ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID")]}}) + "\n")
+            ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID")],
+            "leaked": sorted(k for k in os.environ if k in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SOME_UNKNOWN_SECRET"))}}) + "\n")
         self.messages = self
     def create(self, **kw):
-        open(os.environ["SDK_LOG"], "a").write(json.dumps({"model": kw["model"]}) + "\n")
+        open(LOG, "a").write(json.dumps({"model": kw["model"], "turn": len(kw["messages"])}) + "\n")
         if len(kw["messages"]) == 1:
-            return _Msg(json.dumps({"action": "shell", "command": "cat README.md"}))
+            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7))"}))
         return _Msg(json.dumps({"action": "finish", "findings": [{"kind": "friction", "text": "integration friction"}]}))
 PY
-mkdir -p "$work/integ"; : >"$work/integ/docker.log"; : >"$work/integ/gh.log"; : >"$work/integ/sdk.log"; rc=0
-( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY DOCKER_LOG="$work/integ/docker.log" GH_LOG="$work/integ/gh.log" SDK_LOG="$work/integ/sdk.log" \
-    PYTHONPATH="$work/sdk" GITHUB_RUN_ID=4242 PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE \
+# a python3 first on PATH that makes the fake SDK importable WITHOUT any environment variable reaching the scrubbed agent
+printf '#!/bin/sh\nPYTHONPATH="%s" exec %s "$@"\n' "$work/sdk" "$(command -v python3)" >"$work/pybin/python3"; chmod +x "$work/pybin/python3"
+mkdir -p "$work/integ"; : >"$work/integ/docker.log"; : >"$work/integ/gh.log"; : >"$work/sdk.log"; rc=0
+sed "s#__LOG__#$work/integ/docker.log#" "$work/docker.tmpl" >"$work/integ/docker"; chmod +x "$work/integ/docker"
+( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY GH_LOG="$work/integ/gh.log" PATH="$work/pybin:$PATH" GITHUB_RUN_ID=4242 \
+    PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE \
     ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integ/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
-    ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 GITHUB_TOKEN=SECRET-GH-TOKEN \
+    ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 \
+    AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY SOME_UNKNOWN_SECRET=SECRET-UNK \
     python3 bin/persona-uat.py --mode rc --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
-      --docker "$work/docker" --gh "$work/gh" --port 18080 --ready-timeout 5 --agent "python3 bin/persona-uat-agent.py" ) \
+      --docker "$work/integ/docker" --gh "$work/gh" --port 18080 --ready-timeout 5 --agent "python3 bin/persona-uat-agent.py" ) \
   >"$work/integ/stdout" 2>"$work/integ/stderr" || rc=$?
 CASE="integrated: the real driver, agent (given by a RELATIVE path) and provider complete a clean run with five reports"
 check test "$rc" -eq 0 -a "$(ls "$work/integ/out"/*.report.md | wc -l | tr -d ' ')" -eq 5
-CASE="integrated: each persona really ran a shell action in its sandbox (the README content is in its transcript)"
+CASE="integrated: each persona really ran a shell action in its sandbox, and the COMPUTED output (42, which is not in the command text) came back into its transcript"
 check python3 - "$work/integ/out" <<'PY'
 import glob, sys
 ts = glob.glob(sys.argv[1] + "/*.transcript.txt")
 assert len(ts) == 5, ts
-assert all("# fscache README" in open(t).read() for t in ts)
+for t in ts:
+    c = open(t).read()
+    assert "# fscache README" in c and "\n42" in c.replace("\r", ""), t
 PY
-CASE="integrated: the provider authenticated with the federated identity (all four federation variables and the token file, no API key) and used each persona's owner-set model"
-check python3 - "$work/integ/sdk.log" <<'PY'
+CASE="integrated: every provider call (two per persona) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
+check python3 - "$work/sdk.log" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 inits = [r["init"] for r in rows if "init" in r]
-assert len(inits) == 5 and all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") for i in inits), inits
+assert len(inits) == 10, len(inits)
+assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") and i["leaked"] == [] for i in inits), inits
 models = [r["model"] for r in rows if "model" in r]
-assert sorted(set(models)) == ["INTEG-COMPLIANCE", "INTEG-DEFAULT"] and models.count("INTEG-COMPLIANCE") == 2, models
+assert len(models) == 10 and models.count("INTEG-COMPLIANCE") == 2 and models.count("INTEG-DEFAULT") == 8, models
 PY
 CASE="integrated: no GitHub credential reached the shell containers or the provider's environment"
 check none_match 'SECRET-GH-TOKEN' "$work/integ/out" "$work/integ/docker.log"

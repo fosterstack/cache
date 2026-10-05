@@ -518,10 +518,12 @@ mappings:
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-UAT-001-AC1
     evidence:
+      - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
   - ac: REQ-UAT-001-AC2
     evidence:
+      - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-test.sh" }
       - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
   - ac: REQ-UAT-001-AC3

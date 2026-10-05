@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-UAT-001-AC4, REQ-UAT-001-AC5
+# proves: REQ-UAT-001-AC1, REQ-UAT-001-AC2, REQ-UAT-001-AC4, REQ-UAT-001-AC5
 # The persona agent (bin/persona-uat-agent.py) and its model provider (bin/persona-uat-provider.py), proved with a FAKE
 # provider and a fake `docker` that really runs the shell action inside the directory it was given: the loop stops at the
 # owner's token budget (counted across ALL calls, never calling the model again once reached: a runaway stop, not a
@@ -30,8 +30,9 @@ SHL="docker.io/library/debian@sha256:$(printf '4%.0s' $(seq 64))"
 cat >"$work/fp.py" <<'PY'
 import json, os, sys
 req = json.load(sys.stdin)
-plan = json.load(open(os.environ["FP_PLAN"]))
-log = os.environ["FP_LOG"]
+case = sys.argv[1]
+plan = json.load(open(os.path.join(case, "plan.json")))
+log = os.path.join(case, "fp.log")
 n = sum(1 for _ in open(log)) if os.path.exists(log) else 0
 with open(log, "a") as fh:
     fh.write(json.dumps({"req": req, "key": os.environ.get("ANTHROPIC_API_KEY")}) + "\n")
@@ -43,32 +44,32 @@ if "raw" in step:
 print(json.dumps(step))
 PY
 # fake docker: logs argv and the environment NAMES it was started with, then runs `sh -c CMD` in the -v host directory
-cat >"$work/docker" <<'PY'
+cat >"$work/docker.tmpl" <<'PY'
 #!/usr/bin/env python3
 import json, os, subprocess, sys
 a = sys.argv[1:]
-open(os.environ["FD_LOG"], "a").write(json.dumps({"argv": a, "env": sorted(os.environ)}) + "\n")
+open("__LOG__", "a").write(json.dumps({"argv": a, "env": sorted(os.environ)}) + "\n")
 host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
 cmd = a[a.index("-c") + 1]
 try:
-    p = subprocess.run(["sh", "-c", cmd], cwd=host, capture_output=True, text=True, timeout=int(os.environ.get("FD_TIMEOUT", "60")))
+    p = subprocess.run(["sh", "-c", cmd], cwd=host, capture_output=True, text=True, timeout=60)
     sys.stdout.write(p.stdout + p.stderr); sys.exit(p.returncode)
 except subprocess.TimeoutExpired:
     sys.exit(124)
 PY
-chmod +x "$work/docker"
+chmod +x "$work/docker.tmpl"
 
 # agent <case> <plan-json> [agent flags...]  (env BUDGET, MODEL); sets rc; per-case dir $work/<case>/{sandbox,out.json}
 agent() {
   local name=$1 plan=$2; shift 2
   local d="$work/$name"; mkdir -p "$d/sandbox"; echo "README" >"$d/sandbox/README.md"; echo "$plan" >"$d/plan.json"
-  : >"$d/fp.log"; : >"$d/fd.log"
+  : >"$d/fp.log"; : >"$d/fd.log"; sed "s#__LOG__#$d/fd.log#" "$work/docker.tmpl" >"$d/docker"; chmod +x "$d/docker"
   printf '{"persona":"readme-evaluator","instructions":"You are an evaluator with only the README and ten minutes.","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"%s","token_budget":%s,"tools":{}}' \
     "$d/sandbox" "$(printf 'a%.0s' $(seq 64))" "${MODEL:-MODEL-AGENT-X}" "${BUDGET:-400000}" >"$d/req.json"
   rc=0
   env ANTHROPIC_API_KEY=SECRET-MODEL-KEY GITHUB_TOKEN=SECRET-GH GITHUB_REPOSITORY=x/y RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid \
-    FP_PLAN="$d/plan.json" FP_LOG="$d/fp.log" FD_LOG="$d/fd.log" \
-    python3 "$agent" --docker "$work/docker" --shell-image "$SHL" --provider-cmd "python3 $work/fp.py" "$@" \
+    GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 GH_ENTERPRISE_TOKEN=SECRET-GHE \
+    python3 "$agent" --docker "$d/docker" --shell-image "$SHL" --provider-cmd "python3 $work/fp.py $d" "$@" \
     <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 }
 calls() { wc -l <"$work/$1/fp.log" | tr -d ' '; }
@@ -120,18 +121,19 @@ assert a["findings"] == [] and a["tokens"] >= 1000, a
 PY
 
 # --- the loop works: actions run, their output goes back, a finish ends it ----------------------------------------
-agent finish '[{"usage":{"tokens":300},"action":{"type":"shell","command":"echo marker-7 > made.txt; cat made.txt"}},
+agent finish '[{"usage":{"tokens":300},"action":{"type":"shell","command":"echo $((6*7)) > made.txt; cat made.txt"}},
                {"usage":{"tokens":250},"action":{"type":"finish","findings":[{"kind":"friction","text":"first step unclear"},{"kind":"blocking","text":"step 2 fails as written"}]}}]'
 CASE="the shell action ran (its file exists in the sandbox), its output went back to the model, and the finish ended the run"
 check test "$rc" -eq 0 -a "$(calls finish)" -eq 2 -a -s "$work/finish/sandbox/made.txt"
 check python3 - "$work/finish/fp.log" "$work/finish/out.json" <<'PY'
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
-assert "marker-7" in json.dumps(calls[1]["req"]["messages"]), "the action's output never reached the model"
+first_cmd = json.dumps(calls[0]["req"]["messages"])
+assert "42" not in first_cmd and "42" in json.dumps(calls[1]["req"]["messages"]), "the action's COMPUTED output never reached the model"
 a = json.load(open(sys.argv[2]))
 assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"kind": "blocking", "text": "step 2 fails as written"}], a
 assert a["tokens"] == 550, a
-assert "marker-7" in a["transcript"] and "step 2 fails" in a["transcript"], a
+assert "42" in a["transcript"] and "step 2 fails" in a["transcript"], a
 PY
 CASE="the first model call carries the persona's instructions and the endpoint"
 check python3 - "$work/finish/fp.log" <<'PY'
@@ -162,7 +164,7 @@ CASE="the docker call's environment is an allowlist: PATH, HOME and the docker c
 check python3 - "$work/finish/fd.log" <<'PY'
 import json, sys
 ok = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING",
-      "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "FD_LOG", "FD_TIMEOUT"}
+      "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"}
 for l in open(sys.argv[1]):
     env = json.loads(l)["env"]
     extra = [k for k in env if k not in ok]
