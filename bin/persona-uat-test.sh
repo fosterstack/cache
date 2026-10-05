@@ -711,6 +711,15 @@ check none_match 'MODEL-(DEFAULT|COMPLIANCE)-X|OTHER-(DEFAULT|COMPLIANCE)' "$(ou
 CASE="no model name is written in the driver: neither a vendor family nor a model-version pattern"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-' "$root/bin/persona-uat.py"
 
+# --- the docs the personas read must actually be there
+mkdir -p "$work/emptyrepo"; : >"$work/emptyrepo/placeholder"
+CASE="a --repo with no README.md and no docs: the run refuses (non-zero), every persona is did-not-run, and nothing is started"
+mkdir -p "$work/nodocs"; : >"$work/nodocs/log"; : >"$work/nodocs/docker.log"; echo '{}' >"$work/nodocs/plan.json"; sed "s#__LOG__#$work/nodocs/docker.log#" "$work/docker.tmpl" >"$work/nodocs/docker"; chmod +x "$work/nodocs/docker"; rc=0
+env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/nodocs/gh.log" PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$work/emptyrepo" \
+  --out "$work/nodocs/out" --tools "$work/tools.json" --docker "$work/nodocs/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py $work/nodocs" >/dev/null 2>"$work/nodocs/stderr" || rc=$?
+check test "$rc" -ne 0 -a ! -s "$work/nodocs/log" -a ! -s "$work/nodocs/docker.log"
+check grep -qi 'README' "$work/nodocs/stderr"
+
 # --- readiness: a dead image or a container that is not running never reads as a green run --------------------------
 PORT=18099 READY_TIMEOUT=1 run notready '{}' rc
 CASE="an image that never answers on its endpoint: the run fails, no agent is started against nothing, every persona did not run"
@@ -832,5 +841,17 @@ PY
 CASE="integrated: no GitHub credential reached the shell containers or the provider's environment"
 check none_match 'SECRET-GH-TOKEN' "$work/integ/out" "$work/integ/docker.log"
 
+CASE="across every case, the only gh calls ever made are issue create/edit/list and label create (a stray call is a failure, not a quiet success)"
+check python3 - "$work" <<'PY'
+import glob, sys
+seen = 0
+for path in glob.glob(sys.argv[1] + "/*/gh.log") + glob.glob(sys.argv[1] + "/integ/gh.log"):
+    for l in open(path):
+        if l.startswith(("ARGV ", "BODY")):
+            continue
+        seen += 1
+        assert l.startswith(("issue create", "issue edit", "issue list", "label create")), (path, l)
+assert seen > 0
+PY
 echo "persona-uat: $pass passed, $failn failed"
 test "$failn" -eq 0

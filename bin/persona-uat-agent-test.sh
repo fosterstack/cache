@@ -194,6 +194,33 @@ calls = [json.loads(l) for l in open(sys.argv[1])]
 assert len(json.dumps(calls[1]["req"]["messages"])) < 40000, len(json.dumps(calls[1]["req"]["messages"]))
 PY
 
+# a docker that fails for ITS OWN reasons (exit 125/126/127: the daemon, the image, the command could not be started) is not a command that failed
+cat >"$work/docker-dead" <<'SH'
+#!/bin/sh
+echo "docker: Cannot connect to the Docker daemon" >&2
+exit 125
+SH
+chmod +x "$work/docker-dead"
+d="$work/dockerdead"; mkdir -p "$d/sandbox"; echo README >"$d/sandbox/README.md"; : >"$d/fp.log"
+echo '[{"usage":{"tokens":10},"action":{"type":"shell","command":"ls"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' >"$d/plan.json"
+printf '{"persona":"readme-evaluator","instructions":"You are an evaluator.","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"M","token_budget":400000,"tools":{}}' "$d/sandbox" "$(printf 'a%.0s' $(seq 64))" >"$d/req.json"
+rc=0; python3 "$agent" --docker "$work/docker-dead" --shell-image "$SHL" --provider-cmd "python3 $work/fp.py $d" <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
+CASE="docker's own failure on a shell action (exit 125) fails the agent (the persona did not run); it is never returned to the model as a command error that lets the persona finish with nothing"
+check test "$rc" -ne 0 -a ! -s "$d/out.json"
+# the default step limit is generous: 150 shell actions then a finish, with the default --max-steps and a large budget, still finishes
+python3 - "$work/long.json" <<'PY'
+import json, sys
+json.dump([{"usage": {"tokens": 1}, "action": {"type": "shell", "command": "echo step"}}] * 150 + [{"usage": {"tokens": 1}, "action": {"type": "finish", "findings": []}}], open(sys.argv[1], "w"))
+PY
+agent longrun "$(cat "$work/long.json")"
+CASE="the DEFAULT step limit does not cut a long but honest persona short (150 actions then a finish): the token budget stays the runaway stop"
+check test "$rc" -eq 0 -a "$(calls longrun)" -eq 151
+check python3 - "$work/longrun/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert not any("did not finish" in f["text"].lower() for f in a["findings"]), a
+PY
+
 # --- fail closed: a provider that fails or leaves the protocol fails the AGENT ---------------------------------
 for c in 'crash|[{"exit":9}]' 'not-json|[{"raw":"nope"}]' 'unknown-action|[{"usage":{"tokens":1},"action":{"type":"rm-rf","command":"x"}}]' \
          'no-usage|[{"action":{"type":"finish","findings":[]}}]' 'neg-usage|[{"usage":{"tokens":-5},"action":{"type":"finish","findings":[]}}]' \
