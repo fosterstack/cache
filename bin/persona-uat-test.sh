@@ -162,6 +162,8 @@ elif cmd == ["issue", "edit"]:
 elif cmd == ["issue", "list"]:
     o, pos = parse(a[2:], ("--label", "--state", "--search", "--json", "--limit"))
     if pos or o.get("--json") != "number,title": die("this caller cannot parse a list (needs --json number,title)")
+    if os.environ.get("GH_STUB_LIST_RAW") is not None:
+        print(os.environ["GH_STUB_LIST_RAW"]); sys.exit(0)           # exits 0 with whatever text: a malformed SUCCESSFUL answer
     st = o.get("--state", "open")
     items = json.loads(os.environ.get("GH_STUB_LIST", "[]"))
     if st == "all":
@@ -523,7 +525,16 @@ CASE="weekly: a failing gh (edit of an open issue) also fails the run"
 IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='[{"number":7,"title":"Persona UAT: blocking findings (weekly)"}]' GH_FAIL_MATCH="issue edit" run weeklyghfail2 "$WK" weekly
 check test "$rc" -ne 0
 CASE="weekly: an unparseable issue list fails the run and creates no duplicate"
-IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='<html>rate limited' run weeklygarbage "$WK" weekly
+for raw in '<html>rate limited' '{"number": 7}' '[1,2]' '[{"number": "x"}]' ''; do
+  IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST_RAW="$raw" run weeklygarbage "$WK" weekly
+  CASE="weekly: gh exits 0 but the issue list is malformed ($raw): the run fails and creates no duplicate"
+  check test "$rc" -ne 0
+  check python3 - "$work/weeklygarbage/gh.log" <<'PY'
+import sys
+assert not [l for l in open(sys.argv[1]) if l.startswith("issue create")], "created an issue after an unreadable list"
+PY
+done
+IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='<html>rate limited' run weeklygarbageA "$WK" weekly
 check test "$rc" -ne 0
 check python3 - "$work/weeklygarbage/gh.log" <<'PY'
 import sys
@@ -861,7 +872,7 @@ class Anthropic:
             "first": kw["messages"][0]["content"] if isinstance(kw["messages"][0]["content"], str) else json.dumps(kw["messages"][0]["content"])}) + "\n")
         msgs = kw["messages"]
         if len(msgs) == 1:
-            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); wget -qO- http://127.0.0.1:18080/ >/dev/null 2>&1 || true"}))
+            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); python3 -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:18080/').status)\""}))
         last = msgs[-1]["content"] if isinstance(msgs[-1]["content"], str) else json.dumps(msgs[-1]["content"])
         if len(msgs) == 3:
             return _Msg(json.dumps({"action": "shell", "command": "cat docs/documented-step-that-does-not-exist.md"}))

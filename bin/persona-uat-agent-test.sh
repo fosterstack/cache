@@ -172,8 +172,19 @@ import json, sys
 a = json.load(open(sys.argv[1]))
 assert any(f["kind"] == "blocking" and "endpoint" in f["text"].lower() for f in a["findings"]), a
 PY
-agent contacted '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18080/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="a persona whose commands DID name the endpoint may finish clean (findings stay empty)"
+python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV=$!
+trap 'kill $SRV 2>/dev/null; rm -rf "$work"' EXIT
+for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18080')" 2>/dev/null && break; sleep 0.3; done
+echo "ok-endpoint" >"$work/healthz"
+agent neverreached '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18099/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="naming the endpoint is not enough: a command that names it but got NO answer (the connection failed, output empty) leaves the persona without a clean pass"
+check python3 - "$work/neverreached/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert any(f["kind"] == "blocking" and "endpoint" in f["text"].lower() for f in a["findings"]), a
+PY
+agent contacted '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18080/healthz"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="a persona whose command reached the endpoint (exit 0, a non-empty answer) may finish clean (findings stay empty)"
 check python3 - "$work/contacted/out.json" <<'PY'
 import json, sys
 assert json.load(open(sys.argv[1]))["findings"] == []

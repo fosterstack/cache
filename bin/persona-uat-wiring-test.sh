@@ -87,7 +87,7 @@ def common(name, job, bad):
         bad.append(f"{name}: the job has no timeout-minutes (<= 180): a hung persona must not hold the runner")
     import shlex
     try:
-        argv = shlex.split(flat.replace("SUBST", "SUBSTVAL"))
+        argv = shlex.split(flat.replace("SUBST", "SUBSTVAL"), comments=True)     # a trailing `# --publish` is a comment, not a flag
     except ValueError:
         argv = []
     opts = [t for t in argv if t.startswith("--")]
@@ -96,6 +96,11 @@ def common(name, job, bad):
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
     if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"}):
         bad.append(f"{name}: the driver is given options outside the contract: {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--publish'})}")
+    positional = [t for i, t in enumerate(argv[1:], 1) if not t.startswith("--") and not (argv[i - 1].startswith("--") and argv[i - 1] != "--publish")]
+    if positional:
+        bad.append(f"{name}: the driver command has tokens that are no option or option value: {positional}")
+    if d.get("working-directory") or (job.get("defaults", {}).get("run", {}) or {}).get("working-directory"):
+        bad.append(f"{name}: a working-directory on the driver step or the job: the relative checkout, driver, agent and docs paths assume the workspace root")
     def optval(f):
         return argv[argv.index(f) + 1] if f in argv[:-1] else None
     if optval("--tools") != pre + "bin/persona-uat-tools.json":
@@ -534,6 +539,10 @@ mutate("rc identity step prints the token", "logs the token",
        lambda j: _id_step(j)["with"].update(script=_id_step(j)["with"]["script"] + "\nconsole.log(" + _tokvar(_id_step(j)["with"]["script"]) + ")"))
 mutate("rc identity step masks a literal, not the token", "mask THE TOKEN",
        lambda j: _id_step(j)["with"].update(script=re.sub(r"core\.setSecret\(\s*\w+\s*\)", "core.setSecret('x')", _id_step(j)["with"]["script"])))
+mutate("rc driver's --publish is commented out", "is not run with --publish exactly once", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "# --publish")))
+mutate("rc driver step gets a working-directory", "a working-directory on the driver step", lambda j: drv(j).update({"working-directory": "harness"}))
+mutate("rc job default working-directory", "a working-directory on the driver step", lambda j: j.update(defaults={"run": {"working-directory": "x"}}))
+mutate("rc driver gets a stray positional token", "tokens that are no option or option value", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " extra"))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
 mutate("rc job permissions gain contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"))
