@@ -526,10 +526,14 @@ mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK ins
 mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
        lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "pip install" in str(s.get("run", "")))))
 mutate("patch-failed no longer names persona-uat", "patch-failed does not list persona-uat", lambda j: None, "rel_patchfailed")
+def _tokvar(script):
+    m = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*await\s+core\.getIDToken", script)
+    return m.group(1) if m else "token"
+def _id_step(j): return next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))
 mutate("rc identity step prints the token", "logs the token",
-       lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"] + "\nconsole.log(token)"))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
+       lambda j: _id_step(j)["with"].update(script=_id_step(j)["with"]["script"] + "\nconsole.log(" + _tokvar(_id_step(j)["with"]["script"]) + ")"))
 mutate("rc identity step masks a literal, not the token", "mask THE TOKEN",
-       lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"].replace("core.setSecret(token)", "core.setSecret('token')")))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
+       lambda j: _id_step(j)["with"].update(script=re.sub(r"core\.setSecret\(\s*\w+\s*\)", "core.setSecret('x')", _id_step(j)["with"]["script"])))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
 mutate("rc job permissions gain contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"))

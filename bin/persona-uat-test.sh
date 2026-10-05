@@ -10,6 +10,10 @@
 #   persona-uat.py --mode rc|weekly --image REF@sha256:... --repo DIR --out DIR --tools FILE --docker CMD --gh CMD
 #                  --agent CMD [--port N] [--publish]
 #   env PERSONA_UAT_MODEL, PERSONA_UAT_COMPLIANCE_MODEL (required), PERSONA_UAT_TOKEN_BUDGET (default 400000)
+#   contract notes an implementer needs (each is pinned by a case below): the driver derives GH_REPO for its gh calls from GITHUB_REPOSITORY (the weekly
+#   workspace root has no .git); it makes a relative --agent script absolute before running the agent with its cwd in the sandbox; the agent starts the
+#   provider with `python3` from PATH (never sys.executable); the provider conversation starts with exactly one user message and each shell step adds an
+#   assistant action and a user result (2 messages); containers are removed by container id.
 #   agent: one JSON request on stdin; one JSON answer on stdout {"findings":[{"kind":"blocking|friction","text":str}],
 #          "tokens": int >= 0, "transcript": str}
 set -euo pipefail
@@ -204,7 +208,7 @@ run() {
       GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid \
       ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE=/x/token SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 \
       ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
-      GITHUB_REPOSITORY=x/y GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
+      GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X "$@" \
       bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --gh "$work/gh" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
