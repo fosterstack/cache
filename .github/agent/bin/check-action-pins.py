@@ -1692,8 +1692,12 @@ def _keywords_in(blanked_line):
     the first word of a command (after `;`, `&`, `|`, `(`, `{` or the start of the line) or right after another keyword
     (`then if`, `else if`), never as an ordinary argument (Codex #164 r17, B02: `printf '%s\n' fi` is data)."""
     out = []
-    for seg in re.split(r"[;&|(){}]", blanked_line):
-        for w in seg.split():
+    parts = re.split(r"([;&|(){}])", blanked_line)
+    for i in range(0, len(parts), 2):
+        words = parts[i].split()
+        if i + 1 < len(parts) and parts[i + 1] == ")" and len(words) == 1:
+            continue                    # `done)` / `fi)` is a case PATTERN, not a command (Sonnet #164 r18, R1)
+        for w in words:
             if w in _KEYWORDS:
                 out.append(w)
             else:
@@ -1803,15 +1807,32 @@ def _unconditional(text):
             if "}" in line.split("{", 1)[-1] or re.search(r"\bdone\b", line):   # parameters) may never run (r3, C10; r17, B07)
                 stack.pop()
             continue
+        closers = len(re.findall(r"(?:^|[;&|])\s*[})]", blank))     # a group's closer ends the conditional group it closes,
+        balanced = len(re.findall(r"(?:^|[;&|])\s*[{(](?=\s)(?!\s*$)", blank))   # unless the group opened and closed on this line
+        for _ in range(max(0, closers - balanced)):
+            if stack and stack[-1] == "grp":
+                stack.pop()
+        unsafe_for = False
         for w in words:
             if w in ("if", "case", "while", "until"):
                 stack.append(w)
                 opened = True
             elif w == "for":
-                stack.append("for")
+                lst = re.search(r"\bfor\s+\w+\s+in\s+([^;]*)", line)
+                # only a NON-EMPTY LITERAL word list always runs: a "$@", a $variable, a glob, a $(command) or a C-style
+                # ((...)) loop may run zero times (Sonnet #164 r18, B2)
+                if not lst or re.search(r"[$`*?\[]|\(\(", lst.group(1)) or re.search(r"\bfor\s*\(\(", line):
+                    stack.append("if")
+                    unsafe_for = True
+                else:
+                    stack.append("for")
             elif w in ("fi", "esac", "done") and stack:
                 stack.pop()
-        if opened or cond_line or any(x != "for" for x in stack) or re.match(r"^\s*(elif|else|then)\b", line):
+        tail = re.split(r"&&|\|\|", blank)
+        if (len(tail) > 1 or any(x != "for" for x in stack)) and re.search(r"[{(]\s*$", tail[-1]):
+            stack.append("grp")                # a multi-line group opened after && / || (or inside a conditional one) may never run
+            opened = True                      # (Sonnet #164 r18, B1)
+        if opened or cond_line or unsafe_for or any(x != "for" for x in stack) or re.match(r"^\s*(elif|else|then)\b", line):
             continue
         line = re.sub(r"\bfor\b[^;]*;\s*do\b|\bdone\b", "", line)
         keep.append(re.split(r"&&|\|\|", line)[0])

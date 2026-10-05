@@ -1631,5 +1631,55 @@ case_ r17-control-real-loop-ok ok "$(rb 'for v in latest; do docker build -t "al
 case_ r17-control-keyword-in-comment-ok ok "$(rb 'docker build -t alpine:latest . # fi then done
           docker run alpine:latest')" "$DF"
 
+# --- r18 (Sonnet 2 blockers, plain forms): a multi-line conditional group, and a loop whose list can be empty
+# Sonnet r18 B1: `cond && {` / `cond || {` / `cond && (` opens a MULTI-LINE group that may never run
+case_ r18-and-brace-block-bad bad "$(rb '[ -n "$X" ] && {
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r18-or-brace-block-bad bad "$(rb '[ -z "$X" ] || {
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r18-and-subshell-block-bad bad "$(rb 'test -n "$X" && (
+            docker build -t alpine:latest .
+          )
+          docker run alpine:latest')" "$DF"
+case_ r18-nested-group-in-conditional-bad bad "$(rb '[ -n "$X" ] && {
+            { true; }
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+# Sonnet r18 B2: a for-list that is not a non-empty literal word list may run zero times
+case_ r18-for-positional-bad bad "$(rb 'for v in "$@"; do
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r18-for-variable-list-bad bad "$(rb 'for v in $LIST; do docker build -t alpine:latest .; done
+          docker run alpine:latest')" "$DF"
+case_ r18-for-glob-bad bad "$(rb 'for f in ./nonexistent/*; do docker build -t alpine:latest .; done
+          docker run alpine:latest')" "$DF"
+case_ r18-for-substitution-bad bad "$(rb 'for f in $(ls nothing); do docker build -t alpine:latest .; done
+          docker run alpine:latest')" "$DF"
+case_ r18-for-c-style-bad bad "$(rb 'for ((i=0;i<N;i++)); do docker build -t alpine:latest .; done
+          docker run alpine:latest')" "$DF"
+# Sonnet r18 R1: a case pattern spelled like a keyword must not pop the tracking stack
+case_ r18-case-pattern-spelled-done-bad bad "$(rb 'case "$X" in
+            done) docker build -t alpine:latest . ;;
+          esac
+          docker run alpine:latest')" "$DF"
+# controls: the same shapes, harmless, must NOT disturb a genuinely safe script
+case_ r18-control-unconditional-brace-group-ok ok "$(rb '{
+            docker build -t alpine:latest .
+          }
+          docker run alpine:latest')" "$DF"
+case_ r18-control-literal-for-list-ok ok "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
+          docker run alpine:latest')" "$DF"
+case_ r18-control-and-then-closed-group-ok ok "$(rb 'docker build -t alpine:latest .
+          [ -n "$X" ] && {
+            echo hello
+          }
+          docker run alpine:latest')" "$DF"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
