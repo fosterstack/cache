@@ -66,7 +66,8 @@ agent() {
   printf '{"persona":"readme-evaluator","instructions":"You are an evaluator with only the README and ten minutes.","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"%s","token_budget":%s,"tools":{}}' \
     "$d/sandbox" "$(printf 'a%.0s' $(seq 64))" "${MODEL:-MODEL-AGENT-X}" "${BUDGET:-400000}" >"$d/req.json"
   rc=0
-  env ANTHROPIC_API_KEY=SECRET-MODEL-KEY GITHUB_TOKEN=SECRET-GH FP_PLAN="$d/plan.json" FP_LOG="$d/fp.log" FD_LOG="$d/fd.log" \
+  env ANTHROPIC_API_KEY=SECRET-MODEL-KEY GITHUB_TOKEN=SECRET-GH GITHUB_REPOSITORY=x/y RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid \
+    FP_PLAN="$d/plan.json" FP_LOG="$d/fp.log" FD_LOG="$d/fd.log" \
     python3 "$agent" --docker "$work/docker" --shell-image "$SHL" --provider-cmd "python3 $work/fp.py" "$@" \
     <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 }
@@ -97,6 +98,26 @@ agent steplimit '[{"usage":{"tokens":0},"action":{"type":"shell","command":"echo
 CASE="a model that spends no tokens and never finishes is still stopped, by the step limit (5 calls)"
 check test "$rc" -eq 0 -a "$(calls steplimit)" -eq 5
 check grep -qi 'step limit' "$work/steplimit/out.json"
+CASE="a persona stopped by the step limit did NOT finish: that is a blocking finding (did not finish), never a quiet pass"
+check python3 - "$work/steplimit/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert any(f["kind"] == "blocking" and "did not finish" in f["text"].lower() for f in a["findings"]), a
+PY
+agent noaction '[{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="a persona that finishes without running a single shell action exercised nothing: blocking, never a pass"
+check python3 - "$work/noaction/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert any(f["kind"] == "blocking" and "without running" in f["text"].lower() for f in a["findings"]), a
+PY
+BUDGET=1000 agent capnote "$STEPS"
+CASE="the token cap is only FLAGGED (the owner's rule): it adds no blocking finding of its own"
+check python3 - "$work/capnote/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert a["findings"] == [] and a["tokens"] >= 1000, a
+PY
 
 # --- the loop works: actions run, their output goes back, a finish ends it ----------------------------------------
 agent finish '[{"usage":{"tokens":300},"action":{"type":"shell","command":"echo marker-7 > made.txt; cat made.txt"}},
@@ -121,32 +142,31 @@ assert "evaluator with only the README" in s and "http://127.0.0.1:18080" in s, 
 PY
 
 # --- AC5 (and AC4): the shell is a pinned, unprivileged container that can see ONLY the sandbox -------------------
-CASE="every shell action runs as: docker run --rm ... -v <sandbox>:/work -w /work <pinned shell image> sh -c <command>"
+CASE="every shell action's docker call is EXACTLY: run --rm --network host -v <sandbox>:/work -w /work <pinned shell image> sh -c <command>"
 check python3 - "$work/finish/fd.log" "$work/finish/sandbox" "$SHL" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert rows, "no shell action went through docker"
 for r in rows:
     a = r["argv"]
-    assert a[0] == "run" and "--rm" in a, a
-    vs = [a[i + 1] for i, x in enumerate(a) if x == "-v"]
-    assert vs == [sys.argv[2] + ":/work"], vs                       # exactly ONE mount: the sandbox
-    assert a[a.index("-w") + 1] == "/work", a
-    assert a[a.index(sys.argv[3]) + 1:a.index(sys.argv[3]) + 3] == ["sh", "-c"], a   # the pinned image, then sh -c
-    for forbidden in ("--privileged", "--volumes-from", "--pid", "--cap-add", "--security-opt", "--device", "-e", "--env", "--env-file", "--user", "-u"):
-        if forbidden in ("-e", "--env", "--env-file"):
-            assert forbidden not in a, (forbidden, a)
-        else:
-            assert not any(x == forbidden or x.startswith(forbidden + "=") for x in a), (forbidden, a)
-    assert not any("docker.sock" in x or x in ("/", "/var", "/Users", "/home") for x in a), a
+    # a full-argv ALLOWLIST: nothing can be added (no --privileged, --mount, --volume, --env=, -eX=Y, --user, --device ...)
+    assert a[:10] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh"], a
+    assert a[10] == "-c" and len(a) == 12, a
 PY
-CASE="the docker call carries no credentials: neither the model key nor a GitHub token is in its environment"
+CASE="the endpoint is reachable from the shell: --network host puts the container on the runner's loopback where the image and tools listen"
 check python3 - "$work/finish/fd.log" <<'PY'
 import json, sys
+assert all("host" == json.loads(l)["argv"][json.loads(l)["argv"].index("--network") + 1] for l in open(sys.argv[1]))
+PY
+CASE="the docker call's environment is an allowlist: PATH, HOME and the docker client's own settings, no model or GitHub credential"
+check python3 - "$work/finish/fd.log" <<'PY'
+import json, sys
+ok = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING",
+      "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "FD_LOG", "FD_TIMEOUT"}
 for l in open(sys.argv[1]):
     env = json.loads(l)["env"]
-    for bad in ("ANTHROPIC_API_KEY", "GITHUB_TOKEN"):
-        assert bad not in env, bad
+    extra = [k for k in env if k not in ok]
+    assert not extra, extra
 PY
 CASE="the provider (and only the provider) is given the model credential"
 check python3 - "$work/finish/fp.log" <<'PY'

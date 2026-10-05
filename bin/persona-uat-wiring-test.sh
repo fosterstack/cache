@@ -49,18 +49,32 @@ def common(name, job, bad):
         bad.append(f"{name}: expected exactly one step running bin/persona-uat.py, found {len(drivers)}"); return None
     d = drivers[0]
     run = str(d.get("run", ""))
-    if str(d.get("continue-on-error", "false")).lower() == "true":
-        bad.append(f"{name}: the driver step has continue-on-error: its failure would not fail the run")
     if "if" in d:
         bad.append(f"{name}: the driver step has an if: the persona run could be skipped")
-    if re.search(r"\|\||set\s+\+e|&&\s*false|;\s*true\b|\bexit\s+0\b|\btrue\s*$", run, re.M):
-        bad.append(f"{name}: the driver step swallows the driver's exit status (|| / set +e / exit 0)")
+    # a POSITIVE rule: the run is ONE command, the driver, with nothing that can swallow its status: no pipe, no &, no ;, no
+    # conditional, no negation, no second command; $(...) substitutions inside its arguments are allowed
+    body = "\n".join(l for l in run.splitlines() if l.strip() and not l.strip().startswith("#"))
+    flat = re.sub(r"\$\([^()]*\)", "SUBST", body.replace("\\\n", " "))
+    if not re.match(r"^python3 bin/persona-uat\.py\b", flat.strip()) or re.search(r"[|&;!<>`]|\bif\b|\bthen\b|\|\||\n", flat.strip()):
+        bad.append(f"{name}: the driver step is not exactly one bare driver command (pipe, &, ;, if, !, a second command or redirect can swallow its exit status)")
+    if str(d.get("continue-on-error", "false")).strip() not in ("false",):
+        bad.append(f"{name}: the driver step has continue-on-error: its failure would not fail the run")
+    if "timeout-minutes" not in job or not str(job.get("timeout-minutes", "")).isdigit() or int(job["timeout-minutes"]) > 180:
+        bad.append(f"{name}: the job has no timeout-minutes (<= 180): a hung persona must not hold the runner")
     for flag in ("--out ", "--repo ", "--tools bin/persona-uat-tools.json", "--agent ", "--publish", "--image "):
         if flag not in run:
             bad.append(f"{name}: the driver is not run with {flag.strip()}")
     if "bin/persona-uat-agent.py" not in run:
         bad.append(f"{name}: the driver is not given bin/persona-uat-agent.py as its agent")
-    env = {**job.get("env", {}), **d.get("env", {})}
+    for k in list(job.get("env", {})):
+        if k in CREDS or k in VARS or k.startswith("ANTHROPIC_"):
+            bad.append(f"{name}: {k} is set at job level: the secrets and owner variables belong on the driver step only")
+    for s in steps:
+        if s is not d:
+            for k in s.get("env", {}):
+                if k in CREDS or k in VARS:
+                    bad.append(f"{name}: {k} is set on a step other than the driver")
+    env = d.get("env", {})
     for v in VARS:
         if norm(env.get(v, "")) != f"vars.{v}":
             bad.append(f"{name}: {v} is not exactly vars.{v} on the driver step (the owner's variable)")
@@ -76,10 +90,15 @@ def common(name, job, bad):
         bad.append(f"{name}: a model name is written in the workflow")
     if CLOUD.search("\n".join(str(s.get("run", "")) for s in steps)):
         bad.append(f"{name}: a run step names a cloud CLI: nothing is provisioned in a cloud")
+    ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact")
     for s in steps:
         u = str(s.get("uses", ""))
         if u and not PIN_USES.match(u):
             bad.append(f"{name}: action {u} is not pinned to a commit digest")
+        if u and u.split("@")[0] not in ALLOWED:
+            bad.append(f"{name}: action {u.split('@')[0]} is not on the persona job's allowlist {ALLOWED}")
+        if re.search(r"\bdocker\b", str(s.get("run", ""))):
+            bad.append(f"{name}: a run step names docker: containers are started only by the driver, by pinned digest")
     for s in steps:
         if "actions/checkout" in str(s.get("uses", "")) and str(s.get("with", {}).get("persist-credentials", "")).lower() != "false":
             bad.append(f"{name}: checkout keeps the job's credentials (persist-credentials must be false)")
@@ -123,8 +142,9 @@ def judge_release(r, bad):
         run = str(d.get("run", ""))
         m = re.search(r"--image\s+(\S+(?:\s*\"[^\"]*\")?)", run)
         img = m.group(1) if m else ""
-        if "needs.image.outputs.digests" not in img + run.split("--image", 1)[-1].split("--", 1)[0] or "@" not in run.split("--image", 1)[-1].split("--", 1)[0]:
-            bad.append("release persona-uat takes the image from something other than the chain's digests (needs.image.outputs.digests)")
+        arg = run.split("--image", 1)[-1].split(" --", 1)[0]
+        if not re.search(r"fromJSON\(\s*needs\.image\.outputs\.digests\s*\)\.production", arg) or "@" not in arg:
+            bad.append("release persona-uat takes the image from something other than the chain's digests (fromJSON(needs.image.outputs.digests).production)")
         if "--mode rc" not in run:
             bad.append("release persona-uat does not run the driver with --mode rc")
 
@@ -167,8 +187,9 @@ def judge_source(bad):
         except OSError:
             bad.append(f"{os.path.relpath(p, root)} is missing"); continue
         code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
-        if CLOUD.search(code):
-            bad.append(f"{os.path.relpath(p, root)} names a cloud CLI: {CLOUD.search(code).group(0)}")
+        cmd = re.search(r"[\"'](?:terraform|tofu|pulumi|eksctl|doctl|aws|gcloud|az|kubectl|helm|ibmcloud|oci|linode-cli|vultr-cli)(?:\s|[\"'])", code)
+        if cmd:
+            bad.append(f"{os.path.relpath(p, root)} runs a cloud CLI: {cmd.group(0)}")
         for m in re.finditer(r"[\"']((?:[a-z0-9.-]+/)+[a-z0-9._-]+(?::[\w.-]+)?)[\"']", code):
             if re.search(r"(docker\.io|ghcr\.io|quay\.io|library|jenkins|gitlab|kindest)", m.group(1)) and "@sha256:" not in m.group(1):
                 bad.append(f"{os.path.relpath(p, root)} names an image not pinned by digest: {m.group(1)}")
@@ -210,9 +231,19 @@ mutate("rc job's predicate gains && false", "does not run only for v*-rc.* tags"
 mutate("rc job continue-on-error", "continue-on-error on the job", lambda j: j.update({"continue-on-error": "true"}))
 mutate("rc driver step continue-on-error", "the driver step has continue-on-error", lambda j: drv(j).update({"continue-on-error": "true"}))
 mutate("rc driver step if: false", "the driver step has an if", lambda j: drv(j).update({"if": "false"}))
-mutate("rc driver step ends with || true", "swallows the driver's exit status", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
+mutate("rc driver step is piped through tee", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " | tee persona.log"))
+mutate("rc driver step is backgrounded", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " &"))
+mutate("rc driver step wrapped in if !", "not exactly one bare driver command", lambda j: drv(j).update(run="if ! " + drv(j)["run"].strip() + "; then echo no; fi"))
+mutate("rc driver continue-on-error is an expression", "the driver step has continue-on-error", lambda j: drv(j).update({"continue-on-error": "${{ always() }}"}))
+mutate("rc job has no timeout", "no timeout-minutes", lambda j: j.pop("timeout-minutes"))
+mutate("rc job uses a kind action", "is not on the persona job's allowlist", lambda j: j["steps"].insert(0, {"uses": "helm/kind-action@" + "a" * 40}))
+mutate("rc job runs docker itself", "names docker", lambda j: j["steps"].insert(0, {"run": "docker run -d jenkins/jenkins:lts"}))
+mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
+mutate("rc image argument is the raw digests JSON", "takes the image from something other than the chain's digests",
+       lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "needs.image.outputs.digests", drv(j)["run"])))
+mutate("rc driver step ends with || true", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
 mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
-       lambda j: drv(j).update(run=re.sub(r"needs\.image\.outputs\.digests", "github.ref_name", drv(j)["run"])))
+       lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "github.ref_name", drv(j)["run"])))
 mutate("rc job leaves the persona-uat environment", "persona-uat environment", lambda j: j.update(environment="release"))
 mutate("rc model variable hard-coded", "PERSONA_UAT_MODEL is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
 mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly vars.PERSONA_UAT_MODEL",
@@ -241,7 +272,7 @@ mutate("weekly job resolves a fixed release tag", "does not resolve the LATEST r
 mutate("weekly driver is handed a fixed image", "does not hand the resolved latest-release image digest",
        lambda j: drv(j).update(run=re.sub(r"--image\s+\S+", "--image ghcr.io/x/cache@sha256:" + "a" * 64, drv(j)["run"])), "fresh")
 mutate("weekly driver runs in rc mode", "--mode weekly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode rc")), "fresh")
-mutate("weekly driver step is non-fatal", "swallows the driver's exit status", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")
+mutate("weekly driver step is non-fatal", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")
 # tools file
 mutate("tools: jenkins by tag", "tool jenkins is not pinned by digest", lambda t: t.update(jenkins="docker.io/jenkins/jenkins:lts"), "tools")
 mutate("tools: the persona shell by tag", "tool shell is not pinned by digest", lambda t: t.update(shell="docker.io/library/debian:12"), "tools")

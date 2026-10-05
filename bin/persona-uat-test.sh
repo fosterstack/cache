@@ -88,6 +88,7 @@ PY
 cat >"$work/docker" <<'SH'
 #!/usr/bin/env bash
 echo "$*" >>"$DOCKER_LOG"
+if [ -n "${DOCKER_FAIL_MATCH:-}" ] && [[ "$*" == *"$DOCKER_FAIL_MATCH"* ]]; then echo "docker: simulated failure" >&2; exit 125; fi
 case "$1" in
   run) n=$(grep -c '^run ' "$DOCKER_LOG"); echo "cid-$n" ;;
 esac
@@ -97,6 +98,7 @@ SH
 cat >"$work/gh" <<'SH'
 #!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
+if [ -n "${GH_FAIL_MATCH:-}" ] && [[ "$*" == *"$GH_FAIL_MATCH"* ]]; then echo "gh: simulated failure" >&2; exit 1; fi
 case "$1 $2" in
   "issue list") echo "${GH_STUB_LIST:-[]}" ;;
   "issue create") echo "https://github.com/x/y/issues/99" ;;
@@ -115,6 +117,8 @@ run() {
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
       GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid \
       ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE=/x/token \
+      ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
+      GITHUB_REPOSITORY=x/y GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X "$@" \
       bash -c 'cd "$1" && shift && exec "$@"' _ "$repo" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/docker" --gh "$work/gh" --port 18080 \
@@ -170,7 +174,7 @@ import sys
 for path in sys.argv[1:]:
     lines = open(path).read().splitlines()
     started = [f"cid-{i+1}" for i, l in enumerate(x for x in lines if x.startswith("run "))]
-    removed = " ".join(l for l in lines if l.startswith("rm "))
+    removed = " ".join(l for l in lines if l.startswith("rm -f "))
     assert started and all(c in removed for c in started), (path, started, removed)
 PY
 CASE="an image reference that is not pinned by digest is refused before anything starts (exit 2)"
@@ -189,6 +193,11 @@ for ref in (jen, glr, knd):
 rows = {json.loads(l)["persona"]: json.loads(l)["request"]["tools"] for l in open(sys.argv[2])}
 assert sorted(rows["maven-jenkins-ci"]) == ["gitlab-runner", "jenkins"], rows
 assert sorted(rows["on-call-engineer"]) == ["kind"], rows
+# the contract: each tool is {container, endpoint}; Jenkins is reachable on loopback, kind also hands over a kubeconfig file
+for name, v in {**rows["maven-jenkins-ci"], **rows["on-call-engineer"]}.items():
+    assert sorted(v)[:2] == ["container", "endpoint"] and v["container"].startswith("cid-"), (name, v)
+assert rows["maven-jenkins-ci"]["jenkins"]["endpoint"] == "http://127.0.0.1:18081", rows
+assert rows["on-call-engineer"]["kind"]["kubeconfig"] == "kubeconfig", rows
 for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator"):
     assert rows[p] == {}, (p, rows[p])
 PY
@@ -201,11 +210,55 @@ for ln in open(sys.argv[1]):
     assert a[a.index("--docker") + 1] == sys.argv[4], a
 assert sys.argv[3] not in open(sys.argv[2]).read(), "the driver itself must not start the shell image: the agent does, per action"
 PY
-CASE="a tool in the tools file that is not pinned by digest refuses the whole run (exit 2); nothing starts"
-echo '{"jenkins": "docker.io/jenkins/jenkins:lts", "gitlab-runner": "'"$GLR"'", "kind": "'"$KND"'", "shell": "'"$SHL"'"}' >"$work/tools-unpinned.json"
-TOOLS="$work/tools-unpinned.json" run unpinned '{}' rc
-check test "$rc" -eq 2 -a ! -s "$work/unpinned/docker.log" -a ! -s "$work/unpinned/log"
-unset TOOLS
+CASE="every image a docker run or pull names is exactly one of the four pinned references: nothing else is ever started"
+check python3 - "$work/clean/docker.log" "$work/friction/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
+import re, sys
+allowed = set(sys.argv[3:7])
+for path in sys.argv[1:3]:
+    for l in open(path):
+        if l.split()[0] in ("run", "pull"):
+            imgs = [t for t in l.split() if "/" in t and "@" in t or re.fullmatch(r"[\w.-]+(/[\w.-]+)+(:[\w.-]+)?", t)]
+            assert len(imgs) == 1 and imgs[0] in allowed, (l, imgs)
+PY
+for key in jenkins gitlab-runner kind shell; do
+  python3 - "$work/tools.json" "$work/tools-unpinned-$key.json" "$key" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1])); t[sys.argv[3]] = t[sys.argv[3]].split("@")[0] + ":latest"
+json.dump(t, open(sys.argv[2], "w"))
+PY
+  CASE="the $key entry not pinned by digest refuses the whole run (exit 2); nothing starts and stderr names it"
+  TOOLS="$work/tools-unpinned-$key.json" run "unpinned-$key" '{}' rc
+  check test "$rc" -eq 2 -a ! -s "$work/unpinned-$key/docker.log" -a ! -s "$work/unpinned-$key/log"
+  check grep -q "$key" "$work/unpinned-$key/stderr"
+done
+for badref in "ghcr.io/example/cache@sha256:abc" "ghcr.io/example/cache@sha256:$(printf 'g%.0s' $(seq 64))" "ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 63))"; do
+  IMAGE="$badref" run badimg '{}' rc
+  CASE="a malformed digest ($badref) is refused (exit 2) and nothing starts"
+  check test "$rc" -eq 2 -a ! -s "$work/badimg/docker.log" -a ! -s "$work/badimg/log"
+done
+unset TOOLS IMAGE
+
+# --- infrastructure failures fail closed (AC1, AC2): a dead image or tool must never read as a green run
+DOCKER_FAIL_MATCH="$IMG" run imgdead '{}' rc
+CASE="the image under test cannot start: the run fails, no persona is run against nothing, and every persona is reported did-not-run"
+check test "$rc" -ne 0
+check test "$(ls "$(out imgdead)"/*.report.md | wc -l | tr -d ' ')" -eq 5
+check grep -qi 'did not run' "$(out imgdead)/on-call-engineer.report.md"
+check grep -q 'VERDICT: blocking' "$(out imgdead)/gradle-platform-engineer.report.md"
+DOCKER_FAIL_MATCH="$JEN" run jendead '{}' rc
+CASE="a tool container (Jenkins) cannot start: that persona did not run (blocking), the other four are unaffected"
+check test "$rc" -ne 0
+check grep -qi 'did not run' "$(out jendead)/maven-jenkins-ci.report.md"
+check grep -q 'VERDICT: pass' "$(out jendead)/gradle-platform-engineer.report.md"
+DOCKER_FAIL_MATCH="$IMG2" PUBLISH=1 IMAGE="$IMG2" run weekdead '{}' weekly
+CASE="weekly: a dead image opens the one blocking issue (naming every persona) instead of passing silently"
+check python3 - "$work/weekdead/gh.log" "$(out weekdead)/blocking-issue.md" <<'PY'
+import sys
+calls = [l.strip() for l in open(sys.argv[1])]
+assert len([c for c in calls if c.startswith("issue create") and "--label blocking" in c]) == 1, calls
+b = open(sys.argv[2]).read()
+assert all(p in b for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")), b
+PY
 CASE="the driver provisions nothing in a cloud: its docker and gh calls are only run/rm and issue commands"
 check python3 - "$work/clean/docker.log" "$work/friction/docker.log" <<'PY'
 import sys
@@ -242,6 +295,9 @@ failclosed text-missing gradle-platform-engineer '{"findings":[{"kind":"friction
 failclosed text-notstr  gradle-platform-engineer '{"findings":[{"kind":"friction","text":5}]}'
 failclosed tokens-neg   maven-jenkins-ci         '{"override":{"tokens":-1}}'
 failclosed tokens-str   maven-jenkins-ci         '{"override":{"tokens":"many"}}'
+failclosed tokens-bool  maven-jenkins-ci         '{"override":{"tokens":true}}'
+failclosed tokens-float maven-jenkins-ci         '{"override":{"tokens":1.5}}'
+failclosed extra-key    maven-jenkins-ci         '{"override":{"surprise":1}}'
 failclosed tokens-gone  maven-jenkins-ci         '{"drop":["tokens"]}'
 failclosed transcript-gone compliance-reviewer   '{"drop":["transcript"]}'
 failclosed transcript-notstr compliance-reviewer '{"override":{"transcript":["a"]}}'
@@ -313,8 +369,47 @@ assert not [c for c in calls if c.startswith("issue edit")], calls
 PY
 check grep -q 'jenkins step fails' "$(out weekly)/blocking-issue.md"
 check grep -q 'cosign verify fails as written' "$(out weekly)/blocking-issue.md"
+CASE="weekly: a failing gh (create) fails the run: losing the only signal is never silent"
+IMAGE="$IMG2" PUBLISH=1 GH_FAIL_MATCH="issue create" run weeklyghfail "$WK" weekly
+check test "$rc" -ne 0
+CASE="weekly: a failing gh (edit of an open issue) also fails the run"
+IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='[{"number":7,"title":"Persona UAT: blocking findings (weekly)"}]' GH_FAIL_MATCH="issue edit" run weeklyghfail2 "$WK" weekly
+check test "$rc" -ne 0
+CASE="weekly: an unparseable issue list fails the run and creates no duplicate"
+IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='<html>rate limited' run weeklygarbage "$WK" weekly
+check test "$rc" -ne 0
+check python3 - "$work/weeklygarbage/gh.log" <<'PY'
+import sys
+assert not [l for l in open(sys.argv[1]) if l.startswith("issue create")], "created an issue after an unreadable list"
+PY
+CASE="the labels the issues use are created first (gh label create --force), so a missing label cannot lose the issue"
+check python3 - "$work/weekly/gh.log" "$work/friction/gh.log" <<'PY'
+import sys
+for path, label in ((sys.argv[1], "blocking"), (sys.argv[2], "persona-uat-friction")):
+    calls = [l.strip() for l in open(path)]
+    mk = [i for i, c in enumerate(calls) if c.startswith("label create " + label) and "--force" in c]
+    cr = [i for i, c in enumerate(calls) if c.startswith("issue create") and label in c]
+    assert mk and cr and mk[0] < cr[0], (label, calls)
+PY
+CASE="the weekly lookup is narrowed by the fixed title: another open issue carrying the label is never overwritten"
+IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='[{"number":3,"title":"Something unrelated"},{"number":7,"title":"Persona UAT: blocking findings (weekly)"}]' run weeklytwo "$WK" weekly
+check python3 - "$work/weeklytwo/gh.log" <<'PY'
+import sys
+calls = [l.strip() for l in open(sys.argv[1])]
+lst = [c for c in calls if c.startswith("issue list")][0]
+assert "Persona UAT: blocking findings (weekly)" in lst and "in:title" in lst, lst
+edits = [c for c in calls if c.startswith("issue edit")]
+assert len(edits) == 1 and " 7 " in (" " + edits[0] + " "), calls
+PY
+IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='[{"number":3,"title":"Something unrelated"}]' run weeklyother "$WK" weekly
+CASE="and when the only labelled issue is unrelated, a new one is created, not that one edited"
+check python3 - "$work/weeklyother/gh.log" <<'PY'
+import sys
+calls = [l.strip() for l in open(sys.argv[1])]
+assert len([c for c in calls if c.startswith("issue create") and "--label blocking" in c]) == 1 and not [c for c in calls if c.startswith("issue edit")], calls
+PY
 CASE="weekly with one already open: it UPDATES that issue (edit + the new body), never opens a second"
-IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='[{"number":7}]' run weeklyopen "$WK" weekly
+IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='[{"number":7,"title":"Persona UAT: blocking findings (weekly)"}]' run weeklyopen "$WK" weekly
 check python3 - "$work/weeklyopen/gh.log" <<'PY'
 import sys
 calls = [l.strip() for l in open(sys.argv[1])]
@@ -360,6 +455,8 @@ import json, sys
 for ln in open(sys.argv[1]):
     r = json.loads(ln)
     want = ["README.md"] if r["persona"] == "readme-evaluator" else ["README.md", "docs/gradle.md", "docs/install.md"]
+    if r["persona"] == "on-call-engineer":
+        want = ["README.md", "docs/gradle.md", "docs/install.md", "kubeconfig"]
     assert r["docs"] == want, (r["persona"], r["docs"])
 PY
 CASE="what the agent could READ (every file's content) holds no source, internal doc, dotfile, symlink target or unreleased note"
@@ -373,7 +470,7 @@ for ln in open(sys.argv[1]):
         assert not any(b in c for b in bad), (r["persona"], f)
     assert r["links"] == [], ("symlink in the sandbox", r["links"])
     assert all(not f.startswith(".") and "/." not in f for f in r["content"]), r["content"].keys()
-    assert all(f == "README.md" or (f.startswith("docs/") and f.endswith(".md") and f.count("/") == 1) for f in r["content"]), list(r["content"])
+    assert all(f == "README.md" or (f.startswith("docs/") and f.endswith(".md") and f.count("/") == 1) or (r["persona"] == "on-call-engineer" and f == "kubeconfig") for f in r["content"]), list(r["content"])
 PY
 CASE="nothing the agent was handed or the driver wrote leaks source, internal docs or unreleased notes"
 check none_match 'SECRET-|INTERNAL TRACE|UNRELEASED NOTES|package internal' "$(out clean)"
@@ -401,8 +498,13 @@ for ln in open(sys.argv[1]):
     for bad in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "REPO_CHECKOUT", "GITHUB_WORKSPACE", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
                 "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL"):
         assert bad not in env, bad
-    # the model identity the provider needs is passed through, and nothing broader
-    assert "ANTHROPIC_API_KEY" in env and "ANTHROPIC_IDENTITY_TOKEN_FILE" in env, env
+    # an ALLOWLIST: only a minimal shell environment and the model identity the provider needs, nothing else
+    ok = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"}
+    extra = [k for k in env if k not in ok and not k.startswith("ANTHROPIC_")]
+    assert not extra, extra
+    for need in ("ANTHROPIC_API_KEY", "ANTHROPIC_IDENTITY_TOKEN_FILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
+                 "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"):
+        assert need in env, ("the provider needs", need)
 PY
 
 # --- AC5: model and token budget come from owner-set variables ---------------------------------------------------
@@ -467,7 +569,7 @@ run capped '{"readme-evaluator":{"tokens":400000},"gradle-platform-engineer":{"t
 CASE="a persona that used its whole budget (or more) is flagged plainly in its report; one under it is not"
 check grep -q 'HIT ITS TOKEN CAP' "$(out capped)/readme-evaluator.report.md"
 check grep -q 'HIT ITS TOKEN CAP' "$(out capped)/on-call-engineer.report.md"
-check bash -c "! grep -q 'HIT ITS TOKEN CAP' '$(out capped)/gradle-platform-engineer.report.md'"
+check none_match 'HIT ITS TOKEN CAP' "$(out capped)/gradle-platform-engineer.report.md"
 CASE="a capped run does not fail by itself, and the summary names exactly the capped personas"
 check test "$rc" -eq 0
 check python3 - "$(out capped)/summary.json" <<'PY'
