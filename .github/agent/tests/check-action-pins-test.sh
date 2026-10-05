@@ -657,7 +657,8 @@ case_ run-local-tag            ok  "$head
     steps:
       - run: docker tag \"\$src\" fa-production
       - run: docker run --rm fa-production"
-case_ run-local-build          ok  "$(r 'docker build -t localimg . && docker run localimg')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
+case_ run-local-build          ok  "$(rb 'docker build -t localimg .
+          docker run localimg')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ run-local-skopeo         bad "$(r 'skopeo copy oci-archive:/tmp/a.oci docker-daemon:fa-debug:latest && docker run fa-debug:latest')"
 case_ run-comment              ok  "$(r 'true # docker run alpine')"
 case_ run-echo                 ok  "$(r 'echo docker run alpine')"
@@ -748,7 +749,8 @@ case_ b5-compose               bad "$(r 'docker compose up -d')"
 case_ b5-docker-compose        bad "$(r 'docker-compose up -d')"
 case_ b5-bake                  bad "$(r 'docker buildx bake')"
 case_ b6-build-unpinned        bad "$(r 'docker build -t myapp .')" "printf 'FROM alpine:latest\\n' > Dockerfile"
-case_ b6-build-pinned          ok  "$(r 'docker build -t myapp . && docker run myapp')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 AS b\\nFROM b\\nFROM scratch\\n' > Dockerfile"
+case_ b6-build-pinned          ok  "$(rb 'docker build -t myapp .
+          docker run myapp')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 AS b\\nFROM b\\nFROM scratch\\n' > Dockerfile"
 case_ b6-build-stdin           bad "$(r 'docker build -t x - < Dockerfile')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ b6-buildx-stdin-file     bad "$(r 'docker buildx build -f - .')"
 case_ b6-generated             bad "$(rb 'printf "FROM alpine:latest\\n" > Dockerfile.gen && docker build -f Dockerfile.gen .')"
@@ -1775,8 +1777,8 @@ case_ r19-s-r1-opener-on-next-line-bad bad "$(rb '[ -f x ] &&
 # controls that MUST keep passing: straight-line scripts, chains, pipelines, literal loops, expansions, comments, closed quotes
 case_ r19-control-straight-line-ok ok "$(rb 'docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r19-control-build-and-run-chain-ok ok "$(rb 'docker build -t alpine:latest . && docker run alpine:latest')" "$DF"
-case_ r19-control-pipeline-ok ok "$(rb 'docker build -t alpine:latest . | cat
+case_ r19-failclosed-build-and-run-chain-bad bad "$(rb 'docker build -t alpine:latest . && docker run alpine:latest')" "$DF"
+case_ r19-failclosed-build-piped-bad bad "$(rb 'docker build -t alpine:latest . | cat
           docker run alpine:latest')" "$DF"
 case_ r19-control-expansion-and-redirect-ok ok "$(rb 'echo "built ${NAME:-x} at $(date)" >log 2>&1
           docker build -t alpine:latest .
@@ -1838,7 +1840,7 @@ case_ r20-or-pipeline-continued-bad bad "$(rb 'true ||
           echo x |
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r20-control-plain-continued-pipeline-ok ok "$(rb 'docker build -t alpine:latest . |
+case_ r20-failclosed-continued-pipeline-bad bad "$(rb 'docker build -t alpine:latest . |
           cat
           docker run alpine:latest')" "$DF"
 
@@ -1885,7 +1887,7 @@ case_ r20-control-sudo-docker-build-ok ok "$(rb 'sudo docker build -t alpine:lat
           docker run alpine:latest')" "$DF"
 case_ r20-control-buildx-load-ok ok "$(rb 'docker buildx build --load -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r20-control-semicolon-and-chain-ok ok "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest
+case_ r20-failclosed-semicolon-and-chain-bad bad "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest
           docker build -t alpine:b . && docker run alpine:b')" "$DF"
 case_ r20-control-loop-then-run-after-ok ok "$(rb 'for v in a b; do
             docker build -t "alpine:${v}" .
@@ -1928,6 +1930,68 @@ case_ r21-push-bad bad "$(rb 'docker build --push -t alpine:latest .
           docker run alpine:latest')" "$DF"
 case_ r21-check-only-bad bad "$(rb 'docker build --check -t alpine:latest .
           docker run alpine:latest')" "$DF"
+
+# --- r21 (Codex 10 blockers): local trust must rest on a build that SUCCEEDED, in the RIGHT store, under an intact name and script
+case_ r21-b01-build-and-echo-bad bad "$(rb 'docker build -t alpine:latest . < /__missing_input__ && echo built
+          docker run alpine:latest')" "$DF"
+case_ r21-b01-build-piped-to-cat-bad bad "$(rb 'docker build -t alpine:latest . < /__missing_input__ | cat
+          docker run alpine:latest')" "$DF"
+case_ r21-b01-set-plus-e-bad bad "$(rb 'set +e
+          docker build -t alpine:latest . < /__missing_input__
+          docker run alpine:latest')" "$DF"
+case_ r21-b01-continue-on-error-step-bad bad "$head
+    steps:
+      - continue-on-error: true
+        run: docker build -t alpine:latest .
+      - run: docker run alpine:latest" "$DF"
+case_ r21-b02-multiline-pipeline-bad bad "$(rb 'docker build -t alpine:latest . |
+          docker run --rm -i alpine:latest cat')" "$DF"
+case_ r21-b03-xargs-sudo-docker-bad bad "$(rb "printf '' | xargs -r sudo docker build -t alpine:latest .
+          docker run alpine:latest")" "$DF"
+case_ r21-b04-call-check-bad bad "$(rb 'docker buildx build --load --call=check -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-b04-load-false-bad bad "$(rb 'docker buildx build --load=false -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-b05-nested-loop-rebinds-bad bad "$(rb 'for v in latest; do
+            for v in debug; do
+              docker build -t "alpine:$v" .
+            done
+          done
+          docker run alpine:latest')" "$DF"
+case_ r21-b06-global-option-run-in-loop-bad bad "$(rb 'for v in 3.20 latest; do
+            docker build -t "alpine:$v" .
+            docker --debug run --rm alpine:latest
+          done')" "$DF"
+case_ r21-b07-podman-build-docker-run-bad bad "$(rb 'podman build -t docker.io/library/alpine:latest .
+          docker run docker.io/library/alpine:latest')" "$DF"
+case_ r21-b08-equivalent-name-rmi-bad bad "$(rb 'docker build -t alpine:latest .
+          docker rmi docker.io/library/alpine:latest
+          docker run alpine:latest')" "$DF"
+case_ r21-b09-docker-load-bad bad "$(rb 'docker build -t alpine:latest .
+          docker load -i image.tar
+          docker run alpine:latest')" "$DF"
+case_ r21-b10-tmp-copy-modified-sed-bad bad "$head
+    steps:
+      - run: |
+          mkdir -p /tmp/policy
+          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh
+      - run: sed -i 's/echo hi/docker run alpine:latest/' /tmp/policy/tool.sh
+      - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
+case_ r21-b10-tmp-copy-replaced-cp-bad bad "$head
+    steps:
+      - run: |
+          mkdir -p /tmp/policy
+          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh
+      - run: cp replacement.sh /tmp/policy/tool.sh
+      - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
+# controls that must keep passing
+case_ r21-control-standalone-lines-ok ok "$(rb 'docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-control-semicolon-standalone-ok ok "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest')" "$DF"
+case_ r21-control-set-euo-ok ok "$(rb 'set -euo pipefail
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r21-control-podman-all-pinned-ok ok "$(rb 'podman run --rm docker.io/library/alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

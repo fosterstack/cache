@@ -1413,6 +1413,8 @@ def script_images(script):
                                       % cmd))
                 continue
             verb, rest = rest[0], rest[1:]
+            if verb in ("load", "import", "commit") or (verb == "image" and rest[:1] in (["load"], ["import"])):
+                ev.append(("unlocal", "*"))   # an archive or a commit replaces tags with bytes this check never saw (Codex #164 r21, B9)
             if verb == "rmi" or (verb == "image" and rest[:1] in (["rm"], ["remove"], ["prune"])):
                 gone = [a for a in (rest if verb == "rmi" else rest[1:]) if not a.startswith("-")]
                 if any(_variable(a) or SUBST in a or re.search(r"[*?\[]", a) for a in gone):
@@ -1498,7 +1500,8 @@ def script_images(script):
                     if not (DIGEST_REF.search(gen) and not _variable(gen)):
                         ev.append(("finding", "a build runs a generator image not pinned by digest (%s)" % gen))
                 ev.append(("build", dockerfile, context, named))
-                ev += [("local", x) for x in tags]
+                if cmd == "docker":         # podman and nerdctl build into their OWN stores, not the daemon `docker run` reads (Codex #164 r21, B7)
+                    ev += [("local", x) for x in tags]
                 for cf in cache_from:
                     # a bare ref or type=registry,ref=... names a registry image; any other type (local/gha/...)
                     # reads from something this check does not treat as a remote pull (Codex r1, B4). Both forms are
@@ -1598,8 +1601,16 @@ def _operands(args, val, boolean):
 
 
 def _canon(ref):
-    """name and name:latest are one image (Codex #164 r2, C10: rmi alpine:latest removes alpine)."""
-    return ref if ("@" in ref or ":" in ref.rsplit("/", 1)[-1]) else ref + ":latest"
+    """One image, one name: the registry and library prefixes docker adds by default are dropped, and name and name:latest are one
+    image (Codex #164 r2, C10: rmi alpine:latest removes alpine; r21, B8: docker.io/library/alpine:latest is the same reference)."""
+    r = ref
+    for pre in ("registry-1.docker.io/", "index.docker.io/", "docker.io/"):
+        if r.startswith(pre):
+            r = r[len(pre):]
+            break
+    if r.startswith("library/"):
+        r = r[len("library/"):]
+    return r if ("@" in r or ":" in r.rsplit("/", 1)[-1]) else r + ":latest"
 
 
 def _local(ref, local):
@@ -1735,7 +1746,7 @@ def _straight_line(text):
     # --- the bookkeeping rules (Codex #164 r20): refuse what makes "this tag is certainly in the daemon when the run pulls it" uncertain
     if "||" in flat:
         return None                                   # `build || run` runs the run only when the build FAILED; `build || true` hides a failure
-    for lst in re.split(r";|&&|\n", flat):            # pipeline members run concurrently: when more than one member is a docker command
+    for lst in re.split(r";|&&|\n", re.sub(r"\|\s*\n\s*", "| ", flat)):            # pipeline members run concurrently: when more than one member is a docker command
         if len([m for m in re.split(r"(?<!\|)\|(?!\|)", lst) if re.search(r"(?<![\w.-])docker(?=\s|$)", m)]) > 1:
             return None                               # the run may start before the build is done (a build piped to `tee` or `cat` is fine)
     inner, tmp = [], no_comments                      # read WITH quotes: "$(docker rmi x)" is still a substitution that runs
@@ -1747,17 +1758,25 @@ def _straight_line(text):
         return None
     for m in re.finditer(r"(?<![\w.-])docker(?=\s|$)", b):
         prev = b[:m.start()].rstrip(" \t")
-        if prev and not re.search(r"(?:;|&&|\n|^)$", prev) and not re.search(r"(?<![\w.-])(?:sudo|do)$", prev):
+        while re.search(r"(?<![\w.-])(?:sudo|do)$", prev):
+            prev = re.sub(r"(?:sudo|do)$", "", prev).rstrip(" \t")      # the wrapper before it must itself be a command start
+        if prev and not re.search(r"(?:;|&&|\n|^)$", prev):
             return None                               # `docker` that is not the command itself (xargs/env/printf/command ... docker build)
+    if re.search(r"(?<![\w.-])set\s+(?:-\S+\s+)*\+(?:\w*e\w*\b|o\s+errexit\b)", b):
+        return None                                   # errexit off: a failed build no longer stops the script (Codex #164 r21, B1)
     for ln in b.splitlines():
         if re.search(r"(?<![\w.-])docker\b[^\n;&|]*\b(?:build|b)\b", ln):
-            if re.search(r"(?<![\w-])(?:-o\S|-o(?=\s)|--output|--push|--check)(?![\w-])", ln) or re.search(r"(?<![\w-])-o\S", ln):
+            if re.search(r"(?<![\w-])(?:-o\S|-o(?=\s)|--output|--push|--check|--call)(?![\w-])", ln) or re.search(r"(?<![\w-])-o\S", ln) \
+                    or re.search(r"--load=(?:false|0)\b", ln):
                 return None                           # an exporter, a push or a check-only build: the image need not enter the daemon
             if re.search(r"\bbuildx\s+(?:build|b)\b", ln) and not re.search(r"--load\b", ln):
                 return None                           # buildx without --load may leave the image out of the daemon
     for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in[^;\n]*(?:;|\n)\s*do(?![\w.-])(.*?)(?<![\w$.-])done(?![\w.-])", b, re.S):
-        if re.search(r"(?<![\w.-])docker\s+(?:container\s+)?(?:run|create|exec|start|compose)\b|(?<![\w.-])docker-compose\b", m.group(1)):
+        if re.search(r"(?<![\w.-])docker\b[^\n;&|]*?\b(?:run|create|exec|start|compose)\b|(?<![\w.-])docker-compose\b", m.group(1)):
             return None                               # a loop that USES an image inside its body may use one a later iteration builds
+    for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in[^;\n]*(?:;|\n)\s*do(?![\w.-])(.*?)(?<![\w$.-])done(?![\w.-])", b, re.S):
+        if re.search(r"(?<![\w$.-])for(?![\w.-])", m.group(1)):
+            return None                               # a nested loop may rebind the variable the outer one proves (Codex #164 r21, B5)
     fors = len(re.findall(r"(?<![\w$.-])for(?![\w.-])", b))
     dones = len(re.findall(r"(?<![\w$.-])done(?![\w.-])", b))
     loops = []
@@ -1847,7 +1866,7 @@ def _unconditional(text):
     if body is None:
         return ""
     keep, after_chain = [], False
-    for line in body.splitlines():
+    for line in re.sub(r"\\\n", " ", body).splitlines():
         cond_line = after_chain
         if line.strip():
             tail = line.rstrip()
@@ -1858,7 +1877,9 @@ def _unconditional(text):
         if cond_line:
             continue
         line = re.sub(r"(?<![\w$.-])for\b[^;]*;\s*do(?![\w.-])|(?<![\w$.-])done(?![\w.-])|^\s*do(?![\w.-])", "", line)
-        keep.append(re.split(r"&&|\|\|", line)[0])
+        if re.search(r"&&|\|\||(?<!\|)\|(?!\|)", line):
+            continue            # a command inside a list or pipeline may have FAILED without stopping the script (no pipefail; `build && echo`);
+        keep.append(line)       # only a standalone command's success is certain under errexit (Codex #164 r21, B1)
     return "\n".join(keep)
 
 
@@ -2251,6 +2272,14 @@ def _resolve_script(path, text, entries):
             # only main's copy (or the checked commit's) is the reviewed file (Codex #164 r3, C02: git show attacker:x)
             if g and g.group(1) in ("origin/main", "main", "HEAD", "$GITHUB_SHA", "${GITHUB_SHA}") \
                     and entries.get(g.group(2)) == "file" and _base(g.group(2)) == base:
+                full = re.compile(dpat + r"/" + re.escape(base) + r"(?![\w.-])")
+                for ln in re.sub(r"\\\n", " ", text).splitlines():
+                    if not full.search(ln) or re.search(dst, ln):
+                        continue
+                    bare = full.sub("PATH", ln)          # the file's own name (install-scanner.sh) is not a command
+                    if re.search(r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex)(?![\w.-])", bare) \
+                            or re.search(r">>?\s*\"?" + dpat + r"/" + re.escape(base), ln):
+                        return None      # something else writes the copy (sed -i, cp, mv, tee ...): it is not main's committed bytes
                 return g.group(2)
         if toks[:2] == ["gh", "api"]:
             g = re.search(r"\"?repos/\$\{?GITHUB_REPOSITORY\}?/contents/([^\"?\s]+)\?ref=main\"?", chunk)
@@ -2617,7 +2646,9 @@ def run_scripts(doc):
                     if isinstance(run, yaml.ScalarNode):
                         shell = sh.value if isinstance(sh, yaml.ScalarNode) else inherited
                         wdir = wd.value if isinstance(wd, yaml.ScalarNode) else inherited_wd
-                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m))
+                        coe = m.get("continue-on-error")
+                        soft = coe is not None and not (isinstance(coe, yaml.ScalarNode) and coe.value.strip() == "false")
+                        groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft))
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:
