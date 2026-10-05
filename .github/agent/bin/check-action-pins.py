@@ -732,6 +732,19 @@ SKOPEO_SAFE = {"login", "logout", "list-tags", "manifest-digest", "delete", "sta
 CRANE_SAFE = {"digest", "manifest", "ls", "tag", "auth", "config", "validate", "catalog", "delete", "push", "blob",
               "version"}   # "index" is split below: append/filter fetch their sources, list is read-only (Codex r1, B5)
 SEPARATORS = re.compile(r"&&|\|\||[;|&\n]|\)")
+def _tokens(chunk):
+    """A command chunk's words. Comments come off with _mask_shell's rule (a `#` at the start of a word, outside any quote),
+    then shlex splits with ITS comment handling off: shlex itself treats a `#` in the middle of a word as a comment and
+    silently drops the rest of the line, so `NOTE=hello#world docker run alpine:latest` lost its `docker run` (Codex
+    #164 r17, B09 — a fail-open hole). An unbalanced quote falls back to a whitespace split, as before."""
+    import shlex
+    text = _mask_shell(chunk)[0]
+    try:
+        return shlex.split(text, comments=False)
+    except ValueError:
+        return text.split()
+
+
 def _split_commands(text):
     """The simple commands of a shell text, split as bash splits them: at ; & | ( ) and newlines OUTSIDE quotes ('…',
     "…", $'…') and escapes, with comments (# at the start of a word, outside quotes) dropped. A raw split at these
@@ -993,10 +1006,7 @@ def _commands(script, depth=0):
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
         chunk = _skip_array_literal(chunk)
-        try:
-            toks = shlex.split(chunk, comments=True)
-        except ValueError:
-            toks = chunk.split()
+        toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
             continue
         for i, w in enumerate(toks):
@@ -1607,10 +1617,16 @@ def _expand_names(name, text):
         return {name}
     if _ARRAY_OPEN_RE.search(text):
         return set()
+    _, blanked, open_quote = _mask_shell(text)
+    if open_quote:
+        return set()
     out = {name}
     for var in dict.fromkeys(found):
-        loops = [(lst, body) for lst, body in re.findall(r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b",
-                                                         text, re.S) if name in body]
+        # a loop counts only where its `for` is LIVE shell text, not inside a comment or a quoted string (Sonnet #164
+        # r17, B1 / Codex r17, B03: loop text sitting inert as data proved an expansion nothing ever ran)
+        loops = [(m.group(1), m.group(2)) for m in re.finditer(
+            r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b", text, re.S)
+            if name in m.group(2) and blanked[m.start():m.start() + 3] == "for"]
         assigned = re.search(r"(?<![\w$])" + var + r"\+?=", text)
         if len(loops) != 1 or assigned:
             return set()
@@ -1622,6 +1638,67 @@ def _expand_names(name, text):
 
 
 _TRAP_RE = re.compile(r"(?<![\w$.-])trap(?![\w.-])")
+
+
+def _mask_shell(text):
+    """(no_comments, blanked, open_quote): TWO copies of `text`, each the same length with every newline in place so
+    positions and line numbers line up. no_comments has every real comment replaced by spaces; blanked also has every
+    quoted string's CONTENT (and every backslash-escaped character) replaced by spaces. Quote state runs across the whole
+    text, never reset per line (Sonnet #164 r17, B2 / Codex r17, B01: a quoted string spanning lines hid a real
+    keyword from a per-line scan and fabricated one from its second line), and a `#` starts a comment only at the start
+    of a word, never inside one (`hello#world`, `${#x}`, `$#`). open_quote is True when a quote is still open at the end:
+    the text cannot be read with confidence, so the caller denies trust (fail closed, advisor 0080)."""
+    n, q, i = len(text), None, 0
+    nc, bl = list(text), list(text)
+    def blank(k):
+        if text[k] != "\n":
+            bl[k] = " "
+    while i < n:
+        c = text[i]
+        if q == "'":
+            if c == "'":
+                q = None
+            else:
+                blank(i)
+        elif q == '"':
+            if c == "\\" and i + 1 < n:
+                blank(i); blank(i + 1); i += 2
+                continue
+            if c == '"':
+                q = None
+            else:
+                blank(i)
+        elif c == "\\" and i + 1 < n:
+            blank(i); blank(i + 1); i += 2
+            continue
+        elif c in "'\"":
+            q = c
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()<>"):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            for k in range(i, j):
+                nc[k] = bl[k] = " "
+            i = j
+            continue
+        i += 1
+    return "".join(nc), "".join(bl), q is not None
+
+
+_KEYWORDS = ("if", "case", "while", "until", "fi", "esac", "done", "for", "elif", "else", "then", "do")
+
+
+def _keywords_in(blanked_line):
+    """The shell keywords a (comment-stripped, quote-blanked) line really uses: a keyword counts only in COMMAND position,
+    the first word of a command (after `;`, `&`, `|`, `(`, `{` or the start of the line) or right after another keyword
+    (`then if`, `else if`), never as an ordinary argument (Codex #164 r17, B02: `printf '%s\n' fi` is data)."""
+    out = []
+    for seg in re.split(r"[;&|(){}]", blanked_line):
+        for w in seg.split():
+            if w in _KEYWORDS:
+                out.append(w)
+            else:
+                break
+    return out
 
 
 def _strip_line_comment(line):
@@ -1710,15 +1787,20 @@ def _unconditional(text):
     for-loop always runs and is kept."""
     if _TRAP_RE.search(text) or _ARRAY_OPEN_RE.search(text):
         return ""
-    keep, stack = [], []
-    for line in text.splitlines():
-        line = _strip_line_comment(line)   # Codex #164 r14, B3: "if"/"fi" WRITTEN INSIDE A COMMENT must not
-        words = re.findall(r"(?<![\w$.-])(if|case|while|until|fi|esac|done|for|elif|else|then|do)(?![\w.-])",
-                           _blank_quotes(line))   # Sonnet #164 r16, B1: nor as ordinary quoted DATA
+    no_comments, blanked, open_quote = _mask_shell(text)
+    if open_quote:
+        return ""        # a quote still open at the end: nothing here can be read with confidence (fail closed)
+    keep, stack, after_and_or = [], [], False
+    for line, blank in zip(no_comments.splitlines(), blanked.splitlines()):
+        words = _keywords_in(blank)
+        cond_line = after_and_or                # the command a trailing && / || on the line before guards (Codex r17, B05)
+        if line.strip():
+            after_and_or = line.rstrip().endswith(("&&", "||"))
         opened = False
-        if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line):
-            stack.append("if")                           # a function body or an empty for-list may never run (r3, C10)
-            if "}" in line.split("{", 1)[-1] or re.search(r"\bdone\b", line):
+        if re.search(r"^\s*(function\s+[\w-]+|[\w-]+\s*\(\s*\))\s*\{?", line) or re.search(r"\bfor\s+\w+\s+in\s*;", line) \
+                or re.search(r"\bfor\s+\w+\s*(?:;|$)", blank):
+            stack.append("if")                           # a function body, an empty for-list, or `for v;` (the positional
+            if "}" in line.split("{", 1)[-1] or re.search(r"\bdone\b", line):   # parameters) may never run (r3, C10; r17, B07)
                 stack.pop()
             continue
         for w in words:
@@ -1729,7 +1811,7 @@ def _unconditional(text):
                 stack.append("for")
             elif w in ("fi", "esac", "done") and stack:
                 stack.pop()
-        if opened or any(x != "for" for x in stack) or re.match(r"^\s*(elif|else|then)\b", line):
+        if opened or cond_line or any(x != "for" for x in stack) or re.match(r"^\s*(elif|else|then)\b", line):
             continue
         line = re.sub(r"\bfor\b[^;]*;\s*do\b|\bdone\b", "", line)
         keep.append(re.split(r"&&|\|\|", line)[0])
@@ -1772,10 +1854,7 @@ def _touches(script, name, consumer):
         if _touches(sub, name, consumer):
             return True
     for chunk in _split_commands(text):
-        try:
-            toks = shlex.split(chunk, comments=True)
-        except ValueError:
-            toks = chunk.split()
+        toks = _tokens(chunk)
         if _fills_dir(toks, name, script):     # writes into the file's directory without naming it (C11)
             return True
         if not any(mention.search(t) for t in toks):
@@ -2157,7 +2236,7 @@ def _all_texts(text, depth=0):
         out += _all_texts(sub, depth + 1)
     for chunk in _split_commands(body):
         try:
-            toks = shlex.split(chunk, comments=True)
+            toks = shlex.split(_mask_shell(chunk)[0], comments=False)    # comments off the same way _tokens() does
         except ValueError:
             continue
         words = _command_words(toks)
@@ -2189,10 +2268,7 @@ def _writes(script, rel, ctx=None):
             return True
     same = lambda t: os.path.normpath(re.sub(r"^\./", "", t.strip("'\""))) == rel
     for chunk in _split_commands(text):
-        try:
-            toks = shlex.split(chunk, comments=True)
-        except ValueError:
-            toks = chunk.split()
+        toks = _tokens(chunk)
         if any(same(t) for t in _redirect_targets(chunk)):
             return True
         words = _command_words(toks)

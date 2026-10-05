@@ -1579,5 +1579,57 @@ case_ r4b6-quoted-scalar-contains-keyword-word-bad bad "$(rb 'if [ "$x" = y ]; t
 # proven against the real repo's existing dynamic-tag-name forms (n13/n21), which quote a $variable template
 # as the tag target and must keep working
 
+# --- r17 (Codex 11 blockers, Sonnet 2), PLAIN forms only (owner 0117: plain forms are in scope, deliberately hidden ones are
+# information). Each probe hides a build/tag behind an ordinary shell idiom; the checker must still refuse the unpinned run.
+DF='printf "FROM scratch\n" > Dockerfile'
+# Sonnet r17 B2 / Codex r17 B01: a quoted string that spans lines carries a keyword-looking word on its second line
+case_ r17-multiline-quote-hides-fi-bad bad "$(rb 'if false; then
+          PROFILE="release notes
+          fi
+          then"
+          docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" "$DF"
+# Codex r17 B02: an ordinary unquoted ARGUMENT spelled like a keyword
+case_ r17-keyword-as-argument-bad bad "$(rb 'if false; then
+          printf "%s\n" fi
+          docker build -t alpine:latest .
+          fi
+          docker run alpine:latest')" "$DF"
+# Sonnet r17 B1 / Codex r17 B03: loop text sitting inert in a comment or a quoted scalar must not prove a template
+case_ r17-loop-in-comment-bad bad "$(rb '# for v in latest; do docker build -t "alpine:${v}" .; done
+          docker build -t "alpine:${v}" .
+          docker run alpine:latest')" "$DF"
+case_ r17-loop-in-scalar-bad bad "$(rb "NOTE='for v in latest; do docker build -t \"alpine:\${v}\" .; done'
+          docker build -t \"alpine:\${v}\" .
+          docker run alpine:latest")" "$DF"
+# Codex r17 B05: a command after a line that ends in && or || is conditional too
+case_ r17-and-then-newline-bad bad "$(rb 'false &&
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r17-or-then-newline-bad bad "$(rb 'true ||
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+# Codex r17 B07: `for v; do` iterates over the (possibly empty) positional parameters
+case_ r17-for-without-in-bad bad "$(rb 'for v; do
+            docker build -t alpine:latest .
+          done
+          docker run alpine:latest')" "$DF"
+# Codex r17 B09: a # inside a word is not a comment, so the command after it is still a command (fail-OPEN before)
+case_ r17-hash-inside-word-bad bad "$(rb 'NOTE=hello#world docker run alpine:latest')"
+case_ r17-hash-inside-word-arg-bad bad "$(rb 'echo a#b; docker run alpine:latest')"
+# controls: the same idioms, used innocently, must NOT disturb a genuinely safe script
+case_ r17-control-closed-multiline-quote-ok ok "$(rb 'MSG="hello
+          world"
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r17-control-hash-in-word-then-build-ok ok "$(rb 'echo hello#world
+          docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r17-control-real-loop-ok ok "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
+          docker run alpine:latest')" "$DF"
+case_ r17-control-keyword-in-comment-ok ok "$(rb 'docker build -t alpine:latest . # fi then done
+          docker run alpine:latest')" "$DF"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
