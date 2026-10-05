@@ -653,7 +653,7 @@ case_ run-digest               ok  "$(r 'docker run --rm alpine@sha256:b1934ee5f
 case_ run-variable             ok  "$(r 'docker run --rm "$IMG" true')"
 case_ run-braced-variable      ok  "$(r 'docker run -d --name x "${repo}@${d}"')"
 case_ run-variable-options     ok  "$(r 'docker run -d $authargs -p 1:2 "$ref"')"
-case_ run-local-tag            ok  "$head
+case_ run-local-tag-localtrust-removed-bad bad  "$head
     steps:
       - run: docker tag \"\$src\" fa-production
       - run: docker run --rm fa-production"
@@ -671,7 +671,7 @@ case_ run-timeout              bad "$(r 'timeout 30 docker run alpine')"
 case_ run-env-wrapper          bad "$(r 'env A=b nohup docker pull alpine')"
 case_ run-xargs                bad "$(r 'echo x | xargs docker run alpine')"
 # Codex #164 adversarial r1 C10: a template vouches only for the words of its literal for-list
-case_ run-local-template       ok  "$head
+case_ run-local-template-localtrust-removed-bad bad  "$head
     steps:
       - run: for v in production debug; do docker tag \"\$src\" \"fa-\${v}\"; done
       - run: docker run --rm fa-production"
@@ -749,7 +749,7 @@ case_ b5-compose               bad "$(r 'docker compose up -d')"
 case_ b5-docker-compose        bad "$(r 'docker-compose up -d')"
 case_ b5-bake                  bad "$(r 'docker buildx bake')"
 case_ b6-build-unpinned        bad "$(r 'docker build -t myapp .')" "printf 'FROM alpine:latest\\n' > Dockerfile"
-case_ b6-build-pinned          ok  "$(rb 'docker build -t myapp .
+case_ b6-build-pinned-localtrust-removed-bad bad  "$(rb 'docker build -t myapp .
           docker run myapp')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 AS b\\nFROM b\\nFROM scratch\\n' > Dockerfile"
 case_ b6-build-stdin           bad "$(r 'docker build -t x - < Dockerfile')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ b6-buildx-stdin-file     bad "$(r 'docker buildx build -f - .')"
@@ -1035,8 +1035,8 @@ case_ n12-bash-template-ok     ok  "$head
         run: echo hi"
 # --- Sonnet #164 r11 (NEW-13): a registry-qualified template never stands for "our own bytes"
 case_ n13-registry-template    bad "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved-${GITHUB_SHA}; docker run ghcr.io/myorg/approved-other')"
-case_ n13-registry-exact-ok    ok  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved; docker run ghcr.io/myorg/approved')"
-case_ n13-local-template-ok    ok  "$(rb 'for v in production debug; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
+case_ n13-registry-exact-localtrust-removed-bad bad  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 ghcr.io/myorg/approved; docker run ghcr.io/myorg/approved')"
+case_ n13-local-template-localtrust-removed-bad bad  "$(rb 'for v in production debug; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
 case_ c10-template-not-listed  bad "$(rb 'for v in a b; do docker tag "$src" "fa-${v}"; done; docker run fa-production')"
 # --- Sonnet #164 r12 (NEW-14, NEW-15): every verb is checked, on a reviewed safe list, or refused
 case_ n14-podman-kube-play     bad "$(r 'podman kube play pod.yaml')"
@@ -1074,12 +1074,12 @@ case_ n20-import-url           bad "$(r 'docker import https://x.example/rootfs.
 # --- Sonnet #164 r14 (NEW-21, NEW-22): a loaded tarball or an archive copy is never "the job's own bytes"
 case_ n21-load-tag-run         bad "$(rb 'curl -sL https://x.example/i.tar -o i.tar; docker load -i i.tar; docker tag sha256:deadbeef myname:latest; docker run myname:latest')"
 case_ n21-tag-unpinned-src     bad "$(rb 'docker tag alpine:latest mine; docker run mine')"
-case_ n21-tag-pinned-src-ok    ok  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 mine; docker run mine')"
-case_ n21-tag-variable-src-ok  ok  "$(rb 'for v in production fips; do docker tag "${repo}@${d}" "fa-${v}"; done; docker run fa-production')"
+case_ n21-tag-pinned-src-localtrust-removed-bad bad  "$(rb 'docker tag alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 mine; docker run mine')"
+case_ n21-tag-variable-src-localtrust-removed-bad bad  "$(rb 'for v in production fips; do docker tag "${repo}@${d}" "fa-${v}"; done; docker run fa-production')"
 case_ c10-template-no-list     bad "$(rb 'docker tag "${repo}@${d}" "fa-${v}"; docker run fa-production')"
 case_ n22-archive-to-daemon-run bad "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; docker run img:1')"
 case_ n22-archive-scan-ok      ok  "$(rb 'skopeo copy oci-archive:/tmp/x.oci docker-daemon:img:1; grype docker:img:1; docker scout cves local://img:1')"
-case_ n22-pinned-to-daemon-ok   ok  "$(rb 'skopeo copy docker://alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker-daemon:img:1; docker run img:1')"
+case_ n22-pinned-to-daemon-localtrust-removed-bad bad  "$(rb 'skopeo copy docker://alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker-daemon:img:1; docker run img:1')"
 # --- Sonnet #164 r15 (NEW-23): a build's context must be a local path; remote or computed contexts are refused
 case_ n23-git-url-context      bad "$(r 'docker build https://github.com/attacker/evil.git -f go.mod -t x')" "touch go.mod; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ n23-git-scheme-context   bad "$(r 'docker build git://example.org/r.git -t x')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
@@ -1206,7 +1206,7 @@ case_ c10-pull-always          bad "$(rb 'docker build -t alpine .; docker run -
 case_ c10-branch-build         bad "$(rb 'if false; then docker build -t alpine .; fi; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
 case_ c10-rmi                  bad "$(rb 'docker build -t alpine .; docker rmi alpine; docker run alpine')" "printf 'FROM scratch\\n' > Dockerfile"
 case_ c10-template-sibling     bad "$(rb 'v=example; docker build -t "hello-${v}" .; docker run hello-world')" "printf 'FROM scratch\\n' > Dockerfile"
-case_ c10-own-build-ok         ok  "$(rb 'docker build -t fscache-local .; docker run --rm fscache-local')" "printf 'FROM scratch\\n' > Dockerfile"
+case_ c10-own-build-localtrust-removed-bad bad  "$(rb 'docker build -t fscache-local .; docker run --rm fscache-local')" "printf 'FROM scratch\\n' > Dockerfile"
 case_ c11-dir-copy             bad "$(rb 'cp -R evil/. .; docker build .')" "printf 'FROM scratch\\n' > Dockerfile; mkdir -p evil; printf 'FROM alpine\\n' > evil/Dockerfile"
 case_ c11-printf-consumer      bad "$(rb 'printf "FROM alpine\\n" > Dockerfile docker build; docker build .')" "printf 'FROM scratch\\n' > Dockerfile"
 case_ c12-hash-p               bad "$(rb 'hash -p /usr/bin/docker d; d run alpine:3.20')"
@@ -1625,12 +1625,12 @@ case_ r22-failclosed-closed-multiline-quote-bad bad "$(rb 'MSG="hello
           world"
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r17-control-hash-in-word-then-build-ok ok "$(rb 'echo hello#world
+case_ r17-control-hash-in-word-then-build-localtrust-removed-bad bad "$(rb 'echo hello#world
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r17-control-real-loop-ok ok "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
+case_ r17-control-real-loop-localtrust-removed-bad bad "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
           docker run alpine:latest')" "$DF"
-case_ r17-control-keyword-in-comment-ok ok "$(rb 'docker build -t alpine:latest . # fi then done
+case_ r17-control-keyword-in-comment-localtrust-removed-bad bad "$(rb 'docker build -t alpine:latest . # fi then done
           docker run alpine:latest')" "$DF"
 
 # --- r18 (Sonnet 2 blockers, plain forms): a multi-line conditional group, and a loop whose list can be empty
@@ -1675,7 +1675,7 @@ case_ r19-failclosed-unconditional-brace-group-bad bad "$(rb '{
             docker build -t alpine:latest .
           }
           docker run alpine:latest')" "$DF"
-case_ r18-control-literal-for-list-ok ok "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
+case_ r18-control-literal-for-list-localtrust-removed-bad bad "$(rb 'for v in latest; do docker build -t "alpine:${v}" .; done
           docker run alpine:latest')" "$DF"
 case_ r19-failclosed-group-after-and-bad bad "$(rb 'docker build -t alpine:latest .
           [ -n "$X" ] && {
@@ -1775,15 +1775,15 @@ case_ r19-s-r1-opener-on-next-line-bad bad "$(rb '[ -f x ] &&
           }
           docker run alpine:latest')" "$DF"
 # controls that MUST keep passing: straight-line scripts, chains, pipelines, literal loops, expansions, comments, closed quotes
-case_ r19-control-straight-line-ok ok "$(rb 'docker build -t alpine:latest .
+case_ r19-control-straight-line-localtrust-removed-bad bad "$(rb 'docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
 case_ r19-failclosed-build-and-run-chain-bad bad "$(rb 'docker build -t alpine:latest . && docker run alpine:latest')" "$DF"
 case_ r19-failclosed-build-piped-bad bad "$(rb 'docker build -t alpine:latest . | cat
           docker run alpine:latest')" "$DF"
-case_ r19-control-expansion-and-redirect-ok ok "$(rb 'echo "built ${NAME:-x} at $(date)" >log 2>&1
+case_ r19-control-expansion-and-redirect-localtrust-removed-bad bad "$(rb 'echo "built ${NAME:-x} at $(date)" >log 2>&1
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r19-control-multiple-literal-loop-ok ok "$(rb 'for v in a b c; do
+case_ r19-control-multiple-literal-loop-localtrust-removed-bad bad "$(rb 'for v in a b c; do
             docker build -t "alpine:${v}" .
           done
           docker run alpine:b')" "$DF"
@@ -1883,13 +1883,13 @@ case_ r20-b09-short-output-bad bad "$(rb 'docker build -o /tmp/out -t alpine:lat
 case_ r20-b09-buildx-without-load-bad bad "$(rb 'docker buildx build -t alpine:latest .
           docker run alpine:latest')" "$DF"
 # controls that must keep passing
-case_ r20-control-sudo-docker-build-ok ok "$(rb 'sudo docker build -t alpine:latest .
+case_ r20-control-sudo-docker-build-localtrust-removed-bad bad "$(rb 'sudo docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r20-control-buildx-load-ok ok "$(rb 'docker buildx build --load -t alpine:latest .
+case_ r20-control-buildx-load-localtrust-removed-bad bad "$(rb 'docker buildx build --load -t alpine:latest .
           docker run alpine:latest')" "$DF"
 case_ r20-failclosed-semicolon-and-chain-bad bad "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest
           docker build -t alpine:b . && docker run alpine:b')" "$DF"
-case_ r20-control-loop-then-run-after-ok ok "$(rb 'for v in a b; do
+case_ r20-control-loop-then-run-after-localtrust-removed-bad bad "$(rb 'for v in a b; do
             docker build -t "alpine:${v}" .
           done
           docker run alpine:b')" "$DF"
@@ -1914,7 +1914,7 @@ case_ r21-image-rm-glob-bad bad "$head
       - run: |
           docker image rm alpine:*
           docker run --rm alpine:latest true" "$DF"
-case_ r21-control-rmi-other-literal-ok ok "$head
+case_ r21-control-rmi-other-literal-localtrust-removed-bad bad "$head
     steps:
       - run: docker build -t alpine:latest .
       - run: |
@@ -1985,10 +1985,10 @@ case_ r21-b10-tmp-copy-replaced-cp-bad bad "$head
       - run: cp replacement.sh /tmp/policy/tool.sh
       - run: bash /tmp/policy/tool.sh" "$mkdir_bin"
 # controls that must keep passing
-case_ r21-control-standalone-lines-ok ok "$(rb 'docker build -t alpine:latest .
+case_ r21-control-standalone-lines-localtrust-removed-bad bad "$(rb 'docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r21-control-semicolon-standalone-ok ok "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest')" "$DF"
-case_ r21-control-set-euo-ok ok "$(rb 'set -euo pipefail
+case_ r21-control-semicolon-standalone-localtrust-removed-bad bad "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest')" "$DF"
+case_ r21-control-set-euo-localtrust-removed-bad bad "$(rb 'set -euo pipefail
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
 case_ r21-control-podman-all-pinned-ok ok "$(rb 'podman run --rm docker.io/library/alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
@@ -2028,22 +2028,37 @@ case_ r22-r1-set-plus-x-plus-e-bad bad "$(rb 'set +x +e
           docker build -t alpine:latest . < /__missing__
           docker run alpine:latest')" "$DF"
 # controls
-case_ r22-control-if-success-step-ok ok "$head
+case_ r22-control-if-success-step-localtrust-removed-bad bad "$head
     steps:
       - run: docker build -t alpine:latest .
       - if: success()
         run: docker run --rm alpine:latest true" "$DF"
-case_ r22-control-shell-bash-e-ok ok "$head
+case_ r22-control-shell-bash-e-localtrust-removed-bad bad "$head
     steps:
       - shell: bash -e {0}
         run: |
           docker build -t alpine:latest .
           docker run --rm alpine:latest true" "$DF"
-case_ r22-control-buildkit-env-prefix-ok ok "$(rb 'DOCKER_BUILDKIT=1 docker build -t alpine:latest .
+case_ r22-control-buildkit-env-prefix-localtrust-removed-bad bad "$(rb 'DOCKER_BUILDKIT=1 docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
-case_ r22-control-github-expression-ok ok "$(rb 'echo built ${{ github.sha }}
+case_ r22-control-github-expression-localtrust-removed-bad bad "$(rb 'echo built ${{ github.sha }}
           docker build -t alpine:latest .
           docker run alpine:latest')" "$DF"
 # fail closed (declared): a closed multi-line quoted string no longer grants local trust (the text inside it cannot be told from commands line by line)
+# --- r22 removal (advisor 0080, owner Oct 3: "a simple parse"): NO image name this job built or tagged is trusted. Every case named
+# *-localtrust-removed-bad above was a feature test ("a name the job made earlier is ours"); 22 review rounds kept finding one more way for
+# a hand-written tracker to be wrong about it, and no real workflow used it (the real repo is at 0 findings without it). A script that
+# builds an image runs it by its image id or digest; the build itself is still fully checked (its FROM lines, context, Dockerfile).
+case_ r23-iidfile-run-ok ok "$(rb 'docker build --iidfile "$RUNNER_TEMP/iid" .
+          IID=$(cat "$RUNNER_TEMP/iid")
+          docker run --rm "$IID" true')" "$DF"
+case_ r23-build-only-ok ok "$(rb 'docker build -t alpine:latest .')" "$DF"
+case_ r23-build-with-unpinned-from-bad bad "$(rb 'docker build -t alpine:latest .')" "printf 'FROM alpine:3.20\n' > Dockerfile"
+case_ r23-run-by-name-after-build-bad bad "$(rb 'docker build -t myapp .
+          docker run myapp')" "$DF"
+case_ r23-tag-of-local-name-bad bad "$(rb 'docker build -t myapp .
+          docker tag myapp myapp:v1')" "$DF"
+case_ r23-run-pinned-digest-ok ok "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

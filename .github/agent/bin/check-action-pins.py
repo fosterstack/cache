@@ -88,7 +88,7 @@ npx and npm/yarn/pnpm/gem installs are always flagged (they cannot be held to ha
 word is the image); docker compose / docker-compose / buildx bake / stack are findings (their files name images this
 check does not read); a build's Dockerfile — a literal path, or a template like Dockerfile.${v} matched against the
 tree — must exist in the repository and every FROM be a digest, scratch or an earlier stage (stdin or a generated
-Dockerfile is a finding); a local name counts only if the job made it EARLIER; a step in a non-POSIX shell that names
+Dockerfile is a finding); an image name this job built or tagged is NOT trusted (r23: reference a build by its image id or a digest); a step in a non-POSIX shell that names
 a container or package tool is a finding (this check reads POSIX shell only). Round 2 (Sonnet #164): a tool
 given forwarded arguments ("$@", $*) or a variable verb is a finding; copying, linking or aliasing a tool binary under
 another name is a finding; pip download/wheel follow the install rule; conda/mamba/micromamba installs are flagged;
@@ -109,7 +109,7 @@ under a working-directory (step, job or workflow) cannot be placed in the reposi
 every file of their pattern, as before).
 Round 15 (NEW-23): a build's context and every --build-context must be a local path; a URL, git address, variable or
 substitution builds from bytes this check never sees and is refused.
-Round 14 (NEW-21/22): a name counts as the job's own only when it is built (docker build, its FROM lines checked),
+Round 14 (NEW-21/22; SUPERSEDED in r23: no built or tagged name is trusted any more): a name counts as the job's own only when it is built (docker build, its FROM lines checked),
 tagged from a digest-pinned, local or variable source, or copied into the daemon from a digest-pinned docker:// source;
 a loaded tarball's image ID or an archive copied into the daemon may be scanned, but tagging or running it is a finding.
 Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or context — -H/--host, -c/--context and
@@ -145,9 +145,10 @@ whose row-78 pass asks whether any non-shell code fetches an image or package wi
 Outside this check, each a documented exclusion with its reason (row 78):
   - an image a `run:` script names through a shell variable or an expression: the shell is not evaluated here, so
     the row-78 review pass answers it (on Oct 2 every such image in the workflows is bound to a digest);
-  - a name the same job made EARLIER by an unconditional build or tag (docker tag / build -t / skopeo docker-daemon:;
-    a template like `fa-${v}` stands only for the words of its literal `for v in …` list), not removed since, and used
-    by run/create without --pull=always (a pull always fetches): our own bytes;
+  - (REMOVED in r23, owner Oct 3 "a simple parse"; advisor 0080: nineteen rounds of review kept finding one more way a hand-written
+    tracker of "a name the job made earlier is ours" was wrong, and no real workflow relied on it) an image name the job built or
+    tagged is NOT trusted: a `docker run` names a digest, or a variable holding one, such as the image id a build wrote with
+    --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
   - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md
@@ -536,7 +537,7 @@ def verify_pins(pins):
 # ---------------------------------------------------------------------------- images a run: script names
 # (handoff 0068; owner Sep 30, handoff 0023: "no exceptions, anywhere"). A LITERAL image a script runs or pulls must
 # be a digest. Not flagged: an argument holding a shell variable or an expression (the review pass covers those), a
-# local name the same job made (docker tag / build -t / skopeo docker-daemon:), or a digest reference.
+# digest reference. An image name the job built or tagged itself is NOT trusted (r23, owner Oct 3: every image is pinned by digest; run a build by its image id).
 DIGEST_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
 # docker options (Sonnet #164 r1, B2/B4): every option before the image must be KNOWN — a long or short form that
 # takes a value (attached `--x=v` / `-pV`, or the next word), or one that takes none (short ones may combine: -dit).
@@ -1600,64 +1601,6 @@ def _operands(args, val, boolean):
     return pos, None
 
 
-def _canon(ref):
-    """One image, one name: the registry and library prefixes docker adds by default are dropped, and name and name:latest are one
-    image (Codex #164 r2, C10: rmi alpine:latest removes alpine; r21, B8: docker.io/library/alpine:latest is the same reference)."""
-    r = ref
-    for pre in ("registry-1.docker.io/", "index.docker.io/", "docker.io/"):
-        if r.startswith(pre):
-            r = r[len(pre):]
-            break
-    if r.startswith("library/"):
-        r = r[len("library/"):]
-    return r if ("@" in r or ":" in r.rsplit("/", 1)[-1]) else r + ":latest"
-
-
-def _local(ref, local):
-    """A name the job made EARLIER by an unconditional build or tag, still present. A template (`fa-${v}`) was expanded
-    when it was registered to the words of the literal for-list it is built inside; it never vouches for any other name."""
-    return _canon(ref) in {_canon(x) for x in local}
-
-
-def _expand_names(name, text):
-    """A local name's concrete values: itself when literal; a template's expansions over the literal word list of the
-    `for VAR in w1 w2 …; do … done` loop whose body builds or tags that very template — the variable assigned nowhere
-    else in the job (Codex #164 r2, C10: an unrelated loop or a reassignment proves nothing); otherwise none. A `for`
-    loop's own text, sitting inert as quoted data inside an array literal, is indistinguishable from a real one to
-    the regex below (Codex #164 r16, B1: `arr=('for v in latest; do alpine:${v}; done')` — never executed, planted
-    purely to make this function expand an UNRELATED tag command's template to a value its own loop never produces)
-    — same posture as _unconditional(), deny the expansion outright rather than try to tell real code from array
-    data here too."""
-    found = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", name)
-    if not found:
-        return {name}
-    if _ARRAY_OPEN_RE.search(text):
-        return set()
-    no_comments, blanked, open_quote = _mask_shell(text)
-    if open_quote or _straight_line(text) is None:
-        return set()                  # not a straight-line script: no expansion is trusted (see _straight_line)
-    out = {name}
-    for var in dict.fromkeys(found):
-        # a loop counts only where its `for` is LIVE shell text, not inside a comment or a quoted string (Sonnet #164
-        # r17, B1 / Codex r17, B03: loop text sitting inert as data proved an expansion nothing ever ran)
-        loops = [(m.group(1), m.group(2)) for m in re.finditer(
-            r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b", no_comments, re.S)   # a comment in the list is not a word (Codex #164 r19, B04)
-            if name in m.group(2) and blanked[m.start():m.start() + 3] == "for"]
-        assigned = re.search(r"(?<![\w$])" + var + r"\+?=", text) or re.search(
-            r"printf\s+-v\s+" + var + r"\b|\b(?:read|mapfile|readarray|getopts)\b[^\n;|&]*\b" + var + r"\b|"
-            r"\b(?:declare|typeset|local|export|readonly|unset)\b[^\n;|&]*\b" + var + r"\b|\(\(\s*" + var + r"\b", no_comments)
-        if len(loops) != 1 or assigned:
-            return set()
-        words = loops[0][0].split()
-        if not words or any(re.search(r"[$`*?\[\]\"']", w) for w in words):
-            return set()
-        out = {re.sub(r"\$\{?" + var + r"\}?(?![A-Za-z0-9_])", w, n) for n in out for w in words}
-    return out
-
-
-_TRAP_RE = re.compile(r"(?<![\w$.-])trap(?![\w.-])")
-
-
 def _mask_shell(text, info=None):
     """(no_comments, blanked, open_quote): TWO copies of `text`, each the same length with every newline in place so
     positions and line numbers line up. no_comments has every real comment replaced by spaces; blanked also has every
@@ -1702,189 +1645,6 @@ def _mask_shell(text, info=None):
             continue
         i += 1
     return "".join(nc), "".join(bl), q is not None
-
-
-_FORBIDDEN_WORD = re.compile(
-    r"(?<![\w$.-])(?:if|then|elif|else|fi|case|esac|while|until|select|function|trap|time|coproc|eval|source|exec|break|continue|return|"
-    r"exit|let|do|done)(?![\w.-])")
-
-
-def _straight_line(text):
-    """The script with its comments removed (same length, newlines kept), or None when it is not a STRAIGHT-LINE script this
-    check can read with confidence. Local-build trust (a tag an earlier command made, still present when a later `docker run`
-    names it) is granted only to a straight-line script: a sequence of simple commands, `a && b` / `a || b` chains (only the
-    FIRST command of a chain is certain to run), pipelines, and `for NAME in <literal words>; do ... done` loops. Everything
-    else is refused: no if/case/while/until/select, no function, no { } group or ( ) subshell or array, no background `&`,
-    no heredoc, no quote left open, no eval/source/exec, no break/continue/return/exit, no `!`/`time` before a command, and
-    none of those words even as an ARGUMENT. Nineteen review rounds of Codex and Sonnet kept finding one more construct a
-    hand-written conditional tracker mis-read (a keyword after ${..}, `a|b)` case patterns, `! if`, a background build, a
-    function defined after a command, an empty multi-line list ...); the owner's rule for a security control (advisor 0080) is
-    to refuse what the check cannot resolve, not to chase constructs. A script that genuinely needs one of these forms simply
-    does not get local trust: its `docker run` must name a pinned image."""
-    info = {}
-    no_comments, blanked, open_quote = _mask_shell(text, info)
-    if open_quote or info.get("nl_in_quote"):
-        return None          # a quote that spans lines: its inside cannot be told from commands line by line (Sonnet #164 r22, B1)
-    b = blanked
-    if _FORBIDDEN_WORD.search(re.sub(r"\bfor\b|\bdo\b|\bdone\b", " ", b)):
-        return None
-    if re.search(r"(?:^|[;&|(){}]|\n)\s*!", b):
-        return None
-    if re.search(r"(?<![\w.-])(?:ba|z|da|k|a|c|tc|fi)?sh\s+(?:-\S+\s+)*-[A-Za-z]*c\b", no_comments):
-        return None                                   # `bash -c '...'`: a program inside a string, read recursively, loses its structure
-    if re.search(r"<<(?!<)", b):
-        return None                                   # a heredoc body is not masked: refuse
-    if _ARRAY_OPEN_RE.search(b):
-        return None
-    flat = re.sub(r"\$\{\{.*?\}\}", "V", b)           # a GitHub expression is a value, not a group
-    flat = re.sub(r"\$\{[^}]*\}", "V", flat)          # ${NAME} / ${#NAME} / ${NAME:-x}: parameter expansion, not a group
-    for _ in range(8):                                # $( ... ) command substitutions, innermost first
-        flat = re.sub(r"\$\(\([^()]*\)\)|\$\([^()]*\)", "S", flat)
-    if re.search(r"[(){}]", flat):
-        return None                                   # a group, a subshell, a function, an array, an unbalanced substitution
-    redir = re.sub(r"[0-9]*>&[0-9-]*|&>>?|<&[0-9-]*|&&", " ", flat)
-    if "&" in redir:
-        return None                                   # a background job: its result is not there when the next command runs
-    if re.search(r"(?:&&|\|\||\|)\s*for(?![\w.-])", b):
-        return None                                   # a loop that is itself only conditionally (or pipe-)started
-    # --- the bookkeeping rules (Codex #164 r20): refuse what makes "this tag is certainly in the daemon when the run pulls it" uncertain
-    if "||" in flat:
-        return None                                   # `build || run` runs the run only when the build FAILED; `build || true` hides a failure
-    for lst in re.split(r";|&&|\n", re.sub(r"\|\s*\n\s*", "| ", flat)):            # pipeline members run concurrently: when more than one member is a docker command
-        if len([m for m in re.split(r"(?<!\|)\|(?!\|)", lst) if re.search(r"(?<![\w.-])docker(?=\s|$)", m)]) > 1:
-            return None                               # the run may start before the build is done (a build piped to `tee` or `cat` is fine)
-    inner, tmp = [], no_comments                      # read WITH quotes: "$(docker rmi x)" is still a substitution that runs
-    for _ in range(8):                                # a command substitution's events are not in their place in the script's order
-        inner += re.findall(r"\$\(([^()]*)\)", tmp)
-        tmp = re.sub(r"\$\([^()]*\)", "S", tmp)
-    inner += re.findall(r"`([^`]*)`", no_comments)
-    if any(re.search(r"(?<![\w.-])(?:docker|buildx)(?=\s|$)", x) for x in inner):
-        return None
-    for m in re.finditer(r"(?<![\w.-])docker(?=\s|$)", b):
-        prev = b[:m.start()].rstrip(" \t")
-        while re.search(r"(?<![\w.-])(?:sudo|do)$", prev) or re.search(r"(?<![\w.-])[A-Za-z_]\w*=\S*$", prev):
-            prev = re.sub(r"(?:sudo|do)$|[A-Za-z_]\w*=\S*$", "", prev).rstrip(" \t")   # a wrapper or a VAR=value prefix before it
-        if prev and not re.search(r"(?:;|&&|\n|^)$", prev):
-            return None                               # `docker` that is not the command itself (xargs/env/printf/command ... docker build)
-    if re.search(r"(?<![\w.-])set\s+(?:[-+]\w+\s+)*\+(?:\w*e\w*\b|o\s+errexit\b)", b):
-        return None                                   # errexit off: a failed build no longer stops the script (Codex #164 r21, B1)
-    for ln in b.splitlines():
-        if re.search(r"(?<![\w.-])docker\b[^\n;&|]*\b(?:build|b)\b", ln):
-            if re.search(r"(?<![\w-])(?:-o\S|-o(?=\s)|--output|--push|--check|--call)(?![\w-])", ln) or re.search(r"(?<![\w-])-o\S", ln) \
-                    or re.search(r"--load=(?:false|0)\b", ln):
-                return None                           # an exporter, a push or a check-only build: the image need not enter the daemon
-            if re.search(r"\bbuildx\s+(?:build|b)\b", ln) and not re.search(r"--load\b", ln):
-                return None                           # buildx without --load may leave the image out of the daemon
-    for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in[^;\n]*(?:;|\n)\s*do(?![\w.-])(.*?)(?<![\w$.-])done(?![\w.-])", b, re.S):
-        if re.search(r"(?<![\w.-])docker\b[^\n;&|]*?\b(?:run|create|exec|start|compose)\b|(?<![\w.-])docker-compose\b", m.group(1)):
-            return None                               # a loop that USES an image inside its body may use one a later iteration builds
-    for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in[^;\n]*(?:;|\n)\s*do(?![\w.-])(.*?)(?<![\w$.-])done(?![\w.-])", b, re.S):
-        if re.search(r"(?<![\w$.-])for(?![\w.-])", m.group(1)):
-            return None                               # a nested loop may rebind the variable the outer one proves (Codex #164 r21, B5)
-    fors = len(re.findall(r"(?<![\w$.-])for(?![\w.-])", b))
-    dones = len(re.findall(r"(?<![\w$.-])done(?![\w.-])", b))
-    loops = []
-    for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do(?![\w.-])", no_comments):
-        if b[m.start():m.start() + 3] != "for":
-            continue
-        words = m.group(1)
-        if not words.strip() or re.search(r"[$`*?\[\]()<>|&{}\\]", words):
-            return None                               # not a non-empty LITERAL word list: it may run zero times
-        loops.append(m)
-    if fors != len(loops) or dones != fors:
-        return None                                   # a `for` of any other shape, or loops that do not pair up
-    return no_comments
-
-
-def _strip_line_comment(line):
-    """line with a trailing '#' comment (preceded by whitespace or the start of the line, outside any quote)
-    removed — bash's comments never span more than one line, so a per-line scan is enough here (Codex #164
-    r14, B3: _unconditional()'s own if/fi keyword regex had no comment-awareness at all, so a comment reading
-    "# if" or "# fi" was read as real control flow, corrupting its if/case tracking stack). Used for the line
-    this function KEEPS (local-build-name extraction downstream still needs a real quoted image/tag name
-    intact), unlike _blank_quotes, which is for the keyword regex only."""
-    i, n, q = 0, len(line), None
-    while i < n:
-        c = line[i]
-        if q == "'":
-            q = None if c == "'" else q
-        elif q == '"':
-            if c == "\\" and i + 1 < n:
-                i += 2
-                continue
-            q = None if c == '"' else q
-        elif c == "\\" and i + 1 < n:
-            i += 2
-            continue
-        elif c in "'\"":
-            q = c
-        elif c == "#" and (i == 0 or line[i - 1] in " \t"):
-            return line[:i]
-        i += 1
-    return line
-
-
-def _blank_quotes(line):
-    """line (already comment-stripped) with every quoted string's own CONTENT blanked to spaces — the quote
-    characters and everything else stay put, so positions are undisturbed. Only ever fed to the if/case/trap
-    keyword regex: that regex has no quote-awareness of its own, so an ORDINARY, non-adversarial quoted
-    scalar containing one of its words as plain data (`PROFILE="release notes fi"`, Sonnet #164 r16, B1)
-    corrupted its tracking stack exactly like the comment case did. The line _unconditional() actually KEEPS
-    is the comment-stripped-only one from _strip_line_comment — local-build-name extraction downstream still
-    needs the real quoted image/tag name intact, which blanking here would destroy."""
-    out, i, n, q = [], 0, len(line), None
-    while i < n:
-        c = line[i]
-        if q == "'":
-            out.append(c if c == "'" else " ")
-            q = None if c == "'" else q
-        elif q == '"':
-            if c == "\\" and i + 1 < n:
-                out.append("  ")
-                i += 2
-                continue
-            out.append(c if c == '"' else " ")
-            q = None if c == '"' else q
-        elif c == "\\" and i + 1 < n:
-            out.append("  ")
-            i += 2
-            continue
-        elif c in "'\"":
-            out.append(c)
-            q = c
-        else:
-            out.append(c)
-        i += 1
-    return "".join(out)
-
-
-_ARRAY_OPEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=\(")
-
-
-def _unconditional(text):
-    """The script's commands that are certain to run, or "" when it is not a straight-line script (see _straight_line: anything
-    it cannot read with confidence grants no local trust). In a straight-line script the only thing left that may not run is
-    the part of a `a && b` / `a || b` chain after its first command, and the command on the line after one that ends in
-    && or ||; a literal for-loop always runs, so its header and `done` are dropped and its body kept."""
-    body = _straight_line(text)
-    if body is None:
-        return ""
-    keep, after_chain = [], False
-    for line in re.sub(r"\\\n", " ", body).splitlines():
-        cond_line = after_chain
-        if line.strip():
-            tail = line.rstrip()
-            # a line ending in && / || guards the next one; so does a line ending in | when the pipeline it continues belongs to a
-            # chain's right-hand side (the line itself holds an && / ||, or the line before was already conditional): the pipeline's
-            # later commands may never run (Sonnet #164 r20, B1)
-            after_chain = tail.endswith(("&&", "||")) or (tail.endswith("|") and (cond_line or "&&" in tail or "||" in tail))
-        if cond_line:
-            continue
-        line = re.sub(r"(?<![\w$.-])for\b[^;]*;\s*do(?![\w.-])|(?<![\w$.-])done(?![\w.-])|^\s*do(?![\w.-])", "", line)
-        if re.search(r"&&|\|\||(?<!\|)\|(?!\|)", line):
-            continue            # a command inside a list or pipeline may have FAILED without stopping the script (no pipefail; `build && echo`);
-        keep.append(line)       # only a standalone command's success is certain under errexit (Codex #164 r21, B1)
-    return "\n".join(keep)
 
 
 def _dockerfiles(tree, dockerfile):
@@ -2451,11 +2211,10 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
 
 
 def check_runs(where_job, scripts, bad, tree=None):
-    """scripts: [(where, text, shell)] of ONE job (or one composite action), in order; a local name counts only if
-    the job made it earlier. A step in a non-POSIX shell that names a container or package tool is a finding: this
+    """scripts: [(where, text, shell)] of ONE job (or one composite action), in order. No image name this job built or tagged is
+    trusted (the owner's rule, Oct 3: every image is pinned by digest; reference a build you made by its image id, e.g. --iidfile, or
+    a digest). A step in a non-POSIX shell that names a container or package tool is a finding: this
     check reads POSIX shell only (Sonnet B8)."""
-    local = set()
-
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
@@ -2498,11 +2257,6 @@ def check_runs(where_job, scripts, bad, tree=None):
     READ_SCRIPTS.clear()
     for item, (more, also) in zip(scripts, inlined):
         where, raw, shell = item[:3]
-        conditional = bool(item[4]) if len(item) > 4 else False
-        if_text = item[5] if len(item) > 5 else ""
-        # a step that can run AFTER a failure (always() / failure() / cancelled() / !success()) must not rely on an image an earlier step
-        # may have failed to build (Sonnet #164 r22, B2)
-        after_failure = bool(re.search(r"\b(?:always|failure|cancelled)\s*\(|!\s*success\s*\(", if_text))
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
         own = read(raw)
@@ -2523,40 +2277,16 @@ def check_runs(where_job, scripts, bad, tree=None):
             # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
             bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
             continue
-        # `shell: bash {0}` (or sh {0}) has no errexit: a failed build no longer stops the script, so nothing it builds is certain
-        # (Sonnet #164 r22, B3); a plain `bash`/`sh` default or any template with -e keeps it
-        if shell and not (shell.strip() in ("bash", "sh") or re.search(r"(?:^|\s)-\w*e", shell)):
-            conditional = True
-        # names count only from the step's own unconditional commands, never from a $( ) that may run later (Codex r3,
-        # C10); a committed script it runs is judged against the names that existed before the step, and its builds
-        # register nothing (its commands are not in their execution order here)
-        firm = _cut_substitutions(_unconditional(own))[0]
-        def _made(events):
-            names = [e[1] for e in events if e[0] == "local"] + [e[2] for e in events if e[0] == "tag"]
-            return {n: names.count(n) for n in names}
-        firm_made, own_made = _made(script_images(firm)), _made(script_images(own))
-        # a step's `if:` (Codex r2, C10); and a name counts only when EVERY command that makes it in this step is unconditional,
-        # compared by number (Codex #164 r20, B1: a skipped first build must not be vouched for by a later unconditional one)
-        sure = set() if conditional else {n for n, c in firm_made.items() if own_made.get(n, 0) == c}
-        use_local = set() if after_failure else local
         for ev in [e for e in script_images(read(more)) if e[0] != "local"] + script_images(own) if more else \
                 script_images(own):
-            if ev[0] == "local":
-                if ev[1] in sure:
-                    local.update(_expand_names(ev[1], job_text))
-            elif ev[0] == "unlocal":
-                if ev[1] == "*":
-                    local.clear()
-                else:
-                    local -= {x for x in local if _canon(x) == _canon(ev[1])}
+            if ev[0] in ("local", "unlocal"):
+                continue        # a locally built or tagged name is never trusted (see below): nothing to register
             elif ev[0] == "tag":
                 src, dst = ev[1], ev[2]
-                if _variable(src) or DIGEST_REF.search(src) or _local(src, use_local):
-                    if dst in sure:
-                        local.update(_expand_names(dst, job_text))
-                else:     # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21)
-                    bad.append(f"{where}: `docker tag` makes {dst!r} from {src!r}, which is neither pinned by digest nor an "
-                               f"image this job made; refused")
+                if not (_variable(src) or DIGEST_REF.search(src)):
+                    # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21); a name this job built is
+                    # not trusted either, so tagging it is refused too
+                    bad.append(f"{where}: `docker tag` makes {dst!r} from {src!r}, which is not pinned by digest; refused")
             elif ev[0] == "finding":
                 bad.append(f"{where}: {ev[1]}")
             elif ev[0] == "build":
@@ -2599,7 +2329,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if img is not None and SUBST in img:
                     bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
                     continue
-                if img is None or _variable(img) or DIGEST_REF.search(img) or (ev[0] == "use" and _local(img, use_local)):
+                if img is None or _variable(img) or DIGEST_REF.search(img) or False:
                     continue
                 bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r}")
         for c, why in script_installs(text):
