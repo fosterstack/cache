@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 71 |
-| Acceptance criteria | 157 |
+| Active requirements | 72 |
+| Acceptance criteria | 162 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 141 |
+| ACs with mapped evidence | 146 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 28 |
+| Confidence: implementation-only | 29 |
 
 ## Cache protocol
 
@@ -870,3 +870,19 @@ The complete server — cache protocol, eviction, size caps, auth, metrics, stat
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-LIC-001-AC1 | Given the repository and a release; when the license and artifact set are examined; then the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists | manual |  | approved | 1 item(s) |
+
+## UAT
+
+### REQ-UAT-001 — Persona UAT
+
+Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/persona-uat.py; bin/persona-uat-agent.py; .github/workflows/release.yml; .github/workflows/go-freshness.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-UAT-001-AC1 | Given a release candidate tag v*-rc.*; when its release run promotes; then five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest using only the public docs, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run | ci-workflow |  | approved | 2 item(s) |
+| REQ-UAT-001-AC2 | Given the weekly maintenance run; when it runs; then the same five personas exercise the latest release, and a blocking finding opens or updates one issue labelled blocking | ci-workflow |  | approved | 2 item(s) |
+| REQ-UAT-001-AC3 | Given a persona finding that is friction (not broken behavior or a failing doc step); when the run ends; then it is recorded in one issue per run as information and blocks nothing | ci-workflow |  | approved | 2 item(s) |
+| REQ-UAT-001-AC4 | Given a persona run; when it needs Jenkins, a GitLab runner or Kubernetes; then each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud | ci-workflow |  | approved | 1 item(s) |
+| REQ-UAT-001-AC5 | Given a persona agent; when it runs; then it reads only the public docs and the endpoint (no repository source, no internal docs); its model and token budget come from environment variables the owner sets; its transcript is kept as an artifact | ci-workflow |  | approved | 2 item(s) |
