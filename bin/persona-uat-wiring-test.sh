@@ -188,6 +188,10 @@ def common(name, job, bad):
         for c in cos:
             if str((c.get("with", {}) or {}).get("path", "")) == "harness" and "ref" in (c.get("with", {}) or {}):
                 bad.append(f"{name}: the harness checkout must be today's main (no ref): an old release has no driver")
+    boots = [s for s in steps if re.fullmatch(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*", str(s.get("run", "")).strip())]
+    harness_co = [c for c in cos if str((c.get("with", {}) or {}).get("path", "")) in ("", "harness")]
+    if len(boots) != 1 or (harness_co and steps.index(boots[0]) < steps.index(harness_co[0])) or steps.index(boots[0]) > di:
+        bad.append(f"{name}: expected exactly one hash-pinned SDK install, after the harness checkout and before the driver")
     ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
     if len(ups) != 1:
         bad.append(f"{name}: expected exactly one transcript upload step, found {len(ups)}")
@@ -219,7 +223,7 @@ def run_resolver(script):
         os.makedirs(d + "/bin")
         open(d + "/bin/gh", "w").write("#!/bin/sh\n[ -n \"$GH_REPO\" ] || { echo 'no repo' >&2; exit 1; }\n"
                                        "echo \"gh $*\" >> \"$REC\"\n"
-                                       "case \"$*\" in 'release view --json tagName -q .tagName') echo v0.2.1;; *) echo \"unexpected gh call: $*\" >&2; exit 1;; esac\n")
+                                       "case \"$*\" in 'release view --json tagName -q .tagName'|'release view --json tagName --jq .tagName') echo v0.2.1;; *) echo \"unexpected gh call: $*\" >&2; exit 1;; esac\n")
         open(d + "/bin/docker", "w").write("#!/bin/sh\necho \"docker $*\" >> \"$REC\"\n"
                                            "[ \"$1 $2 $3\" = 'buildx imagetools inspect' ] || { echo 'unexpected docker call' >&2; exit 1; }\n"
                                            "[ \"$4\" = 'ghcr.io/own/cache:0.2.1' ] || { echo \"wrong image reference: $4\" >&2; exit 1; }\n"
@@ -238,23 +242,24 @@ def run_resolver(script):
     return out
 
 def run_identity(step):
-    """EXECUTE the identity step's script in node against a fake core: the token is minted (awaited), masked, written to a file, and
-    that file is what ANTHROPIC_IDENTITY_TOKEN_FILE is exported as."""
+    """EXECUTE the identity step's script in node against a fake core and a capturing console: the token is minted (awaited), the TOKEN ITSELF is
+    registered for masking, it is written to a file, that file is what ANTHROPIC_IDENTITY_TOKEN_FILE is exported as, and it is never logged."""
     import subprocess, shutil
     if not shutil.which("node"):
-        return []
+        return ["node is required to execute the identity step's script (the proof must not be skipped)"]
     body = str((step.get("with", {}) or {}).get("script", ""))
     with tempfile.TemporaryDirectory() as d:
         open(d + "/s.js", "w").write(body)
         open(d + "/run.js", "w").write("""
 const fs = require('fs'); const body = fs.readFileSync(process.argv[2], 'utf8');
-const calls = {exported: {}, masked: []};
+const calls = {exported: {}, masked: [], logs: []};
 const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN:' + aud), 5)), setSecret: (t) => calls.masked.push(t),
-               exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {} };
+               exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {}, info: (m) => calls.logs.push(String(m)), debug: (m) => calls.logs.push(String(m)) };
+const cons = { log: (...a) => calls.logs.push(a.join(' ')), info: (...a) => calls.logs.push(a.join(' ')), warn: (...a) => calls.logs.push(a.join(' ')), error: (...a) => calls.logs.push(a.join(' ')) };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-new AsyncFunction('core', 'require', 'process', body)(core, require, process).then(() => {
+new AsyncFunction('core', 'require', 'process', 'console', body)(core, require, process, cons).then(() => {
   const f = calls.exported.ANTHROPIC_IDENTITY_TOKEN_FILE; let content = null; try { content = fs.readFileSync(f, 'utf8'); } catch (e) {}
-  fs.writeFileSync(process.argv[3], JSON.stringify({file: f || null, content, masked: calls.masked}));
+  fs.writeFileSync(process.argv[3], JSON.stringify({file: f || null, content, masked: calls.masked, logs: calls.logs}));
 }).catch((e) => fs.writeFileSync(process.argv[3], JSON.stringify({error: String(e)})));
 """)
         env = dict(os.environ, RUNNER_TEMP=d)
@@ -263,8 +268,11 @@ new AsyncFunction('core', 'require', 'process', body)(core, require, process).th
             res = json.load(open(d + "/res.json"))
         except Exception:
             return ["the identity step's script could not be executed"]
-        if res.get("error") or not res.get("file") or res.get("content") != "FIXTURE-TOKEN:https://api.anthropic.com" or not res.get("masked"):
-            return [f"the identity step does not mint (await), mask and write the token to the file it exports: {res}"]
+        tok = "FIXTURE-TOKEN:https://api.anthropic.com"
+        if res.get("error") or not res.get("file") or res.get("content") != tok or tok not in (res.get("masked") or []):
+            return [f"the identity step does not mint (await), mask THE TOKEN and write it to the file it exports: {res}"]
+        if any("FIXTURE-TOKEN" in l for l in res.get("logs", [])):
+            return ["the identity step logs the token"]
     return []
 
 def judge_requirements(bad):
@@ -278,9 +286,14 @@ def judge_requirements(bad):
         bad.append("bin/persona-uat-requirements.txt must pin anthropic== and every requirement by --hash=sha256:")
 
 def judge_release(r, bad):
-    tags = (r.get("on", {}).get("push", {}) or {}).get("tags", []) if isinstance(r.get("on"), dict) else []
-    if "v*" not in ([tags] if isinstance(tags, str) else tags):
-        bad.append("release.yml no longer starts on v* tags (the release-candidate trigger)")
+    push = (r.get("on", {}).get("push", {}) or {}) if isinstance(r.get("on"), dict) else {}
+    tags = push.get("tags", [])
+    if (tags if isinstance(tags, list) else [tags]) != ["v*"] or "tags-ignore" in push:
+        bad.append("release.yml's push tags are not exactly ['v*'] (a negation or tags-ignore could disable the release-candidate trigger)")
+    pf = r.get("jobs", {}).get("patch-failed", {}) or {}
+    pfn = pf.get("needs", [])
+    if "persona-uat" not in ([pfn] if isinstance(pfn, str) else pfn):
+        bad.append("release.yml's patch-failed does not list persona-uat in needs (a failed RC persona run must open the failure issue)")
     j = r.get("jobs", {}).get("persona-uat")
     if not j:
         bad.append("release.yml has no persona-uat job"); return
@@ -424,6 +437,10 @@ def mutate(name, expect, fn, which="rel"):
     try:
         if which == "rel_top":
             r["on"]["push"]["tags"] = ["x*"]
+        elif which == "rel_tags":
+            r["on"]["push"]["tags"] = ["v*", "!v*-rc.*"]
+        elif which == "rel_patchfailed":
+            r["jobs"]["patch-failed"]["needs"] = [n for n in r["jobs"]["patch-failed"]["needs"] if n != "persona-uat"]
         else:
             {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t)}[which]()
     except Exception as e:     # the real file lacks the thing being mutated: the real-file case above already failed
@@ -504,6 +521,15 @@ mutate("rc identity step writes one file and exports another", "for THAT file",
 mutate("rc job has no checkout", "actions/checkout step(s) before the driver", lambda j: j.update(steps=[s for s in j["steps"] if "actions/checkout" not in str(s.get("uses", ""))]))
 mutate("rc job checks out after the driver", "actions/checkout step(s) before the driver",
        lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(j["steps"].index(drv(j)) + 1, c)))(next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")))))
+mutate("release tags gain a negation", "push tags are not exactly", lambda j: None, "rel_tags")
+mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK install", lambda j: j.update(steps=[s for s in j["steps"] if "pip install" not in str(s.get("run", ""))]))
+mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
+       lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "pip install" in str(s.get("run", "")))))
+mutate("patch-failed no longer names persona-uat", "patch-failed does not list persona-uat", lambda j: None, "rel_patchfailed")
+mutate("rc identity step prints the token", "logs the token",
+       lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"] + "\nconsole.log(token)"))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
+mutate("rc identity step masks a literal, not the token", "mask THE TOKEN",
+       lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"].replace("core.setSecret(token)", "core.setSecret('token')")))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
 mutate("rc job permissions gain contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"))
@@ -535,7 +561,7 @@ mutate("weekly job gains needs (skipped on the Monday cron)", "has needs", lambd
 mutate("weekly resolver emits tag=main", "does not write tag=<release tag>", lambda j: _resolver(j).update(run=re.sub(r"tag=\S*\s*>>", "tag=main >>", _resolver(j)["run"].replace('"tag=${tag}"', "tag=main"))), "fresh")
 mutate("weekly resolver inspects the v-prefixed image tag", "resolver failed against recording gh/docker",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${tag#v}", "${tag}")), "fresh")
-mutate("weekly resolver asks for the wrong digest format", "does not extract the digest",
+mutate("weekly resolver asks for the wrong digest format", "does not write tag=<release tag>",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("{{.Manifest.Digest}}", "{{.Name}}")), "fresh")
 mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
 mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
@@ -557,7 +583,7 @@ mutate("weekly resolver emits an unrelated fixed digest", "built from the digest
        lambda j: (lambda r: r.update(run=re.sub(r'image=[^\n]*>>', 'image=ghcr.io/x/cache@sha256:' + 'a' * 64 + ' >>', r["run"])))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("rc driver is given a second --mode (last wins)", "--mode exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --mode weekly"))
 mutate("rc driver is given a second --image (last wins)", "--image exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --image ghcr.io/x/cache@sha256:" + "b" * 64))
-mutate("rc driver --repo points elsewhere", "--repo is not the checkout", lambda j: drv(j).update(run=re.sub(r"--repo\s+\S+", "--repo /tmp/empty", drv(j)["run"])))
+mutate("rc driver --repo points elsewhere", "--repo is not the docs checkout", lambda j: drv(j).update(run=re.sub(r"--repo\s+\S+", "--repo /tmp/empty", drv(j)["run"])))
 mutate("rc owner variable is the literal text", "is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="vars.PERSONA_UAT_MODEL"))
 mutate("rc secret is the literal text", "is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].update(ANTHROPIC_WORKSPACE_ID="secrets.ANTHROPIC_WORKSPACE_ID"))
 mutate("rc GH_TOKEN missing", "GH_TOKEN is not exactly github.token", lambda j: drv(j)["env"].pop("GH_TOKEN"))

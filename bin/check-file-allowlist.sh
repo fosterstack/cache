@@ -104,6 +104,7 @@ ALLOW_PATTERNS=(
   '^bin/persona-uat(-agent|-provider)?\.py$'
   '^bin/persona-uat(-wiring|-agent)?-test\.sh$'
   '^bin/persona-uat-tools\.json$'
+  '^bin/persona-uat-requirements\.txt$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'

@@ -164,6 +164,27 @@ CASE="and the transcript keeps the failing command's status and stderr too"
 check grep -q 'exit status: 3' "$work/failcmd/out.json"
 check grep -q 'oops-on-stderr' "$work/failcmd/out.json"
 
+# --- "exercised the persona" is more than "ran a command": a persona that never contacted the endpoint cannot claim a clean pass
+agent irrelevant '[{"usage":{"tokens":10},"action":{"type":"shell","command":"true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="an irrelevant action followed by an empty finish is NOT a pass: the persona never contacted the cache endpoint, so a blocking finding says so"
+check python3 - "$work/irrelevant/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert any(f["kind"] == "blocking" and "endpoint" in f["text"].lower() for f in a["findings"]), a
+PY
+agent contacted '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18080/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="a persona whose commands DID name the endpoint may finish clean (findings stay empty)"
+check python3 - "$work/contacted/out.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))["findings"] == []
+PY
+CASE="a persona that reports its own findings keeps them, endpoint contact or not (the rule only guards a clean pass)"
+check python3 - "$work/finish/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"kind": "blocking", "text": "step 2 fails as written"}], a
+PY
+
 # --- AC5 (and AC4): the shell is a pinned, unprivileged container that can see ONLY the sandbox -------------------
 CASE="every shell action's docker call is EXACTLY: run --rm --network host -v <sandbox>:/work -w /work <pinned shell image> sh -c <command>"
 check python3 - "$work/finish/fd.log" "$work/finish/sandbox" "$SHL" <<'PY'

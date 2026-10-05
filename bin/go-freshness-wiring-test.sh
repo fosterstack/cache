@@ -71,12 +71,21 @@ jobs = d.get("jobs") or {}
 got = hashlib.sha256(json.dumps(mask(jobs.get("check") or {}), sort_keys=True).encode()).hexdigest()
 if got != REVIEWED_CHECK_JOB:
     bad.append("the privileged check job differs from its reviewed form (%s)" % got[:12])
-if sorted(jobs) != ["check", "mutation"]:
-    bad.append("jobs other than check and mutation: %s" % sorted(jobs))
+if sorted(jobs) not in (["check", "mutation"], ["check", "mutation", "persona-uat"]):      # persona-uat's PRESENCE is persona-uat-wiring-test.sh's job
+    bad.append("jobs other than check, mutation and persona-uat: %s" % sorted(jobs))
 if d.get("env") or d.get("defaults"):
     bad.append("a workflow-level env/defaults reaches the privileged job")
 for j, v in jobs.items():
     if j == "check":
+        continue
+    if j == "persona-uat":
+        # REQ-UAT-001's weekly job (its exact shape is pinned by persona-uat-wiring-test.sh): its own environment and the model identity secrets ONLY;
+        # never the App token, never the privileged check job's environment, outputs or secrets
+        t = json.dumps(v)
+        allowed = {"ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
+        used = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", t))
+        if used - allowed or "app-token" in t or "create-github-app-token" in t or v.get("environment") != "persona-uat" or "check" in str(v.get("needs", "")):
+            bad.append("the persona-uat job touches more than its own environment and the model identity secrets (%s)" % sorted(used - allowed))
         continue
     t = json.dumps(v)
     if "secrets" in t or "app-token" in t or "create-github-app-token" in t or v.get("environment") or "check" in str(v.get("needs", "")):
