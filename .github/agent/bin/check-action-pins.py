@@ -1629,7 +1629,9 @@ def _expand_names(name, text):
         loops = [(m.group(1), m.group(2)) for m in re.finditer(
             r"\bfor\s+" + var + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do\b(.*?)\bdone\b", no_comments, re.S)   # a comment in the list is not a word (Codex #164 r19, B04)
             if name in m.group(2) and blanked[m.start():m.start() + 3] == "for"]
-        assigned = re.search(r"(?<![\w$])" + var + r"\+?=", text)
+        assigned = re.search(r"(?<![\w$])" + var + r"\+?=", text) or re.search(
+            r"printf\s+-v\s+" + var + r"\b|\b(?:read|mapfile|readarray|getopts)\b[^\n;|&]*\b" + var + r"\b|"
+            r"\b(?:declare|typeset|local|export|readonly|unset)\b[^\n;|&]*\b" + var + r"\b|\(\(\s*" + var + r"\b", no_comments)
         if len(loops) != 1 or assigned:
             return set()
         words = loops[0][0].split()
@@ -1727,6 +1729,32 @@ def _straight_line(text):
         return None                                   # a background job: its result is not there when the next command runs
     if re.search(r"(?:&&|\|\||\|)\s*for(?![\w.-])", b):
         return None                                   # a loop that is itself only conditionally (or pipe-)started
+    # --- the bookkeeping rules (Codex #164 r20): refuse what makes "this tag is certainly in the daemon when the run pulls it" uncertain
+    if "||" in flat:
+        return None                                   # `build || run` runs the run only when the build FAILED; `build || true` hides a failure
+    for lst in re.split(r";|&&|\n", flat):            # pipeline members run concurrently: when more than one member is a docker command
+        if len([m for m in re.split(r"(?<!\|)\|(?!\|)", lst) if re.search(r"(?<![\w.-])docker(?=\s|$)", m)]) > 1:
+            return None                               # the run may start before the build is done (a build piped to `tee` or `cat` is fine)
+    inner, tmp = [], no_comments                      # read WITH quotes: "$(docker rmi x)" is still a substitution that runs
+    for _ in range(8):                                # a command substitution's events are not in their place in the script's order
+        inner += re.findall(r"\$\(([^()]*)\)", tmp)
+        tmp = re.sub(r"\$\([^()]*\)", "S", tmp)
+    inner += re.findall(r"`([^`]*)`", no_comments)
+    if any(re.search(r"(?<![\w.-])(?:docker|buildx)(?=\s|$)", x) for x in inner):
+        return None
+    for m in re.finditer(r"(?<![\w.-])docker(?=\s|$)", b):
+        prev = b[:m.start()].rstrip(" \t")
+        if prev and not re.search(r"(?:;|&&|\n|^)$", prev) and not re.search(r"(?<![\w.-])(?:sudo|do)$", prev):
+            return None                               # `docker` that is not the command itself (xargs/env/printf/command ... docker build)
+    for ln in b.splitlines():
+        if re.search(r"(?<![\w.-])docker\b[^\n;&|]*\bbuild\b", ln):
+            if re.search(r"(?<![\w-])(?:-o|--output)(?![\w-])", ln):
+                return None                           # an exporter: the image need not enter the daemon
+            if re.search(r"\bbuildx\s+build\b", ln) and not re.search(r"--load\b", ln):
+                return None                           # buildx without --load may leave the image out of the daemon
+    for m in re.finditer(r"(?<![\w$.-])for\s+\w+\s+in[^;\n]*(?:;|\n)\s*do(?![\w.-])(.*?)(?<![\w$.-])done(?![\w.-])", b, re.S):
+        if re.search(r"(?<![\w.-])docker\s+(?:container\s+)?(?:run|create|exec|start|compose)\b|(?<![\w.-])docker-compose\b", m.group(1)):
+            return None                               # a loop that USES an image inside its body may use one a later iteration builds
     fors = len(re.findall(r"(?<![\w$.-])for(?![\w.-])", b))
     dones = len(re.findall(r"(?<![\w$.-])done(?![\w.-])", b))
     loops = []
@@ -2459,8 +2487,13 @@ def check_runs(where_job, scripts, bad, tree=None):
         # C10); a committed script it runs is judged against the names that existed before the step, and its builds
         # register nothing (its commands are not in their execution order here)
         firm = _cut_substitutions(_unconditional(own))[0]
-        sure = set() if conditional else {e[1] for e in script_images(firm) if e[0] == "local"} | {
-            e[2] for e in script_images(firm) if e[0] == "tag"}      # a step's `if:` (Codex r2, C10)
+        def _made(events):
+            names = [e[1] for e in events if e[0] == "local"] + [e[2] for e in events if e[0] == "tag"]
+            return {n: names.count(n) for n in names}
+        firm_made, own_made = _made(script_images(firm)), _made(script_images(own))
+        # a step's `if:` (Codex r2, C10); and a name counts only when EVERY command that makes it in this step is unconditional,
+        # compared by number (Codex #164 r20, B1: a skipped first build must not be vouched for by a later unconditional one)
+        sure = set() if conditional else {n for n, c in firm_made.items() if own_made.get(n, 0) == c}
         for ev in [e for e in script_images(read(more)) if e[0] != "local"] + script_images(own) if more else \
                 script_images(own):
             if ev[0] == "local":

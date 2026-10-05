@@ -1842,5 +1842,55 @@ case_ r20-control-plain-continued-pipeline-ok ok "$(rb 'docker build -t alpine:l
           cat
           docker run alpine:latest')" "$DF"
 
+# --- r20 (Codex 10 blockers): the bookkeeping around local trust, closed fail-closed in the gate. Every probe below makes the tag NOT
+# certainly present when the later `docker run` pulls it, so none may grant trust; controls after them must keep passing.
+case_ r20-b01-later-build-same-name-bad bad "$(rb 'false && docker build -t alpine:latest .
+          docker run alpine:latest
+          docker build -t alpine:latest .')" "$DF"
+case_ r20-b02-or-recovery-bad bad "$(rb 'docker build -t alpine:latest . < /__missing_input__ || docker run alpine:latest')" "$DF"
+case_ r20-b02-or-true-bad bad "$(rb 'docker build -t alpine:latest . || true
+          docker run alpine:latest')" "$DF"
+case_ r20-b03-pipeline-concurrent-bad bad "$(rb 'docker build -t alpine:latest . | docker run --rm -i alpine:latest cat')" "$DF"
+case_ r20-b05-loop-uses-future-name-bad bad "$(rb 'for v in 3.20 latest; do
+            docker build -t "alpine:${v}" .
+            docker run --rm alpine:latest
+          done')" "$DF"
+case_ r20-b06-printf-v-rewrites-loop-var-bad bad "$(rb 'for v in latest; do
+            printf -v v %s debug
+            docker build -t "alpine:${v}" .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r20-b06-read-rewrites-loop-var-bad bad "$(rb 'for v in latest; do
+            read -r v < versions.txt
+            docker build -t "alpine:${v}" .
+          done
+          docker run alpine:latest')" "$DF"
+case_ r20-b07-substitution-order-bad bad "$(rb 'docker build -t alpine:latest .
+          echo "$(docker rmi alpine:latest)"
+          docker run alpine:latest')" "$DF"
+case_ r20-b08-xargs-wrapper-bad bad "$(rb "printf '' | xargs -r docker build -t alpine:latest .
+          docker run alpine:latest")" "$DF"
+case_ r20-b08-env-printf-words-bad bad "$(rb 'env printf "%s\n" docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-b08-echo-words-bad bad "$(rb 'echo docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-b09-local-exporter-bad bad "$(rb 'docker buildx build --output=type=local,dest=/tmp/out -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-b09-short-output-bad bad "$(rb 'docker build -o /tmp/out -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-b09-buildx-without-load-bad bad "$(rb 'docker buildx build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+# controls that must keep passing
+case_ r20-control-sudo-docker-build-ok ok "$(rb 'sudo docker build -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-control-buildx-load-ok ok "$(rb 'docker buildx build --load -t alpine:latest .
+          docker run alpine:latest')" "$DF"
+case_ r20-control-semicolon-and-chain-ok ok "$(rb 'docker build -t alpine:latest . ; docker run alpine:latest
+          docker build -t alpine:b . && docker run alpine:b')" "$DF"
+case_ r20-control-loop-then-run-after-ok ok "$(rb 'for v in a b; do
+            docker build -t "alpine:${v}" .
+          done
+          docker run alpine:b')" "$DF"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
