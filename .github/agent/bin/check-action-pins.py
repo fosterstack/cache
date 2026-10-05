@@ -143,8 +143,11 @@ or a committed file is the documented boundary: not parsed; every diff that adds
 whose row-78 pass asks whether any non-shell code fetches an image or package without a digest or hash.
 
 Outside this check, each a documented exclusion with its reason (row 78):
-  - an image a `run:` script names through a shell variable or an expression: the shell is not evaluated here, so
-    the row-78 review pass answers it (on Oct 2 every such image in the workflows is bound to a digest);
+  - an image a `run:` script names through a shell variable or an expression that the script does NOT assign a literal to: the shell
+    is not evaluated here, so the row-78 review pass answers it (on Oct 2 every such image in the workflows is bound to a digest).
+    ANY such variable is accepted, not only one holding a digest; `$(cat id)` written directly as the image is refused (assign it to a
+    variable first). A variable the same script assigns a LITERAL unpinned name (`IMG=ubuntu:latest`, or `for i in alpine busybox`) is
+    refused: the checker can read that value (r23);
   - (REMOVED in r23, owner Oct 3 "a simple parse"; advisor 0080: nineteen rounds of review kept finding one more way a hand-written
     tracker of "a name the job made earlier is ours" was wrong, and no real workflow relied on it) an image name the job built or
     tagged is NOT trusted: a `docker run` names a digest, or a variable holding one, such as the image id a build wrote with
@@ -1160,6 +1163,26 @@ def _variable(tok):
     return "$" in tok or "${{" in tok
 
 
+def _var_unpinned_literal(tok, text):
+    """For a bare variable ($X, ${X}, "$X") whose value THIS script assigns as a literal (X=name, X="name", an `env`-style prefix, or the
+    literal words of `for X in a b; do`): the first such value that is not a digest reference, else None. A variable assigned from a
+    command substitution or another variable is left to the review pass (the documented boundary): it holds something this check cannot
+    read, but a literal sitting in the same script it CAN, and `IMG=ubuntu:latest; docker run "$IMG"` is the plainest unpinned form there
+    is (Sonnet #164 r23, R1; it was also the one-assignment bypass of the removed local-name trust)."""
+    m = re.fullmatch(r'"?\$\{?([A-Za-z_]\w*)\}?"?', tok)
+    if not m:
+        return None
+    name, vals = m.group(1), []
+    for v in re.findall(r"(?<![\w$.-])" + name + r"=(\"[^\"$`\\]*\"|'[^']*'|[^\s\"'$`;&|()<>\\]+)(?=[\s;&|)]|$)", text):
+        vals.append(v.strip("\"'"))
+    for lst in re.findall(r"(?<![\w$.-])for\s+" + name + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do(?![\w.-])", text):
+        vals += [w.strip("\"'") for w in lst.split() if "$" not in w and not re.search(r"[*?\[`(]", w)]
+    for v in vals:
+        if v and not re.search(r"\s", v) and not v.startswith("-") and not DIGEST_REF.search(v):
+            return v          # an image name has no whitespace and does not start with a dash (a variable of docker OPTIONS is not one)
+    return None
+
+
 def _build(args):
     """(dockerfile, context, tags, named, cache_from) of a docker build / buildx build: dockerfile None = the default
     name. cache_from: each --cache-from registry image (a type=local/gha/... source names nothing remote)."""
@@ -1364,7 +1387,7 @@ def _scout(args):
 
 
 def script_images(script):
-    """Events, in order, for the images a script names: ("use", command, image), ("local", name), ("finding", why)."""
+    """Events, in order, for the images a script names: ("use", command, image), ("tag", src, dst), ("build", ...), ("finding", why)."""
     ev = []
     for t in _commands(script):
         cmd, args = t[0], t[1:]
@@ -1414,15 +1437,8 @@ def script_images(script):
                                       % cmd))
                 continue
             verb, rest = rest[0], rest[1:]
-            if verb in ("load", "import", "commit") or (verb == "image" and rest[:1] in (["load"], ["import"])):
-                ev.append(("unlocal", "*"))   # an archive or a commit replaces tags with bytes this check never saw (Codex #164 r21, B9)
             if verb == "rmi" or (verb == "image" and rest[:1] in (["rm"], ["remove"], ["prune"])):
-                gone = [a for a in (rest if verb == "rmi" else rest[1:]) if not a.startswith("-")]
-                if any(_variable(a) or SUBST in a or re.search(r"[*?\[]", a) for a in gone):
-                    ev.append(("unlocal", "*"))      # a computed or globbed name removes SOME local tag: none stays trusted (Sonnet #164 r21, B1)
-                else:
-                    ev += [("unlocal", x) for x in gone] or [("unlocal", "*")]   # prune: every local name (C10)
-                continue
+                continue        # removing an image names nothing to pull; no local name is trusted, so there is nothing to forget
             if verb in ("container", "image", "builder", "manifest") and rest and (verb, rest[0]) in DOCKER_SAFE_SUB:
                 continue
             if verb == "buildx" and len(rest) >= 2 and rest[0] == "imagetools" and ("buildx imagetools", rest[1]) in DOCKER_SAFE_SUB:
@@ -1501,8 +1517,6 @@ def script_images(script):
                     if not (DIGEST_REF.search(gen) and not _variable(gen)):
                         ev.append(("finding", "a build runs a generator image not pinned by digest (%s)" % gen))
                 ev.append(("build", dockerfile, context, named))
-                if cmd == "docker":         # podman and nerdctl build into their OWN stores, not the daemon `docker run` reads (Codex #164 r21, B7)
-                    ev += [("local", x) for x in tags]
                 for cf in cache_from:
                     # a bare ref or type=registry,ref=... names a registry image; any other type (local/gha/...)
                     # reads from something this check does not treat as a remote pull (Codex r1, B4). Both forms are
@@ -1531,13 +1545,8 @@ def script_images(script):
                 ev.append(("fetch", "skopeo " + args[0], pos[0][len("docker://"):]))   # a registry read (r3, C10)
             elif pos and SUBST in pos[0]:                         # a substituted source could be docker://…
                 ev.append(("fetch", "skopeo " + args[0], pos[0]))
-            src = pos[0] if pos else ""
-            trusted = (src.startswith("docker://") and DIGEST_REF.search(src)) or _variable(src)
-            for a in pos[1:]:
-                if a.startswith("docker-daemon:") and trusted:
-                    ev.append(("local", a[len("docker-daemon:"):]))
-                # an archive copied into the daemon (oci-archive:, dir:, docker-archive:) is NOT the job's own bytes: it
-                # may be scanned, but running it is a finding (Sonnet #164 r14, NEW-22)
+            # a copy into the daemon (docker-daemon:NAME) registers nothing: no name a job made is trusted (r23); an archive copied in
+            # (oci-archive:, dir:, docker-archive:) is NOT the job's own bytes either (Sonnet #164 r14, NEW-22)
         elif cmd == "crane" and args and args[0] == "index" and args[1:2] == ["list"]:
             pass    # read-only: lists an index's own manifests, fetches no new source (Codex r1, B5)
         elif cmd == "crane" and args and args[0] == "index" and args[1:2] not in (["append"], ["filter"]):
@@ -2260,6 +2269,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
         own = read(raw)
+        own_nc = _mask_shell(own)[0]          # the step's text without comments, for reading a variable's literal value
         raw = raw + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own
         text = read(raw)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
@@ -2277,13 +2287,14 @@ def check_runs(where_job, scripts, bad, tree=None):
             # other shell is refused outright, whatever it contains (Sonnet #164 r10, NEW-12; advisor 0080)
             bad.append(f"{where}: a `{shell}` step; this check reads POSIX shell only and refuses any other shell")
             continue
-        for ev in [e for e in script_images(read(more)) if e[0] != "local"] + script_images(own) if more else \
+        for ev in script_images(read(more)) + script_images(own) if more else \
                 script_images(own):
-            if ev[0] in ("local", "unlocal"):
-                continue        # a locally built or tagged name is never trusted (see below): nothing to register
-            elif ev[0] == "tag":
+            if ev[0] == "tag":
                 src, dst = ev[1], ev[2]
-                if not (_variable(src) or DIGEST_REF.search(src)):
+                lit = _var_unpinned_literal(src, own_nc) if _variable(src) else None
+                if lit is not None:
+                    bad.append(f"{where}: `docker tag` takes {src!r}, which this script assigns the unpinned name {lit!r}; refused")
+                elif not (_variable(src) or DIGEST_REF.search(src)):
                     # an image ID from a loaded tarball, or an unpinned name: never "our own bytes" (NEW-21); a name this job built is
                     # not trusted either, so tagging it is refused too
                     bad.append(f"{where}: `docker tag` makes {dst!r} from {src!r}, which is not pinned by digest; refused")
@@ -2329,7 +2340,11 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if img is not None and SUBST in img:
                     bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
                     continue
-                if img is None or _variable(img) or DIGEST_REF.search(img) or False:
+                lit = _var_unpinned_literal(img, own_nc) if img is not None and _variable(img) else None
+                if lit is not None:
+                    bad.append(f"{where}: `{c}` names {img!r}, which this script assigns the unpinned name {lit!r}; pin it by digest")
+                    continue
+                if img is None or _variable(img) or DIGEST_REF.search(img):
                     continue
                 bad.append(f"{where}: `{c}` names an image not pinned by digest: {img!r} (an image this job built or tagged is not trusted by "
                            f"name either: run a build by the image id it wrote with --iidfile, or by a digest)")

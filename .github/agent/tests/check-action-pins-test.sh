@@ -2060,5 +2060,36 @@ case_ r23-tag-of-local-name-bad bad "$(rb 'docker build -t myapp .
           docker tag myapp myapp:v1')" "$DF"
 case_ r23-run-pinned-digest-ok ok "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
 
+# --- r23 (Sonnet R1): a variable assigned a LITERAL unpinned name in the same script is just that name, and the checker can read it
+case_ r23-var-literal-unpinned-run-bad bad "$(rb 'IMG=ubuntu:latest
+          docker run --rm "$IMG" true')"
+case_ r23-var-literal-braced-bad bad "$(rb 'IMG=ubuntu:latest
+          docker run --rm ${IMG} true')"
+case_ r23-var-literal-quoted-bad bad "$(rb 'IMG="ubuntu:latest"
+          docker pull "$IMG"')"
+case_ r23-for-loop-literal-pull-bad bad "$(rb 'for i in alpine busybox; do
+            docker pull "$i"
+          done')"
+case_ r23-var-literal-tag-source-bad bad "$(rb 'SRC=alpine:3.20
+          docker tag $SRC foo')"
+case_ r23-removed-local-trust-bypass-by-variable-bad bad "$(rb 'docker build -t foo .
+          N=foo
+          docker run $N')" "$DF"
+case_ r23-var-one-of-two-assignments-unpinned-bad bad "$(rb 'IMG=alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          IMG=ubuntu:latest
+          docker run "$IMG" true')"
+case_ r23-var-digest-ok ok "$(rb 'IMG=alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          docker run --rm "$IMG" true')"
+case_ r23-var-from-substitution-ok ok "$(rb 'IMG=$(cat "$RUNNER_TEMP/iid")
+          docker run --rm "$IMG" true')"
+case_ r23-var-from-other-variable-ok ok "$(rb 'IMG="$OTHER"
+          docker run --rm "$IMG" true')"
+case_ r23-for-loop-digests-ok ok "$(rb 'for i in alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667; do
+            docker pull "$i"
+          done')"
+
+case_ r23-var-of-docker-options-ok ok "$(rb 'AUTH="-e USER=acc -e PASS=x"
+          docker run --rm $AUTH alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
