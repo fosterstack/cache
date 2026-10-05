@@ -2149,5 +2149,17 @@ case_ r24-scout-scan-of-literal-names-ok ok "$(rb 'for img in scoutcontrol/app:v
             docker scout cves "$img" > out.json
           done')"
 
+# --- r25 (consultation: Sonnet holds, with evidence that the real repo does not need it): a word MIXING a variable and a literal name, with no digest
+case_ r25-mixed-registry-variable-literal-tag-bad bad "$(rb 'docker run --rm "$REG/tool:latest" true')"
+case_ r25-mixed-pull-owner-variable-bad bad "$(rb 'docker pull "ghcr.io/$OWNER/tool:latest"')"
+case_ r25-mixed-tag-variable-bad bad "$(rb 'docker run ubuntu:$TAG true')"
+case_ r25-mixed-braced-tag-variable-bad bad "$(rb 'docker run ubuntu:${TAG} true')"
+case_ r25-mixed-tag-source-bad bad "$(rb 'docker tag "$REG/x:1" y')"
+case_ r25-mixed-with-digest-ok ok "$(rb 'docker run --rm "$REG/tool@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667" true')"
+case_ r25-mixed-with-digest-variable-ok ok "$(rb 'docker pull "ghcr.io/$OWNER/tool@$DIGEST"')"
+case_ r25-bare-variable-still-ok ok "$(rb 'docker run --rm "$IMAGE_REF" true')"
+case_ r25-braced-array-variable-still-ok ok "$(rb 'docker run --rm "${IMAGES[0]}" true')"
+case_ r25-mixed-tag-destination-ok ok "$(rb "docker tag $PIN localhost/fa-\${v}")"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

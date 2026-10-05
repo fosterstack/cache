@@ -1216,6 +1216,17 @@ def _downloaded_commands(script):
     return names
 
 
+def _mixed_unpinned(tok):
+    """A word that MIXES a variable with literal text and holds no digest (`"$REG/tool:latest"`, `ubuntu:$TAG`, `"ghcr.io/$OWNER/tool:latest"`):
+    its literal part is a plainly unpinned name, and only a bare variable (`$X`, `"${X}"`, `"${X[0]}"`) or a word with an `@` digest part is left to the
+    review pass (Sonnet #164 r25, B1: the real repo uses no mixed word as a run or pull source)."""
+    if "$" not in tok and "${{" not in tok:
+        return False
+    if re.fullmatch(r'"?\$\{?[A-Za-z_]\w*(?:\[[@*0-9]+\])?\}?"?', tok):
+        return False                       # a bare variable
+    return "@" not in tok                   # `repo@$DIGEST` and `repo@sha256:...` name a digest
+
+
 def _var_unpinned_literal(tok, text):
     """For a bare variable ($X, ${X}, "$X") whose value THIS script assigns as a literal (X=name, X="name", an `env`-style prefix, or the
     literal words of `for X in a b; do`): the first such value that is not a digest reference, else None. A variable assigned from a
@@ -2397,6 +2408,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                 lit = _var_unpinned_literal(src, own_nc) if _variable(src) else None
                 if SUBST in src:
                     bad.append(f"{where}: `docker tag` takes its source from a command substitution; it cannot be checked")
+                elif _mixed_unpinned(src):
+                    bad.append(f"{where}: `docker tag` takes {src!r}, which mixes a variable with a literal name and holds no digest; refused")
                 elif lit is not None:
                     bad.append(f"{where}: `docker tag` takes {src!r}, which this script assigns the unpinned name {lit!r}; refused")
                 elif not (_variable(src) or DIGEST_REF.search(src)):
@@ -2449,6 +2462,9 @@ def check_runs(where_job, scripts, bad, tree=None):
                        and re.fullmatch(r"(?:docker|podman|nerdctl) (?:run|create|pull)", c) else None)   # not a scan (docker scout) or a read
                 if lit is not None:
                     bad.append(f"{where}: `{c}` names {img!r}, which this script assigns the unpinned name {lit!r}; pin it by digest")
+                    continue
+                if (img is not None and _mixed_unpinned(img) and re.fullmatch(r"(?:docker|podman|nerdctl) (?:run|create|pull)", c)):
+                    bad.append(f"{where}: `{c}` names {img!r}, which mixes a variable with a literal name and holds no digest; pin it by digest")
                     continue
                 if img is None or _variable(img) or DIGEST_REF.search(img):
                     continue
