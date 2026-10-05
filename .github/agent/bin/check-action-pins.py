@@ -568,7 +568,8 @@ RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--inte
 PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
-         "buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor"}
+         "buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor",
+         "kind", "kubectl", "k3d", "minikube"}      # their --image flags are read (Codex #164 r23, B8)
 # container CLIs this check does not parse (Sonnet #164 r3): any use is a finding — run images through docker,
 # podman, nerdctl, skopeo or crane, whose arguments are read
 UNREAD_CONTAINER = {"buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor"}
@@ -726,7 +727,7 @@ DOCKER_SAFE = {"login", "logout", "images", "ps", "rm", "rmi", "stop", "kill", "
                "stats", "events", "history", "pause", "unpause", "rename", "update", "attach", "diff", "commit",
                "network", "volume", "search"}   # not plugin, context, import, system, trust, secret, config (NEW-16/17/20)
 DOCKER_SAFE_SUB = {("image", "ls"), ("image", "rm"), ("image", "inspect"), ("image", "prune"), ("image", "history"),
-                   ("image", "save"), ("image", "load"), ("image", "push"), ("image", "tag"), ("container", "ls"),
+                   ("image", "save"), ("image", "load"), ("image", "push"), ("container", "ls"),
                    ("container", "rm"), ("container", "inspect"), ("container", "logs"), ("container", "stop"),
                    ("container", "prune"), ("manifest", "inspect"), ("manifest", "push"), ("manifest", "annotate"),
                    ("manifest", "rm"), ("buildx", "inspect"), ("buildx", "ls"),
@@ -1163,6 +1164,49 @@ def _variable(tok):
     return "$" in tok or "${{" in tok
 
 
+def _options_variables(script):
+    """Names this script assigns OPTIONS (a literal starting with a dash, or an array whose first element does): `RUN_OPTS=--rm` and
+    `RUN_OPTS=(--rm)`. As docker run's first word such a variable is options, and the image is the word after it (r23, B4)."""
+    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*)?[\"']?-", script))
+
+
+def _is_optvar(tok, optvars):
+    m = re.fullmatch(r'"?\$\{?([A-Za-z_]\w*)(?:\[[@*]\])?\}?"?', tok)
+    return bool(m) and m.group(1) in optvars
+
+
+def _downloaded_commands(script):
+    """Command names this script INSTALLS from a download: `curl -o /tmp/x URL`, then `install|cp|mv|ln /tmp/x /usr/local/bin/x`: running
+    `x` runs bytes nobody checked (Codex #164 r23, B9); their basenames, and the install destinations."""
+    downloads, names = set(), set()
+    for chunk in _split_commands(_cut_substitutions(script)[0]):
+        toks = _tokens(chunk)
+        words = _command_words(toks)
+        if not words:
+            continue
+        base = _base(words[-1])
+        if base in ("curl", "wget", "aria2c"):
+            for j, a in enumerate(toks):
+                if a in ("-o", "-O", "--output", "--output-document") and j + 1 < len(toks):
+                    downloads.add(toks[j + 1].strip("\"'"))
+                elif a.startswith(("--output=", "--output-document=")):
+                    downloads.add(a.split("=", 1)[1].strip("\"'"))
+        elif base in ("install", "cp", "mv", "ln"):
+            skip, pos = False, []
+            for a in toks[toks.index(words[-1]) + 1:]:
+                if skip:
+                    skip = False
+                    continue
+                if a in ("-m", "-o", "-g", "-t", "-S", "--mode", "--owner", "--group", "--target-directory"):
+                    skip = True
+                elif not a.startswith("-"):
+                    pos.append(a.strip("\"'"))
+            if len(pos) >= 2 and any(x in downloads for x in pos[:-1]):
+                names.add(_base(pos[-1]))
+                downloads.add(pos[-1])
+    return names
+
+
 def _var_unpinned_literal(tok, text):
     """For a bare variable ($X, ${X}, "$X") whose value THIS script assigns as a literal (X=name, X="name", an `env`-style prefix, or the
     literal words of `for X in a b; do`): the first such value that is not a digest reference, else None. A variable assigned from a
@@ -1204,6 +1248,8 @@ def _build(args):
             continue
         elif a.startswith(("--tag=", "-t=")):
             tags.add(a.split("=", 1)[1])
+        elif a.startswith("-t") and not a.startswith("--") and len(a) > 2:
+            tags.add(a[2:])                          # -tNAME (Codex #164 r23, B2): never read the context as its value
         elif a == "--build-context" and i + 1 < len(args):
             named.append(args[i + 1].split("=", 1)[-1]); i += 2
             continue
@@ -1214,6 +1260,8 @@ def _build(args):
             continue
         elif a.startswith("--cache-from="):
             cache_from.append(a.split("=", 1)[1])
+        elif a.startswith("-") and not a.startswith("--") and len(a) > 2 and a[1] in "oOfTtqPLbcmu" and "=" not in a[:2]:
+            pass                                     # an attached short value (-oDEST, -PTYPE ...): it consumes nothing after it
         elif a.startswith("-") and a != "-":
             if "=" not in a and i + 1 < len(args) and not args[i + 1].startswith("-") and a not in (
                     "--push", "--load", "--no-cache", "--pull", "-q", "--quiet", "--rm", "--force-rm"):
@@ -1389,11 +1437,17 @@ def _scout(args):
 def script_images(script):
     """Events, in order, for the images a script names: ("use", command, image), ("tag", src, dst), ("build", ...), ("finding", why)."""
     ev = []
+    optvars = _options_variables(script)
     for t in _commands(script):
         cmd, args = t[0], t[1:]
         if cmd in ("docker-compose", "podman-compose"):
             ev.append(("finding", "`%s` runs images named in compose files, which this check does not read" % cmd))
             continue
+        if cmd in ("kind", "kubectl", "k3d", "minikube"):
+            for j, a in enumerate(args):
+                val = a.split("=", 1)[1] if a.startswith("--image=") else (args[j + 1] if a == "--image" and j + 1 < len(args) else None)
+                if val is not None and not (_variable(val) or DIGEST_REF.search(val)):
+                    ev.append(("finding", f"`{cmd}` is given an image not pinned by digest: {val!r}"))
         if cmd in UNREAD_CONTAINER:
             ev.append(("finding", "`%s` runs or pulls images through a CLI this check does not read" % cmd))
             continue
@@ -1471,6 +1525,9 @@ def script_images(script):
                 ev.append(("finding", "`docker %s` runs images named in files this check does not read" % verb))
             elif verb in ("run", "create", "pull"):
                 val, boolean = (PULL_VAL, PULL_BOOL) if verb == "pull" else (RUN_VAL, RUN_BOOL)
+                rest = [a for a in rest if not _is_optvar(a, optvars)]     # a variable that holds OPTIONS is not the image (r23, B4)
+                if "--help" in rest:
+                    continue                                                # prints usage; names no image
                 k, unknown = _options(rest, val, boolean)
                 if unknown:
                     ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "
@@ -1488,7 +1545,11 @@ def script_images(script):
                     never = verb != "pull" and pull_state == "never"
                     fetch = verb == "pull" or (pull_state == "always" if pull_state is not None else False)
                     if not never:     # --pull=never can only use an image already in the daemon (Codex r3, C10)
-                        ev.append(("fetch" if fetch else "use", "docker " + verb, rest[k] if k < len(rest) else None))
+                        if k >= len(rest) and not ({"--help", "-h", "--version"} & set(rest)):
+                            ev.append(("finding", f"`docker {verb}` has no image operand: it comes from stdin or a wrapper (xargs) this "
+                                                  f"check cannot read (Codex #164 r23, B5)"))
+                        else:
+                            ev.append(("fetch" if fetch else "use", "docker " + verb, rest[k] if k < len(rest) else None))
             elif verb == "scout":
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
@@ -1663,7 +1724,7 @@ def _dockerfiles(tree, dockerfile):
     name = dockerfile or "Dockerfile"
     if _variable(name):
         parts = re.split(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", _base(name))
-        pat = re.compile(".+".join(re.escape(x) for x in parts) + "$")
+        pat = re.compile(".*".join(re.escape(x) for x in parts) + "$")      # an expansion may be EMPTY (Codex #164 r23, B3)
         return [e for e in entries if pat.match(_base(e))]
     return [name] if name in entries else []   # a literal path names exactly one repository file (NEW-3: no decoys)
 
@@ -1677,7 +1738,7 @@ def _name_pattern(name):
     base = _base(name)
     if _variable(base):
         parts = re.split(r"\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*", base)
-        return ".+".join(re.escape(x) for x in parts)
+        return ".*".join(re.escape(x) for x in parts)
     return re.escape(base)
 
 
@@ -1867,7 +1928,28 @@ def check_dockerfile(text):
         r = ref.lower()
         return r in stages or r == "scratch" or (r.isdigit() and int(r) < n) or (
             DIGEST_REF.search(ref) is not None and not _variable(ref))
-    for line in re.sub(r"\\\n", " ", text).splitlines():
+    esc = "\\"
+    for raw in text.splitlines():                  # parser directives come first; `escape=` picks the continuation character
+        dm = re.match(r"(?i)^\s*#\s*escape\s*=\s*(\S)\s*$", raw)
+        if dm:
+            esc = dm.group(1)
+        elif not re.match(r"(?i)^\s*#\s*\w+\s*=", raw) and raw.strip():
+            break
+    logical, cur = [], ""
+    for raw in text.splitlines():                  # a comment or directive line NEVER continues (Codex #164 r23, B1)
+        if cur and raw.lstrip().startswith("#"):
+            continue                               # a comment inside a continued instruction is dropped
+        if not cur and raw.lstrip().startswith("#"):
+            logical.append(raw)
+            continue
+        if raw.rstrip().endswith(esc):
+            cur += raw.rstrip()[:-1] + " "
+            continue
+        logical.append(cur + raw)
+        cur = ""
+    if cur:
+        logical.append(cur)
+    for line in logical:
         directive = re.match(r"(?i)^\s*#\s*syntax\s*=\s*(\S+)", line)
         if directive and header:
             if not ok(directive.group(1)):
@@ -2157,6 +2239,13 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
     refused (Codex #164 adversarial r1 C02, r2 C02; advisor 0094)."""
     added, found = [], []
     entries = getattr(tree, "entries", {}) or {}
+    dlnames = _downloaded_commands(job or text)
+    if dlnames:
+        for chunk in _split_commands(_cut_substitutions(text)[0]):
+            words = _command_words(_tokens(chunk))
+            if words and _base(words[-1]) in dlnames:
+                found.append("runs %s, which this job downloaded and installed; its bytes are not pinned by a checked digest or checksum, "
+                             "refused (use a committed installer that verifies a pinned checksum)" % words[-1])
     for t in _commands(text):
         if t[0] == "__globexec__":
             import fnmatch

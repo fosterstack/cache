@@ -2091,5 +2091,37 @@ case_ r23-for-loop-digests-ok ok "$(rb 'for i in alpine@sha256:b1934ee5f1c509618
 case_ r23-var-of-docker-options-ok ok "$(rb 'AUTH="-e USER=acc -e PASS=x"
           docker run --rm $AUTH alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 true')"
 
+# --- r23 (Codex 9 blockers, in the checker's OTHER features): Dockerfile parsing, build flags, option variables, xargs, image tag, --image frontends, installs
+PIN=alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+case_ r23c-b01-escape-directive-hides-from-bad bad "$(rb 'docker build .')" "printf '# escape=\\\\\nFROM alpine:latest\n' > Dockerfile"
+case_ r23c-b01-backtick-escape-continuation-ok ok "$(rb 'docker build .')" "printf '# escape=\`\nFROM $PIN\nRUN echo a \`\n  b\n' > Dockerfile"
+case_ r23c-b01-comment-inside-continuation-ok ok "$(rb 'docker build .')" "printf 'FROM $PIN\nRUN echo a \\\\\n# a comment\n  b\n' > Dockerfile"
+case_ r23c-b02-attached-tag-wrong-context-bad bad "$(rb 'docker build -tmyapp subdir')" "mkdir subdir; printf 'FROM scratch\n' > Dockerfile; printf 'FROM alpine:latest\n' > subdir/Dockerfile"
+case_ r23c-b02-attached-tag-right-context-ok ok "$(rb 'docker build -tmyapp subdir')" "mkdir subdir; printf 'FROM alpine:latest\n' > Dockerfile; printf 'FROM scratch\n' > subdir/Dockerfile"
+case_ r23c-b03-empty-template-substitution-bad bad "$(rb 'SUFFIX=""
+          docker build -f "Dockerfile${SUFFIX}" .')" "printf 'FROM alpine:latest\n' > Dockerfile; printf 'FROM scratch\n' > Dockerfile.prod"
+case_ r23c-b04-options-variable-hides-image-bad bad "$(rb 'RUN_OPTS=--rm
+          docker run $RUN_OPTS alpine:latest')"
+case_ r23c-b04-options-array-hides-image-bad bad "$(rb 'RUN_OPTS=(--rm)
+          docker run "${RUN_OPTS[@]}" alpine:latest')"
+case_ r23c-b04-options-variable-then-digest-ok ok "$(rb "RUN_OPTS=--rm
+          docker run \$RUN_OPTS $PIN true")"
+case_ r23c-b05-xargs-supplies-image-bad bad "$(rb "printf '%s\n' alpine:latest | xargs -n1 docker pull")"
+case_ r23c-b05-docker-run-help-ok ok "$(rb 'docker run --help')"
+case_ r23c-b07-image-tag-alias-bad bad "$(rb 'docker image tag alpine:latest myapp:latest')"
+case_ r23c-b07-image-tag-from-digest-ok ok "$(rb "docker image tag $PIN myapp:latest")"
+case_ r23c-b08-kind-image-flag-bad bad "$(rb 'kind create cluster --image kindest/node:v1.34.0')"
+case_ r23c-b08-kubectl-run-image-bad bad "$(rb 'kubectl run probe --image=alpine:latest --restart=Never -- sleep 60')"
+case_ r23c-b08-kubectl-create-deployment-image-bad bad "$(rb 'kubectl create deployment web --image alpine:latest')"
+case_ r23c-b08-kind-image-digest-ok ok "$(rb "kind create cluster --image kindest/node@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667")"
+case_ r23c-b09-download-install-path-bad bad "$(rb 'curl -fsSL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o /tmp/cosign
+          sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
+          cosign version')"
+case_ r23c-b09-download-mv-then-bare-name-bad bad "$(rb 'curl -fsSL https://example.org/tool -o /tmp/tool
+          mv /tmp/tool /usr/local/bin/tool
+          tool --version')"
+case_ r23c-b09-install-of-committed-file-ok ok "$(rb 'sudo install -m 0755 bin/tool.sh /usr/local/bin/tool
+          tool --version')" "mkdir -p bin; printf '#!/usr/bin/env bash\necho hi\n' > bin/tool.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
