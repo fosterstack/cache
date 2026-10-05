@@ -24,7 +24,7 @@ SRC = [os.path.join(root, "bin", f) for f in ("persona-uat.py", "persona-uat-age
 
 def load(path): return yaml.load(open(path), Loader=yaml.BaseLoader)
 
-CLOUD = re.compile(r"\b(terraform|tofu|pulumi|eksctl|doctl|az|gcloud|aws|kubectl|helm|ibmcloud|oci|linode-cli|vultr-cli)\b")
+CLOUD = re.compile(r"\b(terraform|tofu|pulumi|eksctl|doctl|az|gcloud|aws|ibmcloud|oci|linode-cli|vultr-cli)\b")
 MODEL = re.compile(r"[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-")
 PIN_USES = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 PIN_IMG = re.compile(r"^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$")
@@ -32,15 +32,30 @@ CREDS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC
 VARS = ("PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "PERSONA_UAT_TOKEN_BUDGET")
 
 def norm(expr):
-    """a workflow expression with the ${{ }} wrapper and all whitespace removed, for an EXACT comparison"""
+    """a workflow expression with the ${{ }} wrapper removed and whitespace removed only OUTSIDE quoted strings, for an EXACT
+    comparison (a cron literal's own spaces are part of it)"""
     e = str(expr).strip()
     m = re.fullmatch(r"\$\{\{(.*)\}\}", e, re.S)
-    return re.sub(r"\s+", "", m.group(1) if m else e)
+    e = m.group(1) if m else e
+    out, q = [], None
+    for c in e:
+        if q:
+            out.append(c); q = None if c == q else q
+        elif c in "'\"":
+            out.append(c); q = c
+        elif not c.isspace():
+            out.append(c)
+    return "".join(out)
+
+def literal_false(v):
+    return str(v).strip() in ("", "false") if v is not None else True
 
 def common(name, job, bad):
     steps = job.get("steps", [])
-    if str(job.get("continue-on-error", "false")).lower() == "true":
+    if not literal_false(job.get("continue-on-error")):
         bad.append(f"{name}: continue-on-error on the job lets a persona failure pass")
+    if str(job.get("defaults", {}).get("run", {}).get("shell", "bash")) != "bash":
+        bad.append(f"{name}: the job's default shell is not plain bash")
     for k in ("container", "services"):
         if k in job:
             bad.append(f"{name}: the job declares {k}: the CI tools run only inside the driver, by digest, never as job {k}")
@@ -57,8 +72,10 @@ def common(name, job, bad):
     flat = re.sub(r"\$\([^()]*\)", "SUBST", body.replace("\\\n", " "))
     if not re.match(r"^python3 bin/persona-uat\.py\b", flat.strip()) or re.search(r"[|&;!<>`]|\bif\b|\bthen\b|\|\||\n", flat.strip()):
         bad.append(f"{name}: the driver step is not exactly one bare driver command (pipe, &, ;, if, !, a second command or redirect can swallow its exit status)")
-    if str(d.get("continue-on-error", "false")).strip() not in ("false",):
+    if not literal_false(d.get("continue-on-error")):
         bad.append(f"{name}: the driver step has continue-on-error: its failure would not fail the run")
+    if str(d.get("shell", "bash")) != "bash":
+        bad.append(f"{name}: the driver step's shell is {d.get('shell')!r}, not plain bash (a custom shell can swallow the exit status)")
     if "timeout-minutes" not in job or not str(job.get("timeout-minutes", "")).isdigit() or int(job["timeout-minutes"]) > 180:
         bad.append(f"{name}: the job has no timeout-minutes (<= 180): a hung persona must not hold the runner")
     for flag in ("--out ", "--repo ", "--tools bin/persona-uat-tools.json", "--agent ", "--publish", "--image "):
@@ -102,10 +119,21 @@ def common(name, job, bad):
     for s in steps:
         if "actions/checkout" in str(s.get("uses", "")) and str(s.get("with", {}).get("persist-credentials", "")).lower() != "false":
             bad.append(f"{name}: checkout keeps the job's credentials (persist-credentials must be false)")
+    di = steps.index(d)
+    for i, s in enumerate(steps):
+        if s is d: continue
+        isrun = "run" in s
+        is_resolver = isrun and "gh release view" in str(s.get("run", ""))
+        if i > di and "upload-artifact" not in str(s.get("uses", "")):
+            bad.append(f"{name}: a step after the driver other than the transcript upload could alter the files before upload")
+        if i < di and isrun and not is_resolver:
+            bad.append(f"{name}: a run step before the driver other than the latest-release resolver (it could change what the driver sees)")
     ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
     if len(ups) != 1:
         bad.append(f"{name}: expected exactly one transcript upload step, found {len(ups)}")
     for u in ups:
+        if steps.index(u) != di + 1:
+            bad.append(f"{name}: the transcript upload must be the step immediately after the driver")
         if norm(u.get("if", "")) != "always()":
             bad.append(f"{name}: the transcript upload must run always() (found {u.get('if')!r})")
         outdir = re.search(r"--out\s+(\S+)", run)
@@ -120,6 +148,9 @@ def common(name, job, bad):
     return d
 
 def judge_release(r, bad):
+    tags = (r.get("on", {}).get("push", {}) or {}).get("tags", []) if isinstance(r.get("on"), dict) else []
+    if "v*" not in ([tags] if isinstance(tags, str) else tags):
+        bad.append("release.yml no longer starts on v* tags (the release-candidate trigger)")
     j = r.get("jobs", {}).get("persona-uat")
     if not j:
         bad.append("release.yml has no persona-uat job"); return
@@ -162,13 +193,27 @@ def judge_weekly(f, bad):
         bad.append(f"weekly persona-uat permissions are not exactly {want} (found {p})")
     steps = j.get("steps", [])
     res = [s for s in steps if "gh release view" in str(s.get("run", ""))]
-    if len(res) != 1 or re.search(r"gh release view\s+[\"']?[vV]?\d", str(res[0].get("run", ""))) or "imagetools inspect" not in str(res[0].get("run", "")):
-        bad.append("weekly persona-uat does not resolve the LATEST release's image digest (gh release view with no fixed tag, then imagetools inspect)")
-    elif d is not None:
-        rid = res[0].get("id")
-        run = str(d.get("run", ""))
-        if not rid or f"steps.{rid}.outputs" not in run.split("--image", 1)[-1].split("--", 1)[0] or "@" not in run.split("--image", 1)[-1].split("--", 1)[0]:
-            bad.append("weekly persona-uat does not hand the resolved latest-release image digest to --image")
+    if len(res) != 1:
+        bad.append("weekly persona-uat does not resolve the LATEST release's image digest (expected exactly one gh release view step)")
+    else:
+        r = res[0]; rrun = str(r.get("run", ""))
+        m = re.search(r"(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)", rrun)
+        if not m:
+            bad.append("weekly persona-uat does not resolve the LATEST release's image digest (gh release view --json tagName -q .tagName, no fixed tag)")
+        else:
+            var = m.group(1)
+            insp = [l for l in rrun.splitlines() if "imagetools inspect" in l]
+            if not insp or not re.search(r"\$\{?" + var + r"\}?", insp[0]):
+                bad.append("weekly persona-uat does not inspect the image of the release it just resolved (imagetools inspect must use the resolved tag)")
+            if not re.search(r"image=.*>>\s*\"?\$GITHUB_OUTPUT", rrun):
+                bad.append("weekly persona-uat's resolver does not write its image= output")
+        if d is not None:
+            if steps.index(r) > steps.index(d):
+                bad.append("weekly persona-uat resolves the latest release AFTER running the driver")
+            run = str(d.get("run", ""))
+            arg = run.split("--image", 1)[-1].split(" --", 1)[0].strip()
+            if not r.get("id") or norm(arg.strip("\"'")) != f"steps.{r.get('id')}.outputs.image":
+                bad.append("weekly persona-uat does not hand the resolved latest-release image digest to --image")
     if d is not None and "--mode weekly" not in str(d.get("run", "")):
         bad.append("weekly persona-uat does not run the driver with --mode weekly")
 
@@ -187,7 +232,7 @@ def judge_source(bad):
         except OSError:
             bad.append(f"{os.path.relpath(p, root)} is missing"); continue
         code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
-        cmd = re.search(r"[\"'](?:terraform|tofu|pulumi|eksctl|doctl|aws|gcloud|az|kubectl|helm|ibmcloud|oci|linode-cli|vultr-cli)(?:\s|[\"'])", code)
+        cmd = re.search(r"[\"'](?:terraform|tofu|pulumi|eksctl|doctl|aws|gcloud|az|ibmcloud|oci|linode-cli|vultr-cli)(?:\s|[\"'])", code)
         if cmd:
             bad.append(f"{os.path.relpath(p, root)} runs a cloud CLI: {cmd.group(0)}")
         for m in re.finditer(r"[\"']((?:[a-z0-9.-]+/)+[a-z0-9._-]+(?::[\w.-]+)?)[\"']", code):
@@ -212,7 +257,10 @@ result(not bad, "the real workflows, tools file and sources satisfy the persona 
 def mutate(name, expect, fn, which="rel"):
     r, f, t = copy.deepcopy(R), copy.deepcopy(F), copy.deepcopy(T)
     try:
-        {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t)}[which]()
+        if which == "rel_top":
+            r["on"]["push"]["tags"] = ["x*"]
+        else:
+            {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t)}[which]()
     except Exception as e:     # the real file lacks the thing being mutated: the real-file case above already failed
         result(False, f"mutation could not be applied ({name}): {type(e).__name__}: {e}"); return
     # round-trip through YAML text so the mutated document is valid YAML, not just a dict
@@ -241,6 +289,14 @@ mutate("rc job runs docker itself", "names docker", lambda j: j["steps"].insert(
 mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc image argument is the raw digests JSON", "takes the image from something other than the chain's digests",
        lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "needs.image.outputs.digests", drv(j)["run"])))
+mutate("rc job continue-on-error is an expression", "continue-on-error on the job", lambda j: j.update({"continue-on-error": "${{ true }}"}))
+mutate("rc driver step uses a custom shell", "not plain bash", lambda j: drv(j).update({"shell": "bash {0}"}))
+mutate("rc driver command is only echoed", "not exactly one bare driver command", lambda j: drv(j).update(run="echo " + drv(j)["run"].strip()))
+mutate("rc owner model overridden in the command", "not exactly one bare driver command", lambda j: drv(j).update(run="PERSONA_UAT_MODEL=m-1 " + drv(j)["run"].strip()))
+mutate("rc budget overridden in the command", "not exactly one bare driver command", lambda j: drv(j).update(run="PERSONA_UAT_TOKEN_BUDGET=1000 " + drv(j)["run"].strip()))
+mutate("rc transcripts deleted before upload", "after the driver other than the transcript upload", lambda j: j["steps"].insert(j["steps"].index(up(j)), {"run": "rm -f persona-uat-out/*.transcript.txt"}))
+mutate("rc upload runs before the driver", "immediately after the driver", lambda j: (j["steps"].remove(up(j)), j["steps"].insert(j["steps"].index(drv(j)), up(j))))
+mutate("rc a setup step runs before the driver", "a run step before the driver other than", lambda j: j["steps"].insert(j["steps"].index(drv(j)), {"run": "echo hi"}))
 mutate("rc driver step ends with || true", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
 mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
        lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "github.ref_name", drv(j)["run"])))
@@ -271,6 +327,15 @@ mutate("weekly job resolves a fixed release tag", "does not resolve the LATEST r
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run="gh release view v0.2.0 --json tagName; docker buildx imagetools inspect x"), "fresh")
 mutate("weekly driver is handed a fixed image", "does not hand the resolved latest-release image digest",
        lambda j: drv(j).update(run=re.sub(r"--image\s+\S+", "--image ghcr.io/x/cache@sha256:" + "a" * 64, drv(j)["run"])), "fresh")
+mutate("weekly cron literal reformatted", "does not run only on the Monday cron", lambda j: j.update({"if": "${{ github.event.schedule == '436**1' }}"}), "fresh")
+mutate("weekly resolver moved after the driver", "AFTER running the driver", lambda j: (lambda r: (j["steps"].remove(r), j["steps"].insert(j["steps"].index(drv(j)) + 1, r)))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
+mutate("weekly resolver uses a fixed tag variable", "does not resolve the LATEST release's image digest",
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run='tag=v0.1.0; gh release view "$tag" --json tagName; docker buildx imagetools inspect "ghcr.io/x/cache:$tag"; echo "image=x" >> "$GITHUB_OUTPUT"'), "fresh")
+mutate("weekly resolver inspects an unrelated tag", "does not inspect the image of the release it just resolved",
+       lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run=re.sub(r"imagetools inspect \S+", "imagetools inspect ghcr.io/x/cache:latest", next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))["run"])), "fresh")
+mutate("weekly driver image argument fully replaced", "does not hand the resolved latest-release image digest",
+       lambda j: drv(j).update(run=re.sub(r"--image\s+(\"[^\"]*\"|\S+)", "--image ghcr.io/x/cache@sha256:" + "a" * 64, drv(j)["run"])), "fresh")
+mutate("release.yml loses its v* tag trigger", "no longer starts on v* tags", lambda j: None, "rel_top")
 mutate("weekly driver runs in rc mode", "--mode weekly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode rc")), "fresh")
 mutate("weekly driver step is non-fatal", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")
 # tools file

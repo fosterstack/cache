@@ -199,11 +199,14 @@ done
 # --- AC5: the owner's model reaches the provider; no model name is written anywhere -----------------------------
 MODEL=OWNER-MODEL-Q agent model '[{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
 CASE="the model named in the request is exactly what the provider is asked to use"
+check test "$rc" -eq 0 -a "$(calls model)" -eq 1
 check python3 - "$work/model/fp.log" <<'PY'
 import json, sys
-assert all(json.loads(l)["req"]["model"] == "OWNER-MODEL-Q" for l in open(sys.argv[1]))
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1 and all(r["req"]["model"] == "OWNER-MODEL-Q" for r in rows), rows
 PY
-CASE="the model value never appears in the agent's answer or transcript"
+CASE="the model value never appears in the agent's answer or transcript (and the answer exists)"
+check test -s "$work/model/out.json"
 check none_match 'OWNER-MODEL-Q' "$work/model/out.json"
 CASE="no model name is written in the agent or the provider: neither a vendor family nor a model-version pattern"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-' "$agent" "$provider"

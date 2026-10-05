@@ -89,23 +89,55 @@ cat >"$work/docker" <<'SH'
 #!/usr/bin/env bash
 echo "$*" >>"$DOCKER_LOG"
 if [ -n "${DOCKER_FAIL_MATCH:-}" ] && [[ "$*" == *"$DOCKER_FAIL_MATCH"* ]]; then echo "docker: simulated failure" >&2; exit 125; fi
+if [ "$1" = run ] && [ "$2" = --rm ]; then
+  python3 - "$@" <<'PYX'
+import subprocess, sys
+a = sys.argv[1:]
+host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
+p = subprocess.run(["sh", "-c", a[a.index("-c") + 1]], cwd=host, capture_output=True, text=True, timeout=60)
+sys.stdout.write(p.stdout + p.stderr); sys.exit(p.returncode)
+PYX
+  exit $?
+fi
 case "$1" in
   run) n=$(grep -c '^run ' "$DOCKER_LOG"); echo "cid-$n" ;;
+  inspect) if [ -n "${DOCKER_INSPECT_FALSE:-}" ]; then echo false; else echo true; fi ;;
+  exec) echo "apiVersion: v1 # kubeconfig-for-test" ;;
 esac
 exit 0
 SH
-# A recording gh: `issue list` answers GH_STUB_LIST; every call is logged with its arguments.
-cat >"$work/gh" <<'SH'
-#!/usr/bin/env bash
-echo "$*" >>"$GH_LOG"
-if [ -n "${GH_FAIL_MATCH:-}" ] && [[ "$*" == *"$GH_FAIL_MATCH"* ]]; then echo "gh: simulated failure" >&2; exit 1; fi
-case "$1 $2" in
-  "issue list") echo "${GH_STUB_LIST:-[]}" ;;
-  "issue create") echo "https://github.com/x/y/issues/99" ;;
-esac
-exit 0
-SH
-chmod +x "$work/docker" "$work/gh"
+# gh is a python stub: it VALIDATES issue create/edit (a --title, a --body-file that exists and is non-empty at the moment of the
+# call) and logs the body so tests assert what was actually published; DOCKER/GH_FAIL_MATCH simulate failures
+cat >"$work/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+line = " ".join(a)
+log = open(os.environ["GH_LOG"], "a")
+log.write(line + "\n")
+fm = os.environ.get("GH_FAIL_MATCH")
+if fm and fm in line:
+    sys.stderr.write("gh: simulated failure\n"); sys.exit(1)
+if a[:2] in (["issue", "create"], ["issue", "edit"]):
+    if "--body-file" not in a:
+        sys.stderr.write("gh: no --body-file\n"); sys.exit(1)
+    bf = a[a.index("--body-file") + 1]
+    if not os.path.isfile(bf) or os.path.getsize(bf) == 0:
+        log.write("BODY-MISSING " + bf + "\n"); sys.stderr.write("gh: body file missing or empty\n"); sys.exit(1)
+    if a[:2] == ["issue", "create"] and "--title" not in a:
+        sys.stderr.write("gh: no --title\n"); sys.exit(1)
+    log.write("BODY: " + open(bf).read().replace("\n", " | ") + "\n")
+    print("https://github.com/x/y/issues/99")
+elif a[:2] == ["issue", "list"]:
+    print(os.environ.get("GH_STUB_LIST", "[]"))
+sys.exit(0)
+PY
+chmod +x "$work/gh"
+# the "image under test" and Jenkins as tiny local HTTP servers, so the driver's readiness checks have something to find
+python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV1=$!
+python3 -m http.server 18081 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV2=$!
+trap 'kill $SRV1 $SRV2 2>/dev/null; rm -rf "$work"' EXIT
+for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18080');urllib.request.urlopen('http://127.0.0.1:18081')" 2>/dev/null && break; sleep 0.3; done
 
 # run <name> <plan-json> <mode> [VAR=val ...]  (sets rc; dirs under $work/<name>/)
 run() {
@@ -121,7 +153,7 @@ run() {
       GITHUB_REPOSITORY=x/y GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X "$@" \
       bash -c 'cd "$1" && shift && exec "$@"' _ "$repo" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
-        --tools "${TOOLS:-$work/tools.json}" --docker "$work/docker" --gh "$work/gh" --port 18080 \
+        --tools "${TOOLS:-$work/tools.json}" --docker "$work/docker" --gh "$work/gh" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
         --agent "python3 $work/stub.py" ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${PUBLISH+--publish} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
 }
 out() { echo "$work/$1/out"; }
@@ -149,6 +181,15 @@ want = {"gradle-platform-engineer": "gradle", "maven-jenkins-ci": "jenkins", "co
 assert len(set(rows.values())) == 5, "instructions are not distinct"
 for p, w in want.items():
     assert w in rows[p].lower(), (p, w)
+need = {"gradle-platform-engineer": ("first-time", "gradle", "proxy"), "maven-jenkins-ci": ("maven", "jenkins"),
+        "compliance-reviewer": ("signature", "sbom", "vex"), "readme-evaluator": ("only the readme", "ten minutes"),
+        "on-call-engineer": ("upgrade", "rollback", "logs")}
+for p, words in need.items():
+    for w in words:
+        assert w in rows[p].lower(), (p, w)
+for p, text in rows.items():          # every persona is told how to classify what it finds, and what a doc step is
+    for w in ("broken behavior", "friction", "as written"):
+        assert w in text.lower(), (p, w)
 PY
 CASE="a clean run records no friction or blocking issue file"
 check test ! -e "$(out clean)/friction-issue.md" -a ! -e "$(out clean)/blocking-issue.md"
@@ -189,7 +230,9 @@ import json, sys
 log = open(sys.argv[1]).read()
 jen, glr, knd = sys.argv[3:6]
 for ref in (jen, glr, knd):
-    assert log.count(ref) == 1, (ref, log)
+    runs = [l for l in log.splitlines() if l.startswith("run ") and ref in l]
+    assert len(runs) == 1, (ref, log)
+    assert " -d " in " " + runs[0] + " " or " -d" in runs[0], runs[0]
 rows = {json.loads(l)["persona"]: json.loads(l)["request"]["tools"] for l in open(sys.argv[2])}
 assert sorted(rows["maven-jenkins-ci"]) == ["gitlab-runner", "jenkins"], rows
 assert sorted(rows["on-call-engineer"]) == ["kind"], rows
@@ -211,7 +254,7 @@ for ln in open(sys.argv[1]):
 assert sys.argv[3] not in open(sys.argv[2]).read(), "the driver itself must not start the shell image: the agent does, per action"
 PY
 CASE="every image a docker run or pull names is exactly one of the four pinned references: nothing else is ever started"
-check python3 - "$work/clean/docker.log" "$work/friction/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
+check python3 - "$work/clean/docker.log" "$work/clean/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
 import re, sys
 allowed = set(sys.argv[3:7])
 for path in sys.argv[1:3]:
@@ -260,11 +303,11 @@ b = open(sys.argv[2]).read()
 assert all(p in b for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")), b
 PY
 CASE="the driver provisions nothing in a cloud: its docker and gh calls are only run/rm and issue commands"
-check python3 - "$work/clean/docker.log" "$work/friction/docker.log" <<'PY'
+check python3 - "$work/clean/docker.log" <<'PY'
 import sys
 for path in sys.argv[1:]:
     for l in open(path):
-        assert l.split()[0] in ("run", "rm", "stop", "kill", "logs", "exec", "pull", "inspect"), l
+        assert l.split()[0] in ("run", "rm", "inspect", "exec"), l
 PY
 
 # --- AC1: broken behavior or a failing doc step fails the RC run ------------------------------------------------
@@ -582,6 +625,107 @@ check none_match 'MODEL-(DEFAULT|COMPLIANCE)-X|OTHER-(DEFAULT|COMPLIANCE)' "$(ou
   "$work/clean/docker.log" "$work/friction/gh.log" "$work/weekly/gh.log"
 CASE="no model name is written in the driver: neither a vendor family nor a model-version pattern"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-' "$root/bin/persona-uat.py"
+
+# --- readiness: a dead image or a container that is not running never reads as a green run --------------------------
+PORT=18099 READY_TIMEOUT=1 run notready '{}' rc
+CASE="an image that never answers on its endpoint: the run fails, no agent is started against nothing, every persona did not run"
+check test "$rc" -ne 0 -a ! -s "$work/notready/log"
+check test "$(ls "$(out notready)"/*.report.md | wc -l | tr -d ' ')" -eq 5
+check grep -qi 'did not run' "$(out notready)/readme-evaluator.report.md"
+DOCKER_INSPECT_FALSE=1 run notrunning '{}' rc
+CASE="a container that is not running (docker inspect says false) is a persona that did not run, not a pass"
+check test "$rc" -ne 0
+check grep -qi 'did not run' "$(out notrunning)/gradle-platform-engineer.report.md"
+CASE="readiness is checked with docker inspect on every container the driver started"
+check python3 - "$work/clean/docker.log" <<'PY'
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+runs = [l for l in lines if l.startswith("run ")]
+insp = [l for l in lines if l.startswith("inspect ")]
+assert runs and all(any(f"cid-{i+1}" in l for l in insp) for i in range(len(runs))), (runs, insp)
+PY
+
+# --- publication: the issue BODY is what was published, validated at the moment of the call; retries of one run do not duplicate
+CASE="every issue create/edit carried a real body file (the stub fails the call otherwise) and the body holds the findings"
+check python3 - "$work/friction/gh.log" "$work/weekly/gh.log" <<'PY'
+import sys
+f, w = (open(p).read() for p in sys.argv[1:3])
+assert "BODY-MISSING" not in f + w
+assert "BODY: " in f and "no log level hint" in f and "on-call-engineer" in f, f
+assert "BODY: " in w and "cosign verify fails as written" in w and "maven-jenkins-ci" in w, w
+PY
+CASE="a retry of the SAME run (same run id) edits its friction issue instead of opening a second one"
+PUBLISH=1 GH_STUB_LIST='[{"number":55,"title":"Persona UAT friction: rc run 4242"}]' run frictionretry "$FR" rc
+check test "$rc" -eq 0
+check python3 - "$work/frictionretry/gh.log" <<'PY'
+import sys
+calls = [l.strip() for l in open(sys.argv[1])]
+assert not [c for c in calls if c.startswith("issue create") and "persona-uat-friction" in c], calls
+edits = [c for c in calls if c.startswith("issue edit")]
+assert len(edits) == 1 and " 55 " in (" " + edits[0] + " "), calls
+PY
+CASE="a friction issue of ANOTHER run that carries the label is never edited: a new run opens its own"
+PUBLISH=1 GH_STUB_LIST='[{"number":54,"title":"Persona UAT friction: rc run 4100"}]' run frictionother "$FR" rc
+check python3 - "$work/frictionother/gh.log" <<'PY'
+import sys
+calls = [l.strip() for l in open(sys.argv[1])]
+assert len([c for c in calls if c.startswith("issue create") and "persona-uat-friction" in c]) == 1 and not [c for c in calls if c.startswith("issue edit")], calls
+PY
+CASE="the driver provisions nothing in a cloud (a docker log with only run, rm, inspect, exec), also for a friction run"
+check python3 - "$work/friction/docker.log" <<'PY'
+import sys
+for l in open(sys.argv[1]):
+    assert l.split()[0] in ("run", "rm", "inspect", "exec"), l
+PY
+
+# --- the integrated path: the REAL driver, the REAL agent and the REAL provider (over a fake SDK), workflow-shaped -----
+mkdir -p "$work/sdk/anthropic"
+cat >"$work/sdk/anthropic/__init__.py" <<'PY'
+import json, os
+class _Msg:
+    def __init__(self, text):
+        self.content = [type("B", (), {"type": "text", "text": text})()]
+        self.usage = type("U", (), {"input_tokens": 120, "output_tokens": 30})()
+class Anthropic:
+    def __init__(self, *a, **k):
+        open(os.environ["SDK_LOG"], "a").write(json.dumps({"init": {"has_key": "ANTHROPIC_API_KEY" in os.environ,
+            "token_file": os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE"), "fed": [os.environ.get(x) for x in
+            ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID")]}}) + "\n")
+        self.messages = self
+    def create(self, **kw):
+        open(os.environ["SDK_LOG"], "a").write(json.dumps({"model": kw["model"]}) + "\n")
+        if len(kw["messages"]) == 1:
+            return _Msg(json.dumps({"action": "shell", "command": "cat README.md"}))
+        return _Msg(json.dumps({"action": "finish", "findings": [{"kind": "friction", "text": "integration friction"}]}))
+PY
+mkdir -p "$work/integ"; : >"$work/integ/docker.log"; : >"$work/integ/gh.log"; : >"$work/integ/sdk.log"; rc=0
+( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY DOCKER_LOG="$work/integ/docker.log" GH_LOG="$work/integ/gh.log" SDK_LOG="$work/integ/sdk.log" \
+    PYTHONPATH="$work/sdk" GITHUB_RUN_ID=4242 PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE \
+    ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integ/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
+    ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 GITHUB_TOKEN=SECRET-GH-TOKEN \
+    python3 bin/persona-uat.py --mode rc --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
+      --docker "$work/docker" --gh "$work/gh" --port 18080 --ready-timeout 5 --agent "python3 bin/persona-uat-agent.py" ) \
+  >"$work/integ/stdout" 2>"$work/integ/stderr" || rc=$?
+CASE="integrated: the real driver, agent (given by a RELATIVE path) and provider complete a clean run with five reports"
+check test "$rc" -eq 0 -a "$(ls "$work/integ/out"/*.report.md | wc -l | tr -d ' ')" -eq 5
+CASE="integrated: each persona really ran a shell action in its sandbox (the README content is in its transcript)"
+check python3 - "$work/integ/out" <<'PY'
+import glob, sys
+ts = glob.glob(sys.argv[1] + "/*.transcript.txt")
+assert len(ts) == 5, ts
+assert all("# fscache README" in open(t).read() for t in ts)
+PY
+CASE="integrated: the provider authenticated with the federated identity (all four federation variables and the token file, no API key) and used each persona's owner-set model"
+check python3 - "$work/integ/sdk.log" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+inits = [r["init"] for r in rows if "init" in r]
+assert len(inits) == 5 and all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["token_file"].endswith("integ/token") for i in inits), inits
+models = [r["model"] for r in rows if "model" in r]
+assert sorted(set(models)) == ["INTEG-COMPLIANCE", "INTEG-DEFAULT"] and models.count("INTEG-COMPLIANCE") == 2, models
+PY
+CASE="integrated: no GitHub credential reached the shell containers or the provider's environment"
+check none_match 'SECRET-GH-TOKEN' "$work/integ/out" "$work/integ/docker.log"
 
 echo "persona-uat: $pass passed, $failn failed"
 test "$failn" -eq 0
