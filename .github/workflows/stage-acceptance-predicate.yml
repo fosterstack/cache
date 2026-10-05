@@ -13,6 +13,11 @@ name: 'Stage: acceptance predicate'
 on:
   workflow_call:
     inputs:
+      baseline-version:
+        description: 'the approved ACs baseline admission used (REQ-REL-009-AC13); empty = the tag''s own'
+        required: false
+        type: string
+        default: ''
       digests:
         description: 'JSON {production, debug, fips} candidate index digests'
         required: true
@@ -59,22 +64,25 @@ jobs:
           MAVEN: ${{ inputs.maven-results }}
           EGRESS: ${{ inputs.egress-results }}
           K8S: ${{ inputs.k8s-results }}
+          BASELINE: ${{ inputs.baseline-version }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}" python3 - <<'PY'
           import json, os, sys, yaml
 
           tag = os.environ["TAG"]
+          # admission's baseline (a CI patch uses its line's latest approved one; REQ-REL-009-AC13), else the tag's own
+          base = os.environ.get("BASELINE") or tag
           # The FROZEN, owner-approved baseline is the authority for the
           # required set - not the working requirements.yaml (F07).
-          frozen_path = f"requirements/releases/{tag}.yaml"
+          frozen_path = f"requirements/releases/{base}.yaml"
           try:
               frozen = yaml.safe_load(open(frozen_path))
           except FileNotFoundError:
               print(f"::error::frozen baseline {frozen_path} missing - freeze it before release", file=sys.stderr)
               sys.exit(1)
           if frozen.get("approved") is not True:
-              print(f"::error::frozen baseline {tag} is not approved", file=sys.stderr)
+              print(f"::error::frozen baseline {base} is not approved", file=sys.stderr)
               sys.exit(1)
 
           blocking = frozen.get("release_blocking_acs") or []
