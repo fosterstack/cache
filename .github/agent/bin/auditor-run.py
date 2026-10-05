@@ -180,6 +180,7 @@ def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
             num = found[0]["number"]
             c = subprocess.run(["gh", "issue", "comment", str(num), "--body", body], capture_output=True, text=True, env=ienv)
             return (c.returncode == 0), num
+        subprocess.run(policy.label_create_cmd(policy.OWNER_LABEL), capture_output=True, text=True, env=ienv)  # a missing label would lose the issue; "already exists" is fine
         c = subprocess.run(["gh", "issue", "create", "--title", title, "--label", policy.OWNER_LABEL,
                             "--assignee", policy.OWNER_LOGIN, "--body", body], capture_output=True, text=True, env=ienv)
         if c.returncode != 0:
@@ -2198,6 +2199,7 @@ def _standing_issue(needs, dry, would, cves=()):
             ro = _sh("reopen", n); c = _sh("comment", n, "--body", body)
             ok = ro.returncode == 0 and c.returncode == 0
             return ok, ("reopened:%s" % n if ok else "standing reopen/comment failed")
+        subprocess.run(policy.label_create_cmd(policy.OWNER_LABEL), capture_output=True, text=True, env=ienv)  # create the label first (not forced)
         cr = _sh("create", "--title", title, "--label", policy.OWNER_LABEL, "--assignee", policy.OWNER_LOGIN, "--body", body)
         return (cr.returncode == 0), ("created" if cr.returncode == 0 else "standing create failed: %s" % _mask((cr.stderr or "").strip()))
     ok = True
