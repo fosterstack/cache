@@ -562,7 +562,8 @@ mutate("weekly docs checkout is of main, not the resolved tag", "checkout is not
 mutate("weekly harness checkout takes a ref (an old release has no driver)", "harness checkout must be today's main", lambda j: _harness_checkout(j)["with"].update(ref="v0.2.1"), "fresh")
 mutate("weekly job has a single checkout", "expected exactly 2 actions/checkout", lambda j: j.update(steps=[s for s in j["steps"] if s is not _harness_checkout(j)]), "fresh")
 mutate("weekly job gains needs (skipped on the Monday cron)", "has needs", lambda j: j.update(needs=["check"]), "fresh")
-mutate("weekly resolver emits tag=main", "does not write tag=<release tag>", lambda j: _resolver(j).update(run=re.sub(r"tag=\S*\s*>>", "tag=main >>", _resolver(j)["run"].replace('"tag=${tag}"', "tag=main"))), "fresh")
+mutate("weekly resolver emits tag=main", "does not write tag=<release tag>",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^.*tag=.*GITHUB_OUTPUT.*$", 'echo "tag=main" >> "$GITHUB_OUTPUT"', _resolver(j)["run"])), "fresh")
 mutate("weekly resolver inspects the v-prefixed image tag", "resolver failed against recording gh/docker",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${tag#v}", "${tag}")), "fresh")
 mutate("weekly resolver asks for the wrong digest format", "does not write tag=<release tag>",
@@ -596,7 +597,7 @@ mutate("rc identity step provisions cloud inside github-script", "runs a command
 mutate("rc identity step is conditional", "identity step has an if", lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).update({"if": "false"}))
 mutate("rc identity step exports a path it never writes", "does not write the token to a file",
        lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', '/nonexistent')"))
-mutate("release.yml loses its v* tag trigger", "no longer starts on v* tags", lambda j: None, "rel_top")
+mutate("release.yml loses its v* tag trigger", "push tags are not exactly", lambda j: None, "rel_top")
 mutate("weekly driver runs in rc mode", "--mode weekly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode rc")), "fresh")
 mutate("weekly driver step is non-fatal", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")
 # tools file
