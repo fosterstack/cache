@@ -221,7 +221,7 @@ CASE="a disputed hit neither reports clean nor rolls back: no 'no known-compromi
 check none_match 'no known-compromised' "$work/dispute.out"; check bash -c "! grep -qiE 'roll ?back to|drop the action' '$work/dispute.gh.bodies'"
 CASE="the dispute's public facts are in the issue: both advisory ids, both verdicts, the version"
 check grep -q 'GHSA-69fq-xp46-6x23' "$work/dispute.gh.bodies"; check grep -q 'GO-2026-4919' "$work/dispute.gh.bodies"; check grep -q '0.74.0' "$work/dispute.gh.bodies"
-EXC='{"exceptions": [{"ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "authoritative": "github", "ranges": ["= 0.69.4"], "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
+EXC='{"exceptions": [{"ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "authoritative": {"source": "GitHub", "id": "GHSA-69fq-xp46-6x23", "ranges": ["= 0.69.4"]}, "ruling": "false positive", "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
 echo "$EXC" >"$work/exc.json"
 run excepted "$DISPUTE" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="a MATCHING exception (exactly the advisories of this dispute, the package, every advisory unchanged since it was written, the version outside the authoritative ranges): passes, exit 0, no issue, and says an exception applied"
@@ -235,14 +235,14 @@ CASE="an exception goes STALE when an advisory changed after it was written (its
 check test "$rc" -eq 1; check grep -qi 'disputed' "$work/stale.gh.bodies"
 python3 - "$work/exc.json" "$work/exc-inrange.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1])); e["exceptions"][0]["ranges"] = [">= 0.70.0, < 0.80.0"]; json.dump(e, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[1])); e["exceptions"][0]["authoritative"]["ranges"] = [">= 0.70.0, < 0.80.0"]; json.dump(e, open(sys.argv[2], "w"))
 PY
 run inrange "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-inrange.json"
 CASE="a version INSIDE the authoritative source's affected ranges is a real hit, never excused by an exception: exit 1, an issue that is not 'disputed' and may name a rollback"
 check test "$rc" -eq 1; check test "$(creates "$work/inrange.gh")" -eq 1; check bash -c "! grep -qi 'disputed' '$work/inrange.gh.bodies'"
 python3 - "$work/exc.json" "$work/exc-subset.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1])); x = e["exceptions"][0]; x["ids"] = ["GO-2026-4919"]; del x["modified"]["GHSA-69fq-xp46-6x23"]; json.dump(e, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[1])); x = e["exceptions"][0]; x["ids"] = ["GHSA-69fq-xp46-6x23"]; del x["modified"]["GO-2026-4919"]; json.dump(e, open(sys.argv[2], "w"))
 PY
 run subset "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-subset.json"
 CASE="an exception naming only SOME of the dispute's advisories does not apply (the ids must be exactly the dispute's)"
@@ -259,8 +259,8 @@ import json, sys
 e = json.load(open(sys.argv[1])); del e["exceptions"][0]["modified"]["GHSA-69fq-xp46-6x23"]; json.dump(e, open(sys.argv[2], "w"))
 PY
 run nomod "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-nomod.json"
-CASE="an exception with no recorded last-modified time for one of its advisories cannot be shown unchanged, so it does not apply"
-check test "$rc" -eq 1
+CASE="an exception with no recorded last-modified time for one of its ids is malformed: exit 2, never applied (it could not be shown unchanged)"
+check test "$rc" -eq 2
 echo '{"not": "a list"}' >"$work/exc-bad.json"
 run badexc "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-bad.json"
 CASE="an unreadable exceptions file fails the run loudly (exit 2), never as 'no exceptions'"
@@ -271,8 +271,8 @@ import json, sys
 e = json.load(open(sys.argv[1]))["exceptions"]
 by = {x["package"]: x for x in e}
 t, c = by["trivy"], by["github/codeql-action"]
-assert sorted(t["ids"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"] and t["authoritative"] == "github" and t["ranges"] == ["= 0.69.4"], t
-assert c["ids"] == ["GHSA-vqf5-2xx6-9wfm"] and c["authoritative"] == "github" and c["ranges"] == [">= 3.26.11, <= 3.28.2", ">= 2.26.11, < 3.0.0"], c
+assert sorted(t["ids"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"] and t["authoritative"]["source"] == "GitHub" and t["authoritative"]["ranges"] == ["= 0.69.4"], t
+assert c["ids"] == ["GHSA-vqf5-2xx6-9wfm"] and c["authoritative"] == {"source": "GitHub", "id": "GHSA-vqf5-2xx6-9wfm", "ranges": [">= 3.26.11, <= 3.28.2", ">= 2.26.11, < 3.0.0"]}, c
 for x in (t, c):
     assert x["evidence"] and all(u.startswith("https://") for u in x["evidence"]) and x["date"], x
     assert set(x["modified"]) == set(x["ids"]) and all(x["modified"].values()), x
@@ -426,7 +426,7 @@ assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["versi
 net = pa.LiveNet(["false"], ".")
 assert pa.rollback(pa.inv.Item("gotool", "golang.org/x/vuln/cmd/govulncheck", "v1.0.0"), net, now) == pa.UNKNOWN
 PY
-printf '{"exceptions": [{"ids": ["A"], "package": "p", "authoritative": "github", "ranges": ["= 1"], "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
+printf '{"exceptions": [{"ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "ruling": "r", "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
 run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
 CASE="an exception without evidence links and a date is malformed: exit 2, never applied"
 check test "$rc" -eq 2

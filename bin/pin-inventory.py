@@ -35,12 +35,12 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@([\w.\-+]+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?([\w.+-]+)/")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@([\w.\-+${}()]+)")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?([\w.+${}()-]+)/")
 _PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;'\"]+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
-_VER_PIN = re.compile(r"^([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
+_VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
 _REQ_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", re.M)
 WORKFLOW_GLOBS = (".github/workflows/*.yml", ".github/workflows/*.yaml", ".github/actions/*/action.yml", ".github/actions/*/action.yaml",
                   ".github/actions/*/*/action.yml", ".github/actions/*/*/action.yaml")
@@ -137,11 +137,14 @@ def _step(node, out, labels):
         for m in _PIP_INSTALL.finditer(run):
             for p in _PIP_PIN.finditer(m.group(1)):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
+        if re.search(r"\bpip3?\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
+            for p in _REQ_PIN.finditer(run):
+                out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
 
 
 def _walk(node, out, labels, path="", in_step=False):
     if isinstance(node, str):
-        if "${{" not in node:
+        if True:
             for m in _RUN_IMAGE.finditer(node):  # a digest-pinned image in ANY value: run text, env, driver-opts, an action input
                 out.append(_image_item(m.group(1)))
     elif isinstance(node, dict):

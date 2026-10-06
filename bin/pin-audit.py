@@ -80,8 +80,7 @@ def in_range(version, rng):
         for part in alt.split(","):
             m = re.match(r"^\s*(<=|>=|<|>|=)\s*(\S+)\s*$", part)
             if not m:
-                ok = False
-                break
+                return True  # a range we cannot read is never taken as "not affected"
             c = _cmp(version, m.group(2))
             ok &= {"<": c < 0, "<=": c <= 0, ">": c > 0, ">=": c >= 0, "=": c == 0}[m.group(1)]
         if ok:
@@ -93,6 +92,102 @@ def in_range(version, rng):
 class FixtureNet:
     def __init__(self, fx):
         self.fx = fx
+
+    def lists(self, item):
+        d = (self.fx.get("lists") or {}).get(item.key) or {}
+        return list(d.get("github") or []), list(d.get("osv") or [])
+
+    def covered(self, item):
+        return True
+
+    def upstream(self, item):
+        return ((self.fx.get("upstream") or {}).get(f"{item.name}@{item.version}") or {}).get("reachable")
+
+    def nested(self, item):
+        return (self.fx.get("nested") or {}).get(f"{item.name}@{item.version}") or []
+
+    def versions(self, item):
+        return (self.fx.get("versions") or {}).get(item.name) or []
+
+    def prs(self):
+        return self.fx.get("prs") or []
+
+    def proofs(self, item):
+        return age.Fixture(self.fx).proofs(item)
+
+    def modified(self, advisory_id):
+        return None
+
+
+GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
+            "osv": "github.com/google/osv-scanner", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint",
+            "goreleaser": "github.com/goreleaser/goreleaser", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign",
+            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
+NPM_TOOLS = {"snyk": "snyk"}
+
+
+class LiveNet:
+    def __init__(self, gh, root):
+        self.gh, self.root = gh, root
+        self._memo, self._lock = {}, threading.Lock()
+
+    def _gh_json(self, path):
+        with self._lock:
+            if path in self._memo:
+                return self._memo[path]
+        r = subprocess.run([*self.gh, "api", path], capture_output=True, text=True)
+        if r.returncode:
+            try:
+                age._gh_failed(r)
+            except age.CouldNotLook as e:
+                raise Fail(str(e))
+        try:
+            val = None if r.returncode else json.loads(r.stdout)
+        except ValueError:
+            val = None
+        with self._lock:
+            self._memo[path] = val
+        return val
+
+    def _osv_post(self, q):
+        vulns, token = [], None
+        for _ in range(20):
+            body = dict(q, **({"page_token": token} if token else {}))
+            req = urllib.request.Request("https://api.osv.dev/v1/query", json.dumps(body).encode(), {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    d = json.load(r)
+            except (OSError, ValueError) as e:
+                raise Fail(f"the OSV query failed: {e}")
+            vulns += d.get("vulns", [])
+            token = d.get("next_page_token")
+            if not token:
+                return vulns
+        raise Fail("the OSV query has more than 20 pages")
+
+    def _version_of(self, item):
+        if item.kind == "action" and inv.SHA40.match(item.version):
+            return item.label or age._tag_for_commit(item.name, item.version)
+        return item.version  # a tag/branch ref, or a tool/package version
+
+    def _query(self, item, version):
+        if item.kind == "action":
+            return {"package": {"name": item.name, "ecosystem": "GitHub Actions"}}
+        if item.kind == "package":
+            return {"package": {"name": item.name.split("/", 1)[1], "ecosystem": "PyPI"}, "version": version}
+        if item.kind == "tool" and item.name in NPM_TOOLS:
+            return {"package": {"name": NPM_TOOLS[item.name], "ecosystem": "npm"}, "version": version}
+        mod = None
+        if item.kind == "gotool":
+            mod = age._go_module(item.name, item.version)[0]  # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
+        elif item.kind == "tool":
+            mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
+        return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
+
+    def covered(self, item):
+        """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked, never as clean.)"""
+        v = self._version_of(item)
+        return bool(v) and self._query(item, v) is not None
 
     def lists(self, item):
         d = (self.fx.get("lists") or {}).get(item.key) or {}
@@ -118,7 +213,10 @@ class FixtureNet:
 
 
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
-            "osv": "github.com/google/osv-scanner", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint"}
+            "osv": "github.com/google/osv-scanner", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint",
+            "goreleaser": "github.com/goreleaser/goreleaser", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign",
+            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
+NPM_TOOLS = {"snyk": "snyk"}
 
 
 class LiveNet:
@@ -192,11 +290,12 @@ class LiveNet:
                             if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() in names]
                     if adv and rngs:
                         ghs.append({"id": alias, "incident": v["id"], "affected": in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
-        eco = {"action": "actions", "package": "pip", "gotool": "go", "tool": "go" if item.kind == "tool" and item.name in GO_TOOLS else None}.get(item.kind)
+        eco = {"actions": "actions", "PyPI": "pip", "Go": "go", "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
         pkg = q["package"]["name"]
         if eco:
             seen = {g["id"] for g in ghs}
-            page = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}&per_page=100") or []
+            page = (self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}&per_page=100") or []) + \
+                   (self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}&type=malware&per_page=100") or [])
             for adv in page:  # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to a filter
                 if adv.get("ghsa_id") in seen:
                     continue
@@ -358,8 +457,10 @@ def load_exceptions(path, required):
         assert isinstance(ex, list)
         for e in ex:
             assert isinstance(e["ids"], list) and e["ids"] and all(isinstance(i, str) for i in e["ids"])
-            assert isinstance(e["modified"], dict) and e["package"] and e["authoritative"] in ("github", "osv")
-            assert isinstance(e["ranges"], list) and e["ranges"] and all(isinstance(r, str) for r in e["ranges"])
+            au = e["authoritative"]
+            assert isinstance(e["modified"], dict) and e["package"] and isinstance(au, dict) and str(au["source"]).lower() in ("github", "osv") and au["id"]
+            assert isinstance(au["ranges"], list) and au["ranges"] and all(isinstance(r, str) for r in au["ranges"])
+            assert isinstance(e["ruling"], str) and e["ruling"] and set(e["ids"]) <= set(e["modified"]) and au["id"] in e["ids"]
             assert isinstance(e["evidence"], list) and e["evidence"] and isinstance(e["date"], str) and e["date"]
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         raise Fail(f"the exceptions file {path} is unreadable or malformed: {e}")
@@ -387,7 +488,7 @@ def excepted(item, dispute_ids, current, exceptions):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         if not ver:
             return None  # no version to compare with the ranges: stays disputed
-        return "hit" if in_range(ver, "|".join(e["ranges"])) else "pass"
+        return "hit" if in_range(ver, "|".join(e["authoritative"]["ranges"])) else "pass"
     return None
 
 
@@ -620,6 +721,10 @@ def main(argv=None):
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
                 if not age._tag_for_commit(it.name, it.version):
                     print(f"information: {it.name}@{it.version[:12]} has no version label or tag: its advisories could not be looked up")
+
+        for it in audited:
+            if not net.covered(it):
+                print(f"information: not checked against the advisory lists (no source for this kind of item): {it.key}")
 
         def one(it):
             n2 = []
