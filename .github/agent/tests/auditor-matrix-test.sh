@@ -747,9 +747,9 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false
   baserb="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; baserb="${baserb:-0}"
   goget="$(grep -cE '^go get ' "$shim" 2>/dev/null)"; goget="${goget:-0}"
   tidy="$(grep -cE '^go mod tidy' "$shim" 2>/dev/null)"; tidy="${tidy:-0}"
-  addonly="$(grep -cE '^git add go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
+  addonly="$(grep -cE '^gh api graphql createCommitOnBranch auditor/bump-[^ ]+ -- go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
   { [ "$bump" -ge 1 ] 2>/dev/null && [ "$baserb" -eq 0 ] 2>/dev/null && [ "$goget" -ge 1 ] 2>/dev/null && [ "$tidy" -ge 1 ] 2>/dev/null && [ "$addonly" -ge 1 ] 2>/dev/null; } \
-    && ok || no "draft bump PR delivered via go get/tidy + go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy add_gomod_gosum=$addonly"; }
+    && ok || no "draft bump PR delivered via go get/tidy + a signed API commit of go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy signed_commit_gomod_gosum=$addonly"; }
 
 begin "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" "the workflow's run step invokes auditor-run.py with the dispatch dry_run input"
 if ! have "$WF"; then no "$WF present" "absent"; else
@@ -1239,30 +1239,39 @@ rptnames="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -ciE 'anthropic|claude
 ########################################################################
 echo "=== Round 16 corrections — issues token, test-image PR gating ==="
 
-begin "r16-issues-use-job-token-pr-uses-app-token" "gh issue calls carry the JOB (issues) token; git push / gh pr create carry the App token — verified via fake gh/git on PATH"
+begin "r16-issues-use-job-token-pr-uses-app-token" "gh issue calls carry the JOB (issues) token; the signed API commit / gh pr create carry the App token (and no git commit or git push runs) — verified via fake gh/git on PATH"
 o="$WORK/r16t"; rm -rf "$o"; fb="$WORK/r16t-bin"; rm -rf "$fb"; mkdir -p "$fb"; glog="$WORK/r16t-gh.log"; rm -f "$glog"
+# the delivery commit is made THROUGH THE API (signed by GitHub): the fake gh answers the ref and createCommitOnBranch calls, and the fake git
+# answers `status`/`rev-parse` and records every command so the case can prove no `git commit` / `git push` ran
+gitlog="$WORK/r16t-git.log"; rm -f "$gitlog"
 cat > "$fb/gh" <<EOF
 #!/usr/bin/env bash
 echo "GH_TOKEN=\${GH_TOKEN} ARGS=\$*" >> "$glog"
 if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "[]"; fi
 if [ "\$1" = "pr" ] && [ "\$2" = "create" ]; then echo "https://github.com/OWNER/REPO/pull/1"; fi
+if [ "\$1" = "api" ] && [ "\$2" = "graphql" ]; then cat >/dev/null; echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","signature":{"isValid":true,"state":"VALID"}}}}}'; fi
 exit 0
 EOF
-cat > "$fb/git" <<'EOF'
+cat > "$fb/git" <<EOF
 #!/usr/bin/env bash
+echo "\$*" >> "$gitlog"
+if [ "\$1" = "status" ]; then printf ' M .vex/fosterstack-cache.openvex.json\\0'; fi
+if [ "\$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
 EOF
 chmod +x "$fb/gh" "$fb/git"
 # the real-gh path merges suppressions into GITHUB_WORKSPACE (default: cwd = this repo) — point
 # it at a throwaway copy so the suite never rewrites the real .vex/.snyk/.auditor (REQ-AUD-18).
 ws="$WORK/r16t-ws"; rm -rf "$ws"; mkdir -p "$ws"; cp -R .vex "$ws/"
-env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
+env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
   "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 issuejob="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=JOB_TOKEN_456')"; issuejob="${issuejob:-0}"
 issueapp="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; issueapp="${issueapp:-0}"
 prapp="$(grep 'ARGS=pr create' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; prapp="${prapp:-0}"
-{ [ "$issuejob" -ge 1 ] 2>/dev/null && eq "$issueapp" "0" && [ "$prapp" -ge 1 ] 2>/dev/null; } \
-  && ok || no "issue calls use job token, pr create uses app token" "issue_job=$issuejob issue_app=$issueapp pr_app=$prapp"
+commitapp="$(grep 'ARGS=api graphql' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; commitapp="${commitapp:-0}"
+gitwrite="$(grep -cE '^(commit|push)( |$)' "$gitlog" 2>/dev/null)"; gitwrite="${gitwrite:-0}"
+{ [ "$issuejob" -ge 1 ] 2>/dev/null && eq "$issueapp" "0" && [ "$prapp" -ge 1 ] 2>/dev/null && [ "$commitapp" -ge 1 ] 2>/dev/null && eq "$gitwrite" "0"; } \
+  && ok || no "issue calls use job token, pr create and the signed API commit use app token, no git commit/push" "issue_job=$issuejob issue_app=$issueapp pr_app=$prapp commit_app=$commitapp git_commit_or_push=$gitwrite"
 
 begin "r16-exactly-one-gh-token-key-in-driver-env" "the driver step's env block declares GH_TOKEN exactly once"
 n="$(awk '/name: Run the auditor/{f=1} f&&/^        run:/{f=0} f&&/GH_TOKEN:/{c++} END{print c+0}' "$WF")"
@@ -1336,8 +1345,8 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-owner
 begin "ol7-delivery-carries-accepted-items" "the suppression delivery commits .auditor/accepted-items.json (the release gate's inventory)"
 o="$WORK/ol7"; shim="$WORK/ol7.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
-ai="$(grep -c 'git add .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
-{ [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery git-adds .auditor/accepted-items.json" "add_lines=$ai"
+ai="$(grep -c 'createCommitOnBranch .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
+{ [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery's signed API commit carries .auditor/accepted-items.json" "add_lines=$ai"
 
 begin "ol9-narrative-model-name-withheld" "a narrative containing a vendor/model name is rejected; the report shows 'conclusion withheld', no name persisted"
 o="$WORK/ol9"; rm -rf "$o"
@@ -3560,15 +3569,15 @@ rows=[row("CVE-1","example.org/a","0.16.0","0.22.0"), row("CVE-1","example.org/b
       row("CVE-2","example.org/a","v0.17.3","v0.22.0")]                                             # same target as CVE-1/a
 e1=run(rows)
 L=open(log).read().splitlines()
-creates=[l for l in L if l.startswith("gh pr create")]; pushes=[l for l in L if l.startswith("git push")]
+creates=[l for l in L if l.startswith("gh pr create")]; pushes=[l for l in L if l.startswith("gh api graphql createCommitOnBranch")]; unsigned=[l for l in L if l.startswith(("git commit","git push"))]
 branches=sorted({l.split(" --head ")[1].split()[0] for l in creates})
-first_ok=(e1==[] and branches==["auditor/bump-example.org-a-0.22.0","auditor/bump-example.org-b-1.2.0"] and len(creates)==2 and len(pushes)==2
+first_ok=(e1==[] and branches==["auditor/bump-example.org-a-0.22.0","auditor/bump-example.org-b-1.2.0"] and len(creates)==2 and len(pushes)==2 and not unsigned
           and any("CVE-1, CVE-2" in l for l in creates if "example.org-a" in l)
           and rows[0]["fix_pr_url"]==rows[2]["fix_pr_url"]!=rows[1]["fix_pr_url"])
 n0=len(L)
 e2=run([dict(r, fix_pr_url=None, action="") for r in rows])                        # identical second run
 L2=open(log).read().splitlines()[n0:]
-second_ok=(e2==[] and not any(l.startswith(("git push","gh pr create","gh pr edit")) for l in L2)
+second_ok=(e2==[] and not any(l.startswith(("gh api graphql","git push","gh pr create","gh pr edit")) for l in L2)
            and sorted(l for l in L2 if l.startswith("UNCHANGED"))==["UNCHANGED auditor/bump-example.org-a-0.22.0","UNCHANGED auditor/bump-example.org-b-1.2.0"])
 n1=n0+len(L2)
 e3=run([dict(r, fix_pr_url=None, action="") for r in rows]+[row("CVE-3","example.org/b","1.1.0","1.2.0")])   # new CVE, known target

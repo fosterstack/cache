@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
 from auditorlib import vex
+from auditorlib import signed_commit
 from auditorlib import knowledge as K
 
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
@@ -248,6 +249,18 @@ def _close_superseded(branch, url, ws):
         print("note: superseded-PR cleanup skipped: %s" % type(e).__name__)
 
 
+def _signed_delivery(ws, branch, base_sha, title, paths):
+    """ONE commit on `branch`, rebuilt on base_sha, made through the GitHub API with the App's token so GitHub signs it. None, or the failure text."""
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not repo:
+        return "signed commit: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit"
+    try:
+        signed_commit.commit_via_api(repo, branch, base_sha, title, signed_commit.read_changes(ws, paths))
+    except signed_commit.CommitError as e:
+        return str(e)
+    return None
+
+
 def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json + .snyk + osv-scanner.toml in a single commit
@@ -295,9 +308,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         seq = ["git checkout -B %s origin/main" % branch,
-               "git add " + " ".join(staged),
-               "git commit -m %s" % shlex.quote(title),
-               "git push -u origin %s" % branch,
+               "gh api graphql createCommitOnBranch %s -- %s" % (branch, " ".join(staged)),   # a signed commit made through the API: no git commit, no git push
                "gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title))]
         if automerge:
             seq.append("gh pr merge --auto --squash %s" % branch)
@@ -336,13 +347,20 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
             shutil.copyfile(s, d)
     except Exception as e:
         return None, "stage files: %s" % e
-    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml", ".auditor/accepted-items.json", *extra)
-    r = _git("commit", "-m", title)
+    # the files THIS run changed against main (as `git add` + `git commit` once found them: a path that is absent and untracked is skipped)
+    r = _git("status", "--porcelain", "-z", "--untracked-files=all", "--", *staged)
     if r.returncode != 0:
-        return None, ("git commit: " + (r.stderr or "").strip())
-    r = _git("push", "-u", "origin", branch, "--force-with-lease")
-    if r.returncode != 0:
-        return None, ("git push: " + (r.stderr or "").strip())
+        return None, ("git status: " + (r.stderr or "").strip())
+    changed = [e[3:] for e in (r.stdout or "").split("\0") if len(e) > 3]
+    if not changed:
+        return None, "signed commit: nothing to commit (the run changed none of the suppression files)"
+    sha = _git("rev-parse", "origin/main")
+    if sha.returncode != 0:
+        return None, ("git rev-parse: " + (sha.stderr or "").strip())
+    # the commit is made THROUGH THE API so GitHub signs it (main requires signed commits; a `git commit` is unsigned and left the PR BLOCKED)
+    err = _signed_delivery(ws, branch, sha.stdout.strip(), title, changed)
+    if err:
+        return None, err
     # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
     # it (no duplicate, no false failure) instead of a second `gh pr create`.
     def _existing_pr():
@@ -483,9 +501,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         seq = ["git checkout -B %s origin/main" % branch,
                "go get %s@%s" % (module, to),
                "go mod tidy",
-               "git add go.mod go.sum",
-               "git commit -m %s" % shlex.quote(title),
-               "git push -u origin %s --force-with-lease" % branch]
+               "gh api graphql createCommitOnBranch %s -- go.mod go.sum" % branch]   # a signed commit made through the API: no git commit, no git push
         if ("SHIM_TARGET %s " % branch) in prior:
             seq.append("gh pr edit %s --title %s" % (branch, shlex.quote(title)))       # same PR, updated
         else:
@@ -529,17 +545,19 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         # the bump changed nothing (already at/after the fixed version) — nothing to deliver
         _git("reset", "--hard", "origin/main")
         return None, None, "unresolvable"
-    r = _git("commit", "-m", title)
-    if r.returncode != 0:
-        return None, ("git commit: " + (r.stderr or "").strip()), "error"
     # AC2: the target's branch may already carry an open PR from an earlier run. Unchanged
-    # go.mod/go.sum -> no push (the PR is left alone); changed -> push to the SAME branch.
+    # go.mod/go.sum (this run's tree against that branch) -> no commit (the PR is left alone);
+    # changed -> the branch is rebuilt on main and ONE signed commit is made on it, through the API.
     remote_same = (_git("fetch", "origin", branch).returncode == 0
-                   and _git("diff", "--quiet", "FETCH_HEAD", "HEAD", "--", "go.mod", "go.sum").returncode == 0)
+                   and _git("diff", "--quiet", "FETCH_HEAD", "--", "go.mod", "go.sum").returncode == 0)
     if not remote_same:
-        r = _git("push", "-u", "origin", branch, "--force-with-lease")
-        if r.returncode != 0:
-            return None, ("git push: " + (r.stderr or "").strip()), "error"
+        sha = _git("rev-parse", "origin/main")
+        if sha.returncode != 0:
+            return None, ("git rev-parse: " + (sha.stderr or "").strip()), "error"
+        err = _signed_delivery(ws, branch, sha.stdout.strip(), title,
+                              [f for f in ("go.mod", "go.sum") if os.path.exists(os.path.join(ws, f))])   # a module with no dependencies has no go.sum
+        if err:
+            return None, err, "error"
 
     def _existing():
         q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",

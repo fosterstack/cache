@@ -47,6 +47,44 @@ class FakeRun:
         return [a for a, _ in self.calls]
 
 
+SHA = "a" * 40
+OID = "b" * 40
+GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": True, "state": "VALID"}}}}})
+
+
+class ApiRun(FakeRun):
+    """FakeRun plus the GitHub API the signed delivery uses: the branch ref GET / PATCH / POST, the createCommitOnBranch GraphQL call (its
+    stdin kept in .stdins) and the commit lookup. Defaults: the branch exists, the mutation succeeds with a VALID signature, `git status`
+    lists the suppression files as changed and `git rev-parse` answers SHA. Override `ref`, `reset`, `create`, `mutation`, `lookup`."""
+    def __init__(self, rules=None, ref=(0, "{}", ""), reset=(0, "{}", ""), create=(0, "{}", ""), mutation=(0, GQL_OK, ""), lookup=(0, "{}", "")):
+        defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
+                    ("git", "rev-parse"): (0, SHA + "\n", "")}
+        super().__init__({**defaults, **(rules or {})})
+        self.ref, self.reset, self.create, self.mutation, self.lookup = ref, reset, create, mutation, lookup
+        self.stdins = []
+
+    def __call__(self, argv, **kw):
+        argv = list(argv)
+        if argv[:2] == ["gh", "api"] and not any(argv[:len(p)] == list(p) for p in self.rules):
+            self.calls.append((argv, kw))
+            if argv[2] == "graphql":
+                self.stdins.append(json.loads(kw["input"])); resp = self.mutation
+            elif argv[2] == "--method":
+                resp = self.reset if argv[3] == "PATCH" else self.create
+            elif "/git/ref/heads/" in argv[2]:
+                resp = self.ref
+            elif "/commits/" in argv[2]:
+                resp = self.lookup
+            else:
+                return super().__call__(argv, **kw)
+            return subprocess.CompletedProcess(argv, resp[0], resp[1], resp[2])
+        return super().__call__(argv, **kw)
+
+    def no_unsigned(self):
+        """Nothing here ever ran `git commit` or `git push`."""
+        return not any(a[:2] in (["git", "commit"], ["git", "push"]) for a in self.argvs())
+
+
 def F(fid, purl, pkg, sev="Low", fixed=None, scanner="grype", extra=None):
     return {"scanner": scanner, "finding_id": fid, "purl": purl, "aliases": [fid], "package": pkg,
             "fixed_version": fixed, "severity": sev, "extra": extra or {}}
@@ -383,7 +421,7 @@ class SuppressionPR(Base):
         self.wj(os.path.join(self.out, ".auditor", "knowledge.md"), "# k\n")
 
     def real(self, fr, automerge=False, supp=None):
-        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.ws)
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.ws, GITHUB_REPOSITORY="o/r")
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "on"
@@ -402,43 +440,73 @@ class SuppressionPR(Base):
         self.assertIn("dry-run would open auto-merge PR", out)
 
     def test_git_failures_stop_delivery(self):
+        # (changed: `git commit` and `git push` are never run any more; the commit is a signed one made through the API)
         for pre, label in ((("git", "fetch"), "git fetch"), (("git", "checkout"), "git checkout"),
-                           (("git", "commit"), "git commit"), (("git", "push"), "git push")):
-            fr = FakeRun({pre: (1, "", " %s broke \n" % label)})
+                           (("git", "status"), "git status"), (("git", "rev-parse"), "git rev-parse")):
+            fr = ApiRun({pre: (1, "", " %s broke \n" % label)})
             self.assertEqual(self.real(fr), (None, "%s: %s broke" % (label, label)), label)
             self.assertFalse(any(a[:3] == ["gh", "pr", "create"] for a in fr.argvs()), label)
-        push = [a for a in fr.argvs() if a[:2] == ["git", "push"]][0]
-        self.assertEqual(push, ["git", "push", "-u", "origin", self.BR, "--force-with-lease"])
+            self.assertTrue(fr.no_unsigned(), label)
+        fr = ApiRun({("git", "status"): (0, "", "")})                      # the run changed none of the files: never an empty commit
+        self.assertEqual(self.real(fr), (None, "signed commit: nothing to commit (the run changed none of the suppression files)"))
+        self.assertFalse(fr.stdins)
+
+    def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(self.real(fr), ("https://x/pull/9", None))
+        self.assertTrue(fr.no_unsigned(), fr.argvs())                      # NO git commit, NO git push
+        self.assertFalse(any(a[:2] == ["git", "add"] for a in fr.argvs()))
+        self.assertEqual(len(fr.stdins), 1)
+        inp = fr.stdins[0]["variables"]["input"]
+        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": self.BR})
+        self.assertEqual(inp["expectedHeadOid"], SHA)                      # the branch is rebuilt on origin/main's tip
+        self.assertEqual([x["path"] for x in inp["fileChanges"]["additions"]], [".auditor/knowledge.md", ".vex/fosterstack-cache.openvex.json"])
+        self.assertEqual(inp["fileChanges"]["deletions"], [])
+        a = fr.argvs()
+        self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/" + self.BR, "-f", "sha=" + SHA, "-F", "force=true"]))
+        self.assertLess(a.index(["gh", "api", "graphql", "--input", "-"]), a.index(a[[i for i, x in enumerate(a) if x[:3] == ["gh", "pr", "create"]][0]]))
+        # a deleted file is a deletion; a signed commit that cannot be made stops the delivery before any PR
+        fr = ApiRun({("git", "status"): (0, " D gone/file.txt\0", "")}); self.real(fr)
+        self.assertEqual(fr.stdins[0]["variables"]["input"]["fileChanges"], {"additions": [], "deletions": [{"path": "gone/file.txt"}]})
+        fr = ApiRun(mutation=(1, "", "HTTP 403")); res = self.real(fr)
+        self.assertEqual(res[0], None); self.assertIn("createCommitOnBranch", res[1]); self.assertIn("HTTP 403", res[1])
+        fr = ApiRun(mutation=(0, json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": False, "state": "UNSIGNED"}}}}}), ""))
+        res = self.real(fr)
+        self.assertIn("NOT validly signed", res[1]); self.assertFalse(any(x[:3] == ["gh", "pr", "create"] for x in fr.argvs()))
+        os.environ.pop("GITHUB_REPOSITORY"); fr = ApiRun()
+        with mock.patch.object(R.subprocess, "run", fr):
+            res = R._deliver_suppression_pr(self.out, self.supp, 1, "2026-09-22", "abcdef1234567890", False, [])
+        self.assertIn("GITHUB_REPOSITORY is not set", res[1])
 
     def test_stage_failure(self):
-        fr = FakeRun()
+        fr = ApiRun()
         url, err = self.real(fr, supp=self.d("empty-supp"))               # no openvex file to merge
         self.assertIsNone(url); self.assertTrue(err.startswith("stage files: "), err)
         self.assertEqual(fr.argvs(), [["git", "fetch", "origin", "main"], ["git", "checkout", "-B", self.BR, "origin/main"]])
 
     def test_existing_pr_reused_and_armed(self):
-        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
+        fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/7", None))
         self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"], fr.argvs())
         self.assertFalse(any(a[:3] == ["gh", "pr", "create"] for a in fr.argvs()))
         # staged files rode the checkout
         self.assertTrue(os.path.exists(os.path.join(self.ws, ".auditor", "knowledge.md")))
         self.assertTrue(os.path.exists(os.path.join(self.ws, ".vex", "fosterstack-cache.openvex.json")))
-        add = [a for a in fr.argvs() if a[:2] == ["git", "add"]][0]
-        self.assertIn(".auditor/knowledge.md", add)
-        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
+        # (changed: there is no `git add` any more; the files ride the one signed API commit)
+        self.assertIn(".auditor/knowledge.md", [x["path"] for x in fr.stdins[0]["variables"]["input"]["fileChanges"]["additions"]])
+        fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
         self.assertEqual(self.real(fr), ("https://x/pull/7", None))
         self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] for a in fr.argvs()))
 
     def test_create_race_already_exists(self):
-        fr = FakeRun({("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")],
+        fr = ApiRun({("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")],
                       ("gh", "pr", "create"): (1, "", "a pull request already EXISTS for head")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/8", None))
         self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/8"], fr.argvs())
         # race but the existing PR cannot be found -> a real failure
-        fr = FakeRun({("gh", "pr", "create"): (1, "", "already exists")})
+        fr = ApiRun({("gh", "pr", "create"): (1, "", "already exists")})
         self.assertEqual(self.real(fr), (None, "gh pr create: already exists"))
-        fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403")})
+        fr = ApiRun({("gh", "pr", "create"): (1, "", "HTTP 403")})
         self.assertEqual(self.real(fr), (None, "gh pr create: HTTP 403"))
 
     LIST = ("gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100")
@@ -448,7 +516,7 @@ class SuppressionPR(Base):
     def test_superseded_daily_suppression_prs_are_closed(self):          # advisor 0187: stale PRs must not pile up behind main
         for how, rules in (("created", {("gh", "pr", "create"): (0, "https://x/pull/11\n", "")}),
                            ("existing", {("gh", "pr", "list"): (0, "https://x/pull/6\n", "")})):
-            fr = FakeRun({**rules, self.LIST: (0, self.OPEN, "")})
+            fr = ApiRun({**rules, self.LIST: (0, self.OPEN, "")})
             self.assertIsNotNone(self.real(fr)[0], how)
             closed = sorted(a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "close"])
             self.assertEqual(closed, ["10", "5"], how)              # only OLDER daily branches: not today's, not a NEWER one (12), not panel/bump/feature
@@ -458,7 +526,7 @@ class SuppressionPR(Base):
             self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
 
     def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # reviewer r1 blocker 2
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
         self.real(fr)
         lst = [a for a in fr.argvs() if a[:3] == list(self.LIST)][0]
         self.assertIn("--paginate", lst)
@@ -467,32 +535,37 @@ class SuppressionPR(Base):
             self.assertIn(needle, jq)                                          # a fork's, a human's and an owner-held draft are never closed
 
     def test_todays_replacement_must_be_a_same_repo_pr_into_main(self):                            # review r6 B2
-        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", ""), self.LIST: (0, self.OPEN, "")})
+        fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", ""), self.LIST: (0, self.OPEN, "")})
         self.real(fr, automerge=True)
         lst = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "list"]][0]
         jq = lst[lst.index("--jq") + 1]
         self.assertIn("isCrossRepository == false", jq); self.assertIn('baseRefName == "main"', jq)
 
     def test_nothing_is_closed_when_todays_pr_was_not_delivered(self):
-        fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
+        fr = ApiRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
         self.assertIsNone(self.real(fr)[0])
         self.assertFalse(any(a[:3] == ["gh", "pr", "close"] for a in fr.argvs()))
 
     def test_a_failing_cleanup_never_fails_the_delivery(self):
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (1, "", "HTTP 500"),
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (1, "", "HTTP 500"),
                       ("gh", "pr", "close"): (1, "", "HTTP 500")})
         self.assertEqual(self.real(fr), ("https://x/pull/11", None))
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, ""), ("gh", "pr", "close"): (1, "", "HTTP 500")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, ""), ("gh", "pr", "close"): (1, "", "HTTP 500")})
         self.assertEqual(self.real(fr), ("https://x/pull/11", None))
 
+    def test_a_cleanup_that_raises_never_fails_the_delivery(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: OSError("gh vanished")})
+        res = self.real(fr)
+        self.assertEqual(res, ("https://x/pull/11", None))
+
     def test_create_draft_vs_automerge(self):
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/9", None))
         self.assert_branch_off_main(fr)
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertNotIn("--draft", create)
         self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr), ("https://x/pull/9", None))
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertEqual(create[3], "--draft")
@@ -503,12 +576,14 @@ class FixPR(Base):
     ROW = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v1.0.0", "to": "v1.1.0"}}
     BR = "auditor/bump-example.com-m-1.1.0"       # keyed by TARGET, never by CVE or commit (LR-32)
 
-    def real(self, rules, automerge=False):
-        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+    def real(self, rules, automerge=False, api=None, repo="o/r"):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY=repo)
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "1"
-        fr = FakeRun(rules)
+        fr = ApiRun(rules, **(api or {}))
+        if not os.path.exists(os.path.join(self.d("ws"), "go.mod")):      # what `go get` + `go mod tidy` leave in the checkout
+            open(os.path.join(self.d("ws"), "go.mod"), "w").write("module m\n")
         with mock.patch.object(R.subprocess, "run", fr):
             res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
         return res, fr
@@ -532,10 +607,28 @@ class FixPR(Base):
             res, fr = self.real({pre: (1, "", "nope")})
             self.assertEqual(res, (None, "%s: nope" % label, "error"))
             self.assertEqual(fr.argvs()[0], ["git", "reset", "--hard"])
-        res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "commit"): (1, "", "empty")})
-        self.assertEqual(res, (None, "git commit: empty", "error"))
-        res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "push"): (1, "", "rejected")})
-        self.assertEqual(res, (None, "git push: rejected", "error"))
+        # (changed: `git commit` / `git push` are never run; the commit is made through the API and its failures are signed-commit failures)
+        res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "rev-parse"): (1, "", "bad ref")})
+        self.assertEqual(res, (None, "git rev-parse: bad ref", "error"))
+        res, fr = self.real({("git", "diff"): (1, "", "")}, api={"mutation": (1, "", "HTTP 422 empty")})
+        self.assertEqual(res[2], "error"); self.assertIn("signed commit: createCommitOnBranch", res[1]); self.assertIn("HTTP 422 empty", res[1])
+        self.assertTrue(fr.no_unsigned())
+        res, fr = self.real({("git", "diff"): (1, "", "")}, api={"ref": (1, "", "HTTP 500")})
+        self.assertEqual(res[2], "error"); self.assertIn("reading branch", res[1])
+        res, fr = self.real({("git", "diff"): (1, "", "")}, repo="")
+        self.assertEqual(res[2], "error"); self.assertIn("GITHUB_REPOSITORY is not set", res[1])
+
+    def test_the_bump_commit_is_made_through_the_api_never_git(self):
+                                                                                   # (no go.sum in the checkout: a module with no dependencies)
+        res, fr = self.real({("git", "diff"): (1, "", ""), ("gh", "pr", "create"): (0, "https://x/pull/3\n", "")})
+        self.assertEqual(res, ("https://x/pull/3", None, "delivered"))
+        self.assertTrue(fr.no_unsigned(), fr.argvs())
+        inp = fr.stdins[0]["variables"]["input"]
+        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": self.BR})
+        self.assertEqual(inp["expectedHeadOid"], SHA)
+        self.assertEqual(inp["fileChanges"], {"additions": [{"path": "go.mod", "contents": "bW9kdWxlIG0K"}], "deletions": []})
+        self.assertIn("bump example.com/m", inp["message"]["headline"])
+        self.assertIn(["gh", "api", "repos/o/r/git/ref/heads/" + self.BR], fr.argvs())
 
     def test_go_get_unresolvable_and_tidy_error(self):
         res, fr = self.real({("go", "get"): (1, "", "unknown revision")})

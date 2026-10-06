@@ -21,7 +21,7 @@ environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 import argparse, copy, datetime, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auditorlib import policy  # noqa: E402
+from auditorlib import policy, signed_commit  # noqa: E402
 
 SEATS = ("A", "B")
 DEBATE_ROUNDS = (2, 3, 4)
@@ -1328,9 +1328,22 @@ def cmd_deliver(a, run=subprocess.run):
         if armed == "true":
             _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)
     if changed:
-        _sh(["git", "-C", a.repo, "add", "--"] + changed, plan, real, run)
-        _sh(["git", "-C", a.repo, "commit", "-m", "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today], plan, real, run)
-        _sh(["git", "-C", a.repo, "push", "--force", "origin", "HEAD:refs/heads/" + branch], plan, real, run)
+        # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a `git commit` here is unsigned
+        # and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created or force-reset onto `base`, then ONE commit is made on it.
+        message = "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today
+        if real:
+            if not os.environ.get("GITHUB_REPOSITORY"):
+                raise RuntimeError("auditor-panel: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit")
+            def recorded(cmd, **kw):                    # the plan records each API call (never the file contents sent on stdin)
+                plan.append(cmd)
+                return run(cmd, **kw)
+            try:
+                pushed = signed_commit.commit_via_api(os.environ["GITHUB_REPOSITORY"], branch, base, message,
+                                                      signed_commit.read_changes(a.repo, changed), run=recorded)
+            except signed_commit.CommitError as e:
+                raise RuntimeError("auditor-panel: %s" % public(e))
+        else:
+            plan.extend(signed_commit.planned_commands(os.environ.get("GITHUB_REPOSITORY") or "OWNER/REPO", branch, base))
         body = public("The daily scanner panel's audits of the rescan's unique findings (%s).\n\n%s" % (
             a.today, "\n".join("- " + c for c in changed)))
         if existing:
@@ -1348,7 +1361,6 @@ def cmd_deliver(a, run=subprocess.run):
         elif allowed:           # only content THIS run delivered is armed
             target = existing or branch
             if changed and existing and real:   # arm only the head THIS run pushed: another run's later push must never inherit this run's arming
-                pushed = _sh(["git", "-C", a.repo, "rev-parse", "HEAD"], plan, real, run).strip()
                 now_head = _sh(["gh", "api", "repos/{owner}/{repo}/pulls/%s" % existing, "--jq", ".head.sha"], plan, real, run).strip()
                 if now_head != pushed:
                     raise RuntimeError("auditor-panel: the PR's head is %s, not the %s this run pushed (another run replaced it): not arming auto-merge" % (now_head[:12], pushed[:12]))

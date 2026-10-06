@@ -22,6 +22,9 @@ def load():
 
 
 P = load()
+SHA40 = "c" * 40
+OID40 = "d" * 40
+GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID40, "signature": {"isValid": True, "state": "VALID"}}}}})
 GO_BIN = b"\x7fELF....." + P.GO_MARK + b"...."
 
 
@@ -497,6 +500,7 @@ class Deliver(Tmp):
             json.dump(obj, open(os.path.join(self.repo, rel), "w"))
         self.out = os.path.join(self.d, "out")
         os.makedirs(self.out)
+        env = mock.patch.dict(os.environ, {"GITHUB_SHA": SHA40, "GITHUB_REPOSITORY": "o/r"}); env.start(); self.addCleanup(env.stop)
 
     def day(self, **kw):
         st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
@@ -517,7 +521,12 @@ class Deliver(Tmp):
             out = (outputs or {}).get(tuple(cmd[:3]), "")
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = "success"
+            elif cmd[:3] == ["gh", "api", "graphql"]:
+                run.stdins.append(json.loads(kw["input"])); out = GQL_OK     # the signed commit, made through the API
+            elif cmd[:2] == ["gh", "api"] and "/git/ref" in cmd[2] + " ".join(cmd):
+                out = "{}"
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        run.stdins = []
         return calls, run
 
     def test_nothing_to_deliver(self):
@@ -534,6 +543,8 @@ class Deliver(Tmp):
         self.assertFalse(plan["real"])
         self.assertEqual(plan["changed"], [P.STATE])
         self.assertTrue(any(c[:3] == ["gh", "pr", "create"] for c in plan["commands"]))
+        self.assertIn(["gh", "api", "graphql", "--input", "-"], plan["commands"])                 # what would be done: the signed API commit
+        self.assertFalse([c for c in plan["commands"] if c[:2] == ["git", "commit"] or c[-1:] == ["HEAD:refs/heads/auditor/panel"]])
 
     def test_changes_go_through_a_pull_request_and_issues(self):           # REQ-SCAN-009-AC1, AC5, 013-AC4, 014-AC2
         self.day(issue="CVE-2099-0002 confirmed", owner=["the primary seat moves from vendor A to vendor B"],
@@ -544,15 +555,24 @@ class Deliver(Tmp):
                             "behavior": "unexplained", "finding": "f", "evidence": "e", "unexplained": True}])
         calls, run = self.fake()
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "AUDITOR_ISSUES_TOKEN": "issues-token", "GH_TOKEN": "app-token",
-               "GITHUB_SHA": "abc123"}
+               "GITHUB_SHA": SHA40}
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
             self.assertEqual(P.cmd_deliver(self.a(), run=run), 0)
         cmds = [c for c, _ in calls]
         self.assertEqual(cmds[0][:3], ["gh", "pr", "list"])
-        self.assertEqual(cmds[1], ["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "abc123"])
-        self.assertEqual(cmds[2][:4], ["git", "-C", self.repo, "add"])
-        self.assertEqual(sorted(cmds[2][5:]), sorted([P.STATE, P.VEX, P.PROFILES]))
-        self.assertEqual(cmds[4][-1], "HEAD:refs/heads/auditor/panel")        # never main
+        self.assertEqual(cmds[1], ["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", SHA40])
+        # (changed: the old cmds[2..4] were `git add`, `git commit`, `git push --force origin HEAD:refs/heads/auditor/panel`; now the
+        # branch is read, force-reset onto the run's main commit, and ONE commit is made through the API, which GitHub signs)
+        self.assertEqual(cmds[2], ["gh", "api", "repos/o/r/git/ref/heads/auditor/panel"])
+        self.assertEqual(cmds[3], ["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/auditor/panel", "-f", "sha=" + SHA40, "-F", "force=true"])
+        self.assertEqual(cmds[4], ["gh", "api", "graphql", "--input", "-"])
+        self.assertFalse([c for c in cmds if c[:4] in (["git", "-C", self.repo, "commit"], ["git", "-C", self.repo, "push"], ["git", "-C", self.repo, "add"])])   # no unsigned commit, no push
+        self.assertFalse([c for c in cmds if "push" in c])
+        inp = run.stdins[0]["variables"]["input"]
+        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": "auditor/panel"})   # never main
+        self.assertEqual(inp["expectedHeadOid"], SHA40)
+        self.assertEqual(sorted(x["path"] for x in inp["fileChanges"]["additions"]), sorted([P.STATE, P.VEX, P.PROFILES]))
+        self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03 (rules 7-9, 13, 14)")
         self.assertTrue(any(c[:4] == ["gh", "pr", "create", "--draft"] for c in cmds))
         issue_calls = [(c, t) for c, t in calls if c[:2] == ["gh", "issue"]]
         self.assertTrue(all(t == "issues-token" for _, t in issue_calls))
@@ -703,6 +723,7 @@ class RebuildReal(Tmp):
         self.m1 = self.git("rev-parse", "HEAD")
         self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
         self.guard = "success"
+        self.stdins = []
         self.pr_head = None
 
     def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None, state_source=None, view_armed=False):
@@ -720,10 +741,12 @@ class RebuildReal(Tmp):
                    ("gh", "pr", "view"): "true\n" if view_armed else "false\n"}.get(tuple(cmd[:3]), "")
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = self.guard
-            if cmd[:2] == ["gh", "api"] and "/pulls/" in cmd[2]:
-                out = self.pr_head or subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.work, capture_output=True, text=True).stdout.strip()
+            elif cmd[:2] == ["gh", "api"] and "/pulls/" in cmd[2]:
+                out = self.pr_head or self.origin_head()
+            elif cmd[:2] == ["gh", "api"]:
+                return self.github_api(cmd, kw)
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
-        env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on", "GITHUB_REPOSITORY": "o/r"}
         env.update(env_extra or {})
         if state_source is None:
             state_source = os.path.join(self.d, "ss-auto")
@@ -734,7 +757,49 @@ class RebuildReal(Tmp):
         return rc, calls
 
     def pushed(self, path):
+        self.git("fetch", "-q", "origin")           # the delivery no longer pushes from this clone: what GitHub holds is fetched
         return json.loads(self.git("show", "origin/auditor/panel:" + path, cwd=self.work))
+
+    def origin_head(self):
+        return subprocess.run(["git", "--git-dir", self.origin, "rev-parse", "refs/heads/auditor/panel"], capture_output=True, text=True).stdout.strip()
+
+    def github_api(self, cmd, kw):
+        """GitHub's side of the signed delivery, against the local origin: the ref calls move refs/heads/<branch>; createCommitOnBranch makes ONE
+        commit (parent = the branch head, refused unless it is expectedHeadOid, like GitHub) from the base64 additions/deletions."""
+        import base64
+        g = lambda *a, **k: subprocess.run(["git", "--git-dir", self.origin] + list(a), capture_output=True, text=True, **k)
+        ok = lambda out="{}": types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        bad = lambda err: types.SimpleNamespace(returncode=1, stdout="", stderr=err)
+        if cmd[2] == "graphql":
+            doc = json.loads(kw["input"]); self.stdins.append(doc)
+            inp = doc["variables"]["input"]; ref = "refs/heads/" + inp["branch"]["branchName"]
+            head = g("rev-parse", ref).stdout.strip()
+            if head != inp["expectedHeadOid"]:
+                return ok(json.dumps({"errors": [{"message": "Expected branch to point to %s but it was %s" % (inp["expectedHeadOid"], head)}]}))
+            env = dict(os.environ, GIT_INDEX_FILE=os.path.join(self.d, "api-index"), GIT_AUTHOR_NAME="gh", GIT_AUTHOR_EMAIL="g@x",
+                       GIT_COMMITTER_NAME="gh", GIT_COMMITTER_EMAIL="g@x")
+            if os.path.exists(env["GIT_INDEX_FILE"]):
+                os.remove(env["GIT_INDEX_FILE"])
+            g("read-tree", head, env=env)
+            for add in inp["fileChanges"]["additions"]:
+                blob = subprocess.run(["git", "--git-dir", self.origin, "hash-object", "-w", "--stdin"], input=base64.b64decode(add["contents"]),
+                                      capture_output=True).stdout.decode().strip()
+                g("update-index", "--add", "--cacheinfo", "100644,%s,%s" % (blob, add["path"]), env=env)
+            for rm in inp["fileChanges"]["deletions"]:
+                g("update-index", "--force-remove", rm["path"], env=env)
+            tree = g("write-tree", env=env).stdout.strip()
+            msg = inp["message"]["headline"] + ("\n\n" + inp["message"]["body"] if inp["message"]["body"] else "")
+            oid = g("commit-tree", tree, "-p", head, "-m", msg, env=env).stdout.strip()
+            g("update-ref", ref, oid)
+            return ok(json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": oid, "signature": {"isValid": True, "state": "VALID"}}}}}))
+        if cmd[2].endswith("git/refs") or cmd[2] == "--method":
+            ref, sha = [x.split("=", 1)[1] for x in cmd if x.startswith(("ref=", "sha="))][:2] if cmd[3] == "POST" else \
+                       ("refs/heads/" + cmd[4].split("/git/refs/heads/")[1], [x.split("=", 1)[1] for x in cmd if x.startswith("sha=")][0])
+            g("update-ref", ref, sha)
+            return ok()
+        if "/git/ref/heads/" in cmd[2]:
+            return ok() if g("rev-parse", "--verify", "-q", "refs/heads/" + cmd[2].split("/git/ref/heads/")[1]).returncode == 0 else bad("gh: Not Found (HTTP 404)")
+        return bad("unexpected gh api call %r" % (cmd,))
 
     def test_the_rebuilt_branch_is_one_commit_on_the_runs_main_commit(self):
         rc, calls = self.deliver()
@@ -742,6 +807,85 @@ class RebuildReal(Tmp):
         self.git("fetch", "-q", "origin")
         self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)                      # parent = today's main, not yesterday's
         self.assertEqual(self.git("rev-list", "--count", self.m1 + "..origin/auditor/panel"), "1")
+
+    def commands(self, calls):
+        return [" ".join(c) for c in calls]
+
+    def test_no_git_commit_and_no_git_push_is_ever_run(self):                # main requires signed commits; a git commit in the runner is unsigned
+        for existing in ("17", ""):
+            rc, calls = self.deliver(existing=existing)
+            self.assertEqual(rc, 0)
+            flat = self.commands(calls)
+            self.assertFalse([c for c in flat if " commit" in c and c.startswith("git")], flat)
+            self.assertFalse([c for c in flat if c.startswith("git") and (" push" in c or " add " in c)], flat)
+            self.assertEqual(flat.count("gh api graphql --input -"), 1)               # ONE signed commit through the API
+            self.assertEqual(self.pushed(P.STATE)["note"], "today")
+
+    def test_the_branch_is_reset_onto_the_runs_main_commit_before_the_signed_commit(self):
+        rc, calls = self.deliver()
+        flat = self.commands(calls)
+        reset = flat.index("gh api --method PATCH repos/o/r/git/refs/heads/auditor/panel -f sha=%s -F force=true" % self.m1)
+        self.assertEqual(flat[reset - 1], "gh api repos/o/r/git/ref/heads/auditor/panel")
+        self.assertEqual(flat[reset + 1], "gh api graphql --input -")
+        self.assertEqual(self.stdins[0]["variables"]["input"]["expectedHeadOid"], self.m1)     # a concurrent change to the branch fails the commit
+
+    def test_an_absent_branch_is_created_at_the_runs_main_commit(self):
+        subprocess.run(["git", "--git-dir", self.origin, "update-ref", "-d", "refs/heads/auditor/panel"], check=True)
+        rc, calls = self.deliver(existing="")
+        flat = self.commands(calls)
+        self.assertIn("gh api --method POST repos/o/r/git/refs -f ref=refs/heads/auditor/panel -f sha=%s" % self.m1, flat)
+        self.assertFalse([c for c in flat if "--method PATCH" in c])
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)
+
+    def test_a_branch_that_moves_under_the_delivery_fails_closed_and_nothing_is_armed(self):
+        orig = self.github_api
+        def racing(cmd, kw):
+            if cmd[2] == "graphql":                                                  # another writer lands a commit between the reset and ours
+                env = dict(os.environ, GIT_AUTHOR_NAME="x", GIT_AUTHOR_EMAIL="x@x", GIT_COMMITTER_NAME="x", GIT_COMMITTER_EMAIL="x@x")
+                tree = subprocess.run(["git", "--git-dir", self.origin, "rev-parse", self.m1 + "^{tree}"], capture_output=True, text=True).stdout.strip()
+                other = subprocess.run(["git", "--git-dir", self.origin, "commit-tree", tree, "-p", self.m1, "-m", "other"], capture_output=True, text=True, env=env).stdout.strip()
+                subprocess.run(["git", "--git-dir", self.origin, "update-ref", "refs/heads/auditor/panel", other], check=True)
+            return orig(cmd, kw)
+        self.github_api = racing
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver()
+        self.assertIn("returned errors", str(e.exception))
+
+    def test_a_commit_that_is_not_confirmed_signed_is_not_delivered(self):
+        orig = self.github_api
+        def unsigned(cmd, kw):
+            r = orig(cmd, kw)
+            if cmd[2] == "graphql":
+                doc = json.loads(r.stdout); doc["data"]["createCommitOnBranch"]["commit"]["signature"] = {"isValid": False, "state": "UNSIGNED"}
+                return types.SimpleNamespace(returncode=0, stdout=json.dumps(doc), stderr="")
+            return r
+        self.github_api = unsigned
+        rc, calls = None, []
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver()
+        self.assertIn("NOT validly signed", str(e.exception))
+        self.assertIn("unsigned", str(e.exception))
+
+    def test_a_failing_api_call_stops_delivery_before_any_pr_is_touched(self):
+        for fail in ("graphql", "--method", "/git/ref/heads/"):
+            orig = self.github_api
+            self.github_api = lambda cmd, kw, fail=fail, orig=orig: types.SimpleNamespace(returncode=1, stdout="", stderr="HTTP 500 for openai seat") \
+                if (cmd[2] == fail or (fail in cmd[2])) else orig(cmd, kw)
+            calls = []
+            with self.assertRaises(RuntimeError) as e:
+                self.deliver()
+            self.assertNotIn("openai", str(e.exception))
+            self.github_api = orig
+
+    def test_a_delivery_without_a_repository_or_a_full_main_sha_is_refused(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(env_extra={"GITHUB_REPOSITORY": ""})
+        self.assertIn("GITHUB_REPOSITORY is not set", str(e.exception))
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(env_extra={"GITHUB_SHA": "HEAD"})
+        self.assertIn("not a full commit sha", str(e.exception))
+        self.assertEqual(self.stdins, [])
 
     def test_the_open_prs_files_survive_and_mains_newer_changes_are_kept(self):
         self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
@@ -911,7 +1055,7 @@ class RebuildReal(Tmp):
             P.cmd_state_source(a, run=nopr)
         self.assertIn("first day", so.getvalue()); self.assertFalse(os.path.exists(out))
         # a PR whose branch has no state file at all falls back to main's
-        self.git("checkout", "-q", "auditor/panel"); self.git("rm", "-q", P.STATE); self.git("commit", "-q", "-m", "no state"); self.git("push", "-q", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        self.git("fetch", "-q", "origin"); self.git("checkout", "-q", "-f", "-B", "auditor/panel", "origin/auditor/panel"); self.git("rm", "-q", P.STATE); self.git("commit", "-q", "-m", "no state"); self.git("push", "-q", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
         self.git("checkout", "-q", "--", P.STATE)
         with mock.patch("sys.stdout", new=io.StringIO()) as so:
             P.cmd_state_source(a, run=run)
@@ -922,7 +1066,7 @@ class RebuildReal(Tmp):
         order = [c[:3] + c[-1:] for c in calls if c[:3] in (["gh", "pr", "merge"], ["git", "-C", self.work])]
         flat = [" ".join(c) for c in calls]
         disarm = next(i for i, c in enumerate(flat) if "merge --disable-auto 17" in c)
-        push = next(i for i, c in enumerate(flat) if " push --force " in c)
+        push = next(i for i, c in enumerate(flat) if c == "gh api graphql --input -")     # (changed: the head is replaced by the signed API commit, once a `git push --force`)
         self.assertLess(disarm, push)                                                   # disarmed first, even if a later command fails
 
     def test_the_guard_is_read_with_the_job_token_never_the_apps(self):                            # review r6 B1
