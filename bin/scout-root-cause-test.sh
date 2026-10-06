@@ -116,7 +116,7 @@ cat > "$e2e/skopeo" <<'STUB'
 #!/usr/bin/env bash
 echo "skopeo $*" >> "$LOG"
 case "$1" in
-  inspect) echo '{"manifests": []}' ;;
+  inspect) echo "{\"manifests\": [], \"attached\": $(grep -c '^docker scout attestation add' "$LOG" 2>/dev/null || echo 0)}" ;;   # the index changes once an attestation was attached
 esac
 STUB
 cat > "$e2e/install" <<'STUB'
@@ -142,6 +142,12 @@ if [ "${n_exact:-0}" -eq 2 ]; then echo "ok: the control and the release copy ar
 else echo "FAIL: expected 2 exact-digest scans with --vex-author, got ${n_exact:-0}"; fail=$((fail+1)); fi
 if grep -qF 'docker scout attestation list registry://ghcr.io/fosterstack/cache-scout-probe:release' "$LOG"; then echo "ok: the release copy's attestations are listed (why it got no attestation child)"; pass=$((pass+1))
 else echo "FAIL: the release copy's attestation list is not recorded"; fail=$((fail+1)); fi
+# the exact-digest scan names the digest AFTER attaching, never the pre-attach one (the stub's index changes once an attestation is added)
+for t in control release; do
+  b=$(cat "$e2e/out/attest/$t.before"); x=$(grep -o "scan $t by its exact post-attachment digest \`sha256:[0-9a-f]*" "$e2e/out/summary.md" | grep -o '[0-9a-f]\{64\}$')
+  if [ -n "$x" ] && [ "$x" != "$b" ]; then echo "ok: the $t exact-digest scan names a digest different from the pre-attach one"; pass=$((pass+1))
+  else echo "FAIL: the $t exact-digest scan is missing or names the pre-attach digest ($x vs $b)"; fail=$((fail+1)); fi
+done
 for want in "control-after-exact-digest" "release-after-exact-digest"; do
   if [ -e "$e2e/out/attest/$want.json" ]; then echo "ok: $want.json recorded"; pass=$((pass+1)); else echo "FAIL: $want.json missing"; fail=$((fail+1)); fi
 done
@@ -171,7 +177,7 @@ cat > "$e4/skopeo" <<'STUB'
 #!/usr/bin/env bash
 echo "skopeo $*" >> "$LOG"
 case "$1" in
-  inspect) echo '{"manifests": []}' ;;
+  inspect) echo "{\"manifests\": [], \"attached\": $(grep -c '^docker scout attestation add' "$LOG" 2>/dev/null || echo 0)}" ;;   # the index changes once an attestation was attached
 esac
 STUB
 cp "$e2e/install" "$e4/install" 2>/dev/null || printf '#!/usr/bin/env bash\n: > "${@: -1}"\n' > "$e4/install"

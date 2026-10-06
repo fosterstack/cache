@@ -89,6 +89,7 @@ echo "- scan the release copy from the registry (our author): exit $rc — findi
 for t in control release; do
   nd=$(digest "$PROBE_REPO:$t"); f="$a/$t-after-exact-digest.json"; extra=(--vex-author "$AUTHOR_RE"); [ "$t" = release ] && extra=(--vex-author '^FosterStack LLC$')
   if [ "$nd" = READ-FAILED ]; then echo "- scan $t by its exact post-attachment digest: inconclusive (the digest could not be read)" >> "$summ"; continue; fi
+  if [ "$nd" = "$(cat "$a/$t.before")" ]; then echo "- scan $t by its exact post-attachment digest: inconclusive (attaching did not change the index digest, so there is no post-attachment digest to scan)" >> "$summ"; continue; fi
   docker scout cves --format gitlab "${extra[@]}" "registry://$PROBE_REPO@sha256:$nd" > "$f" 2> "$f.err"; rc=$?
   if [ "$t" = control ]; then verdict=$(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" "${cve:-CVE-0000-0000}" "${purl:--}" 2>&1 | tail -1)
   else verdict="findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)"; fi
@@ -109,6 +110,7 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
   for form in "published:pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "probe-tag:pkg:docker/$PROBE_REPO@ours-probe-tag"; do
     k=${form%%:*}; prod=${form#*:}; tag="ours-$k"
     skopeo copy -q --all "docker://$FIXTURE" "docker://$PROBE_REPO:$tag" >> "$a/copy.log" 2>&1
+    before_d=$(digest "$PROBE_REPO:$tag")
     python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "$prod" CVE-2023-4911 "$g_purl" "$a/$tag.vex.json"
     docker scout attestation add --file "$a/$tag.vex.json" --predicate-type "$PRED" "$PROBE_REPO:$tag" > "$a/$tag-add.log" 2>&1
     echo "  - $k (product \`$prod\`): attestation add exit $? — \`$(tail -1 "$a/$tag-add.log" | cut -c1-160)\`" >> "$summ"
@@ -116,7 +118,8 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
     docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:$tag" > "$f" 2> "$f.err"; rc=$?
     echo "  - $k scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
     nd=$(digest "$PROBE_REPO:$tag"); f="$a/$tag-after-exact-digest.json"
-    if [ "$nd" = READ-FAILED ]; then echo "  - $k by its exact post-attachment digest: inconclusive (the digest could not be read)" >> "$summ"
+    if [ "$nd" = READ-FAILED ] || [ "$before_d" = READ-FAILED ]; then echo "  - $k by its exact post-attachment digest: inconclusive (a digest could not be read)" >> "$summ"
+    elif [ "$nd" = "$before_d" ]; then echo "  - $k by its exact post-attachment digest: inconclusive (attaching did not change the index digest)" >> "$summ"
     else
       docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:$nd" > "$f" 2> "$f.err"; rc=$?
       echo "  - $k scanned by its exact post-attachment digest \`sha256:$nd\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
