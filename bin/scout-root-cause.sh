@@ -180,9 +180,18 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
     echo "- the child's attestation-manifest descriptor: \`$(cut -c1-300 "$a/built-descriptor.json")\`" >> "$summ"
     skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$PROBE_REPO:multi-built" >> "$a/copy.log" 2>&1
     docker buildx imagetools create --tag "$PROBE_REPO:multi-built" --file "$a/built-descriptor.json" "$PROBE_REPO:multi-built@$MULTI" > "$a/built-create.log" 2>&1
-    echo "- imagetools create (the original index plus the descriptor): exit $? — \`$(tail -1 "$a/built-create.log" | cut -c1-200)\`" >> "$summ"
+    crc=$?
+    echo "- imagetools create (the original index plus the descriptor): exit $crc — \`$(tail -1 "$a/built-create.log" | cut -c1-200)\`" >> "$summ"
     bb=$(digest "$PROBE_REPO:multi-built"); children "$PROBE_REPO:multi-built" > "$a/built.children"
     echo "- built index digest \`$bb\` (the original was \`$MULTI\`); children: $(cat "$a/built.children")" >> "$summ"
+    # a scan is only interpreted for an index that really was built: create succeeded, the digest changed, and the attestation-manifest
+    # child is among its children (a failed create leaves the copied original at the tag, and scanning that would mislabel it)
+    if [ "$crc" -ne 0 ] || [ "$bb" = READ-FAILED ] || [ "$bb" = "sha256:${MULTI#sha256:}" ] || [ "$bb" = "${MULTI#sha256:}" ] \
+       || ! grep -q attestation-manifest "$a/built.children"; then
+      echo "- built index: inconclusive (the create failed, the index did not change, or it carries no attestation-manifest child), so it is not scanned" >> "$summ"
+      bb=READ-FAILED; skip_built=1
+    fi
+    [ -n "${skip_built:-}" ] || {
     f="$a/built-after-tag.json"
     docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi-built" > "$f" 2> "$f.err"; rc=$?
     echo "- built index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
@@ -193,6 +202,7 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
     fi
     docker scout attestation list "registry://$PROBE_REPO:multi-built" > "$a/built-attestation-list.txt" 2>&1
     echo "- built index attestation list: \`$(head -c 400 "$a/built-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+    }
   else
     echo "- built index not attempted: Scout created no attestation-manifest child on the child copy" >> "$summ"
   fi

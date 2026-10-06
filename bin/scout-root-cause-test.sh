@@ -173,6 +173,7 @@ case "$1 $2" in
   "scout cves") echo '{"vulnerabilities": [{"id": "x1", "cve": "CVE-2023-4911", "identifiers": [{"type": "cve", "name": "CVE-2023-4911", "value": "CVE-2023-4911"}], "location": {"dependency": {"package": {"name": "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm"}, "version": "2.36-9"}}}]}' ;;
   "scout attestation") echo "attestation added" ;;
   "scout version") echo "v1.26.0" ;;
+  "buildx imagetools") [ -z "${FAIL_CREATE:-}" ] || { echo "ERROR: boom"; exit 1; } ;;
 esac
 STUB
 cp "$e2e/skopeo" "$e4/skopeo" 2>/dev/null || true
@@ -186,7 +187,9 @@ case "$1" in
       *:child-a*) if grep -q 'attestation add .*:child-a' "$LOG"; then
                     echo '{"manifests": [{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":567,"annotations":{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":"sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"},"platform":{"architecture":"unknown","os":"unknown"}}, {"digest":"sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab","platform":{"os":"linux","architecture":"amd64"}}]}'
                   else echo '{"manifests": []}'; fi ;;
-      *:multi-built*) b=$(grep -c 'imagetools create' "$LOG" 2>/dev/null || true); echo "{\"manifests\": [], \"built\": ${b:-0}, \"attached\": $att}" ;;
+      *:multi-built*) b=$(grep -c 'imagetools create' "$LOG" 2>/dev/null || true)
+                      if [ "${b:-0}" -gt 0 ]; then echo "{\"manifests\": [{\"digest\":\"sha256:aaaa\",\"annotations\":{\"vnd.docker.reference.type\":\"attestation-manifest\"}}], \"built\": $b}"
+                      else echo "{\"manifests\": [], \"built\": 0, \"attached\": $att}"; fi ;;
       *) echo "{\"manifests\": [], \"attached\": $att}" ;;
     esac ;;
 esac
@@ -238,7 +241,8 @@ if grep -qF "skopeo copy -q docker://docker.io/library/debian@$CHILD_FIX docker:
   echo "ok: the amd64 child is copied to its own scratch tag and our statement attached to it"; pass=$((pass+1))
 else echo "FAIL: the child copy or its attachment is missing"; fail=$((fail+1)); fi
 if grep -qF 'docker buildx imagetools create --tag ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
-   && grep -qF -- '--file ' "$LOG4" && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor.json" \
+   && grep -qF -- "--file $e4/out/attest/built-descriptor.json ghcr.io/fosterstack/cache-scout-probe:multi-built@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b" "$LOG4" \
+   && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor.json" \
    && grep -qF 'vnd.docker.reference.digest' "$e4/out/attest/built-descriptor.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor.json"; then
   echo "ok: the attestation-manifest descriptor (annotations kept) is added to a copy of the original index"; pass=$((pass+1))
 else echo "FAIL: the built index step or the descriptor is wrong"; fail=$((fail+1)); fi
@@ -249,5 +253,13 @@ else echo "FAIL: the built index scans or summary are missing"; fail=$((fail+1))
 bx=$(grep -c 'imagetools create' "$LOG" || true)
 if [ "${bx:-0}" -eq 0 ] && ! grep -q 'child-a' "$LOG"; then echo "ok: a fixture without the target builds no index"; pass=$((pass+1))
 else echo "FAIL: a fixture without the target tried the built-index probe"; fail=$((fail+1)); fi
+# a FAILED create leaves the copied original at the tag: it must be reported inconclusive and never scanned as the built index
+LOG5="$e4/docker5.log"
+FAIL_CREATE=1 SCOUT_DIR="$e4" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$LOG5" HOME="$e4/home" \
+  PATH="$e4:$PATH" bash "$here/scout-root-cause.sh" "$e4/out5" > "$e4/run5.log" 2>&1 || true
+if grep -q 'inconclusive (the create failed' "$e4/out5/summary.md" && ! grep -qF 'registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG5" \
+   && ! grep -q 'attestation list registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG5"; then
+  echo "ok: a failed create is inconclusive and the unchanged copy is never scanned as the built index"; pass=$((pass+1))
+else echo "FAIL: a failed create was scanned or not reported inconclusive"; fail=$((fail+1)); fi
 rm -rf "$e2e" "$e4"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
