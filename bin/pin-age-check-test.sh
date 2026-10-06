@@ -21,7 +21,7 @@ check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
 NOW="2026-10-05T12:00:00Z"
 d() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA3=$(printf '3%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40)); SHA5=$(printf '5%.0s' $(seq 40))
-DIG1=sha256:$(printf '1%.0s' $(seq 64)); DIG2=sha256:$(printf '2%.0s' $(seq 64)); DIG3=sha256:$(printf '3%.0s' $(seq 64))
+SHA6=$(printf '6%.0s' $(seq 40)); DIG4=sha256:$(printf '4%.0s' $(seq 64)); DIG5=sha256:$(printf '5%.0s' $(seq 64)); DIG1=sha256:$(printf '1%.0s' $(seq 64)); DIG2=sha256:$(printf '2%.0s' $(seq 64)); DIG3=sha256:$(printf '3%.0s' $(seq 64))
 
 # --- the base repository: one of every kind of pin --------------------------------------------------------------------
 base="$work/base"; mkdir -p "$base/.github/workflows" "$base/.github/actions/local" "$base/.github/agent" "$base/bin" "$base/build/docker"
@@ -46,6 +46,16 @@ jobs:
       - run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
           python3 -m pip install --require-hashes -r .github/agent/adjudicator-requirements.txt
+      - uses: goreleaser/goreleaser-action@$SHA6 # v7.2.3
+        with:
+          version: '2.17.1'
+      - uses: helm/kind-action@$SHA6 # v1.15.0
+        with:
+          node_image: kindest/node:v1.31.0@$DIG4
+      - run: |
+          curl -fsSL https://github.com/cli/cli/releases/download/v2.40.0/gh_2.40.0_linux_amd64.tar.gz -o gh.tgz
+          python3 -m pip install --quiet black==24.1.0
+          docker run --rm alpine:3.20@$DIG5 true
 EOF
 cat >"$base/.github/actions/local/action.yml" <<EOF
 name: local
@@ -154,6 +164,11 @@ cover tool-python-version "$(sub .github/workflows/ci.yml "python-version: '3.12
 cover gotool "$(sub .github/workflows/ci.yml 'gosec@v2.29.0' 'gosec@v2.30.0')" "gotool:github.com/securego/gosec/v2/cmd/gosec@v2.30.0" go-index
 cover package "$(sub .github/agent/adjudicator-requirements.txt 'anthropic==1.9.0' 'anthropic==1.10.0')" "package:pypi/anthropic@1.10.0" pypi
 cover image-container "$(sub .github/workflows/ci.yml "ghcr.io/own/ci@$DIG1" "ghcr.io/own/ci@$DIG3")" "image:ghcr.io/own/ci@$DIG3" registry-push
+cover tool-goreleaser "$(sub .github/workflows/ci.yml "version: '2.17.1'" "version: '2.18.0'")" "tool:goreleaser@2.18.0" github-release
+cover tool-curl-download "$(sub .github/workflows/ci.yml 'releases/download/v2.40.0/gh_2.40.0_linux_amd64' 'releases/download/v2.41.0/gh_2.41.0_linux_amd64')" "tool:cli/cli@2.41.0" github-release
+cover package-in-run-step "$(sub .github/workflows/ci.yml 'black==24.1.0' 'black==24.2.0')" "package:pypi/black@24.2.0" pypi
+cover image-in-run-step "$(sub .github/workflows/ci.yml "alpine:3.20@$DIG5" "alpine:3.20@$DIG3")" "image:alpine@$DIG3" registry-push
+cover image-installer-input "$(sub .github/workflows/ci.yml "kindest/node:v1.31.0@$DIG4" "kindest/node:v1.31.0@$DIG3")" "image:kindest/node@$DIG3" registry-push
 NEW5=$(printf 'b%.0s' $(seq 40))
 cover local-composite-action "$(sub .github/actions/local/action.yml "actions/cache@$SHA5" "actions/cache@$NEW5")" "action:actions/cache@$NEW5" github-release
 

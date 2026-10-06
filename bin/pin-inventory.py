@@ -23,10 +23,22 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 # installer-action inputs that name a version of something the action downloads: action -> (input, tool name)
 INSTALLER_INPUTS = {
-    "golangci/golangci-lint-action": ("version", "golangci-lint"),
-    "actions/setup-python": ("python-version", "python"),
+    "golangci/golangci-lint-action": [("version", "golangci-lint")],
+    "actions/setup-python": [("python-version", "python")],
+    "actions/setup-java": [("java-version", "java")],
+    "actions/setup-node": [("node-version", "node")],
+    "goreleaser/goreleaser-action": [("version", "goreleaser")],
+    "sigstore/cosign-installer": [("cosign-release", "cosign")],
+    "google-github-actions/setup-gcloud": [("version", "gcloud")],
+    "azure/setup-helm": [("version", "helm")],
+    "helm/kind-action": [("version", "kind"), ("kubectl_version", "kubectl"), ("node_image", None)],  # None: the input names an image
 }
+# NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\s+(?:-\S+\s+)*([\w.\-/]+)@([\w.\-+]+)")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?([\w.+-]+)/")
+_PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
+_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;'\"]+)")
+_RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
 _REQ_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", re.M)
 WORKFLOW_GLOBS = (".github/workflows/*.yml", ".github/workflows/*.yaml", ".github/actions/*/action.yml", ".github/actions/*/action.yaml",
@@ -106,13 +118,21 @@ def _walk(node, out, labels, path):
                 repo = "/".join(ref_path.split("/")[:2])
                 out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", "")))
                 w = node.get("with")
-                spec = INSTALLER_INPUTS.get(repo)
-                if spec and isinstance(w, dict) and isinstance(w.get(spec[0]), str) and w[spec[0]].strip():
-                    out.append(Item("tool", spec[1], w[spec[0]].strip()))
+                for inp, tool in INSTALLER_INPUTS.get(repo, []):
+                    if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip() and "${{" not in w[inp]:
+                        val = w[inp].strip()
+                        out.append(_image_item(val) if tool is None else Item("tool", tool, val))
         run = node.get("run")
         if isinstance(run, str):
             for m in _GO_INSTALL.finditer(run):
                 out.append(Item("gotool", m.group(1), m.group(2)))
+            for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version
+                out.append(Item("tool", m.group(1), m.group(2)))
+            for m in _PIP_INSTALL.finditer(run):
+                for p in _PIP_PIN.finditer(m.group(1)):
+                    out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
+            for m in _RUN_IMAGE.finditer(run):  # docker run/pull of an image by digest
+                out.append(_image_item(m.group(1)))
         for k, v in node.items():
             if k in ("container", "image") and isinstance(v, (str, dict)):
                 img = v if isinstance(v, str) else v.get("image")

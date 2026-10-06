@@ -2005,7 +2005,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC2
-        given: "a pull request that moves an action pin, or the version of a tool, image or package a workflow downloads (the version inputs of installer actions, install-scanner.sh pins, go install and pip install in run steps, container images our workflows run, the auditor's hash-pinned Python packages)"
+        given: "a pull request that moves an action pin, or the version of a tool, image or package a workflow downloads (the version inputs of installer actions, install-scanner.sh pins, go install, pip install and release-asset downloads (curl or wget of a GitHub release) in run steps, container images our workflows run, local composite actions under .github/actions, the auditor's hash-pinned Python packages)"
         when: "the age check runs"
         then: "it names every version that moved; the product's base image (build/docker FROM lines), Go modules and the Go toolchain are not covered and are skipped"
         verification: { method: ci-workflow, release_blocking: false }
