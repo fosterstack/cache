@@ -770,6 +770,15 @@ class RebuildReal(Tmp):
             self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))
         self.assertIn("not arming", str(e.exception))
 
+    def test_a_no_change_delivery_arms_nothing(self):                                              # review r8 B1
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
+        self.git("checkout", "-q", "main"); self.write(P.STATE, st); self.git("add", "-A"); self.git("commit", "-q", "-m", "state = today's"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-B", "auditor/panel", self.m1); self.git("push", "-q", "-f", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        rc, calls = self.deliver(pr_files="%s\n" % P.STATE)                                          # the PR carries exactly main: nothing to deliver today
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "pr", "merge"] and "--auto" in c])      # nothing is armed on the strength of old content
+        self.assertFalse([c for c in calls if " push " in " ".join(c)])
+
     def test_a_pr_with_only_the_panels_own_records_is_armed_by_number(self):
         self.git("checkout", "-q", "-B", "auditor/panel", self.m0)
         doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-9-ONLY")); doc["version"] = 2
@@ -1002,13 +1011,26 @@ class CarryForward(Tmp):
 
     def test_state_removed_unchanged_and_already_on_main_are_skipped(self):
         self.put("PR", P.STATE, {"a": 1}); self.put("BASE", P.STATE, {"a": 0})
-        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "was")                        # removed by the PR
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "")                           # absent on both sides
         self.assertEqual(self.go([P.STATE, P.PROFILES]), [])
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "was")                        # the PR DELETED the file: loud, never dropped
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "")
         self.assertFalse(os.path.exists(os.path.join(self.repo, P.STATE)))                        # the state is rewritten from the judgment, never carried
         self.put("PR", P.VEX, json.dumps({"statements": []})); self.put("BASE", P.VEX, json.dumps({"statements": []}))   # untouched by the PR
         self.assertEqual(self.go([P.VEX]), [])
         self.put("PR", P.VEX, "new"); self.put("BASE", P.VEX, "old"); self.cur(P.VEX, "new")      # main already has exactly this
         self.assertEqual(self.go([P.VEX]), [])
+
+    def test_duplicate_profile_keys_are_ambiguous_and_refused(self):                               # review r8 B2
+        a = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "A"}
+        b = dict(a, finding="B")                                                                    # same scanner/kind/package, different content
+        self.put("BASE", P.PROFILES, {"entries": [a, b]}); self.put("PR", P.PROFILES, {"entries": [a, b, dict(a, match={"package": "^c$"})]})
+        self.cur(P.PROFILES, {"entries": [dict(a, finding="A-prime"), b]})
+        with self.assertRaises(RuntimeError) as e:
+            self.go([P.PROFILES])
+        self.assertIn("ambiguous", str(e.exception))
 
     def test_a_foreign_path_is_refused_even_when_deleted_or_identical(self):                       # review r6 B4
         for pr_txt, base_txt in (("", "was"), ("same", "same")):

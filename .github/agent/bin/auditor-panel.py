@@ -1214,8 +1214,10 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         if path == STATE:
             continue
         pr_txt, base_txt = show(ref, path), show(base_ref, path)
+        if not pr_txt and base_txt:
+            raise _conflict(path, "the whole file (the PR deleted it)")   # a deletion is never silently dropped
         if not pr_txt or pr_txt == base_txt:
-            continue                                   # removed by the PR, or untouched by it
+            continue                                   # absent on both sides, or untouched by the PR
         cur_txt = read(path)
         if cur_txt == pr_txt:
             continue                                   # main already has exactly this
@@ -1251,6 +1253,10 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         elif path == PROFILES:
             pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"entries": []}'), json.loads(cur_txt)
             key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
+            for doc_ in (pr_doc, base_doc, cur_doc):
+                ks = [key(e) for e in doc_["entries"]]
+                if len(ks) != len(set(ks)):
+                    raise _conflict(path, "entries that share a scanner/kind/package (ambiguous: refusing to guess which one changed)")
             cur_by = {key(e): e for e in cur_doc["entries"]}
             base_by = {key(e): e for e in base_doc["entries"]}
             touched = False
@@ -1336,7 +1342,10 @@ def cmd_deliver(a, run=subprocess.run):
         pr_paths = set(changed)
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
-        if automerge_allowed(sorted(pr_paths)):
+        allowed = automerge_allowed(sorted(pr_paths))
+        if allowed and not changed:
+            pass                # nothing was delivered today: nothing is armed or disarmed on the strength of old content
+        elif allowed:           # only content THIS run delivered is armed
             target = existing or branch
             if changed and existing and real:   # arm only the head THIS run pushed: another run's later push must never inherit this run's arming
                 pushed = _sh(["git", "-C", a.repo, "rev-parse", "HEAD"], plan, real, run).strip()
