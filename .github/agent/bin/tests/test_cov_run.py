@@ -466,6 +466,13 @@ class SuppressionPR(Base):
         for needle in ('.head.repo.fork == false', '.draft == false', '.user.type == "Bot"'):
             self.assertIn(needle, jq)                                          # a fork's, a human's and an owner-held draft are never closed
 
+    def test_todays_replacement_must_be_a_same_repo_pr_into_main(self):                            # review r6 B2
+        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", ""), self.LIST: (0, self.OPEN, "")})
+        self.real(fr, automerge=True)
+        lst = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "list"]][0]
+        jq = lst[lst.index("--jq") + 1]
+        self.assertIn("isCrossRepository == false", jq); self.assertIn('baseRefName == "main"', jq)
+
     def test_nothing_is_closed_when_todays_pr_was_not_delivered(self):
         fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
         self.assertIsNone(self.real(fr)[0])

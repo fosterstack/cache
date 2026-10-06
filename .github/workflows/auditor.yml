@@ -62,6 +62,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read        # to list/download the rescan run's artifacts
+      checks: read         # the panel reads the reserved-branch guard's verdict on the open PR's tip (the delivery App token never gets checks)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -341,6 +342,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
+          AUDITOR_CHECKS_TOKEN: ${{ github.token }}   # the guard's check run is read with the job token (checks: read), not the App's
           AUDITOR_ALLOW_REAL_GH: '1'
           AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}   # REQ-AUD-17 AC3: the owner's switch, as for the CVE auditor's PRs
         run: |

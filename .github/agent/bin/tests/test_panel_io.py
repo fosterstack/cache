@@ -904,6 +904,35 @@ class RebuildReal(Tmp):
         push = next(i for i, c in enumerate(flat) if " push --force " in c)
         self.assertLess(disarm, push)                                                   # disarmed first, even if a later command fails
 
+    def test_the_guard_is_read_with_the_job_token_never_the_apps(self):                            # review r6 B1
+        seen = []
+        orig = P._sh
+        def spy(cmd, plan, real, run=subprocess.run, check=True, **kw):
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                seen.append(kw.get("env", {}).get("GH_TOKEN"))
+            return orig(cmd, plan, real, run, check, **kw)
+        with mock.patch.object(P, "_sh", spy):
+            self.deliver(env_extra={"GH_TOKEN": "app-token", "AUDITOR_CHECKS_TOKEN": "job-token"})
+        self.assertTrue(seen and set(seen) == {"job-token"}, seen)
+
+    def test_main_state_that_moved_since_the_prs_base_stops_the_run_before_judgment(self):         # review r6 B3
+        out = os.path.join(self.d, "state.json"); shaf = os.path.join(self.d, "sha")
+        a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
+        self.git("checkout", "-q", "main")
+        self.write(P.STATE, {"version": 1, "false": [], "real": [{"id": "NEWER-ON-MAIN"}], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "main's state moved"); self.git("push", "-q", "origin", "main")
+
+        def run(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            o = {("gh", "pr", "list"): "17\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                o = "success"
+            return types.SimpleNamespace(returncode=0, stdout=o, stderr="")
+        with self.assertRaises(RuntimeError) as e:
+            P.cmd_state_source(a, run=run)
+        self.assertIn("main's panel state changed", str(e.exception))
+
     def test_a_pr_branch_with_a_planted_file_fails_the_run_before_any_push(self):
         self.git("checkout", "-q", "auditor/panel")
         os.makedirs(os.path.join(self.work, ".github/agent/prompts"), exist_ok=True)
@@ -961,11 +990,20 @@ class CarryForward(Tmp):
 
     def test_state_removed_unchanged_and_already_on_main_are_skipped(self):
         self.put("PR", P.STATE, {"a": 1}); self.put("BASE", P.STATE, {"a": 0})
-        self.put("PR", "gone.txt", ""); self.put("BASE", "gone.txt", "was")                       # removed by the PR
-        self.put("PR", "same.txt", "x"); self.put("BASE", "same.txt", "x")                         # untouched by the PR
-        self.put("PR", "main-has.txt", "new"); self.put("BASE", "main-has.txt", "old"); self.cur("main-has.txt", "new")
-        self.assertEqual(self.go([P.STATE, "gone.txt", "same.txt", "main-has.txt"]), [])
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "was")                        # removed by the PR
+        self.assertEqual(self.go([P.STATE, P.PROFILES]), [])
         self.assertFalse(os.path.exists(os.path.join(self.repo, P.STATE)))                        # the state is rewritten from the judgment, never carried
+        self.put("PR", P.VEX, json.dumps({"statements": []})); self.put("BASE", P.VEX, json.dumps({"statements": []}))   # untouched by the PR
+        self.assertEqual(self.go([P.VEX]), [])
+        self.put("PR", P.VEX, "new"); self.put("BASE", P.VEX, "old"); self.cur(P.VEX, "new")      # main already has exactly this
+        self.assertEqual(self.go([P.VEX]), [])
+
+    def test_a_foreign_path_is_refused_even_when_deleted_or_identical(self):                       # review r6 B4
+        for pr_txt, base_txt in (("", "was"), ("same", "same")):
+            self.put("PR", "bin/foreign.sh", pr_txt); self.put("BASE", "bin/foreign.sh", base_txt)
+            with self.assertRaises(RuntimeError) as e:
+                self.go(["bin/foreign.sh"])
+            self.assertIn("never writes", str(e.exception))
 
     def test_vex_additions_changes_and_conflicts(self):
         base = {"version": 1, "statements": [self.st("A"), self.st("B")]}
@@ -1105,6 +1143,13 @@ class Wiring(unittest.TestCase):                                            # RE
         deliver = self.steps[self.step("auditor-panel.py deliver")]["run"]
         self.assertIn('--state-source "${RUNNER_TEMP}/panel-state-source"', deliver)
         self.assertIn('--sha-out "${RUNNER_TEMP}/panel-state-source"', run)
+
+    def test_the_guard_reader_has_checks_read_and_the_app_token_never_does(self):                    # review r6 B1
+        self.assertEqual(self.wf["jobs"]["audit"]["permissions"].get("checks"), "read")
+        deliver = self.steps[self.step("auditor-panel.py deliver")]
+        self.assertEqual(deliver["env"]["AUDITOR_CHECKS_TOKEN"], "${{ github.token }}")
+        app = next(st for st in self.steps if st.get("id") == "app-token")
+        self.assertNotIn("permission-checks", app["with"])
 
     def test_the_seat_never_moves_the_daily_cve_auditor(self):             # REQ-SCAN-014-AC3
         cve = self.steps[self.step("auditor-run.py")]

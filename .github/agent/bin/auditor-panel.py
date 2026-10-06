@@ -1121,8 +1121,10 @@ GUARD_CHECK = "only-the-app-pushes-auditor-lane"
 
 def _require_app_tip(repo, tip, plan, real, run):
     """Only what the App itself pushed may be read or carried: the reserved-branch guard (a check on every push to auditor/*) must have PASSED on this commit."""
+    # read with the JOB token (checks: read), never the delivery App's: the App must not hold Checks (it publishes the review gate's verdict elsewhere)
+    token = os.environ.get("AUDITOR_CHECKS_TOKEN") or os.environ.get("GH_TOKEN") or ""
     verdict = _sh(["gh", "api", "repos/{owner}/{repo}/commits/%s/check-runs?check_name=%s" % (tip, GUARD_CHECK), "--jq",
-                   '.check_runs | map(.conclusion) | join(",")'], plan, real, run).strip()
+                   '.check_runs | map(.conclusion) | join(",")'], plan, real, run, env=dict(os.environ, GH_TOKEN=token)).strip()
     if verdict != "success":
         raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it may hold a push that was not the App's; refusing to use it"
                            % (tip[:12], verdict))
@@ -1141,6 +1143,14 @@ def cmd_state_source(a, run=subprocess.run):
         _require_app_tip(a.repo, tip, plan, True, run)
         if _sh(["git", "-C", a.repo, "ls-tree", "FETCH_HEAD", "--", STATE], plan, True, run).strip():
             text = _sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run)
+        # main's own state must not have moved since the PR's base (someone merged a newer state): continuing from the PR's older one would publish a regression
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, True, run, check=False)
+        mb = _sh(["git", "-C", a.repo, "merge-base", tip, "HEAD"], plan, True, run).strip()
+        main_file = os.path.join(a.repo, STATE)
+        main_text = open(main_file).read() if os.path.exists(main_file) else ""
+        base_text = _sh(["git", "-C", a.repo, "show", "%s:%s" % (mb, STATE)], plan, True, run) if mb and _sh(["git", "-C", a.repo, "ls-tree", mb, "--", STATE], plan, True, run).strip() else ""
+        if mb and main_text != base_text and main_text != (text or ""):
+            raise RuntimeError("auditor-panel: main's panel state changed since the open PR's base, and the PR's older state would overwrite it; close the PR so the next run starts from main")
     where = "the open panel PR #%s" % existing
     if text is None:
         main_file = os.path.join(a.repo, STATE)
@@ -1196,6 +1206,9 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         with open(full, "w") as fh:
             fh.write(text)
 
+    for path in sorted(set(pr_files)):   # EVERY path first: a deletion or an identical copy of a foreign file is as foreign as an edit
+        if path not in (STATE, VEX, PROFILES):
+            raise RuntimeError("auditor-panel: the open PR's branch holds %s, which the panel never writes; refusing to carry it (a human pushed to the App's branch?)" % path)
     carried = []
     for path in sorted(set(pr_files)):
         if path == STATE:

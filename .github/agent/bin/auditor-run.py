@@ -346,8 +346,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
     # it (no duplicate, no false failure) instead of a second `gh pr create`.
     def _existing_pr():
-        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
-                            "--jq", ".[0].url // \"\""], cwd=ws, capture_output=True, text=True)
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
+                            "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
         return (q.stdout or "").strip() if q.returncode == 0 else ""
     ex = _existing_pr()
     if ex:
@@ -542,8 +542,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
             return None, ("git push: " + (r.stderr or "").strip()), "error"
 
     def _existing():
-        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
-                            "--jq", ".[0].url // \"\""], cwd=ws, capture_output=True, text=True)
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
+                            "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
         return (q.stdout or "").strip() if q.returncode == 0 else ""
     def _arm(u):
         if automerge and u:
