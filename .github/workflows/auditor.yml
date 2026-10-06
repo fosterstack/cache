@@ -48,6 +48,10 @@ permissions:
 jobs:
   audit:
     name: audit
+    # one audit at a time: two overlapping runs could each rebuild auditor/panel and one could arm auto-merge on the other's head
+    concurrency:
+      group: auditor-daily-delivery
+      cancel-in-progress: false
     # a seat-probe dispatch runs ONLY the panel-probe job below: no ordinary audit, delivery, App token or claim logging
     if: ${{ !inputs.panel_probe }}
     runs-on: ubuntu-latest
@@ -62,6 +66,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read        # to list/download the rescan run's artifacts
+      checks: read         # the panel reads the reserved-branch guard's verdict on the open PR's tip (the delivery App token never gets checks)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -328,12 +333,7 @@ jobs:
           # yesterday's judgments, debates and scores: the OPEN panel PR's branch (pending, not yet merged) if there is
           # one, else main's file; a closed or rejected branch never steers the run
           state="${RUNNER_TEMP}/panel-state.json"
-          open_pr=$(gh pr list --head auditor/panel --state open --json number --jq '.[0].number // empty')
-          if [ -n "$open_pr" ] && git fetch --quiet origin auditor/panel && git show FETCH_HEAD:.auditor/panel-state.json > "$state" 2>/dev/null; then
-            echo "state from the open panel PR #${open_pr}"
-          elif [ -f .auditor/panel-state.json ]; then cp .auditor/panel-state.json "$state"; echo "state from main"
-          else rm -f "$state"; echo "no earlier state: the first day"
-          fi
+          python3 .github/agent/bin/auditor-panel.py state-source --repo . --state "$state" --sha-out "${RUNNER_TEMP}/panel-state-source"
           jq -n --arg r "$RESCAN_RUN" --arg h "$RESCAN_HEAD" --arg m "$MAIN_HEAD" --arg c "$RESCAN_CONCLUSION" \
             '{run_id: $r, head: $h, main_head: $m, conclusion: $c}' > "${RUNNER_TEMP}/rescan-binding.json"
           python3 .github/agent/bin/auditor-panel.py judge --verdict "${RUNNER_TEMP}/panel/verdict.json" \
@@ -346,6 +346,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           AUDITOR_ISSUES_TOKEN: ${{ github.token }}
+          AUDITOR_CHECKS_TOKEN: ${{ github.token }}   # the guard's check run is read with the job token (checks: read), not the App's
           AUDITOR_ALLOW_REAL_GH: '1'
           AUDITOR_AUTOMERGE: ${{ vars.AUDITOR_AUTOMERGE }}   # REQ-AUD-17 AC3: the owner's switch, as for the CVE auditor's PRs
         run: |
@@ -354,7 +355,7 @@ jobs:
           dry_arg=""
           [ "$dry" = "false" ] || dry_arg="--dry-run"
           python3 .github/agent/bin/auditor-panel.py deliver --out "${RUNNER_TEMP}/panel-out" --repo . \
-            --today "$(date -u +%F)" ${dry_arg}
+            --state-source "${RUNNER_TEMP}/panel-state-source" --today "$(date -u +%F)" ${dry_arg}
 
       - name: Publish the report to the run summary
         if: ${{ always() }}

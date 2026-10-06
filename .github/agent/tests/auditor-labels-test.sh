@@ -58,7 +58,8 @@ def run(cmd, **kw):
                 return types.SimpleNamespace(returncode=1, stdout="", stderr="could not add label: '%s' not found" % cmd[i + 1])
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
-a = types.SimpleNamespace(out=d, repo=repo, today="2026-10-05", dry_run=False)
+ss = os.path.join(d, "state-source"); open(ss, "w").write("")       # a real delivery needs the state-source record (here: no open PR was read)
+a = types.SimpleNamespace(out=d, repo=repo, today="2026-10-05", dry_run=False, state_source=ss)
 res = {"calls": calls}
 try:
     res["rc"] = ap.cmd_deliver(a, run=run)

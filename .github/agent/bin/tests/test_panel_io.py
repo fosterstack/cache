@@ -506,7 +506,8 @@ class Deliver(Tmp):
         json.dump(d, open(os.path.join(self.out, "day.json"), "w"))
 
     def a(self, dry=False):
-        return args(out=self.out, repo=self.repo, dry_run=dry, today="2026-10-03")
+        ss = os.path.join(self.d, "state-source"); open(ss, "w").write("")      # the fake rev-parse answers "": the judgment read the same tip
+        return args(out=self.out, repo=self.repo, dry_run=dry, today="2026-10-03", state_source=ss)
 
     def fake(self, outputs=None):
         calls = []
@@ -514,6 +515,8 @@ class Deliver(Tmp):
         def run(cmd, **kw):
             calls.append((cmd, kw.get("env", {}).get("GH_TOKEN")))
             out = (outputs or {}).get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                out = "success"
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         return calls, run
 
@@ -608,9 +611,12 @@ class Deliver(Tmp):
                 mock.patch("sys.stdout", new=io.StringIO()):
             P.cmd_deliver(self.a(), run=run)
         cmds = [c for c, _ in calls]
-        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], cmds)   # the open PR holds a profile entry (r2 R7)
-        self.assertIn(["git", "-C", self.repo, "fetch", "origin", "auditor/panel"], cmds)   # builds on the open PR
-        self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], cmds)   # the open PR holds a profile entry (r2 R7)
+        # advisor 0186 (replaces "builds on the open PR's FETCH_HEAD", which left the branch behind main forever): the open PR's branch is
+        # READ (fetched) so its files carry forward, but the branch is rebuilt on the run's main commit
+        self.assertTrue(any(c[:4] == ["git", "-C", self.repo, "fetch"] and c[-1] == "auditor/panel" and "origin" in c for c in cmds))
+        self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", os.environ.get("GITHUB_SHA") or "HEAD"], cmds)
+        self.assertNotIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
         self.assertIn(["gh", "pr", "edit", "17"], [c[:4] for c in cmds])
         self.assertIn(["gh", "issue", "comment", "42"], [c[:4] for c in cmds])
         stmts = json.load(open(vpath))["statements"]
@@ -647,6 +653,473 @@ class Deliver(Tmp):
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1"}), self.assertRaises(RuntimeError) as e:
             P.cmd_deliver(self.a(), run=run)
         self.assertNotIn("openai", str(e.exception))
+
+
+class RebuildReal(Tmp):
+    """advisor 0186 (REQ-AUD-17): with an open PR the branch is rebuilt on the run's CURRENT main commit and the PR's files carry forward.
+    Real git against a local origin; only gh is faked."""
+
+    VEXDOC = {"@id": "https://x/vex", "version": 1, "timestamp": "t", "statements": []}
+
+    def git(self, *a, cwd=None):
+        r = subprocess.run(["git", *a], cwd=cwd or self.work, capture_output=True, text=True)
+        assert r.returncode == 0, (a, r.stderr)
+        return r.stdout.strip()
+
+    def write(self, rel, obj):
+        path = os.path.join(self.work, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        json.dump(obj, open(path, "w"), indent=2)
+        open(path, "a").write("\n")
+
+    def stmt(self, name, status="not_affected"):
+        return {"@id": "https://x/vex#" + name, "vulnerability": {"name": name}, "status": status}
+
+    def setUp(self):
+        super().setUp()
+        self.origin = os.path.join(self.d, "origin.git")
+        self.work = os.path.join(self.d, "work")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        subprocess.run(["git", "clone", "-q", "file://" + self.origin, self.work], check=True, capture_output=True)
+        for k, v in (("user.name", "t"), ("user.email", "t@x"), ("commit.gpgsign", "false")):
+            self.git("config", k, v)
+        self.write(P.VEX, dict(self.VEXDOC, statements=[self.stmt("CVE-0-BASE")]))
+        self.write(P.PROFILES, {"entries": []})
+        self.write(P.STATE, {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "m0"); self.git("branch", "-M", "main"); self.git("push", "-q", "origin", "main")
+        self.m0 = self.git("rev-parse", "HEAD")
+        # yesterday's panel PR: ONE commit on m0 carrying a pending VEX proposal and a pending profile entry
+        self.git("checkout", "-q", "-b", "auditor/panel")
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-1-PANEL")); doc["version"] = 2
+        self.write(P.VEX, doc)
+        self.entry = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}
+        self.write(P.PROFILES, {"entries": [self.entry]})
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "panel yesterday"); self.git("push", "-q", "origin", "auditor/panel")
+        self.git("checkout", "-q", "main")
+        # main moves on: the CVE auditor merged a suppression since
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-2-MAIN")); doc["version"] = 2
+        self.write(P.VEX, doc)
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "m1 (main moved)"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
+        self.guard = "success"
+        self.pr_head = None
+
+    def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None, state_source=None, view_armed=False):
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
+        json.dump(st, open(os.path.join(self.out, "state.json"), "w"))
+        json.dump({"issue": "", "vex": list(vex), "profiles": [], "owner": [], "misses": [], "log": []}, open(os.path.join(self.out, "day.json"), "w"))
+        files = pr_files if pr_files is not None else "%s\n%s\n%s\n" % (P.PROFILES, P.STATE, P.VEX)
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            out = {("gh", "pr", "list"): existing + "\n" if existing else "", ("gh", "pr", "diff"): files,
+                   ("gh", "pr", "view"): "true\n" if view_armed else "false\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                out = self.guard
+            if cmd[:2] == ["gh", "api"] and "/pulls/" in cmd[2]:
+                out = self.pr_head or subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.work, capture_output=True, text=True).stdout.strip()
+            return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
+        env.update(env_extra or {})
+        if state_source is None:
+            state_source = os.path.join(self.d, "ss-auto")
+            open(state_source, "w").write(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0] if existing else "")
+        a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06", state_source=state_source)
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
+            rc = P.cmd_deliver(a, run=run)
+        return rc, calls
+
+    def pushed(self, path):
+        return json.loads(self.git("show", "origin/auditor/panel:" + path, cwd=self.work))
+
+    def test_the_rebuilt_branch_is_one_commit_on_the_runs_main_commit(self):
+        rc, calls = self.deliver()
+        self.assertEqual(rc, 0)
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)                      # parent = today's main, not yesterday's
+        self.assertEqual(self.git("rev-list", "--count", self.m1 + "..origin/auditor/panel"), "1")
+
+    def test_the_open_prs_files_survive_and_mains_newer_changes_are_kept(self):
+        self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
+                           "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}])
+        self.git("fetch", "-q", "origin")
+        ids = {s["vulnerability"]["name"] for s in self.pushed(P.VEX)["statements"]}
+        self.assertEqual(ids, {"CVE-0-BASE", "CVE-1-PANEL", "CVE-2-MAIN", "CVE-3-TODAY"})              # yesterday's proposal kept, main's newer statement not clobbered
+        self.assertEqual(self.pushed(P.PROFILES)["entries"], [self.entry])                              # the pending profile entry survived
+        self.assertEqual(self.pushed(P.STATE)["note"], "today")
+
+    def test_a_profile_entry_still_blocks_auto_merge_and_disarms(self):
+        rc, calls = self.deliver()
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)                       # the carried profile entry keeps it manual
+        self.assertTrue(any(c[:3] == ["gh", "pr", "view"] for c in calls))                              # and an armed PR is checked for disarming
+
+    def test_a_carried_profile_entry_blocks_auto_merge_even_when_the_listing_hides_it(self):     # review r4 B1
+        rc, calls = self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))                 # the (stub) gh listing says only state and VEX
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)           # but the branch carried a profile entry: still manual
+
+    def test_arming_is_bound_to_the_head_this_run_pushed(self):                                  # review r7 B1
+        self.git("checkout", "-q", "-B", "auditor/panel", self.m0)
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-9-ONLY")); doc["version"] = 2
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "vex only"); self.git("push", "-q", "-f", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        self.pr_head = "e" * 40                                                                # another run replaced the head after our push
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))
+        self.assertIn("not arming", str(e.exception))
+
+    def test_a_no_change_delivery_arms_nothing(self):                                              # review r8 B1
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
+        self.git("checkout", "-q", "main"); self.write(P.STATE, st); self.git("add", "-A"); self.git("commit", "-q", "-m", "state = today's"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-B", "auditor/panel", self.m1); self.git("push", "-q", "-f", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        rc, calls = self.deliver(pr_files="%s\n" % P.STATE)                                          # the PR carries exactly main: nothing to deliver today
+        self.assertFalse([c for c in calls if c[:3] == ["gh", "pr", "merge"] and "--auto" in c])      # nothing is armed on the strength of old content
+        self.assertFalse([c for c in calls if " push " in " ".join(c)])
+
+    def test_a_pr_with_only_the_panels_own_records_is_armed_by_number(self):
+        self.git("checkout", "-q", "-B", "auditor/panel", self.m0)
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-9-ONLY")); doc["version"] = 2
+        self.write(P.VEX, doc)
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "vex only"); self.git("push", "-q", "-f", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        rc, calls = self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))
+        self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)               # state + VEX only: armed, through the PR's number
+        self.assertIn(["gh", "pr", "ready", "17"], calls)
+
+    def test_closing_the_source_pr_before_delivery_does_not_launder_the_judgment(self):     # review r5 B1
+        tip = self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0]
+        ss = os.path.join(self.d, "ss-closed"); open(ss, "w").write(tip)
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(existing="", state_source=ss)                                      # the PR the judgment read is gone
+        self.assertIn("absent", str(e.exception))
+        ss2 = os.path.join(self.d, "ss-none"); open(ss2, "w").write("")
+        with self.assertRaises(RuntimeError):
+            self.deliver(existing="17", state_source=ss2)                                   # a PR appeared that the judgment never read
+        with self.assertRaises(RuntimeError):
+            self.deliver(existing="", state_source=os.path.join(self.d, "no-such-record"))   # no record at all: refused, PR or not
+
+    def test_both_lookups_select_only_a_same_repo_pr_into_main(self):                       # review r5 B3
+        rc, calls = self.deliver()
+        lst = [c for c in calls if c[:3] == ["gh", "pr", "list"]][0]
+        self.assertIn('.baseRefName == "main"', lst[lst.index("--jq") + 1])
+        self.assertIn("isCrossRepository == false", lst[lst.index("--jq") + 1])
+
+    def test_main_vex_timestamp_never_regresses_by_instant_through_the_whole_delivery(self):   # review r5 B2
+        self.assertEqual(P._later("2026-10-05T09:00:00-04:00", "2026-10-05T10:00:00Z"), "2026-10-05T09:00:00-04:00")   # 13:00Z beats 10:00Z
+        self.assertEqual(P._later("2026-10-05T18:00:00Z", "2026-10-06T00:00:00Z"), "2026-10-06T00:00:00Z")
+        self.assertEqual(P._later("not a time", "2026-10-06T00:00:00Z"), "2026-10-06T00:00:00Z")
+        self.assertEqual(P._later("2026-10-06T00:00:00Z", "not a time"), "2026-10-06T00:00:00Z")
+        self.assertEqual(P._later("x", "y"), "x")
+        self.git("checkout", "-q", "main")
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["timestamp"] = "2026-10-06T18:00:00Z"
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "later ts"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
+                           "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}])
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.pushed(P.VEX)["timestamp"], "2026-10-06T18:00:00Z")           # today's midnight must not replace main's later instant
+
+    def test_a_real_delivery_with_an_open_pr_needs_the_state_source_record(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(state_source=os.path.join(self.d, "missing"))
+        self.assertIn("--state-source", str(e.exception))
+        self.assertEqual(P.automerge_allowed([], env={"AUDITOR_AUTOMERGE": "on"}), False)       # nothing changed arms nothing
+
+    def test_the_pr_branch_not_the_listing_decides_what_is_carried(self):
+        rc, calls = self.deliver(pr_files="%s\n" % P.STATE)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.pushed(P.STATE)["note"], "today")
+        self.assertEqual(self.pushed(P.PROFILES)["entries"], [self.entry])      # still carried: the PR branch holds it, whatever gh pr diff says
+
+    def test_a_conflict_with_a_newer_main_change_fails_loudly_instead_of_clobbering(self):
+        # the PR flipped CVE-0-BASE to affected; main ALSO changed that statement since: neither silently wins
+        self.git("checkout", "-q", "auditor/panel")
+        doc = json.load(open(os.path.join(self.work, P.VEX)))
+        doc["statements"][0]["status"] = "affected"
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "flip"); self.git("push", "-q", "origin", "auditor/panel")
+        self.git("checkout", "-q", "main")
+        doc = json.load(open(os.path.join(self.work, P.VEX)))
+        doc["statements"][0]["status"] = "under_investigation"
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "main edits it"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver()
+        self.assertIn("conflict", str(e.exception).lower())
+
+    def test_a_tip_that_did_not_pass_the_reserved_branch_guard_is_never_carried(self):      # reviewer r2 blocker: a human's push must not be laundered
+        for verdict in ("failure", "", "success,failure", "cancelled"):
+            self.guard = verdict
+            before = self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0]
+            with self.assertRaises(RuntimeError) as e:
+                self.deliver()
+            self.assertIn("reserved-branch guard", str(e.exception))
+            self.assertEqual(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0], before)   # nothing pushed
+        self.guard = "success"
+        self.assertEqual(self.deliver()[0], 0)
+
+    def test_a_forks_pr_from_a_branch_of_the_same_name_is_not_the_panel_pr(self):
+        rc, calls = self.deliver()
+        lst = [c for c in calls if c[:3] == ["gh", "pr", "list"]][0]
+        self.assertIn("isCrossRepository == false", lst[lst.index("--jq") + 1])
+
+    def test_an_unreadable_object_aborts_it_is_never_read_as_absent(self):          # review r3 B3
+        def failing(cmd, **kw):
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal: bad object")
+        with self.assertRaises(RuntimeError):
+            P.carry_forward(self.work, "FETCH_HEAD", self.m0, [P.VEX], [], True, failing)
+
+    def test_the_judgment_state_source_is_authenticated_and_bound_to_the_delivery(self):    # review r3 B1
+        out = os.path.join(self.d, "state.json"); shaf = os.path.join(self.d, "sha")
+        a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
+
+        def run(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            o = {("gh", "pr", "list"): "17\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                o = self.guard
+            return types.SimpleNamespace(returncode=0, stdout=o, stderr="")
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_state_source(a, run=run), 0)
+        tip = self.git("rev-parse", "origin/auditor/panel")
+        self.assertEqual(open(shaf).read(), tip)                                        # the exact commit read is recorded
+        self.assertEqual(json.load(open(out))["seat"], "A")
+        # a tip that did not pass the guard is never read
+        self.guard = "failure"
+        with self.assertRaises(RuntimeError):
+            P.cmd_state_source(a, run=run)
+        self.guard = "success"
+        # delivery refuses when the branch is no longer the one the judgment read
+        open(shaf, "w").write("0" * 40)
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(env_extra={}, state_source=shaf)
+        self.assertIn("moved", str(e.exception))
+        open(shaf, "w").write(tip)
+        self.assertEqual(self.deliver(state_source=shaf)[0], 0)
+        # no open PR: main's state, an empty recorded sha, and the file removed when there is none anywhere
+        def nopr(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch("sys.stdout", new=io.StringIO()) as so:
+            P.cmd_state_source(a, run=nopr)
+        self.assertIn("main", so.getvalue()); self.assertEqual(open(shaf).read(), "")
+        os.remove(os.path.join(self.work, P.STATE)); self.git("checkout", "-q", "--", ".") if False else None
+        with mock.patch("sys.stdout", new=io.StringIO()) as so:
+            P.cmd_state_source(a, run=nopr)
+        self.assertIn("first day", so.getvalue()); self.assertFalse(os.path.exists(out))
+        # a PR whose branch has no state file at all falls back to main's
+        self.git("checkout", "-q", "auditor/panel"); self.git("rm", "-q", P.STATE); self.git("commit", "-q", "-m", "no state"); self.git("push", "-q", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        self.git("checkout", "-q", "--", P.STATE)
+        with mock.patch("sys.stdout", new=io.StringIO()) as so:
+            P.cmd_state_source(a, run=run)
+        self.assertIn("main", so.getvalue())
+
+    def test_an_armed_pr_is_disarmed_before_its_head_is_replaced(self):             # review r3 B2
+        rc, calls = self.deliver(view_armed=True)
+        order = [c[:3] + c[-1:] for c in calls if c[:3] in (["gh", "pr", "merge"], ["git", "-C", self.work])]
+        flat = [" ".join(c) for c in calls]
+        disarm = next(i for i, c in enumerate(flat) if "merge --disable-auto 17" in c)
+        push = next(i for i, c in enumerate(flat) if " push --force " in c)
+        self.assertLess(disarm, push)                                                   # disarmed first, even if a later command fails
+
+    def test_the_guard_is_read_with_the_job_token_never_the_apps(self):                            # review r6 B1
+        seen = []
+        orig = P._sh
+        def spy(cmd, plan, real, run=subprocess.run, check=True, **kw):
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                seen.append(kw.get("env", {}).get("GH_TOKEN"))
+            return orig(cmd, plan, real, run, check, **kw)
+        with mock.patch.object(P, "_sh", spy):
+            self.deliver(env_extra={"GH_TOKEN": "app-token", "AUDITOR_CHECKS_TOKEN": "job-token"})
+        self.assertTrue(seen and set(seen) == {"job-token"}, seen)
+
+    def test_main_state_that_moved_since_the_prs_base_stops_the_run_before_judgment(self):         # review r6 B3
+        out = os.path.join(self.d, "state.json"); shaf = os.path.join(self.d, "sha")
+        a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
+        self.git("checkout", "-q", "main")
+        self.write(P.STATE, {"version": 1, "false": [], "real": [{"id": "NEWER-ON-MAIN"}], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "main's state moved"); self.git("push", "-q", "origin", "main")
+
+        def run(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            o = {("gh", "pr", "list"): "17\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                o = "success"
+            return types.SimpleNamespace(returncode=0, stdout=o, stderr="")
+        with self.assertRaises(RuntimeError) as e:
+            P.cmd_state_source(a, run=run)
+        self.assertIn("main's panel state changed", str(e.exception))
+
+    def test_a_pr_branch_with_a_planted_file_fails_the_run_before_any_push(self):
+        self.git("checkout", "-q", "auditor/panel")
+        os.makedirs(os.path.join(self.work, ".github/agent/prompts"), exist_ok=True)
+        open(os.path.join(self.work, ".github/agent/prompts/p.md"), "w").write("planted")
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "human push"); self.git("push", "-q", "origin", "auditor/panel")
+        self.git("checkout", "-q", "main")
+        before = self.git("rev-parse", "origin/auditor/panel")
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver()
+        self.assertIn("never writes", str(e.exception))
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel"), before)       # nothing was pushed
+
+    def test_auto_merge_is_only_for_the_panels_own_records(self):
+        on = {"AUDITOR_AUTOMERGE": "on"}
+        self.assertTrue(P.automerge_allowed([P.STATE, P.VEX], env=on))
+        for extra in (P.PROFILES, ".github/agent/prompts/x.md", ".github/workflows/auditor.yml", "bin/x.sh"):
+            self.assertFalse(P.automerge_allowed([P.STATE, extra], env=on), extra)
+
+    def test_no_open_pr_still_starts_from_the_runs_main_commit(self):
+        rc, calls = self.deliver(existing="")
+        self.assertEqual(rc, 0)
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)
+        self.assertEqual([s["vulnerability"]["name"] for s in self.pushed(P.VEX)["statements"]][:2], ["CVE-0-BASE", "CVE-2-MAIN"])   # no PR: nothing carried
+        self.assertFalse(any(c[:4] == ["git", "-C", self.work, "fetch"] for c in calls))
+
+
+class CarryForward(Tmp):
+    """carry_forward (advisor 0186) branch by branch, against canned `git show` contents."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = os.path.join(self.d, "r"); os.makedirs(self.repo)
+        self.texts = {}
+
+    def put(self, ref, path, obj):
+        self.texts[(ref, path)] = obj if isinstance(obj, str) else json.dumps(obj)
+
+    def cur(self, path, obj):
+        full = os.path.join(self.repo, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+        open(full, "w").write(obj if isinstance(obj, str) else json.dumps(obj))
+
+    def go(self, files):
+        def fake(cmd, **kw):
+            if cmd[3] == "ls-tree":
+                present = (cmd[4], cmd[-1]) in self.texts and self.texts[(cmd[4], cmd[-1])] != ""
+                return types.SimpleNamespace(returncode=0, stdout="100644 blob x\t%s" % cmd[-1] if present else "", stderr="")
+            ref, _, path = cmd[-1].partition(":")
+            return types.SimpleNamespace(returncode=0, stdout=self.texts.get((ref, path), ""), stderr="")
+        return P.carry_forward(self.repo, "PR", "BASE", files, [], True, fake)
+
+    def st(self, name, status="not_affected"):
+        return {"@id": "https://x/v#" + name, "status": status}
+
+    def test_state_removed_unchanged_and_already_on_main_are_skipped(self):
+        self.put("PR", P.STATE, {"a": 1}); self.put("BASE", P.STATE, {"a": 0})
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "")                           # absent on both sides
+        self.assertEqual(self.go([P.STATE, P.PROFILES]), [])
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "was")                        # the PR DELETED the file: loud, never dropped
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+        self.put("PR", P.PROFILES, ""); self.put("BASE", P.PROFILES, "")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, P.STATE)))                        # the state is rewritten from the judgment, never carried
+        self.put("PR", P.VEX, json.dumps({"statements": []})); self.put("BASE", P.VEX, json.dumps({"statements": []}))   # untouched by the PR
+        self.assertEqual(self.go([P.VEX]), [])
+        self.put("PR", P.VEX, "new"); self.put("BASE", P.VEX, "old"); self.cur(P.VEX, "new")      # main already has exactly this
+        self.assertEqual(self.go([P.VEX]), [])
+
+    def test_duplicate_profile_keys_are_ambiguous_and_refused(self):                               # review r8 B2
+        a = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "A"}
+        b = dict(a, finding="B")                                                                    # same scanner/kind/package, different content
+        self.put("BASE", P.PROFILES, {"entries": [a, b]}); self.put("PR", P.PROFILES, {"entries": [a, b, dict(a, match={"package": "^c$"})]})
+        self.cur(P.PROFILES, {"entries": [dict(a, finding="A-prime"), b]})
+        with self.assertRaises(RuntimeError) as e:
+            self.go([P.PROFILES])
+        self.assertIn("ambiguous", str(e.exception))
+
+    def test_a_foreign_path_is_refused_even_when_deleted_or_identical(self):                       # review r6 B4
+        for pr_txt, base_txt in (("", "was"), ("same", "same")):
+            self.put("PR", "bin/foreign.sh", pr_txt); self.put("BASE", "bin/foreign.sh", base_txt)
+            with self.assertRaises(RuntimeError) as e:
+                self.go(["bin/foreign.sh"])
+            self.assertIn("never writes", str(e.exception))
+
+    def test_vex_additions_changes_and_conflicts(self):
+        base = {"version": 1, "statements": [self.st("A"), self.st("B")]}
+        pr = {"version": 2, "timestamp": "2026-02-01T00:00:00Z", "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]}
+        self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base)
+        self.cur(P.VEX, {"version": 5, "timestamp": "2026-01-01T00:00:00Z", "statements": [self.st("A"), self.st("B"), self.st("MAIN")]})
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        doc = json.load(open(os.path.join(self.repo, P.VEX)))
+        by = {x["@id"].split("#")[1]: x for x in doc["statements"]}
+        self.assertEqual((by["B"]["status"], sorted(by)), ("affected", ["A", "B", "MAIN", "NEW"]))   # changed statement carried, main's own kept
+        self.assertEqual((doc["version"], doc["timestamp"]), (6, "2026-02-01T00:00:00Z"))
+        # the same addition already on main, identical: nothing to carry
+        self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]})
+        self.assertEqual(self.go([P.VEX]), [])
+        # an addition main holds DIFFERENTLY, and a change main also changed: conflicts
+        self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW", "affected")]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.VEX])
+        self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "under_investigation"), self.st("NEW")]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.VEX])
+
+    def test_hand_written_statements_without_an_id_are_never_collapsed(self):      # reviewer r3 blocker: the real VEX file has four of them
+        legacy = [{"vulnerability": {"name": "CVE-2024-51744"}, "status": "not_affected"}, {"vulnerability": {"name": "CVE-2025-60876"}, "status": "not_affected"},
+                  {"vulnerability": {"name": "CVE-2025-46394"}, "status": "not_affected"}]
+        base = {"version": 1, "timestamp": "2026-01-01T00:00:00Z", "statements": legacy}
+        pr = {"version": 2, "timestamp": "2026-02-01T00:00:00Z", "statements": legacy + [self.st("NEW")]}
+        self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base)
+        self.cur(P.VEX, {"version": 3, "timestamp": "2026-03-01T00:00:00Z", "statements": legacy + [self.st("MAIN")]})
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        doc = json.load(open(os.path.join(self.repo, P.VEX)))
+        self.assertEqual([x.get("vulnerability", {}).get("name") or x["@id"].split("#")[1] for x in doc["statements"]],
+                         ["CVE-2024-51744", "CVE-2025-60876", "CVE-2025-46394", "MAIN", "NEW"])      # every legacy statement intact, in order
+        self.assertEqual(doc["timestamp"], "2026-03-01T00:00:00Z")                                  # main's newer timestamp is never regressed
+        # a statement without an id that the PR ADDED is carried by its content, once
+        extra = {"vulnerability": {"name": "CVE-2099-1"}, "status": "not_affected"}
+        self.put("PR", P.VEX, dict(pr, statements=legacy + [extra]))
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        self.assertEqual(self.go([P.VEX]), [])                                                         # already there now: nothing more to carry
+
+    def test_the_real_vex_file_of_this_repository_survives_a_carry_intact(self):
+        real = open(os.path.join(REPO, P.VEX)).read()
+        base = json.loads(real)
+        pr = json.loads(real); pr["statements"].append(self.st("CVE-2099-REAL")); pr["version"] = int(pr.get("version", 1)) + 1
+        self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base); self.cur(P.VEX, real)
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        doc = json.load(open(os.path.join(self.repo, P.VEX)))
+        self.assertEqual(doc["statements"][:len(base["statements"])], base["statements"])           # every published statement untouched, in order
+        self.assertEqual(len(doc["statements"]), len(base["statements"]) + 1)
+
+    def test_profile_entries_are_carried_once_and_conflicts_are_loud(self):                       # review r7 B2
+        e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "f1"}
+        e2 = {"scanner": "scout", "kind": "k", "match": {"package": "^b$"}, "finding": "f2"}
+        self.put("BASE", P.PROFILES, {"entries": [e1]}); self.put("PR", P.PROFILES, {"entries": [e1, e2]})
+        self.cur(P.PROFILES, {"entries": [e1]})
+        self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
+        self.assertEqual(json.load(open(os.path.join(self.repo, P.PROFILES)))["entries"], [e1, e2])
+        self.cur(P.PROFILES, {"entries": [e1, e2]})                                                 # main already holds exactly it: nothing to carry
+        self.assertEqual(self.go([P.PROFILES]), [])
+        self.cur(P.PROFILES, {"entries": [e1, dict(e2, finding="main's different one")]})            # main holds a DIFFERENT entry for the same key: loud
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+        # the PR CHANGED e1: carried if main still has the base's, loud if main changed it too
+        self.put("PR", P.PROFILES, {"entries": [dict(e1, finding="changed by the PR")]})
+        self.cur(P.PROFILES, {"entries": [e1]})
+        self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
+        self.assertEqual(json.load(open(os.path.join(self.repo, P.PROFILES)))["entries"][0]["finding"], "changed by the PR")
+        self.cur(P.PROFILES, {"entries": [dict(e1, finding="main changed it as well")]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+        self.put("PR", P.PROFILES, {"entries": []})                                                 # the PR REMOVED e1: not silently dropped
+        self.cur(P.PROFILES, {"entries": [e1]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+
+    def test_a_file_the_panel_never_writes_is_refused_not_carried(self):      # reviewer r1 blocker 1: a human push must not ride into an App commit
+        for path in (".github/agent/prompts/x.md", ".github/workflows/auditor.yml", ".auditor/proposals/p.json", "bin/evil.sh"):
+            self.put("PR", path, "pr-version"); self.put("BASE", path, "base-version")
+            with self.assertRaises(RuntimeError) as e:
+                self.go([path])
+            self.assertIn("never writes", str(e.exception))
+            self.assertFalse(os.path.exists(os.path.join(self.repo, path)))
 
 
 sys.path.insert(0, os.path.join(BIN, "..", "fixtures", "testlib"))
@@ -711,10 +1184,25 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertLess(j["run"].index("verdict.json\" ] ||"), j["run"].index("auditor-panel.py judge"))
         self.assertEqual(j["run"].count("exit 1; }"), 3)
 
-    def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # Codex r1 R3
+    def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # review r1 R3; advisor 0186: through the tested command, bound to the delivery
         run = self.steps[self.step("auditor-panel.py judge")]["run"]
-        self.assertIn("gh pr list --head auditor/panel --state open", run)
-        self.assertIn('[ -n "$open_pr" ] && git fetch', run)
+        self.assertIn("auditor-panel.py state-source", run)
+        self.assertLess(run.index("auditor-panel.py state-source"), run.index("auditor-panel.py judge"))
+        self.assertNotIn("gh pr list --head auditor/panel", run)             # the old unguarded, fork-unfiltered lookup is gone
+        deliver = self.steps[self.step("auditor-panel.py deliver")]["run"]
+        self.assertIn('--state-source "${RUNNER_TEMP}/panel-state-source"', deliver)
+        self.assertIn('--sha-out "${RUNNER_TEMP}/panel-state-source"', run)
+
+    def test_the_guard_reader_has_checks_read_and_the_app_token_never_does(self):                    # review r6 B1
+        self.assertEqual(self.wf["jobs"]["audit"]["permissions"].get("checks"), "read")
+        deliver = self.steps[self.step("auditor-panel.py deliver")]
+        self.assertEqual(deliver["env"]["AUDITOR_CHECKS_TOKEN"], "${{ github.token }}")
+        app = next(st for st in self.steps if st.get("id") == "app-token")
+        self.assertNotIn("permission-checks", app["with"])
+
+    def test_overlapping_audits_are_serialised(self):                                              # review r7 B1
+        c = self.wf["jobs"]["audit"].get("concurrency") or {}
+        self.assertEqual((c.get("group"), c.get("cancel-in-progress")), ("auditor-daily-delivery", False))
 
     def test_the_seat_never_moves_the_daily_cve_auditor(self):             # REQ-SCAN-014-AC3
         cve = self.steps[self.step("auditor-run.py")]
