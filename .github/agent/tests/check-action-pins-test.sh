@@ -2378,5 +2378,12 @@ case_ r32-b4-curl-ampersand-redirect-into-a-path-directory-bad bad "$(rb 'curl -
           chmod +x /usr/local/bin/tool
           tool --version')"
 
+case_ r33-b1-ampersand-redirect-to-a-quoted-name-with-a-space-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool &> "/tmp/my tool"
+          sudo install -m 0755 "/tmp/my tool" /usr/local/bin/tool
+          tool --version')"
+case_ r33-b1-ampersand-append-redirect-to-a-quoted-name-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool &>> "/tmp/my tool"
+          sudo install -m 0755 "/tmp/my tool" /usr/local/bin/tool
+          tool --version')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

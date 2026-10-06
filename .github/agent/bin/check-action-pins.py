@@ -1177,7 +1177,7 @@ def _downloaded_commands(script):
     """Command names this script INSTALLS from a download: `curl -o /tmp/x URL`, then `install|cp|mv|ln /tmp/x /usr/local/bin/x`: running
     `x` runs bytes nobody checked (Codex #164 r23, B9); their basenames, and the install destinations."""
     downloads, names = set(), set()
-    for m in re.finditer(r"\b(?:curl|wget|aria2c)\b[^\n;|]*?&>>?\s*([^\s;|&]+)", script):      # curl URL &> /tmp/tool (r32, B4)
+    for m in re.finditer(r"\b(?:curl|wget|aria2c)\b[^\n;|]*?&>>?\s*(\"[^\"]*\"|'[^']*'|[^\s;|&]+)", script):      # curl URL &> /tmp/tool (r32, B4)
         dest = m.group(1).strip("\"'")
         downloads.add(dest)
         if re.fullmatch(r"(?:/usr/local/s?bin|/usr/s?bin|/s?bin|/opt/[\w.-]+/bin|\$\{?HOME\}?/\.local/bin|~/\.local/bin|\$\{?HOME\}?/bin)/[\w.-]+", dest):
