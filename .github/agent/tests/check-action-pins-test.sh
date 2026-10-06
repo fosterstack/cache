@@ -2323,5 +2323,49 @@ $(co "          ref: $BASE_REF
           cd sub
           python3 trusted/bin/tool.py" "$mk_trusted"
 
+# --- R5 follow-up (Codex r27 / Sonnet r27): the fixes' own gaps
+case_ r27-b2-empty-assignment-before-semicolon-bad bad "$(rb 'RUN_OPTS=; docker run $RUN_OPTS alpine:latest')"
+case_ r27-b3-indexed-array-assignment-bad bad "$(rb 'IMAGES[0]=alpine:latest
+          docker run "${IMAGES[0]}"')"
+case_ r27-b3-array-append-bad bad "$(rb 'IMAGES+=(alpine:latest)
+          docker run "${IMAGES[0]}"')"
+case_ r27-b3-loop-over-a-literal-array-bad bad "$(rb 'IMAGES=(alpine:latest busybox:latest)
+          for i in "${IMAGES[@]}"; do docker pull "$i"; done')"
+case_ r27-b3-loop-over-a-digest-array-ok ok "$(rb 'IMAGES=(alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667)
+          for i in "${IMAGES[@]}"; do docker pull "$i"; done')"
+case_ r27-b4-kubectl-namespace-flag-set-image-bad bad "$(rb 'kubectl -n production set image deployment/web web=nginx:latest')"
+case_ r27-b4-kubectl-long-flag-set-image-bad bad "$(rb 'kubectl --namespace=prod --context kind-x set image deployment/web web=nginx:latest')"
+case_ a-later-checkout-with-dot-slash-path-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+$(co "          repository: attacker/repo
+          path: ./trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-later-checkout-into-a-subdirectory-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+$(co "          path: trusted/bin")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-later-root-checkout-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+$(co "          ref: main")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ r27-committed-namesake-after-cd-bad bad "$head
+    steps:
+      - run: |
+          mkdir -p /tmp/pin-run/bin
+          printf 'x\\n' > /tmp/pin-run/bin/tool.py
+          cd /tmp/pin-run
+          python3 bin/tool.py" "mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
+case_ r27-committed-script-after-a-subshell-cd-ok ok "$head
+    steps:
+      - run: |
+          (cd dist && sha256sum -c sums.txt)
+          python3 bin/tool.py" "mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

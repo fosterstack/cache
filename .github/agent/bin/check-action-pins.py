@@ -1165,7 +1165,7 @@ def _variable(tok):
 def _options_variables(script):
     """Names this script assigns OPTIONS (a literal starting with a dash, or an array whose first element does): `RUN_OPTS=--rm` and
     `RUN_OPTS=(--rm)`. As docker run's first word such a variable is options, and the image is the word after it (r23, B4)."""
-    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*\)|[\"']{2}(?![\w])|(?=\s|$)|(?:\(\s*)?[\"']?-)", script))   # also EMPTY (NAME=, ""/()): r24, r26 B2
+    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*\)|[\"']{2}(?![\w])|(?=[\s;&|)]|$)|(?:\(\s*)?[\"']?-)", script))   # also EMPTY (NAME=, ""/()): r24, r26 B2
 
 
 def _is_optvar(tok, optvars):
@@ -1236,6 +1236,16 @@ def _mixed_unpinned(tok):
     return "@" not in tok                   # `repo@$DIGEST` and `repo@sha256:...` name a digest
 
 
+def _array_values(name, text):
+    """The literal words a script gives the array NAME: NAME=(a b), NAME+=(c) and NAME[0]=d (a word with a $ is not literal)."""
+    vals = []
+    for arr in re.findall(r"(?<![\w$.-])" + name + r"\+?=\(([^)]*)\)", text):
+        vals += [w.strip("\"'") for w in arr.split() if "$" not in w]
+    for v in re.findall(r"(?<![\w$.-])" + name + r"\[[^\]]*\]\+?=(\"[^\"$`\\]*\"|'[^']*'|[^\s\"'$`;&|()<>\\]+)", text):
+        vals.append(v.strip("\"'"))
+    return vals
+
+
 def _var_unpinned_literal(tok, text):
     """For a bare variable ($X, ${X}, "$X") whose value THIS script assigns as a literal (X=name, X="name", an `env`-style prefix, or the
     literal words of `for X in a b; do`): the first such value that is not a digest reference, else None. A variable assigned from a
@@ -1245,13 +1255,13 @@ def _var_unpinned_literal(tok, text):
     m = re.fullmatch(r'"?\$\{?([A-Za-z_]\w*)(?:\[[^\]]*\])?\}?"?', tok)
     if not m:
         return None
-    name, vals = m.group(1), []
-    for arr in re.findall(r"(?<![\w$.-])" + name + r"=\(([^)]*)\)", text):      # NAME=(a b): its literal words (r26, B3)
-        vals += [w.strip("\"'") for w in arr.split() if "$" not in w]
+    name, vals = m.group(1), _array_values(m.group(1), text)
     for v in re.findall(r"(?<![\w$.-])" + name + r"=(\"[^\"$`\\]*\"|'[^']*'|[^\s\"'$`;&|()<>\\]+)(?=[\s;&|)]|$)", text):
         vals.append(v.strip("\"'"))
     for lst in re.findall(r"(?<![\w$.-])for\s+" + name + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do(?![\w.-])", text):
         vals += [w.strip("\"'") for w in lst.split() if "$" not in w and not re.search(r"[*?\[`(]", w)]
+        for arr in re.findall(r"\"?\$\{([A-Za-z_]\w*)\[[@*]\]\}\"?", lst):      # for i in "${IMAGES[@]}": the array's literal words
+            vals += _array_values(arr, text)
     for v in vals:
         if v and not re.search(r"\s", v) and not v.startswith("-") and not DIGEST_REF.search(v):
             return v          # an image name has no whitespace and does not start with a dash (a variable of docker OPTIONS is not one)
@@ -1503,8 +1513,9 @@ def script_images(script):
                     vals.append(a[2:].lstrip("="))          # k3d cluster create -i IMAGE (attached or =)
                 elif cmd == "k3d" and a == "-i" and j + 1 < len(args):
                     vals.append(args[j + 1])
-            if cmd == "kubectl" and args[:2] == ["set", "image"]:
-                vals += [x.split("=", 1)[1] for x in args[2:] if "=" in x and not x.startswith("-")]     # kubectl set image deploy/x c=IMAGE
+            si = next((j for j in range(len(args) - 1) if cmd == "kubectl" and args[j] == "set" and args[j + 1] == "image"), None)   # after any global option (-n NS, --context X)
+            if si is not None:
+                vals += [x.split("=", 1)[1] for x in args[si + 2:] if "=" in x and not x.startswith("-")]     # kubectl set image deploy/x c=IMAGE
             if cmd == "kind" and any(x == "--config" or x.startswith("--config=") for x in args):
                 ev.append(("finding", "`kind` reads its node images from a config file this check does not read; pass --image with a digest"))
             for val in vals:
@@ -2317,6 +2328,18 @@ def _made_executable(script, path):
     return None
 
 
+def _cd_outside_subshell(text):
+    """True when the text changes directory outside a ( … ) subshell: `(cd dist && sha256sum -c …)` leaves the shell where it was, a bare
+    `cd /tmp` moves every later relative path (Codex #164 r27: a committed namesake must not excuse a script generated under /tmp)."""
+    flat = re.sub(r"\\\n", " ", text)
+    while True:
+        new = re.sub(r"\$?\([^()]*\)", " ", flat)
+        if new == flat:
+            break
+        flat = new
+    return bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(flat)))
+
+
 def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
     """(the committed shell scripts this text runs, their bytes appended; findings). A script is what _commands names as
     run — bash/sh/dash/zsh <path>, source / . <path>, or a path executed directly that is a *.sh file or a committed file
@@ -2345,7 +2368,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
-            elif entries.get(rel) != "file" and moved and not t[1].startswith(("/", "$")):
+            elif moved and not t[1].startswith(("/", "$")) and (_cd_outside_subshell(text) or not re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text))):
                 found.append("runs %s from a working directory this check cannot place; refused" % t[1])    # main's copy at a literal path, but after a cd
             continue
         if t[0] not in ("__script__", "__exec__"):
@@ -2606,8 +2629,11 @@ def run_scripts(doc):
                                 and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
-                        elif pdir in base_dirs:
-                            base_dirs.remove(pdir)       # a LATER checkout into the same directory (another ref, repository or none) replaces main's copy
+                        else:
+                            np_ = os.path.normpath(pdir or ".")      # ./trusted, trusted/ and trusted/bin are the same directory as trusted
+                            for d_ in list(base_dirs):
+                                if np_ == "." or np_ == d_ or np_.startswith(d_ + "/") or d_.startswith(np_ + "/"):
+                                    base_dirs.remove(d_)     # a LATER checkout into (or over) that directory replaces main's copy
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:
