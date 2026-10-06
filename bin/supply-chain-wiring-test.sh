@@ -102,13 +102,13 @@ def judge_db(d):
     ups = {u.get("package-ecosystem"): u for u in d.get("updates", [])}
     for eco in ("github-actions", "pip"):
         cd = (ups.get(eco) or {}).get("cooldown")
-        if not cd or str(cd.get("default-days")) != "7":
+        if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
-    want = {"gomod": ("/", "weekly"), "docker": ("/build/docker", "daily")}  # the product's CVE-fix targets: unchanged by this rule
-    for eco, (directory, interval) in want.items():
-        u = ups.get(eco) or {}
-        if u and (u.get("directory"), (u.get("schedule") or {}).get("interval")) != (directory, interval):
-            bad.append(f"the {eco} entry is not unchanged ({directory}, {interval})")
+    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
+            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
+    for eco, entry in want.items():
+        if eco in ups and ups[eco] != entry:
+            bad.append(f"the {eco} entry is not unchanged")
     for eco in ("gomod", "docker"):
         if eco not in ups:
             bad.append(f"the {eco} entry is missing")
@@ -219,6 +219,8 @@ mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J
 mut_wf("a fourth job appears", "the jobs are not exactly", lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot (AC1) ---
+mut_db("github-actions cooldown gains a semver override", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"semver-major-days": "0"}))
+mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
 mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
 mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
 mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))

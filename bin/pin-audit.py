@@ -49,12 +49,27 @@ class Fail(Exception):
 
 # ---------- versions and ranges (OSV events, GitHub's comma-separated comparators) ----------
 def _vt(v):
-    return [(0, int(p)) if p.isdigit() else (1, p) for p in re.split(r"[.\-+]", str(v).lstrip("vV")) if p != ""]
+    """(release numbers without trailing zeros, is-final, pre-release parts): 1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.2 equals 1.2.0."""
+    m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", str(v).strip(), re.I)
+    if not m:
+        return ([], 0, [str(v)])
+    nums = [int(x) for x in m.group(1).split(".")]
+    while nums and nums[-1] == 0:
+        nums.pop()
+    rest = m.group(2).lstrip("-_.+")
+    pre = [int(p) if p.isdigit() else p.lower() for p in re.split(r"[.\-_+]|(?<=\D)(?=\d)", rest) if p] if rest and re.match(r"(?i)(a|b|rc|alpha|beta|pre|dev|c)", rest) else []
+    return (nums, 0 if pre else 1, pre)
 
 
 def _cmp(a, b):
     x, y = _vt(a), _vt(b)
-    return (x > y) - (x < y)
+    if x[0] != y[0]:
+        return (x[0] > y[0]) - (x[0] < y[0])
+    if x[1] != y[1]:
+        return (x[1] > y[1]) - (x[1] < y[1])
+    kx = [(0, p) if isinstance(p, int) else (1, p) for p in x[2]]
+    ky = [(0, p) if isinstance(p, int) else (1, p) for p in y[2]]
+    return (kx > ky) - (kx < ky)
 
 
 def covered_by_events(version, events):
@@ -100,6 +115,9 @@ class FixtureNet:
     def covered(self, item):
         return True
 
+    def live_ranges(self, item, source, advisory_id):
+        return (self.fx.get("live_ranges") or {}).get(advisory_id)
+
     def upstream(self, item):
         return ((self.fx.get("upstream") or {}).get(f"{item.name}@{item.version}") or {}).get("reachable")
 
@@ -131,7 +149,8 @@ class LiveNet:
         self.gh, self.root = gh, root
         self._memo, self._lock = {}, threading.Lock()
 
-    def _gh_json(self, path):
+    def _gh_json(self, path, strict=False):
+        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
         with self._lock:
             if path in self._memo:
                 return self._memo[path]
@@ -145,6 +164,12 @@ class LiveNet:
             val = None if r.returncode else json.loads(r.stdout)
         except ValueError:
             val = None
+            if strict:
+                raise Fail(f"gh api {path.split('?')[0]} did not return JSON")
+        if strict and r.returncode and not re.search(r"\b404\b", r.stderr + r.stdout):
+            raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
+        if strict and val is None:
+            val = []  # a 404 on a list endpoint: no entries
         with self._lock:
             self._memo[path] = val
         return val
@@ -183,6 +208,16 @@ class LiveNet:
         elif item.kind == "tool":
             mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
+
+    def live_ranges(self, item, source, advisory_id):
+        """The authoritative advisory's affected ranges for this package, read live (GitHub only: the rulings so far name GitHub)."""
+        if str(source).lower() != "github":
+            return None
+        adv = self._gh_json(f"advisories/{advisory_id}", strict=True)
+        q = self._query(item, self._version_of(item) or "")
+        names = {package_of(item).lower(), item.name.lower()} | ({q["package"]["name"].lower()} if q else set())
+        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", []) if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() in names]
+        return rngs or None
 
     def covered(self, item):
         """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked, never as clean.)"""
@@ -224,7 +259,8 @@ class LiveNet:
         self.gh, self.root = gh, root
         self._memo, self._lock = {}, threading.Lock()
 
-    def _gh_json(self, path):
+    def _gh_json(self, path, strict=False):
+        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
         with self._lock:
             if path in self._memo:
                 return self._memo[path]
@@ -238,6 +274,12 @@ class LiveNet:
             val = None if r.returncode else json.loads(r.stdout)
         except ValueError:
             val = None
+            if strict:
+                raise Fail(f"gh api {path.split('?')[0]} did not return JSON")
+        if strict and r.returncode and not re.search(r"\b404\b", r.stderr + r.stdout):
+            raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
+        if strict and val is None:
+            val = []  # a 404 on a list endpoint: no entries
         with self._lock:
             self._memo[path] = val
         return val
@@ -294,8 +336,17 @@ class LiveNet:
         pkg = q["package"]["name"]
         if eco:
             seen = {g["id"] for g in ghs}
-            page = (self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}&per_page=100") or []) + \
-                   (self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}&type=malware&per_page=100") or [])
+            page = []
+            for typ in ("", "&type=malware"):
+                for n in range(1, 11):
+                    got = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}{typ}&per_page=100&page={n}", strict=True)
+                    if not isinstance(got, list):
+                        raise Fail("GitHub's advisory list was not a list: refusing to read it as 'no advisories'")
+                    page += got
+                    if len(got) < 100:
+                        break
+                else:
+                    raise Fail("GitHub's advisory list has more than 10 pages")
             for adv in page:  # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to a filter
                 if adv.get("ghsa_id") in seen:
                     continue
@@ -335,7 +386,7 @@ class LiveNet:
             return True
         if age._tag_for_commit(item.name, item.version) is not None:
             return True
-        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=30") or []):  # a release branch of the same repository
+        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100") or []):  # a release branch of the same repository
             if br.get("name") != branch:
                 c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
                 self._api_ok(c, item)
@@ -354,7 +405,8 @@ class LiveNet:
             return []
         out = []
         for name in ("action.yml", "action.yaml"):
-            c = self._gh_json(f"repos/{item.name}/contents/{name}?ref={item.version}")
+            sub = f"{item.path}/" if getattr(item, "path", "") else ""
+            c = self._gh_json(f"repos/{item.name}/contents/{sub}{name}?ref={item.version}")
             if c and c.get("content"):
                 try:
                     doc = inv.yaml.load(base64.b64decode(c["content"]).decode(), Loader=inv.yaml.BaseLoader) or {}
@@ -476,7 +528,20 @@ def version_of(item):
     return (item.label or None) if inv.SHA40.match(item.version) else item.version
 
 
-def excepted(item, dispute_ids, current, exceptions):
+def exc_osv_ok(exceptions, item, advisory_id, osv_times):
+    """An id held by both databases records ONE time in the ruling (GitHub's); OSV's copy must not have changed since: it is accepted only if the ruling also recorded it."""
+    for e in exceptions:
+        rec = e.get("osv_modified", {}).get(advisory_id)
+        if e["package"] == package_of(item) and rec and all(t == rec for t in osv_times):
+            return True
+    return False
+
+
+def _norm_ranges(rs):
+    return {re.sub(r"\s+", "", r) for r in rs}
+
+
+def excepted(item, dispute_ids, current, exceptions, net=None):
     """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
     Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
     an exception never covers a version the authoritative source lists as affected)."""
@@ -488,6 +553,11 @@ def excepted(item, dispute_ids, current, exceptions):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         if not ver:
             return None  # no version to compare with the ranges: stays disputed
+        # the ruling verifies itself (advisor 0182): its copied ranges must equal the authoritative advisory's LIVE ranges, or a wrong entry could hide a hit
+        au = e["authoritative"]
+        live = net.live_ranges(item, au["source"], au["id"]) if net is not None else None
+        if not live or _norm_ranges(live) != _norm_ranges(au["ranges"]):
+            return None
         return "hit" if in_range(ver, "|".join(e["authoritative"]["ranges"])) else "pass"
     return None
 
@@ -511,10 +581,15 @@ def judge(item, net, exceptions, notes, current=True):
         ids = [a["id"] for a in advs]
         if yes and no:
             cur = {}
-            for x in advs:  # GitHub's time for a GHSA id, OSV's otherwise: the ops file's rule
+            for x in advs:  # GitHub's time for a GHSA id, OSV's otherwise: the ops file's rule; an id both databases hold must be unchanged in BOTH
                 if x["id"] not in cur or (x["id"].startswith("GHSA-") and x in gh_l):
                     cur[x["id"]] = x.get("modified")
-            ruling = excepted(item, set(ids), cur, exceptions)
+            both = {i for i in cur if any(a["id"] == i for a in gh_l) and any(a["id"] == i for a in osv_l)}
+            for i in both:
+                times = {a.get("modified") for a in advs if a["id"] == i}
+                if len(times) > 1 and not exc_osv_ok(exceptions, item, i, [a.get("modified") for a in osv_l if a["id"] == i]):
+                    cur[i] = "differs:" + ",".join(sorted(str(t) for t in times))
+            ruling = excepted(item, set(ids), cur, exceptions, net)
             if ruling == "pass":
                 notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(set(ids)))}) is outside the authoritative source's affected ranges")
                 continue
@@ -603,7 +678,8 @@ def body_of(f, rb, owner, ran, today):
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt"]
-    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", start, "--", *paths).split() if r]
+    refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
+    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
     if before:
         revs.append(before)
@@ -634,8 +710,12 @@ def file_issues(gh, plan, today):
         open_issues = json.loads(r.stdout or "[]")
     except ValueError:
         raise Fail("gh issue list did not return JSON")
+    done = set()
     for p in plan:
         prefix, title = p["title"]
+        if title in done:
+            continue
+        done.add(title)
         existing = next((i for i in open_issues if str(i.get("title", "")) == title), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
@@ -647,6 +727,7 @@ def file_issues(gh, plan, today):
                 print(f"audit: updated issue #{existing['number']}: {title}")
             else:
                 gh.run("issue", "create", "--title", title, "--body-file", path, *labels)
+                open_issues.append({"number": -1, "title": title})
                 print(f"audit: opened an issue: {title}")
         finally:
             os.unlink(path)
@@ -747,9 +828,13 @@ def main(argv=None):
                     if not n.get("pinned"):
                         print(f"information: {outer.name} uses {clean(ref)}, not pinned to a digest (a moving tag; not a hit)")
                     m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@(\S+)$", ref)
-                    if not m or ref.startswith("docker://"):
+                    if ref.startswith("docker://"):
+                        print(f"information: not checked against the advisory lists (a nested image has no source): {clean(ref)} inside {outer.name}")
                         continue
-                    child = inv.Item("action", m.group(1), m.group(2), "")
+                    if not m:
+                        print(f"information: not checked (a nested reference this check cannot resolve): {clean(ref)} inside {outer.name}")
+                        continue
+                    child = inv.Item("action", m.group(1), m.group(2), "", (ref.split("@")[0].split("/", 2) + [""])[2])
                     if child.key in seen:
                         continue
                     seen.add(child.key)

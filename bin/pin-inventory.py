@@ -31,14 +31,16 @@ INSTALLER_INPUTS = {
     "sigstore/cosign-installer": [("cosign-release", "cosign")],
     "google-github-actions/setup-gcloud": [("version", "gcloud")],
     "azure/setup-helm": [("version", "helm")],
+    "docker/setup-buildx-action": [("version", "buildx")],
+    "docker/setup-qemu-action": [("image", None)],
     "helm/kind-action": [("version", "kind"), ("kubectl_version", "kubectl"), ("node_image", None)],  # None: the input names an image
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@([\w.\-+${}()]+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?([\w.+${}()-]+)/")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{.*?\}\}|[\w.\-+$(){}])+)")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{.*?\}\}|[\w.+$(){}-])+)/")
 _PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
-_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;'\"]+)")
+_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)==((?:\$\{\{.*?\}\}|[^\s\\;'\"])+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
 _REQ_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", re.M)
@@ -46,9 +48,17 @@ WORKFLOW_GLOBS = (".github/workflows/*.yml", ".github/workflows/*.yaml", ".githu
                   ".github/actions/*/*/action.yml", ".github/actions/*/*/action.yaml")
 
 
+_EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
+
+
+def _hide(text):
+    """An expression (which may name a secret or an environment) becomes a placeholder: it can never be proven, so it fails closed, and it never prints."""
+    return _EXPR.sub("${{expression}}", text) if isinstance(text, str) else text
+
+
 class Item:
-    def __init__(self, kind, name, version, label=""):
-        self.kind, self.name, self.version, self.label = kind, name, version, label
+    def __init__(self, kind, name, version, label="", path=""):
+        self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), path  # path: an action's subdirectory
 
     @property
     def key(self):
@@ -114,10 +124,10 @@ def _uses(u, node, out, labels):
     elif u and not u.startswith("./") and "${{" not in u:
         ref_path, _, ref = u.partition("@")
         repo = "/".join(ref_path.split("/")[:2])
-        out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", "")))
+        out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", ""), "/".join(ref_path.split("/")[2:])))
         w = node.get("with")
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
-            if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip() and "${{" not in w[inp]:
+            if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
                 out.append(_image_item(val) if tool is None else Item("tool", tool, val))
 

@@ -350,6 +350,30 @@ out=$(liveproof 2026-08-01T00:00:00Z); case "$out" in *github-release*) ok "$CAS
 CASE="live action proof: a tag redirected to a commit NEWER than the release it carries (commit date after the publish time) gives no proof"
 out=$(liveproof 2026-09-30T00:00:00Z); case "$out" in *github-release*) bad "$CASE";; *) ok "$CASE";; esac
 
+# --- expressions never reach a name (a secret's NAME must not print), an image next to an expression is still seen, buildx's version input is an installer input ---------------------
+newcase secretver "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: pip install private-tool==${{secrets.PRIVATE_TOOL_VERSION}}\n      - run: |')"
+runck secretver '{"times": {}}'
+CASE="a version written as an expression (a secret's name inside it) is an item that cannot be proven (exit 1) and the secret's name is never printed"
+check test "$rc" -eq 1; check bash -c "! grep -rq PRIVATE_TOOL_VERSION '$work/secretver.out' '$work/secretver.json'"; check grep -qF 'package:pypi/private-tool@${{expression}}' "$work/secretver.out"
+newcase exprimg "$(sub .github/workflows/ci.yml "alpine:3.20@$DIG5" "alpine:3.20@$DIG3 \${{ github.sha }}")"
+runck exprimg '{"times": {}}'
+CASE="a digest-pinned image on a line that also holds an expression is still an inventory item"
+check test "$rc" -eq 1; check grep -qF "image:alpine@$DIG3" "$work/exprimg.out"
+newcase buildx "$(sub .github/workflows/ci.yml '      - run: |' $'      - uses: docker/setup-buildx-action@'$SHA6$' # v3\n        with:\n          version: v0.99.0\n      - run: |')"
+runck buildx '{"times": {}}'
+CASE="docker/setup-buildx-action's version input is the downloaded Buildx: named and judged"
+check test "$rc" -eq 1; check grep -qF "tool:buildx@v0.99.0" "$work/buildx.out"
+
+# --- the real tree's inventory has a floor: a parser regression that silently drops pins must fail here --------------------------------------------------------------------------
+CASE="today's real inventory still finds at least 24 actions, 21 packages, 13 tools, 6 images and 5 go tools (a silent drop is a failure)"
+check python3 - "$root" <<'PY'
+import collections, importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1] + "/bin/pin-inventory.py"); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+c = collections.Counter(k.split(":")[0] for k in inv.load_at(sys.argv[1], None))
+floor = {"action": 24, "package": 21, "tool": 13, "image": 6, "gotool": 5}
+assert all(c[k] >= v for k, v in floor.items()), (c, floor)
+PY
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'

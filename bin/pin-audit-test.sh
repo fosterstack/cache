@@ -212,7 +212,7 @@ assert "\n" not in pa.clean("a\n::error::x\x1b[31m") and "\x1b" not in pa.clean(
 PY
 
 # --- AC10: disputed hits and checked-in exceptions ----------------------------------------------------------------------------------------------------
-DISPUTE="{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-69fq-xp46-6x23\", \"incident\": \"INC-T\", \"affected\": false, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-2026-4919\", \"incident\": \"INC-T\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"upstream\": {}, \"nested\": {}, \"versions\": {\"aquasecurity/trivy\": [{\"version\": \"0.69.3\", \"sha\": \"x\", \"published\": \"$(dago 400)\", \"lists\": {}}]}, \"prs\": []}"
+DISPUTE="{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-69fq-xp46-6x23\", \"incident\": \"INC-T\", \"affected\": false, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-2026-4919\", \"incident\": \"INC-T\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"live_ranges\": {\"GHSA-69fq-xp46-6x23\": [\"= 0.69.4\"]}, \"upstream\": {}, \"nested\": {}, \"versions\": {\"aquasecurity/trivy\": [{\"version\": \"0.69.3\", \"sha\": \"x\", \"published\": \"$(dago 400)\", \"lists\": {}}]}, \"prs\": []}"
 printf '{"exceptions": []}' >"$work/no-exceptions.json"
 run dispute "$DISPUTE" "$work/r-cur" --exceptions "$work/no-exceptions.json"
 CASE="two lists disagree about one incident (GitHub: not affected, OSV: affected) and there is NO exception: exit 1, one issue labelled supply-chain-hit that says DISPUTED"
@@ -233,11 +233,29 @@ PY
 run stale "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-stale.json"
 CASE="an exception goes STALE when an advisory changed after it was written (its recorded modified time differs): the dispute is reported again, exit 1"
 check test "$rc" -eq 1; check grep -qi 'disputed' "$work/stale.gh.bodies"
+python3 - "$DISPUTE" "$work/dispute-drift.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); d["live_ranges"]["GHSA-69fq-xp46-6x23"] = ["= 0.69.4", ">= 0.74.0"]; json.dump(d, open(sys.argv[2], "w"))
+PY
+run drift "$(cat "$work/dispute-drift.json")" "$work/r-cur" --exceptions "$work/exc.json"
+CASE="an exception verifies itself: its copied ranges no longer equal the authoritative advisory's LIVE ranges, so it does not apply and the dispute is reported again (a wrong entry can never hide a hit)"
+check test "$rc" -eq 1; check grep -qi 'disputed' "$work/drift.gh.bodies"
+python3 - "$DISPUTE" "$work/dispute-nolive.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); del d["live_ranges"]; json.dump(d, open(sys.argv[2], "w"))
+PY
+run nolive "$(cat "$work/dispute-nolive.json")" "$work/r-cur" --exceptions "$work/exc.json"
+CASE="when the live authoritative ranges cannot be read the exception does not apply (fail closed)"
+check test "$rc" -eq 1
 python3 - "$work/exc.json" "$work/exc-inrange.json" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1])); e["exceptions"][0]["authoritative"]["ranges"] = [">= 0.70.0, < 0.80.0"]; json.dump(e, open(sys.argv[2], "w"))
 PY
-run inrange "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-inrange.json"
+python3 - "$DISPUTE" "$work/dispute-inrange.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); d["live_ranges"]["GHSA-69fq-xp46-6x23"] = [">= 0.70.0, < 0.80.0"]; json.dump(d, open(sys.argv[2], "w"))
+PY
+run inrange "$(cat "$work/dispute-inrange.json")" "$work/r-cur" --exceptions "$work/exc-inrange.json"
 CASE="a version INSIDE the authoritative source's affected ranges is a real hit, never excused by an exception: exit 1, an issue that is not 'disputed' and may name a rollback"
 check test "$rc" -eq 1; check test "$(creates "$work/inrange.gh")" -eq 1; check bash -c "! grep -qi 'disputed' '$work/inrange.gh.bodies'"
 python3 - "$work/exc.json" "$work/exc-subset.json" <<'PY'
@@ -396,9 +414,9 @@ it = pa.inv.Item("action", "o/r", sha, "v1")
 base = {"repos/o/r": {"default_branch": "main"}}
 assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "ahead"}}).upstream(it) is True
 assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "identical"}}).upstream(it) is True
-assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "behind"}, "repos/o/r/branches?per_page=30": []}).upstream(it) is False, "behind: the pin is beyond the branch"
-assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "diverged"}, "repos/o/r/branches?per_page=30": [{"name": "main"}, {"name": "v1"}], f"repos/o/r/compare/{sha}...v1": {"status": "ahead"}}).upstream(it) is True
-assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "diverged"}, "repos/o/r/branches?per_page=30": [{"name": "main"}, {"name": "v1"}], f"repos/o/r/compare/{sha}...v1": {"status": "behind"}}).upstream(it) is False
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "behind"}, "repos/o/r/branches?per_page=100": []}).upstream(it) is False, "behind: the pin is beyond the branch"
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "diverged"}, "repos/o/r/branches?per_page=100": [{"name": "main"}, {"name": "v1"}], f"repos/o/r/compare/{sha}...v1": {"status": "ahead"}}).upstream(it) is True
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "diverged"}, "repos/o/r/branches?per_page=100": [{"name": "main"}, {"name": "v1"}], f"repos/o/r/compare/{sha}...v1": {"status": "behind"}}).upstream(it) is False
 PY
 CASE="live advisories: a GitHub-only advisory (OSV knows nothing of it) is read directly and its ranges evaluated for the version"
 check python3 - "$aud" "$work" <<'PY'
@@ -406,7 +424,7 @@ import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 work = sys.argv[2]
 adv = [{"ghsa_id": "GHSA-only-only-only", "updated_at": "2026-01-01T00:00:00Z", "type": "malware", "vulnerabilities": [{"package": {"name": "o/r"}, "vulnerable_version_range": ">= 1.0, < 2.0"}]}]
-json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100": adv}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": adv, "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
 net = pa.LiveNet([work + "/ghmap"], ".")
 net._osv_post = lambda q: []
 gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
@@ -430,6 +448,29 @@ printf '{"exceptions": [{"ids": ["A"], "package": "p", "authoritative": {"source
 run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
 CASE="an exception without evidence links and a date is malformed: exit 2, never applied"
 check test "$rc" -eq 2
+
+CASE="version order: a pre-release is BEFORE its release (1.0.0-rc.1, 1.0.0rc1 < 1.0.0), 1.2 equals 1.2.0, an unreadable range is never read as safe"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+c = pa._cmp
+assert c("1.0.0-rc.1", "1.0.0") < 0 and c("1.0.0rc1", "1.0.0") < 0 and c("1.0.0", "1.0.0rc1") > 0 and c("1.2", "1.2.0") == 0 and c("2.0.0-rc.1", "2.0.0-rc.2") < 0 and c("v1.10.0", "1.9.9") > 0
+assert pa.in_range("1.0.0-rc.1", "< 1.0.0") and not pa.in_range("1.0.0", "< 1.0.0") and pa.in_range("1.0", "= 1.0.0") and pa.in_range("5", "garbage")
+PY
+CASE="two plan entries with one title make ONE issue (and a title created this run is remembered)"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+calls = []
+class G:
+    def run(self, *a, ok_fail=False):
+        calls.append(a)
+        class R: stdout = "[]"
+        return R()
+plan = [{"title": ("t", "supply-chain: x@1 (A)"), "body": "b", "owner": False}] * 2
+pa.file_issues(G(), plan, "2026-10-05")
+assert len([c for c in calls if c[:2] == ("issue", "create")]) == 1, calls
+PY
 
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
