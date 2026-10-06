@@ -1,0 +1,97 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "68a78f3025b8d37a2db33ff1274c68c242a0788be242b27511db429a03f439f9",
+ "change": "pin-age: an image named localhost/... (no port) used by docker run/create whose effective --pull policy is never, with every option before the operand of known arity, is local to the job and not an inventory item; every other form stays an item (advisor 0203) -- PR #187",
+ "reviewed_commit": "daad9c9a926bbd213d125d469512e0f4bd66633c",
+ "closed_commit": "daad9c9a926bbd213d125d469512e0f4bd66633c",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "localhost-images r1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "47a03c09b1601bfe897772d666742ebd2ad183ebbdde42b18c36bdca3f16ae37"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "83acc52683cd46063246ca7899ca9c2550e44726d09554da09b7816f01be1cc8"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "localhost-images r2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "99a4293457276f7d57eea84665966ea67f795048df7e723f1f0667d122c5c83a"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "f2a1d60ad34e064429ccc03cf147c40fa7d3bc79e8f1b3c1566022f4ede8879a"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "localhost-images r3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "94a3119a715cf2cb4c3e8fc5f1fbf8ed2a78df3a683ec10cb51947bc2fd5e3ee"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "0fbaa8bff361e09f15b4d87005f91468704fe81bc174662ced7e88596d9b3eb2"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "localhost-images r4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "931be5bfd3086bc7c10803ca69b5333ecd04d911c12f73f39b11195379306398"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "41f4eb7abe2450fa5e82f87d6624648c13cc742727c495b132a19683c5d361df"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "localhost-images r5",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "c33c3a619ebbb52f1492680a4740149ebe3c40f0ce7a0b5cc4f6117e9e00d5cb"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "a8666757dabc09b56ec38e8b7985911ff51fb102064925f5048aa87c8880630c"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "a docker run option of unknown arity before the operand withholds the exemption (fail closed: the image stays an item)",
+  "wildcard-bound and registry-remapped forms are not exempt by design"
+ ]
+}
