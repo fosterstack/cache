@@ -3,7 +3,7 @@
 Self-contained and shared verbatim between the cache and ops repos. A release's publish date says nothing about the commit its tag
 points to today (the tj-actions pattern moved tags under old releases), so an action's age is the first time OUR scheduled run on
 main saw that tag point at that exact commit. The state is cumulative and kept as an artifact of those runs; only runs that are
-event=schedule, branch main, success, from our daily workflow's path are ever read, so a PR can never forge it.
+event=schedule, branch main, completed (success or failure), from our daily workflow's path are ever read, so a PR can never forge it.
 
 state = {"version": 1, "first_seen": {"owner/repo@tag@commit": "2026-10-05T12:00:00Z", ...}}
 """
@@ -33,8 +33,9 @@ def first_seen(state, repo, tag, commit):
 
 
 def accept_run(run):
-    """Only a successful scheduled run on main of our daily workflow may supply the state."""
-    return (run.get("event") == "schedule" and run.get("head_branch") == "main" and run.get("conclusion") == "success"
+    """Only a completed scheduled run on main of our daily workflow may supply the state. A run that FAILED still counts: the daily job
+    writes the state first, and a real hit fails the run by design, so success-only would throw the state away exactly when it matters."""
+    return (run.get("event") == "schedule" and run.get("head_branch") == "main" and run.get("conclusion") in ("success", "failure")
             and run.get("path") in WORKFLOW_PATHS)
 
 

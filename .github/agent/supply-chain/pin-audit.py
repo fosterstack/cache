@@ -54,6 +54,10 @@ _PRE = re.compile(r"(?i)^(a|b|c|rc|alpha|beta|pre|preview|dev)")
 _POST = re.compile(r"(?i)^(post|p|rev|r)(?=\d|\.|-|_|$)")
 
 
+def _norm_name(n):
+    return re.sub(r"[-_.]+", "-", str(n)).lower()
+
+
 def _vt(v):
     """(release numbers without trailing zeros, class, suffix parts): class 0 = pre-release (before the final), 1 = final, 2 = post-release.
     1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.0.post1 is AFTER 1.0; 1.2 equals 1.2.0. A suffix of any other kind raises ValueError (callers read it as affected)."""
@@ -329,7 +333,7 @@ class LiveNet:
             for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}", strict=True)
-                    names = {q["package"]["name"].lower(), item.name.lower()}
+                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)}
                     rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
                             if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() in names]
                     if adv and rngs:
@@ -339,9 +343,16 @@ class LiveNet:
         if eco:
             seen = {g["id"] for g in ghs}
             page = []
+            asked = [pkg]
+            if q["package"]["ecosystem"] == "PyPI":
+                info = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
+                published = (info.get("info") or {}).get("name")
+                if published and published != pkg:
+                    asked.append(published)            # jaraco.context vs jaraco-context: GitHub matches the exact published name
             for typ in ("", "&type=malware"):
+              for nm in asked:
                 for n in range(1, 11):
-                    got = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}{typ}&per_page=100&page={n}", strict=True)
+                    got = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(nm)}{typ}&per_page=100&page={n}", strict=True)
                     if not isinstance(got, list):
                         raise Fail("GitHub's advisory list was not a list: refusing to read it as 'no advisories'")
                     page += got
@@ -353,7 +364,7 @@ class LiveNet:
                 if adv.get("ghsa_id") in seen:
                     continue
                 rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
-                        if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() == pkg.lower()]
+                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) == _norm_name(pkg)]
                 if rngs and in_range(version, "|".join(rngs)):
                     ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"), "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])
@@ -697,7 +708,14 @@ def rollback(item, net, now):
         if pub is None or (now - pub).total_seconds() < WAIT_DAYS * 86400 or v["version"] == (item.label or item.version) or v.get("sha") == item.version:
             continue
         eligible.append((pub, v))
-    for pub, v in sorted(eligible, key=lambda x: x[0], reverse=True):  # newest first; the lists of a candidate are fetched only when it is reached
+    def vkey(x):
+        try:
+            nums, cls, parts = _vt(x[1]["version"])
+        except ValueError:
+            return None
+        return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None   # a pre-release is never a rollback target
+    ordered = [x for x in eligible if vkey(x) is not None]
+    for pub, v in sorted(ordered, key=vkey, reverse=True):  # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
         lists = v.get("lists")
         if lists is None:
             gh_l, osv_l = net.lists(v["_item"])
@@ -976,7 +994,12 @@ def main(argv=None):
                         continue
                     child = inv.Item("action", m.group(1), m.group(2), "", (ref.split("@")[0].split("/", 2) + [""])[2])
                     if not inv.SHA40.match(child.version) and hasattr(net, "resolve_ref"):
-                        sha = net.resolve_ref(child.name, child.version)
+                        try:
+                            sha = net.resolve_ref(child.name, child.version)
+                        except (Fail, age.CouldNotLook) as e:
+                            print(f"information: a nested reference of {clean(outer.name)} could not be resolved: {clean(e)}")
+                            incomplete = True
+                            continue
                         if sha:
                             child = inv.Item("action", child.name, sha, child.version, child.path)  # the moving tag's CURRENT commit, labelled by the tag
                         else:
@@ -984,9 +1007,13 @@ def main(argv=None):
                     if child.key in seen:
                         continue
                     seen.add(child.key)
-                    for f in judge(child, net, exceptions, notes, current=True):
-                        f.via = outer.name
-                        findings.append(f)
+                    try:
+                        for f in judge(child, net, exceptions, notes, current=True):
+                            f.via = outer.name
+                            findings.append(f)
+                    except (Fail, age.CouldNotLook) as e:
+                        print(f"information: a nested action of {clean(outer.name)} could not be checked: {clean(e)}")
+                        incomplete = True
                     if depth + 1 < 3:
                         nxt.append((child, depth + 1))
                     else:

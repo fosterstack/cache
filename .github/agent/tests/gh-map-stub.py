@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # a gh stub for the offline tests: GH_MAP is a JSON file {api path: value}; --jq supports .field, .a.b and .[]; {"__b64": "..."} is a binary body; {"__err": "..."} fails
-import base64, json, os, sys
+import base64, json, os, re, sys
 a = sys.argv[1:]
 if not a or a[0] != "api":
     sys.exit(1)
@@ -16,6 +16,8 @@ if isinstance(v, dict) and "__b64" in v:
     sys.stdout.buffer.write(base64.b64decode(v["__b64"])); sys.exit(0)
 if jq == ".[]":
     for x in v: print(json.dumps(x))
+elif jq and re.fullmatch(r"\.\w+\[\]", jq):
+    for x in v[jq[1:-2]]: print(json.dumps(x))
 elif jq and jq.startswith("."):
     for k in jq[1:].split("."):
         v = v[k]

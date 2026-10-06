@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       actions: read   # reads the tag observations of our scheduled runs (an action's age); read-only
+      checks: read    # the PR clock reads every check suite of the introducing commit; read-only
     steps:
       - name: Trusted checker (the base branch)
         if: github.event_name == 'pull_request'
@@ -99,6 +100,7 @@ jobs:
       actions: write
       contents: read
       pull-requests: read
+      checks: read    # the PR clock of a held PR reads every check suite of its introducing commit
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -180,7 +180,9 @@ def _uses(u, node, out, labels):
         if isinstance(w, dict) and repo.lower() != "actions/setup-go":     # the Go toolchain is a product dependency (rule 1, amendment 2)
             for key, val in w.items():
                 if key not in known and isinstance(val, str) and val.strip() and re.search(r"(^|[-_])(versions?|tags?|releases?|tools|images?)(-file)?$", key):
-                    out.append(Item("tool", f"{repo}:{key}", "(input)"))       # an installer-shaped input nobody classified: a placeholder, so a new or changed one is refused
+                    it = Item("tool", f"{repo}:{key}", "(input)")       # an installer-shaped input nobody classified: a placeholder, so a new or changed one is refused
+                    it.step = _ctx_tag(node)                           # identified by the whole step (its value included) and the env/matrix it reads
+                    out.append(it)
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
@@ -245,13 +247,17 @@ def _step_items(node, out, labels):
         for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
             for t in _GO_TARGET.finditer(m.group(1)):
                 out.append(Item("gotool", t.group(1), t.group(2)))
+            for tok in m.group(1).split():
+                tok = tok.strip("'\"")
+                if not tok.startswith("-") and "@" not in tok and re.fullmatch(r"[\w.\-]+\.[\w.\-]+/[\w.\-/]+", tok):
+                    out.append(Item("gotool", tok, "(unversioned)"))     # go install with no @version: a placeholder, refused when added
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             out.append(Item("tool", m.group(1), "latest"))
         for m in _DOCKER_CMD.finditer(run):
             for img in _docker_images(m.group(1)):
                 out.append(_image_item(img))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
-            out.append(Item("tool", m.group(1), m.group(3), m.group(2) + m.group(3)))
+            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3)))
         for m in _PIP_INSTALL.finditer(run):
             for p in _PIP_PIN.finditer(m.group(1)):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
@@ -382,7 +388,7 @@ _UNMEASURED = [
     (re.compile(r"\bgit\s+(?:-\S+\s+)*(?:clone|submodule\s+update|fetch\s+\S*https?://|archive\s+--remote)\b"), "a git clone or remote fetch"),
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
     (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
-    (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
+    (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
 
@@ -424,7 +430,7 @@ def unmeasured(files):
             if len(flat) > MAX_LINE:
                 raise RuntimeError(f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
-                if re.search(r"\b(?:curl|wget)\b", seg) and not re.search(r"github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", seg):
+                if re.search(r"\b(?:curl|wget)\b", seg) and not (_GH_DOWNLOAD.search(_hide(seg)) or _GH_LATEST.search(seg)):
                     key = (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100])
                     out[key] = out.get(key, 0) + 1
             for rx, what in _UNMEASURED:

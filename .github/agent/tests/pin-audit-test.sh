@@ -491,13 +491,13 @@ check test "$rc" -eq 1; check test -s "$work/obsout2/state.json"
 rm -rf "$work/obsout3"; run obs3 "$OBS_FX" "$work/r-pr" --base HEAD~1 --observations-out "$work/obsout3/state.json"
 CASE="a pull request run (--base) never writes observations: only the scheduled run on main does"
 check test ! -e "$work/obsout3/state.json"
-CASE="tag_observer.py accepts only a successful scheduled run on main of supply-chain.yml, and keeps a moved tag as a NEW mapping"
+CASE="tag_observer.py accepts only a completed (success or failure) scheduled run on main of supply-chain.yml, and keeps a moved tag as a NEW mapping"
 check python3 - "$here/../supply-chain/tag_observer.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("t", sys.argv[1]); t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)
 ok = {"event": "schedule", "head_branch": "main", "conclusion": "success", "path": ".github/workflows/supply-chain.yml"}
 assert t.accept_run(ok)
-for k, v in (("event", "pull_request"), ("head_branch", "feature"), ("conclusion", "failure"), ("path", ".github/workflows/ci.yml")):
+for k, v in (("event", "pull_request"), ("head_branch", "feature"), ("conclusion", "cancelled"), ("path", ".github/workflows/ci.yml")):
     assert not t.accept_run(dict(ok, **{k: v})), k
 s = t.update_state(None, {"o/r@v1": "a" * 40}, "2026-01-01T00:00:00Z")
 s = t.update_state(s, {"o/r@v1": "b" * 40}, "2026-02-01T00:00:00Z")
@@ -787,6 +787,18 @@ except pa.Fail as e:
     assert "refusing" in str(e)
 else:
     raise AssertionError("201 tags were truncated")
+PY
+
+CASE="rollback is the newest VERSION, never the newest upload: a late 1.2.9 backport published after 2.0.0 is not 'newest', and a pre-release is never a rollback target; GitHub advisory names compare by PEP 503 normalisation"
+check python3 - "$aud" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
+old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+fx = pa.FixtureNet({"versions": {"o/r": [{"version": "2.0.0", "sha": None, "published": old(60), "lists": {}}, {"version": "1.2.9", "sha": None, "published": old(10), "lists": {}},
+                                          {"version": "3.0.0rc1", "sha": None, "published": old(20), "lists": {}}]}})
+assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["version"] == "2.0.0"
+assert pa._norm_name("Jaraco.Context") == pa._norm_name("jaraco_context") == "jaraco-context"
 PY
 
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------

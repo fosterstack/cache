@@ -69,7 +69,7 @@ def is_pin(version):
 
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if not is_pin(item.version):
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, so it has no age", None
     best, seen = None, []
     for t, src in proofs:
@@ -240,7 +240,7 @@ def observed():
     repo = os.environ.get("GITHUB_REPOSITORY")
     state = None
     if repo:
-        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=success&per_page=100") or {}
+        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=completed&per_page=100") or {}
         runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
         for run in runs[:30]:
             arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
@@ -280,6 +280,17 @@ def _pr_clock(item, root, base, head="HEAD"):
         return None
     runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
     times = [x["created_at"] for x in runs if x.get("created_at")]
+    r2 = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    if r2.returncode:
+        _gh_failed(r2)
+    else:
+        for line in r2.stdout.splitlines():
+            try:
+                c = json.loads(line).get("created_at")
+            except ValueError:
+                continue
+            if c:
+                times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
     return min(times) if times else None
 
 
@@ -293,7 +304,7 @@ def _release_with_assets(repo, tags):
 
 def live_proofs(item, root, base=None, head="HEAD"):
     out = []
-    if not is_pin(item.version):
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version):
         return out    # a placeholder, a range or a variable has no age: nothing is looked up (and nothing can pass)
     if item.kind == "action":
         # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
