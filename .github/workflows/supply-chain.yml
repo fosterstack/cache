@@ -43,8 +43,14 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          python3 trusted/bin/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }}
-          python3 trusted/bin/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --report-only
+          checker=trusted
+          if [ ! -f trusted/bin/pin-age-check.py ]; then
+            # only until the checker first lands on the base branch: after that the base's copy is always the one that runs
+            checker=pr
+            echo "::notice::the base branch has no checker yet; running the pull request's own copy"
+          fi
+          python3 "$checker/bin/pin-age-check.py" --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }}
+          python3 "$checker/bin/pin-audit.py" --root pr --base ${{ github.event.pull_request.base.sha }} --report-only
 
   daily-audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
