@@ -244,6 +244,23 @@ class LiveNet:
     def version_of(self, item):
         return self._version_of(item)
 
+    def resolve_ref(self, repo, tag):
+        """The commit a (moving) tag points at right now, annotated tags peeled; None when it cannot be resolved."""
+        ref = self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(tag)}")
+        obj = (ref or {}).get("object") or {}
+        for _ in range(3):
+            if obj.get("type") != "tag":
+                break
+            obj = (self._gh_json(f"repos/{repo}/git/tags/{obj['sha']}") or {}).get("object") or {}
+        return obj.get("sha") if obj.get("type") == "commit" else None
+
+    def versions_of(self, item):
+        """Every version-like tag at an action's commit (an exception must clear them ALL), else the single version."""
+        if item.kind == "action" and inv.SHA40.match(item.version):
+            return [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:40]
+        v = self._version_of(item)
+        return [v] if v else []
+
     def _version_of(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):
             tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]
@@ -283,7 +300,7 @@ class LiveNet:
 
     def lists(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):  # EVERY version-like tag at the commit: one tag must not hide another's advisory
-            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:6]
+            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:40]
             if len(tags) > 1:
                 gh_all, osv_all = [], []
                 for t in tags:
@@ -456,7 +473,10 @@ class LiveNet:
         if not repo:
             return []
         out = []
-        for p in self._gh_json(f"repos/{repo}/pulls?state=open&per_page=100", strict=True) or []:
+        pulls = age._gh_pages(f"repos/{repo}/pulls?state=open&per_page=100")
+        if pulls is None:
+            raise Fail("could not list the open pull requests")
+        for p in pulls:
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
             f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
@@ -568,7 +588,9 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
     Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
     an exception never covers a version the authoritative source lists as affected)."""
-    ver = net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)
+    vers = (net.versions_of(item) if net is not None and hasattr(net, "versions_of") else None) or [net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)]
+    vers = [v for v in vers if v]
+    ver = vers[0] if vers else None
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
@@ -584,7 +606,7 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
         live = net.live_ranges(item, au["source"], au["id"]) if net is not None else None
         if not live or _norm_ranges(live) != _norm_ranges(au["ranges"]):
             return None
-        return "hit" if in_range(ver, "|".join(e["authoritative"]["ranges"])) else "pass"
+        return "hit" if any(in_range(v, "|".join(e["authoritative"]["ranges"])) for v in vers) else "pass"   # ANY tag of the commit inside the ranges: affected
     return None
 
 
@@ -755,9 +777,9 @@ def file_issues(gh, plan, today):
     done = set()
     for p in plan:
         prefix, title = p["title"]
-        if title in done:
+        if title in done or prefix in done:
             continue
-        done.add(title)
+        done.add(title); done.add(prefix)
         existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " ("))), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
@@ -912,6 +934,12 @@ def main(argv=None):
                         print(f"information: not checked (a nested reference this check cannot resolve: a local action or a Dockerfile): {clean(ref)} inside {outer.name}")
                         continue
                     child = inv.Item("action", m.group(1), m.group(2), "", (ref.split("@")[0].split("/", 2) + [""])[2])
+                    if not inv.SHA40.match(child.version) and hasattr(net, "resolve_ref"):
+                        sha = net.resolve_ref(child.name, child.version)
+                        if sha:
+                            child = inv.Item("action", child.name, sha, child.version, child.path)  # the moving tag's CURRENT commit, labelled by the tag
+                        else:
+                            print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved to a commit; checked by its literal name")
                     if child.key in seen:
                         continue
                     seen.add(child.key)

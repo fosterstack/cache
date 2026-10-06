@@ -695,6 +695,44 @@ assert "issue create" in txt and "GHSA-main-main" in txt and "actions/checkout" 
 assert "open pull request #9 could not be checked" in out.getvalue(), out.getvalue()
 PY
 
+CASE="an exception clears a commit only if NO version-like tag at it is inside the authoritative ranges; a moving nested tag is resolved to its commit; open pull requests are read page by page and an unreadable listing fails; one identity is one issue in a run"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+it = pa.inv.Item("action", "o/r", "a" * 40, "v3")
+class N:
+    def live_ranges(self, i, s, a): return [">= 3.26.11, <= 3.28.2"]
+    def version_of(self, i): return "v3.30.0"
+    def versions_of(self, i): return ["v3.30.0", "v3.27.0"]      # the commit carries two tags; one is inside the ranges
+e = {"ids": ["A"], "package": "o/r", "authoritative": {"source": "GitHub", "id": "A", "ranges": [">= 3.26.11, <= 3.28.2"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "hit", "another tag of the commit is inside the ranges"
+N.versions_of = lambda self, i: ["v3.30.0", "v3.31.0"]
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "pass"
+# a moving tag resolves to its current commit (annotated tags peeled)
+net = pa.LiveNet(["false"], ".")
+net._gh_json = lambda path, strict=False: {"repos/o/r/git/ref/tags/v4": {"object": {"type": "tag", "sha": "t" * 40}}, "repos/o/r/git/tags/" + "t" * 40: {"object": {"type": "commit", "sha": "c" * 40}}}.get(path)
+assert net.resolve_ref("o/r", "v4") == "c" * 40
+# unreadable PR listing fails loudly
+pa.age._gh_pages = lambda path: None
+os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
+try:
+    net.open_pr_items()
+except pa.Fail:
+    pass
+else:
+    raise AssertionError("an unreadable listing was read as no PRs")
+# one identity, one issue per run, whatever ids the findings carry
+calls = []
+class G:
+    def run(self, *a, ok_fail=False):
+        calls.append(a)
+        class R: stdout = "[]"
+        return R()
+plan = [{"title": ("supply-chain: x@1", "supply-chain: x@1 (A)"), "body": "b", "owner": False}, {"title": ("supply-chain: x@1", "supply-chain: x@1 (B)"), "body": "b", "owner": False}]
+pa.file_issues(G(), plan, "2026-10-05")
+assert len([c for c in calls if c[:2] == ("issue", "create")]) == 1, calls
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"
