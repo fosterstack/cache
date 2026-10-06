@@ -7,6 +7,10 @@
 # eval of a variable anywhere is refused by the checker.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../../.." && pwd)
+# the vendored pure-Python PyYAML as `yaml` (the coverage job's python has none of its own), like check-action-pins-test.sh
+pylib=$(mktemp -d); trap 'rm -rf "$pylib"' EXIT
+ln -s "$root/.github/agent/fixtures/testlib/pyyaml" "$pylib/yaml"
+export PYTHONPATH="$pylib${PYTHONPATH:+:$PYTHONPATH}"
 python3 - "$root" <<'PY'
 import ast, importlib.util, os, re, subprocess, sys, tempfile, yaml
 root = sys.argv[1]
