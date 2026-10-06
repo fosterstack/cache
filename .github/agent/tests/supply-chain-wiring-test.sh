@@ -90,7 +90,23 @@ def judge_wf(d, real=False):
         bad.append(f"rerun-held's permissions are not exactly actions: write + contents: read + pull-requests: read (found {j.get('permissions')})")
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
+    PR_IF = "github.event_name == 'pull_request'"
     for name, jj in jobs.items():
+        for st in jj.get("steps", []):
+            # a step may not be skipped, tolerated or cut short: the only conditions are the ratified ones
+            if "continue-on-error" in st:
+                bad.append(f"{name}: a step has continue-on-error: a failing check must fail the job")
+            allowed_if = PR_IF if name == "pin-age" else ("always()" if "upload-artifact" in str(st.get("uses", "")) else None)
+            if st.get("if") != allowed_if:
+                bad.append(f"{name}: a step has a condition ({st.get('if')!r}) other than the ratified one ({allowed_if!r}): it could skip the check")
+            if "timeout-minutes" in st:
+                bad.append(f"{name}: a step has its own timeout-minutes")
+        for st in [x for x in jj.get("steps", []) if "run" in x]:
+            run_text = str(st["run"])
+            if re.search(r"(^|[;&|\n])\s*exit\s+(?!\$status\b)", run_text) or re.search(r"\|\|\s*true\b", run_text):
+                bad.append(f"{name}: a run step exits early or swallows a failure (exit / || true)")
+            if "GH_TOKEN" not in str(st.get("env", "")) and ("pin-" in run_text):
+                bad.append(f"{name}: a step that runs the checkers has no GH_TOKEN (without it the live lookups cannot run)")
         for s in jj.get("steps", []):
             u = str(s.get("uses", ""))
             if u and not PIN.match(u):
@@ -214,6 +230,14 @@ mut_wf("exceptions are read from the PR's tree", "does not take the exceptions f
 mut_wf("the audit stops passing --exceptions", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace(' --exceptions "$exceptions"', "")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the age check's failure hides the audit", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("set -uo pipefail", "set -euo pipefail")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the audit's exit status is dropped", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("--report-only || status=1", "--report-only")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("a step is disabled with if: false", "a step has a condition", lambda d: J(d, "pin-age")["steps"][-1].update({"if": "false"}))
+mut_wf("a step skips bots", "a step has a condition", lambda d: J(d, "pin-age")["steps"][-1].update({"if": "github.actor != 'dependabot[bot]'"}))
+mut_wf("a step tolerates failure", "continue-on-error", lambda d: J(d, "pin-age")["steps"][-1].update({"continue-on-error": "true"}))
+mut_wf("exit 0 is appended to the check step", "exits early", lambda d: [x.update(run=x["run"] + "\nexit 0") for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("exit 0 is put first", "exits early", lambda d: [x.update(run="exit 0\n" + x["run"]) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("a failure is swallowed with || true", "exits early", lambda d: [x.update(run=x["run"].replace("|| status=1", "|| true")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("the check step loses its token", "no GH_TOKEN", lambda d: [x.pop("env") for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))

@@ -12,6 +12,7 @@ NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
 import fnmatch
+import hashlib
 import shlex
 import json
 import re
@@ -76,7 +77,7 @@ class Item:
 
 
 def git(root, *args):
-    r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, errors="replace")  # a non-UTF-8 blob must never crash the readers
     if r.returncode:
         raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout
@@ -318,6 +319,6 @@ def unmeasured(files):
             flat = " ".join(line.split())
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
-                    key = (path, what, _hide(flat)[:160])
+                    key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])  # the WHOLE line decides identity (its hash), never a truncation
                     out[key] = out.get(key, 0) + 1
     return out
