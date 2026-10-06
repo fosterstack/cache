@@ -2,8 +2,8 @@
  "schema": "auditor-review-record/v1",
  "tree": "9e83a8d5c2f3358144760344adaa3b17459937a05bf89ce56f8f8504edc1bd05",
  "change": "the auditor's delivery commits (panel, CVE suppression, bump PRs) are made through the GitHub API with the App token so GitHub signs them (main requires signed commits; the git commit path left PR #181 BLOCKED): a shared helper builds the commit on a temporary auditor/tmp-* ref, requires GitHub to report it validly signed, re-reads the live head as a lease, then moves the live branch; discovery failures abort before any write; arming only binds to the verified head; bump reuse only for one verified commit on current main with exactly the wanted bytes (advisor 0209) -- PR #190",
- "reviewed_commit": "16ce92b55610e7f16dfd22000f0cd960f92e2fb5",
- "closed_commit": "16ce92b55610e7f16dfd22000f0cd960f92e2fb5",
+ "reviewed_commit": "17456a325e06399076715ddb29aae4c1da567dd2",
+ "closed_commit": "17456a325e06399076715ddb29aae4c1da567dd2",
  "rounds": [
   {
    "round": 1,
@@ -50,6 +50,38 @@
      "vendor": "openai",
      "blockers_open": 0,
      "evidence_sha256": "4af6ca5df2899157901e9329d80827b862e68dde194bd28012cf42eba982d701"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "signed-commits r4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "5ef22f9b87a77b84fb1572f2479d5bd9cd3f3a577f5889cef50c5b642fbd121c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "a552600e0aa2f997466c5279541bfe71e028222203543b14a8f88a0b9cff60a7"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "signed-commits r5",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b45a8df562f814b0e558d87184dc6608efee4217eeb5b027acdb7dd74f877a04"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "59ae438ad41b06704108264dfcc90dc071162df515971243b61dcbe91c667fee"
     }
    }
   }
