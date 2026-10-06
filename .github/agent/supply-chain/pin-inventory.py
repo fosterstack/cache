@@ -214,6 +214,10 @@ def _uses(u, node, out, labels):
                     it.step = _ctx_tag(node)                           # identified by the whole step (its value included) and the env/matrix it reads
                     out.append(it)
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
+            if tool is not None and not (isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip()):
+                it = Item("tool", tool, "(default)")       # no version given: the action installs whatever its default is, so removing the input must not remove the obligation
+                it.step = "default:" + inp                 # identified by WHICH input is missing (not by the whole step: unrelated edits move nothing)
+                out.append(it)
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
                 it = _image_item(val) if tool is None else Item("tool", tool, val)

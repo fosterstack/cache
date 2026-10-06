@@ -781,6 +781,21 @@ got = inv.inventory({"bin/x.sh": "cd x&&pip install foo==1.0\necho hi;pip instal
 assert "package:pypi/foo@1.0" in got and "package:pypi/bar@2.0" in got
 PY
 
+CASE="removing an installer action's version input leaves a (default) placeholder (refused), and a release asset that is missing borrows no other asset's age"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
+import importlib.util, sys, subprocess, os, json
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+mk = lambda w: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: golangci/golangci-lint-action@" + "a" * 40 + " # v9\n" + w}
+with_v = inv.inventory(mk("        with:\n          version: v2.13.2\n")); without = inv.inventory(mk(""))
+assert [k for k in without if k not in with_v and "(default)" in k], sorted(without)
+assert not [k for k in with_v if "(default)" in k]
+spec2 = importlib.util.spec_from_file_location("ac", sys.argv[1].replace("pin-inventory", "pin-age-check")); ac = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(ac)
+ac._release_with_assets = lambda repo, tags: {"published_at": "2026-01-01T00:00:00Z", "assets": [{"name": "other.tgz", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}]}
+ac._pr_clock = lambda *a, **k: None
+it = inv.Item("tool", "o/r", "v1.0", "v1.0", "wanted.tgz")
+assert ac.live_proofs(it, ".") == [], "a missing asset must not borrow another asset's age"
+PY
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'
