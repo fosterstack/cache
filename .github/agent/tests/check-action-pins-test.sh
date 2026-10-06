@@ -2376,6 +2376,28 @@ $(co "          ref: $BASE_REF
           mkdir -p /tmp/pin-run/trusted/bin
           printf 'x\\n' > /tmp/pin-run/trusted/bin/tool.py
           (cd /tmp/pin-run && python3 trusted/bin/tool.py)" "$mk_trusted"
+case_ r29-b1-subshell-with-a-nested-substitution-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          mkdir -p /tmp/pin-run/trusted/bin
+          printf 'x\\n' > /tmp/pin-run/trusted/bin/tool.py
+          (cd /tmp/pin-run && python3 trusted/bin/tool.py \"\$(date +%s)\")" "$mk_trusted"
+case_ r29-unbalanced-parentheses-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          (cd dist && sha256sum -c sums.txt
+          python3 trusted/bin/tool.py" "$mk_trusted"
+case_ r29-nested-subshells-without-the-script-ok ok "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          (cd dist && (sha256sum -c sums.txt) && echo \"\$(date +%s)\")
+          python3 trusted/bin/tool.py" "$mk_trusted"
 case_ r28-b2-kubectl-set-flag-image-bad bad "$(rb 'kubectl set -n production image deployment/web web=nginx:latest')"
 case_ r28-b2-kubectl-set-flag-image-digest-ok ok "$(rb 'kubectl set -n production image deployment/web web=nginx@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 

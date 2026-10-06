@@ -2329,22 +2329,43 @@ def _made_executable(script, path):
     return None
 
 
+def _paren_groups(text):
+    """Every balanced ( … ) group of the text as (start, end) pairs, nested ones included (a `$(date +%s)` inside a subshell does not end it);
+    None when the parentheses do not balance (the caller then refuses: stricter, never looser)."""
+    stack, groups = [], []
+    for k, c in enumerate(text):
+        if c == "(":
+            stack.append(k)
+        elif c == ")":
+            if not stack:
+                return None
+            groups.append((stack.pop(), k))
+    return None if stack else groups
+
+
+_CD = r"(?<![\w./$-])(cd|pushd)(?![\w./-])"
+
+
 def _cd_subshell_runs(text, path):
-    """True when a ( … ) subshell that changes directory also runs `path`: `(cd /tmp/x && python3 bin/t.py)` resolves the path under /tmp."""
+    """True when a ( … ) subshell that changes directory also runs `path`: `(cd /tmp/x && python3 bin/t.py "$(date)")` resolves the path under /tmp."""
     flat = re.sub(r"\\\n", " ", text)
-    return any(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(g)) and path in g for g in re.findall(r"\$?\(([^()]*)\)", flat))
+    groups = _paren_groups(flat)
+    if groups is None:
+        return True
+    return any(re.search(_CD, _unquoted(flat[a + 1:b])) and path in flat[a + 1:b] for a, b in groups)
 
 
 def _cd_outside_subshell(text):
     """True when the text changes directory outside a ( … ) subshell: `(cd dist && sha256sum -c …)` leaves the shell where it was, a bare
     `cd /tmp` moves every later relative path (Codex #164 r27: a committed namesake must not excuse a script generated under /tmp)."""
     flat = re.sub(r"\\\n", " ", text)
-    while True:
-        new = re.sub(r"\$?\([^()]*\)", " ", flat)
-        if new == flat:
-            break
-        flat = new
-    return bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(flat)))
+    groups = _paren_groups(flat)
+    if groups is None:
+        return True
+    outer = [(a, b) for a, b in groups if not any(c < a and b < d for c, d in groups)]
+    for a, b in sorted(outer, reverse=True):
+        flat = flat[:a] + " " + flat[b + 1:]
+    return bool(re.search(_CD, _unquoted(flat)))
 
 
 def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
