@@ -212,7 +212,11 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         # (advisor 0106; its own containment and its place before the unconditional self-check are checked below)
         diag = j == "panel-scout" and st.get("name") == "Scout product-form probe (rule 4 diagnostic, advisor 0106)" \
             and cond == "github.event_name=='workflow_dispatch'"
-        if cond and not diag and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        # REQ-REL-004-AC5: the Inspector job's two same-day-reuse cache steps (stock actions/cache restore and save, pinned) carry the
+        # same-repo condition; bin/inspector-reuse-test.sh pins their exact form. No other step of any job may be conditional.
+        cache = j == "panel-inspector" and re.match(r"actions/cache/(restore|save)@[0-9a-f]{40}$", str(st.get("uses", ""))) \
+            and "github.event_name!='pull_request'||github.event.pull_request.head.repo.full_name==github.repository" in cond
+        if cond and not diag and not cache and not cond.startswith("${{always()") and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")

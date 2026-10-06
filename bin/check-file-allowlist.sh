@@ -110,6 +110,8 @@ ALLOW_PATTERNS=(
   '^bin/dispatch-fixer\.sh$'
   '^bin/inspector-gate\.py$'
   '^bin/inspector-gate-test\.sh$'
+  '^bin/inspector-reuse\.py$'
+  '^bin/inspector-reuse-test\.sh$'
   '^bin/grype-scan\.sh$'
   '^bin/vex-both-scanners-test\.sh$'
   '^bin/vex-scope-test\.sh$'

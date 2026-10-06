@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 72 |
-| Acceptance criteria | 167 |
+| Acceptance criteria | 168 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 151 |
+| ACs with mapped evidence | 152 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -551,7 +551,7 @@ No artifact shall be published with a known CVE at any severity unless a publish
 
 A newly disclosed vulnerability shall be caught before release, not on tag day: the full scanner set shall run as a required check on every pull request, every push to main, and every tag; scanner installers shall be pinned by checksum so a scanner that cannot run fails the pipeline rather than passing silently; main's latest candidate shall be rescanned daily; and the Go toolchain shall be kept on its latest patch by an automated bump.
 
-*Introduced v0.2.1 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; bin/inspector-gate.py; .github/policy/required-checks.json; .github/workflows/main-candidate-rescan.yml; .github/workflows/go-freshness.yml*
+*Introduced v0.2.1 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; bin/inspector-gate.py; bin/inspector-reuse.py; .github/policy/required-checks.json; .github/workflows/main-candidate-rescan.yml; .github/workflows/go-freshness.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -559,6 +559,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC2 | Given the scanner installer; when it installs any scanner; then the download is pinned to a specific version and verified against a repo-pinned sha256, and a scanner that cannot be installed or verified exits as a labeled pipeline failure rather than a finding or a silent clean pass | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set; findings seen by two or more scanners open the tracking issue within 24 hours; single-scanner findings follow REQ-SCAN-008 and REQ-SCAN-009 (owner, Oct 2) | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-004-AC4 | Given a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor); when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that release | ci-workflow |  | approved | 3 item(s) |
+| REQ-REL-004-AC5 | Given an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day; when the scan check or the rescan would call Amazon Inspector for it; then it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 
