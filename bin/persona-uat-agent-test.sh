@@ -4,7 +4,8 @@
 # provider and a fake `docker` that really runs the shell action inside the directory it was given: the loop stops at the
 # owner's token budget (counted across ALL calls, never calling the model again once reached: a runaway stop, not a
 # suggestion); every shell action runs in the digest-pinned shell image with exactly one mount (the sandbox of public
-# docs), no privilege, no inherited credentials, so the persona cannot read the checkout; a provider that fails or
+# docs), no privilege, no inherited credentials, so the only thing the sandbox holds is the public docs (the instructions forbid source; host
+# networking is accepted, so nothing here ENFORCES it: the driver flags non-doc hosts in the report); a provider that fails or
 # answers outside the protocol fails the agent (the driver then counts that persona as blocking); the owner's model
 # reaches the provider and no model name is written in the agent or its output.
 # Contracts the tests pin:
@@ -75,6 +76,17 @@ host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
 img = next((i for i, x in enumerate(a) if "@sha256:" in x), None)
 rest = a[img + 1:] if img is not None else []
 if not (len(rest) == 3 and rest[:2] == ["sh", "-c"]):
+    # the images' real entrypoints: gradle (CMD ["gradle"], no ENTRYPOINT) and maven (ENTRYPOINT mvn-entrypoint.sh which exec's "$@", CMD ["mvn"]) take the
+    # PROGRAM as the first argument; cosign (ENTRYPOINT ["/ko-app/cosign"]) and kubectl (ENTRYPOINT ["/bin/kubectl"]) take the SUBCOMMAND (a leading
+    # program name is an unknown command). Arguments replace CMD, so a first argument that is not the program cannot run.
+    repo = a[img]
+    prog = {"/gradle@": "gradle", "/maven@": "mvn"}
+    for k, v in prog.items():
+        if k in repo and rest and rest[0] != v:
+            sys.stderr.write('docker: Error response from daemon: failed to create task: exec: "%s": executable file not found in $PATH\n' % rest[0]); sys.exit(127)
+    for k, v in {"/cosign@": "cosign", "/kubectl@": "kubectl"}.items():
+        if k in repo and rest and rest[0] == v:
+            sys.stderr.write('Error: unknown command "%s" for "%s"\n' % (v, v)); sys.exit(1)
     sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); sys.exit(0)
 cmd = rest[2]
 try:
@@ -328,20 +340,43 @@ assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", sys.argv[2]
 assert open(sys.argv[2] + "/viash.txt").read().strip() == "viash"
 PY
 for t in cosign kubectl gradle maven; do
-  agent "tool-$t" '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"'$t'","args":["verify","--key","k.pub","https://example.org/x"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-  case $t in cosign) img=$CSG;; kubectl) img=$KCT;; gradle) img=$GRD;; maven) img=$MVN;; esac
-  CASE="tool $t: docker is run with the FIXED prefix, THAT tool's own digest, then the args exactly as given (an exec: no sh, no -c); the output goes back to the model"
-  check python3 - "$work/tool-$t/fd.log" "$work/tool-$t/sandbox" "$img" "$work/tool-$t/fp.log" <<'PY'
+  case $t in cosign) img=$CSG; targs='["verify","--key","k.pub","https://example.org/x"]';; kubectl) img=$KCT; targs='["get","pods","--kubeconfig","kubeconfig"]';;
+             gradle) img=$GRD; targs='["gradle","--version"]';; maven) img=$MVN; targs='["mvn","-v"]';; esac
+  agent "tool-$t" '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"'$t'","args":'"$targs"'}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+  CASE="tool $t: docker is run with the FIXED prefix, THAT tool's own digest, then the args exactly as given ($targs; the image's entrypoint semantics decide what the first one is); the output goes back to the model"
+  check python3 - "$work/tool-$t/fd.log" "$work/tool-$t/sandbox" "$img" "$work/tool-$t/fp.log" "$targs" <<'PY'
 import json, sys
 SANDBOX = sys.argv[2]
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert len(rows) == 1, rows
-assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", SANDBOX + ":/work", "-w", "/work", sys.argv[3], "verify", "--key", "k.pub", "https://example.org/x"], rows[0]["argv"]
+assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", SANDBOX + ":/work", "-w", "/work", sys.argv[3]] + json.loads(sys.argv[5]), rows[0]["argv"]
 calls = [json.loads(l) for l in open(sys.argv[4])]
 m = json.dumps(calls[1]["req"]["messages"])
-assert "TOOLARGS" in m and "k.pub" in m and "exit status: 0" in m, m
+assert "TOOLARGS" in m and "exit status: 0" in m, m
 PY
 done
+# the program convention: gradle and maven take the program as the first argument (an arg list that is only options cannot run), cosign and kubectl take the subcommand;
+# the agent passes the args VERBATIM (it never prepends or strips a program name) and the model sees the real failure
+for pair in 'gradle|["--version"]|127|executable file not found' 'maven|["-v"]|127|executable file not found' 'cosign|["cosign","version"]|1|unknown command' 'kubectl|["kubectl","get","pods"]|1|unknown command'; do
+  IFS='|' read -r t targs wantrc wanttxt <<<"$pair"
+  agent "progneg-$t" '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"'$t'","args":'"$targs"'}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+  case $t in cosign) img=$CSG;; kubectl) img=$KCT;; gradle) img=$GRD;; maven) img=$MVN;; esac
+  CASE="tool $t with $targs: passed VERBATIM (no program prepended or stripped); the image cannot run it ($wanttxt), and the model is told the real exit status $wantrc"
+  check python3 - "$work/progneg-$t/fd.log" "$work/progneg-$t/sandbox" "$img" "$work/progneg-$t/fp.log" "$targs" "$wantrc" "$wanttxt" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1 and rows[0]["argv"][9:] == json.loads(sys.argv[5]) and rows[0]["argv"][8] == sys.argv[3], rows
+m = json.dumps(json.loads(open(sys.argv[4]).readlines()[1])["req"]["messages"])
+assert "exit status: " + sys.argv[6] in m and sys.argv[7] in m, m
+PY
+done
+CASE="the first model call tells the model the program convention: for gradle and maven the FIRST element of args is the program (gradle, mvn), for cosign and kubectl it is the subcommand"
+check python3 - "$work/finish/fp.log" <<'PY'
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())["req"]
+s = (r["system"] + json.dumps(r["messages"])).lower()
+assert "program" in s and "mvn" in s and "gradle" in s and "subcommand" in s, s
+PY
 agent toolflags '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"cosign","args":["--privileged","-v","/:/host","--network","none","--pid=host","-e","AWS_SECRET_ACCESS_KEY=x","/var/run/docker.sock"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
 CASE="fence 1 (args): docker flags typed by the model in args stay ARGUMENTS INSIDE the container: the options before the image are the fixed eight tokens (one -v), the image is the cosign digest, the typed words come after it verbatim"
 check python3 - "$work/toolflags/fd.log" "$work/toolflags/sandbox" "$CSG" <<'PY'
@@ -387,16 +422,16 @@ assert any(f["kind"] == "blocking" and "without running" in f["text"].lower() fo
 assert a["commands"] == [], ("a refused action is not a command the persona ran", a["commands"])
 PY
 done
-agent unkthenok '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"docker","args":["ps"]}},{"usage":{"tokens":10},"action":{"type":"shell","tool":"gradle","args":["--version"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+agent unkthenok '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"docker","args":["ps"]}},{"usage":{"tokens":10},"action":{"type":"shell","tool":"gradle","args":["gradle","--version"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
 CASE="after a refused tool the persona carries on: a valid action then runs (exactly one docker call, for gradle) and the persona may finish clean"
 check python3 - "$work/unkthenok" "$GRD" <<'PY'
 import json, sys
 d = sys.argv[1]
 rows = [json.loads(l) for l in open(d + "/fd.log")]
-assert len(rows) == 1 and rows[0]["argv"][8] == sys.argv[2] and rows[0]["argv"][9:] == ["--version"], rows
+assert len(rows) == 1 and rows[0]["argv"][8] == sys.argv[2] and rows[0]["argv"][9:] == ["gradle", "--version"], rows
 a = json.load(open(d + "/out.json"))
 assert a["findings"] == [], a
-assert a["commands"] == [a["commands"][0]] and "gradle" in a["commands"][0] and "--version" in a["commands"][0], a["commands"]
+assert len(a["commands"]) == 1 and "gradle" in a["commands"][0] and "--version" in a["commands"][0], a["commands"]
 PY
 # the ambiguous shapes: a hard failure of the agent or a refusal, but NEVER an execution
 n=0
@@ -464,6 +499,20 @@ import json, sys
 assert json.load(open(sys.argv[1]))["commands"] == ["sleep 5"]
 assert json.load(open(sys.argv[2]))["commands"] == []
 PY
+
+# --- a failure AFTER successful actions keeps what happened so far (the driver stores the agent's stderr as the failed persona's transcript artifact;
+# on the success path nothing is echoed, see fence 2 above)
+agent partial '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo $((6*7))-marker-one"}},{"usage":{"tokens":10},"action":{"type":"shell","command":"echo $((6*8))-marker-two >&2; exit 3"}},{"exit":9}]'
+CASE="a provider that fails AFTER two successful actions: the agent fails closed (non-zero, nothing on stdout) AND its stderr keeps the transcript so far (both commands, their outputs and exit status), so the failed persona's artifact can be diagnosed"
+check python3 - "$work/partial" <<'PY'
+import sys
+d = sys.argv[1]
+assert open(d + "/out.json").read() == ""
+e = open(d + "/err.txt").read()
+for w in ("42-marker-one", "48-marker-two", "echo $((6*7))-marker-one", "exit status: 3"):
+    assert w in e, (w, e)
+PY
+check test "$rc" -ne 0
 
 # --- fail closed: a provider that fails or leaves the protocol fails the AGENT ---------------------------------
 for c in 'crash|[{"exit":9}]' 'not-json|[{"raw":"nope"}]' 'unknown-action|[{"usage":{"tokens":1},"action":{"type":"rm-rf","command":"x"}}]' \
