@@ -37,10 +37,12 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{.*?\}\}|[\w.\-+$(){}])+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{.*?\}\}|[\w.+$(){}-])+)/")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{expression\}\}|[\w.\-+()]|\$(?!\{\{))+)")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{expression\}\}|[\w.+()-]|\$(?!\{\{))+)/")
+_GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
+_GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
 _PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
-_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{.*?\}\}|[^\s\\;'\",])+)")
+_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
 _REQ_PIN = re.compile(r"^[ \t]*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?==([^\s;\\]+)", re.M)
@@ -118,6 +120,14 @@ def _image_item(ref, label=""):
     return Item("image", ref, "", label)  # tag only: kept so the age check can fail it
 
 
+MAX_LINE = 4000
+
+
+def _cap(text):
+    """No line of a run step is read past MAX_LINE characters: a pull request cannot make the readers spend unbounded time on one line."""
+    return "\n".join(l[:MAX_LINE] for l in text.split("\n"))
+
+
 def _uses(u, node, out, labels):
     u = u.strip()
     if u.startswith("docker://"):
@@ -156,10 +166,12 @@ def _step(node, out, labels):
         _uses(node["uses"], node, out, labels)
     run = node.get("run")
     if isinstance(run, str):
-        run = _hide(re.sub(r"\\\n\s*", " ", run))  # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
-        for m in _GO_INSTALL.finditer(run):
+        run = _cap(_hide(re.sub(r"\\\n\s*", " ", run)))  # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
+        for m in list(_GO_INSTALL.finditer(run)) + list(_GO_RUN_GET.finditer(run)):
             for t in _GO_TARGET.finditer(m.group(1)):
                 out.append(Item("gotool", t.group(1), t.group(2)))
+        for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
+            out.append(Item("tool", m.group(1), "latest"))
         for m in _DOCKER_CMD.finditer(run):
             for img in _docker_images(m.group(1)):
                 out.append(_image_item(img))
@@ -209,6 +221,7 @@ def inventory(files):
         found = []
         if path == "bin/install-scanner.sh":
             found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
+            found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
         else:
@@ -242,3 +255,24 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+_UNMEASURED = [
+    (re.compile(r"\b(?:npm|pnpm|yarn)\s+(?:install|add|i)\b|\bnpx\b|\bcargo\s+install\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\b\s+\S|\bbrew\s+install\b"), "a package-manager install"),
+    (re.compile(r"\bapt(?:-get)?\s+install\b"), "an apt install"),
+    (re.compile(r"\bgh\s+release\s+download\b"), "a gh release download"),
+    (re.compile(r"\bpip3?\s+install\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
+    (re.compile(r"\b(?:curl|wget)\b[^\n]*https?://(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
+]
+
+
+def unmeasured(files):
+    """(file, what) for every install form in the workflows that this inventory does not measure: reported as information so nothing is silently empty."""
+    out = []
+    for path, text in sorted(files.items()):
+        if not path.startswith(".github/"):
+            continue
+        for rx, what in _UNMEASURED:
+            if rx.search(text):
+                out.append((path, what))
+    return out

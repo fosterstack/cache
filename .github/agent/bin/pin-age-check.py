@@ -233,16 +233,24 @@ def observed():
     return state
 
 
-def _pr_clock(item, root, base):
-    """The PR clock: the earliest server-side time of a workflow run on the commit that INTRODUCED this version in the pull request (base..HEAD)."""
+def _pr_clock(item, root, base, head="HEAD"):
+    """The PR clock: the earliest server-side time of a workflow run on the first commit of base..head whose INVENTORY holds this exact item
+    (not a text match: a comment mentioning the version, or digits that happen to equal it, never start the clock)."""
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo or not base or not item.version:
         return None
-    r = subprocess.run(["git", "-C", root, "log", "--reverse", "--format=%H", f"{base}..HEAD", "-S" + item.version, "--", ".github", "bin"], capture_output=True, text=True)
-    commits = r.stdout.split()
-    if not commits:
+    r = subprocess.run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
+    first = None
+    for c in r.stdout.split():
+        try:
+            if item.key in inv.load_at(root, c):
+                first = c
+                break
+        except RuntimeError:
+            continue
+    if not first:
         return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={commits[0]}&per_page=100") or {}).get("workflow_runs", [])
+    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
     times = [x["created_at"] for x in runs if x.get("created_at")]
     return min(times) if times else None
 
@@ -255,7 +263,7 @@ def _release_with_assets(repo, tags):
     return None
 
 
-def live_proofs(item, root, base=None):
+def live_proofs(item, root, base=None, head="HEAD"):
     out = []
     if item.kind == "action":
         # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
@@ -293,7 +301,7 @@ def live_proofs(item, root, base=None):
         t = _registry_push(item)
         if t:
             out.append((t, "registry-push"))
-    pc = _pr_clock(item, root, base)
+    pc = _pr_clock(item, root, base, head)
     if pc:
         out.append((pc, "pr-clock"))
     return out
@@ -345,11 +353,11 @@ class Fixture:
 
 
 class Live:
-    def __init__(self, root, base=None):
-        self.root, self.base = root, base
+    def __init__(self, root, base=None, head="HEAD"):
+        self.root, self.base, self.head = root, base, head
 
     def proofs(self, item):
-        return live_proofs(item, self.root, self.base)
+        return live_proofs(item, self.root, self.base, self.head)
 
 
 def check(moved_items, source, now, min_days):
@@ -393,7 +401,7 @@ def _run(a, moved, fx, now):
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base), now, a.min_days)
+        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")

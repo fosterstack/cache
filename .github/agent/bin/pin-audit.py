@@ -155,7 +155,7 @@ class FixtureNet:
     def prs(self):
         return self.fx.get("prs") or []
 
-    def proofs(self, item, base=None):
+    def proofs(self, item, base=None, head="HEAD"):
         return age.Fixture(self.fx).proofs(item)
 
     def tag_map(self, items):
@@ -436,11 +436,11 @@ class LiveNet:
             mine = sorted((x for x in runs.get("workflow_runs", []) if x.get("path") == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
             failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
-                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved, "_base": mb})
+                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved, "_base": mb, "_head": p["headRefOid"]})
         return out
 
-    def proofs(self, item, base=None):
-        return age.live_proofs(item, self.root, base)
+    def proofs(self, item, base=None, head="HEAD"):
+        return age.live_proofs(item, self.root, base, head)
 
     def observed(self):
         return age.observed()
@@ -707,7 +707,7 @@ def rerun_held(gh, net, now):
     n = 0
     for pr in net.prs():
         items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
-        rows = [age.judge_item(it, net.proofs(it, pr.get("_base")), now) for it in items]
+        rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
         if rows and all(r[0] for r in rows):
             gh.run("run", "rerun", str(pr["run_id"]))
             print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
@@ -770,6 +770,11 @@ def main(argv=None):
             with open(a.observations_out, "w") as f:
                 json.dump(state, f, sort_keys=True)
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
+        try:
+            for path, what in inv.unmeasured(inv.tree_files(a.root, None)):
+                print(f"information: not covered by this check: {what} in {clean(path)}")
+        except RuntimeError:
+            pass
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
