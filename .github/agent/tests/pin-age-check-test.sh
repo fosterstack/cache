@@ -379,8 +379,14 @@ check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 t = time.time()
-for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200, "x" * 100000):
+for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 200, "go install example.org/t@" + "${{ x }}" * 200, "pip install foo==" + "${{ x }}" * 200):
     inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + body + "\n"})
+try:
+    inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + "x" * 100000 + "\n"})
+except RuntimeError as e:
+    assert "refusing to read it partially" in str(e)
+else:
+    raise AssertionError("an over-long command line was read as its prefix")
 assert time.time() - t < 3, time.time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
@@ -519,9 +525,20 @@ check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
 import importlib.util, os, subprocess, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 t = time.time()
-inv.inventory({"bin/x.sh": "echo ${{ " * 60000})
-inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})
+for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})):
+    try:
+        fn()
+    except RuntimeError as e:
+        assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
 assert time.time() - t < 3, time.time() - t
+# a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
+pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(250))
+try:
+    inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("an overlong pip install was accepted")
 repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)
@@ -534,6 +551,7 @@ for fn in (lambda: inv.tree_scripts(repo, "HEAD"), lambda: inv.tree_scripts(repo
     else:
         raise AssertionError("an over-size script was read")
 assert inv._strip_expressions("a ${{ x }} b ${{ y") == "a ${{expression}} b ${{expression}}"
+assert inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: echo ${{ " + "x" * 200 + " }}\n"}) == {}
 PY
 
 CASE="a version or image given by a SHELL VARIABLE is a placeholder item that cannot be proven (adding one is refused), and an unreadable file stops the unmeasured check with exit 2, never 'nothing found'"

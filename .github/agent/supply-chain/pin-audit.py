@@ -257,7 +257,7 @@ class LiveNet:
     def versions_of(self, item):
         """Every version-like tag at an action's commit (an exception must clear them ALL), else the single version."""
         if item.kind == "action" and inv.SHA40.match(item.version):
-            return [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:40]
+            return [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:200]
         v = self._version_of(item)
         return [v] if v else []
 
@@ -300,13 +300,14 @@ class LiveNet:
 
     def lists(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):  # EVERY version-like tag at the commit: one tag must not hide another's advisory
-            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:40]
+            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:200]
             if len(tags) > 1:
                 gh_all, osv_all = [], []
                 for t in tags:
                     g, o = self._lists_for(item, t)
-                    gh_all += [x for x in g if x not in gh_all]
-                    osv_all += [x for x in o if x not in osv_all]
+                    tag_ = lambda x: dict(x, incident="%s@%s" % (x.get("incident") or x["id"], t))   # a dispute is between the databases about ONE version, never across tags
+                    gh_all += [tag_(x) for x in g]
+                    osv_all += [tag_(x) for x in o]
                 return gh_all, osv_all
         return self._lists_for(item, self._version_of(item))
 
@@ -741,7 +742,7 @@ def body_of(f, rb, owner, ran, today):
 # ---------- history: what we ran in the last 90 days ----------
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt"]
+    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml"]
     refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
     revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
@@ -884,7 +885,7 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
-        notes, findings = [], []
+        notes, findings, incomplete = [], [], False
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
                 if not age._tag_for_commit(it.name, it.version):
@@ -902,14 +903,16 @@ def main(argv=None):
             for fs, n2 in pool.map(one, audited):
                 findings += fs
                 notes += n2
+        pr_actions = []
         if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
             seen_keys = {i.key for i in audited}
             try:
                 open_prs = net.open_pr_items()
             except (Fail, age.CouldNotLook) as e:
                 print(f"information: the open pull requests were not audited: {clean(e)}")
-                open_prs = []
+                open_prs, incomplete = [], True
             for number, items in open_prs:
+                pr_actions.extend(items)
                 if len(items) > 100:
                     print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
                 for it in items[:100]:
@@ -922,9 +925,10 @@ def main(argv=None):
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
                         print(f"information: a pin of open pull request #{number} could not be checked: {clean(e)}")
+                        incomplete = True
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
         seen = {it.key for it in audited} | set(head)
-        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"]
+        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [(it, 0) for it in pr_actions if it.kind == "action"]
         while queue:
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 level = list(pool.map(lambda q: net.nested(q[0]), queue))
@@ -965,7 +969,7 @@ def main(argv=None):
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
-                disputes.setdefault((package_of(f.item), tuple(f.ids)), []).append(f)
+                disputes.setdefault(package_of(f.item), []).append(f)
                 continue
             if (f.item.key, f.via) in per_item:  # several incidents on one pinned item: one finding, every id
                 g = per_item[(f.item.key, f.via)]
@@ -979,17 +983,22 @@ def main(argv=None):
             pending.append((f, rb, ran, owner))
         for f, rb, ran, owner in pending:
             plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
-        for (pkg, ids), fs in sorted(disputes.items()):
+        for pkg, fs in sorted(disputes.items()):
             versions = sorted({x.item.label or x.item.version for x in fs})
             first = fs[0]
+            first.ids = sorted({i for x in fs for i in x.ids})                              # EVERY incident of the package in one issue
+            first.why = "; ".join(sorted({x.why for x in fs}))[:1500]
             first.item = inv.Item(first.item.kind, first.item.name, first.item.version, ", ".join(versions))
-            plan.append({"finding": first, "title": (f"supply-chain: disputed {pkg}", f"supply-chain: disputed {pkg} ({', '.join(ids)})"),
+            plan.append({"finding": first, "title": (f"supply-chain: disputed {_safe(pkg)}", f"supply-chain: disputed {_safe(pkg)} ({', '.join(_safe(i) for i in first.ids)})"),
                          "body": body_of(first, None, False, False, today), "owner": False})
         if plan:
             if not a.report_only:
                 file_issues(gh, plan, today)
             return 1
         unchecked = [i for i in audited if not net.covered(i)]
+        if incomplete:
+            print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made today", file=sys.stderr)
+            return 1
         print(f"audit: no known-compromised versions as of {today}" + (f" ({len(notes)} disputed hit(s) covered by a checked-in exception)" if notes else "")
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0

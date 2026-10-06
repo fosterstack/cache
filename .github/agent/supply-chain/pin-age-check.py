@@ -293,6 +293,8 @@ def _release_with_assets(repo, tags):
 
 def live_proofs(item, root, base=None, head="HEAD"):
     out = []
+    if not is_pin(item.version):
+        return out    # a placeholder, a range or a variable has no age: nothing is looked up (and nothing can pass)
     if item.kind == "action":
         # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit

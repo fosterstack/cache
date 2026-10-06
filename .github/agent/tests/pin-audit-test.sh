@@ -756,6 +756,25 @@ assert calls == [("run", "rerun", "22")], calls
 assert pa.age.tobs.accept_run(dict({"event": "schedule", "head_branch": "main", "conclusion": "success"}, path=".github/workflows/supply-chain.yml@refs/heads/main".split("@")[0]))
 PY
 
+CASE="two disputed incidents of one package are ONE issue carrying both; tags of one commit never manufacture a dispute (incidents are per tag); script history is covered; an incomplete open-PR audit is not a clean day"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+sha = "a" * 40
+pa.age._tags_for_commit = lambda r, s: ["v3", "v3.27.0"]
+net = pa.LiveNet(["false"], ".")
+net._lists_for = lambda item, v: ([{"id": "G1", "incident": "I", "affected": v == "v3.27.0"}], [{"id": "O1", "incident": "I", "affected": v == "v3.27.0"}])
+gh, osv = net.lists(pa.inv.Item("action", "o/r", sha, ""))
+f = pa.judge.__wrapped__ if hasattr(pa.judge, "__wrapped__") else None
+kinds = set()
+by = {}
+for a in gh + osv:
+    by.setdefault(a["incident"], []).append(a["affected"])
+assert all(len(set(v)) == 1 for v in by.values()), by            # within one tag-scoped incident the databases AGREE
+import re
+assert ":(glob)**/*.sh" in open(sys.argv[1]).read()
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

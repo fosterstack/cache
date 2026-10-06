@@ -153,8 +153,11 @@ MAX_LINE = 4000
 
 
 def _cap(text):
-    """No line of a run step is read past MAX_LINE characters: a pull request cannot make the readers spend unbounded time on one line."""
-    return "\n".join(l[:MAX_LINE] for l in text.split("\n"))
+    """A command line longer than MAX_LINE is REFUSED, never read as its prefix (a dependency appended after the limit would otherwise go unseen)."""
+    for l in text.split("\n"):
+        if len(l) > MAX_LINE:
+            raise RuntimeError(f"a command line of {len(l)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
+    return text
 
 
 def _uses(u, node, out, labels):
@@ -365,7 +368,9 @@ def unmeasured(files):
         if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
             continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
         for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
-            flat = " ".join(line.split())[:4000]
+            flat = " ".join(line.split())
+            if len(flat) > MAX_LINE:
+                raise RuntimeError(f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
             measured = []
             _step({"run": flat}, measured, {})
             _walk(flat, measured, {})
