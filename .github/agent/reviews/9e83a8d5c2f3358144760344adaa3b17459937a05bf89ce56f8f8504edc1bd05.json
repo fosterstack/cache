@@ -1,0 +1,69 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "9e83a8d5c2f3358144760344adaa3b17459937a05bf89ce56f8f8504edc1bd05",
+ "change": "the auditor's delivery commits (panel, CVE suppression, bump PRs) are made through the GitHub API with the App token so GitHub signs them (main requires signed commits; the git commit path left PR #181 BLOCKED): a shared helper builds the commit on a temporary auditor/tmp-* ref, requires GitHub to report it validly signed, re-reads the live head as a lease, then moves the live branch; discovery failures abort before any write; arming only binds to the verified head; bump reuse only for one verified commit on current main with exactly the wanted bytes (advisor 0209) -- PR #190",
+ "reviewed_commit": "16ce92b55610e7f16dfd22000f0cd960f92e2fb5",
+ "closed_commit": "16ce92b55610e7f16dfd22000f0cd960f92e2fb5",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "signed-commits r1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "a50d0ae295a8ea17084b825f1f0ef00ad38fae31ed71688c2cc7b291d164cb48"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "81ee8b4c8c71b847325af96b8dd48b3d6b3f9f0f9b58e9eb34cef5254e115fc5"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "signed-commits r2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "0a84bf31cc77afcc52a98f76463f4c580a4069019210651bef475deca60ef2ef"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "30f134ccc2ee5dbcbce21dd2ea52335b27941b734dfb1d4f6d44b50c8cdc77d8"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "signed-commits r3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b756c45236a527169b9b0565019e5f58c6230d3910f855287daf6579ddb4c6c8"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "4af6ca5df2899157901e9329d80827b862e68dde194bd28012cf42eba982d701"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "the final live-ref move is not atomic (the refs API has no compare-and-swap); the auditor-daily-delivery concurrency group and the App-only writer model are the safeguards",
+  "live proof pending: App-token signing by createCommitOnBranch, 404 for a missing ref, the signature field right after creation, the lane guard accepting auditor/tmp-* ref create/delete: proved by the next panel run",
+  "the contents lookup does not URL-escape path components (only literal go.mod/go.sum are passed today)",
+  "release.yml's patch-notes commit is the same unsigned class: separate follow-up PR",
+  "the panel base is the run-start main sha (pre-existing)"
+ ],
+ "row78": "no workflow file or action reference changed; the pin checker reports 0 findings"
+}
