@@ -1,0 +1,825 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "5d6ce797f3b8fef31d57db58f357bdd5b614314cd9b1dae27e55482033f1fedd",
+ "change": "pin checker: literal images and package installs in run: scripts (and the scripts they run) must be digests/hash-pinned, plain forms only (REQ-AUD, advisor 0068, 0070, 0080, 0094, 0117, 0198) -- PR #164",
+ "reviewed_commit": "5087626bbf2eb0ecd19b47cb3dbf1d692d142be0",
+ "closed_commit": "5087626bbf2eb0ecd19b47cb3dbf1d692d142be0",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "2026-10-02/runscript-pins/r1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 8,
+     "evidence_sha256": "1e8ffdf800b55bac0df1115e07129884c755148e8b0aa8820341f9be065da189"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 13,
+     "evidence_sha256": "015211c1e80da095fecd459eff1b97aca9ac04ad09be42af54743057b13cd7b4"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "2026-10-02/runscript-pins/r2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 4,
+     "evidence_sha256": "8f4dd8913b7324c639f9c757746d9d6c5b9b57bb490b28edaa5ea5f12b954ec3"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "2026-10-02/runscript-pins/r3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "f388a4d424c229d03214be8edac9b3e735c3969c330ae399383a2f8f877bc715"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "2026-10-02/runscript-pins/r4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "0566389dd488a832c4684767c8f005f2e0f1bff93123550acd9e5128e5eb3d5d"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "2026-10-02/runscript-pins/r5",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "e1b3d32c760c136706057cffe03b36ab60d53a448eb1ba7e0b4a6471ef2a3a91"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "label": "2026-10-02/runscript-pins/r6",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "9beb33fd274b4ec8caebd8e9d3753b9bdd8e3558ea93d66f4be6b829e77baf71"
+    }
+   }
+  },
+  {
+   "round": 7,
+   "label": "2026-10-02/runscript-pins/r7",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "c445f6affccea0b2c62908664fa7b05ea1efab1a065f919c67425324c4a64e04"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "label": "2026-10-02/runscript-pins/r8",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "6cecc71bca6a8405175a95a2d06143e852c936f0bbb81fa827228f4292740b59"
+    }
+   }
+  },
+  {
+   "round": 9,
+   "label": "2026-10-02/runscript-pins/r9",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "ee9d03d1c288bcb6a7b838dfe256f606b36f63b36c9ec7730e6ef212785fd0b4"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "label": "2026-10-02/runscript-pins/r10",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "f18de70e77aab2408675d98d44b8bb8e9b6d65d70bde7ab30b0244cc611730b3"
+    }
+   }
+  },
+  {
+   "round": 11,
+   "label": "2026-10-02/runscript-pins/r11",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "799399f867ac5680156164c54e41486418a7324ce5652bd9a6d4fa1f5b7cc6d4"
+    }
+   }
+  },
+  {
+   "round": 12,
+   "label": "2026-10-02/runscript-pins/r12",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "90e5176e468edfdd9f40a53a052ced2b3e638e7adaee38bea6fc940199d47ab0"
+    }
+   }
+  },
+  {
+   "round": 13,
+   "label": "2026-10-02/runscript-pins/r13",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 5,
+     "evidence_sha256": "64ff38f94d70de889283768207cb9633b5ae9d6762cfa1426109788c006a6e8d"
+    }
+   }
+  },
+  {
+   "round": 14,
+   "label": "2026-10-02/runscript-pins/r14",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "89e838cafd450157a745d992cd00b19f43323f40e618a59201b7a31590df5f7a"
+    }
+   }
+  },
+  {
+   "round": 15,
+   "label": "2026-10-02/runscript-pins/r15",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "5030928aed8dbd8fae5164d2a0d6c3da505d68ee61afbe9555b2d340f038bd5e"
+    }
+   }
+  },
+  {
+   "round": 16,
+   "label": "2026-10-02/runscript-pins/r16",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "c8769a4a514200b4ae5e0818966ae61672d07b6aba10cd7f4d8071f174ee97bf"
+    }
+   }
+  },
+  {
+   "round": 17,
+   "label": "2026-10-02/runscript-pins/r17",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "495a68c2f213c8ae8f9f9d8e959207c12b2d94d1c59f67bbe9b4b5fd3dba511d"
+    }
+   }
+  },
+  {
+   "round": 18,
+   "label": "2026-10-02/runscript-pins/r18",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "008161853976e1d28c409c2fed486a89b485176e3a1f3a47c995498c7d3a3362"
+    }
+   }
+  },
+  {
+   "round": 19,
+   "label": "2026-10-02/runscript-pins/r19",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "4d07f395ecc142e71fc5ba403071bf693ce4e1f7b8003969f0a3b1a984b27b86"
+    }
+   }
+  },
+  {
+   "round": 20,
+   "label": "2026-10-02/runscript-pins/r20",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "b7a33479fd018ce95ba3f8d53dd5938b521d365e4f2bb2a5285ef66a46bc5980"
+    }
+   }
+  },
+  {
+   "round": 21,
+   "label": "2026-10-02/runscript-pins/r21",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "59a6f47504024f9ec622e375f67b39576d8f963e9f9fe36bd4eb14b2f0ee2742"
+    }
+   }
+  },
+  {
+   "round": 22,
+   "label": "2026-10-02/runscript-pins/r22",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "c68796467640f409d9158ba8faee0ecb9584053978f1611b0e291112537150c9"
+    }
+   }
+  },
+  {
+   "round": 23,
+   "label": "2026-10-02/runscript-pins/r23",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 3,
+     "evidence_sha256": "24442fd551eb0ab101f0b2b9a4d9a5b939221a9fe7a852876beb3e4881e1acdd"
+    }
+   }
+  },
+  {
+   "round": 24,
+   "label": "2026-10-02/runscript-pins/r24",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "46afd74a196f37160a28662b2ed05c991e4a6d0de9c2101ecdd0df4166f10b2a"
+    }
+   }
+  },
+  {
+   "round": 25,
+   "label": "2026-10-03/pins-plain/r1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "3d820fdfde555b8ce801271eab4fac0911b0fb0f413056cff60f13447cc49f80"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "a0ff4c181c54c9a1ba6e19459b4ec51a198108aa60c2da6bf6c4f4ca97021653"
+    }
+   }
+  },
+  {
+   "round": 26,
+   "label": "2026-10-03/pins-plain/r2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "7359f4d18070c06136eace11b074e7ffc93fc17d06249cd2a415adcb50fc209a"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 6,
+     "evidence_sha256": "2e79e822700c1721384c596e3146451f16c0bd45a702f0e96dadc1aea8a26c9f"
+    }
+   }
+  },
+  {
+   "round": 27,
+   "label": "2026-10-03/pins-plain/r3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "84bb8941c149f20873726360a86d7bf5649b01f44e6ce1ff142c993cc8fb74e5"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "e2f467941ee506dff8ba4f8b3c794d1fe953d95ff09c5bfe1d9ee6578ea91867"
+    }
+   }
+  },
+  {
+   "round": 28,
+   "label": "2026-10-03/pins-plain/r4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "05523786af230febd88fc6672c65dcb638ecc15b7b7d9bdfed7f4aa25cff6c34"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "c3487a8116ca701b05059a9c27fef5773ba9277755a34935db051f7cfe769ac0"
+    }
+   }
+  },
+  {
+   "round": 29,
+   "label": "2026-10-03/pins-plain/r5",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "257506ac9833d2ba96fd7babb8ef50497ee92fc079a43cee71323f209884ec1f"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "1ebbdc2a6964f1e77df48bf46b41bbe2d4544396964e388401920366adaef827"
+    }
+   }
+  },
+  {
+   "round": 30,
+   "label": "2026-10-03/pins-plain/r6",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "acc774870b982bb33557065df589740e2751539c8400ad517964b43fe6a5cb2d"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "d9728e5d07cd5b117335f68556340ae7d18b697f3e45acb40f19b96f6a4d82bc"
+    }
+   }
+  },
+  {
+   "round": 31,
+   "label": "2026-10-03/pins-plain/r7",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "c26a8b911d9fc66fc334bab13a6869227f099335a289de48e057710505ac3ee9"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "6dba8eb6ca18fc134b437945bbc65dfc60516ab128023cda93cbbd52ae7d6026"
+    }
+   }
+  },
+  {
+   "round": 32,
+   "label": "2026-10-03/pins-plain/r8",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "da54ea7a53786ff705b582cda0607a7fcfbdb2ee41618214f49146cf9d4ccff1"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "4381c44f0101aae4fecd36be705871a6896d17d2b958d3f84380b0eef3913b73"
+    }
+   }
+  },
+  {
+   "round": 33,
+   "label": "2026-10-03/pins-plain/r9",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "16a46a6d1d064ecdc489ab691d7bae8bf4be3a79639fb6e08468bb7f47c252d8"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "a2b77185b12d19ea6bb6dfc79c4075a164bf2c42d8926cc273fc24e6494c0743"
+    }
+   }
+  },
+  {
+   "round": 34,
+   "label": "2026-10-03/pins-plain/r10",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "8aa80cddbe166c474173ac2bf0cc806cad7dd4d54e13d0935a935f442634bfa7"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "7cc0b70cf8e3d6168a0b77e4ff37122767ee69c9ab9eaeb2ce45f0306a7d597d"
+    }
+   }
+  },
+  {
+   "round": 35,
+   "label": "2026-10-03/pins-plain/r11",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "c2e66626aef3a915d93fc5049bf19a04ad5147430996b9511f7cb8c9e17b9b66"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "db1e984d600d314f899f629a64fc32bf46d03ba33f54fe94f36f2e1834960ee2"
+    }
+   }
+  },
+  {
+   "round": 36,
+   "label": "2026-10-03/pins-plain/r12",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "0569953e63ab0e59e6809665c58bb790e98b3b044b3a70832247b7a4fbd0d769"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "4c2a0c73dd087d236ec735769f155a5d3bc5f557b06df9427c2de7101ac44077"
+    }
+   }
+  },
+  {
+   "round": 37,
+   "label": "2026-10-03/pins-plain/r13",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "fff6d4110d25400abe9e2f04eaa7150c78e2c9bf2dd27d5286486f736b0647c6"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "62dee7598dad40cf29feb3e06b0a624ddc27558bb37114fd1b23ab14b2d34e71"
+    }
+   }
+  },
+  {
+   "round": 38,
+   "label": "2026-10-03/pins-plain/r14",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "a39c56a0f3aed2c3ff81e97b7451ca8482e98de8f7817491dba081bd1940b197"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "b3d5dd71fa7f3ad105624ac4aea2dc384adc9b44fd4994d58211b57c8170ccf5"
+    }
+   }
+  },
+  {
+   "round": 39,
+   "label": "2026-10-03/pins-plain/r15",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "9981cd816230542a858d90f462815300c02848d56af0458ade394dd161407ceb"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "1c64233f43c16fd41b42a1c2de3b55bdb6887ab1233cf8519932dc4f7b037386"
+    }
+   }
+  },
+  {
+   "round": 40,
+   "label": "2026-10-03/pins-plain/r16",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "d752141b7ab290b37756c213d98660476b0dc8583b9cbba3c8d34d4802b45ec4"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "fd64583e5cf3a7b79ce74e102520d961a3904cca0a562fb3b33afa35e940163a"
+    }
+   }
+  },
+  {
+   "round": 41,
+   "label": "2026-10-04/pins-plain/r18",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "8628c4873d43c9ad08b8859050f20412809d12beebb19449b2b439e56e0b03cf"
+    }
+   }
+  },
+  {
+   "round": 42,
+   "label": "2026-10-04/pins-plain/r19",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "2d2e64a7cc69c5b5496423255a7c6857b2c41073a28773850393878002b8a495"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 12,
+     "evidence_sha256": "9759f5299232e9ae27ba678d46a430a4728a05472e009cd3b3117274f0555d16"
+    }
+   }
+  },
+  {
+   "round": 43,
+   "label": "2026-10-04/pins-plain/r20",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "aafba2e250a316c3b288ed81bd8ba4bf04c5e69645cb667dbd4035c849c5402a"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 10,
+     "evidence_sha256": "4bd3153f8101d8521e3a986adadc8e26645961003f5f4e1f6db1612ab26faad1"
+    }
+   }
+  },
+  {
+   "round": 44,
+   "label": "2026-10-05/pins-plain/r21",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "81f4f62bbaf2b158b1e3cb979f83ca117a4ec33df3bfc58f481d4e2a82d43197"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 10,
+     "evidence_sha256": "c6d4af221225ead06e7919dc964b7ccadb9873c0928fe49d02dd11b16c722613"
+    }
+   }
+  },
+  {
+   "round": 45,
+   "label": "2026-10-05/pins-plain/r22",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 3,
+     "evidence_sha256": "df49e8e50b8dffd646f9b881dc8be57b4a12222d18d3544cbb3bdc2d6f10616d"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 10,
+     "evidence_sha256": "1eeafe2d636997f9b8c457bda036e11ee6c1ba88677dc4be228e396f9095b3ee"
+    }
+   }
+  },
+  {
+   "round": 46,
+   "label": "2026-10-05/pins-plain/r23",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "05596acacfee005d60cffe6f2afd02429757f2ce1a3451dd1c7ac1886c5efec1"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 9,
+     "evidence_sha256": "b8ab37104b99fa52e24b82275920597d33df6425172d15378c9037d784e76192"
+    }
+   }
+  },
+  {
+   "round": 47,
+   "label": "2026-10-05/pins-plain/r24",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "4bf56c0f36b7584d7df51cbcf967651ea60f5b360d5621dcd80d4fb3e4330567"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 11,
+     "evidence_sha256": "f7058d74c7ba8a3d5f92f5ae629d6a852198e787c678d3631552dfca14b3eb1d"
+    }
+   }
+  },
+  {
+   "round": 48,
+   "label": "2026-10-05/pins-plain/r25",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "afd8ccb978df93d25bd4c652d66420e97324dacc99745c296f109b2327e5f25f"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 9,
+     "evidence_sha256": "208ce9100f77ab72753af91682a940e03a8fdb3fdc59eaf80d65051a729e9678"
+    }
+   }
+  },
+  {
+   "round": 49,
+   "label": "2026-10-06/pins-plain/r26",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "29dd6879928615668c81a0013bdc416c0d438df22fef9a16e22f9e1fcd5a845c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 10,
+     "evidence_sha256": "457c62d917b24626c4266bbf26d84a119af450c6980ceb70179a4385be2b4420"
+    }
+   }
+  },
+  {
+   "round": 50,
+   "label": "2026-10-06/pins-plain/r27",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "f8770587571b0c3fa257099587cd589bdc36569ab76bd60c2300e593e9e78614"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "9d188c6591daf651892343dffeb06d2fcbdb77bef8ff2140b515b2c2f9cc8fe7"
+    }
+   }
+  },
+  {
+   "round": 51,
+   "label": "2026-10-06/pins-plain/r28",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ecfa936024ee3cb2fae8d9d40df3da9334466bba3e5b6704b48b3d086f1062fb"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "dd279bda13314ac824726383f4f2838632d65ae9e9fc49832fc847261d060d06"
+    }
+   }
+  },
+  {
+   "round": 52,
+   "label": "2026-10-06/pins-plain/r29",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "2887110a443acd6498fa75f1db7bd2c8ef0f21b7bd19a31076b379789fd07e72"
+    }
+   }
+  },
+  {
+   "round": 53,
+   "label": "2026-10-06/pins-plain/r30",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "eb14b352c4e93b7e772003f81218a2cac1cfdf642dbd0078e2cb9aed6938e92c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "eb77d6ac5a044bbe23cd92d75023d8751e6f3efaee394a619217043e6ab97b3c"
+    }
+   }
+  },
+  {
+   "round": 54,
+   "label": "2026-10-06/pins-plain/r31",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "2963f143086fc3aac78434be74a414f83b8af9ab64f630fabc96b6b1b68da13c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "dedd9ee2da9ad166ce9078ded2f8b723bd35bceb49fd908e69ce7460ef13e628"
+    }
+   }
+  },
+  {
+   "round": 55,
+   "label": "2026-10-06/pins-plain/r32",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "bd7718721935d012636db88bf15a847a22f822f797eea4d38d8e3d2df28f461a"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "de4b095cc552dcf0a3880a9851dbe2ed27362616a69524079180d5207de20ed2"
+    }
+   }
+  },
+  {
+   "round": 56,
+   "label": "2026-10-06/pins-plain/r33",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "c96716c9b334a0be339987102b4b14323c13113a88f49292c9890a25486b6b25"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "7d7e011b9128dc45d062b4f6f06f1a5f2522b3c28748522d83b05fa61571d5de"
+    }
+   }
+  },
+  {
+   "round": 57,
+   "label": "2026-10-06/pins-plain/r34",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "3e01aa23ba570cde33935ce89153c0ada790c7155439a55845d6137a6bd2cf7e"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "1f313d37e6f54684331ce91461bd85c7d5cb093e7d4be2e56d6a7f2f80ea5010"
+    }
+   }
+  },
+  {
+   "round": 58,
+   "label": "2026-10-06/pins-plain/r35",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "55664f17533fa41ddbcff07fcb001fdf6b10d9db33c1731ab03623fad8c61807"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "a0141a86c239c77b25520cd32eedd0746e86775b54e2ed7d168e4eff6e839f41"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "kubectl apply -f manifests are not read (the k8s acceptance stage applies manifests it generates)",
+  "--pull=never exempts localhost/ names (a naming convention, not provenance)",
+  "AC partly not met: a foreign interpreter's relative path after a directory change (cd) is the documented boundary: the refusal was removed because finding r30-B1 (a quoted directory component) could not be closed by a plain rule (advisor 0194)",
+  "helm/oras words anywhere refuse (like ctr/buildah)",
+  "download variants (tee into a PATH directory, a $GITHUB_PATH directory) and other new spellings of earlier classes found in fix verifications are information",
+  "obfuscation-only forms (eval, base64, computed URLs) are information (owner Oct 3)"
+ ],
+ "row78": "adversarial pass: every action reference is a 40-char commit digest with a version comment (147 remote, 1 docker action by sha256, 18 local reusable-workflow calls); no unpinned container/services image; check-action-pins.py bypasses found by the reviewers were fixed, the remaining ones are listed as residuals"
+}
