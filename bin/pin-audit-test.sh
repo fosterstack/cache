@@ -250,6 +250,20 @@ run agree "{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-x\", \"in
 CASE="when BOTH lists say affected it is a plain hit (rollback advice allowed), not a dispute, and an unrelated exception does not hide it"
 check test "$rc" -eq 1; check bash -c "! grep -qi 'disputed' '$work/agree.gh.bodies'"
 
+# disputes of one package and incident across several versions (the 90-day history can hold many) are ONE issue listing every version, never one issue per version
+mkrepo "$work/r-twin" "120:$SHA1"
+for spec in "40:0.73.0" "10:0.74.0"; do
+  printf 'TRIVY_VER=%s\n' "${spec##*:}" >"$work/r-twin/bin/install-scanner.sh"; git -C "$work/r-twin" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$work/r-twin" -c user.name=t -c user.email=t@x commit -q -m "trivy ${spec##*:}"
+done
+python3 - "$DISPUTE" "$work/twin.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); d["lists"]["tool:trivy@0.73.0"] = d["lists"]["tool:trivy@0.74.0"]; json.dump(d, open(sys.argv[2], "w"))
+PY
+run twin "$(cat "$work/twin.json")" "$work/r-twin" --exceptions "$work/no-exceptions.json"
+CASE="the same dispute on two versions of one package (0.73.0 in the history, 0.74.0 today) is ONE issue that names both versions"
+check test "$rc" -eq 1; check test "$(creates "$work/twin.gh")" -eq 1; check grep -q '0.73.0' "$work/twin.gh.bodies"; check grep -q '0.74.0' "$work/twin.gh.bodies"
+
 # --- AC6: held pull requests are re-run once their versions are old enough ----------------------------------------------------------------------------------
 HELD="{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [
   {\"number\": 7, \"title\": \"bump checkout\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]},

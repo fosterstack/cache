@@ -176,7 +176,7 @@ class LiveNet:
         for v in self._osv_post(q):
             says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
             osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
-            for alias in v.get("aliases", []):
+            for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}")
                     names = {q["package"]["name"].lower(), item.name.lower()}
@@ -555,13 +555,22 @@ def main(argv=None):
                         print(f"information: {it.name} uses {n['ref']}, not pinned to a digest (a moving tag; not a hit)")
         for n in notes:
             print(f"audit: {n}")
-        plan = []
+        plan, disputes = [], {}
         for f in findings:
-            rb = None if f.disputed else rollback(f.item, net, now)
-            ran = f.item.key in ran_keys
-            owner = (not f.disputed) and (rb is None or ran)
-            plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {f.item.key} ({', '.join(f.ids)}): {f.why}")
+            if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
+                disputes.setdefault((package_of(f.item), tuple(f.ids)), []).append(f)
+                continue
+            rb = rollback(f.item, net, now)
+            ran = f.item.key in ran_keys
+            owner = rb is None or ran
+            plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
+        for (pkg, ids), fs in sorted(disputes.items()):
+            versions = sorted({x.item.label or x.item.version for x in fs})
+            first = fs[0]
+            first.item = inv.Item(first.item.kind, first.item.name, first.item.version, ", ".join(versions))
+            plan.append({"finding": first, "title": (f"supply-chain: disputed {pkg}", f"supply-chain: disputed {pkg} ({', '.join(ids)})"),
+                         "body": body_of(first, None, False, False, today), "owner": False})
         if plan:
             if not a.report_only:
                 file_issues(gh, plan, today)
