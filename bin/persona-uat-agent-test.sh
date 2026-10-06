@@ -8,10 +8,21 @@
 # answers outside the protocol fails the agent (the driver then counts that persona as blocking); the owner's model
 # reaches the provider and no model name is written in the agent or its output.
 # Contracts the tests pin:
-#   persona-uat-agent.py --docker CMD --shell-image REF [--provider-cmd CMD] [--shell-timeout S] [--max-steps N]
-#     stdin: the driver's request JSON; stdout: {"findings":[...],"tokens":N,"transcript":str}
+#   persona-uat-agent.py --docker CMD --tools FILE [--provider-cmd CMD] [--shell-timeout S] [--max-steps N]
+#     stdin: the driver's request JSON; stdout: {"findings":[...],"tokens":N,"transcript":str,"commands":[str]}
 #   provider (stdin {"model","system","messages":[{"role","content"}]}) -> stdout {"usage":{"tokens":N},
-#     "action":{"type":"shell","command":str} | {"type":"finish","findings":[...]}}
+#     "action":{"type":"shell","command":str} | {"type":"shell","tool":NAME,"command":str} (tool shell only) |
+#              {"type":"shell","tool":NAME,"args":[str,...]} (any other tool) | {"type":"finish","findings":[...]}}
+#   DELTAS (advisor 0207/0208; step 6, tests first):
+#   (2) per-action tool images: the agent reads the tools file (--tools; replaces --shell-image). A shell action may carry `tool`, the NAME of
+#       an action tool of that file (shell, cosign, kubectl, gradle, maven; absent = shell). Every action runs as
+#       docker run --rm --network host -v <sandbox>:/work -w /work <that tool's digest> [sh -c <command> | <args...>] with FIXED options:
+#       `command` runs under `sh -c` only for the shell tool, `args` (a list) is exec'd as the image's own arguments for the others; whatever the
+#       model types stays AFTER the image. An unknown tool name (not an entry, a digest reference, a different case, a service entry such as
+#       kind/jenkins/gitlab-runner) is refused: never executed, the model is told, the persona carries on. A bad tools file fails the agent.
+#   (3) the answer carries `commands`: what the persona ran (shell: the command; other tools: the tool name and its args joined by spaces), in
+#       order, executed actions only (a refused one was never run); the driver derives the report's outside-hosts line from it.
+#   (4) the agent no longer decides whether the endpoint was contacted: that is the driver's metrics proof; no `reached` finding here.
 #   persona-uat-provider.py: the real provider, over the Anthropic Python SDK (faked here on PYTHONPATH).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,6 +36,16 @@ CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
 none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -rqE "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
 SHL="docker.io/library/debian@sha256:$(printf '4%.0s' $(seq 64))"
+CSG="gcr.io/projectsigstore/cosign@sha256:$(printf '5%.0s' $(seq 64))"
+KCT="registry.k8s.io/kubectl@sha256:$(printf '6%.0s' $(seq 64))"
+GRD="docker.io/library/gradle@sha256:$(printf '7%.0s' $(seq 64))"
+MVN="docker.io/library/maven@sha256:$(printf '8%.0s' $(seq 64))"
+JEN="docker.io/jenkins/jenkins@sha256:$(printf '1%.0s' $(seq 64))"
+GLR="docker.io/gitlab/gitlab-runner@sha256:$(printf '2%.0s' $(seq 64))"
+KND="docker.io/kindest/node@sha256:$(printf '3%.0s' $(seq 64))"
+cat >"$work/tools.json" <<EOF
+{"cosign": "$CSG", "gitlab-runner": "$GLR", "gradle": "$GRD", "jenkins": "$JEN", "kind": "$KND", "kubectl": "$KCT", "maven": "$MVN", "shell": "$SHL"}
+EOF
 
 # fake provider: pops the next scripted answer; records each call's stdin and the credential it can see
 cat >"$work/fp.py" <<'PY'
@@ -43,14 +64,19 @@ if "raw" in step:
     sys.stdout.write(step["raw"]); sys.exit(0)
 print(json.dumps(step))
 PY
-# fake docker: logs argv and the environment NAMES it was started with, then runs `sh -c CMD` in the -v host directory
+# fake docker: logs argv and the environment NAMES it was started with; what follows the image digest decides: `sh -c CMD` runs CMD in the -v
+# host directory, anything else is a tool's own arguments (an exec: distroless images have no sh) and is echoed back as TOOLARGS:<json>
 cat >"$work/docker.tmpl" <<'PY'
 #!/usr/bin/env python3
 import json, os, subprocess, sys
 a = sys.argv[1:]
 open("__LOG__", "a").write(json.dumps({"argv": a, "env": sorted(os.environ)}) + "\n")
 host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
-cmd = a[a.index("-c") + 1]
+img = next((i for i, x in enumerate(a) if "@sha256:" in x), None)
+rest = a[img + 1:] if img is not None else []
+if not (len(rest) == 3 and rest[:2] == ["sh", "-c"]):
+    sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); sys.exit(0)
+cmd = rest[2]
 try:
     p = subprocess.run(["sh", "-c", cmd], cwd=host, capture_output=True, text=True, timeout=60)
     sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); sys.exit(p.returncode)
@@ -69,7 +95,7 @@ agent() {
   rc=0
   env ANTHROPIC_API_KEY=SECRET-MODEL-KEY GITHUB_TOKEN=SECRET-GH GITHUB_REPOSITORY=x/y RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid \
     GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 GH_ENTERPRISE_TOKEN=SECRET-GHE \
-    python3 "$agent" --docker "$d/docker" --shell-image "$SHL" --provider-cmd "python3 $work/fp.py $d" "$@" \
+    python3 "$agent" --docker "$d/docker" --tools "${TOOLSFILE:-$work/tools.json}" --provider-cmd "python3 $work/fp.py $d" "$@" \
     <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 }
 calls() { wc -l <"$work/$1/fp.log" | tr -d ' '; }
@@ -164,24 +190,26 @@ CASE="and the transcript keeps the failing command's status and stderr too"
 check grep -q 'exit status: 3' "$work/failcmd/out.json"
 check grep -q 'oops-on-stderr' "$work/failcmd/out.json"
 
-# --- "exercised the persona" is more than "ran a command": a persona that never contacted the endpoint cannot claim a clean pass
+# --- delta 4 (advisor 0207): whether the endpoint was contacted is NO LONGER decided here. The driver proves it with the endpoint's request
+# counter before and after the persona's window. The three former cases (an irrelevant action then a clean finish was blocking; naming an
+# unreachable endpoint was blocking; reaching it was needed for a clean pass) are CHANGED: the agent adds no finding about the endpoint at all.
 agent irrelevant '[{"usage":{"tokens":10},"action":{"type":"shell","command":"true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="an irrelevant action followed by an empty finish is NOT a pass: the persona never contacted the cache endpoint, so a blocking finding says so"
+CASE="an irrelevant action followed by an empty finish: the agent adds NO endpoint finding (contact is proved by the driver's request counter, not guessed here)"
 check python3 - "$work/irrelevant/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
-assert any(f["kind"] == "blocking" and "endpoint" in f["text"].lower() for f in a["findings"]), a
+assert a["findings"] == [], a
 PY
 python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -rf "$work"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18080')" 2>/dev/null && break; sleep 0.3; done
 echo "ok-endpoint" >"$work/healthz"
 ENDPOINT=http://127.0.0.1:18099 agent neverreached '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18099/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="naming the endpoint is not enough: the CONFIGURED endpoint (18099, where nothing listens) is named exactly by the command, but the connection failed and the output is empty: the persona is left without a clean pass (an implementation that only matches the endpoint string fails this)"
+CASE="a command naming an endpoint where nothing listens (output empty) no longer earns a finding from the agent either: findings stay empty and none mentions the endpoint (an implementation that kept the old 'reached' rule fails this)"
 check python3 - "$work/neverreached/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
-assert any(f["kind"] == "blocking" and "endpoint" in f["text"].lower() for f in a["findings"]), a
+assert a["findings"] == [] and "endpoint" not in json.dumps(a["findings"]).lower(), a
 PY
 agent contacted '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18080/healthz"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
 CASE="a persona whose command reached the endpoint (exit 0, a non-empty answer) may finish clean (findings stay empty)"
@@ -189,7 +217,7 @@ check python3 - "$work/contacted/out.json" <<'PY'
 import json, sys
 assert json.load(open(sys.argv[1]))["findings"] == []
 PY
-CASE="a persona that reports its own findings keeps them, endpoint contact or not (the rule only guards a clean pass)"
+CASE="a persona that reports its own findings keeps them, endpoint contact or not"
 check python3 - "$work/finish/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
@@ -272,7 +300,7 @@ chmod +x "$work/docker-dead"
 d="$work/dockerdead"; mkdir -p "$d/sandbox"; echo README >"$d/sandbox/README.md"; : >"$d/fp.log"
 echo '[{"usage":{"tokens":10},"action":{"type":"shell","command":"ls"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' >"$d/plan.json"
 printf '{"persona":"readme-evaluator","instructions":"You are an evaluator.","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"M","token_budget":400000,"tools":{}}' "$d/sandbox" "$(printf 'a%.0s' $(seq 64))" >"$d/req.json"
-rc=0; python3 "$agent" --docker "$work/docker-dead" --shell-image "$SHL" --provider-cmd "python3 $work/fp.py $d" <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
+rc=0; python3 "$agent" --docker "$work/docker-dead" --tools "$work/tools.json" --provider-cmd "python3 $work/fp.py $d" <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 CASE="docker's own failure on a shell action (exit 125) fails the agent (the persona did not run); it is never returned to the model as a command error that lets the persona finish with nothing"
 check test "$rc" -ne 0 -a ! -s "$d/out.json"
 # the default step limit is generous: 150 shell actions then a finish, with the default --max-steps and a large budget, still finishes
@@ -287,6 +315,154 @@ check python3 - "$work/longrun/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
 assert not any("did not finish" in f["text"].lower() for f in a["findings"]), a
+PY
+
+# --- DELTA 2: per-action tool images, fixed options only --------------------------------------------------------------------------
+agent explicitshell '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"shell","command":"echo viash > viash.txt; cat viash.txt"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="tool shell, named explicitly: the same fixed argv as the unnamed shell (run --rm --network host -v SANDBOX:/work -w /work <shell digest> sh -c <command>), and the command ran under sh"
+check python3 - "$work/explicitshell/fd.log" "$work/explicitshell/sandbox" "$SHL" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1, rows
+assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh", "-c", "echo viash > viash.txt; cat viash.txt"], rows[0]["argv"]
+assert open(sys.argv[2] + "/viash.txt").read().strip() == "viash"
+PY
+for t in cosign kubectl gradle maven; do
+  agent "tool-$t" '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"'$t'","args":["verify","--key","k.pub","https://example.org/x"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+  case $t in cosign) img=$CSG;; kubectl) img=$KCT;; gradle) img=$GRD;; maven) img=$MVN;; esac
+  CASE="tool $t: docker is run with the FIXED prefix, THAT tool's own digest, then the args exactly as given (an exec: no sh, no -c); the output goes back to the model"
+  check python3 - "$work/tool-$t/fd.log" "$work/tool-$t/sandbox" "$img" "$work/tool-$t/fp.log" <<'PY'
+import json, sys
+SANDBOX = sys.argv[2]
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1, rows
+assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", SANDBOX + ":/work", "-w", "/work", sys.argv[3], "verify", "--key", "k.pub", "https://example.org/x"], rows[0]["argv"]
+calls = [json.loads(l) for l in open(sys.argv[4])]
+m = json.dumps(calls[1]["req"]["messages"])
+assert "TOOLARGS" in m and "k.pub" in m and "exit status: 0" in m, m
+PY
+done
+agent toolflags '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"cosign","args":["--privileged","-v","/:/host","--network","none","--pid=host","-e","AWS_SECRET_ACCESS_KEY=x","/var/run/docker.sock"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="fence 1 (args): docker flags typed by the model in args stay ARGUMENTS INSIDE the container: the options before the image are the fixed eight tokens (one -v), the image is the cosign digest, the typed words come after it verbatim"
+check python3 - "$work/toolflags/fd.log" "$work/toolflags/sandbox" "$CSG" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1
+a = rows[0]["argv"]
+assert a[:9] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3]], a
+assert a[9:] == ["--privileged", "-v", "/:/host", "--network", "none", "--pid=host", "-e", "AWS_SECRET_ACCESS_KEY=x", "/var/run/docker.sock"], a
+assert a[:9].count("-v") == 1 and "--privileged" not in a[:9] and "none" not in a[:9]
+PY
+agent toolflags2 '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"shell","command":"--privileged -v /:/host --network none --pid=host -e AWS_SECRET_ACCESS_KEY=x /var/run/docker.sock"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="fence 1 (command, tool shell named): the same: the typed flags are inside the sh -c argument, the argv stays the fixed twelve tokens"
+check python3 - "$work/toolflags2/fd.log" "$work/toolflags2/sandbox" "$SHL" <<'PY'
+import json, sys
+a = [json.loads(l) for l in open(sys.argv[1])][0]["argv"]
+assert a[:11] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh", "-c"] and len(a) == 12, a
+PY
+CASE="every tool action's docker call runs with the allowlisted environment only (PATH, HOME, docker client settings): no model or job credential, for every tool"
+check python3 - "$work/tool-cosign/fd.log" "$work/tool-kubectl/fd.log" "$work/tool-gradle/fd.log" "$work/tool-maven/fd.log" "$work/toolflags/fd.log" <<'PY'
+import json, sys
+ok = {"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "PWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT"}
+for p in sys.argv[1:]:
+    for l in open(p):
+        assert not [k for k in json.loads(l)["env"] if k not in ok], (p, json.loads(l)["env"])
+PY
+# unknown tools: refused (never executed), the model is told, the persona carries on
+refplan() { printf '[{"usage":{"tokens":10},"action":{"type":"shell","tool":%s,"args":["http://evil.example/x"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' "$1"; }
+i=0
+for tv in '"docker"' '"alpine"' "\"$SHL\"" "\"$CSG\"" '"Cosign"' '"COSIGN"' '"cosign "' '" cosign"' '"../kubectl"' '"--privileged"' '"sh"' '"bash"' '"kind"' '"jenkins"' '"gitlab-runner"' '"cosign;id"' '"co*"'; do
+  i=$((i+1)); agent "unk$i" "$(refplan "$tv")"
+  CASE="unknown tool $tv: refused, docker is NEVER called, the model is told (a refusal in its next request), the persona carries on and, having run nothing, cannot finish clean"
+  check python3 - "$work/unk$i" <<'PY'
+import json, re, sys
+d = sys.argv[1]
+assert open(d + "/fd.log").read() == "", "an unknown tool reached docker"
+calls = [json.loads(l) for l in open(d + "/fp.log")]
+assert len(calls) == 2, len(calls)
+told = calls[1]["req"]["messages"][-1]["content"].lower()
+assert re.search(r"refus|unknown|not allowed|not an allowed|no such tool|not a known", told), told
+a = json.load(open(d + "/out.json"))
+assert any(f["kind"] == "blocking" and "without running" in f["text"].lower() for f in a["findings"]), a
+assert a["commands"] == [], ("a refused action is not a command the persona ran", a["commands"])
+PY
+done
+agent unkthenok '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"docker","args":["ps"]}},{"usage":{"tokens":10},"action":{"type":"shell","tool":"gradle","args":["--version"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="after a refused tool the persona carries on: a valid action then runs (exactly one docker call, for gradle) and the persona may finish clean"
+check python3 - "$work/unkthenok" "$GRD" <<'PY'
+import json, sys
+d = sys.argv[1]
+rows = [json.loads(l) for l in open(d + "/fd.log")]
+assert len(rows) == 1 and rows[0]["argv"][8] == sys.argv[2] and rows[0]["argv"][9:] == ["--version"], rows
+a = json.load(open(d + "/out.json"))
+assert a["findings"] == [], a
+assert a["commands"] == [a["commands"][0]] and "gradle" in a["commands"][0] and "--version" in a["commands"][0], a["commands"]
+PY
+# the ambiguous shapes: a hard failure of the agent or a refusal, but NEVER an execution
+n=0
+for act in '{"type":"shell","tool":"","args":["x"]}' '{"type":"shell","tool":null,"args":["x"]}' '{"type":"shell","tool":5,"args":["x"]}' '{"type":"shell","tool":["shell"],"command":"id"}' \
+           '{"type":"shell","tool":"cosign","command":"cosign version"}' '{"type":"shell","tool":"cosign"}' '{"type":"shell","tool":"kubectl","args":"get pods"}' \
+           '{"type":"shell","tool":"kubectl","args":["get",5]}' '{"type":"shell","tool":"kubectl","args":["get"],"command":"id"}' '{"type":"shell","tool":"shell","args":["id"]}' \
+           '{"type":"shell","tool":"shell","command":"id","args":["id"]}' '{"type":"shell","command":"id","args":["id"]}' '{"type":"shell","args":["id"]}'; do
+  n=$((n+1)); agent "shape$n" "[{\"usage\":{\"tokens\":10},\"action\":$act},{\"usage\":{\"tokens\":10},\"action\":{\"type\":\"finish\",\"findings\":[]}}]"
+  CASE="a malformed tool action ($act) is never executed: the agent fails closed or refuses it and tells the model"
+  check python3 - "$work/shape$n" "$rc" <<'PY'
+import json, re, sys
+d, rc = sys.argv[1], int(sys.argv[2])
+assert open(d + "/fd.log").read() == "", "a malformed action reached docker"
+if rc == 0:
+    calls = [json.loads(l) for l in open(d + "/fp.log")]
+    assert len(calls) == 2 and re.search(r"refus|unknown|not allowed|invalid|malformed|outside|must", calls[1]["req"]["messages"][-1]["content"].lower()), calls
+else:
+    assert open(d + "/out.json").read() == ""
+PY
+done
+# the tools file: a bad one fails the agent before the model is called
+printf '%s' 'not json' >"$work/tools-badjson.json"
+python3 - "$work/tools.json" "$work" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1])); w = sys.argv[2]
+a = dict(t); del a["shell"]; json.dump(a, open(w + "/tools-noshell.json", "w"))
+b = dict(t); b["cosign"] = b["cosign"].split("@")[0] + ":latest"; json.dump(b, open(w + "/tools-tag.json", "w"))
+c = dict(t); c["gradle"] = 5; json.dump(c, open(w + "/tools-int.json", "w"))
+d = dict(t); d["maven"] = "docker.io/library/maven@sha256:abc"; json.dump(d, open(w + "/tools-short.json", "w"))
+json.dump(["shell"], open(w + "/tools-list.json", "w"))
+PY
+for tf in "$work/tools-badjson.json" "$work/tools-noshell.json" "$work/tools-tag.json" "$work/tools-int.json" "$work/tools-short.json" "$work/tools-list.json" "$work/no-such-tools.json"; do
+  nm="badtools-$(basename "$tf" .json)"
+  TOOLSFILE="$tf" agent "$nm" '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo hi"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+  CASE="a bad tools file ($(basename "$tf")) fails the agent before anything runs: non-zero, no answer, the model is never called, docker never called"
+  check test "$rc" -ne 0 -a ! -s "$work/$nm/out.json" -a ! -s "$work/$nm/fp.log" -a ! -s "$work/$nm/fd.log"
+done
+CASE="the first model call names every action tool (shell, cosign, kubectl, gradle, maven) and tells how to use the tool, command and args fields"
+check python3 - "$work/finish/fp.log" <<'PY'
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())["req"]
+s = (r["system"] + json.dumps(r["messages"])).lower()
+for w in ("shell", "cosign", "kubectl", "gradle", "maven", '"tool"', "args", "command"):
+    assert w in s, w
+PY
+# --- DELTA 3: the commands the persona ran, for the driver's outside-hosts line ------------------------------------------------------
+CASE="the answer carries the commands the persona ran, in order (the shell command text)"
+check python3 - "$work/finish/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert a["commands"] == ["echo $((6*7)) > made.txt; cat made.txt"], a
+PY
+agent cmdrec '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo hi"}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"cosign","args":["verify","https://example.org/a"]}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"docker","args":["https://evil.example/never"]}},{"usage":{"tokens":1},"action":{"type":"shell","command":"echo bad >&2; exit 3"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+CASE="commands: shell text and a tool's name plus its args (joined by spaces) are recorded in order, a FAILING command too, and a refused action is not"
+check python3 - "$work/cmdrec/out.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))["commands"]
+assert len(c) == 3 and c[0] == "echo hi" and c[2] == "echo bad >&2; exit 3", c
+assert "cosign" in c[1] and c[1].index("verify") < c[1].index("https://example.org/a"), c
+assert "evil.example" not in json.dumps(c), c
+PY
+CASE="commands: a command that timed out was run, so it is recorded; a persona that ran nothing still answers with commands == []"
+check python3 - "$work/timeout/out.json" "$work/noaction/out.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))["commands"] == ["sleep 5"]
+assert json.load(open(sys.argv[2]))["commands"] == []
 PY
 
 # --- fail closed: a provider that fails or leaves the protocol fails the AGENT ---------------------------------
@@ -363,6 +539,31 @@ for bad in 'no json at all' '{"action":"shell"}' '{"action":"explode","command":
   prov "p-bad" "$bad" "$REQ"
   CASE="provider fails closed on a reply outside the protocol: '$bad'"
   check test "$rc" -ne 0 -a ! -s "$work/p-bad/out"
+done
+prov p-tool '{"action":"shell","tool":"cosign","args":["version","--short"]}' "$REQ"
+CASE="provider (delta 2): a tool action with args passes through as {type, tool, args} (the provider does not know the tools file: an unknown name is the agent's to refuse)"
+check python3 - "$work/p-tool/out" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1])) == {"usage": {"tokens": 150}, "action": {"type": "shell", "tool": "cosign", "args": ["version", "--short"]}}
+PY
+prov p-toolshell '{"action":"shell","tool":"shell","command":"ls"}' "$REQ"
+CASE="provider (delta 2): the shell tool named explicitly passes through as {type, tool, command}; an unnamed shell action keeps its old shape"
+check python3 - "$work/p-toolshell/out" "$work/p-shell/out" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))["action"] == {"type": "shell", "tool": "shell", "command": "ls"}
+assert json.load(open(sys.argv[2]))["action"] == {"type": "shell", "command": "ls"}
+PY
+prov p-toolunk '{"action":"shell","tool":"docker","args":["ps"]}' "$REQ"
+CASE="provider (delta 2): a well-formed action for a tool name it cannot know passes through"
+check python3 - "$work/p-toolunk/out" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))["action"] == {"type": "shell", "tool": "docker", "args": ["ps"]}
+PY
+for bad in '{"action":"shell","tool":"cosign"}' '{"action":"shell","tool":"cosign","args":"version"}' '{"action":"shell","tool":"cosign","args":[1]}' '{"action":"shell","tool":5,"command":"ls"}' \
+           '{"action":"shell","tool":"shell","args":["ls"]}' '{"action":"shell","tool":"cosign","command":"cosign version"}' '{"action":"shell","command":"ls","args":["ls"]}'; do
+  prov "p-badtool" "$bad" "$REQ"
+  CASE="provider (delta 2) fails closed on a malformed tool action: '$bad'"
+  check test "$rc" -ne 0 -a ! -s "$work/p-badtool/out"
 done
 CASE="provider: a request missing its model is refused before the SDK is touched"
 prov p-nomodel '{"action":"finish","findings":[]}' '{"system":"s","messages":[]}'

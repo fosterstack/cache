@@ -6,7 +6,9 @@
 # skip or make non-fatal, with the owner's model/budget variables and the model identity on THAT step, uploading the
 # driver's output directory (transcripts and reports) even when personas fail; and a persona-uat job in the weekly
 # workflow that runs only on its Monday cron, resolves the LATEST release's image digest, and runs the same driver with
-# --publish. The pinned CI tools file holds exactly Jenkins, a GitLab runner, kind and the persona shell, each by digest.
+# --publish. The pinned CI tools file (advisor 0207, delta 2) holds exactly eight entries, each by digest, distinct, and each naming its own OFFICIAL repository:
+# cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven and the persona shell (the curl image); no driver, agent or provider source may run a
+# privileged container (the kind cluster is created by the job's kind binary).
 # Neither job nor the driver, agent or provider may name a cloud CLI. The real workflows must pass; each of ~30 mutations
 # (structurally valid YAML/JSON, made through the parsed document) must be rejected FOR THE REASON NAMED, so a checker
 # crash or an unrelated failure cannot count as a catch.
@@ -407,33 +409,47 @@ def judge_weekly(f, bad):
     if d is not None and "--mode weekly" not in str(d.get("run", "")):
         bad.append("weekly persona-uat does not run the driver with --mode weekly")
 
+TOOL_KEYS = ["cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell"]
+# each key's official image repository, as docker normalises it (docker.io/ and library/ stripped); an exact match, never a suffix match
+OFFICIAL = {"cosign": {"gcr.io/projectsigstore/cosign", "ghcr.io/sigstore/cosign/cosign"}, "gitlab-runner": {"gitlab/gitlab-runner"}, "gradle": {"gradle"},
+            "jenkins": {"jenkins/jenkins"}, "kind": {"kindest/node"}, "kubectl": {"registry.k8s.io/kubectl"}, "maven": {"maven"}, "shell": {"curlimages/curl"}}
+
+def repo_of(ref):
+    r = str(ref).split("@")[0]
+    r = re.sub(r":[A-Za-z0-9._-]+$", "", r)
+    for pre in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
+        if r.startswith(pre): r = r[len(pre):]
+    return r[len("library/"):] if r.startswith("library/") else r
+
 def judge_tools(t, bad):
-    if not isinstance(t, dict) or sorted(t) != ["gitlab-runner", "jenkins", "kind", "shell"]:
-        bad.append(f"the persona tools file must hold exactly the keys gitlab-runner, jenkins, kind, shell (found {sorted(t) if isinstance(t, dict) else t})")
+    if not isinstance(t, dict) or sorted(t) != TOOL_KEYS:
+        bad.append(f"the persona tools file must hold exactly the keys {', '.join(TOOL_KEYS)} (found {sorted(t) if isinstance(t, dict) else t})")
         return
     for k, v in t.items():
         if not PIN_IMG.match(str(v)):
             bad.append(f"tool {k} is not pinned by digest ({v!r})")
-    want = {"jenkins": "jenkins/jenkins", "gitlab-runner": "gitlab/gitlab-runner", "kind": "kindest/node"}
-    for k, repo in want.items():
-        got = str(t.get(k, "")).split("@")[0].split(":")[0]
-        if not (got == repo or got.endswith("/" + repo)):
-            bad.append(f"tool {k} does not name its own image (expected the repository {repo!r}): {t.get(k)!r}")
-    if len({str(v).split("@")[0] for v in t.values()}) != 4:
-        bad.append("the persona tools are not four distinct images")
+    for k, repos in OFFICIAL.items():
+        if repo_of(t.get(k, "")) not in repos:
+            bad.append(f"tool {k} does not name its own official image (expected one of {sorted(repos)}): {t.get(k)!r}")
+    if len({repo_of(v) for v in t.values()}) != len(TOOL_KEYS) or len({str(v).split("@")[-1] for v in t.values()}) != len(TOOL_KEYS):
+        bad.append("the persona tools are not distinct images (eight different repositories and digests)")
+
+SRC_OVER = {}
 
 def judge_source(bad):
     for p in SRC:
         try:
-            src = open(p).read()
+            src = SRC_OVER[p] if p in SRC_OVER else open(p).read()
         except OSError:
             bad.append(f"{os.path.relpath(p, root)} is missing"); continue
         code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+        if re.search(r"--privileged|[\"']privileged[\"']\s*[:=]\s*True|privileged\s*=\s*True", code):
+            bad.append(f"{os.path.relpath(p, root)} starts a privileged container: the kind cluster is created by the job's kind binary, never by docker run --privileged")
         cmd = re.search(r"[\"'](?:terraform|tofu|pulumi|eksctl|doctl|aws|gcloud|az|ibmcloud|oci|linode-cli|vultr-cli)(?:\s|[\"'])", code)
         if cmd:
             bad.append(f"{os.path.relpath(p, root)} runs a cloud CLI: {cmd.group(0)}")
         for m in re.finditer(r"[\"']((?:[a-z0-9.-]+/)+[a-z0-9._-]+(?::[\w.-]+)?)[\"']", code):
-            if re.search(r"(docker\.io|ghcr\.io|quay\.io|library|jenkins|gitlab|kindest)", m.group(1)) and "@sha256:" not in m.group(1):
+            if re.search(r"(docker\.io|ghcr\.io|quay\.io|gcr\.io|registry\.k8s\.io|library|jenkins|gitlab|kindest|sigstore|cosign|kubectl|gradle|maven)", m.group(1)) and "@sha256:" not in m.group(1):
                 bad.append(f"{os.path.relpath(p, root)} names an image not pinned by digest: {m.group(1)}")
 
 def judge(r, f, t):
@@ -451,8 +467,30 @@ def result(ok, msg):
 bad = judge(R, F, T if T is not None else "missing")
 result(not bad, "the real workflows, tools file and sources satisfy the persona UAT wiring" + ("" if not bad else ": " + "; ".join(bad)))
 
+# a known-good eight-entry tools file, so the tools mutations test the JUDGE and do not depend on the file in the tree
+TGOOD = {"cosign": "gcr.io/projectsigstore/cosign@sha256:" + "5" * 64, "gitlab-runner": "docker.io/gitlab/gitlab-runner@sha256:" + "2" * 64,
+         "gradle": "docker.io/library/gradle@sha256:" + "7" * 64, "jenkins": "docker.io/jenkins/jenkins@sha256:" + "1" * 64,
+         "kind": "docker.io/kindest/node@sha256:" + "3" * 64, "kubectl": "registry.k8s.io/kubectl@sha256:" + "6" * 64,
+         "maven": "docker.io/library/maven@sha256:" + "8" * 64, "shell": "docker.io/curlimages/curl@sha256:" + "4" * 64}
+CLEAN_SRC = {p: "x = 1\n" for p in SRC}
+
+# the same two judges on the REAL files alone, so a delta-1/2 failure is not hidden behind the workflow wiring (which lands with commit 2)
+good = []
+judge_tools(T if T is not None else "missing", good)
+result(not good, "the real tools file (bin/persona-uat-tools.json) is the eight official digest-pinned images" + ("" if not good else ": " + "; ".join(good)))
+good = []
+judge_source(good)
+result(not good, "the real driver, agent and provider run no privileged container, no cloud CLI and name no image without a digest" + ("" if not good else ": " + "; ".join(good)))
+good = []
+judge_tools(TGOOD, good)
+result(not good, "the in-test known-good eight-entry tools file is accepted by the judge" + ("" if not good else ": " + "; ".join(good)))
+good = []
+SRC_OVER.update(CLEAN_SRC); judge_source(good); SRC_OVER.clear()
+result(not good, "a clean source set is accepted by the source judge" + ("" if not good else ": " + "; ".join(good)))
+
 def mutate(name, expect, fn, which="rel"):
-    r, f, t = copy.deepcopy(R), copy.deepcopy(F), copy.deepcopy(T)
+    r, f, t = copy.deepcopy(R), copy.deepcopy(F), copy.deepcopy(TGOOD if which == "tools" else T)
+    srcs = copy.deepcopy(CLEAN_SRC)
     try:
         if which == "rel_top":
             r["on"]["push"]["tags"] = ["x*"]
@@ -467,15 +505,19 @@ def mutate(name, expect, fn, which="rel"):
         elif which == "rel_patchfailed":
             r["jobs"]["patch-failed"]["needs"] = [n for n in r["jobs"]["patch-failed"]["needs"] if n != "persona-uat"]
         else:
-            {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t)}[which]()
+            {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t), "src": lambda: fn(srcs)}[which]()
     except Exception as e:     # the real file lacks the thing being mutated: the real-file case above already failed
         result(False, f"mutation could not be applied ({name}): {type(e).__name__}: {e}"); return
     # round-trip through YAML text so the mutated document is valid YAML, not just a dict
     for doc in (r, f):
         yaml.safe_load(yaml.safe_dump(doc))
-    if (r, f, t) == (R, F, T):
+    if (r, f, t, srcs) == (R, F, TGOOD if which == "tools" else T, CLEAN_SRC):
         result(False, f"mutation changed nothing ({name})"); return
+    SRC_OVER.clear()
+    if which == "src":
+        SRC_OVER.update(srcs)
     found = judge(r, f, t)
+    SRC_OVER.clear()
     result(any(expect in b for b in found), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in found) else f"; saw {found}"))
 
 def set_image(job, value):
@@ -611,8 +653,8 @@ mutate("rc identity step never awaits the token", "does not mint (await)",
        lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"].replace("await core.getIDToken", "core.getIDToken")))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
 mutate("rc SDK install without hashes", "a run step before the driver other than",
        lambda j: next(s for s in j["steps"] if "pip install" in str(s.get("run", ""))).update(run="python3 -m pip install anthropic"))
-mutate("tools: all four point at one image", "not four distinct images", lambda t: t.update({k: t["shell"] for k in ("jenkins", "gitlab-runner", "kind")}), "tools")
-mutate("tools: jenkins names another image", "does not name its own image", lambda t: t.update(jenkins=t["shell"]), "tools")
+mutate("tools: all eight point at one image", "not distinct images", lambda t: t.update({k: t["shell"] for k in t}), "tools")
+mutate("tools: jenkins names another image", "does not name its own official image", lambda t: t.update(jenkins=t["shell"]), "tools")
 mutate("weekly job leaves the persona-uat environment", "does not run in the persona-uat environment", lambda j: j.pop("environment"), "fresh")
 mutate("weekly resolver is conditional", "resolver step is conditional or non-fatal",
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update({"if": "false"}), "fresh")
@@ -639,6 +681,29 @@ mutate("tools: jenkins by tag", "tool jenkins is not pinned by digest", lambda t
 mutate("tools: the persona shell by tag", "tool shell is not pinned by digest", lambda t: t.update(shell="docker.io/library/debian:12"), "tools")
 mutate("tools: the kind entry is missing", "must hold exactly the keys", lambda t: t.pop("kind"), "tools")
 mutate("tools: an extra tool appears", "must hold exactly the keys", lambda t: t.update(terraform="docker.io/hashicorp/terraform@sha256:" + "5" * 64), "tools")
+# delta 2 (advisor 0207): eight entries, each official, digest-pinned and distinct
+for k in ("cosign", "kubectl", "gradle", "maven", "gitlab-runner", "jenkins", "shell"):
+    mutate(f"tools: the {k} entry is missing", "must hold exactly the keys", lambda t, k=k: t.pop(k), "tools")
+for k in ("cosign", "kubectl", "gradle", "maven", "gitlab-runner", "kind"):
+    mutate(f"tools: {k} by tag", f"tool {k} is not pinned by digest", lambda t, k=k: t.update({k: t[k].split("@")[0] + ":latest"}), "tools")
+    mutate(f"tools: {k} by a short digest", f"tool {k} is not pinned by digest", lambda t, k=k: t.update({k: t[k].split("@")[0] + "@sha256:abc"}), "tools")
+mutate("tools: gradle names the maven image", "tool gradle does not name its own official image", lambda t: t.update(gradle="docker.io/library/maven@sha256:" + "7" * 64), "tools")
+mutate("tools: kubectl from a lookalike repository", "tool kubectl does not name its own official image", lambda t: t.update(kubectl="docker.io/evil/kubectl@sha256:" + "6" * 64), "tools")
+mutate("tools: kubectl from a third-party packager", "tool kubectl does not name its own official image", lambda t: t.update(kubectl="docker.io/bitnami/kubectl@sha256:" + "6" * 64), "tools")
+mutate("tools: kubectl under a lookalike path of the official registry", "tool kubectl does not name its own official image", lambda t: t.update(kubectl="registry.k8s.io/evil/kubectl@sha256:" + "6" * 64), "tools")
+mutate("tools: cosign from a lookalike repository", "tool cosign does not name its own official image", lambda t: t.update(cosign="ghcr.io/evil/cosign/cosign@sha256:" + "5" * 64), "tools")
+mutate("tools: gradle from an unofficial registry", "tool gradle does not name its own official image", lambda t: t.update(gradle="evil.example/gradle@sha256:" + "7" * 64), "tools")
+mutate("tools: maven under a suffix-matching namespace", "tool maven does not name its own official image", lambda t: t.update(maven="docker.io/evil/maven@sha256:" + "8" * 64), "tools")
+mutate("tools: the shell is not the curl image", "tool shell does not name its own official image", lambda t: t.update(shell="docker.io/library/debian@sha256:" + "4" * 64), "tools")
+mutate("tools: two entries share one digest", "not distinct images", lambda t: t.update(kubectl="registry.k8s.io/kubectl@sha256:" + "8" * 64), "tools")
+for variant, key, ref in (("cosign from ghcr", "cosign", "ghcr.io/sigstore/cosign/cosign@sha256:" + "5" * 64), ("gradle without library/", "gradle", "docker.io/gradle@sha256:" + "7" * 64)):
+    good = []
+    judge_tools({**TGOOD, key: ref}, good)
+    result(not good, f"the judge accepts an official spelling ({variant})" + ("" if not good else ": " + "; ".join(good)))
+# delta 1: nothing in the sources starts a privileged container
+mutate("source: a privileged docker run in the driver", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "-d", "--privileged"]\n'}), "src")
+mutate("source: a privileged flag in the agent", "starts a privileged container", lambda srcs: srcs.update({SRC[1]: 'argv = ["docker", "run", "--privileged", img]\n'}), "src")
+mutate("source: privileged=True", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: "d.start(ref, privileged=True)\n"}), "src")
 
 print(f"persona-uat wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)
