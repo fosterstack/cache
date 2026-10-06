@@ -10,7 +10,7 @@ name: supply-chain
 on:
   pull_request: {}
   schedule:
-    - cron: '17 6 * * *'
+    - cron: '53 3 * * *'    # off-peak, clear of the auditor, rescan and freshness crons (the 1,000/hour token limit is shared by the repo)
   workflow_dispatch: {}
 
 permissions: {}
