@@ -496,8 +496,6 @@ def check_uses(tree, where, path, node, parent, lines, pins, bad):
             bad.append(f"{where}: {v!r} is not followed directly by a `# vX` comment on its line")
         else:
             pins.append((where, v.rsplit("@", 1)[0], sha, tag))
-        if ident in DOCKER_ACTIONS:
-            docker_inputs(where, parent, bad)
         check_executor(where, "/".join(v.split("@")[0].split("/")[:2]), parent, bad)
         return
     if DOCKER_USES.fullmatch(v):
@@ -2300,8 +2298,6 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
         if t[0] not in ("__script__", "__exec__"):
             continue
         path = t[1]
-        if path in ("-", "/dev/stdin"):
-            continue
         if t[0] == "__exec__":
             rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", path)
             if entries.get(rel) != "file":

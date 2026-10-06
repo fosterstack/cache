@@ -2249,5 +2249,13 @@ $(co "          ref: $BASE_REF
           echo 'import os' > trusted/bin/tool.py
           python3 trusted/bin/tool.py" "$mk_trusted"
 
+# --- coverage cases (the 100% gate): branches of the readers that no workflow of this repository exercises
+case_ cov-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
+          gh api "repos/${GITHUB_REPOSITORY}/contents/${f}?ref=main" --jq .content | base64 -d > "${RUNNER_TEMP}/g.sh"
+          done
+          bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
+case_ cov-another-language-script-run-directly-ok ok "$(rb './bin/t')" "mkdir -p bin; printf '#!/usr/bin/env python3\\nprint(1)\\n' > bin/t; chmod +x bin/t"
+case_ cov-scripts-nested-past-the-limit-bad bad "$(rb 'bash bin/a.sh')" "mkdir -p bin; for p in a:b b:c c:d d:e e:f; do printf 'bash bin/%s.sh\\n' \"\${p#*:}\" > bin/\${p%%:*}.sh; done; printf 'echo hi\\n' > bin/f.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
