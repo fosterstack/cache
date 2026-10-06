@@ -89,7 +89,8 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     def wanted(n):
-        return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh"
+        return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
+                or (n.endswith(".sh") and not n.startswith(".github/agent/"))
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
     if rev is None:
@@ -137,7 +138,9 @@ def _uses(u, node, out, labels):
     u = u.strip()
     if u.startswith("docker://"):
         out.append(_image_item(u[len("docker://"):]))
-    elif u and not u.startswith("./") and "${{" not in u:
+    elif u.startswith("./"):
+        out.append(Item("action", "local:" + _hide(u), "(local)"))   # a local action outside the globs: its content is not read, so a new one cannot pass
+    elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
         repo = "/".join(ref_path.split("/")[:2])
         out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", ""), "/".join(ref_path.split("/")[2:])))
@@ -235,7 +238,12 @@ def inventory(files):
         found = []
         if path == "bin/install-scanner.sh":
             found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
+            found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
+            found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(https?://[^\s'\"]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
+        elif path.endswith(".sh"):
+            found = []
+            _step({"run": text}, found, {})          # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
         else:
@@ -283,6 +291,7 @@ _UNMEASURED = [
     (re.compile(r"\bapt(?:-get)?\s+(?:-\S+\s+)*install\b"), "an apt install"),
     (re.compile(r"\bgh\s+release\s+download\b"), "a gh release download"),
     (re.compile(r"\bpip3?\s+install\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
+    (re.compile(r"\bpip3?\s+install\b[^\n]*\s-r\s*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
     (re.compile(r"\b(?:curl|wget)\b[^\n]*https?://(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
 ]
 

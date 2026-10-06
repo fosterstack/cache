@@ -861,6 +861,7 @@ def main(argv=None):
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
             raise Fail(str(e))
+        audited = [i for i in audited if i.version not in ("(local)", "(source)")]   # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
         today = now.strftime("%Y-%m-%d")
         if a.observations_out and not a.base:
             state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))

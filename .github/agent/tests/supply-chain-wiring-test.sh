@@ -90,6 +90,30 @@ def judge_wf(d, real=False):
         bad.append(f"rerun-held's permissions are not exactly actions: write + contents: read + pull-requests: read (found {j.get('permissions')})")
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
+    # nothing may change WHERE the checker comes from or what runs it
+    for key in ("env", "defaults", "concurrency"):
+        if key in d:
+            bad.append(f"the workflow has a top-level {key}: it could change what the trusted checker runs")
+    for name, jj in jobs.items():
+        for key in ("container", "services", "defaults"):
+            if key in jj:
+                bad.append(f"{name} has a job-level {key} (an image or a shell default that could run PR code or an unpinned image)")
+        if name != "daily-audit" and "concurrency" in jj:
+            bad.append(f"{name} has a concurrency block")
+        if name != "pin-age" and "env" in jj:
+            bad.append(f"{name} has a job-level env")
+        if name == "pin-age" and "env" in jj:
+            bad.append("pin-age has a job-level env (PYTHONPATH and friends could redirect the trusted checker)")
+    pa_steps = [st for st in jobs["pin-age"].get("steps", []) if str(st.get("uses", "")).startswith("actions/checkout@")]
+    if len(pa_steps) != 2:
+        bad.append("pin-age must have exactly two checkouts (the base's trusted checker, the PR's tree)")
+    else:
+        t, pr_ = pa_steps
+        tw, pw = t.get("with") or {}, pr_.get("with") or {}
+        if tw.get("ref") != "${{ github.event.pull_request.base.sha }}" or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false":
+            bad.append("pin-age's trusted checkout is not the BASE sha at path trusted with persist-credentials false")
+        if "ref" in pw or pw.get("path") != "pr" or pw.get("fetch-depth") != "0" or str(pw.get("persist-credentials")).lower() != "false":
+            bad.append("pin-age's PR checkout is not the default (merge) ref at path pr, full depth, persist-credentials false")
     PR_IF = "github.event_name == 'pull_request'"
     for name, jj in jobs.items():
         for st in jj.get("steps", []):
@@ -238,6 +262,15 @@ mut_wf("exit 0 is put first", "exits early", lambda d: [x.update(run="exit 0\n" 
 mut_wf("a failure is swallowed with || true", "exits early", lambda d: [x.update(run=x["run"].replace("|| status=1", "|| true")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("the check step loses its token", "no GH_TOKEN", lambda d: [x.pop("env") for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("a daily step gains a condition", "a step has a condition", lambda d: [x.update({"if": "false"}) for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
+mut_wf("the trusted checkout takes the PR's head", "trusted checkout is not the BASE", lambda d: [x["with"].update(ref="${{ github.event.pull_request.head.sha }}") for x in J(d, "pin-age")["steps"] if str(x.get("uses", "")).startswith("actions/checkout") and x["with"].get("path") == "trusted"])
+mut_wf("the PR checkout lands in trusted", "PR checkout is not", lambda d: [x["with"].update(path="trusted") for x in J(d, "pin-age")["steps"] if str(x.get("uses", "")).startswith("actions/checkout") and x["with"].get("path") == "pr"])
+mut_wf("the PR checkout picks a ref", "PR checkout is not", lambda d: [x["with"].update(ref="refs/heads/evil") for x in J(d, "pin-age")["steps"] if str(x.get("uses", "")).startswith("actions/checkout") and x["with"].get("path") == "pr"])
+mut_wf("a job container image appears", "job-level container", lambda d: J(d, "pin-age").update(container={"image": "evil:latest"}))
+mut_wf("a job service appears", "job-level services", lambda d: J(d, "pin-age").update(services={"x": {"image": "evil"}}))
+mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={"PYTHONPATH": "pr"}))
+mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "pin-age").update(env={"PYTHONPATH": "pr"}))
+mut_wf("a shell default appears", "job-level defaults", lambda d: J(d, "pin-age").update(defaults={"run": {"shell": "python3 {0}"}}))
+mut_wf("a third checkout appears", "exactly two checkouts", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {"persist-credentials": "false"}}))
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))
