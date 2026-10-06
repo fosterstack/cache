@@ -116,7 +116,7 @@ cat > "$e2e/skopeo" <<'STUB'
 #!/usr/bin/env bash
 echo "skopeo $*" >> "$LOG"
 case "$1" in
-  inspect) echo '{"manifests": []}' ;;
+  inspect) echo "{\"manifests\": [], \"attached\": $(grep -c '^docker scout attestation add' "$LOG" 2>/dev/null || echo 0)}" ;;   # the index changes once an attestation was attached
 esac
 STUB
 cat > "$e2e/install" <<'STUB'
@@ -133,8 +133,27 @@ no_scan=$(grep -c '^scan(' "$here/scout-root-cause.sh" || true)
 if [ "$no_scan" -eq 0 ]; then echo "ok: the scan() wrapper is gone"; pass=$((pass+1))
 else echo "FAIL: scan() wrapper still defined"; fail=$((fail+1)); fi
 cves=$(grep -c '^docker scout cves' "$LOG" 2>/dev/null || true)
-if [ "${cves:-0}" -eq 36 ]; then echo "ok: 36 docker scout cves invocations (2 attestation-path + 3 control-after + 1 release-author + 6 version warm-up + 24 matrix)"; pass=$((pass+1))
-else echo "FAIL: expected 36 docker scout cves invocations, got ${cves:-0}"; fail=$((fail+1)); fi
+if [ "${cves:-0}" -eq 38 ]; then echo "ok: 38 docker scout cves invocations (2 attestation-path + 3 control-after + 1 control exact post-attachment digest + 1 release-author + 1 release exact post-attachment digest + 6 version warm-up + 24 matrix)"; pass=$((pass+1))
+else echo "FAIL: expected 38 docker scout cves invocations, got ${cves:-0}"; fail=$((fail+1)); fi
+# advisor 0214: the attestation path is judged on the POST-attachment index scanned by its EXACT new digest with --vex-author
+# (the index digest changes when the attestation is attached, so signing must come after attaching): the control and the release copy
+n_exact=$(grep -cE '^docker scout cves --format gitlab --vex-author .* registry://ghcr.io/fosterstack/cache-scout-probe@sha256:[0-9a-f]{64}$' "$LOG" || true)
+if [ "${n_exact:-0}" -eq 2 ]; then echo "ok: the control and the release copy are each scanned by their exact post-attachment digest with --vex-author"; pass=$((pass+1))
+else echo "FAIL: expected 2 exact-digest scans with --vex-author, got ${n_exact:-0}"; fail=$((fail+1)); fi
+if grep -qF 'docker scout attestation list registry://ghcr.io/fosterstack/cache-scout-probe:release' "$LOG"; then echo "ok: the release copy's attestations are listed (why it got no attestation child)"; pass=$((pass+1))
+else echo "FAIL: the release copy's attestation list is not recorded"; fail=$((fail+1)); fi
+# the exact-digest scan names the digest AFTER attaching, never the pre-attach one (the stub's index changes once an attestation is added)
+for t in control release; do
+  b=$(cat "$e2e/out/attest/$t.before"); x=$(grep -o "scan $t by its exact post-attachment digest \`sha256:[0-9a-f]*" "$e2e/out/summary.md" | grep -o '[0-9a-f]\{64\}$')
+  # and the digest in the ACTUAL scout command equals the one reported (a script reporting the new digest while scanning the old one fails)
+  if [ "$t" = control ]; then va='^author@example\.com$'; else va='^FosterStack LLC$'; fi
+  c=$(grep -F -- "--vex-author $va registry://ghcr.io/fosterstack/cache-scout-probe@sha256:" "$LOG" | grep -o '[0-9a-f]\{64\}$' | tail -1)
+  if [ -n "$x" ] && [ "$x" != "$b" ] && [ "$c" = "$x" ]; then echo "ok: the $t exact-digest scan names, in the command itself, a digest different from the pre-attach one"; pass=$((pass+1))
+  else echo "FAIL: the $t exact-digest scan is missing or names the pre-attach digest ($x vs $b)"; fail=$((fail+1)); fi
+done
+for want in "control-after-exact-digest" "release-after-exact-digest"; do
+  if [ -e "$e2e/out/attest/$want.json" ]; then echo "ok: $want.json recorded"; pass=$((pass+1)); else echo "FAIL: $want.json missing"; fail=$((fail+1)); fi
+done
 if grep -qF 'docker scout cves --format gitlab registry://ghcr.io/fosterstack/cache-scout-probe:control' "$LOG"; then
   echo "ok: the control-before scan still names the scratch package over the registry"; pass=$((pass+1))
 else echo "FAIL: the control-before scan invocation is missing or changed"; fail=$((fail+1)); fi
@@ -161,7 +180,7 @@ cat > "$e4/skopeo" <<'STUB'
 #!/usr/bin/env bash
 echo "skopeo $*" >> "$LOG"
 case "$1" in
-  inspect) echo '{"manifests": []}' ;;
+  inspect) echo "{\"manifests\": [], \"attached\": $(grep -c '^docker scout attestation add' "$LOG" 2>/dev/null || echo 0)}" ;;   # the index changes once an attestation was attached
 esac
 STUB
 cp "$e2e/install" "$e4/install" 2>/dev/null || printf '#!/usr/bin/env bash\n: > "${@: -1}"\n' > "$e4/install"
@@ -178,6 +197,9 @@ done
 if grep -qF 'pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache' "$e4/out/attest/ours-published.vex.json" && grep -qF 'pkg:docker/ghcr.io/fosterstack/cache-scout-probe@ours-probe-tag' "$e4/out/attest/ours-probe-tag.vex.json" \
    && grep -qF 'CVE-2023-4911' "$e4/out/attest/ours-published.vex.json"; then echo "ok: the two documents carry our product forms and the target CVE"; pass=$((pass+1))
 else echo "FAIL: the probe documents are wrong"; fail=$((fail+1)); fi
+n_ours=$(grep -cF -- '--vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:' "$LOG4" || true)
+if [ "${n_ours:-0}" -eq 2 ]; then echo "ok: our statement is also scanned by the exact post-attachment digest, once per form"; pass=$((pass+1))
+else echo "FAIL: expected 2 exact-digest scans with our author (one per form), got ${n_ours:-0}"; fail=$((fail+1)); fi
 if grep -q 'ghcr.io/fosterstack/cache-scout-probe:ours-' "$LOG4" && ! grep -E 'skopeo copy .*docker://ghcr.io/fosterstack/cache:' "$LOG4" | grep -qE 'docker://ghcr.io/fosterstack/cache:[0-9a-z.-]+$'; then
   echo "ok: only the scratch package is written to"; pass=$((pass+1)); else echo "FAIL: a write outside the scratch package"; fail=$((fail+1)); fi
 rm -rf "$e2e" "$e4"
