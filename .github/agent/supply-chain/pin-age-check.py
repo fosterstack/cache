@@ -414,6 +414,9 @@ def main(argv=None):
     moved = inv.moved(base_items, head_items)
     try:
         return _run(a, moved, fx, now)
+    except RuntimeError as e:
+        print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        return 2
     except CouldNotLook as e:
         print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
         return 2
@@ -421,11 +424,8 @@ def main(argv=None):
 
 def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
     """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
-    try:
-        b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})
-        h = inv.unmeasured({**inv.tree_files(root, head), **inv.tree_scripts(root, head)})
-    except RuntimeError:
-        return []
+    b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})   # a read error propagates: the check cannot run (exit 2), never "nothing found"
+    h = inv.unmeasured({**inv.tree_files(root, head), **inv.tree_scripts(root, head)})
     return sorted(k for k, n in h.items() if n > b.get(k, 0))
 
 

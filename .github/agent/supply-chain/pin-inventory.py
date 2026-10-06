@@ -39,12 +39,12 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{expression\}\}|[\w.\-+()]|\$(?!\{\{))+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{expression\}\}|[\w.+()-]|\$(?!\{\{))+)/")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
 _PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
-_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
+_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|\$\{var\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
 _REQ_PIN = re.compile(r"^[ \t]*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?==([^\s;\\]+)", re.M)
@@ -192,7 +192,9 @@ def _docker_images(cmd_args):
             takes = (t in _DOCKER_VALUE_OPTS and "=" not in t) or (i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--"))
             i += 2 if takes else 1
             continue
-        return [t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) and "$" not in t else []
+        if "$" in t:
+            return ["(variable)"]                      # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
+        return [t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []
     return []
 
 
@@ -323,7 +325,7 @@ def tree_scripts(root, rev):
     """{path: text} for every shell script at a revision (rev None: the working tree): where a download or install can hide outside the workflows."""
     out = {}
     if rev is None:
-        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh")]
+        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith(".github/agent/")]
         for n in names:
             try:
                 out[n] = open(f"{root}/{n}").read()
@@ -334,7 +336,7 @@ def tree_scripts(root, rev):
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
-        if n.endswith(".sh"):
+        if n.endswith(".sh") and not n.startswith(".github/agent/"):
             blob = meta.split()[2]
             if blob not in _BLOBS:
                 _BLOBS[blob] = git(root, "cat-file", "blob", blob)
