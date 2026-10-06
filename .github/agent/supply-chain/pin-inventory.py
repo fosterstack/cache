@@ -46,7 +46,7 @@ _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
 _SEP = re.compile(r"[;&|]")
 
 
-def _tails(run, is_cmd, subcommands, skip_values=()):
+def _tails(run, is_cmd, subcommands, skip_values=(), keep_sub=False):
     """For every command word `is_cmd` accepts, the text after its subcommand: found by walking tokens (linear time: a regex over an option chain can backtrack exponentially)."""
     out = []
     for line in run.split("\n"):
@@ -66,7 +66,7 @@ def _tails(run, is_cmd, subcommands, skip_values=()):
                         tail.append(_SEP.split(tk)[0])
                         break
                     tail.append(tk)
-                out.append(" ".join(tail))
+                out.append((toks[j], " ".join(tail)) if keep_sub else " ".join(tail))
                 if len(out) > MAX_ITEMS_PER_STEP:
                     raise RuntimeError("a step repeats one command more than %d times: refusing to read it (a hostile text could exhaust the readers)" % MAX_ITEMS_PER_STEP)
     return out
@@ -233,28 +233,50 @@ _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editabl
                    "--prefix", "--root", "--cache-dir", "--python", "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary", "--progress-bar",
                    "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action"}
 def _docker_tails(run):
-    return _tails(run, lambda t: t in ("docker", "podman", "nerdctl", "buildah"), {"run", "pull", "create"}, _DOCKER_VALUE_OPTS)
+    return _tails(run, lambda t: t in ("docker", "podman", "nerdctl", "buildah"), {"run", "pull", "create"}, _DOCKER_VALUE_OPTS, keep_sub=True)
 _DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "--tlscacert", "--tlscert", "--tlskey", "--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
-                      "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull"}
+                      "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull", "--cpu-period", "--cpu-quota", "--cpuset-cpus", "--cpuset-mems", "--memory-swap", "--memory-reservation", "--stop-timeout", "--stop-signal", "--health-cmd", "--health-interval", "--health-retries", "--health-timeout", "--health-start-period", "--tmpfs", "--volumes-from", "--link", "--ip", "--network-alias", "--user", "-u", "-w", "--workdir", "--entrypoint", "--name", "-e", "--env", "-p", "--publish", "-v", "--volume", "--network", "--net", "--security-opt", "--sysctl", "--group-add", "--runtime", "--isolation", "--cgroup-parent", "--blkio-weight", "--annotation", "--cidfile", "--pid", "--ipc", "--uts", "--userns", "--expose", "--log-opt", "--mac-address", "--oom-score-adj", "--dns-search", "--dns-option", "--detach-keys", "--label-file", "--gpus"}
 
 
 def _docker_images(cmd_args):
-    """The image of a docker run/pull/create: the first argument that is not an option or an option's value (quotes read as a shell would)."""
+    return _docker_operand(cmd_args)[0]
+
+
+_DOCKER_BOOL_OPTS = {"--rm", "-d", "--detach", "-i", "--interactive", "-t", "--tty", "--init", "--privileged", "--read-only", "--no-healthcheck",
+                     "--sig-proxy", "--oom-kill-disable", "-P", "--publish-all", "--help", "--quiet", "-q", "--disable-content-trust",
+                     "--platform-none"}
+
+
+def _docker_operand(cmd_args):
+    """(the image of a docker run/pull/create, the effective --pull policy): the image is the first argument that is not an option or an option's
+    value (quotes read as a shell would); the policy is the LAST --pull among the options before it (pflag keeps the final value), read by the SAME
+    walk so the two can never disagree about which words are options, values or the operand (Codex #187 rounds 2-3). The `never` policy only
+    counts when EVERY option before the operand has a known arity (a value option, a boolean, a short cluster of booleans, or --name=value of a
+    known option): a guessed arity (a number after an unknown option is taken as its value) once let `--rm 123 --pull=never localhost/x` read the
+    container's own arguments as a policy (round 4), so an unknown option withholds the exemption."""
     try:
         toks = shlex.split(cmd_args)
     except ValueError:
         toks = cmd_args.split()
-    i = 0
+    i, pull, guessed = 0, None, False
     while i < len(toks):
         t = toks[i]
+        if t.startswith("--pull="):
+            pull = t.split("=", 1)[1]; i += 1; continue
+        if t == "--pull" and i + 1 < len(toks):
+            pull = toks[i + 1]; i += 2; continue
         if t.startswith("-"):
-            takes = (t in _DOCKER_VALUE_OPTS and "=" not in t) or (i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--"))
-            i += 2 if takes else 1
+            known_value = t in _DOCKER_VALUE_OPTS and "=" not in t
+            known = known_value or t in _DOCKER_BOOL_OPTS or (t.startswith("--") and t.split("=", 1)[0] in _DOCKER_VALUE_OPTS and "=" in t) \
+                or re.fullmatch(r"-[dit]+", t) is not None
+            guess = not known and i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--")
+            guessed = guessed or not known
+            i += 2 if (known_value or guess) else 1
             continue
         if "$" in t:
-            return ["(variable)"]                      # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
-        return [t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []
-    return []
+            return ["(variable)"], (None if guessed else pull)                # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
+        return ([t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []), (None if guessed else pull)
+    return [], (None if guessed else pull)
 
 
 _ENV_CTX = [""]
@@ -304,9 +326,14 @@ def _step_items(node, out, labels):
                     out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             out.append(Item("tool", m.group(1), "latest"))
-        for tail in _docker_tails(run):
-            for img in _docker_images(tail):
-                out.append(_image_item(img))
+        for sub, tail in _docker_tails(run):
+            images, pull = _docker_operand(tail)
+            local_only = sub in ("run", "create") and pull == "never"
+            for img in images:
+                it = _image_item(img)
+                if local_only and it.name.startswith("localhost/"):
+                    continue      # run/create with --pull=never can only use an image already in the daemon: built or loaded by this job, never downloaded, no age to prove (advisor 0203); a pull, a container:/services: image, uses: docker:// and localhost:PORT/ stay items
+                out.append(it)
         for ln in run.split("\n"):    # where a script downloads FROM: an assignment of a URL/BASE variable is a source line identified by its own text
             m = _SOURCE_ASSIGN.match(ln)
             if m:
