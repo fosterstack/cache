@@ -439,6 +439,8 @@ def inventory(files):
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
             _walk(doc, found, labels, "")
         for it in found:
+            if it.kind == "image" and it.name.startswith("localhost/"):
+                continue          # an image named localhost/... (no port) is built or loaded in the job, never downloaded: no age to prove (advisor 0203); localhost:PORT/ is a registry and stays an item
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
                 while True:
