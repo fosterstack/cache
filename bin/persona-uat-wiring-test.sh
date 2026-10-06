@@ -59,7 +59,7 @@ def literal_false(v):
 
 def install_re(pre):
     """the ONLY accepted way to get `kind` onto the job: the repo's own installer (version and sha256 pinned inside it), from the same tree as the driver"""
-    return re.compile(r"^(?:\./)?" + re.escape(pre) + r"bin/install-scanner\.sh kind(?: \S+)?$")
+    return re.compile(r"^(?:\./)?" + re.escape(pre) + r"bin/install-scanner\.sh kind(?: (\S+))?$")
 
 def judge_install(name, steps, d, pre, bad):
     """advisor ruling: the job installs kind in ONE unconditional run step BEFORE the driver, by ./bin/install-scanner.sh kind (no pipe to a shell, no
@@ -73,26 +73,143 @@ def judge_install(name, steps, d, pre, bad):
     i, s = good[0]
     if i > di:
         bad.append(f"{name}: kind is installed AFTER the driver step: the driver would run without it")
+    cos = [(k, x) for k, x in enumerate(steps) if "actions/checkout" in str(x.get("uses", ""))]
+    prov = next((k for k, x in cos if str((x.get("with") or {}).get("path", "")) == "harness"), None) if pre else (cos[0][0] if cos else None)
+    if prov is None or i < prov:
+        bad.append(f"{name}: the kind install step runs BEFORE the checkout that provides bin/install-scanner.sh (or there is none): the installer would not exist yet")
+    dest = install_re(pre).match(str(s["run"]).strip()).group(1)
+    if dest not in (None, "/usr/local/bin"):
+        bad.append(f"{name}: the kind install step installs into {dest!r}, a directory that is not on PATH for the driver step (only the installer's default /usr/local/bin is)")
     if s.get("if") is not None or not literal_false(s.get("continue-on-error")):
         bad.append(f"{name}: the kind install step is conditional or non-fatal: a job without kind must fail, never skip it")
     if str(s.get("shell", "bash")) != "bash" or s.get("working-directory") or s.get("env"):
         bad.append(f"{name}: the kind install step has a custom shell, working-directory or env")
 
 def judge_installer(text, bad):
-    """bin/install-scanner.sh knows kind: a pinned version, an allowlisted tool name, a pinned sha256 for both architectures, the release URL of the kind project"""
-    if not re.search(r"(?m)^KIND_VER=[0-9]+\.[0-9]+\.[0-9]+$", text):
+    """bin/install-scanner.sh knows kind: a pinned version, an allowlisted tool name, a pinned sha256 for both architectures, the release URL of the kind
+    project, a kind branch that VERIFIES the download before installing it into ${DEST}/kind, and a verify() that really hashes. (judge_installer reads;
+    exercise_installer RUNS the installer: both must pass.)"""
+    code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+    code = re.sub(r"\s#[^\n\"']*$", "", code, flags=re.M)         # trailing comments on a line
+    if not re.search(r"(?m)^KIND_VER=[0-9]+\.[0-9]+\.[0-9]+$", code):
         bad.append("the installer has no pinned KIND_VER (x.y.z)")
-    if not re.search(r'case "\$TOOL" in [^\n]*\bkind\b', text):
+    if not re.search(r'case "\$TOOL" in [^\n]*\bkind\b', code):
         bad.append("the installer does not allow the tool name kind")
     for arch in ("x86_64\\|kind:amd64", "aarch64\\|kind:arm64"):
-        if not re.search(r"(?m)^\s*kind:" + arch + r"\) SUM=[0-9a-f]{64}\s*$", text):
+        if not re.search(r"(?m)^\s*kind:" + arch + r"\) SUM=[0-9a-f]{64}\s*;?;?\s*$", code):
             bad.append("the installer has no pinned 64-hex sha256 for kind on " + arch.split("\\")[0])
-    if len(re.findall(r"A_KIND=", text)) < 2:
+    if len(re.findall(r"A_KIND=", code)) < 2:
         bad.append("the installer maps no kind release asset for both architectures (A_KIND)")
-    if not re.search(r'(?m)^KIND_BASE="\$\{KIND_BASE_URL:-https://github\.com/kubernetes-sigs/kind/releases/download\}"', text):
+    if not re.search(r'(?m)^KIND_BASE="\$\{KIND_BASE_URL:-https://github\.com/kubernetes-sigs/kind/releases/download\}"', code):
         bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download")
-    if "sha256sum" not in text:
-        bad.append("the installer verifies no sha256")
+    vf = re.search(r"(?ms)^verify\(\)\s*\{(.*?)^\}", code)
+    if not vf or "sha256sum" not in vf.group(1) or "SUM" not in vf.group(1):
+        bad.append("the installer verifies no sha256: verify() does not hash the file with sha256sum and compare it with the pinned SUM (a comment does not count)")
+    if not re.search(r'(?m)^DEST="\$\{2:-/usr/local/bin\}"', code):
+        bad.append("the installer's default destination is not /usr/local/bin (the directory on PATH for the driver step)")
+    arm = re.search(r"(?ms)^\s*kind\)\s*\n(.*?)^\s*;;", code)
+    if not arm:
+        bad.append("the installer has no kind branch")
+    else:
+        a = arm.group(1)
+        iv, ii = a.find('verify "$tmp/kind"'), a.find('"${DEST}/kind"')
+        if iv < 0 or ii < 0 or iv > ii or not re.search(r"\binstall\b[^\n]*-m 0?755", a):
+            bad.append("the kind branch does not verify the download BEFORE installing it as an executable ${DEST}/kind")
+        if "curl" not in a or "pipeline_fail" not in a:
+            bad.append("the kind branch does not download with curl and fail as a pipeline failure")
+
+import hashlib, http.server, subprocess, tempfile, threading, stat
+
+def exercise_installer(path):
+    """RUN the installer for kind against a local fixture server: good bytes install an executable `kind` into DEST (and the sha256 check ran, recorded by a
+    sha256sum on PATH); tampered bytes exit non-zero as a PIPELINE failure and install nothing. -> [problems]"""
+    probs = []
+    try:
+        src = open(path).read()
+    except OSError as e:
+        return ["the installer cannot be read: %s" % e]
+    good = b"#!/bin/sh\necho kind v0.0.0\n"
+    tam = good + b"# tampered\n"
+    sha = hashlib.sha256(good).hexdigest()
+    work = tempfile.mkdtemp(prefix="inst-ex-")
+    state = {"body": good, "paths": []}
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            state["paths"].append(self.path)
+            self.send_response(200); self.send_header("Content-Length", str(len(state["body"]))); self.end_headers(); self.wfile.write(state["body"])
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    copy = os.path.join(work, "install-scanner.sh")
+    txt = re.sub(r"(kind:(?:x86_64\|kind:amd64|aarch64\|kind:arm64)\) SUM=)[0-9a-f]{64}", lambda m: m.group(1) + sha, src)
+    open(copy, "w").write(txt); os.chmod(copy, 0o755)
+    rbin = os.path.join(work, "rbin"); os.makedirs(rbin)
+    open(os.path.join(rbin, "sha256sum"), "w").write("#!/usr/bin/env python3\nimport hashlib, sys\nfor f in sys.argv[1:]:\n    h = hashlib.sha256(open(f, 'rb').read()).hexdigest()\n    open('%s/sha.log', 'a').write(h + '\\n')\n    print(h + '  ' + f)\n" % work)
+    os.chmod(os.path.join(rbin, "sha256sum"), 0o755)
+    for arch in ("x86_64", "aarch64"):
+        for label, body in (("good", good), ("tampered", tam)):
+            state["body"] = body
+            dest = os.path.join(work, "dest-%s-%s" % (arch, label)); os.makedirs(dest)
+            open(os.path.join(work, "sha.log"), "w").close()
+            env = dict(os.environ, PATH=rbin + ":" + os.environ["PATH"], KIND_BASE_URL="http://127.0.0.1:%d" % srv.server_address[1], INSTALL_SCANNER_ARCH=arch)
+            r = subprocess.run(["bash", copy, "kind", dest], capture_output=True, text=True, env=env, timeout=60)
+            hashed = open(os.path.join(work, "sha.log")).read().split()
+            k = os.path.join(dest, "kind")
+            if label == "good":
+                if r.returncode != 0: probs.append("%s: good bytes did not install (rc %d: %s)" % (arch, r.returncode, r.stderr.strip()[:120]))
+                elif not (os.path.isfile(k) and os.access(k, os.X_OK)): probs.append("%s: good bytes left no executable kind in DEST" % arch)
+                else:
+                    pr = subprocess.run([k], capture_output=True, text=True)
+                    if pr.returncode != 0 or "kind" not in pr.stdout: probs.append("%s: the installed kind does not run" % arch)
+                if sha not in hashed: probs.append("%s: the sha256 of the downloaded bytes was never computed (no verification ran)" % arch)
+            else:
+                if r.returncode == 0: probs.append("%s: TAMPERED bytes were accepted (exit 0)" % arch)
+                if "PIPELINE" not in r.stderr: probs.append("%s: a tampered download is not reported as a PIPELINE failure" % arch)
+                if os.path.exists(k): probs.append("%s: tampered bytes were installed" % arch)
+    srv.shutdown()
+    return probs
+
+SYN_INST = r"""#!/usr/bin/env bash
+set -euo pipefail
+TOOL="${1:-}"
+DEST="${2:-/usr/local/bin}"
+KIND_VER=0.30.0
+pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
+case "$TOOL" in trivy|kind|gitsign) ;; *) pipeline_fail "unknown tool" ;; esac
+arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
+case "$arch" in
+  x86_64|amd64) A_KIND=kind-linux-amd64 ;;
+  aarch64|arm64) A_KIND=kind-linux-arm64 ;;
+  *) pipeline_fail "unsupported architecture" ;;
+esac
+case "${TOOL}:${arch}" in
+  kind:x86_64|kind:amd64) SUM=""" + "a" * 64 + r""" ;;
+  kind:aarch64|kind:arm64) SUM=""" + "b" * 64 + r""" ;;
+  *) pipeline_fail "no pinned checksum" ;;
+esac
+KIND_BASE="${KIND_BASE_URL:-https://github.com/kubernetes-sigs/kind/releases/download}"
+tmp=$(mktemp -d)
+trap 'rm -rf "${tmp:?}"' EXIT
+verify() { # file
+  local got
+  got=$(sha256sum "$1" | cut -d' ' -f1)
+  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM})"
+}
+case "$TOOL" in
+  kind)
+    url="${KIND_BASE}/v${KIND_VER}/${A_KIND}"
+    curl -fsSL -o "$tmp/kind" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/kind"
+    install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
+    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
+    ;;
+  *)
+    pipeline_fail "unknown scanner"
+    ;;
+esac
+echo "installed ${TOOL}"
+"""
+GOODINST = SYN_INST
 
 def common(name, job, bad):
     steps = job.get("steps", [])
@@ -221,6 +338,7 @@ def common(name, job, bad):
         if i < di and isrun and not is_resolver and not is_boot and not is_install:
             bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install and the one pinned kind install (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
+    judge_prereqs(name, job, steps, bad)
     cos = [s for s in steps if "actions/checkout" in str(s.get("uses", ""))]
     if len(cos) != (2 if weekly else 1) or any(steps.index(c) > di for c in cos):
         bad.append(f"{name}: expected exactly {2 if weekly else 1} actions/checkout step(s) before the driver (the personas read the docs they bring; without them the docs directory is empty)")
@@ -534,18 +652,11 @@ good = []
 SRC_OVER.update(CLEAN_SRC); judge_source(good); SRC_OVER.clear()
 result(not good, "a clean source set is accepted by the source judge" + ("" if not good else ": " + "; ".join(good)))
 
-GOODINST = """case "$TOOL" in trivy|kind|gitsign) ;; *) echo no;; esac
-KIND_VER=0.30.0
-  kind:x86_64|kind:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  kind:aarch64|kind:arm64) SUM=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-amd64) A_KIND=kind-linux-amd64 ;;
-arm64) A_KIND=kind-linux-arm64 ;;
-KIND_BASE="${KIND_BASE_URL:-https://github.com/kubernetes-sigs/kind/releases/download}"
-got=$(sha256sum "$1")
-"""
 def synth_steps(weekly):
     pre = "harness/" if weekly else ""
-    return pre, [{"uses": "actions/checkout@" + "0" * 40}, {"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
+    cos = [{"uses": "actions/checkout@" + "0" * 40, "with": {"path": "harness"}}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
+    return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+                       {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
     pre, st = synth_steps(weekly)
     bd = []
@@ -554,6 +665,9 @@ for weekly in (False, True):
 bd = []
 judge_installer(GOODINST, bd)
 result(not bd, "the installer judge accepts a installer with kind pinned by version and sha256" + ("" if not bd else ": " + "; ".join(bd)))
+
+def ins(st):
+    return next(x for x in st if "install-scanner" in str(x.get("run", "")) or re.search(r"\bkind\b", str(x.get("run", ""))))
 
 def imutate(name, expect, fn, weekly=False):
     pre, st = synth_steps(weekly)
@@ -568,31 +682,99 @@ def smutate(name, expect, fn):
     judge_installer(t, bd)
     result(t != GOODINST and any(expect in b for b in bd), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
 
+def xmutate(name, expect, fn):
+    """the installer is RUN (exercise_installer): a mutant that reads right but behaves wrong must still be caught"""
+    t = fn(SYN_INST)
+    f = os.path.join(tempfile.mkdtemp(prefix="inst-mut-"), "install-scanner.sh")
+    open(f, "w").write(t)
+    pr = exercise_installer(f)
+    result(t != SYN_INST and any(expect in x for x in pr), f"caught by running it: {name} (reason: {expect!r})" + ("" if any(expect in x for x in pr) else f"; saw {pr}"))
+
+# the synthetic installer is valid shell, is judged clean and RUNS right: the controls
+f = os.path.join(tempfile.mkdtemp(prefix="inst-syn-"), "install-scanner.sh"); open(f, "w").write(SYN_INST)
+rc = subprocess.run(["bash", "-n", f], capture_output=True, text=True)
+result(rc.returncode == 0, "the synthetic reference installer is valid shell (bash -n)" + ("" if rc.returncode == 0 else ": " + rc.stderr.strip()))
+pr = exercise_installer(f)
+result(not pr, "running the reference installer: good bytes install an executable kind and are hashed, tampered bytes exit non-zero as a PIPELINE failure and install nothing, on both architectures" + ("" if not pr else ": " + "; ".join(pr)))
+pr = exercise_installer(INST)
+result(not pr, "running the REAL installer (bin/install-scanner.sh kind) against a local fixture with its pinned sums replaced: good bytes install an executable kind, tampered bytes are a PIPELINE failure" + ("" if not pr else ": " + "; ".join(pr)))
+
 for weekly in (False, True):
     w = " (weekly)" if weekly else ""
-    imutate("kind install missing" + w, "exactly one step", lambda st: st.pop(1), weekly)
-    imutate("kind install by curl | sh" + w, "exactly one step", lambda st: st[1].update(run="curl -sSL https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 | sh"), weekly)
-    imutate("kind download without checksum" + w, "exactly one step", lambda st: st[1].update(run="curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && chmod +x /usr/local/bin/kind"), weekly)
-    imutate("kind installed by go install" + w, "exactly one step", lambda st: st[1].update(run="go install sigs.k8s.io/kind@latest"), weekly)
-    imutate("kind install after the driver" + w, "AFTER the driver", lambda st: st.append(st.pop(1)), weekly)
-    imutate("kind install conditional" + w, "conditional or non-fatal", lambda st: st[1].update({"if": "github.event_name == 'push'"}), weekly)
-    imutate("kind install continue-on-error" + w, "conditional or non-fatal", lambda st: st[1].update({"continue-on-error": "true"}), weekly)
-    imutate("kind install with another tool name" + w, "exactly one step", lambda st: st[1].update(run=st[1]["run"].replace(" kind", " trivy") + "; echo kind"), weekly)
-    imutate("kind install from the other tree" + w, "exactly one step", lambda st: st[1].update(run="./" + ("" if weekly else "harness/") + "bin/install-scanner.sh kind"), weekly)
-    imutate("kind install piped" + w, "exactly one step", lambda st: st[1].update(run=st[1]["run"] + " | sh"), weekly)
-    imutate("kind installed twice" + w, "exactly one step", lambda st: st.insert(1, dict(st[1])), weekly)
-    imutate("kind install with a custom shell" + w, "custom shell", lambda st: st[1].update(shell="pwsh"), weekly)
-    imutate("kind install with env" + w, "custom shell, working-directory or env", lambda st: st[1].update(env={"KIND_BASE_URL": "https://evil.example"}), weekly)
+    imutate("kind install missing" + w, "exactly one step", lambda st: st.remove(ins(st)), weekly)
+    imutate("kind install by curl | sh" + w, "exactly one step", lambda st: ins(st).update(run="curl -sSL https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 | sh"), weekly)
+    imutate("kind download without checksum" + w, "exactly one step", lambda st: ins(st).update(run="curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && chmod +x /usr/local/bin/kind"), weekly)
+    imutate("kind installed by go install" + w, "exactly one step", lambda st: ins(st).update(run="go install sigs.k8s.io/kind@latest"), weekly)
+    imutate("kind install after the driver" + w, "AFTER the driver", lambda st: st.append(st.pop(st.index(ins(st)))), weekly)
+    imutate("kind install BEFORE the checkout" + w, "BEFORE the checkout", lambda st: st.insert(0, st.pop(st.index(ins(st)))), weekly)
+    imutate("kind install into a directory not on PATH" + w, "not on PATH", lambda st: ins(st).update(run=ins(st)["run"] + " /tmp/not-on-path"), weekly)
+    imutate("kind install into /opt/bin" + w, "not on PATH", lambda st: ins(st).update(run=ins(st)["run"] + " /opt/bin"), weekly)
+    imutate("kind install conditional" + w, "conditional or non-fatal", lambda st: ins(st).update({"if": "github.event_name == 'push'"}), weekly)
+    imutate("kind install continue-on-error" + w, "conditional or non-fatal", lambda st: ins(st).update({"continue-on-error": "true"}), weekly)
+    imutate("kind install with another tool name" + w, "exactly one step", lambda st: ins(st).update(run=ins(st)["run"].replace(" kind", " trivy") + "; echo kind"), weekly)
+    imutate("kind install from the other tree" + w, "exactly one step", lambda st: ins(st).update(run="./" + ("" if weekly else "harness/") + "bin/install-scanner.sh kind"), weekly)
+    imutate("kind install piped" + w, "exactly one step", lambda st: ins(st).update(run=ins(st)["run"] + " | sh"), weekly)
+    imutate("kind installed twice" + w, "exactly one step", lambda st: st.insert(st.index(ins(st)), dict(ins(st))), weekly)
+    imutate("kind install with a custom shell" + w, "custom shell", lambda st: ins(st).update(shell="pwsh"), weekly)
+    imutate("kind install with env" + w, "custom shell, working-directory or env", lambda st: ins(st).update(env={"KIND_BASE_URL": "https://evil.example"}), weekly)
 smutate("installer: KIND_VER missing", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.30.0\n", ""))
 smutate("installer: KIND_VER is latest", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.30.0", "KIND_VER=latest"))
 smutate("installer: kind not in the allowlist", "does not allow the tool name kind", lambda t: t.replace("trivy|kind|gitsign", "trivy|gitsign"))
-smutate("installer: x86_64 checksum missing", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("  kind:x86_64|kind:amd64) SUM=" + "a" * 64 + "\n", ""))
+smutate("installer: x86_64 checksum missing", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("  kind:x86_64|kind:amd64) SUM=" + "a" * 64 + " ;;\n", ""))
 smutate("installer: x86_64 checksum too short", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("a" * 64, "a" * 63))
-smutate("installer: arm64 checksum missing", "no pinned 64-hex sha256 for kind on aarch64", lambda t: t.replace("  kind:aarch64|kind:arm64) SUM=" + "b" * 64 + "\n", ""))
+smutate("installer: arm64 checksum missing", "no pinned 64-hex sha256 for kind on aarch64", lambda t: t.replace("  kind:aarch64|kind:arm64) SUM=" + "b" * 64 + " ;;\n", ""))
 smutate("installer: checksum is a placeholder", "no pinned 64-hex sha256 for kind on aarch64", lambda t: t.replace("b" * 64, "TODO"))
-smutate("installer: asset mapping missing", "maps no kind release asset", lambda t: t.replace("arm64) A_KIND=kind-linux-arm64 ;;\n", ""))
+smutate("installer: asset mapping missing", "maps no kind release asset", lambda t: t.replace("  aarch64|arm64) A_KIND=kind-linux-arm64 ;;\n", ""))
 smutate("installer: download from another host", "not from github.com/kubernetes-sigs/kind", lambda t: t.replace("github.com/kubernetes-sigs/kind", "evil.example/kind"))
-smutate("installer: no sha256 verification", "verifies no sha256", lambda t: t.replace("sha256sum", "md5sum"))
+smutate("installer: checksum only in a comment", "verifies no sha256", lambda t: t.replace('got=$(sha256sum "$1" | cut -d\' \' -f1)', "got=x  # sha256sum"))
+smutate("installer: verify() hashes nothing", "verifies no sha256", lambda t: t.replace("sha256sum", "md5sum"))
+smutate("installer: the kind branch never verifies", "does not verify the download BEFORE", lambda t: t.replace('    verify "$tmp/kind"\n', ""))
+smutate("installer: the kind branch verifies after installing", "does not verify the download BEFORE", lambda t: t.replace('    verify "$tmp/kind"\n', "").replace('    "${DEST}/kind" version', '    verify "$tmp/kind"\n    "${DEST}/kind" version'))
+smutate("installer: the kind branch installs elsewhere", "does not verify the download BEFORE", lambda t: t.replace('"${DEST}/kind" || pipeline_fail', '"/opt/kind-bin/kind" || pipeline_fail').replace('"${DEST}/kind" version', '"/opt/kind-bin/kind" version'))
+smutate("installer: the default destination is not on PATH", "default destination", lambda t: t.replace('DEST="${2:-/usr/local/bin}"', 'DEST="${2:-/opt/kind-bin}"'))
+smutate("installer: no kind branch", "no kind branch", lambda t: t.replace("  kind)\n", "  kindx)\n"))
+xmutate("verification removed from the kind branch", "TAMPERED bytes were accepted", lambda t: t.replace('    verify "$tmp/kind"\n', ""))
+xmutate("verify() compares nothing (always passes)", "TAMPERED bytes were accepted", lambda t: t.replace('[ "$got" = "$SUM" ] || ', "true || "))
+xmutate("verify() only in a comment", "no verification ran", lambda t: t.replace('got=$(sha256sum "$1" | cut -d\' \' -f1)', "got=$SUM  # sha256sum"))
+xmutate("wrong destination", "left no executable kind in DEST", lambda t: t.replace('"${DEST}/kind" || pipeline_fail', '"${DEST}/kind-x" || pipeline_fail').replace('"${DEST}/kind" version', '"${DEST}/kind-x" version'))
+xmutate("not executable", "left no executable kind in DEST", lambda t: t.replace("install -m 0755", "install -m 0644").replace('    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"\n', ""))
+xmutate("a mismatch is not a pipeline failure", "not reported as a PIPELINE failure", lambda t: t.replace("(PIPELINE failure - not a scan finding)", "(scan finding)"))
+xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.replace('pipeline_fail "${TOOL} checksum mismatch', 'echo "${TOOL} checksum mismatch'))
+
+# --- prerequisites of the job (round 2): a persona job that cannot run, or runs twice, must not be approved ---------------------------------
+def judge_prereqs(name, job, steps, bad):
+    ro = str(job.get("runs-on", ""))
+    if not re.fullmatch(r"ubuntu-[0-9]{2}\.[0-9]{2}(-arm)?|ubuntu-latest", ro):
+        bad.append(f"{name}: runs-on is {ro!r}, not an ubuntu runner (the host kubectl and the docker the personas use are the ubuntu image's)")
+    if job.get("strategy") is not None:
+        bad.append(f"{name}: the job has a strategy/matrix: the persona UAT would run more than once (or not at all)")
+    for x in steps:
+        u = str(x.get("uses", ""))
+        isboot = "pip install" in str(x.get("run", "")) and "persona-uat-requirements" in str(x.get("run", ""))
+        if "actions/checkout" in u or isboot:
+            if x.get("if") is not None or not literal_false(x.get("continue-on-error")):
+                bad.append(f"{name}: the {'checkout' if not isboot else 'SDK install'} step is conditional or non-fatal: the persona UAT could run without it")
+
+def synth_job(weekly):
+    pre, st = synth_steps(weekly)
+    return {"runs-on": "ubuntu-24.04", "steps": st}
+for weekly in (False, True):
+    j = synth_job(weekly); bd = []
+    judge_prereqs("synth", j, j["steps"], bd)
+    result(not bd, f"the prerequisite judge accepts a plain ubuntu job ({'weekly' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
+    def pm(name, expect, fn):
+        j = synth_job(weekly); fn(j); bd = []
+        judge_prereqs("synth", j, j["steps"], bd)
+        result(any(expect in b for b in bd), f"caught: {name}{' (weekly)' if weekly else ''} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
+    pm("checkout with if: false", "checkout step is conditional", lambda j: j["steps"][0].update({"if": "false"}))
+    pm("checkout continue-on-error", "checkout step is conditional", lambda j: j["steps"][0].update({"continue-on-error": "true"}))
+    pm("SDK install continue-on-error: true", "SDK install step is conditional", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
+    pm("SDK install with if: false", "SDK install step is conditional", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"if": "false"}))
+    pm("runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
+    pm("runs-on macos-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "macos-latest"}))
+    pm("runs-on a self-hosted runner", "not an ubuntu runner", lambda j: j.update({"runs-on": "self-hosted"}))
+    pm("a matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}))
+    pm("a one-entry matrix", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1"]}}}))
 
 def mutate(name, expect, fn, which="rel"):
     r, f, t = copy.deepcopy(R), copy.deepcopy(F), copy.deepcopy(TGOOD if which == "tools" else T)
@@ -753,6 +935,19 @@ mutate("weekly resolver asks for the wrong digest format", "does not write tag=<
 mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
 mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
 mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
+mutate("rc job-level if: false", "does not run only for v*-rc.* tags", lambda j: j.update({"if": "false"}))
+mutate("rc checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}))
+mutate("rc SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
+mutate("rc runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
+mutate("rc matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}))
+mutate("rc kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))))
+mutate("rc kind install before the checkout", "BEFORE the checkout", lambda j: j["steps"].insert(0, j["steps"].pop(j["steps"].index(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))))))
+mutate("weekly job-level if: false", "does not run only on the Monday cron", lambda j: j.update({"if": "false"}), "fresh")
+mutate("weekly checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}), "fresh")
+mutate("weekly SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"continue-on-error": "true"}), "fresh")
+mutate("weekly runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}), "fresh")
+mutate("weekly matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}), "fresh")
+mutate("weekly kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))), "fresh")
 mutate("rc checkout of another repository", "checkout of another repository", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(repository="evil/cache"))
 mutate("rc driver step overrides the identity token file", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(ANTHROPIC_IDENTITY_TOKEN_FILE="/missing"))
 mutate("rc identity step never awaits the token", "does not mint (await)",

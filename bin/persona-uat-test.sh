@@ -29,6 +29,10 @@
 #       (namespace persona, EXACTLY the minted token, no client certificate or key). The cluster is deleted (`kind delete cluster --name <same>`)
 #       when the persona is done, whatever the outcome; the kind API port is whatever kind chose (the admin kubeconfig's server: the tests vary it)
 #       and is a loopback listener the guard allows ONLY for that persona while its cluster exists.
+#       The fake kubectl accepts ONLY apply -f, create token, get, wait, version, cluster-info (an imperative `create clusterrolebinding` or
+#       `create rolebinding` is refused and the test proves it), validates manifests like the API server (a ServiceAccount subject has an EMPTY apiGroup,
+#       roleRef kind/name/apiGroup, apiVersion/kind pairs) and answers the persona's own token only while the cluster exists: the stub persona uses its
+#       kubeconfig at the END of its window and `kind delete cluster` must come AFTER its recorded end. A hung `kind create` is bounded.
 #       The Role is derived from the documented steps (docs/kubernetes.md, docs/docker-deploy.md) plus the persona's task (upgrade, rollback, logs):
 #       get/list/watch/create/update/patch/delete on pods, deployments, replicasets, services, configmaps, secrets, persistentvolumeclaims, jobs,
 #       events; get/list on pods/log; create on pods/portforward; get/update/patch on deployments/scale; nothing else (no pods/exec, pods/attach,
@@ -51,10 +55,22 @@
 #       tools file. A URL only on a shell comment line is ignored. The line is information only: it never changes a verdict, and a host that would
 #       trip the report scan (a vendor name, a credential-looking name) is printed as `(host withheld by the scan)` instead of withholding the
 #       report. Public-docs-only is claimed as: the sandbox holds only the public docs, the instructions forbid source, and non-doc hosts (such
-#       as the repository's raw source URL) are flagged; host networking is accepted (advisor 0207), nothing is enforced here.
+#       as the repository's raw source URL) are flagged; host networking is accepted (advisor 0207), nothing is enforced here. A URL whose path
+#       points into the repository's own source (github.com/<owner>/<repo>/archive|raw|blob|tree/..., and raw.githubusercontent.com) is listed as
+#       `<host> (repository source)` EVEN on an allowed docs host (an allowlist is per host, not per path). OPEN, pending the owner's amendment
+#       (outbox 2026-10-06-cache-persona-ac-amendments-for-owner.md): AC1/AC5 still read "public documents only, no repository source"; these tests
+#       prove only the narrowed claim above and do not claim compliance with the unamended wording.
+#   (5) container lifecycle: every shell-action container the AGENT starts carries `--label persona-uat=<uuid>` (one fresh uuid per persona,
+#       handed to the agent as `--label persona-uat=<uuid>`); containers are daemon-managed, so killing the docker client does not stop them. The agent
+#       removes by label what a shell timeout left, and the DRIVER sweeps by label (`docker ps -aq --filter label=persona-uat=<uuid>`, then
+#       `docker rm -f <ids>`) after EVERY agent outcome (success, crash, timeout) before the next persona's window. The recording docker models a
+#       daemon-managed container (it keeps requesting the endpoint after its client is killed) and `ps`, `rm -f`, `stop`, `kill` by id.
+#       Not modelled (cannot be): a directory OWNED BY ANOTHER UID in the sandbox; the test creates a read-only directory of the runner's own uid and
+#       asserts the cleanup restores modes (chmod -R u+rwX) before removing. Host `kubectl` is the runner's (ubuntu-*, asserted by the wiring test).
 #   (4) endpoint proof, matching the REAL server (internal/server/server.go): only `/` and cache keys are counted in
-#       fscache_http_requests_total{method,status}; /metrics, /healthz and /statusz are never counted and nothing counts itself; a client_golang
-#       CounterVec has NO sample line until its first counted request (a fresh server's scrape holds no sample: that is zero, not an error).
+#       fscache_http_requests_total{method,status}; /metrics, /healthz and /statusz are never counted and nothing counts itself (requests the front controller rejects before withMetrics are not counted either); a client_golang
+#       CounterVec has NO sample line until its first counted request: a fresh server's scrape holds NO fscache_http_requests_total family at all
+#       (no HELP, no TYPE, no samples); HELP and TYPE without samples is the other valid zero. A scrape that fails or is garbage at EITHER end is blocking.
 #       The driver scrapes GET <endpoint>/metrics (sum of every fscache_http_requests_total sample) immediately before the agent starts and
 #       immediately after it returns; persona_requests = after - before (no correction); a persona that finished with NO findings and
 #       persona_requests <= 0 (counter backwards, or a scrape that cannot be taken or parsed) is blocking: "the endpoint was never exercised".
@@ -77,7 +93,7 @@ none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || ret
 # --- fixtures -------------------------------------------------------------------------------------------------
 repo="$work/repo"; mkdir -p "$repo/docs/quality" "$repo/internal" "$repo/cmd"
 printf '# fscache README\nSee https://docs.example.org/guide/install and [releases](https://github.com/example/cache/releases).\n' >"$repo/README.md"
-echo "install steps"    >"$repo/docs/install.md"
+printf 'install steps\nSee https://docs-only.example.net/guide (a link that occurs ONLY in a docs page, not in the README)\n' >"$repo/docs/install.md"
 echo "gradle steps"     >"$repo/docs/gradle.md"
 echo "INTERNAL TRACE"   >"$repo/docs/quality/traceability.md"
 echo "UNRELEASED NOTES" >"$repo/docs/next-release-notes.md"
@@ -108,7 +124,7 @@ PERSONAS="gradle-platform-engineer maven-jenkins-ci compliance-reviewer readme-e
 
 # The stub agent: one request as JSON on stdin, one JSON answer on stdout. It records everything it was given.
 cat >"$work/stub.py" <<'PY'
-import json, os, sys
+import json, os, shlex, subprocess, sys
 raw = sys.stdin.read()
 req = json.loads(raw)
 case = sys.argv[1]
@@ -133,12 +149,28 @@ for d, ds, fs in os.walk(req["docs_dir"]):
 with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
                          "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links, "modes": modes}) + "\n")
+import time, urllib.request, urllib.error
+LEAK = "ghp_abcdefghij0123456789ABCDEF"      # a credential-looking marker, and the request's own model value: neither may survive in a retained artifact
+if p.get("daemon"):         # a tool container managed by the DAEMON, started through the recording docker; its client is killed at once (a shell timeout, a teardown)
+    av = sys.argv[2:]
+    tools = json.load(open(av[av.index("--tools") + 1]))
+    cl = subprocess.Popen(shlex.split(av[av.index("--docker") + 1]) + ["run", "--rm", "--network", "host"] + (["--label", av[av.index("--label") + 1]] if "--label" in av else []) +
+                          ["-v", req["docs_dir"] + ":/work", "-w", "/work", tools["shell"], "sh", "-c", "DAEMON"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.7)
+    cl.kill()
 if p.get("crash"):
     sys.stderr.write("PARTIAL-TRANSCRIPT for " + req["persona"] + "\n")
+    for ln in p.get("crash_lines", []):
+        sys.stderr.write(ln + "\n")
+    if p.get("leak"):
+        sys.stderr.write("provider error: model=%s key=%s\n" % (req["model"], LEAK))
     sys.exit(7)
 if "raw_out" in p:
     sys.stdout.write(p["raw_out"]); sys.exit(0)
-import time, urllib.request, urllib.error
+if p.get("restore"):        # the endpoint's /metrics answered garbage at this persona's BEFORE-scrape; it is fine again from here on
+    urllib.request.urlopen(req["endpoint"] + "/__mode?m=ok", timeout=5).read()
+if p.get("queue"):          # the next /metrics scrapes answer these modes in order (ok,garbage,...): breaks ONE scrape, e.g. the next persona's BEFORE-scrape
+    urllib.request.urlopen(req["endpoint"] + "/__queue?m=" + p["queue"], timeout=5).read()
 t0 = time.time()
 if p.get("reset"):          # the endpoint's counters go back to zero during this persona's window (a restarted server)
     urllib.request.urlopen(req["endpoint"] + "/__reset", timeout=5).read()
@@ -154,25 +186,32 @@ for i in range(n):
 for path in p.get("uncounted", []):   # health, status and metrics requests: the real server does not count these
     hit(path)
 if p.get("orphan"):         # work the agent started in its OWN session, outliving it: it requests the endpoint after this many seconds
-    import subprocess
     subprocess.Popen([sys.executable, "-c", "import sys,time,urllib.request;time.sleep(float(sys.argv[2]));urllib.request.urlopen(urllib.request.Request(sys.argv[1]+'/orphan-work',headers={'X-Persona':'ORPHAN'}),timeout=5)\n", req["endpoint"], str(p["orphan"])],
                      start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-if p.get("readonly_dir"):   # what a container of another uid leaves behind: a directory the runner cannot empty
+if p.get("readonly_dir"):   # what a container of another uid leaves behind: a directory the runner cannot empty (the real thing, a directory OWNED BY ANOTHER UID, cannot be modelled)
     os.makedirs(os.path.join(req["docs_dir"], "created"), exist_ok=True)
     open(os.path.join(req["docs_dir"], "created", "x"), "w").write("x")
     os.chmod(os.path.join(req["docs_dir"], "created"), 0o555)
 if p.get("sleep"):
     time.sleep(p["sleep"])
+kube_rc = None
+kc = os.path.join(req["docs_dir"], "kubeconfig")
+if os.path.exists(kc):      # the on-call persona USES its cluster at the END of its window: a cluster deleted earlier is a dead cluster for it
+    kube_rc = subprocess.run(["kubectl", "--kubeconfig", kc, "-n", "persona", "get", "pods"], stdin=subprocess.DEVNULL, capture_output=True).returncode
 if p.get("mode_after"):     # the endpoint's /metrics breaks once this persona is done
     urllib.request.urlopen(req["endpoint"] + "/__mode?m=" + p["mode_after"], timeout=5).read()
 with open(os.path.join(case, "timing.log"), "a") as fh:
-    fh.write(json.dumps({"persona": req["persona"], "t0": t0, "t1": time.time(), "requests": n, "uncounted": len(p.get("uncounted", []))}) + "\n")
+    fh.write(json.dumps({"persona": req["persona"], "t0": t0, "t1": time.time(), "requests": n, "uncounted": len(p.get("uncounted", [])), "kube_rc": kube_rc}) + "\n")
 ans = {"findings": p.get("findings", []), "tokens": p.get("tokens", 1000), "transcript": "TRANSCRIPT for " + req["persona"] + "\n"}
+if p.get("leak"):
+    ans["transcript"] += "model=%s key=%s\n" % (req["model"], LEAK)
 if "commands" in p:
     ans["commands"] = p["commands"]
 ans.update(p.get("override", {}))
 for k in p.get("drop", []):
     ans.pop(k, None)
+if p.get("daemon") == "crash":
+    sys.exit(7)
 print(json.dumps(ans))
 PY
 # A recording docker: `run -d ...` prints a container id and logs the whole line; every other call is only logged.
@@ -193,19 +232,46 @@ fi
 # the GitLab runner's metrics listener exists only when THIS docker was asked to start it exactly as the real image needs: published
 # 127.0.0.1:<port>:9252 AND the arguments `run --listen-address=0.0.0.0:9252` after the image (no flag, no listener)
 CASEDIR="$(dirname "$DOCKER_LOG")"
+CONTAINERS="$CASEDIR/../containers"
 if [ "$1" = run ] && [ "$2" = -d ] && [[ "$*" =~ -p\ 127\.0\.0\.1:([0-9]+):9252\  ]] && [[ "$*" == *"gitlab-runner@sha256"* ]] && [ "${*: -2}" = "run --listen-address=0.0.0.0:9252" ]; then
   kill $(cat "$CASEDIR/../runner.pid" 2>/dev/null) 2>/dev/null
   nohup python3 -m http.server "${BASH_REMATCH[1]}" --bind 127.0.0.1 --directory "$CASEDIR" </dev/null >/dev/null 2>&1 &
   echo $! >"$CASEDIR/../runner.pid"
 fi
-if [ "$1" = rm ]; then kill $(cat "$CASEDIR/../runner.pid" 2>/dev/null) 2>/dev/null; rm -f "$CASEDIR/../runner.pid"; fi
+# DAEMON-MANAGED containers: a `run --rm ... --label L ... sh -c 'DAEMON...'` starts work that belongs to the DAEMON, not to the docker client: it keeps
+# requesting the endpoint (X-Persona: CONTAINER) after the client is killed, until `rm -f`, `stop` or `kill` names its id (ps --filter label=L lists it)
+if [ "$1" = ps ]; then
+  lab=""; for t in "$@"; do case "$t" in label=*) lab="${t#label=}";; esac; done
+  for f in "$CONTAINERS"/*; do [ -e "$f" ] || continue; if [ "$(sed -n 1p "$f")" = "$lab" ] && kill -0 "$(sed -n 2p "$f")" 2>/dev/null; then basename "$f"; fi; done
+  exit 0
+fi
+if [ "$1" = rm ] || [ "$1" = stop ] || [ "$1" = kill ]; then
+  for t in "$@"; do if [ -n "$t" ] && [ -e "${CONTAINERS:?}/${t:?}" ]; then kill -9 "$(sed -n 2p "${CONTAINERS:?}/${t:?}")" 2>/dev/null; rm -f "${CONTAINERS:?}/${t:?}"; fi; done
+fi
+if [ "$1" = rm ]; then kill $(cat "$CASEDIR/../runner.pid" 2>/dev/null) 2>/dev/null; rm -f "${CASEDIR:?}/../runner.pid"; fi
 if [ "$1" = run ] && [ "$2" = --rm ]; then
-  python3 - "$@" <<'PYX'
-import subprocess, sys
-a = sys.argv[1:]
+  python3 - "$CONTAINERS" "$@" <<'PYX'
+import json, os, subprocess, sys, time
+reg, a = sys.argv[1], sys.argv[2:]
 host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
-p = subprocess.run(["sh", "-c", a[a.index("-c") + 1]], cwd=host, capture_output=True, text=True, timeout=60)
-sys.stdout.write(p.stdout + p.stderr); sys.exit(p.returncode)
+img = next((i for i, x in enumerate(a) if "@sha256:" in x), None)
+rest = a[img + 1:] if img is not None else []
+repo = a[img] if img is not None else ""
+if rest[:2] == ["sh", "-c"] and len(rest) == 3:
+    if "/cosign@" in repo or "/kubectl@" in repo:       # distroless images have no shell
+        sys.stderr.write('docker: Error response from daemon: exec: "sh": executable file not found in $PATH\n'); sys.exit(127)
+    if "DAEMON" in rest[2]:
+        os.makedirs(reg, exist_ok=True)
+        lab = a[a.index("--label") + 1] if "--label" in a else ""
+        cid = "daemon-%d" % int(time.time() * 1000)
+        child = subprocess.Popen([sys.executable, "-c", "import time,urllib.request\nwhile True:\n    try: urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:18080/container-work', headers={'X-Persona': 'CONTAINER'}), timeout=2).read()\n    except Exception: pass\n    time.sleep(0.25)\n"],
+                                 start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open(os.path.join(reg, cid), "w").write(lab + "\n" + str(child.pid) + "\n")
+        time.sleep(60)          # the docker client stays attached until it is killed
+        sys.exit(0)
+    p = subprocess.run(["sh", "-c", rest[2]], cwd=host, capture_output=True, text=True, timeout=60)
+    sys.stdout.write(p.stdout + p.stderr); sys.exit(p.returncode)
+sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); sys.exit(0)
 PYX
   exit $?
 fi
@@ -235,6 +301,8 @@ if kc and a[:2] == ["create", "cluster"]:
     row["existed_mode"] = oct(os.stat(kc).st_mode & 0o7777) if os.path.exists(kc) else None
     row["dir_mode"] = oct(os.stat(os.path.dirname(os.path.abspath(kc))).st_mode & 0o7777)
 open(D + "/host.log", "a").write(json.dumps(row) + "\n")
+if cfg.get("kind_hang") and a[:2] == ["create", "cluster"]:
+    time.sleep(20)
 if cfg.get("kind_fail"):
     sys.stderr.write("kind: simulated failure\n"); sys.exit(1)
 port, pn = int(cfg["kind_port"]), cfg.get("procnet")
@@ -245,61 +313,121 @@ if a[:2] == ["create", "cluster"]:
         fh.write("apiVersion: v1\nkind: Config\nclusters:\n- name: kind-%s\n  cluster:\n    server: https://127.0.0.1:%d\n    certificate-authority-data: CA-DATA-MARKER-PUBLIC\n"
                  "users:\n- name: kind-%s\n  user:\n    client-certificate-data: ADMIN-CERT-MARKER-1\n    client-key-data: ADMIN-KEY-MARKER-1\n"
                  "contexts:\n- name: kind-%s\n  context:\n    cluster: kind-%s\n    user: kind-%s\ncurrent-context: kind-%s\n" % (name, port, name, name, name, name, name))
+    open(D + "/alive", "w").write("1")        # the cluster exists until `kind delete cluster`: the fake kubectl answers the persona's calls only while it does
     if pn:      # the API server of a real kind cluster LISTENS on the loopback: show it in the kernel table the driver's guard reads
         raw = "%08X" % struct.unpack("<I", socket.inet_aton("127.0.0.1"))[0]
         open(pn + "/tcp", "a").write("   9: %s:%04X 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 9999 1 0\n" % (raw, port))
 elif a[:2] == ["delete", "cluster"] and cfg.get("kind_delete_fail"):
     sys.stderr.write("kind: simulated delete failure\n"); sys.exit(1)
-elif a[:2] == ["delete", "cluster"] and pn:
-    keep = [l for l in open(pn + "/tcp") if not l.rstrip().endswith(" 9999 1 0")]
-    open(pn + "/tcp", "w").writelines(keep)
+elif a[:2] == ["delete", "cluster"]:
+    if os.path.exists(D + "/alive"):
+        os.remove(D + "/alive")
+    if pn:
+        keep = [l for l in open(pn + "/tcp") if not l.rstrip().endswith(" 9999 1 0")]
+        open(pn + "/tcp", "w").writelines(keep)
 sys.exit(0)
 PY
 cat >"$work/kubectl.tmpl" <<'PY'
 #!/usr/bin/env python3
-import json, os, sys, time
+# The fake kubectl accepts ONLY: `apply -f FILE|-`, `create token SA ...`, `get`, `wait`, `version`, `cluster-info`. Any other verb or create
+# subcommand (create clusterrolebinding, create rolebinding, delete, patch, exec, ...) fails the call. It validates what is applied the way the API
+# server would (apiVersion/kind pairs, RoleBinding roleRef and subjects), keeps what was APPLIED apart from other calls, and answers the persona's own
+# (token) credential only while the kind cluster exists.
+import json, os, re, sys, time
 D = "__DIR__"
 cfg = json.load(open(D + "/host.cfg"))
 a = sys.argv[1:]
-kcp = None
-files = []
+kcp, files, verb, skip = None, [], None, False
 for i, t in enumerate(a):
-    if t == "--kubeconfig" and i + 1 < len(a): kcp = a[i + 1]
+    if skip:
+        skip = False; continue
+    if t == "--kubeconfig" and i + 1 < len(a): kcp = a[i + 1]; skip = True
     elif t.startswith("--kubeconfig="): kcp = t.split("=", 1)[1]
-    elif t in ("-f", "--filename") and i + 1 < len(a): files.append(a[i + 1])
+    elif t in ("-f", "--filename") and i + 1 < len(a): files.append(a[i + 1]); skip = True
     elif t.startswith("--filename="): files.append(t.split("=", 1)[1])
-row = {"tool": "kubectl", "t": time.time(), "argv": a, "env": sorted(os.environ), "cwd": os.getcwd(), "kubeconfig": kcp, "manifests": []}
+    elif t in ("-n", "--namespace", "--context", "-o", "--duration", "--for", "--timeout") and i + 1 < len(a): skip = True
+    elif t.startswith("-"): pass
+    elif verb is None: verb = t
+row = {"tool": "kubectl", "t": time.time(), "argv": a, "verb": verb, "env": sorted(os.environ), "cwd": os.getcwd(), "kubeconfig": kcp, "manifests": [], "refused": None}
 row["kc_content"] = open(kcp).read() if kcp and os.path.isfile(kcp) else None
+persona_call = row["kc_content"] is not None and "client-certificate" not in row["kc_content"] and "token" in row["kc_content"]
+row["persona_call"] = persona_call
+def finish(rc, msg=None, refused=None):
+    row["refused"] = refused
+    open(D + "/host.log", "a").write(json.dumps(row) + "\n")
+    if msg:
+        sys.stderr.write(msg + "\n")
+    sys.exit(rc)
+if persona_call:
+    if not os.path.exists(D + "/alive"):
+        finish(1, "The connection to the server was refused - did you specify the right host or port? (the cluster is gone)")
+    print("ok"); finish(0)
+m = cfg.get("kubectl_fail_match")
+if m and m in " ".join(a):
+    finish(1, "kubectl: simulated failure")
+sub = a[a.index("create") + 1:] if "create" in a else []
+allowed = bool((verb == "apply" and files) or (verb == "create" and sub[:1] == ["token"]) or verb in ("get", "wait", "version", "cluster-info"))
+if verb == "get" and files:
+    allowed = False
+if not allowed:
+    finish(1, "kubectl: this fake refuses %r (only apply -f, create token, get, wait, version, cluster-info): an imperative grant such as create clusterrolebinding is never accepted" % " ".join(a[:4]), refused=" ".join(a[:3]))
+if any(t.startswith("--dry-run") for t in a):
+    finish(1, "kubectl: the fake applies nothing under --dry-run")
 for f in files:
     if f == "-":
         row["manifests"].append(sys.stdin.read())
     elif os.path.isfile(f):
         row["manifests"].append(open(f).read())
 GOODAPI = {"Namespace": "v1", "ServiceAccount": "v1", "Role": "rbac.authorization.k8s.io/v1", "RoleBinding": "rbac.authorization.k8s.io/v1"}
-def go_seconds(d):
-    import re
-    if not re.fullmatch(r"(?:[0-9]+(?:s|m|h))+", d):
-        return None
-    return sum(int(n) * {"s": 1, "m": 60, "h": 3600}[u] for n, u in re.findall(r"([0-9]+)(s|m|h)", d))
-open(D + "/host.log", "a").write(json.dumps(row) + "\n")
-m = cfg.get("kubectl_fail_match")
-if m and m in " ".join(a):
-    sys.stderr.write("kubectl: simulated failure\n"); sys.exit(1)
-if any(t.startswith("--dry-run") for t in a):
-    sys.stderr.write("kubectl: the fake applies nothing under --dry-run\n"); sys.exit(1)
+RBAC = "rbac.authorization.k8s.io"
+def invalid(o):
+    if not isinstance(o, dict) or GOODAPI.get(o.get("kind")) != o.get("apiVersion"):
+        return "no matches for kind %r with version %r" % (o.get("kind") if isinstance(o, dict) else o, o.get("apiVersion") if isinstance(o, dict) else None)
+    k = o["kind"]
+    if not (o.get("metadata") or {}).get("name"):
+        return "%s: metadata.name is required" % k
+    if k == "RoleBinding":
+        rr = o.get("roleRef") or {}
+        if rr.get("kind") not in ("Role", "ClusterRole") or not rr.get("name") or rr.get("apiGroup") != RBAC:
+            return "RoleBinding: roleRef needs kind Role|ClusterRole, a name and apiGroup %s" % RBAC
+        subs = o.get("subjects")
+        if not isinstance(subs, list) or not subs:
+            return "RoleBinding: subjects are required"
+        for s in subs:
+            if not isinstance(s, dict) or not s.get("name") or s.get("kind") not in ("ServiceAccount", "User", "Group"):
+                return "RoleBinding: invalid subject %r" % (s,)
+            if s["kind"] == "ServiceAccount" and (s.get("apiGroup") not in (None, "") or not s.get("namespace")):
+                return "RoleBinding: a ServiceAccount subject has an EMPTY apiGroup and a namespace"
+            if s["kind"] != "ServiceAccount" and s.get("apiGroup") != RBAC:
+                return "RoleBinding: a User/Group subject has apiGroup %s" % RBAC
+    if k == "Role":
+        rules = o.get("rules")
+        if not isinstance(rules, list) or not rules:
+            return "Role: rules are required"
+        for r in rules:
+            if not isinstance(r, dict) or not r.get("verbs") or not (r.get("resources") or r.get("nonResourceURLs")) or (r.get("resources") and "apiGroups" not in r):
+                return "Role: a rule needs verbs, resources and apiGroups"
+    return None
 for mm in row["manifests"]:
     try:
-        doc = json.loads(mm)
+        doc = json.loads(mm); docs = doc["items"] if isinstance(doc, dict) and doc.get("kind") == "List" else [doc]
     except ValueError:
-        doc = None
-    docs = (doc["items"] if isinstance(doc, dict) and doc.get("kind") == "List" else [doc]) if doc is not None else []
-    if doc is None:
-        import re
-        docs = [{"kind": k, "apiVersion": v} for k, v in zip(re.findall(r"(?m)^kind:\s*(\S+)", mm), re.findall(r"(?m)^apiVersion:\s*(\S+)", mm))]
+        try:
+            import yaml
+            docs = [d for d in yaml.safe_load_all(mm) if d]
+            docs = [x for d in docs for x in (d["items"] if isinstance(d, dict) and d.get("kind") == "List" else [d])]
+        except Exception:
+            finish(1, "error: the manifest is not valid YAML or JSON")
     for o in docs:
-        if not isinstance(o, dict) or GOODAPI.get(o.get("kind")) != o.get("apiVersion"):
-            sys.stderr.write("kubectl: no matches for kind %r with version %r\n" % (o.get("kind") if isinstance(o, dict) else o, o.get("apiVersion") if isinstance(o, dict) else None)); sys.exit(1)
-if "create" in a and "token" in a:
+        why = invalid(o)
+        if why:
+            row["manifests"] = []
+            finish(1, "kubectl: " + why)
+def go_seconds(d):
+    if not re.fullmatch(r"(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:s|m|h))+", d):
+        return None
+    return sum(float(n) * {"s": 1, "m": 60, "h": 3600}[u] for n, u in re.findall(r"([0-9]+\.?[0-9]*|\.[0-9]+)(s|m|h)", d))
+if verb == "create":
     import base64, hashlib
     dur = None
     for i, t in enumerate(a):
@@ -307,23 +435,28 @@ if "create" in a and "token" in a:
         elif t.startswith("--duration="): dur = t.split("=", 1)[1]
     secs = go_seconds(dur) if dur is not None else 3600
     if not secs:
-        sys.stderr.write("error: invalid duration %r\n" % dur); sys.exit(1)
+        finish(1, "error: invalid duration %r" % dur)
+    if cfg.get("token_lifetime"):
+        secs = int(cfg["token_lifetime"])        # the API server may issue another lifetime than the one asked for
     b = lambda x: base64.urlsafe_b64encode(json.dumps(x).encode()).decode().rstrip("=")
     now = int(time.time())
     sa = a[a.index("token") + 1]
-    tok = b({"alg": "RS256", "kid": "k1"}) + "." + b({"aud": ["https://kubernetes.default.svc"], "exp": now + secs, "iat": now, "sub": "system:serviceaccount:persona:" + sa}) + "." + base64.urlsafe_b64encode(hashlib.sha256(str(now).encode()).digest()).decode().rstrip("=")
+    tok = b({"alg": "RS256", "kid": "k1"}) + "." + b({"aud": ["https://kubernetes.default.svc"], "exp": now + int(secs), "iat": now, "sub": "system:serviceaccount:persona:" + sa}) + "." + base64.urlsafe_b64encode(hashlib.sha256(str(now).encode()).digest()).decode().rstrip("=")
     open(D + "/host.log", "a").write(json.dumps({"tool": "issued", "token": tok, "t": time.time()}) + "\n")
     print(tok)
 else:
     print("ok")
+if verb != "apply":
+    row["manifests"] = []
+finish(0)
 PY
 # mkhost <case dir>: the per-case HOSTBIN (kind, kubectl) and host.cfg from KIND_FAIL, KUBECTL_FAIL_MATCH, KIND_PORT (default 18090), KIND_PROCNET
 mkhost() {
   local d=$1; mkdir -p "$d/hostbin"; : >"$d/host.log"
   sed "s#__DIR__#$d#" "$work/kind.tmpl" >"$d/hostbin/kind"; sed "s#__DIR__#$d#" "$work/kubectl.tmpl" >"$d/hostbin/kubectl"; chmod +x "$d/hostbin/kind" "$d/hostbin/kubectl"
-  python3 - "$d/host.cfg" "${KIND_FAIL:-}" "${KUBECTL_FAIL_MATCH:-}" "${KIND_PORT:-18090}" "${KIND_PROCNET:-}" "${KIND_DELETE_FAIL:-}" <<'PYC'
+  python3 - "$d/host.cfg" "${KIND_FAIL:-}" "${KUBECTL_FAIL_MATCH:-}" "${KIND_PORT:-18090}" "${KIND_PROCNET:-}" "${KIND_DELETE_FAIL:-}" "${KIND_HANG:-}" "${KIND_TOKEN_LIFETIME:-}" <<'PYC'
 import json, sys
-json.dump({"kind_fail": sys.argv[2], "kubectl_fail_match": sys.argv[3], "kind_port": int(sys.argv[4]), "procnet": sys.argv[5], "kind_delete_fail": sys.argv[6]}, open(sys.argv[1], "w"))
+json.dump({"kind_fail": sys.argv[2], "kubectl_fail_match": sys.argv[3], "kind_port": int(sys.argv[4]), "procnet": sys.argv[5], "kind_delete_fail": sys.argv[6], "kind_hang": sys.argv[7], "token_lifetime": sys.argv[8]}, open(sys.argv[1], "w"))
 PYC
 }
 # gh is a python stub that validates ARGV STRUCTURALLY (every token accounted for: a title split into words is refused, as the real gh would),
@@ -400,7 +533,7 @@ import json, os, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 port, root = int(sys.argv[1]), sys.argv[2]
 lock = threading.Lock()
-S = {"c": {}, "mode": "ok", "dir": "", "silent": False, "seen": False}
+S = {"c": {}, "mode": "ok", "dir": "", "silent": False, "seen": False, "queue": [], "unc": 0}
 UNCOUNTED = ("/metrics", "/healthz", "/statusz")
 def total():
     return sum(S["c"].values())
@@ -421,10 +554,12 @@ class H(BaseHTTPRequestHandler):
                 S["dir"] = q.get("dir", [""])[0]; return self.reply(200, "ok")
             if u.path == "/__mode":
                 S["mode"] = q["m"][0]; return self.reply(200, "ok")
+            if u.path == "/__queue":       # the next /metrics scrapes answer these modes, one each, in order; then the base mode again
+                S["queue"] = [m for m in q["m"][0].split(",") if m]; return self.reply(200, "ok")
             if u.path == "/__silent":      # while on, requests without an X-Persona header (the driver's own readiness probe) are not counted: a truly fresh first scrape
                 S["silent"] = q["v"][0] == "1"; S["seen"] = False; return self.reply(200, "ok")
             if u.path == "/__reset":
-                S["c"].clear(); return self.reply(200, "ok")
+                S["c"].clear(); S["unc"] = 0; return self.reply(200, "ok")
             known = u.path in UNCOUNTED or (self.command in ("GET", "HEAD") and os.path.isfile(os.path.join(root, u.path.lstrip("/"))))
             code = "201" if self.command == "PUT" else ("200" if known else "404")
             who = self.headers.get("X-Persona")
@@ -433,20 +568,30 @@ class H(BaseHTTPRequestHandler):
             counted = u.path not in UNCOUNTED and not (S["silent"] and (not who or (who == "NOISE" and not S["seen"])))
             if counted:
                 S["c"][(self.command, code)] = S["c"].get((self.command, code), 0) + 1
+            if u.path in UNCOUNTED:
+                S["unc"] += 1
             if S["dir"]:
                 open(os.path.join(S["dir"], "srv.log"), "a").write(json.dumps({"t": time.time(), "path": u.path, "method": self.command, "counted": counted,
-                                                                               "persona": self.headers.get("X-Persona"), "total": total()}) + "\n")
+                                                                               "persona": who, "total": total()}) + "\n")
             if u.path == "/metrics" and self.command == "GET":
-                if S["mode"] == "garbage":
+                mode = S["queue"].pop(0) if S["queue"] else S["mode"]
+                if mode == "garbage":
                     return self.reply(200, "<html>not prometheus</html>")
-                if S["mode"] == "status500":
+                if mode == "status500":
                     return self.reply(500, "boom")
                 n = total()
-                lines = ["# HELP fscache_http_requests_total Requests served (fscache_http_requests_total 999999 is not a sample).", "# TYPE fscache_http_requests_total counter"]
-                if S["mode"] != "nometric":
+                lines = []
+                fam = "fscache_http_requests_total"
+                if mode == "nofamily":
+                    pass                      # a real fresh server: the whole family (HELP, TYPE and samples) is absent
+                elif mode == "nometric":
+                    lines += ["# HELP %s Requests served (%s 999999 is not a sample)." % (fam, fam), "# TYPE %s counter" % fam]     # HELP and TYPE, no sample
+                elif S["c"]:
+                    lines += ["# HELP %s Requests served (%s 999999 is not a sample)." % (fam, fam), "# TYPE %s counter" % fam]
                     for (m, c), v in sorted(S["c"].items()):
-                        lines.append('fscache_http_requests_total{method="%s",status="%s"} %s' % (m, c, ("%d.0" % v) if (m, c) == ("GET", "200") else v))
-                lines += ["# TYPE fscache_http_requests_total_created gauge", "fscache_http_requests_total_created 1.7e+09",
+                        lines.append('%s{method="%s",status="%s"} %s' % (fam, m, c, ("%d.0" % v) if (m, c) == ("GET", "200") else v))
+                lines += ["# TYPE go_goroutines gauge", "go_goroutines 9",
+                          "# TYPE fscache_http_requests_total_uncounted counter", 'fscache_http_requests_total_uncounted{path="all"} %d' % S["unc"],     # a decoy that moves on uncounted traffic
                           "fscache_http_request_bytes_total %d" % (100 * n), "fscache_http_requests_in_flight 1",
                           'other_http_requests_total{method="GET",status="200"} %d' % (3 * n), ""]
                 return self.reply(200, "\n".join(lines), "text/plain; version=0.0.4")
@@ -519,6 +664,8 @@ run() {
   sed -i.bak "2i\\
 . \"$work/$name/docker.env\"" "$work/$name/docker"; rm -f "$work/$name/docker.bak"
   rc=0
+  local tw=(); [ -n "${RUN_TIMEOUT:-}" ] && tw=(perl -e 'alarm shift; exec @ARGV' "$RUN_TIMEOUT")
+  local t_start=$SECONDS
   env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/$name/gh.log" GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
       GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid \
@@ -526,9 +673,10 @@ run() {
       ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
       GITHUB_SERVER_URL=https://github.com RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid GH_ENTERPRISE_TOKEN=SECRET-GHE \
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X PATH="$work/$name/hostbin:$PATH" "$@" \
-      bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
+      ${tw[@]+"${tw[@]}"} bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --gh "$work/gh" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
         --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${PUBLISH+--publish} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
+  RUNSECS=$((SECONDS - t_start))
   srvctl __case dir ""
 }
 out() { echo "$work/$1/out"; }
@@ -565,6 +713,9 @@ for p, words in need.items():
 for p, text in rows.items():          # every persona is told how to classify what it finds, and what a doc step is
     for w in ("broken behavior", "friction", "as written"):
         assert w in text.lower(), (p, w)
+    # steps that need a tool the environment does not have (gh, docker, jq, kubectl exec) are ENVIRONMENT LIMITS, reported as friction, never 'fails as written'
+    for w in ("environment limit", "gh", "docker", "jq", "kubectl exec", "not as blocking", "friction"):
+        assert w in text.lower(), (p, w, "the persona is not told that missing tools are environment limits")
 PY
 CASE="a clean run records no friction or blocking issue file"
 check test ! -e "$(out clean)/friction-issue.md" -a ! -e "$(out clean)/blocking-issue.md"
@@ -625,12 +776,15 @@ for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator")
 PY
 CASE="the agent is started with --tools <the driver's own tools file> and NOT --shell-image; the driver itself starts no shell image"
 check python3 - "$work/clean/log" "$work/clean/docker.log" "$SHL" "$work/tools.json" <<'PY'
-import json, os, sys
+import json, os, re, sys
 rows = [json.loads(ln) for ln in open(sys.argv[1])]
 assert len(rows) == 5
+assert len({r["argv"][r["argv"].index("--label") + 1] for r in rows}) == 5, "the label is distinct per persona"
 for r in rows:
     a = r["argv"]
     assert "--shell-image" not in a, a
+    lab = a[a.index("--label") + 1]
+    assert re.fullmatch(r"persona-uat=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", lab), ("a fresh uuid label per persona", lab)
     assert os.path.realpath(a[a.index("--tools") + 1]) == os.path.realpath(sys.argv[4]), a
     assert a[a.index("--docker") + 1].endswith("/docker"), a
 assert sys.argv[3] not in open(sys.argv[2]).read(), "the driver itself must not start the shell image: the agent does, per action"
@@ -725,7 +879,10 @@ def issued(d):
 def kind(d):
     return [r for r in rows(d) if r["tool"] == "kind"]
 def kubectl(d):
-    return [r for r in rows(d) if r["tool"] == "kubectl"]
+    """the DRIVER's kubectl calls (admin credential); the persona's own calls with its token are persona_calls"""
+    return [r for r in rows(d) if r["tool"] == "kubectl" and not r.get("persona_call")]
+def persona_calls(d):
+    return [r for r in rows(d) if r["tool"] == "kubectl" and r.get("persona_call")]
 def create(d):
     c = [r for r in kind(d) if r["argv"][:2] == ["create", "cluster"]]
     assert len(c) == 1, ("exactly one kind create cluster", c)
@@ -748,10 +905,10 @@ def persona_row(d, name="on-call-engineer"):
     r = [json.loads(l) for l in open(d + "/log")]
     return [x for x in r if x["persona"] == name]
 def go_duration(s):
-    """a Go-style duration made of whole numbers of s, m and h, strictly positive: seconds, else None"""
-    if not re.fullmatch(r"(?:[0-9]+(?:s|m|h))+", s):
+    """a Go-style duration made of numbers (decimals allowed) of s, m and h, strictly positive: seconds, else None"""
+    if not re.fullmatch(r"(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:s|m|h))+", s):
         return None
-    v = sum(int(n) * {"s": 1, "m": 60, "h": 3600}[u] for n, u in re.findall(r"([0-9]+)(s|m|h)", s))
+    v = sum(float(n) * {"s": 1, "m": 60, "h": 3600}[u] for n, u in re.findall(r"([0-9]+\.?[0-9]*|\.[0-9]+)(s|m|h)", s))
     return v if v > 0 else None
 def duration_ok(s):
     v = go_duration(s)
@@ -784,7 +941,8 @@ KINDMAP = {"Secret": ("", "secrets"), "PersistentVolumeClaim": ("", "persistentv
 DOC_OPTIONAL_KINDS = {"HTTPRoute", "Ingress"}        # the documented EXPOSURE options: not part of the persona's ruling
 DOC_FORBIDDEN_CMDS = {"exec"}                       # documented, and deliberately not granted (no pods/exec): reported, not required
 TASK_NEEDS = {("apps", "deployments", v) for v in ("get", "list", "update", "patch")} | {("apps", "replicasets", v) for v in ("get", "list")} | \
-             {("", "pods", v) for v in ("get", "list")} | {("", "pods/log", "get"), ("", "events", "get"), ("", "events", "list")}     # upgrade, rollback (rollout undo), logs
+             {("", "pods", v) for v in ("get", "list", "watch")} | {("apps", "deployments", "watch"), ("apps", "replicasets", "watch")} | \
+             {("", "pods/log", "get"), ("", "events", "get"), ("", "events", "list")}     # upgrade, rollback (rollout undo, rollout status and wait need watch), logs
 def doc_needs(texts):
     """what the documented kubectl steps need, as (group, resource, verb); raises for a documented step this table does not know"""
     needs = set()
@@ -879,7 +1037,7 @@ check python3 - "$work/clean" "$work" <<'PY'
 import re, sys
 sys.path.insert(0, sys.argv[2]); import kh
 cred = re.compile(r"^(AWS_.*|ACTIONS_.*|GITHUB_.*|GH_.*|ANTHROPIC_.*|.*_TOKEN|.*_KEY|.*_SECRET|SOME_UNKNOWN_SECRET|PERSONA_UAT_.*|REPO_CHECKOUT|RUNNER_.*)$")
-rs = kh.rows(sys.argv[1])
+rs = [r for r in kh.rows(sys.argv[1]) if not r.get("persona_call")]      # the DRIVER's kind and kubectl processes (the persona's own calls run in the agent's environment)
 assert len(rs) >= 3, rs
 for r in rs:
     assert not [k for k in r["env"] if cred.match(k)], (r["tool"], r["env"])
@@ -919,6 +1077,7 @@ bads = {
  "no secrets": mut(lambda r: r[0].update(resources=["pods", "services", "configmaps", "persistentvolumeclaims", "events"])),
  "no pvc": mut(lambda r: r[0].update(resources=["pods", "services", "configmaps", "secrets", "events"])),
  "no logs": mut(lambda r: r.pop(3)),
+ "no watch": mut(lambda r: [x.update(verbs=[v for v in x["verbs"] if v != "watch"]) for x in r[:3]]),
  "exec": mut(lambda r: r.append({"apiGroups": [""], "resources": ["pods/exec"], "verbs": ["create"]})),
  "attach": mut(lambda r: r.append({"apiGroups": [""], "resources": ["pods/attach"], "verbs": ["create"]})),
  "nodes": mut(lambda r: r.append({"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]})),
@@ -972,16 +1131,16 @@ assert rb["roleRef"]["kind"] == "Role" and rb["roleRef"]["name"] == role["metada
 assert rb["roleRef"].get("apiGroup", "rbac.authorization.k8s.io") == "rbac.authorization.k8s.io", rb["roleRef"]
 assert [(s["kind"], s["name"], s.get("namespace")) for s in rb["subjects"]] == [("ServiceAccount", sa["metadata"]["name"], "persona")], rb["subjects"]
 PY
-CASE="duration parser (self-test): 1h, 24h, 3600s, 1h30m and 86400s are accepted; -1h, 1hgarbage, 0, 0s, 30m, 59m59s, 25h, 86401s, 1.5h, h, an empty and a spaced value are rejected"
+CASE="duration parser (self-test): 1h, 24h, 3600s, 1h30m, 86400s and the decimal Go forms 1.5h, 1.h, 90.5m are accepted; -1h, 1hgarbage, 0, 0s, 30m, 59m59s, 25h, 86401s, .5h, 1.5.2h, 24.5h, an empty and a spaced value are rejected"
 check python3 - "$work" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1]); import kh
-for ok in ("1h", "24h", "3600s", "1h30m", "86400s", "23h59m59s", "60m"):
+for ok in ("1h", "24h", "3600s", "1h30m", "86400s", "23h59m59s", "60m", "1.5h", "1.h", "90.5m", "24.0h"):
     assert kh.duration_ok(ok), ok
-for bad in ("-1h", "1hgarbage", "0", "0s", "0h", "30m", "59m59s", "25h", "86401s", "1.5h", "h", "", " 1h", "1h ", "1H", "3600", "+1h"):
+for bad in ("-1h", "1hgarbage", "0", "0s", "0h", "30m", "59m59s", "25h", "86401s", ".5h", "1.5.2h", "1.5", "h", "", " 1h", "1h ", "1H", "3600", "+1h", "24.5h"):
     assert not kh.duration_ok(bad), bad
 PY
-CASE="kind: ONE short-lived token is minted with 'kubectl create token <the ServiceAccount> -n persona --duration D' (a valid Go duration, 1h <= D <= 24h), the issued JWT's own exp-iat is in the same range, and it happens after the namespace and RBAC were applied and before the on-call persona started"
+CASE="kind: ONE short-lived token is minted with 'kubectl create token <the ServiceAccount> -n persona --duration D' (a valid Go duration, 1h <= D <= 24h), the issued JWT's own exp-iat (the API server may issue another lifetime than asked) is in the same range, and it happens after the namespace and RBAC were applied and before the on-call persona started"
 check python3 - "$work/clean" "$work" <<'PY'
 import base64, json, sys
 sys.path.insert(0, sys.argv[2]); import kh
@@ -1000,7 +1159,7 @@ assert len(dur) == 1 and kh.duration_ok(dur[0]), ("not a valid duration of 1h..2
 iss = kh.issued(d)
 assert len(iss) == 1
 pl = json.loads(base64.urlsafe_b64decode(iss[0]["token"].split(".")[1] + "=="))
-assert 3600 <= pl["exp"] - pl["iat"] <= 86400 and pl["exp"] - pl["iat"] == kh.go_duration(dur[0]), pl
+assert 3600 <= pl["exp"] - pl["iat"] <= 86400, ("the ISSUED lifetime (which the API server may set differently from the request) is what must cover the persona window", pl)
 assert not [x for x in a if x.startswith("--dry-run")]
 ns_i = min(i2 for i2, _, o in kh.objects(d) if o["kind"] == "Namespace")
 last_apply = max(i2 for i2, _, _ in kh.objects(d))
@@ -1181,7 +1340,7 @@ check python3 - "$work/clean/docker.log" <<'PY'
 import sys
 for path in sys.argv[1:]:
     for l in open(path):
-        assert l.split()[0] in ("run", "rm", "inspect", "exec"), l
+        assert l.split()[0] in ("run", "rm", "inspect", "exec", "ps", "stop", "kill"), l
 PY
 
 # --- AC1: broken behavior or a failing doc step fails the RC run ------------------------------------------------
@@ -1624,7 +1783,7 @@ CASE="the driver provisions nothing in a cloud (a docker log with only run, rm, 
 check python3 - "$work/friction/docker.log" <<'PY'
 import sys
 for l in open(sys.argv[1]):
-    assert l.split()[0] in ("run", "rm", "inspect", "exec"), l
+    assert l.split()[0] in ("run", "rm", "inspect", "exec", "ps", "stop", "kill"), l
 PY
 
 # --- the integrated path: the REAL driver, the REAL agent and the REAL provider (over a fake SDK), workflow-shaped -----
@@ -1781,7 +1940,7 @@ FAKEHEX=$(printf 'ab12%.0s' $(seq 12))
 i=0
 for leak in "the guide says to ask Anthropic support" "reply from the CLAUDE assistant was empty" "an OpenAI key was needed" "gpt-style answer" "Codex said so" "uses Gemini under the hood" "google ai studio link" "a llama backend" "Mistral tips" \
             "token ghp_abcdefghijklmnopqrstuvwxyz0123456789" "github_pat_11ABCDEFG0abcdefghijkl_xyz" "AKIAABCDEFGHIJKLMNOP is shown" "key sk-abcdefghijklmnopqrstuvwx" "Authorization: Bearer abcdefghijklmnop" \
-            "-----BEGIN PRIVATE KEY-----" "hex $FAKEHEX" "blob QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OTBBQkNERUZHSElKS0xNTk9QUVJT" "uses MODEL-DEFAULT-X for it" "uses MODEL-COMPLIANCE-X for it"; do
+            "-----BEGIN PRIVATE KEY-----" "a pasted token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl" "hex $FAKEHEX" "blob QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OTBBQkNERUZHSElKS0xNTk9QUVJT" "uses MODEL-DEFAULT-X for it" "uses MODEL-COMPLIANCE-X for it"; do
   i=$((i+1)); scanrun "$i" "$leak"
   CASE="fence 2: a finding that carries '$leak' withholds that persona's report (fixed notice, blocking), keeps the other four, and nothing of it reaches any issue body or public file"
   check python3 - "$(out "scan-$i")/maven-jenkins-ci.report.md" "$leak" "$(out "scan-$i")" "$work/scan-$i/gh.log" <<'PY'
@@ -2040,15 +2199,18 @@ print(json.dumps({
  "gradle-platform-engineer": {"commands": ["curl -s https://docs.example.org/guide/install -o /dev/null", "curl http://127.0.0.1:18080/healthz", "curl -s http://localhost:18080/x",
                                            "curl https://github.com/example/cache/releases/download/v1/x", "curl http://127.0.0.1:18081/login",
                                            "curl -o out.txt http://127.0.0.1:18080/a", "wget -O file.zip https://docs.example.org/a", "curl -s -o report.json https://docs.example.org/y",
-                                           "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z"]},
+                                           "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z",
+                                           "curl -s https://docs-only.example.net/guide", "curl -L https://github.com/example/cache/releases/latest"]},
  "maven-jenkins-ci": {"commands": ["curl -s https://repo.maven.apache.org/maven2/x.pom", "curl http://169.254.169.254/latest/meta-data", "curl -u a:b 'https://Evil.Example:8443/p?x=1'",
                                    "curl -s outside.example/path", "wget -q outside2.example:8080/f.tgz", "kubectl --server=k8s3.evil.example:6443 get pods",
-                                   "kubectl --server https://k8s2.evil.example get pods", "curl http://127.0.0.2:8080/x"]},
- "compliance-reviewer": {"commands": ["cosign verify x # https://registry.k8s.io/v2/", "curl https://docker.io/v2/", "curl https://gcr.io/v2/"]},
+                                   "kubectl --server https://k8s2.evil.example get pods", "curl http://127.0.0.2:8080/x", "cosign verify registry.outside.example/ns/img:1"]},
+ "compliance-reviewer": {"commands": ["cosign verify x # https://registry.k8s.io/v2/", "curl https://docker.io/v2/", "curl https://gcr.io/v2/",
+                                      "cosign verify gcr.io/projectsigstore/cosign@sha256:5555555555555555555555555555555555555555555555555555555555555555", "cosign verify docker.io/library/gradle:8"]},
  "readme-evaluator": {"commands": ["curl http://localhost.evil.example/a", "curl http://127.0.0.1.evil.example/b", "curl https://docs.example.org.evil.example/c",
                                    "curl https://evil.example/127.0.0.1", "curl https://example.org/", "curl https://user@evil2.example/x", "curl 'http://evil3.example:80'",
                                    "curl https://sub.docs.example.org/x", "curl https://evildocker.io/v2/", "curl https://notgithub.com/x",
-                                   "curl https://raw.githubusercontent.com/example/cache/main/internal/x.go"]},
+                                   "curl https://raw.githubusercontent.com/example/cache/main/internal/x.go", "curl -L https://github.com/example/cache/archive/refs/heads/main.tar.gz",
+                                   "curl https://github.com/example/cache/raw/main/internal/x.go", "curl https://github.com/example/cache/blob/main/README.md", "curl https://github.com/example/cache/tree/main/internal"]},
  "on-call-engineer": {"commands": ["kubectl get pods --kubeconfig kubeconfig # https://127.0.0.1:18090"]}}))
 PY
 PUBLISH=1 run hosts "$(cat "$work/hostsplan.json")" rc
@@ -2056,13 +2218,13 @@ CASE="hosts: every report carries ONE 'Hosts contacted outside the docs:' line"
 allhosts() { local q; for q in $PERSONAS; do hostsline "$(out hosts)/$q.report.md" >/dev/null || return 1; done; }
 check allhosts
 for p in gradle-platform-engineer compliance-reviewer on-call-engineer; do
-  CASE="hosts ($p): only docs links, loopback (any port), localhost, tool registries (docker.io, gcr.io, registry.k8s.io), output file names after -o/-O and URLs on shell comment lines were named: the line says none"
+  CASE="hosts ($p): only docs links, loopback (any port), localhost, tool registries (docker.io, gcr.io, registry.k8s.io), output file names after -o/-O, a host that occurs only in a docs/*.md page, a github.com RELEASES url, cosign references to a tool registry and URLs on shell comment lines were named: the line says none"
   check test "$(hostsline "$(out hosts)/$p.report.md")" = ""
 done
-CASE="hosts (maven-jenkins-ci): URL hosts, a metadata-service IP, a mixed-case host with port and query, scheme-less curl/wget/kubectl --server hosts and 127.0.0.2 are listed, lower-cased, once each, sorted"
-check test "$(hostsline "$(out hosts)/maven-jenkins-ci.report.md")" = "127.0.0.2,169.254.169.254,evil.example,k8s2.evil.example,k8s3.evil.example,outside.example,outside2.example,repo.maven.apache.org"
-CASE="hosts (readme-evaluator): lookalikes are flagged, never matched by substring or suffix; the repository's RAW SOURCE URL (raw.githubusercontent.com) is flagged: it is not a doc host"
-check test "$(hostsline "$(out hosts)/readme-evaluator.report.md")" = "127.0.0.1.evil.example,docs.example.org.evil.example,evil.example,evil2.example,evil3.example,evildocker.io,example.org,localhost.evil.example,notgithub.com,raw.githubusercontent.com,sub.docs.example.org"
+CASE="hosts (maven-jenkins-ci): URL hosts, a metadata-service IP, a mixed-case host with port and query, scheme-less curl/wget/kubectl --server hosts, a scheme-less cosign registry reference and 127.0.0.2 are listed, lower-cased, once each, sorted"
+check test "$(hostsline "$(out hosts)/maven-jenkins-ci.report.md")" = "127.0.0.2,169.254.169.254,evil.example,k8s2.evil.example,k8s3.evil.example,outside.example,outside2.example,registry.outside.example,repo.maven.apache.org"
+CASE="hosts (readme-evaluator): lookalikes are flagged, never matched by substring or suffix; the repository's source (raw.githubusercontent.com, and github.com archive/raw/blob/tree paths, although github.com IS a docs host) is listed as '<host> (repository source)', once per host"
+check test "$(hostsline "$(out hosts)/readme-evaluator.report.md")" = "127.0.0.1.evil.example,docs.example.org.evil.example,evil.example,evil2.example,evil3.example,evildocker.io,example.org,github.com (repository source),localhost.evil.example,notgithub.com,raw.githubusercontent.com (repository source),sub.docs.example.org"
 CASE="hosts are information only: the run exits 0, every verdict stays pass, and no friction or blocking issue is opened"
 check test "$rc" -eq 0
 check python3 - "$(out hosts)" "$work/hosts/gh.log" <<'PY'
@@ -2192,7 +2354,7 @@ for ma in garbage nometric; do
   CASE="proof: an AFTER-scrape that cannot be parsed or holds no sample while the before-scrape had one ($ma) is no proof: blocking, never a pass"
   check test "$(head -1 "$(out "proofafter-$ma")/on-call-engineer.report.md")" = "VERDICT: blocking" -a "$rc" -ne 0
 done
-for m in garbage status500 nometric; do
+for m in garbage status500 nometric nofamily; do
   srvctl __mode m "$m"
   run "proofmode-$m" '{}' rc
   srvctl __mode m "ok"
@@ -2263,6 +2425,242 @@ srv = [json.loads(l) for l in open(sys.argv[1] + "/srv.log")]
 assert not [e for e in srv if e["persona"] == "ORPHAN"], ("work started by the agent survived its window", [e for e in srv if e["persona"] == "ORPHAN"])
 assert "did not run" in open(sys.argv[2] + "/maven-jenkins-ci.report.md").read().lower()
 PY
+
+
+# --- ROUND 2 (review d6r2) ----------------------------------------------------------------------------------------------------------------------
+# The fake kubectl itself: only the five accepted verbs, schema validation, nothing imperative
+fk="$work/fk"; mkdir -p "$fk"; mkhost "$fk"; printf 'users:\n- user:\n    client-certificate-data: X\n' >"$fk/admin"
+CASE="fake kubectl (self-test): create clusterrolebinding (cluster-admin), create rolebinding, create role, create serviceaccount, delete, patch, exec, run, label, edit, replace, get -f and create namespace are all REFUSED (exit 1, recorded as refused); apply -f -, create token, get, wait, version and cluster-info are accepted"
+check python3 - "$fk" <<'PY'
+import json, subprocess, sys
+d = sys.argv[1]
+k = d + "/hostbin/kubectl"
+def call(args, stdin=None):
+    return subprocess.run([k, "--kubeconfig", d + "/admin"] + args, input=stdin, capture_output=True, text=True).returncode
+refused = ["create clusterrolebinding x --clusterrole=cluster-admin --serviceaccount=persona:p", "create rolebinding x --clusterrole=admin --serviceaccount=persona:p",
+           "create role r --verb=get --resource=pods -n persona", "create serviceaccount sa -n persona", "create namespace persona", "delete pvc x", "patch deploy x -p {}", "exec p -- sh",
+           "run x --image=y", "label ns persona x=y", "edit deploy x", "replace -f x.yaml", "get -f x.yaml", "auth can-i create pods"]
+for a in refused:
+    assert call(a.split()) != 0, ("the fake accepted", a)
+rows = [json.loads(l) for l in open(d + "/host.log") if '"kubectl"' in l]
+assert len([r for r in rows if r["refused"]]) == len(refused), [r["argv"] for r in rows if not r["refused"]]
+ok_ns = json.dumps({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "persona"}})
+assert call(["apply", "-f", "-"], ok_ns) == 0
+for a in (["create", "token", "sa", "-n", "persona", "--duration", "1h"], ["get", "pods"], ["wait", "--for=condition=Ready", "node", "--all"], ["version"], ["cluster-info"]):
+    assert call(a) == 0, a
+PY
+python3 - "$fk" >"$work/fk-neg.json" <<'PY'
+import json, sys
+SA = {"kind": "ServiceAccount", "name": "p", "namespace": "persona"}
+RR = {"kind": "Role", "name": "r", "apiGroup": "rbac.authorization.k8s.io"}
+def rb(**kw):
+    o = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": {"name": "b", "namespace": "persona"}, "roleRef": dict(RR), "subjects": [dict(SA)]}
+    o.update(kw); return o
+role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "r", "namespace": "persona"}, "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get"]}]}
+bad = {
+ "SA subject with apiGroup rbac": rb(subjects=[dict(SA, apiGroup="rbac.authorization.k8s.io")]),
+ "SA subject without namespace": rb(subjects=[{"kind": "ServiceAccount", "name": "p"}]),
+ "no subjects": rb(subjects=[]),
+ "roleRef kind Deployment": rb(roleRef=dict(RR, kind="Deployment")),
+ "roleRef without name": rb(roleRef={"kind": "Role", "apiGroup": "rbac.authorization.k8s.io"}),
+ "roleRef apiGroup empty": rb(roleRef=dict(RR, apiGroup="")),
+ "roleRef apiGroup core": rb(roleRef=dict(RR, apiGroup="v1")),
+ "Role with apiVersion v1": dict(role, apiVersion="v1"),
+ "Namespace with rbac apiVersion": {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Namespace", "metadata": {"name": "persona"}},
+ "ServiceAccount with apps/v1": {"apiVersion": "apps/v1", "kind": "ServiceAccount", "metadata": {"name": "p"}},
+ "Deployment (no match)": {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "d"}},
+ "Role without rules": dict(role, rules=[]),
+ "rule without apiGroups": dict(role, rules=[{"resources": ["pods"], "verbs": ["get"]}]),
+ "rule without verbs": dict(role, rules=[{"apiGroups": [""], "resources": ["pods"]}]),
+ "no metadata.name": {"apiVersion": "v1", "kind": "Namespace", "metadata": {}},
+}
+good = {"Namespace": {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "persona", "labels": {"a": "b"}}}, "ServiceAccount": {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "p", "namespace": "persona"}},
+        "Role": role, "RoleBinding": rb(), "List of all": {"apiVersion": "v1", "kind": "List", "items": [role, rb()]}}
+print(json.dumps({"bad": bad, "good": good}))
+PY
+CASE="fake kubectl schema (self-test): 15 invalid manifests (a ServiceAccount subject with apiGroup rbac.authorization.k8s.io, no subject namespace, no subjects, roleRef kind/name/apiGroup wrong, wrong apiVersion/kind pairs, empty rules, no name, unknown kind) are all rejected and apply nothing; 5 valid ones (including a List) are applied"
+check python3 - "$fk" "$work/fk-neg.json" <<'PY'
+import json, subprocess, sys
+d = sys.argv[1]
+k = d + "/hostbin/kubectl"
+t = json.load(open(sys.argv[2]))
+def ap(doc, raw=False):
+    return subprocess.run([k, "--kubeconfig", d + "/admin", "apply", "-f", "-"], input=doc if raw else json.dumps(doc), capture_output=True, text=True).returncode
+for n, doc in t["bad"].items():
+    assert ap(doc) != 0, ("accepted an invalid manifest", n)
+assert ap("{not json", True) != 0
+for n, doc in t["good"].items():
+    assert ap(doc) == 0, ("rejected a valid manifest", n)
+rows = [json.loads(l) for l in open(d + "/host.log") if '"kubectl"' in l and '"apply"' in l]
+applied = [r for r in rows if r["manifests"]]
+assert len(applied) >= len(t["good"]) and all(r["verb"] == "apply" for r in applied)
+PY
+CASE="what was APPLIED is tracked apart from other calls: only 'apply' rows carry manifests (a 'get' row never does), and the driver's clean run has no refused kubectl call and uses only apply, create token, get, wait, version, cluster-info"
+check python3 - "$work/clean" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+rs = kh.kubectl(d)
+assert rs and not [r for r in kh.rows(d) if r.get("refused")], [r["argv"] for r in kh.rows(d) if r.get("refused")]
+for r in rs:
+    assert r["verb"] in ("apply", "create", "get", "wait", "version", "cluster-info"), r["argv"]
+    assert r["manifests"] == [] or r["verb"] == "apply", r["argv"]
+assert [r for r in rs if r["verb"] == "apply"], "nothing was applied"
+PY
+CASE="kubectl (imperative grant): every object the persona's authority comes from is a MANIFEST the driver applied: no create role/rolebinding/clusterrolebinding/serviceaccount call exists, so the Role evaluator saw everything (the fake refuses them; a driver that tried would make on-call did-not-run)"
+check python3 - "$work/clean" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+for r in kh.rows(d):
+    if r["tool"] == "kubectl":
+        a = r["argv"]
+        assert not ("create" in a and any(x in a for x in ("clusterrolebinding", "rolebinding", "role", "clusterrole", "serviceaccount", "namespace", "secret"))), a
+PY
+# cluster lifecycle (C-B2): usable for the whole persona window, deleted AFTER its recorded end
+CASE="kind lifecycle: the on-call persona used its kubeconfig at the END of its window (a call the fake kubectl recorded, answered because the cluster still existed, inside the persona's own start/end) and 'kind delete cluster' came AFTER the persona's recorded end (clean and blocking runs); an early deletion fails the persona's call"
+check python3 - "$work/clean" "$work/kindblock" "$work" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[3]); import kh
+for d in sys.argv[1:3]:
+    t = [json.loads(l) for l in open(d + "/timing.log") if '"on-call-engineer"' in l][0]
+    assert t["kube_rc"] == 0, ("the persona's call at the end of its window failed: the cluster was gone", d, t)
+    pc = kh.persona_calls(d)
+    assert len(pc) == 1 and t["t0"] < pc[0]["t"] < t["t1"], (pc, t)
+    dels = [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]]
+    assert len(dels) == 1 and dels[0]["t"] > t["t1"], ("the cluster was deleted before the persona's recorded end", dels[0]["t"], t["t1"])
+PY
+KIND_TOKEN_LIFETIME=1800 run kindshort '{}' rc
+CASE="token lifetime: the API server issued a 30-minute token although 1h+ was asked: shorter than a persona window, so the on-call persona did not run (blocking), cluster deleted, others unaffected"
+check python3 - "$work/kindshort" "$work" "$(out kindshort)" "$rc" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/log")]
+assert [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]]
+assert "did not run" in open(sys.argv[3] + "/on-call-engineer.report.md").read().lower() and int(sys.argv[4]) != 0
+PY
+KIND_TOKEN_LIFETIME=7200 run kindlong '{}' rc
+CASE="token lifetime: the API server issued 2h although 1h was asked: fine (the issued lifetime covers the window): the persona runs, its kubeconfig holds exactly that token"
+check test "$rc" -eq 0
+check python3 - "$work/kindlong" "$work" <<'PY'
+import base64, json, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+import yaml
+kc = yaml.safe_load(kh.persona_row(d)[0]["content"]["kubeconfig"])
+tok = kh.issued(d)[0]["token"]
+assert kc["users"][0]["user"] == {"token": tok}
+pl = json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "=="))
+assert pl["exp"] - pl["iat"] == 7200
+PY
+KIND_HANG=1 READY_TIMEOUT=2 RUN_TIMEOUT=60 run kindhang '{}' rc
+CASE="kind hang: a 'kind create cluster' that does not return is bounded (the run finishes in well under the 20s the fake hangs): the on-call persona did not run, the other four ran, the run fails, no traceback"
+check python3 - "$work/kindhang" "$(out kindhang)" "$rc" "$RUNSECS" <<'PY'
+import json, sys
+d = sys.argv[1]
+assert int(sys.argv[3]) != 0 and int(sys.argv[4]) < 16, ("the driver waited for a hung kind", sys.argv[4])
+assert "Traceback" not in open(d + "/stderr").read()
+assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/log")] and len(open(d + "/log").read().splitlines()) == 4
+assert "did not run" in open(sys.argv[2] + "/on-call-engineer.report.md").read().lower()
+PY
+# before-scrape failures ALONE (S-B3): the persona after a queued break reads a broken BEFORE-scrape and a good after-scrape
+for ba in garbage status500 nometric nofamily; do
+  run "proofbefore-$ba" "{\"gradle-platform-engineer\":{\"requests\":2},\"maven-jenkins-ci\":{\"requests\":2},\"compliance-reviewer\":{\"requests\":2,\"queue\":\"ok,$ba\"},\"readme-evaluator\":{\"requests\":3}}" rc
+  CASE="before-scrape failure alone ($ba): the readme persona's BEFORE-scrape is $ba (after a prior persona's samples) and its after-scrape is fine: that persona is BLOCKING (a failed or sample-less before-scrape is never read as 0 against the earlier personas' totals); the others pass"
+  check python3 - "$(out "proofbefore-$ba")" "$rc" <<'PY'
+import sys
+d = sys.argv[1]
+want = {"gradle-platform-engineer": "pass", "maven-jenkins-ci": "pass", "compliance-reviewer": "pass", "readme-evaluator": "blocking", "on-call-engineer": "pass"}
+for p, v in want.items():
+    r = open(d + "/" + p + ".report.md").read()
+    assert r.splitlines()[0] == "VERDICT: " + v, (p, r)
+assert "never exercised" in open(d + "/readme-evaluator.report.md").read().lower() or "scrape" in open(d + "/readme-evaluator.report.md").read().lower()
+assert int(sys.argv[2]) != 0
+PY
+done
+srvctl __mode m garbage
+run proofbefore1 '{"gradle-platform-engineer":{"restore":true,"requests":2}}' rc
+srvctl __mode m ok
+CASE="before-scrape failure alone, FIRST persona (nothing earlier to compare with): its before-scrape is garbage, its after-scrape fine: BLOCKING (a failed scrape is never read as zero), the other four pass"
+check python3 - "$(out proofbefore1)" <<'PY'
+import sys
+d = sys.argv[1]
+want = {"gradle-platform-engineer": "blocking", "maven-jenkins-ci": "pass", "compliance-reviewer": "pass", "readme-evaluator": "pass", "on-call-engineer": "pass"}
+for p, v in want.items():
+    assert open(d + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
+PY
+# daemon-managed containers (C-B5): swept by label after every agent outcome; nothing from a previous persona's container reaches a later window
+reapd() { python3 - "$work/containers" <<'PY'
+import os, signal, sys
+d = sys.argv[1]
+live = 0
+if os.path.isdir(d):
+    for f in os.listdir(d):
+        pid = int(open(os.path.join(d, f)).read().split()[1])
+        try:
+            os.kill(pid, 0); live += 1; os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.remove(os.path.join(d, f))
+print(live)
+PY
+}
+reapd >/dev/null
+for scn in return crash timeout; do
+  case $scn in
+    return) plan='{"maven-jenkins-ci":{"daemon":true,"requests":1,"sleep":0.3},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at="";;
+    crash) plan='{"maven-jenkins-ci":{"daemon":"crash","requests":1},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at="";;
+    timeout) plan='{"maven-jenkins-ci":{"daemon":true,"sleep":30},"compliance-reviewer":{"sleep":0.8},"readme-evaluator":{"sleep":0.8}}'; at=1;;
+  esac
+  AGENT_TIMEOUT=$at run "daemon-$scn" "$plan" rc
+  live=$(reapd)
+  CASE="daemon container ($scn): a tool container the agent started (its docker client was killed, the daemon keeps it running) is removed by the DRIVER by label before the next persona: a docker ps filtered by that persona's label and an rm -f of the container id exist, none was left alive, and none of its requests reached a later persona's window"
+  check python3 - "$work/daemon-$scn" "$live" <<'PY'
+import json, re, sys
+d, live = sys.argv[1], int(sys.argv[2])
+assert live == 0, ("a container survived the run", live)
+rows = [json.loads(l) for l in open(d + "/log")]
+maven = [r for r in rows if r["persona"] == "maven-jenkins-ci"][0]
+a = maven["argv"]
+label = a[a.index("--label") + 1]
+assert re.fullmatch(r"persona-uat=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", label), label
+labels = {r["persona"]: r["argv"][r["argv"].index("--label") + 1] for r in rows}
+assert len(set(labels.values())) == len(labels), ("one label per persona, never shared", labels)
+dl = open(d + "/docker.log").read().splitlines()
+ps = [l for l in dl if l.startswith("ps ") and "label=" + label in l]
+assert ps, ("the driver never listed the persona's containers by label", dl)
+rm = [l for l in dl if l.startswith(("rm -f", "stop", "kill")) and "daemon-" in l]
+assert rm, ("the daemon container was never removed by id", dl)
+srv = [json.loads(l) for l in open(d + "/srv.log")]
+t0s = {json.loads(l)["persona"]: json.loads(l)["t0"] for l in open(d + "/timing.log")}
+late = [e for e in srv if e["persona"] == "CONTAINER" and e["t"] > t0s["compliance-reviewer"]]
+assert not late, ("a previous persona's container kept requesting the endpoint into the next window", len(late))
+PY
+done
+# secrets in retained artifacts (C-B8): the request's model value and a credential marker injected into transcripts and failure output
+python3 - >"$work/leakplan.json" <<'PY'
+import json
+print(json.dumps({"gradle-platform-engineer": {"leak": True}, "compliance-reviewer": {"leak": True, "findings": [{"kind": "friction", "text": "slow start"}]},
+                  "maven-jenkins-ci": {"crash": True, "leak": True, "crash_lines": ["$ curl https://crash-host.example/x", "exit status: 0"]}}))
+PY
+PUBLISH=1 run leak "$(cat "$work/leakplan.json")" rc
+CASE="scrubbing: the request's model value and a credential-looking marker the agent put into its returned transcript, and into the stderr of a CRASHED agent, never reach a retained file: every .transcript.txt, report, issue body and the driver's stdout/stderr is free of both (the transcripts are still there and still say what happened)"
+check python3 - "$(out leak)" "$work/leak" <<'PY'
+import glob, sys
+out, d = sys.argv[1], sys.argv[2]
+files = glob.glob(out + "/*") + [d + "/stdout", d + "/stderr", d + "/gh.log"]
+assert len(glob.glob(out + "/*.transcript.txt")) == 5
+for f in files:
+    c = open(f).read()
+    for bad in ("MODEL-DEFAULT-X", "MODEL-COMPLIANCE-X", "ghp_abcdefghij0123456789ABCDEF"):
+        assert bad not in c, (f, bad)
+assert "TRANSCRIPT for gradle-platform-engineer" in open(out + "/gradle-platform-engineer.transcript.txt").read()
+assert "PARTIAL-TRANSCRIPT for maven-jenkins-ci" in open(out + "/maven-jenkins-ci.transcript.txt").read()
+PY
+CASE="host retention after an agent failure: the crashed persona's report (did not run) still lists the host its '\$ <command>' transcript lines named (crash-host.example), as information"
+check test "$(hostsline "$(out leak)/maven-jenkins-ci.report.md")" = "crash-host.example"
+check grep -qi 'did not run' "$(out leak)/maven-jenkins-ci.report.md"
 
 # --- across every case's docker log (these need all the runs above)
 CASE="no credential value (job secrets, the model identity, the owner's model names) appears in ANY docker call of a run, so none reaches a container's environment"

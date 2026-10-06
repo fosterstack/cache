@@ -9,7 +9,7 @@
 # answers outside the protocol fails the agent (the driver then counts that persona as blocking); the owner's model
 # reaches the provider and no model name is written in the agent or its output.
 # Contracts the tests pin:
-#   persona-uat-agent.py --docker CMD --tools FILE [--provider-cmd CMD] [--shell-timeout S] [--max-steps N]
+#   persona-uat-agent.py --docker CMD --tools FILE --label persona-uat=<uuid> [--provider-cmd CMD] [--shell-timeout S] [--max-steps N]
 #     stdin: the driver's request JSON; stdout: {"findings":[...],"tokens":N,"transcript":str,"commands":[str]}
 #   provider (stdin {"model","system","messages":[{"role","content"}]}) -> stdout {"usage":{"tokens":N},
 #     "action":{"type":"shell","command":str} | {"type":"shell","tool":NAME,"command":str} (tool shell only) |
@@ -37,6 +37,7 @@ CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
 none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -rqE "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
 SHL="docker.io/library/debian@sha256:$(printf '4%.0s' $(seq 64))"
+LABEL="persona-uat=11111111-2222-3333-4444-555555555555"      # one fresh uuid per persona, from the driver: every container the agent starts carries it
 CSG="gcr.io/projectsigstore/cosign@sha256:$(printf '5%.0s' $(seq 64))"
 KCT="registry.k8s.io/kubectl@sha256:$(printf '6%.0s' $(seq 64))"
 GRD="docker.io/library/gradle@sha256:$(printf '7%.0s' $(seq 64))"
@@ -59,6 +60,8 @@ n = sum(1 for _ in open(log)) if os.path.exists(log) else 0
 with open(log, "a") as fh:
     fh.write(json.dumps({"req": req, "key": os.environ.get("ANTHROPIC_API_KEY"), "env": sorted(os.environ)}) + "\n")
 step = plan[min(n, len(plan) - 1)]
+if step.get("stderr"):
+    sys.stderr.write(step["stderr"] + "\n")
 if step.get("exit"):
     sys.exit(step["exit"])
 if "raw" in step:
@@ -71,29 +74,50 @@ cat >"$work/docker.tmpl" <<'PY'
 #!/usr/bin/env python3
 import json, os, subprocess, sys
 a = sys.argv[1:]
-open("__LOG__", "a").write(json.dumps({"argv": a, "env": sorted(os.environ)}) + "\n")
+LOG = "__LOG__"
+open(LOG, "a").write(json.dumps({"argv": a, "env": sorted(os.environ)}) + "\n")
+REG = os.path.join(os.path.dirname(LOG), "containers")     # daemon-managed containers: they outlive a killed docker client until rm -f / stop / kill names them
+if a[0] == "ps":
+    lab = next((x[len("label="):] for x in a if x.startswith("label=")), None)
+    if os.path.isdir(REG):
+        for f in sorted(os.listdir(REG)):
+            if open(os.path.join(REG, f)).read().strip() == lab:
+                print(f)
+    sys.exit(0)
+if a[0] in ("rm", "stop", "kill"):
+    for x in a[1:]:
+        if os.path.exists(os.path.join(REG, x)):
+            os.remove(os.path.join(REG, x))
+    sys.exit(0)
 host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
 img = next((i for i, x in enumerate(a) if "@sha256:" in x), None)
 rest = a[img + 1:] if img is not None else []
+repo = a[img] if img is not None else ""
+os.makedirs(REG, exist_ok=True)
+cid = "c-%d" % os.getpid()
+open(os.path.join(REG, cid), "w").write(a[a.index("--label") + 1] if "--label" in a else "")      # the container exists from here until its client returns normally
+def done():
+    if os.path.exists(os.path.join(REG, cid)):
+        os.remove(os.path.join(REG, cid))
 if not (len(rest) == 3 and rest[:2] == ["sh", "-c"]):
     # the images' real entrypoints: gradle (CMD ["gradle"], no ENTRYPOINT) and maven (ENTRYPOINT mvn-entrypoint.sh which exec's "$@", CMD ["mvn"]) take the
     # PROGRAM as the first argument; cosign (ENTRYPOINT ["/ko-app/cosign"]) and kubectl (ENTRYPOINT ["/bin/kubectl"]) take the SUBCOMMAND (a leading
     # program name is an unknown command). Arguments replace CMD, so a first argument that is not the program cannot run.
-    repo = a[img]
-    prog = {"/gradle@": "gradle", "/maven@": "mvn"}
-    for k, v in prog.items():
+    for k, v in {"/gradle@": "gradle", "/maven@": "mvn"}.items():
         if k in repo and rest and rest[0] != v:
-            sys.stderr.write('docker: Error response from daemon: failed to create task: exec: "%s": executable file not found in $PATH\n' % rest[0]); sys.exit(127)
+            sys.stderr.write('docker: Error response from daemon: failed to create task: exec: "%s": executable file not found in $PATH\n' % rest[0]); done(); sys.exit(127)
     for k, v in {"/cosign@": "cosign", "/kubectl@": "kubectl"}.items():
         if k in repo and rest and rest[0] == v:
-            sys.stderr.write('Error: unknown command "%s" for "%s"\n' % (v, v)); sys.exit(1)
-    sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); sys.exit(0)
+            sys.stderr.write('Error: unknown command "%s" for "%s"\n' % (v, v)); done(); sys.exit(1)
+    sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); done(); sys.exit(0)
+if "/cosign@" in repo or "/kubectl@" in repo:       # distroless images have no shell: a tool run through sh -c fails like the real image
+    sys.stderr.write('docker: Error response from daemon: exec: "sh": executable file not found in $PATH\n'); done(); sys.exit(127)
 cmd = rest[2]
 try:
     p = subprocess.run(["sh", "-c", cmd], cwd=host, capture_output=True, text=True, timeout=60)
-    sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); sys.exit(p.returncode)
+    sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); done(); sys.exit(p.returncode)
 except subprocess.TimeoutExpired:
-    sys.exit(124)
+    done(); sys.exit(124)
 PY
 chmod +x "$work/docker.tmpl"
 
@@ -107,7 +131,7 @@ agent() {
   rc=0
   env ANTHROPIC_API_KEY=SECRET-MODEL-KEY GITHUB_TOKEN=SECRET-GH GITHUB_REPOSITORY=x/y RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid \
     GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 GH_ENTERPRISE_TOKEN=SECRET-GHE \
-    python3 "$agent" --docker "$d/docker" --tools "${TOOLSFILE:-$work/tools.json}" --provider-cmd "python3 $work/fp.py $d" "$@" \
+    python3 "$agent" --docker "$d/docker" --tools "${TOOLSFILE:-$work/tools.json}" --provider-cmd "python3 $work/fp.py $d" ${NOLABEL-"--label"} ${NOLABEL-"${LABELARG-$LABEL}"} "$@" \
     <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 }
 calls() { wc -l <"$work/$1/fp.log" | tr -d ' '; }
@@ -237,7 +261,7 @@ assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"k
 PY
 
 # --- AC5 (and AC4): the shell is a pinned, unprivileged container that can see ONLY the sandbox -------------------
-CASE="every shell action's docker call is EXACTLY: run --rm --network host -v <sandbox>:/work -w /work <pinned shell image> sh -c <command>"
+CASE="every shell action's docker call is EXACTLY: run --rm --network host --label persona-uat=<uuid> -v <sandbox>:/work -w /work <pinned shell image> sh -c <command>"
 check python3 - "$work/finish/fd.log" "$work/finish/sandbox" "$SHL" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
@@ -245,8 +269,8 @@ assert rows, "no shell action went through docker"
 for r in rows:
     a = r["argv"]
     # a full-argv ALLOWLIST: nothing can be added (no --privileged, --mount, --volume, --env=, -eX=Y, --user, --device ...)
-    assert a[:10] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh"], a
-    assert a[10] == "-c" and len(a) == 12, a
+    assert a[:12] == ["run", "--rm", "--network", "host", "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh"], a
+    assert a[12] == "-c" and len(a) == 14, a
 PY
 CASE="the endpoint is reachable from the shell: --network host puts the container on the runner's loopback where the image and tools listen"
 check python3 - "$work/finish/fd.log" <<'PY'
@@ -275,8 +299,8 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert len(rows) == 1
 a = rows[0]["argv"]
-assert a[:10] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh"] and a[10] == "-c" and len(a) == 12, a
-assert a.count("-v") == 1 and "--privileged" not in a[:10] and "--pid=host" not in a[:10]
+assert a[:12] == ["run", "--rm", "--network", "host", "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh"] and a[12] == "-c" and len(a) == 14, a
+assert a.count("-v") == 1 and "--privileged" not in a[:12] and "--pid=host" not in a[:12]
 PY
 CASE="fence 1: the provider's environment holds the model identity and no job credential (no GitHub, AWS, ACTIONS_* or unknown variable)"
 check python3 - "$work/finish/fp.log" <<'PY'
@@ -312,7 +336,7 @@ chmod +x "$work/docker-dead"
 d="$work/dockerdead"; mkdir -p "$d/sandbox"; echo README >"$d/sandbox/README.md"; : >"$d/fp.log"
 echo '[{"usage":{"tokens":10},"action":{"type":"shell","command":"ls"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' >"$d/plan.json"
 printf '{"persona":"readme-evaluator","instructions":"You are an evaluator.","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"M","token_budget":400000,"tools":{}}' "$d/sandbox" "$(printf 'a%.0s' $(seq 64))" >"$d/req.json"
-rc=0; python3 "$agent" --docker "$work/docker-dead" --tools "$work/tools.json" --provider-cmd "python3 $work/fp.py $d" <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
+rc=0; python3 "$agent" --docker "$work/docker-dead" --tools "$work/tools.json" --label "$LABEL" --provider-cmd "python3 $work/fp.py $d" <"$d/req.json" >"$d/out.json" 2>"$d/err.txt" || rc=$?
 CASE="docker's own failure on a shell action (exit 125) fails the agent (the persona did not run); it is never returned to the model as a command error that lets the persona finish with nothing"
 check test "$rc" -ne 0 -a ! -s "$d/out.json"
 # the default step limit is generous: 150 shell actions then a finish, with the default --max-steps and a large budget, still finishes
@@ -331,12 +355,12 @@ PY
 
 # --- DELTA 2: per-action tool images, fixed options only --------------------------------------------------------------------------
 agent explicitshell '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"shell","command":"echo viash > viash.txt; cat viash.txt"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="tool shell, named explicitly: the same fixed argv as the unnamed shell (run --rm --network host -v SANDBOX:/work -w /work <shell digest> sh -c <command>), and the command ran under sh"
+CASE="tool shell, named explicitly: the same fixed argv as the unnamed shell (run --rm --network host --label persona-uat=<uuid> -v SANDBOX:/work -w /work <shell digest> sh -c <command>), and the command ran under sh"
 check python3 - "$work/explicitshell/fd.log" "$work/explicitshell/sandbox" "$SHL" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert len(rows) == 1, rows
-assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh", "-c", "echo viash > viash.txt; cat viash.txt"], rows[0]["argv"]
+assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh", "-c", "echo viash > viash.txt; cat viash.txt"], rows[0]["argv"]
 assert open(sys.argv[2] + "/viash.txt").read().strip() == "viash"
 PY
 for t in cosign kubectl gradle maven; do
@@ -349,7 +373,7 @@ import json, sys
 SANDBOX = sys.argv[2]
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert len(rows) == 1, rows
-assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "-v", SANDBOX + ":/work", "-w", "/work", sys.argv[3]] + json.loads(sys.argv[5]), rows[0]["argv"]
+assert rows[0]["argv"] == ["run", "--rm", "--network", "host", "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "-v", SANDBOX + ":/work", "-w", "/work", sys.argv[3]] + json.loads(sys.argv[5]), rows[0]["argv"]
 calls = [json.loads(l) for l in open(sys.argv[4])]
 m = json.dumps(calls[1]["req"]["messages"])
 assert "TOOLARGS" in m and "exit status: 0" in m, m
@@ -365,7 +389,7 @@ for pair in 'gradle|["--version"]|127|executable file not found' 'maven|["-v"]|1
   check python3 - "$work/progneg-$t/fd.log" "$work/progneg-$t/sandbox" "$img" "$work/progneg-$t/fp.log" "$targs" "$wantrc" "$wanttxt" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
-assert len(rows) == 1 and rows[0]["argv"][9:] == json.loads(sys.argv[5]) and rows[0]["argv"][8] == sys.argv[3], rows
+assert len(rows) == 1 and rows[0]["argv"][11:] == json.loads(sys.argv[5]) and rows[0]["argv"][10] == sys.argv[3], rows
 m = json.dumps(json.loads(open(sys.argv[4]).readlines()[1])["req"]["messages"])
 assert "exit status: " + sys.argv[6] in m and sys.argv[7] in m, m
 PY
@@ -378,22 +402,22 @@ s = (r["system"] + json.dumps(r["messages"])).lower()
 assert "program" in s and "mvn" in s and "gradle" in s and "subcommand" in s, s
 PY
 agent toolflags '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"cosign","args":["--privileged","-v","/:/host","--network","none","--pid=host","-e","AWS_SECRET_ACCESS_KEY=x","/var/run/docker.sock"]}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="fence 1 (args): docker flags typed by the model in args stay ARGUMENTS INSIDE the container: the options before the image are the fixed eight tokens (one -v), the image is the cosign digest, the typed words come after it verbatim"
+CASE="fence 1 (args): docker flags typed by the model in args stay ARGUMENTS INSIDE the container: the options before the image are the fixed ten tokens (one -v, one --label), the image is the cosign digest, the typed words come after it verbatim"
 check python3 - "$work/toolflags/fd.log" "$work/toolflags/sandbox" "$CSG" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert len(rows) == 1
 a = rows[0]["argv"]
-assert a[:9] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3]], a
-assert a[9:] == ["--privileged", "-v", "/:/host", "--network", "none", "--pid=host", "-e", "AWS_SECRET_ACCESS_KEY=x", "/var/run/docker.sock"], a
-assert a[:9].count("-v") == 1 and "--privileged" not in a[:9] and "none" not in a[:9]
+assert a[:11] == ["run", "--rm", "--network", "host", "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3]], a
+assert a[11:] == ["--privileged", "-v", "/:/host", "--network", "none", "--pid=host", "-e", "AWS_SECRET_ACCESS_KEY=x", "/var/run/docker.sock"], a
+assert a[:11].count("-v") == 1 and "--privileged" not in a[:11] and "none" not in a[:11]
 PY
 agent toolflags2 '[{"usage":{"tokens":10},"action":{"type":"shell","tool":"shell","command":"--privileged -v /:/host --network none --pid=host -e AWS_SECRET_ACCESS_KEY=x /var/run/docker.sock"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="fence 1 (command, tool shell named): the same: the typed flags are inside the sh -c argument, the argv stays the fixed twelve tokens"
+CASE="fence 1 (command, tool shell named): the same: the typed flags are inside the sh -c argument, the argv stays the fixed fourteen tokens"
 check python3 - "$work/toolflags2/fd.log" "$work/toolflags2/sandbox" "$SHL" <<'PY'
 import json, sys
 a = [json.loads(l) for l in open(sys.argv[1])][0]["argv"]
-assert a[:11] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh", "-c"] and len(a) == 12, a
+assert a[:13] == ["run", "--rm", "--network", "host", "--label", "persona-uat=11111111-2222-3333-4444-555555555555", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh", "-c"] and len(a) == 14, a
 PY
 CASE="every tool action's docker call runs with the allowlisted environment only (PATH, HOME, docker client settings): no model or job credential, for every tool"
 check python3 - "$work/tool-cosign/fd.log" "$work/tool-kubectl/fd.log" "$work/tool-gradle/fd.log" "$work/tool-maven/fd.log" "$work/toolflags/fd.log" <<'PY'
@@ -428,7 +452,7 @@ check python3 - "$work/unkthenok" "$GRD" <<'PY'
 import json, sys
 d = sys.argv[1]
 rows = [json.loads(l) for l in open(d + "/fd.log")]
-assert len(rows) == 1 and rows[0]["argv"][8] == sys.argv[2] and rows[0]["argv"][9:] == ["gradle", "--version"], rows
+assert len(rows) == 1 and rows[0]["argv"][10] == sys.argv[2] and rows[0]["argv"][11:] == ["gradle", "--version"], rows
 a = json.load(open(d + "/out.json"))
 assert a["findings"] == [], a
 assert len(a["commands"]) == 1 and "gradle" in a["commands"][0] and "--version" in a["commands"][0], a["commands"]
@@ -513,6 +537,58 @@ for w in ("42-marker-one", "48-marker-two", "echo $((6*7))-marker-one", "exit st
     assert w in e, (w, e)
 PY
 check test "$rc" -ne 0
+
+# --- ROUND 2 (review d6r2): container lifecycle and scrubbing -----------------------------------------------------------------------------------
+# every container the agent starts carries --label persona-uat=<uuid> (handed in by the driver, one per persona); an agent without a valid label refuses to run
+n=0
+for lab in "NONE" "persona-uat=" "persona-uat=x" "other=11111111-2222-3333-4444-555555555555" "persona-uat=11111111-2222-3333-4444-55555555555G" "persona-uat=11111111-2222-3333-4444-555555555555 --privileged" "persona-uat=11111111-2222-3333-4444-5555555555555" "PERSONA-UAT=11111111-2222-3333-4444-555555555555"; do
+  n=$((n+1))
+  if [ "$lab" = NONE ]; then NOLABEL= agent "nolabel$n" '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo hi"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+  else LABELARG="$lab" agent "nolabel$n" '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo hi"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'; fi
+  CASE="the agent refuses a missing or malformed --label ('$lab'): non-zero, no answer, nothing started (an unlabelled container could outlive its persona unseen)"
+  check test "$rc" -ne 0 -a ! -s "$work/nolabel$n/out.json" -a ! -s "$work/nolabel$n/fd.log" -a ! -s "$work/nolabel$n/fp.log"
+done
+CASE="a normal run makes only 'run' calls to docker (cleanup by label is for what a TIMEOUT left, never an extra call per action)"
+check python3 - "$work/finish/fd.log" "$work/tool-cosign/fd.log" <<'PY'
+import json, sys
+for p in sys.argv[1:]:
+    assert all(json.loads(l)["argv"][0] == "run" for l in open(p)), p
+PY
+agent shtimeout '[{"usage":{"tokens":1},"action":{"type":"shell","command":"sleep 5"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]' --shell-timeout 1
+CASE="a shell action that timed out leaves a daemon-managed container behind (the docker client was killed, the container runs on): the agent finds it by label (docker ps --filter label=<its label>) and removes it by id (rm -f / stop / kill), in that order, and none is left"
+check python3 - "$work/shtimeout" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+rows = [json.loads(l)["argv"] for l in open(d + "/fd.log")]
+ps = [i for i, a in enumerate(rows) if a[0] == "ps"]
+rm = [i for i, a in enumerate(rows) if a[0] in ("rm", "stop", "kill")]
+assert ps and rm and ps[0] < rm[0], rows
+assert "label=persona-uat=11111111-2222-3333-4444-555555555555" in rows[ps[0]], rows[ps[0]]
+assert [x for x in rows[rm[0]] if x.startswith("c-")], ("the container was not removed BY ID", rows[rm[0]])
+assert not os.listdir(d + "/containers"), os.listdir(d + "/containers")
+PY
+CASE="the timeout is still reported to the model and the persona carries on after the cleanup"
+check test "$rc" -eq 0 -a "$(calls shtimeout)" -eq 2
+check grep -qi 'timed out' "$work/shtimeout/out.json"
+# scrubbing: the request's model value and a credential-looking marker never reach the answer, the transcript or the failure output
+MARK='model=OWNER-MODEL-Q key=ghp_abcdefghij0123456789ABCDEF'
+MODEL=OWNER-MODEL-Q agent scrubok '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo '"$MARK"'; echo $((6*7))-scrubmark"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+CASE="scrubbing (success path): the model value and the credential marker that the persona's command and its output carried are in NEITHER the transcript nor the commands of the answer (the transcript still shows what ran: 42-scrubmark)"
+check python3 - "$work/scrubok/out.json" <<'PY'
+import json, sys
+raw = open(sys.argv[1]).read()
+assert "OWNER-MODEL-Q" not in raw and "ghp_abcdefghij0123456789ABCDEF" not in raw, raw
+a = json.loads(raw)
+assert "42-scrubmark" in a["transcript"] and a["commands"], a
+PY
+MODEL=OWNER-MODEL-Q agent scrubfail '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo '"$MARK"'; echo $((6*7))-scrubmark"}},{"stderr":"provider error: model=OWNER-MODEL-Q key=ghp_abcdefghij0123456789ABCDEF","exit":9}]'
+CASE="scrubbing (failure path): after a provider failure that carries the model value and a credential marker in ITS stderr, the agent's own stderr (the failed persona's retained transcript) keeps the earlier steps (42-scrubmark) and holds neither secret"
+check python3 - "$work/scrubfail" <<'PY'
+d = __import__("sys").argv[1]
+e = open(d + "/err.txt").read()
+assert "42-scrubmark" in e and "OWNER-MODEL-Q" not in e and "ghp_abcdefghij0123456789ABCDEF" not in e, e
+assert open(d + "/out.json").read() == ""
+PY
 
 # --- fail closed: a provider that fails or leaves the protocol fails the AGENT ---------------------------------
 for c in 'crash|[{"exit":9}]' 'not-json|[{"raw":"nope"}]' 'unknown-action|[{"usage":{"tokens":1},"action":{"type":"rm-rf","command":"x"}}]' \
