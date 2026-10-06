@@ -1,0 +1,113 @@
+name: supply-chain
+
+# REQ-SUP-001 (owner ratified Oct 5): the actions supply-chain checks.
+#   pin-age        every pull request: a version the PR moves must be public 7 days by a server-side time (AC2-AC4). It runs the base branch's
+#                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
+#   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
+#   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
+# It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
+
+on:
+  pull_request: {}
+  schedule:
+    - cron: '53 3 * * *'    # off-peak, clear of the auditor, rescan and freshness crons (the 1,000/hour token limit is shared by the repo)
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  pin-age:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      actions: read   # reads the tag observations of our scheduled runs (an action's age); read-only
+      checks: read    # the PR clock reads every check suite of the introducing commit; read-only
+    steps:
+      - name: Trusted checker (the base branch)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: The pull request's tree
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Age of every moved version, and what advisories say about it
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          checker=trusted
+          if [ ! -f trusted/.github/agent/supply-chain/pin-age-check.py ]; then
+            # only until the checker first lands on the base branch: after that the base's copy is always the one that runs
+            checker=pr
+            echo "::notice::the base branch has no checker yet; running the pull request's own copy"
+          fi
+          status=0
+          python3 "$checker/.github/agent/supply-chain/pin-age-check.py" --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1
+          # the advisor's rulings come from the base branch too: a pull request must not bring its own
+          exceptions=trusted/.github/supply-chain-exceptions.json
+          if [ ! -f "$exceptions" ]; then
+            exceptions="$RUNNER_TEMP/no-exceptions.json"
+            echo '{"exceptions": []}' > "$exceptions"
+          fi
+          python3 "$checker/.github/agent/supply-chain/pin-audit.py" --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1
+          exit $status
+
+  daily-audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    concurrency:
+      group: supply-chain-daily   # two runs at once (a manual dispatch and the cron) must not both file an issue
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      actions: read   # reads the previous tag observations to extend them; read-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 .github/agent/supply-chain/pin-audit.py --observations-out "$RUNNER_TEMP/tag-observations/state.json"
+      - name: Keep the tag observations (an action's age is when WE first saw its tag at that commit)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tag-observations
+          path: ${{ runner.temp }}/tag-observations/state.json
+          retention-days: 90
+          if-no-files-found: error
+
+  rerun-held:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      checks: read    # the PR clock of a held PR reads every check suite of its introducing commit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Re-run held pull requests whose versions are old enough
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 .github/agent/supply-chain/pin-audit.py --rerun-held

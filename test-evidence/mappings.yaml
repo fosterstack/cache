@@ -518,3 +518,34 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-SUP-001-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+  - ac: REQ-SUP-001-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+  - ac: REQ-SUP-001-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC6
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+  - ac: REQ-SUP-001-AC7
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC8
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC9
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC10
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }

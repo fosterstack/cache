@@ -296,6 +296,12 @@ jobs:
         run: bash bin/workflow-consolidation-test.sh
       - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
         run: bash bin/panel-wiring-test.sh
+      - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
+        run: bash .github/agent/tests/pin-age-check-test.sh
+      - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
+        run: bash .github/agent/tests/pin-audit-test.sh
+      - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
+        run: bash .github/agent/tests/supply-chain-wiring-test.sh
 
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: bash bin/inspector-gate-test.sh

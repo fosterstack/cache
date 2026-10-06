@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 71 |
-| Acceptance criteria | 157 |
+| Active requirements | 72 |
+| Acceptance criteria | 167 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 141 |
+| ACs with mapped evidence | 151 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 28 |
+| Confidence: implementation-only | 29 |
 
 ## Cache protocol
 
@@ -655,7 +655,7 @@ The repository's workflows shall be consolidated from 32 files to the 23 the own
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 24 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file) | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-008-AC1 | Given the four consolidation pull requests have landed; when the workflow directory is listed; then it holds exactly the 25 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, owner ratified Oct 5, new-file amendment Oct 3) | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC2 | Given a job moved into another workflow file; when it runs; then its check name, top-level placement and triggering events are unchanged, and no required job gains a condition that could skip it on a pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-008-AC3 | Given the mutation job, merged into go-freshness.yml; when the schedules fire or the workflow is dispatched; then the mutation job runs weekly on its own schedule and the freshness check daily on its own, each guarded by the schedule that fired; a dispatch runs both; mutation.yml is gone and the docs link points to go-freshness.yml | ci-workflow |  | approved | 1 item(s) |
 
@@ -870,3 +870,24 @@ The complete server — cache protocol, eviction, size caps, auth, metrics, stat
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-LIC-001-AC1 | Given the repository and a release; when the license and artifact set are examined; then the license is MIT, no capability listed above is gated, and no separate paid artifact channel exists | manual |  | approved | 1 item(s) |
+
+## SUP
+
+### REQ-SUP-001 — Actions supply-chain checks
+
+Our workflows shall take no new version of an action, or of a tool, image or package they download, until it has been public 7 days; shall check every version we use, every day, against the public advisory and malware lists; and shall say publicly only what they know.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/supply-chain.yml; .github/dependabot.yml; .github/supply-chain-exceptions.json*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SUP-001-AC1 | Given Dependabot's configuration; when it is read; then the github-actions and pip entries wait 7 days (a 7-day cooldown), and the gomod and docker entries are unchanged | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC2 | Given a pull request that moves an action pin, or the version of a tool, image or package a workflow downloads (the version inputs of installer actions, install-scanner.sh pins, go install, pip install and release-asset downloads (curl or wget of a GitHub release) in run steps, container images our workflows run, local composite actions under .github/actions, the auditor's hash-pinned Python packages); when the age check runs; then it names every version that moved; the product's base image (build/docker FROM lines), Go modules and the Go toolchain are not covered and are skipped | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC3 | Given a moved version; when its age is measured; then only a server-side time counts: for an action, the first time our own scheduled run on main saw the tag point at the exact commit (the tag in the version comment must resolve to that commit) or the PR clock, whichever is older, and a release date alone never counts; for a downloaded tool, the newest of the release date and its asset's own created and updated times; a package index's newest upload time; the Go module index's timestamp; a registry's own push or creation time for an image; the PR clock is the earliest workflow run on the commit that introduced the version in the pull request; never a commit or tag date and never an image's own created field; a version public less than 7 days, or whose age cannot be proven, fails the check | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC4 | Given any pull request; when the check runs; then it runs on every pull request (no path filter) on pull_request, never pull_request_target, with a read-only token and no secrets, and passes within a minute when no pin moves | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC5 | Given any day; when the daily check runs; then it lists every version the age check covers, plus the actions and images called inside the actions we pin (each pinned action read at its commit; ones on moving tags are reported as information), checks each against the GitHub advisory database and OSV with its malicious-package reports, and checks that each pinned commit is reachable from a branch or tag of the action's own repository, not only a fork | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC6 | Given a pull request held by the age check (for example a Dependabot security update, which skips the cooldown); when the daily check runs; then it re-runs that pull request's age check, so it turns green on day 7 with no human step | ci-workflow |  | approved | 2 item(s) |
+| REQ-SUP-001-AC7 | Given a hit; when the daily check finds it; then it opens one issue, updated on later days and never a new one each day, that names the pinned version, the advisory id and the rollback: the newest clean version that is at least 7 days old, or dropping the action, never a brand-new release | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC8 | Given a hit with no clean version at least 7 days old, or a hit whose bad version we ran in the last 90 days; when the issue is opened; then it is labelled owner-decision (every hit carries supply-chain-hit), and the workflow never produces the runs, their environments or the secret names they could reach: not in the issue, a log or an artifact | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC9 | Given any public report or issue the checks write; when it states the result; then it says at most 'no known-compromised versions as of <date>', never 'no supply chain issues' | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC10 | Given two advisory lists that disagree about whether a version we use is affected (one says affected; the other, for the same incident, says not); when the daily check or the pull request check runs; then it neither reports clean nor rolls back: with no matching exception it reports a disputed hit, as a public-facts-only issue labelled supply-chain-hit, to the advisor; with a matching exception it passes; an exception is a checked-in entry (the advisory ids, the package, the version, evidence links, its date and each advisory's last-modified time) and applies only while both advisories are unchanged since it was written | ci-workflow |  | approved | 1 item(s) |
