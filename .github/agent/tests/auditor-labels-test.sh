@@ -60,9 +60,9 @@ def run(cmd, **kw):
         if "graphql" in cmd:
             return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": "b" * 40, "signature": {"isValid": True, "state": "VALID"}}}}}))
         if any("git/ref/heads" in x for x in cmd) and "--method" not in cmd:
-            return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"object": {"sha": "c" * 40}}))
+            return types.SimpleNamespace(returncode=0, stderr="", stdout=("c" * 40 + "\n") if "--jq" in cmd else json.dumps({"object": {"sha": "c" * 40}}))
     if cmd[:3] == ["gh", "pr", "view"]:
-        return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"headRefOid": "b" * 40, "autoMergeRequest": None}))
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=("b" * 40 + "\n") if "--jq" in cmd else json.dumps({"headRefOid": "b" * 40, "autoMergeRequest": None}))
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
 os.environ["GITHUB_REPOSITORY"] = "o/r"; os.environ["GITHUB_SHA"] = "a" * 40
