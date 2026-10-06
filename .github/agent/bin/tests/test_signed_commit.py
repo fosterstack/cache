@@ -390,5 +390,72 @@ class Reusable(unittest.TestCase):
             self.assertIsNone(S.branch_reusable(run=Gh(), **args), kw)
 
 
+class Prefixes(unittest.TestCase):
+    """commit_via_api(..., prefixes=...): the release workflow's patch-notes/ lane. The default stays auditor/ only; the strict shape guard stays."""
+    PN = "patch-notes/v0.2.9"
+
+    class Rec:
+        """A minimal recording fake: the branch is absent, the mutation answers a signed commit, every ref write succeeds."""
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, cmd, **kw):
+            cmd = list(cmd); self.calls.append(cmd)
+            if cmd[2] == "graphql":
+                return subprocess.CompletedProcess(cmd, 0, mutation(), "")
+            if "/git/ref/heads/" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+    def make(self, branch, **kw):
+        rec = self.Rec()
+        return rec, S.commit_via_api(REPO, branch, BASE, "Release notes", {"docs/x.md": b"x"}, run=rec, **kw)
+
+    def test_a_patch_notes_branch_is_committed_when_that_prefix_is_allowed(self):
+        rec, oid = self.make(self.PN, prefixes=("patch-notes/",))
+        self.assertEqual(oid, OID)
+        posts = [c for c in rec.calls if "ref=refs/heads/%s" % self.PN in c]
+        self.assertEqual(len(posts), 1)                                              # the live branch is created at the signed commit
+        self.assertTrue(any(c[2:4] == ["--method", "POST"] and any(x.startswith("ref=refs/heads/auditor/tmp-") for x in c) for c in rec.calls))   # the temp ref stays in auditor/
+
+    def test_the_default_is_unchanged_auditor_only(self):
+        for branch in (self.PN, "main", "release/x"):
+            rec = self.Rec()
+            with self.assertRaises(S.CommitError, msg=branch):
+                S.commit_via_api(REPO, branch, BASE, "m", {"x": b"1"}, run=rec)
+            self.assertEqual(rec.calls, [], branch)
+        self.assertEqual(self.make("auditor/x")[1], OID)
+
+    def test_a_branch_outside_every_allowed_prefix_is_refused_before_any_call(self):
+        for branch, prefixes in ((self.PN, ("auditor/",)), ("auditor/x", ("patch-notes/",)), ("auditor/x", ("patch-notes/", "auditor/")),
+                                 ("patch-notes/", ("patch-notes/",)), ("patch-notes/../main", ("patch-notes/",)), ("patch-notes/x.lock", ("patch-notes/",)),
+                                 ("refs/heads/patch-notes/x", ("patch-notes/",)), ("patch-notesx/y", ("patch-notes/",)), ("release/x", ("release/",))):
+            rec = self.Rec()
+            if branch == "auditor/x" and "auditor/" in prefixes:
+                self.assertEqual(S.commit_via_api(REPO, branch, BASE, "m", {"x": b"1"}, run=self.Rec(), prefixes=prefixes), OID)
+                continue
+            with self.assertRaises(S.CommitError, msg=(branch, prefixes)):
+                S.commit_via_api(REPO, branch, BASE, "m", {"x": b"1"}, run=rec, prefixes=prefixes)
+            self.assertEqual(rec.calls, [], (branch, prefixes))
+
+    def test_the_prefixes_themselves_are_held_to_the_two_lanes(self):
+        for prefixes in ((), [], None, "auditor/", ("main/",), ("",), ("auditor/", "x/"), ("patch-notes",)):
+            rec = self.Rec()
+            with self.assertRaises(S.CommitError, msg=repr(prefixes)):
+                S.commit_via_api(REPO, self.PN, BASE, "m", {"x": b"1"}, run=rec, prefixes=prefixes)
+            self.assertEqual(rec.calls, [], repr(prefixes))
+
+    def test_every_path_component_of_a_contents_lookup_is_url_encoded(self):
+        evil = "go.mod?ref=main#"
+        gh = Gh(live=H1, lookup=Reusable.lookup(None, files=((evil, "modified"), ("a b/c d.txt", "added"))),
+                 contents={"go.mod%3Fref%3Dmain%23": b"x", "a%20b/c%20d.txt": b"y"})
+        S.branch_reusable(REPO, BRANCH, BASE, {evil: b"x", "a b/c d.txt": b"y"}, run=gh)
+        urls = [c[2] for c in gh.calls if "/contents/" in c[2]]
+        self.assertIn("repos/o/r/contents/go.mod%3Fref%3Dmain%23?ref=" + H1, urls)   # the request cannot be altered by the path
+        self.assertIn("repos/o/r/contents/a%20b/c%20d.txt?ref=" + H1, urls)          # components encoded, the separators kept
+        for u in urls:
+            self.assertEqual(u.count("?"), 1, u); self.assertNotIn("#", u)
+
+
 if __name__ == "__main__":
     unittest.main()

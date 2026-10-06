@@ -26,13 +26,14 @@ compare-and-swap for a forced update). The window is two API calls long; the aud
 `auditor-daily-delivery` (cancel-in-progress: false), so two deliveries never overlap, and only the App writes auditor/* (the
 only-the-app-pushes-auditor-lane guard).
 """
-import base64, hashlib, json, os, re, subprocess, time
+import base64, hashlib, json, os, re, subprocess, time, urllib.parse
 
 MAX_FILE_BYTES = 5 * 1024 * 1024        # createCommitOnBranch is a request body, not a git push: refuse what it cannot take
 BRANCH_PREFIX = "auditor/"              # the reserved lane: the only branches the App writes
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
-_BRANCH = re.compile(r"^auditor/[A-Za-z0-9._/+-]+$")
+ALLOWED_PREFIXES = ("auditor/", "patch-notes/")   # the only lanes the App may write: a caller names which of them it uses
+_BRANCH = re.compile(r"^(?:auditor|patch-notes)/[A-Za-z0-9._/+-]+$")
 
 MUTATION = ("mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) "
             "{ commit { oid signature { isValid state } } } }")
@@ -92,15 +93,19 @@ def planned_commands(repo, branch, base_sha):
             _patch_cmd(repo, branch, "<new signed commit>"), _delete_cmd(repo, tmp)]
 
 
-def _check_branch(branch):
-    if not isinstance(branch, str) or not _BRANCH.match(branch) or ".." in branch or branch.endswith(("/", ".lock")):
-        raise CommitError("signed commit: refusing branch %r: the App writes only %s* branches" % (branch, BRANCH_PREFIX))
+def _check_branch(branch, prefixes=(BRANCH_PREFIX,)):
+    """The branch must have the strict shape AND start with one of `prefixes` (each itself one of ALLOWED_PREFIXES)."""
+    if not isinstance(prefixes, (tuple, list)) or not prefixes or any(p not in ALLOWED_PREFIXES for p in prefixes):
+        raise CommitError("signed commit: refusing prefixes %r: the App writes only %s" % (prefixes, " or ".join(ALLOWED_PREFIXES)))
+    if not isinstance(branch, str) or not _BRANCH.match(branch) or ".." in branch or branch.endswith(("/", ".lock")) \
+            or not branch.startswith(tuple(prefixes)):
+        raise CommitError("signed commit: refusing branch %r: the App writes only %s* branches" % (branch, "* or ".join(prefixes)))
 
 
-def _check(repo, branch, base_sha, message, changes):
+def _check(repo, branch, base_sha, message, changes, prefixes=(BRANCH_PREFIX,)):
     if not isinstance(repo, str) or not _REPO.match(repo):
         raise CommitError("signed commit: the repository %r is not owner/name" % (repo,))
-    _check_branch(branch)
+    _check_branch(branch, prefixes)
     if not isinstance(base_sha, str) or not _SHA.match(base_sha):
         raise CommitError("signed commit: the base %r is not a full commit sha" % (base_sha,))
     if not isinstance(message, str) or not message.strip():
@@ -174,10 +179,11 @@ def _make_commit(run, repo, tmp, base_sha, message, changes):
     return oid
 
 
-def commit_via_api(repo, branch, base_sha, message, changes, run=None, notes=None):
+def commit_via_api(repo, branch, base_sha, message, changes, run=None, notes=None, prefixes=(BRANCH_PREFIX,)):
     """repo: "owner/name". changes: {path: bytes to write, or None to delete}. Returns the new signed commit's oid; the live `branch` then holds it.
-    notes: an optional list that receives non-fatal remarks (a temporary ref that could not be deleted)."""
-    _check(repo, branch, base_sha, message, changes)
+    notes: an optional list that receives non-fatal remarks (a temporary ref that could not be deleted).
+    prefixes: the lanes `branch` may be in (default auditor/ only; the release workflow passes ("patch-notes/",)). The temporary ref is always auditor/tmp-*."""
+    _check(repo, branch, base_sha, message, changes, prefixes)
     tmp = _tmp_branch(base_sha)
     _check_branch(tmp)
     h1 = _head(run, repo, branch)                                            # 1. observe the live branch
@@ -211,7 +217,8 @@ def commit_via_api(repo, branch, base_sha, message, changes, run=None, notes=Non
 
 def _content(run, repo, path, ref):
     """The bytes of `path` at commit `ref`, or None when it is absent there (404). Anything unreadable is an error."""
-    rc, out, err = _api(run, ["gh", "api", "repos/%s/contents/%s?ref=%s" % (repo, path, ref)])
+    quoted = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))     # a path like go.mod?ref=main# must not alter the request
+    rc, out, err = _api(run, ["gh", "api", "repos/%s/contents/%s?ref=%s" % (repo, quoted, urllib.parse.quote(ref, safe=""))])
     if rc != 0:
         if "404" in err + out or "Not Found" in err + out:
             return None
