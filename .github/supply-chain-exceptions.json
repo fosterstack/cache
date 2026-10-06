@@ -1,14 +1,46 @@
 {
-  "_format": "One entry per advisor ruling on a disputed hit (REQ-SUP-001-AC10). ids: every advisory id involved. modified: each id's last-modified time when the ruling was made; the exception lapses the moment either changes. Same format as the ops repo's docs/supply-chain-exceptions.json.",
+  "_format": "One entry per advisor ruling on a disputed hit: ONE advisory incident and ONE package (REQ-SUP-001-AC10; advisor 0179). ids: every advisory id of the dispute, exactly. authoritative: the source the advisor ruled correct for this incident; ranges: that source's affected ranges, verbatim. A version outside the ranges passes; a version inside them is a hit. modified: each id's last-modified time when the ruling was made (GitHub's for a GHSA id, OSV's otherwise); the entry lapses the moment any changes. Same format as the ops repo's docs/supply-chain-exceptions.json.",
   "exceptions": [
     {
-      "ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"],
+      "ids": [
+        "GO-2026-4919",
+        "GHSA-69fq-xp46-6x23"
+      ],
       "package": "trivy",
-      "version": "0.74.0",
-      "ruling": "false positive: OSV GO-2026-4919 has an open-ended range from 0.69.4; the incident's GitHub advisory lists exactly 0.69.4, and 0.74.0 shipped on Aug 14",
-      "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23", "https://osv.dev/vulnerability/GO-2026-4919"],
+      "authoritative": "github",
+      "ranges": [
+        "= 0.69.4"
+      ],
+      "ruling": "false positive for 0.74.0: the Go-database entry GO-2026-4919 is open-ended from 0.69.4; the incident's GitHub advisory (and OSV's own copy of it) lists exactly 0.69.4",
+      "evidence": [
+        "https://github.com/advisories/GHSA-69fq-xp46-6x23",
+        "https://osv.dev/vulnerability/GO-2026-4919"
+      ],
       "date": "2026-10-05",
-      "modified": {"GO-2026-4919": "2026-06-16T13:29:16.436842048Z", "GHSA-69fq-xp46-6x23": "2026-03-30T20:51:04Z"}
+      "modified": {
+        "GO-2026-4919": "2026-06-16T13:29:16.436842048Z",
+        "GHSA-69fq-xp46-6x23": "2026-03-30T20:51:04Z"
+      }
+    },
+    {
+      "ids": [
+        "GHSA-vqf5-2xx6-9wfm"
+      ],
+      "package": "github/codeql-action",
+      "authoritative": "github",
+      "ranges": [
+        ">= 3.26.11, <= 3.28.2",
+        ">= 2.26.11, < 3.0.0"
+      ],
+      "ruling": "OSV's second range lost its upper bound (< 3.0.0); GitHub's ranges are authoritative, so v4 pins pass",
+      "evidence": [
+        "https://github.com/advisories/GHSA-vqf5-2xx6-9wfm",
+        "https://osv.dev/vulnerability/GHSA-vqf5-2xx6-9wfm"
+      ],
+      "date": "2026-10-06",
+      "modified": {
+        "GHSA-vqf5-2xx6-9wfm": "2025-03-31T21:55:43Z"
+      }
     }
   ]
 }

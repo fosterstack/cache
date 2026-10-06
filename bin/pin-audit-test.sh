@@ -194,6 +194,23 @@ CASE="a nested action or image on a MOVING tag is reported as INFORMATION (named
 check test "$rc" -eq 0; check test "$(creates "$work/nested.gh")" -eq 0
 check grep -q 'actions/cache@v3' "$work/nested.out"; check grep -q 'docker://alpine:3' "$work/nested.out"; check bash -c "! grep -q 'actions/upload-artifact@$SHA4' '$work/nested.out' || grep -qi 'information.*upload-artifact\\|pinned' '$work/nested.out'"
 
+# an action INSIDE a pinned action is checked against the advisory lists too (rule 2: actions inside actions), whether it is pinned or on a moving tag
+NEST_HIT="{\"lists\": {\"action:actions/cache@v3\": {\"github\": [{\"id\": \"GHSA-nest-nest-nest\", \"incident\": \"INC-N\", \"affected\": true, \"modified\": \"$(dago 5)\"}], \"osv\": []}}, \"upstream\": {}, \"prs\": [], \"versions\": {},
+ \"nested\": {\"actions/checkout@$SHA1\": [{\"ref\": \"actions/cache@v3\", \"pinned\": false}]}}"
+run nesthit "$NEST_HIT" "$work/r-cur"
+CASE="a nested action with an advisory against it is a HIT: exit 1, an issue naming it and the outer action to replace, labelled owner-decision (we run it today)"
+check test "$rc" -eq 1; check test "$(creates "$work/nesthit.gh")" -eq 1; check grep -q 'GHSA-nest-nest-nest' "$work/nesthit.gh.bodies"; check grep -q 'actions/checkout' "$work/nesthit.gh.bodies"; check grep -q 'owner-decision' "$work/nesthit.gh"
+GH_LIST='[{"number": 40, "title": "supply-chain: actions/checkout@v4.1.0X (GHSA-aaaa-bbbb-cccc)"}, {"number": 41, "title": "supply-chain: actions/checkout@v4.1.00 (GHSA-aaaa-bbbb-cccc)"}]' run boundary "$HIT_GH" "$work/r-cur"
+CASE="issue matching is exact up to the version: an open issue for v4.1.0X or v4.1.00 is never edited for v4.1.0 (a new issue is opened)"
+check test "$(creates "$work/boundary.gh")" -eq 1; check bash -c "! grep -q '\"edit\"' '$work/boundary.gh'"
+printf 'x\n' >/dev/null
+CASE="untrusted text is printed without control characters (a nested ref or PR title cannot inject log commands)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+assert "\n" not in pa.clean("a\n::error::x\x1b[31m") and "\x1b" not in pa.clean("a\x1b[31m")
+PY
+
 # --- AC10: disputed hits and checked-in exceptions ----------------------------------------------------------------------------------------------------
 DISPUTE="{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-69fq-xp46-6x23\", \"incident\": \"INC-T\", \"affected\": false, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-2026-4919\", \"incident\": \"INC-T\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"upstream\": {}, \"nested\": {}, \"versions\": {\"aquasecurity/trivy\": [{\"version\": \"0.69.3\", \"sha\": \"x\", \"published\": \"$(dago 400)\", \"lists\": {}}]}, \"prs\": []}"
 printf '{"exceptions": []}' >"$work/no-exceptions.json"
@@ -204,10 +221,10 @@ CASE="a disputed hit neither reports clean nor rolls back: no 'no known-compromi
 check none_match 'no known-compromised' "$work/dispute.out"; check bash -c "! grep -qiE 'roll ?back to|drop the action' '$work/dispute.gh.bodies'"
 CASE="the dispute's public facts are in the issue: both advisory ids, both verdicts, the version"
 check grep -q 'GHSA-69fq-xp46-6x23' "$work/dispute.gh.bodies"; check grep -q 'GO-2026-4919' "$work/dispute.gh.bodies"; check grep -q '0.74.0' "$work/dispute.gh.bodies"
-EXC='{"exceptions": [{"ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "version": "0.74.0", "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
+EXC='{"exceptions": [{"ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "authoritative": "github", "ranges": ["= 0.69.4"], "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
 echo "$EXC" >"$work/exc.json"
 run excepted "$DISPUTE" "$work/r-cur" --exceptions "$work/exc.json"
-CASE="a MATCHING exception (same advisories, package, version, and both advisories unchanged since it was written): passes, exit 0, no issue, and says an exception applied"
+CASE="a MATCHING exception (exactly the advisories of this dispute, the package, every advisory unchanged since it was written, the version outside the authoritative ranges): passes, exit 0, no issue, and says an exception applied"
 check test "$rc" -eq 0; check test "$(creates "$work/excepted.gh")" -eq 0; check grep -qi 'exception' "$work/excepted.out"
 python3 - "$work/exc.json" "$work/exc-stale.json" <<'PY'
 import json, sys
@@ -216,13 +233,27 @@ PY
 run stale "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-stale.json"
 CASE="an exception goes STALE when an advisory changed after it was written (its recorded modified time differs): the dispute is reported again, exit 1"
 check test "$rc" -eq 1; check grep -qi 'disputed' "$work/stale.gh.bodies"
-python3 - "$work/exc.json" "$work/exc-otherver.json" <<'PY'
+python3 - "$work/exc.json" "$work/exc-inrange.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1])); e["exceptions"][0]["version"] = "0.74.1"; json.dump(e, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[1])); e["exceptions"][0]["ranges"] = [">= 0.70.0, < 0.80.0"]; json.dump(e, open(sys.argv[2], "w"))
 PY
-run otherver "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-otherver.json"
-CASE="an exception for a different version of the same package does not apply"
-check test "$rc" -eq 1
+run inrange "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-inrange.json"
+CASE="a version INSIDE the authoritative source's affected ranges is a real hit, never excused by an exception: exit 1, an issue that is not 'disputed' and may name a rollback"
+check test "$rc" -eq 1; check test "$(creates "$work/inrange.gh")" -eq 1; check bash -c "! grep -qi 'disputed' '$work/inrange.gh.bodies'"
+python3 - "$work/exc.json" "$work/exc-subset.json" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1])); x = e["exceptions"][0]; x["ids"] = ["GO-2026-4919"]; del x["modified"]["GHSA-69fq-xp46-6x23"]; json.dump(e, open(sys.argv[2], "w"))
+PY
+run subset "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-subset.json"
+CASE="an exception naming only SOME of the dispute's advisories does not apply (the ids must be exactly the dispute's)"
+check test "$rc" -eq 1; check grep -qi 'disputed' "$work/subset.gh.bodies"
+python3 - "$DISPUTE" "$work/dispute-three.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); d["lists"]["tool:trivy@0.74.0"]["osv"].append({"id": "GHSA-NEW-EVIL", "incident": "INC-T", "affected": True, "modified": "2026-10-01T00:00:00Z"}); json.dump(d, open(sys.argv[2], "w"))
+PY
+run three "$(cat "$work/dispute-three.json")" "$work/r-cur" --exceptions "$work/exc.json"
+CASE="a third advisory joining the incident after the ruling means the ruling no longer names the dispute: it is reported again, never excused"
+check test "$rc" -eq 1; check grep -q 'GHSA-NEW-EVIL' "$work/three.gh.bodies"
 python3 - "$work/exc.json" "$work/exc-nomod.json" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1])); del e["exceptions"][0]["modified"]["GHSA-69fq-xp46-6x23"]; json.dump(e, open(sys.argv[2], "w"))
@@ -234,16 +265,17 @@ echo '{"not": "a list"}' >"$work/exc-bad.json"
 run badexc "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-bad.json"
 CASE="an unreadable exceptions file fails the run loudly (exit 2), never as 'no exceptions'"
 check test "$rc" -eq 2
-CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the first ruling: OSV GO-2026-4919 against trivy 0.74.0 is a false positive, in the same format as ops (an "exceptions" list of ids, package, version, evidence, date and each advisory's last-modified time)"
+CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the advisor rulings in the shared shape: trivy (GO-2026-4919 and GHSA-69fq-xp46-6x23, GitHub authoritative, range 0.69.4 only) and codeql-action (GHSA-vqf5-2xx6-9wfm, GitHub two ranges), each with evidence, a date and last-modified times"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
 import json, sys
 e = json.load(open(sys.argv[1]))["exceptions"]
-m = [x for x in e if x["package"] == "trivy" and x["version"] == "0.74.0"]
-assert len(m) == 1, e
-x = m[0]
-assert sorted(x["ids"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"], x
-assert x["evidence"] and all(u.startswith("https://") for u in x["evidence"]) and x["date"]
-assert set(x["modified"]) == {"GO-2026-4919", "GHSA-69fq-xp46-6x23"} and all(x["modified"].values()), x
+by = {x["package"]: x for x in e}
+t, c = by["trivy"], by["github/codeql-action"]
+assert sorted(t["ids"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"] and t["authoritative"] == "github" and t["ranges"] == ["= 0.69.4"], t
+assert c["ids"] == ["GHSA-vqf5-2xx6-9wfm"] and c["authoritative"] == "github" and c["ranges"] == [">= 3.26.11, <= 3.28.2", ">= 2.26.11, < 3.0.0"], c
+for x in (t, c):
+    assert x["evidence"] and all(u.startswith("https://") for u in x["evidence"]) and x["date"], x
+    assert set(x["modified"]) == set(x["ids"]) and all(x["modified"].values()), x
 PY
 # a plain hit is NOT a dispute: when both lists agree it is affected, an exception for another advisory changes nothing
 run agree "{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-x\", \"incident\": \"INC-A\", \"affected\": true, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-x\", \"incident\": \"INC-A\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": []}" "$work/r-cur" --exceptions "$work/exc.json"

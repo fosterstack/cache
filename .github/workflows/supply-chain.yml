@@ -50,7 +50,13 @@ jobs:
             echo "::notice::the base branch has no checker yet; running the pull request's own copy"
           fi
           python3 "$checker/bin/pin-age-check.py" --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }}
-          python3 "$checker/bin/pin-audit.py" --root pr --base ${{ github.event.pull_request.base.sha }} --report-only
+          # the advisor's rulings come from the base branch too: a pull request must not bring its own
+          exceptions=trusted/.github/supply-chain-exceptions.json
+          if [ ! -f "$exceptions" ]; then
+            exceptions="$RUNNER_TEMP/no-exceptions.json"
+            echo '{"exceptions": []}' > "$exceptions"
+          fi
+          python3 "$checker/bin/pin-audit.py" --root pr --base ${{ github.event.pull_request.base.sha }} --exceptions "$exceptions" --report-only
 
   daily-audit:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

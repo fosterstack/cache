@@ -190,12 +190,14 @@ def _first_seen(item, root):
     needle = item.version
     if not repo or not needle:
         return None
-    r = subprocess.run(["git", "-C", root, "log", "--all", "--format=%H", f"-S{needle}", "--", ".github", "bin"], capture_output=True, text=True)
+    token = r"(^|[^0-9A-Za-z._+-])" + re.escape(needle) + r"($|[^0-9A-Za-z._+-])"  # the whole version, never a longer string containing it
+    r = subprocess.run(["git", "-C", root, "log", "--all", "--format=%H", "-G", token, "--", ".github", "bin"], capture_output=True, text=True)
     shas = [s for s in r.stdout.split() if s]
     times = []
     for sha in shas[-3:]:
         prs = _gh_api(f"repos/{repo}/commits/{sha}/pulls") or []
-        times += [p["created_at"] for p in prs if p.get("created_at")]
+        # only a pull request from a branch of our own repository: an outsider's fork PR must not be able to start the clock
+        times += [p["created_at"] for p in prs if p.get("created_at") and ((p.get("head") or {}).get("repo") or {}).get("full_name") == repo]
     return min(times) if times else None
 
 

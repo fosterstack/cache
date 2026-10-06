@@ -60,6 +60,8 @@ def judge_wf(d, real=False):
             bad.append(f"pin-age does not run {prog} {flag} (the age check and the audit of what the PR moves)")
     if "checker=trusted" not in runs or "[ ! -f trusted/bin/pin-age-check.py ]" not in runs or runs.count("checker=pr") != 1 or '"$checker/bin/pin-age-check.py"' not in runs or '"$checker/bin/pin-audit.py"' not in runs:
         bad.append("pin-age does not run the BASE branch's checker (trusted/) and fall back to the PR's copy only when the base has none")
+    if "exceptions=trusted/.github/supply-chain-exceptions.json" not in runs or '--exceptions "$exceptions"' not in runs or "pr/.github/supply-chain-exceptions.json" in runs:
+        bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "${{ github.event.pull_request.base.sha }}" not in runs or "${{ github.event.pull_request.head.sha }}" not in runs:
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
@@ -191,6 +193,8 @@ mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and
 mut_wf("the PR's own checker always runs", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace("checker=trusted", "checker=pr")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the fallback is unconditional", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace("[ ! -f trusted/bin/pin-age-check.py ]", "true")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the checker is taken from the PR even when the base has it", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace('"$checker/bin/pin-age-check.py"', "pr/bin/pin-age-check.py")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("exceptions are read from the PR's tree", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace("exceptions=trusted/.github", "exceptions=pr/.github")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("the audit stops passing --exceptions", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace(' --exceptions "$exceptions"', "")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))

@@ -316,7 +316,9 @@ def load_exceptions(path, required):
         ex = d["exceptions"]
         assert isinstance(ex, list)
         for e in ex:
-            assert isinstance(e["ids"], list) and isinstance(e["modified"], dict) and e["package"] and e["version"]
+            assert isinstance(e["ids"], list) and e["ids"] and all(isinstance(i, str) for i in e["ids"])
+            assert isinstance(e["modified"], dict) and e["package"] and e["authoritative"] in ("github", "osv")
+            assert isinstance(e["ranges"], list) and e["ranges"] and all(isinstance(r, str) for r in e["ranges"])
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         raise Fail(f"the exceptions file {path} is unreadable or malformed: {e}")
     return ex
@@ -326,15 +328,24 @@ def package_of(item):
     return item.name.split("/", 1)[1] if item.kind == "package" else item.name
 
 
-def excepted(item, dispute_ids, current, exceptions, net):
-    """A ruling still stands while BOTH advisories are unchanged since it was written (each id's recorded last-modified time still matches)."""
+def version_of(item):
+    """The version to hold against an advisory's ranges: a tag-like label for a commit pin, else the version itself."""
+    return (item.label or None) if inv.SHA40.match(item.version) else item.version
+
+
+def excepted(item, dispute_ids, current, exceptions):
+    """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
+    Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
+    an exception never covers a version the authoritative source lists as affected)."""
+    ver = version_of(item)
     for e in exceptions:
-        if e["package"] != package_of(item) or str(e["version"]).lstrip("v") != item.version.lstrip("v") and e["version"] != item.label:
+        if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        if not set(e["ids"]) & set(dispute_ids):
-            continue
-        if all(e["modified"].get(i) and (current.get(i) or net.modified(i)) == e["modified"][i] for i in e["ids"]):
-            return e
+        if not all(e["modified"].get(i) and current.get(i) == e["modified"][i] for i in e["ids"]):
+            continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
+        if not ver:
+            return None  # no version to compare with the ranges: stays disputed
+        return "hit" if in_range(ver, "|".join(e["ranges"])) else "pass"
     return None
 
 
@@ -342,6 +353,7 @@ def excepted(item, dispute_ids, current, exceptions, net):
 class Finding:
     def __init__(self, item, kind, ids, why, disputed=False):
         self.item, self.kind, self.ids, self.why, self.disputed = item, kind, sorted(set(ids)), why, disputed
+        self.via = None  # the pinned action that calls this one
 
 
 def judge(item, net, exceptions, notes, current=True):
@@ -355,10 +367,16 @@ def judge(item, net, exceptions, notes, current=True):
         no = [a for a in advs if not a.get("affected")]
         ids = [a["id"] for a in advs]
         if yes and no:
-            cur = {a["id"]: a.get("modified") for a in advs}
-            ex = excepted(item, ids, cur, exceptions, net)
-            if ex:
-                notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(ids))}), ruled {ex.get('date', '?')}")
+            cur = {}
+            for x in advs:  # GitHub's time for a GHSA id, OSV's otherwise: the ops file's rule
+                if x["id"] not in cur or (x["id"].startswith("GHSA-") and x in gh_l):
+                    cur[x["id"]] = x.get("modified")
+            ruling = excepted(item, set(ids), cur, exceptions)
+            if ruling == "pass":
+                notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(set(ids)))}) is outside the authoritative source's affected ranges")
+                continue
+            if ruling == "hit":
+                findings.append(Finding(item, "advisory", ids, "the authoritative source for this incident lists this version as affected"))
                 continue
             findings.append(Finding(item, "disputed", ids, "the two advisory lists disagree about this incident: "
                                     + "; ".join(f"{a['id']} says {'affected' if a.get('affected') else 'not affected'}" for a in advs), True))
@@ -394,6 +412,11 @@ def rollback(item, net, now):
     return best[1] if best else None
 
 
+def clean(text):
+    """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
+    return re.sub(r"[\x00-\x1f\x7f]", " ", str(text))[:200]
+
+
 def title_of(f):
     it = f.item
     ver = it.label or it.version[:12]
@@ -408,6 +431,10 @@ def body_of(f, rb, owner, ran, today):
     if f.disputed:
         lines += ["This is a DISPUTED hit, for the advisor to rule on. Nothing was rolled back and nothing was reported clean.",
                   "A ruling goes in `.github/supply-chain-exceptions.json` (advisory ids, package, version, evidence links, date, each advisory's last-modified time); it lapses when either advisory changes."]
+        return "\n".join(lines) + "\n"
+    if f.via:
+        lines.append(f"This action is called inside `{f.via}`: replace or drop the outer action. Nothing here can be pinned by us.")
+        lines.append("There is no rollback of ours to a clean version of a nested action: the owner decides.")
         return "\n".join(lines) + "\n"
     if rb:
         lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {rb['version']}" + (f" (commit {rb['sha']})" if rb.get("sha") else "") + f", published {rb['published']}.")
@@ -457,7 +484,7 @@ def file_issues(gh, plan, today):
         raise Fail("gh issue list did not return JSON")
     for p in plan:
         prefix, title = p["title"]
-        existing = next((i for i in open_issues if str(i.get("title", "")).startswith(prefix)), None)
+        existing = next((i for i in open_issues if str(i.get("title", "")).startswith(prefix + " (")), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
             path = f.name
@@ -481,7 +508,7 @@ def rerun_held(gh, net, now):
         rows = [age.judge_item(it, net.proofs(it), now) for it in items]
         if rows and all(r[0] for r in rows):
             gh.run("run", "rerun", str(pr["run_id"]))
-            print(f"audit: pull request #{pr['number']} ({pr['title']}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
+            print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
             n += 1
     if not n:
         print("audit: no held pull request is ready to re-run")
@@ -538,6 +565,10 @@ def main(argv=None):
         for k in sorted(head):
             print(f"  {k}")
         notes, findings = [], []
+        for it in audited:
+            if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
+                if not age._tag_for_commit(it.name, it.version):
+                    print(f"information: {it.name}@{it.version[:12]} has no version label or tag: its advisories could not be looked up")
 
         def one(it):
             n2 = []
@@ -547,23 +578,42 @@ def main(argv=None):
             for fs, n2 in pool.map(one, audited):
                 findings += fs
                 notes += n2
-        nest_items = [it for it in (audited if a.base else head.values()) if it.kind == "action"]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            for it, ns in zip(nest_items, pool.map(net.nested, nest_items)):
-                for n in ns:
+        # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
+        seen = {it.key for it in audited} | set(head)
+        queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"]
+        while queue:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                level = list(pool.map(lambda q: net.nested(q[0]), queue))
+            nxt = []
+            for (outer, depth), refs in zip(queue, level):
+                for n in refs:
+                    ref = n["ref"]
                     if not n.get("pinned"):
-                        print(f"information: {it.name} uses {n['ref']}, not pinned to a digest (a moving tag; not a hit)")
+                        print(f"information: {outer.name} uses {clean(ref)}, not pinned to a digest (a moving tag; not a hit)")
+                    m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@(\S+)$", ref)
+                    if not m or ref.startswith("docker://"):
+                        continue
+                    child = inv.Item("action", m.group(1), m.group(2), "")
+                    if child.key in seen:
+                        continue
+                    seen.add(child.key)
+                    for f in judge(child, net, exceptions, notes, current=True):
+                        f.via = outer.name
+                        findings.append(f)
+                    if depth + 1 < 3:
+                        nxt.append((child, depth + 1))
+            queue = nxt
         for n in notes:
             print(f"audit: {n}")
         plan, disputes = [], {}
         for f in findings:
-            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {f.item.key} ({', '.join(f.ids)}): {f.why}")
+            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {f.item.key} ({', '.join(f.ids)}): {f.why}" + (f" [inside {f.via}]" if f.via else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault((package_of(f.item), tuple(f.ids)), []).append(f)
                 continue
-            rb = rollback(f.item, net, now)
+            rb = None if f.via else rollback(f.item, net, now)
             ran = f.item.key in ran_keys
-            owner = rb is None or ran
+            owner = rb is None or ran or bool(f.via)
             plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
         for (pkg, ids), fs in sorted(disputes.items()):
             versions = sorted({x.item.label or x.item.version for x in fs})

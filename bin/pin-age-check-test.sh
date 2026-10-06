@@ -232,6 +232,41 @@ runck none '{"times": {}}'
 CASE="an unchanged workflow with 5 pins needs no data (only what MOVED is measured)"
 check test "$rc" -eq 0
 
+# --- a workflow whose filename is not ASCII is still read (git quotes such paths; a pin there must never go unmeasured) --------------------------------------------
+newcase unicode "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")
+import pathlib, shutil
+shutil.copy('.github/workflows/ci.yml', '.github/workflows/\u00e9.yml')
+pathlib.Path('.github/workflows/ci.yml').write_text(pathlib.Path('.github/workflows/ci.yml').read_text().replace('actions/checkout@$NEW1', 'actions/checkout@$SHA1'))"
+runck unicode '{"times": {}}'
+CASE="a new pin in .github/workflows/\u00e9.yml (a non-ASCII file name) is named and measured like any other"
+check test "$rc" -eq 1; check grep -qF "action:actions/checkout@$NEW1" "$work/unicode.out"
+
+# --- the 'first seen in one of OUR pull requests' proof matches the WHOLE version and only PRs from our own repository ------------------------------------------------
+mkdir -p "$work/stubfs"
+cat >"$work/stubfs/gh" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *pulls*) if [ "$GH_PR_FORK" = 1 ]; then echo '[{"created_at":"2026-01-01T00:00:00Z","head":{"repo":{"full_name":"stranger/cache"}}}]'; else echo '[{"created_at":"2026-01-01T00:00:00Z","head":{"repo":{"full_name":"o/r"}}}]'; fi;;
+  *) exit 1;;
+esac
+STUB
+chmod +x "$work/stubfs/gh"
+rm -rf "$work/fs"; mkdir -p "$work/fs/.github/workflows"; git -C "$work/fs" init -q
+printf 'note: released in 2021 and 12.1\n' >"$work/fs/.github/workflows/a.yml"; git -C "$work/fs" add -A; git -C "$work/fs" -c user.name=t -c user.email=t@x commit -q -m a
+firstseen() { ( cd "$work" && GITHUB_REPOSITORY=o/r GH_PR_FORK="${3:-0}" PATH="$work/stubfs:$PATH" python3 - "$chk" "$work/fs" "$1" "$2" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+print(ac._first_seen(ac.inv.Item("tool", "java", sys.argv[4]), sys.argv[2]))
+PY
+) 2>&1 | tail -1; }
+CASE="first seen: version 21 does NOT match the text 2021 or 12.1 (a substring is not the version): no proof"
+check test "$(firstseen x 21)" = None
+printf 'java-version: 21\n' >"$work/fs/.github/workflows/a.yml"; git -C "$work/fs" add -A; git -C "$work/fs" -c user.name=t -c user.email=t@x commit -q -m b
+CASE="first seen: the whole version as its own token IS found, and gives the PR's server-side creation time"
+check test "$(firstseen x 21)" = 2026-01-01T00:00:00Z
+CASE="first seen: a pull request from someone's FORK never starts the clock"
+check test "$(firstseen x 21 1)" = None
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'

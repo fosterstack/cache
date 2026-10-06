@@ -74,14 +74,14 @@ def tree_files(root, rev):
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
     if rev is None:
-        for n in git(root, "ls-files").split("\n"):
+        for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
             if n and wanted(n):
                 try:
                     out[n] = open(f"{root}/{n}").read()
                 except OSError:
                     continue
         return out
-    for line in git(root, "ls-tree", "-r", rev).split("\n"):
+    for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if not n or not wanted(n):
             continue
