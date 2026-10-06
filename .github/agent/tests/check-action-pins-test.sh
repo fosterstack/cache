@@ -2161,5 +2161,93 @@ case_ r25-bare-variable-still-ok ok "$(rb 'docker run --rm "$IMAGE_REF" true')"
 case_ r25-braced-array-variable-still-ok ok "$(rb 'docker run --rm "${IMAGES[0]}" true')"
 case_ r25-mixed-tag-destination-ok ok "$(rb "docker tag $PIN localhost/fa-\${v}")"
 
+# --- advisor 0198 (option A, fenced): a directory that an EARLIER step of the SAME job filled with actions/checkout of THIS repository at
+# exactly the pull request's base sha (`ref: ${{ github.event.pull_request.base.sha }}`, a literal path) is main's copy: a committed script
+# under it runs at a literal path in any interpreter (REQ-SUP-001's trusted checker). Every other shape stays refused.
+BASE_REF='${{ github.event.pull_request.base.sha }}'
+mk_trusted='mkdir -p bin && printf "print(1)\n" > bin/tool.py && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+co() { printf '      - uses: actions/checkout@%s # v7.0.1\n        with:\n%s\n' "$SHA" "$1"; }
+case_ a-base-checkout-python-ok ok "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-base-checkout-bash-ok ok "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: bash trusted/bin/tool.sh" "$mk_trusted"
+case_ a-base-checkout-dot-slash-ok ok "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: python3 ./trusted/bin/tool.py" "$mk_trusted"
+case_ a-other-ref-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.pull_request.head.sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-no-ref-bad bad "$head
+    steps:
+$(co "          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-other-repository-bad bad "$head
+    steps:
+$(co "          repository: attacker/x
+          ref: $BASE_REF
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-checkout-after-the-run-bad bad "$head
+    steps:
+      - run: python3 trusted/bin/tool.py
+$(co "          ref: $BASE_REF
+          path: trusted")" "$mk_trusted"
+case_ a-checkout-in-another-job-bad bad "on: push
+jobs:
+  one:
+    runs-on: ubuntu-latest
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+  two:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-variable-path-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          checker=trusted
+          python3 \"\$checker/bin/tool.py\"" "$mk_trusted"
+case_ a-not-a-committed-file-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: python3 trusted/bin/missing.py" "$mk_trusted"
+case_ a-root-checkout-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF")
+      - run: python3 ./bin/tool.py extra && python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-parent-path-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: ../trusted")
+      - run: python3 ../trusted/bin/tool.py" "$mk_trusted"
+case_ a-copy-over-the-checkout-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          cp pr/evil.py trusted/bin/tool.py
+          python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-redirect-over-the-checkout-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          echo 'import os' > trusted/bin/tool.py
+          python3 trusted/bin/tool.py" "$mk_trusted"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

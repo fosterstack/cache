@@ -146,7 +146,8 @@ class VerifyTags(unittest.TestCase):
 class Main(unittest.TestCase):
     def test_verify_tags_through_main(self):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
-                  "README.md": "not read\n", ".git/x.yml": "uses: [\n"})
+                  "README.md": "not read\n", ".git/x.yml": "uses: [\n",
+                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": ""})   # the gate's committed programs
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
                  {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}}
         with open(GATE) as fh:  # the gate's own pins answer truthfully too
@@ -211,19 +212,20 @@ def urllib_request():
 class RunScriptImages(unittest.TestCase):              # handoff 0068: literal images a run: script names
     def test_double_dash_ends_the_options(self):
         self.assertEqual(M.script_images("docker run --rm -- alpine true"), [("use", "docker run", "alpine")])
-        self.assertEqual(M.script_images("docker run --rm --"), [("use", "docker run", None)])
+        self.assertEqual([e[0] for e in M.script_images("docker run --rm --")], ["finding"])      # no operand: refused (Codex #164 r23, B5)
 
     def test_a_command_without_an_image(self):
-        self.assertEqual(M.script_images("docker run --rm"), [("use", "docker run", None)])
+        self.assertEqual([e[0] for e in M.script_images("docker run --rm")], ["finding"])         # no operand: stdin or a wrapper, refused (Codex #164 r23, B5)
         self.assertEqual(M.script_images("docker"), [])
         self.assertEqual(M.script_images("docker --tls"), [])
         bad = []
         M.check_runs("j", [("w", "docker run --rm", None)], bad)
-        self.assertEqual(bad, [])
+        self.assertEqual(len(bad), 1)
+        self.assertIn("has no image operand", bad[0])
 
     def test_tag_equals_form_makes_a_local_name(self):
         ev = M.script_images("docker build --tag=img1 . && docker buildx build -t img2 .")
-        self.assertEqual({e[1] for e in ev if e[0] == "local"}, {"img1", "img2"})
+        self.assertEqual([e[0] for e in ev], ["build", "build"])           # a name this job built is never trusted (owner, Oct 3): no "local" events
 
     def test_a_document_that_is_not_a_mapping_has_no_scripts(self):
         self.assertEqual(M.run_scripts(M.yaml.compose("- a\n- b\n", Loader=M.StrLoader)), {})
@@ -239,8 +241,8 @@ class RunScriptImages(unittest.TestCase):              # handoff 0068: literal i
         self.assertEqual(M.check_dockerfile("FROM --platform=x\n"), [])
 
     def test_build_option_forms(self):
-        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set(), []))
-        self.assertEqual(M._build(["-f"]), ("-", ".", set(), []))
+        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set(), [], []))
+        self.assertEqual(M._build(["-f"]), ("-", ".", set(), [], []))
         self.assertEqual(M._build(["--build-context=a=./x", "."])[3], ["./x"])
 
     def test_short_option_forms(self):

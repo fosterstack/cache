@@ -2124,7 +2124,11 @@ GENERATED_OK = {
 }
 
 
-def _resolve_script(path, text, entries):
+BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"
+_BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
+
+
+def _resolve_script(path, text, entries, bases=()):
     """A script path as a committed file: relative (./x), under $GITHUB_WORKSPACE, or a COPY that a real
     `git show <ref>:<file> > <dir>/<name>` or `gh api repos/${GITHUB_REPOSITORY}/contents/<file>?ref=main` command of the
     job writes (main's copy of a reviewed script; Codex #164 r2, C02: an echo of the words, another repository, or a second
@@ -2134,6 +2138,15 @@ def _resolve_script(path, text, entries):
     rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", path)
     if entries.get(rel) == "file":
         return rel
+    mb = re.match(r"^(?:\./)?([\w][\w.-]*)/([\w./-]+)$", path)
+    if mb and mb.group(1) in bases and entries.get(mb.group(2)) == "file":
+        # advisor 0198 (option A, fenced): a directory an EARLIER step of this job filled with actions/checkout of THIS repository at exactly
+        # the pull request's base sha is main's copy; the script runs from it at a literal path. Nothing else in the job may write under it.
+        d = re.escape(mb.group(1))
+        for ln in re.sub(r"\\\n", " ", text).splitlines():
+            if re.search(r"(?<![\w.-])" + d + r"/", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
+                return None
+        return mb.group(2)
     m = re.match(r"^(\$\{?RUNNER_TEMP\}?|/tmp(?:/[\w.-]+)*)/([\w.-]+)$", path)
     if not m:
         return None
@@ -2255,7 +2268,7 @@ def _made_executable(script, path):
     return None
 
 
-def _run_scripts(text, tree, moved, depth=0, where="", job=""):
+def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
     """(the committed shell scripts this text runs, their bytes appended; findings). A script is what _commands names as
     run — bash/sh/dash/zsh <path>, source / . <path>, or a path executed directly that is a *.sh file or a committed file
     starting with a shell #! (#!/usr/bin/env bash too) or none — through every channel _commands reads (wrappers, $( ),
@@ -2280,7 +2293,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
             continue
         if t[0] == "__foreign__":
             rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", t[1])
-            if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries) is None:
+            if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
             continue
@@ -2308,7 +2321,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
                 found.append("%s is fenced as written only by its python heredoc, and a shell command of the job "
                              "writes it; refused" % path)
             continue
-        rel = _resolve_script(path, job or text, entries)
+        rel = _resolve_script(path, job or text, entries, bases)
         if rel is None and (_variable(path) or SUBST in path):
             found.append("runs a shell script named by a variable (%s); it cannot be read, refused" % path)
             continue
@@ -2327,7 +2340,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job=""):
         content = tree.read(rel)
         inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", content))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
-        more, also = _run_scripts(inner, tree, cd, depth + 1, where, job)
+        more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
         added.append(content + ("\n" + more if more else ""))
         found += also
     return "\n".join(added), found
@@ -2359,7 +2372,8 @@ def check_runs(where_job, scripts, bad, tree=None):
         # cd / pushd in the script — a literal relative path then resolves somewhere else (Sonnet #164 r16, NEW-24).
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(read(raw))))
-        inlined.append(_run_scripts(read(raw), tree, moved, 0, where, job0) if ok else ("", []))
+        bases = item[6] if len(item) > 6 else ()
+        inlined.append(_run_scripts(read(raw), tree, moved, 0, where, job0, bases) if ok else ("", []))
 
     job_text = job0 + "".join("\n" + read(m) for m, _ in inlined if m)
     # every committed script read for this job must run as committed: nothing in the job, its -c / eval strings or the
@@ -2519,6 +2533,7 @@ def run_scripts(doc):
     top = {key_of(k): v for k, v in doc.value}
 
     def steps_of(seq, base, group, inherited, inherited_wd=None):
+        base_dirs = []                                   # directories filled by an earlier actions/checkout of THIS repository at the base sha
         if isinstance(seq, yaml.SequenceNode):
             for i, st in enumerate(seq.value):
                 if isinstance(st, yaml.MappingNode):
@@ -2531,7 +2546,14 @@ def run_scripts(doc):
                         soft = coe is not None and not (isinstance(coe, yaml.ScalarNode) and coe.value.strip() == "false")
                         ifn = m.get("if")
                         groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft,
-                                                              ifn.value if isinstance(ifn, yaml.ScalarNode) else ""))
+                                                              ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
+                    uses, w = m.get("uses"), m.get("with")
+                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip()) and isinstance(w, yaml.MappingNode):
+                        wm = {key_of(k): v for k, v in w.value}
+                        ref, pth = wm.get("ref"), wm.get("path")
+                        if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
+                                and isinstance(pth, yaml.ScalarNode) and re.fullmatch(r"[\w][\w-]*", pth.value.strip())):
+                            base_dirs.append(pth.value.strip())
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:
