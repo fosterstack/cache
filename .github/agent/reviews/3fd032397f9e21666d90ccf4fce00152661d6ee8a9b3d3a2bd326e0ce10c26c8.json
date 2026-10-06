@@ -1,0 +1,84 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "3fd032397f9e21666d90ccf4fce00152661d6ee8a9b3d3a2bd326e0ce10c26c8",
+ "change": "Inspector same-day reuse (REQ-REL-004-AC5, owner ratified Oct 4): bin/inspector-reuse.py keys an SBOM by package name/version pairs (purl type, qualifiers and our own module excluded), validates a stored or fresh ScanSbom response as the envelope that contains every package pair of the request, and decides reuse per UTC day; both Inspector call sites (scan.yml, the daily rescan) restore same-day results from the Actions cache (same-repo runs only), call ScanSbom only on a miss, store only validated fresh results (never across midnight), and still run our VEX gate/tally; actions/cache v6.1.0 pinned by digest and classified in the pin checker -- PR #188",
+ "reviewed_commit": "c56322aba43b4515b63da47b632605b994538d99",
+ "closed_commit": "c56322aba43b4515b63da47b632605b994538d99",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "inspector-reuse r1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "b922db2a519741914d64e643042f5e2e728fcbeec63e3ebe78519b6fca278e53"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "3c9527d0dad284dd65cedef3edd0b49fe9a872d0b21f145f137f649f786ad971"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "inspector-reuse r2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "7aa6eef5bbbe33a5b489bac296ba2adaf1199f3f04f06d5b33bbc7f3626af8b3"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "a7969649ce58e14ba77bff17d7354aaa2e913ac6433b8cbc622aab3c0cbb1dff"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "inspector-reuse r3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "57776e8ff0824927f3fd9da80aa5bfe9ea940c9b010702b947e0bacae884b4f4"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "574877dbf8e76f5147710d44b96ad50cc24f180275594d4ff216394c02f13760"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "inspector-reuse r4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "34c46c84240e8ad60fbed797f74f01d01010d2e8f9e5ddb2407644d959ad9cfa"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "72e47613eed2a68310f61fba945c3fd8f79f0cfa4307145f7ea2e0e5e7db163f"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "identity is package name and version only (npm foo@1 and pypi foo@1 share a key), as ratified",
+  "structural validation does not authenticate findings: a planted cache file in a scope the consumer can read could hide findings; cache scoping (a PR cannot write main's scope, forks excluded) is the guarantee",
+  "concurrent runs and re-runs lose cache entries (extra Inspector calls, never a wrong verdict)",
+  "pin-age: actions/cache v6.1.0 first appears in this PR; its 7-day PR clock ends ~Oct 13"
+ ],
+ "row78": "adversarial pass in every round: every action reference is a commit digest with a version comment (151 pins); the actions/cache classification (node24, no image) verified against the pinned action.yml; no bypass of check-action-pins.py found"
+}
