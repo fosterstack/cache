@@ -623,6 +623,8 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
+        if e.get("version") and str(e["version"]).lstrip("v") not in {str(x).lstrip("v") for x in [item.version, item.label, *vers]}:
+            continue   # a ruling that names a version covers only that version
         if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged

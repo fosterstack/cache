@@ -111,12 +111,17 @@ def judge_wf(d, real=False):
             bad.append(f"{name} has a job-level env")
         if name == "pin-age" and "env" in jj:
             bad.append("pin-age has a job-level env (PYTHONPATH and friends could redirect the trusted checker)")
+    seq = [("checkout" if str(st.get("uses", "")).startswith("actions/checkout@") else "run" if "run" in st else "other") for st in jobs["pin-age"].get("steps", [])]
+    if seq != ["checkout", "checkout", "run"]:
+        bad.append(f"pin-age's steps are not exactly [trusted checkout, PR checkout, the check step] (found {seq}): no step may be added between them")
     pa_steps = [st for st in jobs["pin-age"].get("steps", []) if str(st.get("uses", "")).startswith("actions/checkout@")]
     if len(pa_steps) != 2:
         bad.append("pin-age must have exactly two checkouts (the base's trusted checker, the PR's tree)")
     else:
         t, pr_ = pa_steps
         tw, pw = t.get("with") or {}, pr_.get("with") or {}
+        if set(tw) != {"ref", "path", "persist-credentials"} or set(pw) != {"path", "fetch-depth", "persist-credentials"}:
+            bad.append("pin-age's checkouts take inputs other than the ratified ones (e.g. sparse-checkout would empty the trusted checker)")
         if tw.get("ref") != "${{ github.event.pull_request.base.sha }}" or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false":
             bad.append("pin-age's trusted checkout is not the BASE sha at path trusted with persist-credentials false")
         if "ref" in pw or pw.get("path") != "pr" or pw.get("fetch-depth") != "0" or str(pw.get("persist-credentials")).lower() != "false":
@@ -315,6 +320,8 @@ mut_wf("a step writes BASH_ENV", "writes the job's environment", lambda d: J(d, 
 mut_wf("the daily condition gains && false", "not exactly the ratified one", lambda d: J(d, "daily-audit").update({"if": "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && false"}))
 mut_wf("the artifact path widens", "artifact path is not exactly", lambda d: [x["with"].update(path=".github/workflows") for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
 mut_wf("hidden files are uploaded", "uploads hidden files", lambda d: [x["with"].update({"include-hidden-files": "true"}) for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
+mut_wf("sparse-checkout empties the trusted checker", "checkouts take inputs other than", lambda d: [x["with"].update({"sparse-checkout": "bin"}) for x in J(d, "pin-age")["steps"] if str(x.get("uses", "")).startswith("actions/checkout") and x["with"].get("path") == "trusted"])
+mut_wf("a step between the checkouts and the check", "not exactly [trusted checkout", lambda d: J(d, "pin-age")["steps"].insert(2, {"if": "github.event_name == 'pull_request'", "run": 'find trusted -name "*.py" -exec cp /dev/null {} \\;'}))
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))

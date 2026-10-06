@@ -324,8 +324,8 @@ def live_proofs(item, root, base=None, head="HEAD"):
             rel = _release_with_assets(repo, [item.label] if item.label else [item.version, "v" + bare, bare])   # a download names its EXACT tag: no twin tag lends its age
             if rel:
                 # the NEWEST of the release date and every asset's own created/updated time: a replaced asset in an old release is young again
-                assets = [a for a in rel.get("assets", []) if not item.path or a.get("name") == item.path]   # the asset we download: a missing one borrows no other asset's age
-                if item.path and not assets:
+                assets = [a for a in rel.get("assets", []) if not item.path or a.get("name") == item.path.split("#")[0]]   # the asset we download: a missing one borrows no other asset's age
+                if item.path.split("#")[0] and not assets:
                     return out
                 stamps = [rel["published_at"]] + [a[k] for a in assets for k in ("created_at", "updated_at") if a.get(k)]
                 out.append((max(stamps, key=lambda x: parse_time(x) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)), "github-release"))

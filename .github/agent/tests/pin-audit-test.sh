@@ -821,6 +821,19 @@ pa.rerun_held(G(), N(), now)
 assert calls == [("run", "rerun", "22")], calls
 PY
 
+CASE="an exception that names a version covers only that version"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+class N:
+    def live_ranges(self, i, s, a): return ["= 0.69.4"]
+    def version_of(self, i): return i.version
+    def versions_of(self, i): return [i.version]
+e = {"ids": ["A"], "package": "trivy", "version": "0.74.0", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 0.69.4"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+assert pa.excepted(pa.inv.Item("tool", "trivy", "0.74.0"), {"A"}, {"A": "t1"}, [e], N(), {}) == "pass"
+assert pa.excepted(pa.inv.Item("tool", "trivy", "0.75.0"), {"A"}, {"A": "t1"}, [e], N(), {}) is None
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"
