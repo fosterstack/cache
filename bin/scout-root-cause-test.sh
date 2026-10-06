@@ -145,7 +145,10 @@ else echo "FAIL: the release copy's attestation list is not recorded"; fail=$((f
 # the exact-digest scan names the digest AFTER attaching, never the pre-attach one (the stub's index changes once an attestation is added)
 for t in control release; do
   b=$(cat "$e2e/out/attest/$t.before"); x=$(grep -o "scan $t by its exact post-attachment digest \`sha256:[0-9a-f]*" "$e2e/out/summary.md" | grep -o '[0-9a-f]\{64\}$')
-  if [ -n "$x" ] && [ "$x" != "$b" ]; then echo "ok: the $t exact-digest scan names a digest different from the pre-attach one"; pass=$((pass+1))
+  # and the digest in the ACTUAL scout command equals the one reported (a script reporting the new digest while scanning the old one fails)
+  if [ "$t" = control ]; then va='^author@example\.com$'; else va='^FosterStack LLC$'; fi
+  c=$(grep -F -- "--vex-author $va registry://ghcr.io/fosterstack/cache-scout-probe@sha256:" "$LOG" | grep -o '[0-9a-f]\{64\}$' | tail -1)
+  if [ -n "$x" ] && [ "$x" != "$b" ] && [ "$c" = "$x" ]; then echo "ok: the $t exact-digest scan names, in the command itself, a digest different from the pre-attach one"; pass=$((pass+1))
   else echo "FAIL: the $t exact-digest scan is missing or names the pre-attach digest ($x vs $b)"; fail=$((fail+1)); fi
 done
 for want in "control-after-exact-digest" "release-after-exact-digest"; do
