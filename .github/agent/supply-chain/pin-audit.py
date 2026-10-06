@@ -595,6 +595,7 @@ def load_exceptions(path, required):
             assert isinstance(e["ruling"], str) and e["ruling"] and set(e["ids"]) <= set(e["modified"]) and au["id"] in e["ids"]
             assert isinstance(e.get("osv_modified", {}), dict)
             assert isinstance(e["evidence"], list) and e["evidence"] and isinstance(e["date"], str) and e["date"]
+            assert isinstance(e.get("version"), str) and e["version"].strip(), "every exception names the one version it covers"
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         raise Fail(f"the exceptions file {path} is unreadable or malformed: {e}")
     return ex
@@ -623,8 +624,10 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        if e.get("version") and str(e["version"]).lstrip("v") not in {str(x).lstrip("v") for x in [item.version, item.label, *vers]}:
-            continue   # a ruling that names a version covers only that version
+        covered = {str(x).lstrip("v") for x in [item.version, item.label, *vers] if x}
+        want = str(e.get("version", "")).lstrip("v")
+        if not want or not any(c == want or (want.endswith(".*") and c.startswith(want[:-1])) for c in covered):
+            continue   # a ruling names the one version it covers (or one series, "4.*"): never a wildcard
         if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged
@@ -727,6 +730,17 @@ def rollback(item, net, now):
         cand = v.get("_item")
         if cand is not None and net.proofs(cand) is not None and not age.judge_item(cand, net.proofs(cand), now)[0]:
             continue  # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old version)
+        if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
+            try:                       # the candidate's own nested actions must be clean too (a replacement that calls a compromised child is no replacement)
+                dirty = False
+                for n in net.nested(cand):
+                    m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@([0-9a-f]{40})$", n["ref"])
+                    if m and any_affected(dict(zip(("github", "osv"), net.lists(inv.Item("action", m.group(1), m.group(2)))))):
+                        dirty = True
+            except (Fail, age.CouldNotLook):
+                continue               # cannot prove it clean: not recommended
+            if dirty:
+                continue
         return v
     return None
 
@@ -819,6 +833,9 @@ def file_issues(gh, plan, today):
             continue
         done.add(title); done.add(prefix)
         existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " ("))), None)
+        pkg_of_prefix = prefix[len("supply-chain: "):].split("@")[0]
+        if existing is None and not prefix.startswith("supply-chain: disputed "):   # a dispute that became a confirmed hit is the SAME issue (one per hit), retitled
+            existing = next((i for i in open_issues if i.get("number", -1) > 0 and str(i.get("title", "")).startswith(f"supply-chain: disputed {pkg_of_prefix} (")), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
             path = f.name
@@ -1013,6 +1030,7 @@ def main(argv=None):
                     if child.key in seen:
                         continue
                     seen.add(child.key)
+                    print(f"audit: nested action {clean(child.name)}@{clean(child.version[:12])} inside {clean(outer.name)}")    # listed, clean or not
                     try:
                         for f in judge(child, net, exceptions, notes, current=True):
                             f.via = outer.name

@@ -73,7 +73,7 @@ def _tails(run, is_cmd, subcommands, skip_values=()):
 
 
 def _pip_tails(run):
-    return _tails(run, lambda t: re.fullmatch(r"pip[0-9.]*", t) is not None, {"install"}, _PIP_VALUE_OPTS | {"--timeout", "--retries", "--proxy", "--cert", "--cache-dir", "--log", "--isolated"})
+    return _tails(run, lambda t: re.fullmatch(r"pip[0-9.]*", t) is not None, {"install"}, _PIP_VALUE_OPTS | {"--timeout", "--retries", "--proxy", "--cert", "--cache-dir", "--log"})
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|\$\{var\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
@@ -141,7 +141,7 @@ def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     def wanted(n):
         return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
-                or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n in VERSION_FILES
+                or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
     if rev is None:
@@ -258,6 +258,7 @@ def _docker_images(cmd_args):
 
 
 _ENV_CTX = [""]
+_JOB_SUMS = [[]]
 
 
 _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
@@ -311,7 +312,7 @@ def _step_items(node, out, labels):
             if m:
                 out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
-            sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)))   # checksums, not image digests
+            sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)) | set(_JOB_SUMS[0]))   # checksums, not image digests
             out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4) + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest()[:8] if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
@@ -366,12 +367,14 @@ def _walk(node, out, labels, path="", in_step=False):
                 top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
                 for job in v.values():
                     _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
+                    _JOB_SUMS[0] = re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", json.dumps(job, default=str)) if isinstance(job, dict) else []   # a checksum in ANY step of the job (a separate verify step) belongs to the job's downloads
                     _walk(job, out, labels, "job:" + k)
                     if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].startswith("./") and job.get("with"):
                         for it in out:                       # a local reusable-workflow call: what it passes in is part of that call's identity
                             if it.version == "(local)" and it.name == "local:" + _hide(job["uses"]) and not it.step:
                                 it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:10]
                 _ENV_CTX[0] = ""
+                _JOB_SUMS[0] = []
                 continue
             _walk(v, out, labels, k, in_step=(k == "steps"))
     elif isinstance(node, list):
@@ -391,7 +394,7 @@ def inventory(files):
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # and the rest of the script like any other: an appended download is seen
                 _step({"run": ln}, found, {})
-        elif path in VERSION_FILES:
+        elif path.rsplit("/", 1)[-1] in VERSION_FILES:
             found = [Item("tool", "file:" + path, "(file)")]
             found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]      # what an installer's *-version-file selects: a changed content is a changed key
         elif path.endswith(".sh"):
@@ -436,6 +439,13 @@ def inventory(files):
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
             _walk(doc, found, labels, "")
         for it in found:
+            if it.key in items and it.version.startswith("("):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
+                n = 2
+                while True:
+                    it.step = re.sub(r"~\d+$", "", it.step or "") + f"~{n}"
+                    if it.key not in items:
+                        break
+                    n += 1
             items.setdefault(it.key, it)
     return items
 

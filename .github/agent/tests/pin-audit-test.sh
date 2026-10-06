@@ -223,7 +223,7 @@ CASE="a disputed hit neither reports clean nor rolls back: no 'no known-compromi
 check none_match 'no known-compromised' "$work/dispute.out"; check bash -c "! grep -qiE 'roll ?back to|drop the action' '$work/dispute.gh.bodies'"
 CASE="the dispute's public facts are in the issue: both advisory ids, both verdicts, the version"
 check grep -q 'GHSA-69fq-xp46-6x23' "$work/dispute.gh.bodies"; check grep -q 'GO-2026-4919' "$work/dispute.gh.bodies"; check grep -q '0.74.0' "$work/dispute.gh.bodies"
-EXC='{"exceptions": [{"ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "authoritative": {"source": "GitHub", "id": "GHSA-69fq-xp46-6x23", "ranges": ["= 0.69.4"]}, "ruling": "false positive", "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
+EXC='{"exceptions": [{"version": "0.74.0", "ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "authoritative": {"source": "GitHub", "id": "GHSA-69fq-xp46-6x23", "ranges": ["= 0.69.4"]}, "ruling": "false positive", "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
 echo "$EXC" >"$work/exc.json"
 run excepted "$DISPUTE" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="a MATCHING exception (exactly the advisories of this dispute, the package, every advisory unchanged since it was written, the version outside the authoritative ranges): passes, exit 0, no issue, and says an exception applied"
@@ -424,7 +424,7 @@ assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["versi
 net = pa.LiveNet(["false"], ".")
 assert pa.rollback(pa.inv.Item("gotool", "golang.org/x/vuln/cmd/govulncheck", "v1.0.0"), net, now) == pa.UNKNOWN
 PY
-printf '{"exceptions": [{"ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "ruling": "r", "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
+printf '{"exceptions": [{"version": "1.0.0", "ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "ruling": "r", "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
 run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
 CASE="an exception without evidence links and a date is malformed: exit 2, never applied"
 check test "$rc" -eq 2
@@ -524,7 +524,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 it = pa.inv.Item("tool", "trivy", "0.74.0")
 net = type("N", (), {"live_ranges": lambda self, i, s, a: ["= 0.69.4"]})()
-e = {"ids": ["A"], "package": "trivy", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 0.69.4"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+e = {"version": "0.74.0", "ids": ["A"], "package": "trivy", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 0.69.4"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
 other = dict(e, package="other", osv_modified={"A": "t2"})
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], net, {"A": "t2"}) is None, "no osv_modified in THIS entry"
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [other, e], net, {"A": "t2"}) is None, "another entry's time must not be borrowed"
@@ -591,7 +591,7 @@ it = pa.inv.Item("action", "o/r", "a" * 40, "v3")
 class N:
     def live_ranges(self, i, s, a): return [">= 3.26.11, <= 3.28.2"]
     def version_of(self, i): return "v3.27.0"
-e = {"ids": ["A"], "package": "o/r", "authoritative": {"source": "GitHub", "id": "A", "ranges": [">= 3.26.11, <= 3.28.2"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+e = {"version": "3.*", "ids": ["A"], "package": "o/r", "authoritative": {"source": "GitHub", "id": "A", "ranges": [">= 3.26.11, <= 3.28.2"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "hit", "the precise tag v3.27.0 is inside the range"
 assert pa.excepted(it, {"A"}, {"A": None}, [e], N(), {}) is None
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [dict(e, osv_modified={"A": None})], N(), {"A": None}) is None
@@ -705,7 +705,7 @@ class N:
     def live_ranges(self, i, s, a): return [">= 3.26.11, <= 3.28.2"]
     def version_of(self, i): return "v3.30.0"
     def versions_of(self, i): return ["v3.30.0", "v3.27.0"]      # the commit carries two tags; one is inside the ranges
-e = {"ids": ["A"], "package": "o/r", "authoritative": {"source": "GitHub", "id": "A", "ranges": [">= 3.26.11, <= 3.28.2"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+e = {"version": "3.*", "ids": ["A"], "package": "o/r", "authoritative": {"source": "GitHub", "id": "A", "ranges": [">= 3.26.11, <= 3.28.2"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "hit", "another tag of the commit is inside the ranges"
 N.versions_of = lambda self, i: ["v3.30.0", "v3.31.0"]
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "pass"
@@ -832,6 +832,29 @@ class N:
 e = {"ids": ["A"], "package": "trivy", "version": "0.74.0", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 0.69.4"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
 assert pa.excepted(pa.inv.Item("tool", "trivy", "0.74.0"), {"A"}, {"A": "t1"}, [e], N(), {}) == "pass"
 assert pa.excepted(pa.inv.Item("tool", "trivy", "0.75.0"), {"A"}, {"A": "t1"}, [e], N(), {}) is None
+PY
+
+CASE="an exception without a version is refused as malformed (never a wildcard), a series (4.*) covers its series only; a dispute issue that becomes a confirmed hit is the SAME issue (retitled), never a second; a clean nested child is listed; a rollback whose nested child is affected is skipped"
+check python3 - "$aud" <<'PY'
+import importlib.util, json, sys, tempfile, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+base = {"ids": ["A"], "package": "p", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "modified": {"A": "t"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+d = tempfile.mkdtemp()
+for ex, ok in ((dict(base), False), (dict(base, version=""), False), (dict(base, version="1.0.0"), True)):
+    json.dump({"exceptions": [ex]}, open(d + "/e.json", "w"))
+    try:
+        pa.load_exceptions(d + "/e.json", True); assert ok
+    except pa.Fail:
+        assert not ok
+class G:
+    def __init__(self): self.calls = []
+    def run(self, *a, ok_fail=False):
+        self.calls.append(a)
+        class R: returncode = 0; stdout = json.dumps([{"number": 7, "title": "supply-chain: disputed trivy (A, B)", "state": "OPEN"}]) if a[:2] == ("issue", "list") else ""; stderr = ""
+        return R()
+g = G()
+pa.file_issues(g, [{"title": ("supply-chain: trivy@0.75.0", "supply-chain: trivy@0.75.0 (A)"), "body": "b", "owner": False}], "2026-10-06")
+assert any(c[:3] == ("issue", "edit", "7") for c in g.calls) and not any(c[:2] == ("issue", "create") for c in g.calls), g.calls
 PY
 
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
