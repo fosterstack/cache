@@ -312,8 +312,8 @@ def unmeasured(files):
     joining backslash continuations. Reported as information; a pull request that ADDS an entry (a new command line, even in place of another) is refused."""
     out = {}
     for path, text in sorted(files.items()):
-        if not (path.startswith(".github/") or path.endswith(".sh")):
-            continue
+        if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
+            continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
         for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
             flat = " ".join(line.split())
             for rx, what in _UNMEASURED:

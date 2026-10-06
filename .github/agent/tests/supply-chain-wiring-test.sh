@@ -55,10 +55,10 @@ def judge_wf(d, real=False):
     if int(str(j.get("timeout-minutes", "999"))) > 10:
         bad.append("pin-age has no short timeout-minutes (<= 10): it must pass fast")
     runs = "\n".join(str(s.get("run", "")) for s in j.get("steps", []))
-    for prog, flag in ((".github/agent/bin/pin-age-check.py", "--base"), (".github/agent/bin/pin-audit.py", "--base")):
+    for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
             bad.append(f"pin-age does not run {prog} {flag} (the age check and the audit of what the PR moves)")
-    if "checker=trusted" not in runs or "[ ! -f trusted/.github/agent/bin/pin-age-check.py ]" not in runs or runs.count("checker=pr") != 1 or '"$checker/.github/agent/bin/pin-age-check.py"' not in runs or '"$checker/.github/agent/bin/pin-audit.py"' not in runs:
+    if "checker=trusted" not in runs or "[ ! -f trusted/.github/agent/supply-chain/pin-age-check.py ]" not in runs or runs.count("checker=pr") != 1 or '"$checker/.github/agent/supply-chain/pin-age-check.py"' not in runs or '"$checker/.github/agent/supply-chain/pin-audit.py"' not in runs:
         bad.append("pin-age does not run the BASE branch's checker (trusted/) and fall back to the PR's copy only when the base has none")
     if "exceptions=trusted/.github/supply-chain-exceptions.json" not in runs or '--exceptions "$exceptions"' not in runs or "pr/.github/supply-chain-exceptions.json" in runs:
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
@@ -82,14 +82,14 @@ def judge_wf(d, real=False):
         bad.append("only daily-audit may write the tag observations")
     if "schedule" not in str(j.get("if", "")):
         bad.append("daily-audit does not run on the schedule")
-    if ".github/agent/bin/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])) or "--rerun-held" in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
-        bad.append("daily-audit must run .github/agent/bin/pin-audit.py without --rerun-held")
+    if ".github/agent/supply-chain/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])) or "--rerun-held" in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
+        bad.append("daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held")
     # rerun-held
     j = jobs["rerun-held"]
     if j.get("permissions") != {"actions": "write", "contents": "read", "pull-requests": "read"}:
         bad.append(f"rerun-held's permissions are not exactly actions: write + contents: read + pull-requests: read (found {j.get('permissions')})")
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
-        bad.append("rerun-held does not run .github/agent/bin/pin-audit.py --rerun-held")
+        bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
     for name, jj in jobs.items():
         for s in jj.get("steps", []):
             u = str(s.get("uses", ""))
@@ -204,12 +204,12 @@ mut_wf("pin-age is allowed to fail", "pin-age has an if, needs", lambda d: J(d, 
 mut_wf("pin-age can write", "pin-age's permissions are not exactly contents: read + actions: read", lambda d: J(d, "pin-age")["permissions"].update(issues="write"))
 mut_wf("pin-age has actions write", "pin-age's permissions are not exactly contents: read + actions: read", lambda d: J(d, "pin-age")["permissions"].update(actions="write"))
 mut_wf("pin-age has no timeout", "no short timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
-mut_wf("pin-age never runs the age check", "does not run .github/agent/bin/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
-mut_wf("pin-age never audits what moves", "does not run .github/agent/bin/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
+mut_wf("pin-age never runs the age check", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
+mut_wf("pin-age never audits what moves", "does not run .github/agent/supply-chain/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
 mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and head", lambda d: [s.update(run=s["run"].replace("github.event.pull_request.base.sha", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the PR's own checker always runs", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace("checker=trusted", "checker=pr")) for s in J(d, "pin-age")["steps"] if "run" in s])
-mut_wf("the fallback is unconditional", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace("[ ! -f trusted/.github/agent/bin/pin-age-check.py ]", "true")) for s in J(d, "pin-age")["steps"] if "run" in s])
-mut_wf("the checker is taken from the PR even when the base has it", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace('"$checker/.github/agent/bin/pin-age-check.py"', "pr/bin/pin-age-check.py")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("the fallback is unconditional", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace("[ ! -f trusted/.github/agent/supply-chain/pin-age-check.py ]", "true")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("the checker is taken from the PR even when the base has it", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace('"$checker/.github/agent/supply-chain/pin-age-check.py"', "pr/bin/pin-age-check.py")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("exceptions are read from the PR's tree", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace("exceptions=trusted/.github", "exceptions=pr/.github")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the audit stops passing --exceptions", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace(' --exceptions "$exceptions"', "")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the age check's failure hides the audit", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("set -uo pipefail", "set -euo pipefail")) for s in J(d, "pin-age")["steps"] if "run" in s])
@@ -228,10 +228,10 @@ mut_wf("the observations are kept under another name", "does not keep the tag ob
 mut_wf("the observations expire in a day", "does not keep the tag observations", lambda d: [x["with"].update({"retention-days": "1"}) for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
 mut_wf("the PR job writes observations", "only daily-audit may write the tag observations", lambda d: [x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"] if "run" in x])
 mut_wf("the audit stops writing observations", "does not write the tag observations", lambda d: [x.update(run=x["run"].replace("--observations-out", "--quiet")) for x in J(d, "daily-audit")["steps"] if "run" in x])
-mut_wf("daily-audit re-runs PRs itself", "daily-audit must run .github/agent/bin/pin-audit.py without --rerun-held", lambda d: [x.update(run=x["run"] + " --rerun-held") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
+mut_wf("daily-audit re-runs PRs itself", "daily-audit must run .github/agent/supply-chain/pin-audit.py without --rerun-held", lambda d: [x.update(run=x["run"] + " --rerun-held") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("rerun-held loses actions: write", "rerun-held's permissions are not exactly", lambda d: J(d, "rerun-held")["permissions"].pop("actions"))
 mut_wf("rerun-held gains issues: write", "can write issues", lambda d: J(d, "rerun-held")["permissions"].update(issues="write"))
-mut_wf("rerun-held never re-runs", "does not run .github/agent/bin/pin-audit.py --rerun-held", lambda d: J(d, "rerun-held").update(steps=[s for s in J(d, "rerun-held")["steps"] if "--rerun-held" not in str(s.get("run", ""))]))
+mut_wf("rerun-held never re-runs", "does not run .github/agent/supply-chain/pin-audit.py --rerun-held", lambda d: J(d, "rerun-held").update(steps=[s for s in J(d, "rerun-held")["steps"] if "--rerun-held" not in str(s.get("run", ""))]))
 mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J(d, "daily-audit").update(environment="release"))
 mut_wf("a fourth job appears", "the jobs are not exactly", lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))

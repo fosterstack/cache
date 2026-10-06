@@ -10,9 +10,10 @@
 #   gh calls it may make: issue list / issue create / issue edit / label create, and (only with --rerun-held) run rerun. NEVER anything about runs, environments or
 #   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
 set -euo pipefail
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-aud="$here/../bin/pin-audit.py"
+aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
@@ -455,7 +456,7 @@ CASE="no module-level name or class method is defined twice in the three program
 check python3 - "$root" <<'PY'
 import ast, sys
 for n in ("pin-inventory", "pin-age-check", "pin-audit"):
-    tree = ast.parse(open(f"{sys.argv[1]}/.github/agent/bin/{n}.py").read())
+    tree = ast.parse(open(f"{sys.argv[1]}/.github/agent/supply-chain/{n}.py").read())
     names = [x.name for x in tree.body if isinstance(x, (ast.FunctionDef, ast.ClassDef))]
     assert len(names) == len(set(names)), (n, sorted(x for x in names if names.count(x) > 1))
     for c in (x for x in tree.body if isinstance(x, ast.ClassDef)):
@@ -491,7 +492,7 @@ rm -rf "$work/obsout3"; run obs3 "$OBS_FX" "$work/r-pr" --base HEAD~1 --observat
 CASE="a pull request run (--base) never writes observations: only the scheduled run on main does"
 check test ! -e "$work/obsout3/state.json"
 CASE="tag_observer.py accepts only a successful scheduled run on main of supply-chain.yml, and keeps a moved tag as a NEW mapping"
-check python3 - "$here/../bin/tag_observer.py" <<'PY'
+check python3 - "$here/../supply-chain/tag_observer.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("t", sys.argv[1]); t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)
 ok = {"event": "schedule", "head_branch": "main", "conclusion": "success", "path": ".github/workflows/supply-chain.yml"}
@@ -608,7 +609,7 @@ for text in (title, body):
 assert "(unparseable)" in title
 PY
 CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges can never pass the age check; commits, digests and dotted numbers can"
-check python3 - "$here/../bin/pin-age-check.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-age-check.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 for v in ("main", "master", "nightly", "lts/*", "1.*", "3.x", "latest", "stable", ">=1.0", "(unpinned)", "${{expression}}", "v1.x", "1.2.x", "", "release-1"):
@@ -617,7 +618,7 @@ for v in ("v2.29.0", "2.17.1", "0.74.0", "21", "3.12", "1.0.0-rc.1", "a" * 40, "
     assert ac.is_pin(v), v
 PY
 CASE="a YAML alias bomb is refused before anything is expanded (fast), and an unparseable file never hangs the readers"
-check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 bomb = "x: &a [1,1,1,1,1,1,1,1,1]\n" + "".join(f"x{i}: &{chr(98+i)} [*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)}]\n" for i in range(8))
@@ -643,7 +644,7 @@ assert [x.kind for x in f] == ["unresolved"], [x.kind for x in f]
 PY
 
 CASE="every version-like tag at a commit is checked (one tag must not hide another's advisory), and shell variable names never print"
-check python3 - "$aud" "$here/../bin/pin-inventory.py" <<'PY'
+check python3 - "$aud" "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 spec = importlib.util.spec_from_file_location("inv2", sys.argv[2]); inv2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv2)
@@ -741,7 +742,7 @@ echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/bro
 CASE="unreadable input fails the run (exit 2), it never reports a clean day"
 check test "$rc" -eq 2
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
-check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../bin/pin-inventory.py" "$here/../bin/pin-age-check.py" "$here/../bin/pin-audit.py"
+check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

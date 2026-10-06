@@ -10,9 +10,10 @@
 #   Fixtures: {"now": ISO, "times": {ITEM: {"time": ISO, "source": S}}, "first_seen": {ITEM: ISO}}. Sources that count: github-release, pypi, go-index,
 #   registry-push. A source of commit-date, tag-date or image-config is NEVER a proof (the publisher or the builder controls it).
 set -euo pipefail
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x   # CI runners have no git identity
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
-chk="$here/../bin/pin-age-check.py"
+chk="$here/../supply-chain/pin-age-check.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
@@ -374,7 +375,7 @@ check test "$rc" -eq 1; check grep -qF "package:pypi/requests@2.40.0" "$work/ind
 
 # --- a hostile line cannot stall the readers; the scout versions named in install-scanner.sh; forms this inventory does not measure are listed, never silently empty ---------------------------------
 CASE="inventory: a run line of 200 repeated expressions (a pattern-backtracking probe) is read in well under a second"
-check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 t = time.time()
@@ -383,7 +384,7 @@ for body in ("curl https://github.com/a/b/releases/download/v" + "${{ x }}" * 20
 assert time.time() - t < 3, time.time() - t
 PY
 CASE="inventory: docker-scout-X.Y.Z versions in install-scanner.sh's case list are tool:scout items; releases/latest/download is an unprovable item; go run and go get x@v are go tools"
-check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 got = inv.inventory({"bin/install-scanner.sh": "SCOUT_VER=1.26.0\ncase x in docker-scout|docker-scout-1.25.0|docker-scout-1.24.0) ;; esac\n",
@@ -392,7 +393,7 @@ for k in ("tool:scout@1.25.0", "tool:scout@1.24.0", "tool:scout@1.26.0", "tool:o
     assert k in got, (k, sorted(got))
 PY
 CASE="inventory: install forms it does not measure (npm, apt, gh release download, a pip URL, a non-release download) are LISTED"
-check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 f = {".github/workflows/a.yml": "x: npm install left-pad\ny: sudo apt-get install -y skopeo\nz: gh release download v1\nw: pip install git+https://x/y@z\nv: curl -O https://example.org/t.tgz\n"}
@@ -401,7 +402,7 @@ assert whats == {"a package-manager install", "an apt install", "a gh release do
 PY
 
 CASE="inventory: docker run with a quoted image, with --cpus 2, and bare pip install names are items; a range, (unpinned) or an expression is NEVER a pin that can pass the age check"
-check python3 - "$here/../bin/pin-inventory.py" "$chk" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" "$chk" <<'PY'
 import importlib.util, sys, datetime as dt
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 got = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n          docker run --rm \"alpine:3.99\" true\n          docker run --cpus 2 --memory 1g busybox:1.36 true\n          pip install requests flask[async]\n"})
@@ -414,7 +415,7 @@ for v in (">=2.0", "(unpinned)", "latest", "${{expression}}"):
     assert not ok and "not a pin" in why, (v, why)
 PY
 CASE="inventory: a subdirectory taken from untrusted action metadata is redacted like every other part of a key"
-check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 assert "PRIVATE_CANARY" not in inv.Item("action", "o/r", "a" * 40, "", "x/${{secrets.PRIVATE_CANARY}}").key
