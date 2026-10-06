@@ -64,8 +64,8 @@ agent() {
   local name=$1 plan=$2; shift 2
   local d="$work/$name"; mkdir -p "$d/sandbox"; echo "README" >"$d/sandbox/README.md"; echo "$plan" >"$d/plan.json"
   : >"$d/fp.log"; : >"$d/fd.log"; sed "s#__LOG__#$d/fd.log#" "$work/docker.tmpl" >"$d/docker"; chmod +x "$d/docker"
-  printf '{"persona":"readme-evaluator","instructions":"You are an evaluator with only the README and ten minutes.","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"%s","token_budget":%s,"tools":{}}' \
-    "$d/sandbox" "$(printf 'a%.0s' $(seq 64))" "${MODEL:-MODEL-AGENT-X}" "${BUDGET:-400000}" >"$d/req.json"
+  printf '{"persona":"readme-evaluator","instructions":"You are an evaluator with only the README and ten minutes.","docs_dir":"%s","endpoint":"%s","image":"x@sha256:%s","model":"%s","token_budget":%s,"tools":{}}' \
+    "$d/sandbox" "${ENDPOINT:-http://127.0.0.1:18080}" "$(printf 'a%.0s' $(seq 64))" "${MODEL:-MODEL-AGENT-X}" "${BUDGET:-400000}" >"$d/req.json"
   rc=0
   env ANTHROPIC_API_KEY=SECRET-MODEL-KEY GITHUB_TOKEN=SECRET-GH GITHUB_REPOSITORY=x/y RUNNER_TEMP=/r ACTIONS_CACHE_URL=http://c.invalid \
     GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 GH_ENTERPRISE_TOKEN=SECRET-GHE \
@@ -176,8 +176,8 @@ python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&
 trap 'kill $SRV 2>/dev/null; rm -rf "$work"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18080')" 2>/dev/null && break; sleep 0.3; done
 echo "ok-endpoint" >"$work/healthz"
-agent neverreached '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18099/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
-CASE="naming the endpoint is not enough: a command that names it but got NO answer (the connection failed, output empty) leaves the persona without a clean pass"
+ENDPOINT=http://127.0.0.1:18099 agent neverreached '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18099/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+CASE="naming the endpoint is not enough: the CONFIGURED endpoint (18099, where nothing listens) is named exactly by the command, but the connection failed and the output is empty: the persona is left without a clean pass (an implementation that only matches the endpoint string fails this)"
 check python3 - "$work/neverreached/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))

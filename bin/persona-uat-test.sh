@@ -536,7 +536,7 @@ PY
 done
 IMAGE="$IMG2" PUBLISH=1 GH_STUB_LIST='<html>rate limited' run weeklygarbageA "$WK" weekly
 check test "$rc" -ne 0
-check python3 - "$work/weeklygarbage/gh.log" <<'PY'
+check python3 - "$work/weeklygarbageA/gh.log" <<'PY'
 import sys
 assert not [l for l in open(sys.argv[1]) if l.startswith("issue create")], "created an issue after an unreadable list"
 PY
@@ -857,6 +857,9 @@ class _Msg:
     def __init__(self, text):
         self.content = [type("B", (), {"type": "text", "text": text})()]
         self.usage = type("U", (), {"input_tokens": 120, "output_tokens": 30})()
+ROLE_WORDS = (("gradle", ("first-time", "gradle", "proxy")), ("maven", ("maven", "jenkins")), ("compliance", ("signature", "sbom", "vex")),
+              ("readme", ("only the readme", "ten minutes")), ("oncall", ("upgrade", "rollback", "logs")))   # each persona's own instruction words
+
 class Anthropic:
     def __init__(self, *a, **k):
         tf = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")
@@ -872,7 +875,9 @@ class Anthropic:
             "first": kw["messages"][0]["content"] if isinstance(kw["messages"][0]["content"], str) else json.dumps(kw["messages"][0]["content"])}) + "\n")
         msgs = kw["messages"]
         if len(msgs) == 1:
-            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); python3 -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:18080/').status)\""}))
+            ctx = (kw.get("system", "") + " " + (msgs[0]["content"] if isinstance(msgs[0]["content"], str) else json.dumps(msgs[0]["content"]))).lower()
+            role = next((n for n, ws in ROLE_WORDS if all(w in ctx for w in ws)), "none")      # which persona's instructions did THIS request carry
+            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); echo ROLE-" + role + "; python3 -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:18080/').status)\""}))
         last = msgs[-1]["content"] if isinstance(msgs[-1]["content"], str) else json.dumps(msgs[-1]["content"])
         if len(msgs) == 3:
             return _Msg(json.dumps({"action": "shell", "command": "cat docs/documented-step-that-does-not-exist.md"}))
@@ -902,14 +907,23 @@ for r in glob.glob(sys.argv[1] + "/*.report.md"):
     c = open(r).read()
     assert "VERDICT: blocking" in c and "No such file" in c, r
 PY
-CASE="integrated: each persona really ran a shell action in its sandbox, and the COMPUTED output (42, which is not in the command text) came back into its transcript"
+CASE="integrated: each persona really ran a shell action in its sandbox, the COMPUTED output (42, which is not in the command text) came back into its transcript, and the role its OWN provider request carried (gradle, maven, compliance, readme, oncall) is the role of its report: five distinct roles through the real agent"
 check python3 - "$work/integ/out" <<'PY'
-import glob, sys
+import glob, re, sys
 ts = glob.glob(sys.argv[1] + "/*.transcript.txt")
 assert len(ts) == 5, ts
 for t in ts:
     c = open(t).read()
     assert "# fscache README" in c and "\n42" in c.replace("\r", ""), t
+role_of = {"gradle-platform-engineer": "gradle", "maven-jenkins-ci": "maven", "compliance-reviewer": "compliance", "readme-evaluator": "readme", "on-call-engineer": "oncall"}
+seen = {}
+for t in ts:
+    persona = t.split("/")[-1].split(".transcript")[0]
+    c = open(t).read()
+    got = sorted(set(re.findall(r"ROLE-(\w+)", c)))
+    assert got == [role_of[persona]], (persona, got, "the persona's provider request did not carry ITS OWN role instructions")
+    seen[persona] = got[0]
+assert len(set(seen.values())) == 5, seen
 PY
 CASE="integrated: every provider call (three per persona) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
 check python3 - "$work/sdk/sdk.log" <<'PY'

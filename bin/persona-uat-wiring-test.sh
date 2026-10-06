@@ -96,7 +96,9 @@ def common(name, job, bad):
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
     if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"}):
         bad.append(f"{name}: the driver is given options outside the contract: {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--publish'})}")
-    positional = [t for i, t in enumerate(argv[1:], 1) if not t.startswith("--") and not (argv[i - 1].startswith("--") and argv[i - 1] != "--publish")]
+    first = next((i for i, t in enumerate(argv) if t.endswith("bin/persona-uat.py")), None)       # skip `python3` and the driver script itself
+    positional = [] if first is None else [t for i, t in enumerate(argv[first + 1:], first + 1)
+                                           if not t.startswith("--") and not (argv[i - 1].startswith("--") and argv[i - 1] != "--publish")]
     if positional:
         bad.append(f"{name}: the driver command has tokens that are no option or option value: {positional}")
     if d.get("working-directory") or (job.get("defaults", {}).get("run", {}) or {}).get("working-directory"):
@@ -290,7 +292,16 @@ def judge_requirements(bad):
     if not any(l.startswith("anthropic==") for l in reqs) or any("--hash=sha256:" not in l for l in reqs):
         bad.append("bin/persona-uat-requirements.txt must pin anthropic== and every requirement by --hash=sha256:")
 
+def workflow_defaults(doc, label, bad):
+    """a workflow-level `defaults.run` (working-directory or shell) is inherited by every job: the driver's relative paths assume the workspace root"""
+    run = (doc.get("defaults", {}) or {}).get("run", {}) or {}
+    if run.get("working-directory"):
+        bad.append(f"{label} has a workflow-level working-directory: the relative checkout, driver, agent and docs paths assume the workspace root")
+    if str(run.get("shell", "bash")) != "bash":
+        bad.append(f"{label} has a workflow-level default shell that is not plain bash")
+
 def judge_release(r, bad):
+    workflow_defaults(r, "release.yml", bad)
     push = (r.get("on", {}).get("push", {}) or {}) if isinstance(r.get("on"), dict) else {}
     tags = push.get("tags", [])
     if (tags if isinstance(tags, list) else [tags]) != ["v*"] or "tags-ignore" in push:
@@ -333,6 +344,7 @@ def judge_release(r, bad):
             bad.append("release persona-uat does not run the driver with --mode rc")
 
 def judge_weekly(f, bad):
+    workflow_defaults(f, "go-freshness.yml", bad)
     j = f.get("jobs", {}).get("persona-uat")
     if not j:
         bad.append("go-freshness.yml has no persona-uat job"); return
@@ -444,6 +456,12 @@ def mutate(name, expect, fn, which="rel"):
             r["on"]["push"]["tags"] = ["x*"]
         elif which == "rel_tags":
             r["on"]["push"]["tags"] = ["v*", "!v*-rc.*"]
+        elif which == "rel_defaults":
+            r["defaults"] = {"run": {"working-directory": "harness"}}
+        elif which == "fresh_defaults":
+            f["defaults"] = {"run": {"working-directory": "harness"}}
+        elif which == "rel_defaults_shell":
+            r["defaults"] = {"run": {"shell": "pwsh"}}
         elif which == "rel_patchfailed":
             r["jobs"]["patch-failed"]["needs"] = [n for n in r["jobs"]["patch-failed"]["needs"] if n != "persona-uat"]
         else:
@@ -542,6 +560,9 @@ mutate("rc identity step masks a literal, not the token", "mask THE TOKEN",
 mutate("rc driver's --publish is commented out", "is not run with --publish exactly once", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "# --publish")))
 mutate("rc driver step gets a working-directory", "a working-directory on the driver step", lambda j: drv(j).update({"working-directory": "harness"}))
 mutate("rc job default working-directory", "a working-directory on the driver step", lambda j: j.update(defaults={"run": {"working-directory": "x"}}))
+mutate("release.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="rel_defaults")
+mutate("go-freshness.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="fresh_defaults")
+mutate("release.yml gets a workflow-level default shell", "workflow-level default shell", lambda j: None, which="rel_defaults_shell")
 mutate("rc driver gets a stray positional token", "tokens that are no option or option value", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " extra"))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
