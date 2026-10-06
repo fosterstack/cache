@@ -96,7 +96,9 @@ def common(name, job, bad):
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
     if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"}):
         bad.append(f"{name}: the driver is given options outside the contract: {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--publish'})}")
-    first = next((i for i, t in enumerate(argv) if t.endswith("bin/persona-uat.py")), None)       # skip `python3` and the driver script itself
+    first = next((i for i, t in enumerate(argv) if t == pre + "bin/persona-uat.py"), None)       # the EXACT script token (`python3 <pre>bin/persona-uat.py`), never a suffix such as .py.bak
+    if first is None or first != 1 or argv[0] != "python3":
+        bad.append(f"{name}: the driver command is not exactly `python3 {pre}bin/persona-uat.py ...` (the tested driver must be the one that runs)")
     positional = [] if first is None else [t for i, t in enumerate(argv[first + 1:], first + 1)
                                            if not t.startswith("--") and not (argv[i - 1].startswith("--") and argv[i - 1] != "--publish")]
     if positional:
@@ -563,6 +565,8 @@ mutate("rc job default working-directory", "a working-directory on the driver st
 mutate("release.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="rel_defaults")
 mutate("go-freshness.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="fresh_defaults")
 mutate("release.yml gets a workflow-level default shell", "workflow-level default shell", lambda j: None, which="rel_defaults_shell")
+mutate("weekly driver script is a .py.bak copy and gets a stray argument", "is not exactly `python3 harness/bin/persona-uat.py", lambda j: drv(j).update(run=drv(j)["run"].replace("persona-uat.py", "persona-uat.py.bak", 1).rstrip() + " extra"), which="fresh")
+mutate("rc driver script is a .py.bak copy", "is not exactly `python3 bin/persona-uat.py", lambda j: drv(j).update(run=drv(j)["run"].replace("persona-uat.py", "persona-uat.py.bak", 1)))
 mutate("rc driver gets a stray positional token", "tokens that are no option or option value", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " extra"))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
