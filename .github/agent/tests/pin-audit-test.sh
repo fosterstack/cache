@@ -862,11 +862,34 @@ check python3 - "$aud" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 class N:
-    def live_ranges(self, i, s, a): return ["= 0.69.4"]
+    def live_ranges(self, i, s, a): return ["= 1"]
     def version_of(self, i): return "4.38.1"
     def versions_of(self, i): return ["v4.38.1", "v4.39.0"]
 e = {"ids": ["A"], "package": "o/r", "version": "4.38.1", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
 assert pa.excepted(pa.inv.Item("action", "o/r", "a" * 40, "v4.38.1"), {"A"}, {"A": "t1"}, [e], N(), {}) is None
+N.versions_of = lambda self, i: ["v4.38.1"]
+assert pa.excepted(pa.inv.Item("action", "o/r", "a" * 40, "v4.38.1"), {"A"}, {"A": "t1"}, [e], N(), {}) == "pass", "positive control: one tag, the ruling applies"
+# mixed: a confirmed 0.73.0 and a still-disputed 0.74.0 never share (overwrite) one open issue
+class G2:
+    def __init__(self): self.calls = []
+    def run(self, *a, ok_fail=False):
+        self.calls.append(a)
+        class R: returncode = 0; stdout = json.dumps([{"number": 7, "title": "supply-chain: disputed trivy (A, B)", "state": "OPEN"}]) if a[:2] == ("issue", "list") else ""; stderr = ""
+        return R()
+g2 = G2()
+pa.file_issues(g2, [{"title": ("supply-chain: trivy@0.73.0", "supply-chain: trivy@0.73.0 (A)"), "body": "1", "owner": False}, {"title": ("supply-chain: disputed trivy", "supply-chain: disputed trivy (A, B)"), "body": "2", "owner": False}], "2026-10-06")
+assert len([c for c in g2.calls if c[:3] == ("issue", "edit", "7")]) == 1 and len([c for c in g2.calls if c[:2] == ("issue", "create")]) == 1, g2.calls
+# rollback: a compromised grandchild behind a SUBDIRECTORY child
+class RN:
+    def versions(self, item): return [{"version": "v2.0.0", "published": "2026-01-01T00:00:00Z", "sha": "b" * 40, "_item": pa.inv.Item("action", "o/cand", "b" * 40), "lists": {"github": [], "osv": []}}]
+    def lists(self, item):
+        return ([{"id": "G", "affected": True, "incident": "I", "modified": "t"}], []) if item.name == "o/grand" else ([], [])
+    def proofs(self, item): return None
+    def nested(self, item):
+        return {"o/cand": [{"ref": "o/child1/sub@" + "c" * 40, "pinned": True}], "o/child1": [{"ref": "o/grand@" + "d" * 40, "pinned": True}]}.get(item.name, []) if (item.name != "o/child1" or item.path == "sub") else []
+import datetime as dt
+r = pa.rollback(pa.inv.Item("action", "o/cand", "e" * 40, "v3.0.0"), RN(), dt.datetime(2026, 10, 6, tzinfo=dt.timezone.utc))
+assert r is None, r
 class G:
     def __init__(self): self.calls = []
     def run(self, *a, ok_fail=False):

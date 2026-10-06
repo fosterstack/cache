@@ -737,10 +737,10 @@ def rollback(item, net, now):
                     nxt = []
                     for outer in level:
                         for n in net.nested(outer):
-                            m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@([0-9a-f]{40})$", n["ref"])
+                            m = re.match(r"^([\w.-]+/[\w.-]+)(?:/([^@\s]*))?@([0-9a-f]{40})$", n["ref"])
                             if not m:
                                 continue
-                            child = inv.Item("action", m.group(1), m.group(2))
+                            child = inv.Item("action", m.group(1), m.group(3), "", m.group(2) or "")     # the subdirectory is part of the child (o/x/sub is not o/x)
                             if child.key in seen_c:
                                 continue
                             seen_c.add(child.key)
@@ -844,9 +844,9 @@ def file_issues(gh, plan, today):
         if title in done or prefix in done:
             continue
         done.add(title); done.add(prefix)
+        open_issues = [i for i in open_issues if i.get("number") not in consumed]    # an issue already serving a finding in this run is out of BOTH lookups
         existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " ("))), None)
         pkg_of_prefix = prefix[len("supply-chain: "):].split("@")[0]
-        open_issues = [i for i in open_issues if i.get("number") not in consumed]
         if existing is None and not prefix.startswith("supply-chain: disputed "):   # a dispute that became a confirmed hit is the SAME issue (one per hit), retitled
             existing = next((i for i in open_issues if i.get("number", -1) > 0 and str(i.get("title", "")).startswith(f"supply-chain: disputed {pkg_of_prefix} (")), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
