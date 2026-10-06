@@ -235,22 +235,30 @@ _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editabl
 def _docker_tails(run):
     return _tails(run, lambda t: t in ("docker", "podman", "nerdctl", "buildah"), {"run", "pull", "create"}, _DOCKER_VALUE_OPTS, keep_sub=True)
 _DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "--tlscacert", "--tlscert", "--tlskey", "--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
-                      "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull"}
+                      "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull", "--cpu-period", "--cpu-quota", "--cpuset-cpus", "--cpuset-mems", "--memory-swap", "--memory-reservation", "--stop-timeout", "--stop-signal", "--health-cmd", "--health-interval", "--health-retries", "--health-timeout", "--health-start-period", "--tmpfs", "--volumes-from", "--link", "--ip", "--network-alias", "--user", "-u", "-w", "--workdir", "--entrypoint", "--name", "-e", "--env", "-p", "--publish", "-v", "--volume", "--network", "--net", "--security-opt", "--sysctl", "--group-add", "--runtime", "--isolation", "--cgroup-parent", "--blkio-weight", "--annotation", "--cidfile", "--pid", "--ipc", "--uts", "--userns", "--expose", "--log-opt", "--mac-address", "--oom-score-adj", "--dns-search", "--dns-option", "--detach-keys", "--label-file", "--gpus"}
 
 
 def _docker_images(cmd_args):
     return _docker_operand(cmd_args)[0]
 
 
+_DOCKER_BOOL_OPTS = {"--rm", "-d", "--detach", "-i", "--interactive", "-t", "--tty", "--init", "--privileged", "--read-only", "--no-healthcheck",
+                     "--sig-proxy", "--oom-kill-disable", "-P", "--publish-all", "--help", "--quiet", "-q", "--disable-content-trust",
+                     "--platform-none"}
+
+
 def _docker_operand(cmd_args):
     """(the image of a docker run/pull/create, the effective --pull policy): the image is the first argument that is not an option or an option's
     value (quotes read as a shell would); the policy is the LAST --pull among the options before it (pflag keeps the final value), read by the SAME
-    walk so the two can never disagree about which words are options, values or the operand (Codex #187 rounds 2-3)."""
+    walk so the two can never disagree about which words are options, values or the operand (Codex #187 rounds 2-3). The `never` policy only
+    counts when EVERY option before the operand has a known arity (a value option, a boolean, a short cluster of booleans, or --name=value of a
+    known option): a guessed arity (a number after an unknown option is taken as its value) once let `--rm 123 --pull=never localhost/x` read the
+    container's own arguments as a policy (round 4), so an unknown option withholds the exemption."""
     try:
         toks = shlex.split(cmd_args)
     except ValueError:
         toks = cmd_args.split()
-    i, pull = 0, None
+    i, pull, guessed = 0, None, False
     while i < len(toks):
         t = toks[i]
         if t.startswith("--pull="):
@@ -258,13 +266,17 @@ def _docker_operand(cmd_args):
         if t == "--pull" and i + 1 < len(toks):
             pull = toks[i + 1]; i += 2; continue
         if t.startswith("-"):
-            takes = (t in _DOCKER_VALUE_OPTS and "=" not in t) or (i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--"))
-            i += 2 if takes else 1
+            known_value = t in _DOCKER_VALUE_OPTS and "=" not in t
+            known = known_value or t in _DOCKER_BOOL_OPTS or (t.startswith("--") and t.split("=", 1)[0] in _DOCKER_VALUE_OPTS and "=" in t) \
+                or re.fullmatch(r"-[dit]+", t) is not None
+            guess = not known and i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--")
+            guessed = guessed or not known
+            i += 2 if (known_value or guess) else 1
             continue
         if "$" in t:
-            return ["(variable)"], pull                # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
-        return ([t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []), pull
-    return [], pull
+            return ["(variable)"], (None if guessed else pull)                # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
+        return ([t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []), (None if guessed else pull)
+    return [], (None if guessed else pull)
 
 
 _ENV_CTX = [""]
