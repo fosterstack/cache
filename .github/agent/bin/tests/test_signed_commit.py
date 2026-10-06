@@ -1,4 +1,4 @@
-# proves: REQ-AUD-17, REQ-AUD-15 (the auditor's delivery commits are made through the GitHub API so GitHub signs them)
+# proves: REQ-SCAN-009-AC1, REQ-SCAN-009-AC5 — the auditor's delivery commits are made through the GitHub API so GitHub signs them (REQ-AUD-17, advisor 0209)
 """auditorlib.signed_commit: the exact REST and GraphQL calls, the base64 file changes, the create-or-reset branch path, and every way the
 delivery must fail closed (an API error, no oid, an unsigned or unverifiable commit, a file over 5 MB, a branch outside auditor/). A recording
 fake `gh`; nothing touches the network."""

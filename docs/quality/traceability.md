@@ -787,11 +787,11 @@ A unique finding judged false with evidence from the image shall get a not_affec
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-009-AC1 | Given a unique finding judged false with evidence from the image; when the panel ends; then it gets a not_affected VEX statement with the evidence as its justification, published through the normal VEX process | ci-workflow |  | approved | 2 item(s) |
 | REQ-SCAN-009-AC2 | Given a unique finding judged false only by default (no audit cited evidence); when the panel ends; then it is logged, raises no alarm, and gets no public statement | unit |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC3 | Given any judged finding; when the panel ends; then it is logged with each audit's reasoning | unit |  | approved | 1 item(s) |
 | REQ-SCAN-009-AC4 | Given a finding judged false earlier; when another scanner reports it, or an advisory names the package we ship; then it becomes real: the tracking issue opens, any VEX statement is updated to affected, and it is counted and reported to the owner as an audit miss | unit |  | approved | 1 item(s) |
-| REQ-SCAN-009-AC5 | Given the audits; when they run; then they run in the auditor's daily run (auditor.yml), right after the rescan, in one of its steps; no separate workflow and no deferral to another day; the rescan stays mechanical (scanners, counts, quorum, seen by N of M, the two-or-more issue rule) and judges no unique finding (owner, Oct 3) | ci-workflow |  | approved | 4 item(s) |
+| REQ-SCAN-009-AC5 | Given the audits; when they run; then they run in the auditor's daily run (auditor.yml), right after the rescan, in one of its steps; no separate workflow and no deferral to another day; the rescan stays mechanical (scanners, counts, quorum, seen by N of M, the two-or-more issue rule) and judges no unique finding (owner, Oct 3) | ci-workflow |  | approved | 5 item(s) |
 
 ### REQ-SCAN-010 — VEX in three forms
 

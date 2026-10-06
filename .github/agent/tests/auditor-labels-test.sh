@@ -56,8 +56,16 @@ def run(cmd, **kw):
         for i, x in enumerate(cmd):
             if x == "--label" and cmd[i + 1] not in labels:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr="could not add label: '%s' not found" % cmd[i + 1])
+    if cmd[:2] == ["gh", "api"]:       # the signed delivery's API calls (advisor 0209): a ref read, the commit mutation, the PR head
+        if "graphql" in cmd:
+            return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": "b" * 40, "signature": {"isValid": True, "state": "VALID"}}}}}))
+        if any("git/ref/heads" in x for x in cmd) and "--method" not in cmd:
+            return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"object": {"sha": "c" * 40}}))
+    if cmd[:3] == ["gh", "pr", "view"]:
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"headRefOid": "b" * 40, "autoMergeRequest": None}))
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+os.environ["GITHUB_REPOSITORY"] = "o/r"; os.environ["GITHUB_SHA"] = "a" * 40
 ss = os.path.join(d, "state-source"); open(ss, "w").write("")       # a real delivery needs the state-source record (here: no open PR was read)
 a = types.SimpleNamespace(out=d, repo=repo, today="2026-10-05", dry_run=False, state_source=ss)
 res = {"calls": calls}

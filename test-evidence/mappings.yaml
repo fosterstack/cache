@@ -395,6 +395,7 @@ mappings:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_signed_commit.py" }
   - ac: REQ-SCAN-007-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
@@ -432,6 +433,7 @@ mappings:
   - ac: REQ-SCAN-009-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_signed_commit.py" }
   - ac: REQ-SCAN-009-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
