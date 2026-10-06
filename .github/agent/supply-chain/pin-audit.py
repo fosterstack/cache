@@ -624,10 +624,10 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        covered = {str(x).lstrip("v") for x in [item.version, item.label, *vers] if x}
+        covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
         want = str(e.get("version", "")).lstrip("v")
-        if not want or not any(c == want or (want.endswith(".*") and c.startswith(want[:-1])) for c in covered):
-            continue   # a ruling names the one version it covers (or one series, "4.*"): never a wildcard
+        if not want or not all(c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1]))) for c in covered):
+            continue   # a ruling names the one version (or one series, "4.*") it covers and must cover EVERY tag at the commit: never a wildcard, never one tag speaking for another
         if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged
@@ -731,12 +731,23 @@ def rollback(item, net, now):
         if cand is not None and net.proofs(cand) is not None and not age.judge_item(cand, net.proofs(cand), now)[0]:
             continue  # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old version)
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
-            try:                       # the candidate's own nested actions must be clean too (a replacement that calls a compromised child is no replacement)
-                dirty = False
-                for n in net.nested(cand):
-                    m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@([0-9a-f]{40})$", n["ref"])
-                    if m and any_affected(dict(zip(("github", "osv"), net.lists(inv.Item("action", m.group(1), m.group(2)))))):
-                        dirty = True
+            try:                       # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
+                dirty, level, seen_c = False, [cand], {cand.key}
+                for _depth in range(3):
+                    nxt = []
+                    for outer in level:
+                        for n in net.nested(outer):
+                            m = re.match(r"^([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@([0-9a-f]{40})$", n["ref"])
+                            if not m:
+                                continue
+                            child = inv.Item("action", m.group(1), m.group(2))
+                            if child.key in seen_c:
+                                continue
+                            seen_c.add(child.key)
+                            if any_affected(dict(zip(("github", "osv"), net.lists(child)))):
+                                dirty = True
+                            nxt.append(child)
+                    level = nxt
             except (Fail, age.CouldNotLook):
                 continue               # cannot prove it clean: not recommended
             if dirty:
@@ -827,6 +838,7 @@ def file_issues(gh, plan, today):
     except ValueError:
         raise Fail("gh issue list did not return JSON")
     done = set()
+    consumed = set()
     for p in plan:
         prefix, title = p["title"]
         if title in done or prefix in done:
@@ -834,6 +846,7 @@ def file_issues(gh, plan, today):
         done.add(title); done.add(prefix)
         existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " ("))), None)
         pkg_of_prefix = prefix[len("supply-chain: "):].split("@")[0]
+        open_issues = [i for i in open_issues if i.get("number") not in consumed]
         if existing is None and not prefix.startswith("supply-chain: disputed "):   # a dispute that became a confirmed hit is the SAME issue (one per hit), retitled
             existing = next((i for i in open_issues if i.get("number", -1) > 0 and str(i.get("title", "")).startswith(f"supply-chain: disputed {pkg_of_prefix} (")), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
@@ -842,6 +855,7 @@ def file_issues(gh, plan, today):
         try:
             labels = ["--label", HIT_LABEL] + (["--label", OWNER_LABEL] if p["owner"] else [])
             if existing:
+                consumed.add(existing["number"])       # one issue serves one finding in a run: a second finding never overwrites it
                 gh.run("issue", "edit", str(existing["number"]), "--title", title, "--body-file", path, *(["--add-label", OWNER_LABEL] if p["owner"] else []))
                 if str(existing.get("state", "OPEN")).upper() == "CLOSED":
                     gh.run("issue", "reopen", str(existing["number"]))  # still a hit: the same issue, never a replacement

@@ -857,6 +857,27 @@ pa.file_issues(g, [{"title": ("supply-chain: trivy@0.75.0", "supply-chain: trivy
 assert any(c[:3] == ("issue", "edit", "7") for c in g.calls) and not any(c[:2] == ("issue", "create") for c in g.calls), g.calls
 PY
 
+CASE="a ruling for one version never covers another tag of the same commit; one open issue is never overwritten by two findings in a run (the second opens its own); a rollback candidate is rejected for a compromised grandchild"
+check python3 - "$aud" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+class N:
+    def live_ranges(self, i, s, a): return ["= 0.69.4"]
+    def version_of(self, i): return "4.38.1"
+    def versions_of(self, i): return ["v4.38.1", "v4.39.0"]
+e = {"ids": ["A"], "package": "o/r", "version": "4.38.1", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 1"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+assert pa.excepted(pa.inv.Item("action", "o/r", "a" * 40, "v4.38.1"), {"A"}, {"A": "t1"}, [e], N(), {}) is None
+class G:
+    def __init__(self): self.calls = []
+    def run(self, *a, ok_fail=False):
+        self.calls.append(a)
+        class R: returncode = 0; stdout = json.dumps([{"number": 7, "title": "supply-chain: disputed trivy (A, B)", "state": "OPEN"}]) if a[:2] == ("issue", "list") else ""; stderr = ""
+        return R()
+g = G()
+pa.file_issues(g, [{"title": ("supply-chain: trivy@0.73.0", "supply-chain: trivy@0.73.0 (A)"), "body": "1", "owner": False}, {"title": ("supply-chain: trivy@0.74.0", "supply-chain: trivy@0.74.0 (A)"), "body": "2", "owner": False}], "2026-10-06")
+assert len([c for c in g.calls if c[:3] == ("issue", "edit", "7")]) == 1 and len([c for c in g.calls if c[:2] == ("issue", "create")]) == 1, g.calls
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

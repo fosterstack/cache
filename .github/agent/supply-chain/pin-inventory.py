@@ -141,7 +141,7 @@ def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     def wanted(n):
         return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
-                or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES
+                or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
     if rev is None:
@@ -348,7 +348,7 @@ def _walk(node, out, labels, path="", in_step=False):
             if k == "env" and isinstance(v, dict):
                 for ek, ev in v.items():
                     if re.fullmatch(r"[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL)", str(ek)):
-                        out.append(Item("tool", "source:env:" + str(ek).lower() + "=" + hashlib.sha256(str(ev).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))   # an env var that retargets a download
+                        out.append(Item("tool", "source:env:" + ("(expression)" if "${{" in str(ev) else str(ek).lower()) + "=" + hashlib.sha256(str(ev).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))   # an env var that retargets a download
             if k in ("container", "image") and isinstance(v, (str, dict)):
                 img = v if isinstance(v, str) else v.get("image")
                 # an `image:` input of an action counts only when it names a digest (other inputs called image are not pins)
@@ -394,8 +394,8 @@ def inventory(files):
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # and the rest of the script like any other: an appended download is seen
                 _step({"run": ln}, found, {})
-        elif path.rsplit("/", 1)[-1] in VERSION_FILES:
-            found = [Item("tool", "file:" + path, "(file)")]
+        elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
+            found = [Item("tool", "file:" + path, "(file)")]   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
             found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]      # what an installer's *-version-file selects: a changed content is a changed key
         elif path.endswith(".sh"):
             found = []
@@ -439,7 +439,7 @@ def inventory(files):
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
             _walk(doc, found, labels, "")
         for it in found:
-            if it.key in items and it.version.startswith("("):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
+            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
                 while True:
                     it.step = re.sub(r"~\d+$", "", it.step or "") + f"~{n}"
