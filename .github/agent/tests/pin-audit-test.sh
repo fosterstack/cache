@@ -667,6 +667,34 @@ pa.file_issues(G(), plan, "2026-10-05")
 assert not any(c[:3] == ("issue", "edit", "-1") for c in calls), calls
 PY
 
+CASE="an open pull request that cannot be checked (a failure inside its item) never hides main's own findings: they are still filed, and the PR is named as not audited"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, io, json, os, subprocess, sys, contextlib
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+sha = "1" * 40
+fx = {"lists": {"action:actions/checkout@" + sha: {"github": [{"id": "GHSA-main-main", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}},
+      "upstream": {}, "nested": {}, "versions": {}, "prs": [], "open_prs": [{"number": 9, "items": ["action:actions/boom@v1"]}]}
+class N(pa.FixtureNet):
+    def lists(self, item):
+        if item.name == "actions/boom":
+            raise pa.Fail("simulated strict-read failure")
+        return super().lists(item)
+pa.FixtureNet = N
+json.dump(fx, open(work + "/iso.fx.json", "w"))
+calls = []
+log = work + "/iso.gh"
+open(work + "/isogh", "w").write("#!/bin/sh\necho \"$@\" >> %s\ncase \"$1 $2\" in 'issue list') echo '[]';; esac\nexit 0\n" % log); os.chmod(work + "/isogh", 0o755)
+repo = work + "/r-cur"
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = pa.main(["--root", repo, "--fixtures", work + "/iso.fx.json", "--now", "2026-10-05T12:00:00Z", "--gh", work + "/isogh"])
+assert rc == 1, rc
+txt = open(log).read()
+assert "issue create" in txt and "GHSA-main-main" in txt and "actions/checkout" in txt, txt
+assert "open pull request #9 could not be checked" in out.getvalue(), out.getvalue()
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

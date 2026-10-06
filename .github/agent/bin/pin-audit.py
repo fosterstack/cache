@@ -627,7 +627,7 @@ def _judge(item, net, exceptions, notes, current=True):
                 findings.append(Finding(item, "advisory", ids, "the authoritative source for this incident lists this version as affected"))
                 continue
             findings.append(Finding(item, "disputed", ids, "the two advisory lists disagree about this incident: "
-                                    + "; ".join(f"{a['id']} says {'affected' if a.get('affected') else 'not affected'}" for a in advs), True))
+                                    + "; ".join(f"{_safe(a['id'])} says {'affected' if a.get('affected') else 'not affected'}" for a in advs), True))
         elif yes:
             mal = any(a.get("malicious") for a in yes)
             findings.append(Finding(item, "malicious" if mal else "advisory", [a["id"] for a in yes],
@@ -706,7 +706,7 @@ def body_of(f, rb, owner, ran, today):
     if rb == UNKNOWN:
         lines.append("Rollback: this kind of item cannot be searched for older versions automatically; nobody has looked for a clean one, so the owner decides.")
     elif rb:
-        lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {rb['version']}" + (f" (commit {rb['sha']})" if rb.get("sha") else "") + f", published {rb['published']}.")
+        lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {_safe(rb['version'])}" + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + f", published {_safe(rb['published'])}.")
     else:
         lines.append(f"No clean version public at least {WAIT_DAYS} days exists: drop it (remove its use) until one does.")
     if ran:
@@ -801,6 +801,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base")
+    ap.add_argument("--head", help="PR mode: the pull request's head commit (its blobs are read, as pin-age-check does)")
     ap.add_argument("--fixtures")
     ap.add_argument("--now")
     ap.add_argument("--gh", default="gh")
@@ -827,7 +828,7 @@ def main(argv=None):
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         try:
-            head = inv.load_at(a.root, None)
+            head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
             if a.base:
                 audited = inv.moved(inv.load_at(a.root, a.base), head)
                 hist = history_items(a.root, a.base, now) if audited else {}
@@ -846,8 +847,8 @@ def main(argv=None):
                 json.dump(state, f, sort_keys=True)
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
-            for path, what in inv.unmeasured(inv.tree_files(a.root, None)):
-                print(f"information: not covered by this check: {what} in {clean(path)}")
+            for (path, what), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
+                print(f"information: not covered by this check: {what} in {clean(path)} ({n}x)")
         except RuntimeError:
             pass
         print(f"audit: inventory of {len(head)} item(s):")
@@ -873,14 +874,24 @@ def main(argv=None):
                 notes += n2
         if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
             seen_keys = {i.key for i in audited}
-            for number, items in net.open_pr_items():
-                for it in items:
+            try:
+                open_prs = net.open_pr_items()
+            except (Fail, age.CouldNotLook) as e:
+                print(f"information: the open pull requests were not audited: {clean(e)}")
+                open_prs = []
+            for number, items in open_prs:
+                if len(items) > 100:
+                    print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
+                for it in items[:100]:
                     if it.key in seen_keys:
                         continue
                     seen_keys.add(it.key)
-                    for f in judge(it, net, exceptions, notes, current=True):
-                        f.pr = number
-                        findings.append(f)
+                    try:  # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or other PRs'
+                        for f in judge(it, net, exceptions, notes, current=True):
+                            f.pr = number
+                            findings.append(f)
+                    except (Fail, age.CouldNotLook) as e:
+                        print(f"information: a pin of open pull request #{number} could not be checked: {clean(e)}")
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
         seen = {it.key for it in audited} | set(head)
         queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"]

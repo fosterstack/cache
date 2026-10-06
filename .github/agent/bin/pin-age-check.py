@@ -406,8 +406,19 @@ def main(argv=None):
         return 2
 
 
+def _added_unmeasured(root, base, head):
+    """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
+    try:
+        b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})
+        h = inv.unmeasured({**inv.tree_files(root, head), **inv.tree_scripts(root, head)})
+    except RuntimeError:
+        return []
+    return sorted(k for k, n in h.items() if n > b.get(k, 0))
+
+
 def _run(a, moved, fx, now):
-    if not moved:
+    added = _added_unmeasured(a.root, a.base, a.head)
+    if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
@@ -415,6 +426,10 @@ def _run(a, moved, fx, now):
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
+    for path, what in added:
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
+                     "reason": f"{what} was added to {path}: this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
+        print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
         json.dump({"min_days": a.min_days, "moved": rows}, open(a.json, "w"), indent=1)

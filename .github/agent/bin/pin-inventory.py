@@ -286,13 +286,36 @@ _UNMEASURED = [
 ]
 
 
+def tree_scripts(root, rev):
+    """{path: text} for every shell script at a revision (rev None: the working tree): where a download or install can hide outside the workflows."""
+    out = {}
+    if rev is None:
+        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh")]
+        for n in names:
+            try:
+                out[n] = open(f"{root}/{n}").read()
+            except OSError:
+                continue
+        return out
+    for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
+        meta, _, n = line.partition("\t")
+        if n.endswith(".sh"):
+            blob = meta.split()[2]
+            if blob not in _BLOBS:
+                _BLOBS[blob] = git(root, "cat-file", "blob", blob)
+            out[n] = _BLOBS[blob]
+    return out
+
+
 def unmeasured(files):
-    """(file, what) for every install form in the workflows that this inventory does not measure: reported as information so nothing is silently empty."""
-    out = []
+    """{(file, what): occurrences} for every install form in the workflows and scripts that this inventory does not measure: reported as information,
+    and a pull request that ADDS one is refused (the check says what it cannot resolve and then refuses it)."""
+    out = {}
     for path, text in sorted(files.items()):
-        if not path.startswith(".github/"):
+        if not (path.startswith(".github/") or path.endswith(".sh")) or path == "bin/install-scanner.sh":
             continue
         for rx, what in _UNMEASURED:
-            if rx.search(text):
-                out.append((path, what))
+            n = len(rx.findall(text))
+            if n:
+                out[(path, what)] = n
     return out

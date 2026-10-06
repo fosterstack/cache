@@ -58,7 +58,7 @@ jobs:
             exceptions="$RUNNER_TEMP/no-exceptions.json"
             echo '{"exceptions": []}' > "$exceptions"
           fi
-          python3 "$checker/.github/agent/bin/pin-audit.py" --root pr --base ${{ github.event.pull_request.base.sha }} --exceptions "$exceptions" --report-only || status=1
+          python3 "$checker/.github/agent/bin/pin-audit.py" --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1
           exit $status
 
   daily-audit:
