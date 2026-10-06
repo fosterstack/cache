@@ -869,7 +869,10 @@ def main(argv=None):
                 json.dump(state, f, sort_keys=True)
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
-            for (path, what), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
+            seen_um = {}
+            for (path, what, _line), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
+                seen_um[(path, what)] = seen_um.get((path, what), 0) + n
+            for (path, what), n in sorted(seen_um.items()):
                 print(f"information: not covered by this check: {what} in {clean(path)} ({n}x)")
         except RuntimeError:
             pass
@@ -884,7 +887,7 @@ def main(argv=None):
 
         for it in audited:
             if not net.covered(it):
-                print(f"information: not checked against the advisory lists (no source for this kind of item): {it.key}")
+                print(f"information: not checked against the advisory lists (no source for this kind of item): {clean(it.key)}")
 
         def one(it):
             n2 = []

@@ -278,8 +278,8 @@ if __name__ == "__main__":
 
 
 _UNMEASURED = [
-    (re.compile(r"\b(?:npm|pnpm|yarn)\s+(?:install|add|i)\b|\bnpx\b|\bcargo\s+install\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\b\s+\S|\bbrew\s+install\b"), "a package-manager install"),
-    (re.compile(r"\bapt(?:-get)?\s+install\b"), "an apt install"),
+    (re.compile(r"\b(?:npm|pnpm|yarn)\b[^\n;&|]*?\s(?:install|add|i)(?=\s|$)|\bnpx\b|\bcargo\s+install\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\s+\S|\bbrew\s+install\b"), "a package-manager install"),
+    (re.compile(r"\bapt(?:-get)?\s+(?:-\S+\s+)*install\b"), "an apt install"),
     (re.compile(r"\bgh\s+release\s+download\b"), "a gh release download"),
     (re.compile(r"\bpip3?\s+install\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\b(?:curl|wget)\b[^\n]*https?://(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
@@ -308,14 +308,16 @@ def tree_scripts(root, rev):
 
 
 def unmeasured(files):
-    """{(file, what): occurrences} for every install form in the workflows and scripts that this inventory does not measure: reported as information,
-    and a pull request that ADDS one is refused (the check says what it cannot resolve and then refuses it)."""
+    """{(file, form, command line): occurrences} for every install form in the workflows and scripts that this inventory does not measure, read after
+    joining backslash continuations. Reported as information; a pull request that ADDS an entry (a new command line, even in place of another) is refused."""
     out = {}
     for path, text in sorted(files.items()):
-        if not (path.startswith(".github/") or path.endswith(".sh")) or path == "bin/install-scanner.sh":
+        if not (path.startswith(".github/") or path.endswith(".sh")):
             continue
-        for rx, what in _UNMEASURED:
-            n = len(rx.findall(text))
-            if n:
-                out[(path, what)] = n
+        for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
+            flat = " ".join(line.split())
+            for rx, what in _UNMEASURED:
+                if rx.search(flat):
+                    key = (path, what, _hide(flat)[:160])
+                    out[key] = out.get(key, 0) + 1
     return out

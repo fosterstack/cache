@@ -153,20 +153,33 @@ def _release_time(repo, tags):
 _TAGS = {}
 
 
-def _tags_for_commit(repo, sha):
-    """EVERY tag that points at the commit (annotated ones peeled): v4 and v4.1.0 may both."""
+def _tag_refs(repo):
+    """{tag: commit} for EVERY tag of a public repository, annotated tags peeled, from ONE `git ls-remote` (no REST call per tag: a repository with hundreds
+    of annotated tags would otherwise exhaust the shared API budget)."""
     if repo not in _TAGS:
-        _TAGS[repo] = _gh_pages(f"repos/{repo}/git/matching-refs/tags?per_page=100") or []
-    found = []
-    for r in _TAGS[repo]:
-        o = r.get("object", {})
-        if o.get("sha") == sha:
-            found.append(r["ref"][len("refs/tags/"):])
-        elif o.get("type") == "tag":
-            t = _gh_api(f"repos/{repo}/git/tags/{o['sha']}")
-            if t and t.get("object", {}).get("sha") == sha:
-                found.append(r["ref"][len("refs/tags/"):])
-    return found
+        try:
+            r = subprocess.run(["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"], capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise CouldNotLook(f"git ls-remote of {repo} failed: {type(e).__name__}")
+        if r.returncode:
+            raise CouldNotLook(f"git ls-remote of {repo} failed")
+        refs = {}
+        for line in r.stdout.splitlines():
+            sha, _, ref = line.partition("\t")
+            if not ref.startswith("refs/tags/"):
+                continue
+            name = ref[len("refs/tags/"):]
+            if name.endswith("^{}"):
+                refs[name[:-3]] = sha          # peeled: the commit an annotated tag points at
+            else:
+                refs.setdefault(name, sha)
+        _TAGS[repo] = refs
+    return _TAGS[repo]
+
+
+def _tags_for_commit(repo, sha):
+    """EVERY tag that points at the commit: v4 and v4.1.0 may both."""
+    return sorted(t for t, c in _tag_refs(repo).items() if c == sha)
 
 
 def _tag_for_commit(repo, sha):
@@ -406,7 +419,7 @@ def main(argv=None):
         return 2
 
 
-def _added_unmeasured(root, base, head):
+def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
     """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
     try:
         b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})
@@ -426,9 +439,9 @@ def _run(a, moved, fx, now):
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
-    for path, what in added:
+    for path, what, line in added:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
-                     "reason": f"{what} was added to {path}: this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
+                     "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
