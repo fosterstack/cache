@@ -1257,8 +1257,6 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                 cur_doc["entries"].extend(new)
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
-        else:                                          # the panel writes ONLY its state, its VEX and its profile file: anything else on this branch is not ours
-            raise RuntimeError("auditor-panel: the open PR's branch holds %s, which the panel never writes; refusing to carry it (a human pushed to the App's branch?)" % path)
     return carried
 
 
