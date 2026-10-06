@@ -230,8 +230,10 @@ def _close_superseded(branch, url, ws):
     merge under strict checks, so it is closed with a pointer to today's (advisor 0187). Only older daily branches: never today's, auditor/panel or
     a bump branch. Best effort: a failure here is reported and never fails the delivery."""
     try:
-        q = subprocess.run(["gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100", "--jq",
-                            '.[] | "\\(.number) \\(.head.ref)"'], cwd=ws, capture_output=True, text=True)
+        # only PRs the App itself opened from a branch of THIS repository and that are not drafts (a draft waits for the owner; a fork's or a human's PR is never ours to close)
+        q = subprocess.run(["gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100", "--paginate", "--jq",
+                            '.[] | select(.head.repo.fork == false and .draft == false and .user.type == "Bot") | "\\(.number) \\(.head.ref)"'],
+                           cwd=ws, capture_output=True, text=True)
         if q.returncode != 0:
             print("note: could not list open PRs to close superseded suppression PRs")
             return

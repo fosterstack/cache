@@ -457,6 +457,15 @@ class SuppressionPR(Base):
             self.assertIn("supersed", first[first.index("--comment") + 1].lower())
             self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
 
+    def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # Sonnet r1 blocker 2
+        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
+        self.real(fr)
+        lst = [a for a in fr.argvs() if a[:3] == list(self.LIST)][0]
+        self.assertIn("--paginate", lst)
+        jq = lst[lst.index("--jq") + 1]
+        for needle in ('.head.repo.fork == false', '.draft == false', '.user.type == "Bot"'):
+            self.assertIn(needle, jq)                                          # a fork's, a human's and an owner-held draft are never closed
+
     def test_nothing_is_closed_when_todays_pr_was_not_delivered(self):
         fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
         self.assertIsNone(self.real(fr)[0])

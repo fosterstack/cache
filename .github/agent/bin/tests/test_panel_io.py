@@ -611,7 +611,7 @@ class Deliver(Tmp):
         self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], cmds)   # the open PR holds a profile entry (r2 R7)
         # advisor 0186 (replaces "builds on the open PR's FETCH_HEAD", which left the branch behind main forever): the open PR's branch is
         # READ (fetched) so its files carry forward, but the branch is rebuilt on the run's main commit
-        self.assertTrue(any(c[:4] == ["git", "-C", self.repo, "fetch"] and c[-1] == "auditor/panel" for c in cmds))
+        self.assertTrue(any(c[:4] == ["git", "-C", self.repo, "fetch"] and c[-1] == "auditor/panel" and "origin" in c for c in cmds))
         self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", os.environ.get("GITHUB_SHA") or "HEAD"], cmds)
         self.assertNotIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
         self.assertIn(["gh", "pr", "edit", "17"], [c[:4] for c in cmds])
@@ -744,7 +744,7 @@ class RebuildReal(Tmp):
         self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], calls)           # the carried profile entry keeps it manual
         self.assertTrue(any(c[:3] == ["gh", "pr", "view"] for c in calls))                              # and an armed PR is checked for disarming
 
-    def test_a_state_only_pr_is_rebuilt_and_may_auto_merge(self):
+    def test_the_pr_branch_not_the_listing_decides_what_is_carried(self):
         rc, calls = self.deliver(pr_files="%s\n" % P.STATE)
         self.assertEqual(rc, 0)
         self.assertEqual(self.pushed(P.STATE)["note"], "today")
@@ -764,6 +764,25 @@ class RebuildReal(Tmp):
         with self.assertRaises(RuntimeError) as e:
             self.deliver()
         self.assertIn("conflict", str(e.exception).lower())
+
+    def test_a_pr_branch_with_a_planted_file_fails_the_run_before_any_push(self):
+        self.git("checkout", "-q", "auditor/panel")
+        os.makedirs(os.path.join(self.work, ".github/agent/prompts"), exist_ok=True)
+        open(os.path.join(self.work, ".github/agent/prompts/p.md"), "w").write("planted")
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "human push"); self.git("push", "-q", "origin", "auditor/panel")
+        self.git("checkout", "-q", "main")
+        before = self.git("rev-parse", "origin/auditor/panel")
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver()
+        self.assertIn("never writes", str(e.exception))
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel"), before)       # nothing was pushed
+
+    def test_auto_merge_is_only_for_the_panels_own_records(self):
+        on = {"AUDITOR_AUTOMERGE": "on"}
+        self.assertTrue(P.automerge_allowed([P.STATE, P.VEX], env=on))
+        for extra in (P.PROFILES, ".github/agent/prompts/x.md", ".github/workflows/auditor.yml", "bin/x.sh"):
+            self.assertFalse(P.automerge_allowed([P.STATE, extra], env=on), extra)
 
     def test_no_open_pr_still_starts_from_the_runs_main_commit(self):
         rc, calls = self.deliver(existing="")
@@ -837,13 +856,13 @@ class CarryForward(Tmp):
         self.cur(P.PROFILES, {"entries": [e1, e2, {"scanner": "x", "kind": "y", "match": {}}]})   # main already holds it: nothing new
         self.assertEqual(self.go([P.PROFILES]), [])
 
-    def test_any_other_pending_file_is_carried_whole_unless_main_changed_it(self):
-        self.put("PR", ".auditor/proposals/p.json", "pr-version"); self.put("BASE", ".auditor/proposals/p.json", "base-version")
-        self.assertEqual(self.go([".auditor/proposals/p.json"]), [".auditor/proposals/p.json"])
-        self.assertEqual(open(os.path.join(self.repo, ".auditor/proposals/p.json")).read(), "pr-version")
-        self.cur(".auditor/proposals/p.json", "main-changed-it")
-        with self.assertRaises(RuntimeError):
-            self.go([".auditor/proposals/p.json"])
+    def test_a_file_the_panel_never_writes_is_refused_not_carried(self):      # Sonnet r1 blocker 1: a human push must not ride into an App commit
+        for path in (".github/agent/prompts/x.md", ".github/workflows/auditor.yml", ".auditor/proposals/p.json", "bin/evil.sh"):
+            self.put("PR", path, "pr-version"); self.put("BASE", path, "base-version")
+            with self.assertRaises(RuntimeError) as e:
+                self.go([path])
+            self.assertIn("never writes", str(e.exception))
+            self.assertFalse(os.path.exists(os.path.join(self.repo, path)))
 
 
 sys.path.insert(0, os.path.join(BIN, "..", "fixtures", "testlib"))

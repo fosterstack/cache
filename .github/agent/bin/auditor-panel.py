@@ -918,7 +918,8 @@ def automerge_allowed(changed, env=os.environ):
     """REQ-AUD-17 AC3/AC4, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
     that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
     on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
-    return on and PROFILES not in changed
+    # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a workflow or any other path waits for the owner.
+    return on and all(c in (STATE, VEX) for c in changed)
 
 
 def _load_json(path, default=None):
@@ -1178,11 +1179,8 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                 cur_doc["entries"].extend(new)
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
-        else:                                          # any other file the PR holds (a pending proposal): carried whole if main did not touch it
-            if cur_txt and cur_txt != base_txt:
-                raise _conflict(path, "the whole file")
-            write(path, pr_txt)
-            carried.append(path)
+        else:                                          # the panel writes ONLY its state, its VEX and its profile file: anything else on this branch is not ours
+            raise RuntimeError("auditor-panel: the open PR's branch holds %s, which the panel never writes; refusing to carry it (a human pushed to the App's branch?)" % path)
     return carried
 
 
@@ -1209,7 +1207,7 @@ def cmd_deliver(a, run=subprocess.run):
         # no shared history within the fetched depth fails the command (and so the run): never a rebuild without knowing what the PR itself added
         merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
         if merge_base:  # the PR's own files come from git itself, not from what a listing says
-            pr_files = _sh(["git", "-C", a.repo, "diff", "--name-only", merge_base, "FETCH_HEAD"], plan, real, run).split()
+            pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
     carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
     changed = list(carried)
