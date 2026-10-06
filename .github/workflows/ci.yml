@@ -134,8 +134,8 @@ jobs:
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
       - name: run gosec
         run: |
-          gosec="$(go env GOPATH)/bin/gosec"
-          "$gosec" -fmt sarif -out gosec-results.sarif ./...
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          gosec -fmt sarif -out gosec-results.sarif ./...
       # Fork PRs get a read-only GITHUB_TOKEN that `permissions:` cannot
       # elevate, so security-events: write is not granted and this upload
       # cannot succeed. gosec is a REQUIRED status check: without this guard
@@ -296,6 +296,8 @@ jobs:
         run: bash bin/workflow-consolidation-test.sh
       - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
         run: bash bin/panel-wiring-test.sh
+      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
+        run: bash .github/agent/tests/k8s-harness-fence-test.sh
       - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
         run: bash .github/agent/tests/pin-age-check-test.sh
       - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)

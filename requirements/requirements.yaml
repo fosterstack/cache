@@ -1181,6 +1181,9 @@ requirements:
       digest with its version in a comment, and every container image the
       pipeline names or passes to an action shall be named by digest; a tag
       or branch reference shall fail the check that gates every pull request.
+      The check enforces plain forms only (owner, Oct 3): a deliberately
+      hidden form is out of its scope; reviewers judge intent, and an
+      obfuscation-only finding is information, not a blocker.
     source: [.github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
