@@ -609,8 +609,11 @@ class Deliver(Tmp):
             P.cmd_deliver(self.a(), run=run)
         cmds = [c for c, _ in calls]
         self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], cmds)   # the open PR holds a profile entry (r2 R7)
-        self.assertIn(["git", "-C", self.repo, "fetch", "origin", "auditor/panel"], cmds)   # builds on the open PR
-        self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
+        # advisor 0186 (replaces "builds on the open PR's FETCH_HEAD", which left the branch behind main forever): the open PR's branch is
+        # READ (fetched) so its files carry forward, but the branch is rebuilt on the run's main commit
+        self.assertTrue(any(c[:4] == ["git", "-C", self.repo, "fetch"] and c[-1] == "auditor/panel" for c in cmds))
+        self.assertIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", os.environ.get("GITHUB_SHA") or "HEAD"], cmds)
+        self.assertNotIn(["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", "FETCH_HEAD"], cmds)
         self.assertIn(["gh", "pr", "edit", "17"], [c[:4] for c in cmds])
         self.assertIn(["gh", "issue", "comment", "42"], [c[:4] for c in cmds])
         stmts = json.load(open(vpath))["statements"]
@@ -647,6 +650,200 @@ class Deliver(Tmp):
         with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1"}), self.assertRaises(RuntimeError) as e:
             P.cmd_deliver(self.a(), run=run)
         self.assertNotIn("openai", str(e.exception))
+
+
+class RebuildReal(Tmp):
+    """advisor 0186 (REQ-AUD-17): with an open PR the branch is rebuilt on the run's CURRENT main commit and the PR's files carry forward.
+    Real git against a local origin; only gh is faked."""
+
+    VEXDOC = {"@id": "https://x/vex", "version": 1, "timestamp": "t", "statements": []}
+
+    def git(self, *a, cwd=None):
+        r = subprocess.run(["git", *a], cwd=cwd or self.work, capture_output=True, text=True)
+        assert r.returncode == 0, (a, r.stderr)
+        return r.stdout.strip()
+
+    def write(self, rel, obj):
+        path = os.path.join(self.work, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        json.dump(obj, open(path, "w"), indent=2)
+        open(path, "a").write("\n")
+
+    def stmt(self, name, status="not_affected"):
+        return {"@id": "https://x/vex#" + name, "vulnerability": {"name": name}, "status": status}
+
+    def setUp(self):
+        super().setUp()
+        self.origin = os.path.join(self.d, "origin.git")
+        self.work = os.path.join(self.d, "work")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        subprocess.run(["git", "clone", "-q", "file://" + self.origin, self.work], check=True, capture_output=True)
+        for k, v in (("user.name", "t"), ("user.email", "t@x"), ("commit.gpgsign", "false")):
+            self.git("config", k, v)
+        self.write(P.VEX, dict(self.VEXDOC, statements=[self.stmt("CVE-0-BASE")]))
+        self.write(P.PROFILES, {"entries": []})
+        self.write(P.STATE, {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "m0"); self.git("branch", "-M", "main"); self.git("push", "-q", "origin", "main")
+        self.m0 = self.git("rev-parse", "HEAD")
+        # yesterday's panel PR: ONE commit on m0 carrying a pending VEX proposal and a pending profile entry
+        self.git("checkout", "-q", "-b", "auditor/panel")
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-1-PANEL")); doc["version"] = 2
+        self.write(P.VEX, doc)
+        self.entry = {"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}
+        self.write(P.PROFILES, {"entries": [self.entry]})
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "panel yesterday"); self.git("push", "-q", "origin", "auditor/panel")
+        self.git("checkout", "-q", "main")
+        # main moves on: the CVE auditor merged a suppression since
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-2-MAIN")); doc["version"] = 2
+        self.write(P.VEX, doc)
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "m1 (main moved)"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
+
+    def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None):
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
+        json.dump(st, open(os.path.join(self.out, "state.json"), "w"))
+        json.dump({"issue": "", "vex": list(vex), "profiles": [], "owner": [], "misses": [], "log": []}, open(os.path.join(self.out, "day.json"), "w"))
+        files = pr_files if pr_files is not None else "%s\n%s\n%s\n" % (P.PROFILES, P.STATE, P.VEX)
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            out = {("gh", "pr", "list"): existing + "\n" if existing else "", ("gh", "pr", "diff"): files}.get(tuple(cmd[:3]), "")
+            return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
+        env.update(env_extra or {})
+        a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06")
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
+            rc = P.cmd_deliver(a, run=run)
+        return rc, calls
+
+    def pushed(self, path):
+        return json.loads(self.git("show", "origin/auditor/panel:" + path, cwd=self.work))
+
+    def test_the_rebuilt_branch_is_one_commit_on_the_runs_main_commit(self):
+        rc, calls = self.deliver()
+        self.assertEqual(rc, 0)
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)                      # parent = today's main, not yesterday's
+        self.assertEqual(self.git("rev-list", "--count", self.m1 + "..origin/auditor/panel"), "1")
+
+    def test_the_open_prs_files_survive_and_mains_newer_changes_are_kept(self):
+        self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
+                           "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}])
+        self.git("fetch", "-q", "origin")
+        ids = {s["vulnerability"]["name"] for s in self.pushed(P.VEX)["statements"]}
+        self.assertEqual(ids, {"CVE-0-BASE", "CVE-1-PANEL", "CVE-2-MAIN", "CVE-3-TODAY"})              # yesterday's proposal kept, main's newer statement not clobbered
+        self.assertEqual(self.pushed(P.PROFILES)["entries"], [self.entry])                              # the pending profile entry survived
+        self.assertEqual(self.pushed(P.STATE)["note"], "today")
+
+    def test_a_profile_entry_still_blocks_auto_merge_and_disarms(self):
+        rc, calls = self.deliver()
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], calls)           # the carried profile entry keeps it manual
+        self.assertTrue(any(c[:3] == ["gh", "pr", "view"] for c in calls))                              # and an armed PR is checked for disarming
+
+    def test_a_state_only_pr_is_rebuilt_and_may_auto_merge(self):
+        rc, calls = self.deliver(pr_files="%s\n" % P.STATE)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.pushed(P.STATE)["note"], "today")
+        self.assertEqual(self.pushed(P.PROFILES)["entries"], [self.entry])      # still carried: the PR branch holds it, whatever gh pr diff says
+
+    def test_a_conflict_with_a_newer_main_change_fails_loudly_instead_of_clobbering(self):
+        # the PR flipped CVE-0-BASE to affected; main ALSO changed that statement since: neither silently wins
+        self.git("checkout", "-q", "auditor/panel")
+        doc = json.load(open(os.path.join(self.work, P.VEX)))
+        doc["statements"][0]["status"] = "affected"
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "flip"); self.git("push", "-q", "origin", "auditor/panel")
+        self.git("checkout", "-q", "main")
+        doc = json.load(open(os.path.join(self.work, P.VEX)))
+        doc["statements"][0]["status"] = "under_investigation"
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "main edits it"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver()
+        self.assertIn("conflict", str(e.exception).lower())
+
+    def test_no_open_pr_still_starts_from_the_runs_main_commit(self):
+        rc, calls = self.deliver(existing="")
+        self.assertEqual(rc, 0)
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)
+        self.assertEqual([s["vulnerability"]["name"] for s in self.pushed(P.VEX)["statements"]][:2], ["CVE-0-BASE", "CVE-2-MAIN"])   # no PR: nothing carried
+        self.assertFalse(any(c[:4] == ["git", "-C", self.work, "fetch"] for c in calls))
+
+
+class CarryForward(Tmp):
+    """carry_forward (advisor 0186) branch by branch, against canned `git show` contents."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = os.path.join(self.d, "r"); os.makedirs(self.repo)
+        self.texts = {}
+
+    def put(self, ref, path, obj):
+        self.texts[(ref, path)] = obj if isinstance(obj, str) else json.dumps(obj)
+
+    def cur(self, path, obj):
+        full = os.path.join(self.repo, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+        open(full, "w").write(obj if isinstance(obj, str) else json.dumps(obj))
+
+    def go(self, files):
+        def fake(cmd, **kw):
+            ref, _, path = cmd[-1].partition(":")
+            return types.SimpleNamespace(returncode=0, stdout=self.texts.get((ref, path), ""), stderr="")
+        return P.carry_forward(self.repo, "PR", "BASE", files, [], True, fake)
+
+    def st(self, name, status="not_affected"):
+        return {"@id": "https://x/v#" + name, "status": status}
+
+    def test_state_removed_unchanged_and_already_on_main_are_skipped(self):
+        self.put("PR", P.STATE, {"a": 1}); self.put("BASE", P.STATE, {"a": 0})
+        self.put("PR", "gone.txt", ""); self.put("BASE", "gone.txt", "was")                       # removed by the PR
+        self.put("PR", "same.txt", "x"); self.put("BASE", "same.txt", "x")                         # untouched by the PR
+        self.put("PR", "main-has.txt", "new"); self.put("BASE", "main-has.txt", "old"); self.cur("main-has.txt", "new")
+        self.assertEqual(self.go([P.STATE, "gone.txt", "same.txt", "main-has.txt"]), [])
+        self.assertFalse(os.path.exists(os.path.join(self.repo, P.STATE)))                        # the state is rewritten from the judgment, never carried
+
+    def test_vex_additions_changes_and_conflicts(self):
+        base = {"version": 1, "statements": [self.st("A"), self.st("B")]}
+        pr = {"version": 2, "timestamp": "t-pr", "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]}
+        self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base)
+        self.cur(P.VEX, {"version": 5, "timestamp": "t-main", "statements": [self.st("A"), self.st("B"), self.st("MAIN")]})
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        doc = json.load(open(os.path.join(self.repo, P.VEX)))
+        by = {x["@id"].split("#")[1]: x for x in doc["statements"]}
+        self.assertEqual((by["B"]["status"], sorted(by)), ("affected", ["A", "B", "MAIN", "NEW"]))   # changed statement carried, main's own kept
+        self.assertEqual((doc["version"], doc["timestamp"]), (6, "t-pr"))
+        # the same addition already on main, identical: nothing to carry
+        self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]})
+        self.assertEqual(self.go([P.VEX]), [])
+        # an addition main holds DIFFERENTLY, and a change main also changed: conflicts
+        self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW", "affected")]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.VEX])
+        self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "under_investigation"), self.st("NEW")]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.VEX])
+
+    def test_profile_entries_are_carried_once(self):
+        e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}}
+        e2 = {"scanner": "scout", "kind": "k", "match": {"package": "^b$"}}
+        self.put("BASE", P.PROFILES, {"entries": [e1]}); self.put("PR", P.PROFILES, {"entries": [e1, e2]})
+        self.cur(P.PROFILES, {"entries": [e1]})
+        self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
+        self.assertEqual(json.load(open(os.path.join(self.repo, P.PROFILES)))["entries"], [e1, e2])
+        self.cur(P.PROFILES, {"entries": [e1, e2, {"scanner": "x", "kind": "y", "match": {}}]})   # main already holds it: nothing new
+        self.assertEqual(self.go([P.PROFILES]), [])
+
+    def test_any_other_pending_file_is_carried_whole_unless_main_changed_it(self):
+        self.put("PR", ".auditor/proposals/p.json", "pr-version"); self.put("BASE", ".auditor/proposals/p.json", "base-version")
+        self.assertEqual(self.go([".auditor/proposals/p.json"]), [".auditor/proposals/p.json"])
+        self.assertEqual(open(os.path.join(self.repo, ".auditor/proposals/p.json")).read(), "pr-version")
+        self.cur(".auditor/proposals/p.json", "main-changed-it")
+        with self.assertRaises(RuntimeError):
+            self.go([".auditor/proposals/p.json"])
 
 
 sys.path.insert(0, os.path.join(BIN, "..", "fixtures", "testlib"))

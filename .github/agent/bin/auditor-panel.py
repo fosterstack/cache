@@ -1115,6 +1115,77 @@ def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
     return ""
 
 
+def _conflict(path, why):
+    return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); refusing to pick a winner" % (path, why))
+
+
+def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
+    """Carry the open PR's OWN additions onto the freshly checked-out main: a three-way merge by content, not a copy of the PR's files (a copy would
+    silently revert whatever main merged since). The state file is not carried: it is rewritten from the day's judgment. Returns the paths changed."""
+    def show(r, path):
+        return _sh(["git", "-C", repo, "show", "%s:%s" % (r, path)], plan, real, run, check=False)
+
+    def read(path):
+        full = os.path.join(repo, path)
+        return open(full).read() if os.path.exists(full) else ""
+
+    def write(path, text):
+        full = os.path.join(repo, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as fh:
+            fh.write(text)
+
+    carried = []
+    for path in sorted(set(pr_files)):
+        if path == STATE:
+            continue
+        pr_txt, base_txt = show(ref, path), show(base_ref, path)
+        if not pr_txt or pr_txt == base_txt:
+            continue                                   # removed by the PR, or untouched by it
+        cur_txt = read(path)
+        if cur_txt == pr_txt:
+            continue                                   # main already has exactly this
+        if path == VEX:
+            pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"statements": []}'), json.loads(cur_txt)
+            base_by = {x.get("@id"): x for x in base_doc.get("statements", [])}
+            cur_by = {x.get("@id"): x for x in cur_doc.get("statements", [])}
+            touched = False
+            for stmt in pr_doc.get("statements", []):
+                sid = stmt.get("@id")
+                if sid not in base_by:                 # a statement the PR ADDED
+                    if sid not in cur_by:
+                        cur_doc["statements"].append(stmt)
+                        touched = True
+                    elif cur_by[sid] != stmt:
+                        raise _conflict(path, sid)
+                elif stmt != base_by[sid]:             # a statement the PR CHANGED (e.g. turned to affected)
+                    if cur_by.get(sid) == base_by[sid]:
+                        cur_doc["statements"][[x.get("@id") for x in cur_doc["statements"]].index(sid)] = stmt
+                        touched = True
+                    elif cur_by.get(sid) != stmt:
+                        raise _conflict(path, sid)
+            if touched:
+                cur_doc["timestamp"] = pr_doc.get("timestamp", cur_doc.get("timestamp"))
+                cur_doc["version"] = int(cur_doc.get("version", 1)) + 1
+                write(path, json.dumps(cur_doc, indent=2) + "\n")
+                carried.append(path)
+        elif path == PROFILES:
+            pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"entries": []}'), json.loads(cur_txt)
+            key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
+            have, base_keys = {key(e) for e in cur_doc["entries"]}, {key(e) for e in base_doc["entries"]}
+            new = [e for e in pr_doc["entries"] if key(e) not in base_keys and key(e) not in have]
+            if new:
+                cur_doc["entries"].extend(new)
+                write(path, json.dumps(cur_doc, indent=2) + "\n")
+                carried.append(path)
+        else:                                          # any other file the PR holds (a pending proposal): carried whole if main did not touch it
+            if cur_txt and cur_txt != base_txt:
+                raise _conflict(path, "the whole file")
+            write(path, pr_txt)
+            carried.append(path)
+    return carried
+
+
 def cmd_deliver(a, run=subprocess.run):
     """Rule 0: the day's changes reach main only through a pull request from the auditor lane's branch; the tracking
     issue (rule 5) and the owner report (rules 8, 9, 14) are issues. Real git/gh only with AUDITOR_ALLOW_REAL_GH=1
@@ -1126,16 +1197,25 @@ def cmd_deliver(a, run=subprocess.run):
         return 2
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
     plan, branch = [], "auditor/panel"
-    # the base: the open panel PR's branch (yesterday's unmerged proposals stay), else the main commit this run is on
+    # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
+    # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
+    base = os.environ.get("GITHUB_SHA") or "HEAD"
     existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--jq", ".[0].number"],
                    plan, real, run).strip()
+    pr_files, merge_base = [], ""
     if existing:
-        _sh(["git", "-C", a.repo, "fetch", "origin", branch], plan, real, run)
-        base = "FETCH_HEAD"
-    else:
-        base = os.environ.get("GITHUB_SHA") or "HEAD"
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, real, run, check=False)
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, real, run)
+        # no shared history within the fetched depth fails the command (and so the run): never a rebuild without knowing what the PR itself added
+        merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
+        if merge_base:  # the PR's own files come from git itself, not from what a listing says
+            pr_files = _sh(["git", "-C", a.repo, "diff", "--name-only", merge_base, "FETCH_HEAD"], plan, real, run).split()
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
-    changed = apply_files(a.repo, st, day, a.today)
+    carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
+    changed = list(carried)
+    for path in apply_files(a.repo, st, day, a.today):
+        if path not in changed:
+            changed.append(path)
     if changed:
         _sh(["git", "-C", a.repo, "add", "--"] + changed, plan, real, run)
         _sh(["git", "-C", a.repo, "commit", "-m", "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today], plan, real, run)
