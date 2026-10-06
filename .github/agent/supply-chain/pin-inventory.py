@@ -303,7 +303,8 @@ def inventory(files):
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
         elif path.endswith(".sh"):
             found = []
-            _step({"run": text}, found, {})          # a script's go install / pip install / docker run / release download are measured like a run step's
+            for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line, never the whole file
+                _step({"run": ln}, found, {})          # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
