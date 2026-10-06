@@ -40,10 +40,10 @@ INSTALLER_INPUTS = {
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
 _GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
-_PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
+_PIP_INSTALL = re.compile(r"\bpip3?\b(?:\s+-\S+(?:\s+(?!install\b)\S+)?)*\s+install\b([^\n]*)")
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|\$\{var\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
@@ -175,7 +175,7 @@ def _uses(u, node, out, labels):
         known = {i for i, _ in INSTALLER_INPUTS.get(repo.lower(), [])}
         if isinstance(w, dict) and repo.lower() != "actions/setup-go":     # the Go toolchain is a product dependency (rule 1, amendment 2)
             for key, val in w.items():
-                if key not in known and isinstance(val, str) and val.strip() and re.search(r"(^|[-_])(versions?|tags?|releases?|tools|images?)$", key):
+                if key not in known and isinstance(val, str) and val.strip() and re.search(r"(^|[-_])(versions?|tags?|releases?|tools|images?)(-file)?$", key):
                     out.append(Item("tool", f"{repo}:{key}", "(input)"))       # an installer-shaped input nobody classified: a placeholder, so a new or changed one is refused
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
@@ -210,6 +210,9 @@ def _docker_images(cmd_args):
     return []
 
 
+_ENV_CTX = [""]
+
+
 _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
 
 
@@ -218,7 +221,8 @@ def _step(node, out, labels):
     _step_items(node, out, labels)
     run = node.get("run")
     if isinstance(run, str):
-        tag = "step:" + hashlib.sha256(" ".join(run.split()).encode("utf-8", "replace")).hexdigest()[:10]
+        ctx = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
+        tag = "step:" + hashlib.sha256(ctx.encode("utf-8", "replace")).hexdigest()[:10]
         for it in out[n0:]:
             if _NONPIN.search(it.version or "") and not it.step:
                 it.step = tag     # a placeholder (variable, @latest, @main, unpinned) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused
@@ -239,8 +243,8 @@ def _step_items(node, out, labels):
         for m in _DOCKER_CMD.finditer(run):
             for img in _docker_images(m.group(1)):
                 out.append(_image_item(img))
-        for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version
-            out.append(Item("tool", m.group(1), m.group(2)))
+        for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
+            out.append(Item("tool", m.group(1), m.group(3), m.group(2) + m.group(3)))
         for m in _PIP_INSTALL.finditer(run):
             for p in _PIP_PIN.finditer(m.group(1)):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
@@ -282,8 +286,11 @@ def _walk(node, out, labels, path="", in_step=False):
                     if isinstance(svc, dict) and isinstance(svc.get("image"), str) and "${{" not in svc["image"]:
                         out.append(_image_item(svc["image"]))
             if k == "jobs" and isinstance(v, dict):
+                top_env = json.dumps(node.get("env"), sort_keys=True, default=str)
                 for job in v.values():
+                    _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str)
                     _walk(job, out, labels, "job:" + k)
+                _ENV_CTX[0] = ""
                 continue
             _walk(v, out, labels, k, in_step=(k == "steps"))
     elif isinstance(node, list):
@@ -299,8 +306,10 @@ def inventory(files):
         if path == "bin/install-scanner.sh":
             found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
             found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
-            found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(https?://[^\s'\"]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
+            found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
+            for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # and the rest of the script like any other: an appended download is seen
+                _step({"run": ln}, found, {})
         elif path.endswith(".sh"):
             found = []
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line, never the whole file
@@ -360,8 +369,8 @@ _UNMEASURED = [
     (re.compile(r"\bgh\s+(?:release\s+download|extension\s+install)\b"), "a gh release or extension download"),
     (re.compile(r"\bgit\s+(?:-\S+\s+)*(?:clone|submodule\s+update|fetch\s+\S*https?://|archive\s+--remote)\b"), "a git clone or remote fetch"),
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
-    (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
-    (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*\s-r\s*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
+    (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
+    (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
     (re.compile(r"\b(?:curl|wget)\b(?![^\n]*github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]

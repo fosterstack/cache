@@ -310,7 +310,7 @@ def live_proofs(item, root, base=None, head="HEAD"):
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
         if repo:
             bare = item.version.lstrip("v")
-            rel = _release_with_assets(repo, [item.version, "v" + bare, bare])
+            rel = _release_with_assets(repo, [item.label] if item.label else [item.version, "v" + bare, bare])   # a download names its EXACT tag: no twin tag lends its age
             if rel:
                 # the NEWEST of the release date and every asset's own created/updated time: a replaced asset in an old release is young again
                 stamps = [rel["published_at"]] + [a[k] for a in rel.get("assets", []) for k in ("created_at", "updated_at") if a.get(k)]

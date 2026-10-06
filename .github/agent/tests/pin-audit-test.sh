@@ -775,6 +775,20 @@ import re
 assert ":(glob)**/*.sh" in open(sys.argv[1]).read()
 PY
 
+CASE="round 15: more than 200 version tags at one commit is refused, never truncated; an incomplete open-PR collection is not a clean day"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+pa.age._tags_for_commit = lambda r, s: ["v1.%d" % i for i in range(201)]
+net = pa.LiveNet(["false"], ".")
+try:
+    net.versions_of(pa.inv.Item("action", "o/r", "a" * 40, ""))
+except pa.Fail as e:
+    assert "refusing" in str(e)
+else:
+    raise AssertionError("201 tags were truncated")
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

@@ -186,6 +186,7 @@ class LiveNet:
     def __init__(self, gh, root):
         self.gh, self.root = gh, root
         self._memo, self._lock = {}, threading.Lock()
+        self.incomplete_prs = []
 
     def _gh_json(self, path, strict=False):
         """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
@@ -254,10 +255,16 @@ class LiveNet:
             obj = (self._gh_json(f"repos/{repo}/git/tags/{obj['sha']}") or {}).get("object") or {}
         return obj.get("sha") if obj.get("type") == "commit" else None
 
+    @staticmethod
+    def _bounded(tags):
+        if len(tags) > 200:
+            raise Fail("a commit carries %d version tags: refusing to check only some of them" % len(tags))
+        return tags
+
     def versions_of(self, item):
         """Every version-like tag at an action's commit (an exception must clear them ALL), else the single version."""
         if item.kind == "action" and inv.SHA40.match(item.version):
-            return [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:200]
+            return self._bounded([t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)])
         v = self._version_of(item)
         return [v] if v else []
 
@@ -300,7 +307,7 @@ class LiveNet:
 
     def lists(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):  # EVERY version-like tag at the commit: one tag must not hide another's advisory
-            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:200]
+            tags = self._bounded([t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)])
             if len(tags) > 1:
                 gh_all, osv_all = [], []
                 for t in tags:
@@ -482,12 +489,18 @@ class LiveNet:
             hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
             f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
             if f.returncode:
+                self.incomplete_prs.append(p["number"])
+                print(f"information: open pull request #{p['number']} could not be fetched: not audited")
                 continue
             try:
                 mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
+                if not mb:
+                    self.incomplete_prs.append(p["number"])
+                    print(f"information: open pull request #{p['number']} shares no history with its base: not audited")
                 items = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["head"]["sha"])) if mb else []
             except (RuntimeError, ValueError) as e:
                 print(f"information: open pull request #{p['number']} was not audited: {clean(e)}")
+                self.incomplete_prs.append(p["number"])
                 continue
             out.append((p["number"], items))
         return out
@@ -512,7 +525,11 @@ class LiveNet:
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
-            runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
+            try:
+                runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
+            except Fail as e:
+                print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
+                continue
             mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
             failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
@@ -696,7 +713,7 @@ def rollback(item, net, now):
 
 def clean(text):
     """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
-    return re.sub(r"[\x00-\x1f\x7f]", " ", inv._hide(str(text)))[:200]  # control characters out, and an expression (a secret's name) never printed
+    return re.sub(r"[\x00-\x1f\x7f]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
 
 
 def _safe(text, limit=64):
@@ -762,7 +779,7 @@ class Gh:
     def run(self, *args, ok_fail=False):
         r = subprocess.run([*self.cmd, *args], capture_output=True, text=True)
         if r.returncode and not ok_fail:
-            raise Fail(f"gh {' '.join(args[:2])} failed: {r.stderr.strip()[:200]}")
+            raise Fail(f"gh {' '.join(args[:2])} failed: {r.stderr.strip()}")
         return r
 
 
@@ -911,10 +928,13 @@ def main(argv=None):
             except (Fail, age.CouldNotLook) as e:
                 print(f"information: the open pull requests were not audited: {clean(e)}")
                 open_prs, incomplete = [], True
+            if getattr(net, "incomplete_prs", None):
+                incomplete = True
             for number, items in open_prs:
                 pr_actions.extend(items)
                 if len(items) > 100:
                     print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
+                    incomplete = True
                 for it in items[:100]:
                     if it.key in seen_keys:
                         continue
@@ -930,8 +950,17 @@ def main(argv=None):
         seen = {it.key for it in audited} | set(head)
         queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"] + [(it, 0) for it in pr_actions if it.kind == "action"]
         while queue:
+            def nested_safe(q):
+                try:
+                    return net.nested(q[0])
+                except (Fail, age.CouldNotLook) as e:
+                    print(f"information: the nested references of {clean(q[0].key)} could not be read: {clean(e)}")
+                    return None
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-                level = list(pool.map(lambda q: net.nested(q[0]), queue))
+                level = list(pool.map(nested_safe, queue))
+            if any(x is None for x in level):
+                incomplete = True
+            level = [x or [] for x in level]
             nxt = []
             for (outer, depth), refs in zip(queue, level):
                 for n in refs:

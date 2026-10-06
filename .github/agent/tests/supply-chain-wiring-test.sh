@@ -125,8 +125,13 @@ def judge_wf(d, real=False):
                 bad.append(f"{name}: a step has a condition ({st.get('if')!r}) other than the ratified one ({allowed_if!r}): it could skip the check")
             if "timeout-minutes" in st:
                 bad.append(f"{name}: a step has its own timeout-minutes")
+            extra_env = set(st.get("env") or {}) - {"GH_TOKEN", "GITHUB_REPOSITORY"}
+            if extra_env:
+                bad.append(f"{name}: a step sets env {sorted(extra_env)}: only GH_TOKEN and GITHUB_REPOSITORY may be set (PYTHONPATH and friends redirect the trusted checker)")
         for st in [x for x in jj.get("steps", []) if "run" in x]:
             run_text = str(st["run"])
+            if re.search(r"--fixtures|--now\b|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONSAFEPATH=0", run_text):
+                bad.append(f"{name}: a run step passes a test-only flag or a Python path override (--fixtures, --now, PYTHONPATH): production runs never take fixtures")
             if re.search(r"(^|[;&|\n])\s*exit\s+(?!\$status\b)", run_text) or re.search(r"\|\|\s*true\b", run_text):
                 bad.append(f"{name}: a run step exits early or swallows a failure (exit / || true)")
             if "GH_TOKEN" not in str(st.get("env", "")) and ("pin-" in run_text):
@@ -271,6 +276,10 @@ mut_wf("a workflow-level env appears", "top-level env", lambda d: d.update(env={
 mut_wf("a job-level env appears", "job-level env", lambda d: J(d, "pin-age").update(env={"PYTHONPATH": "pr"}))
 mut_wf("a shell default appears", "job-level defaults", lambda d: J(d, "pin-age").update(defaults={"run": {"shell": "python3 {0}"}}))
 mut_wf("a third checkout appears", "exactly two checkouts", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@" + "a" * 40, "with": {"persist-credentials": "false"}}))
+mut_wf("fixtures are passed to the checker", "test-only flag", lambda d: [x.update(run=x["run"].replace("--report-only", "--report-only --fixtures pr/fx.json")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("--now is passed", "test-only flag", lambda d: [x.update(run=x["run"].replace("pin-age-check.py\"", "pin-age-check.py\" --now 2020-01-01T00:00:00Z")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("a step sets PYTHONPATH", "sets env", lambda d: [x.setdefault("env", {}).update(PYTHONPATH="pr") for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("PYTHONPATH in the script", "test-only flag", lambda d: [x.update(run="export PYTHONPATH=pr\n" + x["run"]) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))
