@@ -703,7 +703,7 @@ class RebuildReal(Tmp):
         self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
         self.guard = "success"
 
-    def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None):
+    def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None, state_source=None, view_armed=False):
         st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
         json.dump(st, open(os.path.join(self.out, "state.json"), "w"))
         json.dump({"issue": "", "vex": list(vex), "profiles": [], "owner": [], "misses": [], "log": []}, open(os.path.join(self.out, "day.json"), "w"))
@@ -714,13 +714,14 @@ class RebuildReal(Tmp):
             calls.append(cmd)
             if cmd[0] == "git":
                 return subprocess.run(cmd, capture_output=True, text=True)
-            out = {("gh", "pr", "list"): existing + "\n" if existing else "", ("gh", "pr", "diff"): files}.get(tuple(cmd[:3]), "")
+            out = {("gh", "pr", "list"): existing + "\n" if existing else "", ("gh", "pr", "diff"): files,
+                   ("gh", "pr", "view"): "true\n" if view_armed else "false\n"}.get(tuple(cmd[:3]), "")
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = self.guard
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
         env.update(env_extra or {})
-        a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06")
+        a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06", state_source=state_source)
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
             rc = P.cmd_deliver(a, run=run)
         return rc, calls
@@ -770,7 +771,7 @@ class RebuildReal(Tmp):
             self.deliver()
         self.assertIn("conflict", str(e.exception).lower())
 
-    def test_a_tip_that_did_not_pass_the_reserved_branch_guard_is_never_carried(self):      # Sonnet r2 blocker: a human's push must not be laundered
+    def test_a_tip_that_did_not_pass_the_reserved_branch_guard_is_never_carried(self):      # reviewer r2 blocker: a human's push must not be laundered
         for verdict in ("failure", "", "success,failure", "cancelled"):
             self.guard = verdict
             before = self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0]
@@ -785,6 +786,67 @@ class RebuildReal(Tmp):
         rc, calls = self.deliver()
         lst = [c for c in calls if c[:3] == ["gh", "pr", "list"]][0]
         self.assertIn("isCrossRepository == false", lst[lst.index("--jq") + 1])
+
+    def test_an_unreadable_object_aborts_it_is_never_read_as_absent(self):          # review r3 B3
+        def failing(cmd, **kw):
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal: bad object")
+        with self.assertRaises(RuntimeError):
+            P.carry_forward(self.work, "FETCH_HEAD", self.m0, [P.VEX], [], True, failing)
+
+    def test_the_judgment_state_source_is_authenticated_and_bound_to_the_delivery(self):    # review r3 B1
+        out = os.path.join(self.d, "state.json"); shaf = os.path.join(self.d, "sha")
+        a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
+
+        def run(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            o = {("gh", "pr", "list"): "17\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                o = self.guard
+            return types.SimpleNamespace(returncode=0, stdout=o, stderr="")
+        with mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_state_source(a, run=run), 0)
+        tip = self.git("rev-parse", "origin/auditor/panel")
+        self.assertEqual(open(shaf).read(), tip)                                        # the exact commit read is recorded
+        self.assertEqual(json.load(open(out))["seat"], "A")
+        # a tip that did not pass the guard is never read
+        self.guard = "failure"
+        with self.assertRaises(RuntimeError):
+            P.cmd_state_source(a, run=run)
+        self.guard = "success"
+        # delivery refuses when the branch is no longer the one the judgment read
+        open(shaf, "w").write("0" * 40)
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(env_extra={}, state_source=shaf)
+        self.assertIn("moved", str(e.exception))
+        open(shaf, "w").write(tip)
+        self.assertEqual(self.deliver(state_source=shaf)[0], 0)
+        # no open PR: main's state, an empty recorded sha, and the file removed when there is none anywhere
+        def nopr(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch("sys.stdout", new=io.StringIO()) as so:
+            P.cmd_state_source(a, run=nopr)
+        self.assertIn("main", so.getvalue()); self.assertEqual(open(shaf).read(), "")
+        os.remove(os.path.join(self.work, P.STATE)); self.git("checkout", "-q", "--", ".") if False else None
+        with mock.patch("sys.stdout", new=io.StringIO()) as so:
+            P.cmd_state_source(a, run=nopr)
+        self.assertIn("first day", so.getvalue()); self.assertFalse(os.path.exists(out))
+        # a PR whose branch has no state file at all falls back to main's
+        self.git("checkout", "-q", "auditor/panel"); self.git("rm", "-q", P.STATE); self.git("commit", "-q", "-m", "no state"); self.git("push", "-q", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        self.git("checkout", "-q", "--", P.STATE)
+        with mock.patch("sys.stdout", new=io.StringIO()) as so:
+            P.cmd_state_source(a, run=run)
+        self.assertIn("main", so.getvalue())
+
+    def test_an_armed_pr_is_disarmed_before_its_head_is_replaced(self):             # review r3 B2
+        rc, calls = self.deliver(view_armed=True)
+        order = [c[:3] + c[-1:] for c in calls if c[:3] in (["gh", "pr", "merge"], ["git", "-C", self.work])]
+        flat = [" ".join(c) for c in calls]
+        disarm = next(i for i, c in enumerate(flat) if "merge --disable-auto 17" in c)
+        push = next(i for i, c in enumerate(flat) if " push --force " in c)
+        self.assertLess(disarm, push)                                                   # disarmed first, even if a later command fails
 
     def test_a_pr_branch_with_a_planted_file_fails_the_run_before_any_push(self):
         self.git("checkout", "-q", "auditor/panel")
@@ -831,6 +893,9 @@ class CarryForward(Tmp):
 
     def go(self, files):
         def fake(cmd, **kw):
+            if cmd[3] == "ls-tree":
+                present = (cmd[4], cmd[-1]) in self.texts and self.texts[(cmd[4], cmd[-1])] != ""
+                return types.SimpleNamespace(returncode=0, stdout="100644 blob x\t%s" % cmd[-1] if present else "", stderr="")
             ref, _, path = cmd[-1].partition(":")
             return types.SimpleNamespace(returncode=0, stdout=self.texts.get((ref, path), ""), stderr="")
         return P.carry_forward(self.repo, "PR", "BASE", files, [], True, fake)
@@ -867,7 +932,7 @@ class CarryForward(Tmp):
         with self.assertRaises(RuntimeError):
             self.go([P.VEX])
 
-    def test_hand_written_statements_without_an_id_are_never_collapsed(self):      # Sonnet r3 blocker: the real VEX file has four of them
+    def test_hand_written_statements_without_an_id_are_never_collapsed(self):      # reviewer r3 blocker: the real VEX file has four of them
         legacy = [{"vulnerability": {"name": "CVE-2024-51744"}, "status": "not_affected"}, {"vulnerability": {"name": "CVE-2025-60876"}, "status": "not_affected"},
                   {"vulnerability": {"name": "CVE-2025-46394"}, "status": "not_affected"}]
         base = {"version": 1, "timestamp": "2026-01-01T00:00:00Z", "statements": legacy}
@@ -905,7 +970,7 @@ class CarryForward(Tmp):
         self.cur(P.PROFILES, {"entries": [e1, e2, {"scanner": "x", "kind": "y", "match": {}}]})   # main already holds it: nothing new
         self.assertEqual(self.go([P.PROFILES]), [])
 
-    def test_a_file_the_panel_never_writes_is_refused_not_carried(self):      # Sonnet r1 blocker 1: a human push must not ride into an App commit
+    def test_a_file_the_panel_never_writes_is_refused_not_carried(self):      # reviewer r1 blocker 1: a human push must not ride into an App commit
         for path in (".github/agent/prompts/x.md", ".github/workflows/auditor.yml", ".auditor/proposals/p.json", "bin/evil.sh"):
             self.put("PR", path, "pr-version"); self.put("BASE", path, "base-version")
             with self.assertRaises(RuntimeError) as e:
@@ -976,10 +1041,14 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertLess(j["run"].index("verdict.json\" ] ||"), j["run"].index("auditor-panel.py judge"))
         self.assertEqual(j["run"].count("exit 1; }"), 3)
 
-    def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # Codex r1 R3
+    def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # review r1 R3; advisor 0186: through the tested command, bound to the delivery
         run = self.steps[self.step("auditor-panel.py judge")]["run"]
-        self.assertIn("gh pr list --head auditor/panel --state open", run)
-        self.assertIn('[ -n "$open_pr" ] && git fetch', run)
+        self.assertIn("auditor-panel.py state-source", run)
+        self.assertLess(run.index("auditor-panel.py state-source"), run.index("auditor-panel.py judge"))
+        self.assertNotIn("gh pr list --head auditor/panel", run)             # the old unguarded, fork-unfiltered lookup is gone
+        deliver = self.steps[self.step("auditor-panel.py deliver")]["run"]
+        self.assertIn('--state-source "${RUNNER_TEMP}/panel-state-source"', deliver)
+        self.assertIn('--sha-out "${RUNNER_TEMP}/panel-state-source"', run)
 
     def test_the_seat_never_moves_the_daily_cve_auditor(self):             # REQ-SCAN-014-AC3
         cve = self.steps[self.step("auditor-run.py")]

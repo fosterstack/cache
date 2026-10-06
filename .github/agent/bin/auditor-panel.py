@@ -1116,6 +1116,47 @@ def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
     return ""
 
 
+GUARD_CHECK = "only-the-app-pushes-auditor-lane"
+
+
+def _require_app_tip(repo, tip, plan, real, run):
+    """Only what the App itself pushed may be read or carried: the reserved-branch guard (a check on every push to auditor/*) must have PASSED on this commit."""
+    verdict = _sh(["gh", "api", "repos/{owner}/{repo}/commits/%s/check-runs?check_name=%s" % (tip, GUARD_CHECK), "--jq",
+                   '.check_runs | map(.conclusion) | join(",")'], plan, real, run).strip()
+    if verdict != "success":
+        raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it may hold a push that was not the App's; refusing to use it"
+                           % (tip[:12], verdict))
+
+
+def cmd_state_source(a, run=subprocess.run):
+    """Yesterday's judgments for the judge: the open panel PR's branch if there is one (same repository, and its tip PASSED the reserved-branch guard), else main's
+    file. The exact commit read is recorded, and the delivery refuses to carry anything from a different tip (a human push between judgment and delivery)."""
+    plan, branch = [], "auditor/panel"
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository", "--jq",
+                    ".[] | select(.isCrossRepository == false) | .number"], plan, True, run).strip().split("\n")[0].strip()
+    text, tip = None, ""
+    if existing:
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, True, run)
+        tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, True, run).strip()
+        _require_app_tip(a.repo, tip, plan, True, run)
+        if _sh(["git", "-C", a.repo, "ls-tree", "FETCH_HEAD", "--", STATE], plan, True, run).strip():
+            text = _sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run)
+    where = "the open panel PR #%s" % existing
+    if text is None:
+        main_file = os.path.join(a.repo, STATE)
+        text = open(main_file).read() if os.path.exists(main_file) else None
+        where = "main" if text is not None else "none (the first day)"
+    if os.path.exists(a.state):
+        os.remove(a.state)
+    if text is not None:
+        with open(a.state, "w") as fh:
+            fh.write(text)
+    with open(a.sha_out, "w") as fh:
+        fh.write(tip)
+    print("auditor-panel: state from %s" % where)
+    return 0
+
+
 def _conflict(path, why):
     return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); refusing to pick a winner" % (path, why))
 
@@ -1124,7 +1165,9 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
     """Carry the open PR's OWN additions onto the freshly checked-out main: a three-way merge by content, not a copy of the PR's files (a copy would
     silently revert whatever main merged since). The state file is not carried: it is rewritten from the day's judgment. Returns the paths changed."""
     def show(r, path):
-        return _sh(["git", "-C", repo, "show", "%s:%s" % (r, path)], plan, real, run, check=False)
+        if real and not _sh(["git", "-C", repo, "ls-tree", r, "--", path], plan, real, run).strip():
+            return ""                                   # PROVEN absent (the tree was read and does not list it); any read failure raised
+        return _sh(["git", "-C", repo, "show", "%s:%s" % (r, path)], plan, real, run)
 
     def read(path):
         full = os.path.join(repo, path)
@@ -1213,21 +1256,24 @@ def cmd_deliver(a, run=subprocess.run):
         merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
         if merge_base:  # the PR's own files come from git itself, not from what a listing says
             pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
-    if existing and merge_base and pr_files and real:
-        # only what the App itself pushed may be carried: the reserved-branch guard (a check on every push to auditor/*) must have passed on the PR branch's tip.
-        # A human push to the App's branch fails that guard; carrying it into a fresh App commit would launder it past the guard and into auto-merge.
+    if existing and merge_base and real:
         tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip()
-        verdict = _sh(["gh", "api", "repos/{owner}/{repo}/commits/%s/check-runs?check_name=only-the-app-pushes-auditor-lane" % tip, "--jq",
-                       '.check_runs | map(.conclusion) | join(",")'], plan, real, run).strip()
-        if verdict != "success":
-            raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it may hold a push that was not the App's; refusing to carry it forward"
-                               % (tip[:12], verdict))
+        recorded = open(a.state_source).read().strip() if getattr(a, "state_source", None) and os.path.exists(a.state_source) else None
+        if recorded is not None and recorded != tip:
+            raise RuntimeError("auditor-panel: the open PR's branch moved from %s (read for the judgment) to %s (now): refusing to publish a judgment about a different state"
+                               % (recorded[:12] or "none", tip[:12]))
+        if pr_files:
+            _require_app_tip(a.repo, tip, plan, real, run)
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
     carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
     changed = list(carried)
     for path in apply_files(a.repo, st, day, a.today):
         if path not in changed:
             changed.append(path)
+    if changed and existing:   # disarm BEFORE the head is replaced: an armed PR must never carry new content that auto-merge was not armed for
+        armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"], plan, real, run).strip()
+        if armed == "true":
+            _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)
     if changed:
         _sh(["git", "-C", a.repo, "add", "--"] + changed, plan, real, run)
         _sh(["git", "-C", a.repo, "commit", "-m", "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today], plan, real, run)
@@ -1313,7 +1359,7 @@ def cmd_probe(a, seats=None):
     return 0 if ok else 1
 
 
-def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
+def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe, state_source=cmd_state_source):
     ap = argparse.ArgumentParser(prog="auditor-panel")
     sub = ap.add_subparsers(dest="cmd", required=True)
     j = sub.add_parser("judge")
@@ -1326,7 +1372,12 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     j.add_argument("--seats", choices=("real", "none"), default="none")
     j.add_argument("--today", default=datetime.date.today().isoformat())
     j.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
+    ss = sub.add_parser("state-source")
+    ss.add_argument("--repo", default=".")
+    ss.add_argument("--state", required=True)
+    ss.add_argument("--sha-out", required=True)
     d = sub.add_parser("deliver")
+    d.add_argument("--state-source", help="the file state-source wrote: the PR tip the judgment read; the delivery refuses a different tip")
     d.add_argument("--out", required=True)
     d.add_argument("--repo", default=".")
     d.add_argument("--dry-run", action="store_true")
@@ -1336,7 +1387,7 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     pr.add_argument("--seats", choices=("real", "none"), default="none")
     pr.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
     a = ap.parse_args(argv)
-    return {"judge": judge, "deliver": deliver, "probe": probe}[a.cmd](a)
+    return {"judge": judge, "deliver": deliver, "probe": probe, "state-source": state_source}[a.cmd](a)
 
 
 if __name__ == "__main__":

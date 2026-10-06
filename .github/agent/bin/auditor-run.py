@@ -239,7 +239,7 @@ def _close_superseded(branch, url, ws):
             return
         for line in (q.stdout or "").splitlines():
             num, _, ref = line.strip().partition(" ")
-            if num.isdigit() and ref != branch and _DAILY_BRANCH.match(ref):
+            if num.isdigit() and ref != branch and _DAILY_BRANCH.match(ref) and ref[len("auditor/"):len("auditor/") + 10] < branch[len("auditor/"):len("auditor/") + 10]:
                 r = subprocess.run(["gh", "pr", "close", num, "--comment", "Superseded by %s (a fresh branch off the current main; this one is behind main and cannot merge)." % url],
                                    cwd=ws, capture_output=True, text=True)
                 if r.returncode != 0:

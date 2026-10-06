@@ -328,12 +328,7 @@ jobs:
           # yesterday's judgments, debates and scores: the OPEN panel PR's branch (pending, not yet merged) if there is
           # one, else main's file; a closed or rejected branch never steers the run
           state="${RUNNER_TEMP}/panel-state.json"
-          open_pr=$(gh pr list --head auditor/panel --state open --json number --jq '.[0].number // empty')
-          if [ -n "$open_pr" ] && git fetch --quiet origin auditor/panel && git show FETCH_HEAD:.auditor/panel-state.json > "$state" 2>/dev/null; then
-            echo "state from the open panel PR #${open_pr}"
-          elif [ -f .auditor/panel-state.json ]; then cp .auditor/panel-state.json "$state"; echo "state from main"
-          else rm -f "$state"; echo "no earlier state: the first day"
-          fi
+          python3 .github/agent/bin/auditor-panel.py state-source --repo . --state "$state" --sha-out "${RUNNER_TEMP}/panel-state-source"
           jq -n --arg r "$RESCAN_RUN" --arg h "$RESCAN_HEAD" --arg m "$MAIN_HEAD" --arg c "$RESCAN_CONCLUSION" \
             '{run_id: $r, head: $h, main_head: $m, conclusion: $c}' > "${RUNNER_TEMP}/rescan-binding.json"
           python3 .github/agent/bin/auditor-panel.py judge --verdict "${RUNNER_TEMP}/panel/verdict.json" \
@@ -354,7 +349,7 @@ jobs:
           dry_arg=""
           [ "$dry" = "false" ] || dry_arg="--dry-run"
           python3 .github/agent/bin/auditor-panel.py deliver --out "${RUNNER_TEMP}/panel-out" --repo . \
-            --today "$(date -u +%F)" ${dry_arg}
+            --state-source "${RUNNER_TEMP}/panel-state-source" --today "$(date -u +%F)" ${dry_arg}
 
       - name: Publish the report to the run summary
         if: ${{ always() }}

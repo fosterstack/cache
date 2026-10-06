@@ -443,7 +443,7 @@ class SuppressionPR(Base):
 
     LIST = ("gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100")
     OPEN = ("5 auditor/2026-09-20-aaaaaaaaaaaa\n6 auditor/2026-09-22-abcdef123456\n7 auditor/panel\n8 auditor/bump-example.com-m-1.1.0\n"
-            "9 feature/x\n10 auditor/2026-09-21-bbbbbbbbbbbb\n")
+            "9 feature/x\n10 auditor/2026-09-21-bbbbbbbbbbbb\n12 auditor/2026-09-23-cccccccccccc\n")
 
     def test_superseded_daily_suppression_prs_are_closed(self):          # advisor 0187: stale PRs must not pile up behind main
         for how, rules in (("created", {("gh", "pr", "create"): (0, "https://x/pull/11\n", "")}),
@@ -451,13 +451,13 @@ class SuppressionPR(Base):
             fr = FakeRun({**rules, self.LIST: (0, self.OPEN, "")})
             self.assertIsNotNone(self.real(fr)[0], how)
             closed = sorted(a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "close"])
-            self.assertEqual(closed, ["10", "5"], how)                    # only older daily branches: not today's, not panel/bump/feature
+            self.assertEqual(closed, ["10", "5"], how)              # only OLDER daily branches: not today's, not a NEWER one (12), not panel/bump/feature
             first = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "close"]][0]
             self.assertIn("--comment", first)
             self.assertIn("supersed", first[first.index("--comment") + 1].lower())
             self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
 
-    def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # Sonnet r1 blocker 2
+    def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # reviewer r1 blocker 2
         fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
         self.real(fr)
         lst = [a for a in fr.argvs() if a[:3] == list(self.LIST)][0]
