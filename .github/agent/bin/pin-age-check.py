@@ -59,10 +59,18 @@ def parse_time(s):
     return d.replace(tzinfo=dt.timezone.utc)
 
 
+_PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
+
+
+def is_pin(version):
+    """An exact version: a commit, a digest, or dotted numbers (an optional suffix such as -rc.1). Never a name (main, nightly, lts/*), a wildcard (1.*, 3.x), a range or an expression."""
+    return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
+
+
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.match(r"^(>=|<=|~=|!=|>|<|latest$|\(unpinned\)$)", item.version or "") or "${{" in (item.version or ""):
-        return False, f"not a pin: {item.version!r} is a range, a moving name or an expression, so it has no age", None
+    if not is_pin(item.version):
+        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, so it has no age", None
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)

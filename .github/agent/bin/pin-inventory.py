@@ -239,6 +239,13 @@ def inventory(files):
             for m in re.finditer(r"uses:\s*([^\s#'\"]+)\s*#\s*(\S+)", text):
                 labels[m.group(1)] = m.group(2)
             try:
+                nodes = 0
+                for ev in yaml.parse(text, Loader=yaml.BaseLoader):  # events, not expanded nodes: an alias bomb is refused before anything is built
+                    if isinstance(ev, yaml.AliasEvent):
+                        raise RuntimeError(f"{path} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
+                    nodes += 1
+                    if nodes > 200000:
+                        raise RuntimeError(f"{path} is too large to read safely")
                 doc = yaml.load(text, Loader=yaml.BaseLoader)
             except yaml.YAMLError as e:
                 mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)

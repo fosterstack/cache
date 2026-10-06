@@ -595,6 +595,52 @@ assert pa.excepted(it, {"A"}, {"A": None}, [e], N(), {}) is None
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [dict(e, osv_modified={"A": None})], N(), {"A": None}) is None
 PY
 
+CASE="issue text echoes only plain version-like tokens: a hostile label (a markdown link, an @mention, a URL) becomes (unparseable) in the title and the body"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+it = pa.inv.Item("action", "o/r", "a" * 40, "[click](https://evil.example/x)@owner")
+f = pa.Finding(it, "advisory", ["GHSA-x"], "an advisory covers this version")
+title = pa.title_of(f)[1]; body = pa.body_of(f, None, True, False, "2026-10-05")
+for text in (title, body):
+    assert "evil.example" not in text and "[click]" not in text and "@owner" not in text, text
+assert "(unparseable)" in title
+PY
+CASE="only an exact version is a pin: main, nightly, lts/*, 1.*, 3.x, latest and ranges can never pass the age check; commits, digests and dotted numbers can"
+check python3 - "$here/../bin/pin-age-check.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+for v in ("main", "master", "nightly", "lts/*", "1.*", "3.x", "latest", "stable", ">=1.0", "(unpinned)", "${{expression}}", "v1.x", "1.2.x", "", "release-1"):
+    assert not ac.is_pin(v), v
+for v in ("v2.29.0", "2.17.1", "0.74.0", "21", "3.12", "1.0.0-rc.1", "a" * 40, "sha256:" + "b" * 64, "v4"):
+    assert ac.is_pin(v), v
+PY
+CASE="a YAML alias bomb is refused before anything is expanded (fast), and an unparseable file never hangs the readers"
+check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+bomb = "x: &a [1,1,1,1,1,1,1,1,1]\n" + "".join(f"x{i}: &{chr(98+i)} [*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)},*{chr(97+i)}]\n" for i in range(8))
+t = time.time()
+try:
+    inv.inventory({".github/workflows/bomb.yml": bomb})
+except RuntimeError as e:
+    assert "alias" in str(e)
+else:
+    raise AssertionError("an alias was accepted")
+assert time.time() - t < 2
+PY
+CASE="a commit pin with no tag at it is UNRESOLVED (a finding), whatever its # label says (the label is only a comment)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet(["false"], ".")
+pa.age._tags_for_commit = lambda r, s: []
+assert net._version_of(pa.inv.Item("action", "o/r", "a" * 40, "v99.0.0")) is None
+net._osv_post = lambda q: []; net.upstream = lambda i: True
+f = pa.judge(pa.inv.Item("action", "o/r", "a" * 40, "v99.0.0"), net, [], [])
+assert [x.kind for x in f] == ["unresolved"], [x.kind for x in f]
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

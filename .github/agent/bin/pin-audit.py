@@ -249,7 +249,7 @@ class LiveNet:
             tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]
             if tags:  # the most specific tag at the commit (v4.1.5 over v4): a coarse label must not move the commit out of a range
                 return sorted(tags, key=lambda t: (t.count("."), len(t)), reverse=True)[0]
-            return item.label or None
+            return None  # no tag at the commit resolves to a version: even a # label is only a comment, so the commit is UNRESOLVED
         return item.version  # a tag/branch ref, or a tool/package version
 
     def _query(self, item, version):
@@ -454,7 +454,8 @@ class LiveNet:
             try:
                 mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
                 items = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["head"]["sha"])) if mb else []
-            except RuntimeError:
+            except RuntimeError as e:
+                print(f"information: open pull request #{p['number']} was not audited: {clean(e)}")
                 continue
             out.append((p["number"], items))
         return out
@@ -496,7 +497,7 @@ class LiveNet:
         """{"owner/repo@tag": commit} for the latest tags of every action we use plus the tags we pin: what today's run observed."""
         out = {}
         for repo in sorted({i.name for i in items if i.kind == "action"}):
-            for t in self._gh_json(f"repos/{repo}/tags?per_page=100", strict=True) or []:
+            for t in age._gh_pages(f"repos/{repo}/tags?per_page=100") or []:
                 out[f"{repo}@{t['name']}"] = t["commit"]["sha"]
         for i in items:
             if i.kind == "action" and inv.SHA40.match(i.version):
@@ -585,6 +586,13 @@ class Finding:
 
 
 def judge(item, net, exceptions, notes, current=True):
+    findings = _judge(item, net, exceptions, notes, current)
+    if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of") and net.version_of(item) is None and isinstance(net, LiveNet)):
+        findings.append(Finding(item, "unresolved", ["unresolved"], "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a version (the # label is not evidence)"))
+    return findings
+
+
+def _judge(item, net, exceptions, notes, current=True):
     findings = []
     gh_l, osv_l = net.lists(item)
     by_incident = {}
@@ -657,23 +665,31 @@ def clean(text):
     return re.sub(r"[\x00-\x1f\x7f]", " ", inv._hide(str(text)))[:200]  # control characters out, and an expression (a secret's name) never printed
 
 
+def _safe(text, limit=64):
+    """Only a plain version-like token is echoed into an issue (a hostile label from a fork's pin could carry a link or an @mention)."""
+    t = str(text)
+    return t if re.fullmatch(r"[A-Za-z0-9._+/@:, \-]{1,%d}" % limit, t) and "@" not in t.replace("@sha256", "") and "//" not in t else "(unparseable)"
+
+
 def title_of(f):
     it = f.item
-    ver = it.label or it.version[:12]
-    return f"supply-chain: {'disputed ' if f.disputed else ''}{package_of(it)}@{ver}", f"supply-chain: {'disputed ' if f.disputed else ''}{package_of(it)}@{ver} ({', '.join(f.ids)})"
+    ver = _safe(it.label or it.version[:12])
+    pkg = _safe(package_of(it))
+    ids = ", ".join(_safe(i) for i in f.ids)
+    return f"supply-chain: {'disputed ' if f.disputed else ''}{pkg}@{ver}", f"supply-chain: {'disputed ' if f.disputed else ''}{pkg}@{ver} ({ids})"
 
 
 def body_of(f, rb, owner, ran, today):
     it = f.item
-    ver = it.label or it.version
-    lines = [f"# {title_of(f)[1]}", "", f"Checked {today}. Pinned: `{it.kind}:{package_of(it)}@{it.version}`" + (f" ({ver})" if it.label else "") + ".", "",
-             f"Finding: {f.why}.", f"Advisories: {', '.join(f.ids)}.", ""]
+    ver = _safe(it.label or it.version)
+    lines = [f"# {title_of(f)[1]}", "", f"Checked {today}. Pinned: `{it.kind}:{_safe(package_of(it))}@{_safe(it.version, 80)}`" + (f" ({ver})" if it.label else "") + ".", "",
+             f"Finding: {f.why}.", f"Advisories: {', '.join(_safe(i) for i in f.ids)}.", ""]
     if f.disputed:
         lines += ["This is a DISPUTED hit, for the advisor to rule on. Nothing was rolled back and nothing was reported clean.",
                   "A ruling goes in `.github/supply-chain-exceptions.json` (advisory ids, package, version, evidence links, date, each advisory's last-modified time); it lapses when either advisory changes."]
         return "\n".join(lines) + "\n"
     if f.via:
-        lines.append(f"This action is called inside `{f.via}`: replace or drop the outer action. Nothing here can be pinned by us.")
+        lines.append(f"This action is called inside `{_safe(f.via)}`: replace or drop the outer action. Nothing here can be pinned by us.")
         lines.append("There is no rollback of ours to a clean version of a nested action: the owner decides.")
         return "\n".join(lines) + "\n"
     if rb == UNKNOWN:
