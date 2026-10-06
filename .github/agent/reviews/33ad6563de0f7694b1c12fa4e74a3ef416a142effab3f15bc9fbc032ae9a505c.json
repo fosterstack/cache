@@ -132,6 +132,20 @@
   "--force without a lease on the App's own branch (rebuilt by design); a run that changes nothing leaves an old PR as it is",
   "cleanup failures print a note and never fail the delivery",
   "shallow history is deepened to 1000 commits; no shared history within that fails loudly",
-  "Codex could not execute the unit suite in its read-only sandbox (it read the tests in full); the suite and the 100% auditor coverage gate pass locally and in CI"
- ]
+  "Codex could not execute the unit suite in its read-only sandbox (it read the tests in full); the suite and the 100% auditor coverage gate pass locally and in CI",
+  "row 78 adversarial pass (both vendors, zero blockers): the guard's success is identified by check name only, so a forged same-named check from another Checks writer would be accepted; the preventive control is the ruleset restricting auditor/* to the App (named in the guard's own header), and the allowlist plus automerge_allowed still bound what such a push could carry",
+  "row 78: head verification and the arming are separate calls (gh pr merge --match-head-commit would close the window); the concurrency group serialises this workflow's own runs",
+  "row 78: cleanup identifies any Bot-authored non-draft same-repo PR on an older daily branch, not the App specifically",
+  "row 78: no action reference was added or changed; every uses: in auditor.yml stays a commit digest and check-action-pins reports 0 findings"
+ ],
+ "adversarial_pass": {
+  "codex": {
+   "blockers_open": 0,
+   "evidence_sha256": "a8d6c9076877c37e1108b6c824c04944e3d77bd88628900baf5c01715d16ab18"
+  },
+  "sonnet": {
+   "blockers_open": 0,
+   "evidence_sha256": "ac065ed03554749faee36f41c315fce0eb4463875fcfe4b40a2caec6428223ae"
+  }
+ }
 }
