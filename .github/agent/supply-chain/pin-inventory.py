@@ -161,6 +161,10 @@ def _cap(text):
     return text
 
 
+def _ctx_tag(node):
+    return "step:" + hashlib.sha256((json.dumps(node, sort_keys=True, default=str) + "\0" + _ENV_CTX[0]).encode("utf-8", "replace")).hexdigest()[:10]
+
+
 def _uses(u, node, out, labels):
     u = u.strip()
     if u.startswith("docker://"):
@@ -180,7 +184,10 @@ def _uses(u, node, out, labels):
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
-                out.append(_image_item(val) if tool is None else Item("tool", tool, val))
+                it = _image_item(val) if tool is None else Item("tool", tool, val)
+                if _NONPIN.search(it.version or ""):
+                    it.step = _ctx_tag(node)       # an expression (a matrix value, an env var): identified by the step AND the env/matrix it reads
+                out.append(it)
 
 
 _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target",
@@ -279,16 +286,21 @@ def _walk(node, out, labels, path="", in_step=False):
             if k in ("container", "image") and isinstance(v, (str, dict)):
                 img = v if isinstance(v, str) else v.get("image")
                 # an `image:` input of an action counts only when it names a digest (other inputs called image are not pins)
-                if isinstance(img, str) and "${{" not in img and (path != "with" or k == "container" or DIGEST.search(img)):
+                if isinstance(img, str) and "${{" in img and k == "container":
+                    it = Item("image", "(expression)", ""); it.step = _ctx_tag(v); out.append(it)    # a container image given by an expression: a placeholder
+                elif isinstance(img, str) and "${{" not in img and (path != "with" or k == "container" or DIGEST.search(img)):
                     out.append(_image_item(img))
             if k == "services" and isinstance(v, dict):
                 for svc in v.values():
-                    if isinstance(svc, dict) and isinstance(svc.get("image"), str) and "${{" not in svc["image"]:
-                        out.append(_image_item(svc["image"]))
+                    if isinstance(svc, dict) and isinstance(svc.get("image"), str):
+                        if "${{" in svc["image"]:
+                            it = Item("image", "(expression)", ""); it.step = _ctx_tag(svc); out.append(it)
+                        else:
+                            out.append(_image_item(svc["image"]))
             if k == "jobs" and isinstance(v, dict):
                 top_env = json.dumps(node.get("env"), sort_keys=True, default=str)
                 for job in v.values():
-                    _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str)
+                    _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
                     _walk(job, out, labels, "job:" + k)
                 _ENV_CTX[0] = ""
                 continue
@@ -371,7 +383,6 @@ _UNMEASURED = [
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
     (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
-    (re.compile(r"\b(?:curl|wget)\b(?![^\n]*github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
 
@@ -412,6 +423,10 @@ def unmeasured(files):
             flat = " ".join(line.split())
             if len(flat) > MAX_LINE:
                 raise RuntimeError(f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
+            for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
+                if re.search(r"\b(?:curl|wget)\b", seg) and not re.search(r"github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", seg):
+                    key = (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100])
+                    out[key] = out.get(key, 0) + 1
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])  # the WHOLE line decides identity (its hash), never a truncation
