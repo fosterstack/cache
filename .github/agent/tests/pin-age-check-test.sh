@@ -532,7 +532,7 @@ for fn in (lambda: inv.inventory({"bin/x.sh": "echo ${{ " * 60000}), lambda: inv
         assert "refusing to read it partially" in str(e)     # one enormous line is refused outright, quickly
 assert time.time() - t < 3, time.time() - t
 # a long ordinary pip install with a dependency appended after 4000 characters is REFUSED, never read as its prefix
-pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(250))
+pkgs = " ".join("pkg%03d==1.0.%d" % (i, i) for i in range(400))
 try:
     inv.inventory({"bin/x.sh": "pip install " + pkgs + " evilpkg==9.9.9\n"})
 except RuntimeError:
