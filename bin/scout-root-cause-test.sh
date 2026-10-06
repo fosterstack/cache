@@ -198,9 +198,27 @@ if grep -qF 'pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache' "$e4/out/at
    && grep -qF 'CVE-2023-4911' "$e4/out/attest/ours-published.vex.json"; then echo "ok: the two documents carry our product forms and the target CVE"; pass=$((pass+1))
 else echo "FAIL: the probe documents are wrong"; fail=$((fail+1)); fi
 n_ours=$(grep -cF -- '--vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:' "$LOG4" || true)
-if [ "${n_ours:-0}" -eq 2 ]; then echo "ok: our statement is also scanned by the exact post-attachment digest, once per form"; pass=$((pass+1))
-else echo "FAIL: expected 2 exact-digest scans with our author (one per form), got ${n_ours:-0}"; fail=$((fail+1)); fi
+if [ "${n_ours:-0}" -eq 4 ]; then echo "ok: our statement is also scanned by an exact digest: once per form, plus the multi-platform index and its amd64 child"; pass=$((pass+1))
+else echo "FAIL: expected 4 exact-digest scans with our author (2 forms + multi index + child), got ${n_ours:-0}"; fail=$((fail+1)); fi
 if grep -q 'ghcr.io/fosterstack/cache-scout-probe:ours-' "$LOG4" && ! grep -E 'skopeo copy .*docker://ghcr.io/fosterstack/cache:' "$LOG4" | grep -qE 'docker://ghcr.io/fosterstack/cache:[0-9a-z.-]+$'; then
   echo "ok: only the scratch package is written to"; pass=$((pass+1)); else echo "FAIL: a write outside the scratch package"; fail=$((fail+1)); fi
+# advisor 0214 (probe 2): a MULTI-PLATFORM index (debian 12.0's manifest list; its amd64 child is the fixture) that HAS the target: our
+# statement is attached to a scratch copy; index digest/children recorded before and after, the index scanned by tag and by exact digest
+# and the amd64 child scanned by digest, all with our author; the attestations listed. The default run (no target) tries nothing.
+MULTI=sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b
+if grep -qF "skopeo copy -q --all docker://docker.io/library/debian@$MULTI docker://ghcr.io/fosterstack/cache-scout-probe:multi" "$LOG4" \
+   && grep -qF "docker scout attestation add --file $e4/out/attest/multi.vex.json --predicate-type https://openvex.dev/ns/v0.2.0 ghcr.io/fosterstack/cache-scout-probe:multi" "$LOG4"; then
+  echo "ok: the multi-platform index is copied to its own scratch tag and our statement attached"; pass=$((pass+1))
+else echo "FAIL: the multi-platform copy or attachment is missing"; fail=$((fail+1)); fi
+if grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe:multi' "$LOG4" \
+   && grep -qE '^docker scout cves --format gitlab --vex-author \^FosterStack\\ LLC\$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:[0-9a-f]{64}$' "$LOG4" \
+   && grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab' "$LOG4"; then
+  echo "ok: the multi-platform index is scanned by tag and by exact digest, and its amd64 child by digest, with our author"; pass=$((pass+1))
+else echo "FAIL: the multi-platform scans are missing"; fail=$((fail+1)); fi
+if grep -qF 'docker scout attestation list registry://ghcr.io/fosterstack/cache-scout-probe:multi' "$LOG4" && grep -q 'multi-platform index' "$e4/out/summary.md"; then
+  echo "ok: the multi-platform attestations are listed and the result is in the summary"; pass=$((pass+1))
+else echo "FAIL: the multi-platform attestation list or summary is missing"; fail=$((fail+1)); fi
+if [ -e "$e2e/out/attest/multi.vex.json" ] || grep -q 'multi' "$LOG"; then echo "FAIL: a fixture without the target tried the multi-platform probe"; fail=$((fail+1))
+else echo "ok: a fixture without the target tries no multi-platform probe"; pass=$((pass+1)); fi
 rm -rf "$e2e" "$e4"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]

@@ -127,6 +127,41 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
   done
 fi
 
+# --- 1c. a MULTI-PLATFORM index with the target (advisor 0214, probe 2): the release is an index, and attaching to one did not change its
+# digest (Scout attached to a platform child). Debian 12.0's manifest list: its amd64 child IS the fixture above. A scratch copy gets our
+# statement (published product form); the index digest and children are recorded before and after, then the index is scanned by tag and by
+# exact digest and the amd64 child by digest, all with our author, and the attestations are listed. A fixture without the target tries nothing.
+MULTI=sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b
+CHILD=sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab
+echo -e "\n### 1c. multi-platform index (scratch tag \`multi\`, debian 12.0 manifest list \`$MULTI\`)\n" >> "$summ"
+if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+  skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$PROBE_REPO:multi" >> "$a/copy.log" 2>&1
+  mb=$(digest "$PROBE_REPO:multi"); children "$PROBE_REPO:multi" > "$a/multi.children.before"
+  python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" CVE-2023-4911 "$g_purl" "$a/multi.vex.json"
+  docker scout attestation add --file "$a/multi.vex.json" --predicate-type "$PRED" "$PROBE_REPO:multi" > "$a/multi-add.log" 2>&1
+  echo "- multi-platform index: attestation add exit $? — \`$(tail -1 "$a/multi-add.log" | cut -c1-160)\`" >> "$summ"
+  mn=$(digest "$PROBE_REPO:multi"); children "$PROBE_REPO:multi" > "$a/multi.children.after"
+  if [ "$mb" = READ-FAILED ] || [ "$mn" = READ-FAILED ]; then mstat="inconclusive (a read failed)"; elif [ "$mb" = "$mn" ]; then mstat=unchanged; else mstat=CHANGED; fi
+  echo "- multi-platform index digest before \`$mb\`, after \`$mn\` — $mstat" >> "$summ"
+  echo "  - children before: $(cat "$a/multi.children.before")" >> "$summ"
+  echo "  - children after: $(cat "$a/multi.children.after")" >> "$summ"
+  f="$a/multi-after-tag.json"
+  docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi" > "$f" 2> "$f.err"; rc=$?
+  echo "- multi-platform index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  if [ "$mn" != READ-FAILED ]; then
+    f="$a/multi-after-index-digest.json"
+    docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:${mn}" > "$f" 2> "$f.err"; rc=$?
+    echo "- multi-platform index scanned by its exact digest \`sha256:$mn\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  fi
+  f="$a/multi-after-child-digest.json"
+  docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@$CHILD" > "$f" 2> "$f.err"; rc=$?
+  echo "- multi-platform amd64 child scanned by its digest \`$CHILD\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  docker scout attestation list "registry://$PROBE_REPO:multi" > "$a/multi-attestation-list.txt" 2>&1
+  echo "- multi-platform attestation list: \`$(head -c 400 "$a/multi-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+else
+  echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"
+fi
+
 # --- 2. the matrix: control, one field at a time, our forms; three Scout versions --------------------------------------
 echo -e "\n## 2. Matrix\n\n| case | Scout | image | location | file | --vex-author | subcomponent | product | result |\n|---|---|---|---|---|---|---|---|---|" >> "$summ"
 current=""
