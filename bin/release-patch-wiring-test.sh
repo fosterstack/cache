@@ -238,7 +238,10 @@ head=$(gh pr list --head "$branch" --base main --state open --json number,headRe
 [[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
 [ "$head" = "$oid" ] || { echo "the open PR's head is not the commit this job made; refusing" >&2; exit 1; }
 gh pr merge --auto --squash --match-head-commit "$oid" "$number"
+state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus) || state=unknown
+if [ "$state" = "BEHIND" ]; then
 gh pr update-branch "$number" || true
+fi
 """
 _got = [re.sub(r"python3 \.github/[a-z]+/bin/auditor-signed-commit\.py", "python3 @CLI@", " ".join(l.split()))
         for l in crun.splitlines() if l.strip()]
@@ -418,6 +421,12 @@ mutrun pr-oid-not-captured     'oid=$(python3' 'python3'
 mutrun update-branch-dropped   'gh pr update-branch "$number" || true' 'true'
 mutrun update-branch-fatal     'gh pr update-branch "$number" || true' 'gh pr update-branch "$number"'
 mutrun update-branch-by-branch 'gh pr update-branch "$number"' 'gh pr update-branch "$branch"'
+mutrun update-branch-always    'if [ "$state" = "BEHIND" ]; then' 'if true; then'
+mutrun update-branch-other-state '"BEHIND"' '"DIRTY"'
+mutrun update-branch-state-unread 'state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus) || state=unknown' 'state=BEHIND'
+mutrun update-branch-state-fatal 'state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus) || state=unknown' 'state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus)'
+mutrun update-branch-other-pr  'gh pr view "$number" --json' 'gh pr view "$branch" --json'
+mutrun update-branch-before-merge "$MRG" $'gh pr update-branch "$number"\n'"$MRG"
 mutrun pr-count-unchecked      '[ "$count" -le 1 ] ||' 'true ||'
 mutrun pr-number-unchecked     '[[ "$number" =~ ^[0-9]+$ ]] ||' 'true ||'
 mutrun pr-second-element       '.[0].number' '.[1].number'

@@ -334,8 +334,11 @@ jobs:
           [[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
           [ "$head" = "$oid" ] || { echo "the open PR's head is not the commit this job made; refusing" >&2; exit 1; }
           gh pr merge --auto --squash --match-head-commit "$oid" "$number"
-          # main's ruleset requires up-to-date branches: bring a PR that is behind main up to date (a failure, e.g. already current, is not an error)
-          gh pr update-branch "$number" || true
+          # main's ruleset requires up-to-date branches: a PR that is BEHIND main is brought up to date (a failure of the update is not an error)
+          state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus) || state=unknown
+          if [ "$state" = "BEHIND" ]; then
+            gh pr update-branch "$number" || true
+          fi
 
   admission:
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
