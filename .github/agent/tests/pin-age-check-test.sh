@@ -762,6 +762,25 @@ assert time.time() - t < 2, time.time() - t
 assert inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker --context x run evil/x:latest\n"})
 PY
 
+CASE="a hostile many-line file or a step that repeats one command hundreds of times is refused quickly (items and lines are bounded), and compound commands (cd x&&pip install y; a;pip install b) are read as separate commands"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+t = time.time()
+for files in ({"bin/x.sh": ("pip install " * 320 + "\n") * 100},
+              {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n" + "".join("          " + "pip install " * 320 + "\n" for _ in range(100))},
+              {"bin/y.sh": "echo\n" * 30000}):
+    try:
+        inv.inventory(files)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a hostile file was read")
+assert time.time() - t < 5, time.time() - t
+got = inv.inventory({"bin/x.sh": "cd x&&pip install foo==1.0\necho hi;pip install bar==2.0\n"})
+assert "package:pypi/foo@1.0" in got and "package:pypi/bar@2.0" in got
+PY
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'

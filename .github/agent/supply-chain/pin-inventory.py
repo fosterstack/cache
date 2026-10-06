@@ -50,7 +50,7 @@ def _tails(run, is_cmd, subcommands, skip_values=()):
     """For every command word `is_cmd` accepts, the text after its subcommand: found by walking tokens (linear time: a regex over an option chain can backtrack exponentially)."""
     out = []
     for line in run.split("\n"):
-        toks = line.split()
+        toks = re.sub(r"[;&|]+", " ; ", line).split()      # `cd x&&pip install y` and `a;pip install y` are two commands
         for i, t in enumerate(toks):
             if not is_cmd(t):
                 continue
@@ -67,6 +67,8 @@ def _tails(run, is_cmd, subcommands, skip_values=()):
                         break
                     tail.append(tk)
                 out.append(" ".join(tail))
+                if len(out) > MAX_ITEMS_PER_STEP:
+                    raise RuntimeError("a step repeats one command more than %d times: refusing to read it (a hostile text could exhaust the readers)" % MAX_ITEMS_PER_STEP)
     return out
 
 
@@ -254,9 +256,16 @@ _ENV_CTX = [""]
 _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
 
 
+MAX_ITEMS_PER_STEP = 500
+MAX_ITEMS_PER_FILE = 5000
+MAX_LINES_PER_FILE = 20000
+
+
 def _step(node, out, labels):
     n0 = len(out)
     _step_items(node, out, labels)
+    if len(out) - n0 > MAX_ITEMS_PER_STEP:
+        raise RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
     run = node.get("run")
     if isinstance(run, str):
         ctx = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
@@ -373,6 +382,8 @@ def inventory(files):
         elif path.endswith(".sh"):
             found = []
             joined = re.sub(r"\\\n\s*", " ", text).split("\n")
+            if len(joined) > MAX_LINES_PER_FILE:
+                raise RuntimeError(f"{path} has {len(joined)} lines: more than the {MAX_LINES_PER_FILE} this check reads")
             assigns = {}
             for ln in joined:
                 am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
@@ -380,7 +391,9 @@ def inventory(files):
                     assigns[am.group(1)] = am.group(2)
             for ln in joined:   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
                 refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
-                _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})   # a script's go install / pip install / docker run / release download are measured like a run step's
+                _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})
+                if len(found) > MAX_ITEMS_PER_FILE:
+                    raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
