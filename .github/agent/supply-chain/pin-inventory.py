@@ -237,6 +237,9 @@ def _step(node, out, labels):
                 it.step = tag     # a placeholder (variable, @latest, @main, unpinned) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused
 
 
+_SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
+
+
 def _step_items(node, out, labels):
     """A step (or a job-level reusable-workflow call): `uses` and `run` mean something only here; the same word in `env:` or `with:` is data."""
     if isinstance(node.get("uses"), str):
@@ -256,6 +259,10 @@ def _step_items(node, out, labels):
         for m in _DOCKER_CMD.finditer(run):
             for img in _docker_images(m.group(1)):
                 out.append(_image_item(img))
+        for ln in run.split("\n"):    # where a script downloads FROM: an assignment of a URL/BASE variable is a source line identified by its own text
+            m = _SOURCE_ASSIGN.match(ln)
+            if m:
+                out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3)))
         for m in _PIP_INSTALL.finditer(run):
@@ -289,6 +296,10 @@ def _walk(node, out, labels, path="", in_step=False):
         if in_step or path.startswith("job:"):
             _step(node, out, labels)
         for k, v in node.items():
+            if k == "env" and isinstance(v, dict):
+                for ek, ev in v.items():
+                    if re.fullmatch(r"[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL)", str(ek)):
+                        out.append(Item("tool", "source:env:" + str(ek).lower() + "=" + hashlib.sha256(str(ev).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))   # an env var that retargets a download
             if k in ("container", "image") and isinstance(v, (str, dict)):
                 img = v if isinstance(v, str) else v.get("image")
                 # an `image:` input of an action counts only when it names a digest (other inputs called image are not pins)
