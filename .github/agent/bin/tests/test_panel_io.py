@@ -703,6 +703,7 @@ class RebuildReal(Tmp):
         self.m1 = self.git("rev-parse", "HEAD")
         self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
         self.guard = "success"
+        self.pr_head = None
 
     def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None, state_source=None, view_armed=False):
         st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
@@ -719,6 +720,8 @@ class RebuildReal(Tmp):
                    ("gh", "pr", "view"): "true\n" if view_armed else "false\n"}.get(tuple(cmd[:3]), "")
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = self.guard
+            if cmd[:2] == ["gh", "api"] and "/pulls/" in cmd[2]:
+                out = self.pr_head or subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.work, capture_output=True, text=True).stdout.strip()
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
         env.update(env_extra or {})
@@ -757,6 +760,15 @@ class RebuildReal(Tmp):
     def test_a_carried_profile_entry_blocks_auto_merge_even_when_the_listing_hides_it(self):     # review r4 B1
         rc, calls = self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))                 # the (stub) gh listing says only state and VEX
         self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)           # but the branch carried a profile entry: still manual
+
+    def test_arming_is_bound_to_the_head_this_run_pushed(self):                                  # review r7 B1
+        self.git("checkout", "-q", "-B", "auditor/panel", self.m0)
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-9-ONLY")); doc["version"] = 2
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "vex only"); self.git("push", "-q", "-f", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        self.pr_head = "e" * 40                                                                # another run replaced the head after our push
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))
+        self.assertIn("not arming", str(e.exception))
 
     def test_a_pr_with_only_the_panels_own_records_is_armed_by_number(self):
         self.git("checkout", "-q", "-B", "auditor/panel", self.m0)
@@ -1054,15 +1066,30 @@ class CarryForward(Tmp):
         self.assertEqual(doc["statements"][:len(base["statements"])], base["statements"])           # every published statement untouched, in order
         self.assertEqual(len(doc["statements"]), len(base["statements"]) + 1)
 
-    def test_profile_entries_are_carried_once(self):
-        e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}}
-        e2 = {"scanner": "scout", "kind": "k", "match": {"package": "^b$"}}
+    def test_profile_entries_are_carried_once_and_conflicts_are_loud(self):                       # review r7 B2
+        e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}, "finding": "f1"}
+        e2 = {"scanner": "scout", "kind": "k", "match": {"package": "^b$"}, "finding": "f2"}
         self.put("BASE", P.PROFILES, {"entries": [e1]}); self.put("PR", P.PROFILES, {"entries": [e1, e2]})
         self.cur(P.PROFILES, {"entries": [e1]})
         self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
         self.assertEqual(json.load(open(os.path.join(self.repo, P.PROFILES)))["entries"], [e1, e2])
-        self.cur(P.PROFILES, {"entries": [e1, e2, {"scanner": "x", "kind": "y", "match": {}}]})   # main already holds it: nothing new
+        self.cur(P.PROFILES, {"entries": [e1, e2]})                                                 # main already holds exactly it: nothing to carry
         self.assertEqual(self.go([P.PROFILES]), [])
+        self.cur(P.PROFILES, {"entries": [e1, dict(e2, finding="main's different one")]})            # main holds a DIFFERENT entry for the same key: loud
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+        # the PR CHANGED e1: carried if main still has the base's, loud if main changed it too
+        self.put("PR", P.PROFILES, {"entries": [dict(e1, finding="changed by the PR")]})
+        self.cur(P.PROFILES, {"entries": [e1]})
+        self.assertEqual(self.go([P.PROFILES]), [P.PROFILES])
+        self.assertEqual(json.load(open(os.path.join(self.repo, P.PROFILES)))["entries"][0]["finding"], "changed by the PR")
+        self.cur(P.PROFILES, {"entries": [dict(e1, finding="main changed it as well")]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
+        self.put("PR", P.PROFILES, {"entries": []})                                                 # the PR REMOVED e1: not silently dropped
+        self.cur(P.PROFILES, {"entries": [e1]})
+        with self.assertRaises(RuntimeError):
+            self.go([P.PROFILES])
 
     def test_a_file_the_panel_never_writes_is_refused_not_carried(self):      # reviewer r1 blocker 1: a human push must not ride into an App commit
         for path in (".github/agent/prompts/x.md", ".github/workflows/auditor.yml", ".auditor/proposals/p.json", "bin/evil.sh"):
@@ -1150,6 +1177,10 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertEqual(deliver["env"]["AUDITOR_CHECKS_TOKEN"], "${{ github.token }}")
         app = next(st for st in self.steps if st.get("id") == "app-token")
         self.assertNotIn("permission-checks", app["with"])
+
+    def test_overlapping_audits_are_serialised(self):                                              # review r7 B1
+        c = self.wf["jobs"]["audit"].get("concurrency") or {}
+        self.assertEqual((c.get("group"), c.get("cancel-in-progress")), ("auditor-daily-delivery", False))
 
     def test_the_seat_never_moves_the_daily_cve_auditor(self):             # REQ-SCAN-014-AC3
         cve = self.steps[self.step("auditor-run.py")]

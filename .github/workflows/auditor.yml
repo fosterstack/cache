@@ -48,6 +48,10 @@ permissions:
 jobs:
   audit:
     name: audit
+    # one audit at a time: two overlapping runs could each rebuild auditor/panel and one could arm auto-merge on the other's head
+    concurrency:
+      group: auditor-daily-delivery
+      cancel-in-progress: false
     # a seat-probe dispatch runs ONLY the panel-probe job below: no ordinary audit, delivery, App token or claim logging
     if: ${{ !inputs.panel_probe }}
     runs-on: ubuntu-latest

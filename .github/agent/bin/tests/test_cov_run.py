@@ -463,7 +463,7 @@ class SuppressionPR(Base):
         lst = [a for a in fr.argvs() if a[:3] == list(self.LIST)][0]
         self.assertIn("--paginate", lst)
         jq = lst[lst.index("--jq") + 1]
-        for needle in ('.head.repo.fork == false', '.draft == false', '.user.type == "Bot"'):
+        for needle in ('.head.repo.fork == false', '.draft == false', '.user.type == "Bot"', '.base.ref == "main"'):
             self.assertIn(needle, jq)                                          # a fork's, a human's and an owner-held draft are never closed
 
     def test_todays_replacement_must_be_a_same_repo_pr_into_main(self):                            # review r6 B2

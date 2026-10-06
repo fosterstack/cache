@@ -232,7 +232,7 @@ def _close_superseded(branch, url, ws):
     try:
         # only PRs the App itself opened from a branch of THIS repository and that are not drafts (a draft waits for the owner; a fork's or a human's PR is never ours to close)
         q = subprocess.run(["gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100", "--paginate", "--jq",
-                            '.[] | select(.head.repo.fork == false and .draft == false and .user.type == "Bot") | "\\(.number) \\(.head.ref)"'],
+                            '.[] | select(.head.repo.fork == false and .base.ref == "main" and .draft == false and .user.type == "Bot") | "\\(.number) \\(.head.ref)"'],
                            cwd=ws, capture_output=True, text=True)
         if q.returncode != 0:
             print("note: could not list open PRs to close superseded suppression PRs")

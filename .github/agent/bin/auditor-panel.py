@@ -1251,10 +1251,25 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         elif path == PROFILES:
             pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"entries": []}'), json.loads(cur_txt)
             key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
-            have, base_keys = {key(e) for e in cur_doc["entries"]}, {key(e) for e in base_doc["entries"]}
-            new = [e for e in pr_doc["entries"] if key(e) not in base_keys and key(e) not in have]
-            if new:
-                cur_doc["entries"].extend(new)
+            cur_by = {key(e): e for e in cur_doc["entries"]}
+            base_by = {key(e): e for e in base_doc["entries"]}
+            touched = False
+            for e in pr_doc["entries"]:
+                k = key(e)
+                if k not in base_by:                   # an entry the PR ADDED
+                    if k not in cur_by:
+                        cur_doc["entries"].append(e); cur_by[k] = e; touched = True
+                    elif cur_by[k] != e:
+                        raise _conflict(path, "the entry for %s" % (k,))      # main holds a DIFFERENT entry for the same scanner/kind/package
+                elif e != base_by[k]:                  # an entry the PR CHANGED
+                    if cur_by.get(k) == base_by[k]:
+                        cur_doc["entries"][[key(x) for x in cur_doc["entries"]].index(k)] = e; cur_by[k] = e; touched = True
+                    elif cur_by.get(k) != e:
+                        raise _conflict(path, "the entry for %s" % (k,))
+            for k in base_by:                          # an entry the PR REMOVED: not silently dropped either
+                if k not in {key(x) for x in pr_doc["entries"]}:
+                    raise _conflict(path, "the removed entry for %s" % (k,))
+            if touched:
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
     return carried
@@ -1323,6 +1338,11 @@ def cmd_deliver(a, run=subprocess.run):
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
         if automerge_allowed(sorted(pr_paths)):
             target = existing or branch
+            if changed and existing and real:   # arm only the head THIS run pushed: another run's later push must never inherit this run's arming
+                pushed = _sh(["git", "-C", a.repo, "rev-parse", "HEAD"], plan, real, run).strip()
+                now_head = _sh(["gh", "api", "repos/{owner}/{repo}/pulls/%s" % existing, "--jq", ".head.sha"], plan, real, run).strip()
+                if now_head != pushed:
+                    raise RuntimeError("auditor-panel: the PR's head is %s, not the %s this run pushed (another run replaced it): not arming auto-merge" % (now_head[:12], pushed[:12]))
             _sh(["gh", "pr", "ready", target], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", target], plan, real, run)
         elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
