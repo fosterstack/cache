@@ -282,7 +282,18 @@ class LiveNet:
         return bool(v) and self._query(item, v) is not None
 
     def lists(self, item):
-        version = self._version_of(item)
+        if item.kind == "action" and inv.SHA40.match(item.version):  # EVERY version-like tag at the commit: one tag must not hide another's advisory
+            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)][:6]
+            if len(tags) > 1:
+                gh_all, osv_all = [], []
+                for t in tags:
+                    g, o = self._lists_for(item, t)
+                    gh_all += [x for x in g if x not in gh_all]
+                    osv_all += [x for x in o if x not in osv_all]
+                return gh_all, osv_all
+        return self._lists_for(item, self._version_of(item))
+
+    def _lists_for(self, item, version):
         q = self._query(item, version) if version else None
         if q is None or not version:
             return [], []
@@ -747,7 +758,7 @@ def file_issues(gh, plan, today):
         if title in done:
             continue
         done.add(title)
-        existing = next((i for i in open_issues if str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " (")), None)
+        existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " ("))), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
             path = f.name

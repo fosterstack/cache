@@ -56,7 +56,10 @@ _EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
 
 def _hide(text):
     """An expression (which may name a secret or an environment) becomes a placeholder: it can never be proven, so it fails closed, and it never prints."""
-    return _EXPR.sub("${{expression}}", text) if isinstance(text, str) else text
+    if not isinstance(text, str):
+        return text
+    text = _EXPR.sub("${{expression}}", text)
+    return re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "${var}", text)  # a shell variable's name (an env var, maybe a secret's) never prints either
 
 
 class Item:

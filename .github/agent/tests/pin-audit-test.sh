@@ -405,6 +405,7 @@ adv = [{"ghsa_id": "GHSA-only-only-only", "updated_at": "2026-01-01T00:00:00Z", 
 json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": adv, "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
 net = pa.LiveNet([work + "/ghmap"], ".")
 net._osv_post = lambda q: []
+net._osv_get = lambda i: None   # offline: OSV is never asked
 gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
 assert [g["id"] for g in gh] == ["GHSA-only-only-only"] and gh[0]["affected"] and gh[0]["malicious"], gh
 assert net.lists(pa.inv.Item("action", "o/r", "v2.1", "")) == ([], [])
@@ -639,6 +640,31 @@ assert net._version_of(pa.inv.Item("action", "o/r", "a" * 40, "v99.0.0")) is Non
 net._osv_post = lambda q: []; net.upstream = lambda i: True
 f = pa.judge(pa.inv.Item("action", "o/r", "a" * 40, "v99.0.0"), net, [], [])
 assert [x.kind for x in f] == ["unresolved"], [x.kind for x in f]
+PY
+
+CASE="every version-like tag at a commit is checked (one tag must not hide another's advisory), and shell variable names never print"
+check python3 - "$aud" "$here/../bin/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+spec = importlib.util.spec_from_file_location("inv2", sys.argv[2]); inv2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv2)
+sha = "a" * 40
+pa.age._tags_for_commit = lambda r, s: ["v4", "v4.2.0", "latest"]
+net = pa.LiveNet(["false"], ".")
+seen = []
+net._lists_for = lambda item, v: (seen.append(v) or ([{"id": "G-" + v, "incident": "I", "affected": v == "v4.2.0"}], []))
+gh, osv = net.lists(pa.inv.Item("action", "o/r", sha, ""))
+assert seen == ["v4", "v4.2.0"] and any(g["affected"] for g in gh), (seen, gh)
+assert "SECRET_NAME" not in inv2.Item("gotool", "x", "${SECRET_NAME}").version and "SECRET_NAME" not in inv2.Item("gotool", "x", "$SECRET_NAME").version
+# an issue created in THIS run is never edited (no 'issue edit -1')
+calls = []
+class G:
+    def run(self, *a, ok_fail=False):
+        calls.append(a)
+        class R: stdout = "[]"
+        return R()
+plan = [{"title": ("supply-chain: x@1", "supply-chain: x@1 (A)"), "body": "b", "owner": False}, {"title": ("supply-chain: x@1", "supply-chain: x@1 (A, B)"), "body": "b", "owner": False}]
+pa.file_issues(G(), plan, "2026-10-05")
+assert not any(c[:3] == ("issue", "edit", "-1") for c in calls), calls
 PY
 
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
