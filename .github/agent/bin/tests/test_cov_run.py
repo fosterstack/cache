@@ -4,7 +4,7 @@ merge/consolidate fallbacks, the narrative guard, the scanner tables and main()'
 
 No network, no real git/gh/go: every subprocess call is intercepted by FakeRun and asserted on by
 its exact argv. Every write goes to a temp dir."""
-import contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import base64, contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -53,8 +53,11 @@ OLDHEAD = "c" * 40
 GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": True, "state": "VALID"}}}}})
 
 
-def head_lookup(verified=True, parent=SHA):
-    return (0, json.dumps({"parents": [{"sha": parent}], "commit": {"verification": {"verified": verified}}}), "")
+def head_lookup(verified=True, parent=SHA, parents=None, files=(("go.mod", "modified"),)):
+    """GitHub's answer for a commit: its parents, its changed files and whether it is verified."""
+    return (0, json.dumps({"parents": [{"sha": x} for x in (parents if parents is not None else [parent])],
+                           "files": [{"filename": f[0], "status": f[1], **(f[2] if len(f) > 2 else {})} for f in files],
+                           "commit": {"verification": {"verified": verified}}}), "")
 
 
 class ApiRun(FakeRun):
@@ -63,13 +66,14 @@ class ApiRun(FakeRun):
     Defaults: the branch exists at OLDHEAD, every write succeeds with a VALID signature, `git status` lists the suppression files as changed and
     `git rev-parse` answers SHA. Override `live`, `post`, `patch`, `delete`, `mutation`, `lookup`, `pr_head`."""
     def __init__(self, rules=None, live=OLDHEAD, post=(0, "{}", ""), patch=(0, "{}", ""), delete=(0, "{}", ""), mutation=(0, GQL_OK, ""),
-                 lookup=None, pr_head=OID):
+                 lookup=None, pr_head=OID, contents=None):
         defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
                     ("git", "rev-parse"): (0, SHA + "\n", "")}
         super().__init__({**defaults, **(rules or {})})
         self.live, self.post, self.patch, self.delete, self.mutation = live, post, patch, delete, mutation
         self.lookup = lookup or head_lookup()
         self.pr_head = pr_head
+        self.contents = {"go.mod": b"module m\n"} if contents is None else contents
         self.stdins = []
 
     def __call__(self, argv, **kw):
@@ -87,6 +91,10 @@ class ApiRun(FakeRun):
                 resp = (1, "", "gh: Not Found (HTTP 404)") if self.live is None else (0, json.dumps({"object": {"sha": self.live}}), "")
             elif "/commits/" in argv[2]:
                 resp = self.lookup
+            elif "/contents/" in argv[2]:
+                path = argv[2].split("/contents/")[1].split("?ref=")[0]
+                resp = (0, json.dumps({"encoding": "base64", "content": base64.encodebytes(self.contents[path]).decode()}), "") if path in self.contents \
+                    else (1, "", "gh: Not Found (HTTP 404)")
             else:
                 return super().__call__(argv, **kw)
             return subprocess.CompletedProcess(argv, resp[0], resp[1], resp[2])
@@ -545,6 +553,30 @@ class SuppressionPR(Base):
         self.assertEqual(res[0], OID); self.assertIsNone(res[1])
         self.assertIn("warning: temporary branch auditor/tmp-", out); self.assertIn("could not be deleted", out)
 
+    def test_a_pr_discovery_failure_aborts_before_any_write(self):
+        for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (1, "", "")}):
+            fr = ApiRun(rules)
+            res = self.real(fr, automerge=True)
+            self.assertIsNone(res[0]); self.assertIn("gh pr list", res[1])
+            self.assertEqual(fr.ref_writes(), []); self.assertTrue(fr.no_unsigned())
+            self.assertFalse(any(a[:3] in (["gh", "pr", "merge"], ["gh", "pr", "create"], ["gh", "pr", "view"]) for a in fr.argvs()))
+
+    def test_every_suppression_path_arms_only_the_verified_head(self):
+        view = ["gh", "pr", "view", "https://x/pull/9", "--json", "headRefOid", "--jq", ".headRefOid"]
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/9", None))   # a NEW PR is checked too
+        self.assertIn(view, fr.argvs()); self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}, pr_head="e" * 40)   # replaced between the commit and the arm
+        res = self.real(fr, automerge=True)
+        self.assertIsNone(res[0]); self.assertIn("head changed since it was verified", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}, pr_head=None)       # unreadable
+        self.assertIsNone(self.real(fr, automerge=True)[0])
+        fr = ApiRun({("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")], ("gh", "pr", "create"): (1, "", "already exists")}, pr_head="e" * 40)
+        self.assertIsNone(self.real(fr, automerge=True)[0])                                       # the race-found PR is bound too
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}, pr_head="e" * 40)
+        self.assertEqual(self.real(fr), ("https://x/pull/9", None))                              # draft (no auto-merge): nothing to arm, nothing to check
+
     def test_stage_failure(self):
         fr = ApiRun()
         url, err = self.real(fr, supp=self.d("empty-supp"))               # no openvex file to merge
@@ -731,13 +763,18 @@ class FixPR(Base):
 
     REUSE = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
 
-    def test_an_existing_bump_branch_is_reused_only_when_its_head_is_verified_and_on_current_main(self):
-        # signed head on the CURRENT main: reused, no write at all
+    def test_an_existing_bump_branch_is_reused_only_for_one_reviewed_bump_commit_on_main_with_the_same_bytes(self):
+        # one verified commit on the CURRENT main, changing only go.mod, with the same bytes: reused, no write at all
         res, fr = self.real(self.REUSE, api={"lookup": head_lookup(True, SHA)})
         self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])
         self.assertIn(["gh", "api", "repos/o/r/commits/" + OLDHEAD], fr.argvs())
-        # an unsigned head, a signed head on an OLD main, a failed lookup, an absent branch: rebuilt through the API, the PR is then updated
+        # everything else is rebuilt through the API (the PR is then updated); never reused
         for label, api in (("unsigned", {"lookup": head_lookup(False, SHA)}), ("old main", {"lookup": head_lookup(True, "9" * 40)}),
+                           ("two parents (a verified merge commit)", {"lookup": head_lookup(True, parents=[SHA, "9" * 40])}),
+                           ("parent is not main", {"lookup": head_lookup(True, parents=["9" * 40])}),
+                           ("an extra changed file", {"lookup": head_lookup(True, SHA, files=[("go.mod", "modified"), ("README.md", "modified")])}),
+                           ("a rename", {"lookup": head_lookup(True, SHA, files=[("go.mod", "renamed", {"previous_filename": "a"})])}),
+                           ("different bytes", {"contents": {"go.mod": b"module other\n"}}),
                            ("lookup failure", {"lookup": (1, "", "HTTP 500")}), ("absent", {"live": None})):
             res, fr = self.real(self.REUSE, api=api)
             self.assertEqual(res, ("https://x/pull/7", None, "delivered"), label)
@@ -752,6 +789,49 @@ class FixPR(Base):
         res, fr = self.real(self.REUSE, repo="")
         self.assertEqual(res[2], "error")
 
+    def test_a_pr_discovery_failure_aborts_before_any_write(self):                     # a failed lookup is not "no PR"
+        for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (1, "", "")}):
+            res, fr = self.real({**self.CHG, **rules}, automerge=True)
+            self.assertEqual(res[0], None); self.assertEqual(res[2], "error"); self.assertIn("gh pr list", res[1])
+            self.assertEqual(fr.ref_writes(), []); self.assertTrue(fr.no_unsigned())
+            self.assertFalse(any(a[:3] in (["gh", "pr", "merge"], ["gh", "pr", "create"], ["gh", "pr", "view"]) for a in fr.argvs()))
+        res, fr = self.real({**self.REUSE, ("gh", "pr", "list"): (1, "", "HTTP 500")})   # also when the branch would be reused
+        self.assertEqual(res[2], "error"); self.assertEqual(fr.ref_writes(), [])
+
+    def test_every_bump_path_arms_only_the_verified_head(self):
+        new = {**self.CHG, ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}
+        res, fr = self.real(new, automerge=True)                                       # a new PR: head == the commit the helper made
+        self.assertEqual(res, ("https://x/pull/9", None, "delivered"))
+        self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
+        self.assertLess(fr.index(["gh", "pr", "view", "https://x/pull/9", "--json", "headRefOid", "--jq", ".headRefOid"]), len(fr.argvs()) - 1)
+        res, fr = self.real(new, automerge=True, api={"pr_head": "e" * 40})            # replaced between the commit and the arm
+        self.assertEqual(res[0], None); self.assertEqual(res[2], "error"); self.assertIn("head changed since it was verified", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        res, fr = self.real(self.REUSE, automerge=True, api={"pr_head": OLDHEAD})      # a REUSED branch: bound to the head that was verified
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])
+        self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"])
+        res, fr = self.real(self.REUSE, automerge=True, api={"pr_head": "e" * 40})      # its head changed after the verification
+        self.assertEqual(res[2], "error"); self.assertIn("head changed since it was verified", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        res, fr = self.real({**self.CHG, ("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")], ("gh", "pr", "create"): (1, "", "already exists")},
+                            automerge=True, api={"pr_head": "e" * 40})                 # the race-found PR is bound too
+        self.assertEqual(res[2], "error")
+        res, fr = self.real(new, automerge=True, api={"pr_head": None})                # a head that cannot be read is not armed either
+        self.assertEqual(res[2], "error")
+
+    def test_a_staging_failure_is_an_error_and_a_missing_go_sum_is_not_staged(self):
+        res, fr = self.real({("git", "add"): (1, "", "fatal: pathspec 'go.mod' did not match")})
+        self.assertEqual(res, (None, "git add: fatal: pathspec 'go.mod' did not match", "error"))
+        self.assertEqual(fr.ref_writes(), [])
+        res, fr = self.real({**self.CHG, ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertIn(["git", "add", "go.mod"], fr.argvs())                           # no go.sum in the checkout: only what exists is staged
+        os.remove(os.path.join(self.d("ws"), "go.mod"))
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY="o/r")
+        fr = ApiRun()
+        with mock.patch.object(R.subprocess, "run", fr):
+            res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
+        self.assertEqual(res[2], "error"); self.assertIn("go.mod", res[1])            # no go.mod at all: nothing to stage, never "unresolvable"
+
     def test_go_get_unresolvable_and_tidy_error(self):
         res, fr = self.real({("go", "get"): (1, "", "unknown revision")})
         self.assertEqual(res, (None, None, "unresolvable"))
@@ -764,7 +844,7 @@ class FixPR(Base):
     def test_noop_bump_is_unresolvable(self):
         res, fr = self.real({("git", "diff"): (0, "", "")})                # nothing staged
         self.assertEqual(res, (None, None, "unresolvable"))
-        self.assertIn(["git", "add", "go.mod", "go.sum"], fr.argvs())
+        self.assertIn(["git", "add", "go.mod"], fr.argvs())               # (changed: only the files that exist are staged; the checkout has no go.sum)
         self.assertFalse(any(a[:2] == ["git", "commit"] for a in fr.argvs()))
 
     def test_existing_and_race_and_create(self):

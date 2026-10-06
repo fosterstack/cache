@@ -1291,7 +1291,7 @@ def cmd_deliver(a, run=subprocess.run):
         sys.stderr.write("::error::auditor-panel: nothing to deliver (no judgment in %s)\n" % a.out)
         return 2
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
-    plan, branch = [], "auditor/panel"
+    plan, branch, notes = [], "auditor/panel", []
     # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
     # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
@@ -1339,7 +1339,9 @@ def cmd_deliver(a, run=subprocess.run):
                 return run(cmd, **kw)
             try:
                 pushed = signed_commit.commit_via_api(os.environ["GITHUB_REPOSITORY"], branch, base, message,
-                                                      signed_commit.read_changes(a.repo, changed), run=recorded)
+                                                      signed_commit.read_changes(a.repo, changed), run=recorded, notes=notes)
+                for n in notes:                         # a temporary ref that could not be deleted: not fatal, never silent
+                    print("warning: auditor-panel: " + public(n))
             except signed_commit.CommitError as e:
                 raise RuntimeError("auditor-panel: %s" % public(e))
         else:
@@ -1360,10 +1362,10 @@ def cmd_deliver(a, run=subprocess.run):
             pass                # nothing was delivered today: nothing is armed or disarmed on the strength of old content
         elif allowed:           # only content THIS run delivered is armed
             target = existing or branch
-            if changed and existing and real:   # arm only the head THIS run pushed: another run's later push must never inherit this run's arming
-                now_head = _sh(["gh", "api", "repos/{owner}/{repo}/pulls/%s" % existing, "--jq", ".head.sha"], plan, real, run).strip()
+            if changed and real:   # arm only the head THIS run made and GitHub verified, on a new PR as on an existing one: another run's later push must never inherit this run's arming
+                now_head = _sh(["gh", "pr", "view", target, "--json", "headRefOid", "--jq", ".headRefOid"], plan, real, run).strip()
                 if now_head != pushed:
-                    raise RuntimeError("auditor-panel: the PR's head is %s, not the %s this run pushed (another run replaced it): not arming auto-merge" % (now_head[:12], pushed[:12]))
+                    raise RuntimeError("auditor-panel: the PR's head is %s, not the verified %s (head changed since it was verified, or it could not be read): not arming auto-merge" % (now_head[:12], pushed[:12]))
             _sh(["gh", "pr", "ready", target], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", target], plan, real, run)
         elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
@@ -1393,7 +1395,7 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "issue", "create", "--title", OWNER_TITLE, "--label", policy.OWNER_LABEL,
                  "--assignee", policy.OWNER_LOGIN, "--body", body], plan, real, run, env=ienv)
     with open(os.path.join(a.out, "plan.json"), "w") as fh:
-        json.dump(scrub({"real": real, "changed": changed, "commands": plan}), fh, indent=1)
+        json.dump(scrub({"real": real, "changed": changed, "commands": plan, "notes": [public(n) for n in notes]}), fh, indent=1)
     print("auditor-panel: delivered (%s): %d path(s), %d command(s)" % ("real" if real else "plan only", len(changed), len(plan)))
     return 0
 

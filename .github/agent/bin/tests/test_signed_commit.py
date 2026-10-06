@@ -32,7 +32,8 @@ TMP = "auditor/tmp-test0001"
 class Gh:
     """A recording fake GitHub with refs state. `refs` maps branch -> sha (the live branch starts at `live`, None = absent). Responses can be
     overridden per kind: get, post, patch, delete, graphql, lookup (each (rc, out, err)); `on_get` runs before the Nth GET of the live branch."""
-    def __init__(self, live=H1, mutation=None, lookup=(0, "{}", ""), **fail):
+    def __init__(self, live=H1, mutation=None, lookup=(0, "{}", ""), contents=None, **fail):
+        self.contents = {"go.mod": b"module m\n"} if contents is None else contents
         self.refs = {} if live is None else {BRANCH: live}
         self.mutation, self.lookup, self.fail = mutation, lookup, fail
         self.calls, self.stdins, self.live_gets, self.on_live_get = [], [], 0, None
@@ -85,6 +86,11 @@ class Gh:
             if br not in self.refs:
                 return done((1, "", "gh: Not Found (HTTP 404)"))
             return done((0, json.dumps({"ref": "refs/heads/" + br, "object": {"type": "commit", "sha": self.refs[br]}}), ""))
+        if "/contents/" in cmd[2]:
+            path = cmd[2].split("/contents/")[1].split("?ref=")[0]
+            if path in self.contents:
+                return done((0, json.dumps({"encoding": "base64", "content": base64.encodebytes(self.contents[path]).decode()}), ""))
+            return done((1, "", "gh: Not Found (HTTP 404)"))
         return done(self.lookup)
 
 
@@ -310,41 +316,78 @@ class Commit(unittest.TestCase):
 
 
 class Reusable(unittest.TestCase):
-    """branch_reusable: an existing delivery branch is reused only when its head is a VERIFIED commit whose first parent is the run's main commit."""
-    def lookup(self, verified=True, parent=BASE, **kw):
-        return (0, json.dumps({"parents": [{"sha": parent}], "commit": {"verification": {"verified": verified}}}), "")
+    """branch_reusable: an existing delivery branch is reused only when its head is ONE verified commit on today's main, changing only the wanted
+    files, with exactly the wanted bytes. It returns the verified head oid (the caller binds arming to it), else None."""
+    WANT = {"go.mod": b"module m\n", "go.sum": None}
 
-    def test_only_a_verified_head_on_the_current_main_is_reused_and_nothing_is_written(self):
-        gh = Gh(live=H1, lookup=self.lookup())
-        self.assertTrue(S.branch_reusable(REPO, BRANCH, BASE, run=gh))
+    def lookup(self, verified=True, parents=(BASE,), files=(("go.mod", "modified"),), **extra):
+        fs = []
+        for f in files:
+            d = {"filename": f[0], "status": f[1]}
+            d.update(f[2] if len(f) > 2 else {})
+            fs.append(d)
+        return (0, json.dumps({"parents": [{"sha": p} for p in parents], "files": fs, "commit": {"verification": {"verified": verified}}, **extra}), "")
+
+    def ok(self, **kw):
+        return Gh(live=H1, lookup=self.lookup(**kw))
+
+    def test_one_verified_commit_on_main_with_the_wanted_bytes_is_reused_and_nothing_is_written(self):
+        gh = self.ok()
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), H1)            # the verified head oid
         self.assertEqual(gh.writes(), [])
-        self.assertEqual(gh.calls[-1], ["gh", "api", "repos/o/r/commits/" + H1])
+        self.assertIn(["gh", "api", "repos/o/r/commits/" + H1], gh.calls)
+        self.assertIn(["gh", "api", "repos/o/r/contents/go.mod?ref=" + H1], gh.calls)
+        both = Gh(live=H1, lookup=self.lookup(files=(("go.mod", "modified"), ("go.sum", "added"))), contents={"go.mod": b"module m\n", "go.sum": b"x\n"})
+        self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, {"go.mod": b"module m\n", "go.sum": b"x\n"}, run=both), H1)
 
     def test_everything_else_is_not_reusable_so_the_branch_is_rebuilt_through_the_api(self):
-        cases = {"unsigned head": Gh(live=H1, lookup=self.lookup(verified=False)),
-                 "verified string": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "commit": {"verification": {"verified": "true"}}}), "")),
-                 "signed on an old main": Gh(live=H1, lookup=self.lookup(parent="9" * 40)),
+        cases = {"unsigned head": self.ok(verified=False),
+                 "verified string": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": [{"filename": "go.mod", "status": "modified"}], "commit": {"verification": {"verified": "true"}}}), "")),
+                 "signed on an old main": self.ok(parents=("9" * 40,)),
+                 "two parents, main first (a merge commit)": self.ok(parents=(BASE, "9" * 40)),
+                 "two parents, main second": self.ok(parents=("9" * 40, BASE)),
+                 "parents is another commit": self.ok(parents=("9" * 40,)),
                  "the head is the base itself": Gh(live=BASE, lookup=self.lookup()),
-                 "merge commit, base is not the first parent": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": "9" * 40}, {"sha": BASE}], "commit": {"verification": {"verified": True}}}), "")),
-                 "no parents": Gh(live=H1, lookup=(0, json.dumps({"parents": [], "commit": {"verification": {"verified": True}}}), "")),
-                 "parents not a list": Gh(live=H1, lookup=(0, json.dumps({"parents": None, "commit": {"verification": {"verified": True}}}), "")),
-                 "no verification": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "commit": {}}), "")),
-                 "no commit": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}]}), "")),
+                 "no parents": self.ok(parents=()),
+                 "parents not a list": Gh(live=H1, lookup=(0, json.dumps({"parents": None, "files": [{"filename": "go.mod", "status": "modified"}], "commit": {"verification": {"verified": True}}}), "")),
+                 "parent not an object": Gh(live=H1, lookup=(0, json.dumps({"parents": ["x"], "files": [{"filename": "go.mod", "status": "modified"}], "commit": {"verification": {"verified": True}}}), "")),
+                 "an extra changed file": self.ok(files=(("go.mod", "modified"), ("README.md", "modified"))),
+                 "only another file": self.ok(files=(("README.md", "modified"),)),
+                 "a rename": self.ok(files=(("go.mod", "renamed", {"previous_filename": "old.mod"}),)),
+                 "a rename status": self.ok(files=(("go.mod", "renamed"),)),
+                 "no files": self.ok(files=()),
+                 "files not a list": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": None, "commit": {"verification": {"verified": True}}}), "")),
+                 "a file entry that is not an object": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": ["go.mod"], "commit": {"verification": {"verified": True}}}), "")),
+                 "the right files, different bytes": Gh(live=H1, lookup=self.lookup(), contents={"go.mod": b"module other\n"}),
+                 "a wanted file is missing at the head": Gh(live=H1, lookup=self.lookup(), contents={}),
+                 "an unwanted file is present at the head": Gh(live=H1, lookup=self.lookup(), contents={"go.mod": b"module m\n", "go.sum": b"x"}),
+                 "contents not base64": Gh(live=H1, lookup=self.lookup(), contents={"go.mod": b"module m\n"}),
+                 "no verification": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": [{"filename": "go.mod", "status": "modified"}], "commit": {}}), "")),
+                 "no commit": Gh(live=H1, lookup=(0, json.dumps({"parents": [{"sha": BASE}], "files": [{"filename": "go.mod", "status": "modified"}]}), "")),
                  "lookup fails": Gh(live=H1, lookup=(1, "", "HTTP 500")),
                  "lookup not json": Gh(live=H1, lookup=(0, "nope", "")),
                  "branch absent": Gh(live=None),
                  "branch unreadable": Gh(live=H1, get=(1, "", "HTTP 500"))}
+        orig = cases["contents not base64"].__call__
+        cases["contents not base64"] = lambda cmd, **kw: subprocess.CompletedProcess(list(cmd), 0, json.dumps({"encoding": "none", "content": ""}), "") if "/contents/" in cmd[2] else orig(cmd, **kw)
         for name, gh in cases.items():
-            self.assertFalse(S.branch_reusable(REPO, BRANCH, BASE, run=gh), name)
-            self.assertEqual(gh.writes(), [], name)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=gh), name)
+            if hasattr(gh, "writes"):
+                self.assertEqual(gh.writes(), [], name)
+
+    def test_an_unreadable_or_malformed_contents_answer_is_not_reusable(self):
+        for answer in ((1, "", "HTTP 500"), (0, json.dumps({"encoding": "base64", "content": "abc"}), "")):
+            gh = self.ok(); orig = gh.__call__
+            run = lambda cmd, answer=answer, orig=orig, **kw: subprocess.CompletedProcess(list(cmd), answer[0], answer[1], answer[2]) if "/contents/" in cmd[2] else orig(cmd, **kw)
+            self.assertIsNone(S.branch_reusable(REPO, BRANCH, BASE, self.WANT, run=run), answer)
 
     def test_the_default_runner_and_input_checks(self):
-        gh = Gh(live=H1, lookup=self.lookup())
+        gh = self.ok()
         with mock.patch.object(S.subprocess, "run", gh):
-            self.assertTrue(S.branch_reusable(REPO, BRANCH, BASE))
-        for kw in (dict(repo="o"), dict(branch="main"), dict(base="abc")):
-            args = dict(repo=REPO, branch=BRANCH, base_sha=BASE); args.update({("base_sha" if k == "base" else k): v for k, v in kw.items()})
-            self.assertFalse(S.branch_reusable(run=Gh(), **args), kw)
+            self.assertEqual(S.branch_reusable(REPO, BRANCH, BASE, self.WANT), H1)
+        for kw in (dict(repo="o"), dict(branch="main"), dict(base_sha="abc"), dict(want={}), dict(want={"../x": b""}), dict(want={"go.mod": "text"})):
+            args = dict(repo=REPO, branch=BRANCH, base_sha=BASE, want=self.WANT); args.update(kw)
+            self.assertIsNone(S.branch_reusable(run=Gh(), **args), kw)
 
 
 if __name__ == "__main__":

@@ -209,26 +209,56 @@ def commit_via_api(repo, branch, base_sha, message, changes, run=None, notes=Non
                 leftover.args = (str(leftover) + "; " + note,)
 
 
-def branch_reusable(repo, branch, base_sha, run=None):
-    """True only when `branch` exists, its head commit is VERIFIED by GitHub and its first parent is base_sha. Every other answer, including a
-    lookup that fails, is False: the caller rebuilds the branch through commit_via_api, which is itself fail-closed."""
+def _content(run, repo, path, ref):
+    """The bytes of `path` at commit `ref`, or None when it is absent there (404). Anything unreadable is an error."""
+    rc, out, err = _api(run, ["gh", "api", "repos/%s/contents/%s?ref=%s" % (repo, path, ref)])
+    if rc != 0:
+        if "404" in err + out or "Not Found" in err + out:
+            return None
+        raise CommitError("signed commit: reading %s at %s failed: %s" % (path, ref[:12], (err or out).strip()[-300:]))
+    doc = _json(out, "the contents lookup")
+    if doc.get("encoding") != "base64" or not isinstance(doc.get("content"), str):
+        raise CommitError("signed commit: %s at %s did not come back as base64 content" % (path, ref[:12]))
+    try:
+        return base64.b64decode(doc["content"])
+    except ValueError:
+        raise CommitError("signed commit: %s at %s is not valid base64" % (path, ref[:12]))
+
+
+def branch_reusable(repo, branch, base_sha, want, run=None):
+    """The head oid of `branch` when it may be left as it is, else None (the caller rebuilds through commit_via_api, which is fail-closed). Reuse means ONE
+    reviewed commit: GitHub verifies the head as signed, it has EXACTLY ONE parent and that is base_sha (today's main), it changes only files named in
+    `want` ({path: the bytes this run wants there, or None for absent}; no renames), and at the head each wanted path holds exactly those bytes.
+    The caller binds arming to the returned oid. Every other answer, a failed lookup included, is None."""
     try:
         _check_branch(branch)
         if not isinstance(repo, str) or not _REPO.match(repo) or not isinstance(base_sha, str) or not _SHA.match(base_sha):
-            return False
+            return None
+        _check(repo, branch, base_sha, "m", want)          # the wanted paths and bytes are held to the same rules as a commit's
         head = _head(run, repo, branch)
-        if head is None or head == base_sha:      # absent, or exactly main (nothing delivered on it): rebuild
-            return False
+        if head is None or head == base_sha:               # absent, or exactly main (nothing delivered on it): rebuild
+            return None
         rc, out, err = _api(run, ["gh", "api", "repos/%s/commits/%s" % (repo, head)])
         if rc != 0:
-            return False
+            return None
         doc = _json(out, "the commit lookup")
+        commit, parents, files = doc.get("commit"), doc.get("parents"), doc.get("files")
+        verification = commit.get("verification") if isinstance(commit, dict) else None
+        if not (isinstance(verification, dict) and verification.get("verified") is True):
+            return None
+        if not (isinstance(parents, list) and len(parents) == 1 and isinstance(parents[0], dict) and parents[0].get("sha") == base_sha):
+            return None
+        if not (isinstance(files, list) and files):
+            return None
+        for f in files:
+            if not (isinstance(f, dict) and f.get("filename") in want and f.get("status") in ("added", "modified", "removed") and "previous_filename" not in f):
+                return None
+        for path, wanted in want.items():
+            if _content(run, repo, path, head) != (bytes(wanted) if wanted is not None else None):
+                return None
     except CommitError:
-        return False
-    commit, parents = doc.get("commit"), doc.get("parents")
-    verification = commit.get("verification") if isinstance(commit, dict) else None
-    first = parents[0].get("sha") if isinstance(parents, list) and parents and isinstance(parents[0], dict) else None
-    return isinstance(verification, dict) and verification.get("verified") is True and first == base_sha
+        return None
+    return head
 
 
 def read_changes(root, paths):

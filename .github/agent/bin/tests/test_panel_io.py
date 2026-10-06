@@ -521,6 +521,8 @@ class Deliver(Tmp):
             out = (outputs or {}).get(tuple(cmd[:3]), "")
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = "success"
+            elif cmd[:3] == ["gh", "pr", "view"] and "headRefOid" in cmd:
+                out = OID40                                                    # the PR's head is the commit the delivery made
             elif cmd[:3] == ["gh", "api", "graphql"]:
                 run.stdins.append(json.loads(kw["input"])); out = GQL_OK     # the signed commit, made through the API
             elif cmd[:2] == ["gh", "api"] and "/git/ref/heads/" in cmd[2]:
@@ -739,7 +741,7 @@ class RebuildReal(Tmp):
         json.dump(st, open(os.path.join(self.out, "state.json"), "w"))
         json.dump({"issue": "", "vex": list(vex), "profiles": [], "owner": [], "misses": [], "log": []}, open(os.path.join(self.out, "day.json"), "w"))
         files = pr_files if pr_files is not None else "%s\n%s\n%s\n" % (P.PROFILES, P.STATE, P.VEX)
-        calls = []
+        calls = self.last_calls = []
 
         def run(cmd, **kw):
             calls.append(cmd)
@@ -749,8 +751,8 @@ class RebuildReal(Tmp):
                    ("gh", "pr", "view"): "true\n" if view_armed else "false\n"}.get(tuple(cmd[:3]), "")
             if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
                 out = self.guard
-            elif cmd[:2] == ["gh", "api"] and "/pulls/" in cmd[2]:
-                out = self.pr_head or self.origin_head()
+            elif cmd[:3] == ["gh", "pr", "view"] and "headRefOid" in cmd:
+                out = self.pr_head or self.origin_head()                                 # the PR's actual head, read before arming
             elif cmd[:2] == ["gh", "api"]:
                 return self.github_api(cmd, kw)
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
@@ -760,8 +762,11 @@ class RebuildReal(Tmp):
             state_source = os.path.join(self.d, "ss-auto")
             open(state_source, "w").write(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0] if existing else "")
         a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06", state_source=state_source)
-        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
-            rc = P.cmd_deliver(a, run=run)
+        with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()) as so:
+            try:
+                rc = P.cmd_deliver(a, run=run)
+            finally:
+                self.stdout = so.getvalue()
         return rc, calls
 
     def pushed(self, path):
@@ -907,6 +912,25 @@ class RebuildReal(Tmp):
             self.assertNotIn("openai", str(e.exception))
             self.assertEqual(self.live(), before)                                         # the PR's branch (and its pending additions) is exactly as it was
             self.github_api = orig
+
+    def test_a_temp_ref_that_cannot_be_deleted_is_reported(self):
+        orig = self.github_api
+        self.github_api = lambda cmd, kw: types.SimpleNamespace(returncode=1, stdout="", stderr="HTTP 500") if cmd[3:4] == ["DELETE"] else orig(cmd, kw)
+        rc, calls = self.deliver()
+        self.assertEqual(rc, 0)
+        self.assertIn("warning: auditor-panel: temporary branch auditor/tmp-", self.stdout); self.assertIn("could not be deleted", self.stdout)
+        self.assertIn("could not be deleted", json.dumps(json.load(open(os.path.join(self.out, "plan.json")))["notes"]))
+
+    def test_auto_merge_is_armed_only_on_the_head_this_run_made_for_a_new_pr_too(self):
+        view = lambda calls: [c for c in calls if c[:3] == ["gh", "pr", "view"] and "headRefOid" in c]
+        rc, calls = self.deliver(existing="")                                        # no open PR: created, then its head is read before arming
+        self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], calls)
+        self.assertEqual(len(view(calls)), 1)
+        self.pr_head = "e" * 40                                                      # replaced between the commit and the arm
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(existing="")
+        self.assertIn("head changed since it was verified", str(e.exception))
+        self.assertNotIn("--auto", " ".join(" ".join(c) for c in self.last_calls if c[:3] == ["gh", "pr", "merge"]))
 
     def test_a_delivery_without_a_repository_or_a_full_main_sha_is_refused(self):
         with self.assertRaises(RuntimeError) as e:
