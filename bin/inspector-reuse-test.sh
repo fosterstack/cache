@@ -101,6 +101,25 @@ var("a-sub.json", sub); var("a-look.json", look); var("a-meta.json", meta)
 var("a-amd64.json", q("?arch=amd64")); var("a-arm64.json", q("?arch=arm64"))
 var("a-qual.json", q("?arch=amd64&distro=debian-12&epoch=1")); var("a-subpath.json", q("#usr/bin/x")); var("a-both.json", q("?arch=arm64#sub"))
 var("a-ver.json", ver)   # the explicit version field changes, the purl does not
+def retype(typ):
+    def f(d): generic(d, lambda c: c.__setitem__("purl", c["purl"].replace("pkg:generic/", "pkg:%s/" % typ, 1)))
+    return f
+def nopurl(d): generic(d, lambda c: c.pop("purl"))
+def ns(d): generic(d, lambda c: c.__setitem__("purl", c["purl"].replace("pkg:generic/", "pkg:deb/debian/", 1)))
+var("a-apk.json", retype("apk")); var("a-deb.json", retype("deb")); var("a-nopurl.json", nopurl)
+# purl-only components (no name, no version field): name and version come from the purl, whatever its type
+def purlonly(typ, fmt="pkg:%s/%s@%s%s"):
+    def f(d):
+        for c in d["components"]:
+            if c.get("purl", "").startswith("pkg:generic/"):
+                n, v = c["name"], c["version"]
+                c.pop("name"); c.pop("version"); c["purl"] = fmt % (typ, n, v, "?arch=arm64&distro=x#sub")
+    return f
+var("a-po-apk.json", purlonly("apk")); var("a-po-deb.json", purlonly("deb"))
+var("a-po-enc.json", purlonly("deb", "pkg:%s/%s@%s%s"))
+def vdiff(d): generic(d, lambda c: c.__setitem__("version", "9.9.9") if c["name"] == "busybox" else None)
+def ndiff(d): generic(d, lambda c: c.__setitem__("name", "busybox2") if c["name"] == "busybox" else None)
+var("a-vdiff.json", vdiff); var("a-ndiff.json", ndiff)
 PY
 expect "key: our module's sub-package and a purl-less entry of it are excluded" "$ka" "$(python3 "$prog" key "$w/a-sub.json")"
 [ "$(python3 "$prog" key "$w/a-look.json")" != "$ka" ] && ok "key: a look-alike module (cache-other) is an ordinary package" || bad "key: a look-alike module (cache-other) is an ordinary package"
@@ -110,7 +129,25 @@ expect "key: a purl qualifier does not move the key" "$ka" "$(python3 "$prog" ke
 expect "key: several qualifiers (distro, epoch, arch) do not move the key" "$ka" "$(python3 "$prog" key "$w/a-qual.json")"
 expect "key: a purl subpath does not move the key" "$ka" "$(python3 "$prog" key "$w/a-subpath.json")"
 expect "key: qualifier and subpath together do not move the key" "$ka" "$(python3 "$prog" key "$w/a-both.json")"
-expect "key: the explicit version field changing with the same purl keeps the key" "$ka" "$(python3 "$prog" key "$w/a-ver.json")"
+[ "$(python3 "$prog" key "$w/a-ver.json")" != "$ka" ] && ok "key: the explicit version field decides (purl ignored when name and version exist): other version, other key" || bad "key: an explicit version change must move the key"
+expect "key: the same name and version under purl type apk: the same key" "$ka" "$(python3 "$prog" key "$w/a-apk.json")"
+expect "key: the same name and version under purl type deb: the same key" "$ka" "$(python3 "$prog" key "$w/a-deb.json")"
+expect "key: the same name and version with NO purl: the same key" "$ka" "$(python3 "$prog" key "$w/a-nopurl.json")"
+expect "key: purl-only components (no name/version fields), type apk, with qualifiers and subpath: name and version parsed from the purl, the same key" "$ka" "$(python3 "$prog" key "$w/a-po-apk.json")"
+expect "key: purl-only components, type deb: the same key as type apk" "$ka" "$(python3 "$prog" key "$w/a-po-deb.json")"
+[ "$(python3 "$prog" key "$w/a-vdiff.json")" != "$ka" ] && ok "key: a different version differs" || bad "key: a different version differs"
+[ "$(python3 "$prog" key "$w/a-ndiff.json")" != "$ka" ] && ok "key: a different name differs" || bad "key: a different name differs"
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+# our own module by purl alone (no name field) is still excluded
+d = json.load(open(w + "/a.json")); d["components"].append({"purl": "pkg:golang/github.com/fosterstack/cache@v5?type=module"}); json.dump(d, open(w + "/a-ours-purl.json", "w"))
+# a purl-only component with an encoded version (%2B) and a namespace
+d = json.load(open(w + "/a.json")); d["components"].append({"purl": "pkg:deb/debian/tzdata@2026c%2Bdeb12?arch=all"}); json.dump(d, open(w + "/a-enc1.json", "w"))
+d = json.load(open(w + "/a.json")); d["components"].append({"name": "debian/tzdata", "version": "2026c+deb12"}); json.dump(d, open(w + "/a-enc2.json", "w"))
+PY
+expect "key: our own module named only by a purl is excluded" "$ka" "$(python3 "$prog" key "$w/a-ours-purl.json")"
+expect "key: a purl-only component's namespace/name and decoded version equal the explicit fields" "$(python3 "$prog" key "$w/a-enc2.json")" "$(python3 "$prog" key "$w/a-enc1.json")"
 # malformed SBOMs exit non-zero and print no key
 printf 'not json' > "$w/m1.json"; printf '[]' > "$w/m2.json"; printf '{}' > "$w/m3.json"; : > "$w/m4.json"
 printf '{"components":{}}' > "$w/m5.json"; printf '{"components":[]}' > "$w/m6.json"; printf '{"components":[5]}' > "$w/m7.json"
@@ -144,6 +181,21 @@ expect "decide: a different UTC day (an entry from yesterday) calls" call "$(pyt
 mkdir -p "$cdir/$Y"; cp "$cdir/$D/$K.findings.json" "$cdir/$Y/$K.findings.json"
 expect "decide: yesterday's entry exists, tomorrow asked: calls" call "$(python3 "$prog" decide "$cdir" "2026-10-07" "$w/a.json")"
 expect "decide: yesterday's entry is only reused for yesterday" reuse "$(python3 "$prog" decide "$cdir" "$Y" "$w/a.json" | head -1)"
+
+# validate SBOM FILE: exit 0 only for the envelope bound to the SBOM's key; never writes
+vtry() { # name want-nonzero(0|1) file
+  python3 "$prog" validate "$w/a.json" "$3" > "$w/v.out" 2>/dev/null; rc=$?
+  if [ "$2" = 0 ]; then expect "validate: $1 (exit 0, prints nothing)" "0|" "$rc|$(cat "$w/v.out")"; else [ "$rc" -ne 0 ] && ok "validate: $1 exits non-zero" || bad "validate: $1 exits non-zero"; fi
+}
+vtry "the envelope for this inventory" 0 "$w/f.json"
+vtry "an envelope carrying findings" 0 "$w/f-vuln.json"
+printf '%s' '{"bomFormat":"CycloneDX"}' > "$w/v-bare.json"
+vtry "a bare CycloneDX marker" 1 "$w/v-bare.json"
+vtry "the unscanned SBOM itself" 1 "$w/a.json"
+vtry "an envelope for another inventory" 1 "$w/f-b.json"
+vtry "a missing file" 1 "$w/nonexistent.json"
+vtry "an empty file" 1 "$w/m4.json"
+ls "$w" | grep -q "findings" && bad "validate: wrote something" || ok "validate: writes nothing"
 
 # decide reads the stored file and keeps it only when it is Inspector's answer for THIS inventory
 bd="$w/badcache"; mkdir -p "$bd/$D"
@@ -322,6 +374,13 @@ cat > "$sim/bin/aws" <<'EOF'
 sbom=""; while [ $# -gt 0 ]; do [ "$1" = --sbom ] && sbom=${2#file://}; shift; done
 echo "scan-sbom $sbom" >> "$FAKE_AWS_LOG"
 [ -n "${FAKE_AWS_FAIL:-}" ] && exit 1
+# FAKE_FLIP_FLAG: the call completes, then the clock moves on (UTC midnight between the response and the store)
+[ -n "${FAKE_FLIP_FLAG:-}" ] && : > "$FAKE_FLIP_FLAG"
+case "${FAKE_AWS_MODE:-}" in
+  bare)  echo '{"bomFormat":"CycloneDX"}'; exit 0 ;;
+  sbom)  cat "$sbom"; exit 0 ;;
+  other) python3 -c 'import json,sys; print(json.dumps({"sbom":{"bomFormat":"CycloneDX","components":[{"name":"someone-else","version":"1","bom-ref":"x"}],"vulnerabilities":[]}}))'; exit 0 ;;
+esac
 # the realistic answer: {"sbom": the submitted components + a vulnerabilities list}; FAKE_VULN=CVE:pkgname adds one
 python3 - "$sbom" "${FAKE_VULN:-}" <<'PY'
 import json, sys
@@ -337,7 +396,8 @@ EOF
 cat > "$sim/bin/date" <<'EOF'
 #!/usr/bin/env bash
 if [ "$*" = "-u +%F" ]; then
-  if [ -n "${FAKE_NEXT_DAY:-}" ] && ls "$FAKE_CACHE"/*/*.findings.json >/dev/null 2>&1; then echo "$FAKE_NEXT_DAY"; else echo "$FAKE_DAY"; fi
+  if [ -n "${FAKE_FLIP_FLAG:-}" ] && [ -e "$FAKE_FLIP_FLAG" ]; then echo "$FAKE_NEXT_DAY"
+  elif [ -n "${FAKE_NEXT_DAY:-}" ] && ls "$FAKE_CACHE"/*/*.findings.json >/dev/null 2>&1; then echo "$FAKE_NEXT_DAY"; else echo "$FAKE_DAY"; fi
   exit 0
 fi
 exec /bin/date "$@"
@@ -357,6 +417,7 @@ run_step() {
   : > "$sim/aws.log"; : > "$sim/summary.md"; : > "$sim/out.txt"
   ( cd "$sim/repo" && PATH="$sim/bin:$PATH" FAKE_SBOMS="$sim/sboms" FAKE_AWS_LOG="$sim/aws.log" FAKE_AWS_FAIL="${3:-}" \
       FAKE_DAY="$2" FAKE_NEXT_DAY="${4:-}" FAKE_CACHE="$sim/tmp/inspector-cache" FAKE_VULN="${FAKE_VULN:-}" \
+      FAKE_AWS_MODE="${FAKE_AWS_MODE:-}" FAKE_FLIP_FLAG="${FAKE_FLIP_FLAG:-}" \
       GITHUB_STEP_SUMMARY="$sim/summary.md" GITHUB_OUTPUT="$sim/out.txt" bash "$1" ) > "$sim/log.txt" 2>&1
 }
 calls() { wc -l < "$sim/aws.log" | tr -d ' '; }
@@ -428,6 +489,24 @@ expect "scan.yml midnight: the step succeeds" 0 "$rc"
 expect "scan.yml midnight: the second image does not reuse the earlier day's entry (production-amd64 at D; production-arm64 and debug-amd64 at D+1 = 3 calls)" 3 "$(calls)"
 expect "scan.yml midnight: the first image's answer is stored under day D, the later ones under D+1" "1 2" "$(ls "$sim/tmp/inspector-cache/2026-10-06" | wc -l | tr -d ' ') $(ls "$sim/tmp/inspector-cache/2026-10-07" | wc -l | tr -d ' ')"
 
+# --- scan.yml: the clock moves on between the ScanSbom response and the store (the day read before the call no longer holds)
+daycross_scan() { # script -> "rc calls stored-D stored-D+1 gate-finding-lines"
+  reset_scan; rm -f "$sim/flip"
+  FAKE_VULN="CVE-2099-0001:busybox" FAKE_FLIP_FLAG="$sim/flip" run_step "${SCRIPT:-$1}" 2026-10-06 "" 2026-10-07; r=$?
+  echo "$r $(calls) $(ls "$sim/tmp/inspector-cache/2026-10-06" 2>/dev/null | wc -l | tr -d ' ') $(ls "$sim/tmp/inspector-cache/2026-10-07" 2>/dev/null | wc -l | tr -d ' ') $(grep -c '::error::inspector .*CVE-2099-0001 busybox@1.37.0' "$sim/log.txt" | tr -d ' ')"
+}
+DAYCROSS_SCAN="1 3 0 2 3"
+expect "scan.yml day crossing: the first image's response is NOT stored (the day changed), the next same-inventory image calls AWS again, the fresh findings still reach the gate (rc 1, 3 findings), only D+1 holds entries" "$DAYCROSS_SCAN" "$(daycross_scan "$sim/scan-step.sh")"
+
+# --- scan.yml: a ScanSbom answer that is not the envelope for this inventory is a pipeline failure, never a clean pass
+bad_answer_scan() { # mode -> "rc gate-lines findings-files stored"
+  reset_scan; FAKE_AWS_MODE="$1" run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06; r=$?
+  echo "$r $(gate_lines) $(ls "$sim"/tmp/insp/*.findings.json 2>/dev/null | wc -l | tr -d ' ') $(ls -A "$sim/tmp/inspector-cache" 2>/dev/null | wc -l | tr -d ' ')"
+}
+for m in bare sbom other; do
+  expect "scan.yml a rejected ScanSbom answer ($m): the step exits 2, no verdict reaches the gate (only the assessed line), no findings file is left, nothing stored" "2 1 0 0" "$(bad_answer_scan $m)"
+done
+
 # --- scan.yml: findings carried by a REUSED result reach the REAL gate, with and without our VEX
 scan_case() { # script-file -> "rc1 rc2 calls2 identical findinglines2"
   reset_scan
@@ -486,10 +565,26 @@ mut_def M_GATE_CLEAN <<'EOF'
 import os
 t = t.replace('"/tmp/insp/${key}.findings.json" .vex', '"$(printf %s \'' + os.environ["CLEAN"] + '\' > /tmp/insp/clean.json; echo /tmp/insp/clean.json)" .vex')
 EOF
+mut_def M_NO_VALIDATE <<'EOF'
+import re
+t = re.sub(r'if ! python3 bin/inspector-reuse\.py validate', 'if ! true', t, count=1)
+EOF
+mut_def M_NO_RECHECK <<'EOF'
+t = t.replace('[ "$(date -u +%F)" != "${day}" ]', 'false', 1)
+EOF
 mscan "the reuse branch writes a fixed clean document" "$M_FIXED_CLEAN"
 mscan "the reuse branch hands the gate the SBOM instead of the findings" "$M_SBOM_SCAN"
 mscan "the gate is fed the unscanned SBOM as the findings" "$M_GATE_SBOM"
 mscan "the gate is fed a fixed clean document" "$M_GATE_CLEAN"
+mscan2() { # name mutation function-and-args... (the unmutated script's answer is the reference; the mutant must differ)
+  local name=$1 mut=$2; shift 2
+  mutate "$mut" < "$sim/scan-raw.sh" | sandbox > "$sim/scan-mut.sh" || { bad "scan.yml mutation $name did not apply"; return; }
+  want=$(SCRIPT="$sim/scan-step.sh" "$@"); got=$(SCRIPT="$sim/scan-mut.sh" "$@")
+  if [ "$got" != "$want" ]; then ok "scan.yml mutation caught: $name ($got)"; else bad "scan.yml mutation NOT caught: $name"; fi
+}
+mscan2 "no validation before the gate (a rejected answer reaches it)" "$M_NO_VALIDATE" bad_answer_scan bare
+mscan2 "no validation before the gate (the unscanned SBOM reaches it)" "$M_NO_VALIDATE" bad_answer_scan sbom
+mscan2 "the store happens without the day re-check" "$M_NO_RECHECK" daycross_scan
 
 # --- main-candidate-rescan.yml: the daily panel
 extract main-candidate-rescan.yml panel-inspector "Amazon Inspector every image" > "$sim/rescan-raw.sh" || { bad "extract the rescan's Inspector step"; }
@@ -523,6 +618,16 @@ reset_rescan
 run_step "$sim/rescan-step.sh" 2026-10-06 1
 expect "rescan ScanSbom fails: nothing stored, fresh=0, no findings file left to be mistaken for a result" "|0|0" "$(ls -A "$sim/tmp/inspector-cache" 2>/dev/null)|$(fresh)|$(scans)"
 
+# --- the rescan: the clock moves on between the response and the store
+daycross_rescan() { # -> "rc calls stored-D stored-D+1 scans tally"
+  reset_rescan; rm -f "$sim/flip"
+  FAKE_VULN="CVE-2099-0001:busybox" FAKE_FLIP_FLAG="$sim/flip" run_step "${SCRIPT:-$sim/rescan-step.sh}" 2026-10-06 "" 2026-10-07; r=$?
+  echo "$r $(calls) $(ls "$sim/tmp/inspector-cache/2026-10-06" 2>/dev/null | wc -l | tr -d ' ') $(ls "$sim/tmp/inspector-cache/2026-10-07" 2>/dev/null | wc -l | tr -d ' ') $(scans) $(tally_count)"
+}
+bad_answer_rescan() { # mode -> "rc scans stored"
+  reset_rescan; FAKE_AWS_MODE="$1" run_step "${SCRIPT:-$sim/rescan-step.sh}" 2026-10-06; r=$?
+  echo "$r $(scans) $(ls -A "$sim/tmp/inspector-cache" 2>/dev/null | wc -l | tr -d ' ')"
+}
 # --- the rescan across UTC midnight: after the first stored result the clock reads D+1
 reset_rescan
 run_step "$sim/rescan-step.sh" 2026-10-06 "" 2026-10-07; rc=$?
@@ -554,6 +659,26 @@ mresc() { # name python-mutation
 }
 mresc "the reuse branch writes a fixed clean document" "$M_FIXED_CLEAN"
 mresc "the reuse branch copies the SBOM instead of the findings" "$M_SBOM_RESCAN"
+
+expect "rescan day crossing: the first response is NOT stored, the next images call again and store under D+1 only; every image still has its fresh findings in the tally (4 calls)" "0 4 0 3 6 6" "$(daycross_rescan)"
+for m in bare sbom other; do
+  expect "rescan a rejected ScanSbom answer ($m): no scan.json is left for the tally (did not run), nothing stored" "0 0 0" "$(bad_answer_rescan $m)"
+done
+mresc2() { # name mutation function-and-args...
+  local name=$1 mut=$2; shift 2
+  mutate "$mut" < "$sim/rescan-raw.sh" | sandbox > "$sim/rescan-mut.sh" || { bad "rescan mutation $name did not apply"; return; }
+  want=$(SCRIPT="$sim/rescan-step.sh" "$@"); got=$(SCRIPT="$sim/rescan-mut.sh" "$@")
+  if [ "$got" != "$want" ]; then ok "rescan mutation caught: $name ($got)"; else bad "rescan mutation NOT caught: $name"; fi
+}
+mut_def M_NO_VALIDATE_R <<'EOF'
+import re
+t = re.sub(r'if ! python3 bin/inspector-reuse\.py validate', 'if ! true', t, count=1)
+EOF
+mut_def M_NO_RECHECK_R <<'EOF'
+t = t.replace('[ "$(date -u +%F)" != "${day}" ]', 'false', 1)
+EOF
+mresc2 "no validation (a rejected answer stays as scan.json)" "$M_NO_VALIDATE_R" bad_answer_rescan bare
+mresc2 "the store happens without the day re-check" "$M_NO_RECHECK_R" daycross_rescan
 
 # --- the save step's day is read at save time: the extracted day step prints the clock's day at that moment
 extract scan.yml scanner "Amazon Inspector - the UTC day at save time" > "$sim/saveday-raw.sh" 2>/dev/null || { bad "scan.yml has no save-time day step"; : > "$sim/saveday-raw.sh"; }
@@ -683,10 +808,21 @@ else:
         bad.append("the order key < decide < ScanSbom < store is not held: %s" % [k, dc, call, st])
     if marker and not (call < pos(marker)):
         bad.append("the gate does not run after the call site")
-    if not re.search(r'inspector-reuse\.py decide \S+ "\$\(date -u \+%F\)" ', run):
-        bad.append("decide does not read the UTC day from the clock at that moment")
-    if not re.search(r'inspector-reuse\.py store \S+ "\$\(date -u \+%F\)" ', run):
-        bad.append("store does not read the UTC day from the clock at that moment")
+    # the day is read from the clock at each decision, used for the store only if the clock still reads it after the call
+    if len(re.findall(r'(?m)^\s*day=\$\(date -u \+%F\)\s*$', run)) != 1:
+        bad.append("the day is not read from the clock exactly once per image, at the decision")
+    if not re.search(r'inspector-reuse\.py decide \S+ "\$\{day\}" ', run):
+        bad.append("decide does not use the day read at this decision")
+    if not re.search(r'inspector-reuse\.py store \S+ "\$\{day\}" ', run):
+        bad.append("store does not use the day read at the decision")
+    vpos, rpos = run.find('inspector-reuse.py validate'), run.find('[ "$(date -u +%F)" != "${day}" ]')
+    dpos = run.find('day=$(date -u +%F)')
+    if run.count('inspector-reuse.py validate') != 1 or run.count('[ "$(date -u +%F)" != "${day}" ]') != 1:
+        bad.append("validate and the day re-check must each appear exactly once")
+    elif not (dpos < dc < call < vpos < rpos < st):
+        bad.append("the order day < decide < ScanSbom < validate < day re-check < store is not held: %s" % [dpos, dc, call, vpos, rpos, st])
+    elif not re.search(r'if ! python3 bin/inspector-reuse\.py validate "[^"]+" "[^"]+"; then', run):
+        bad.append("validate is not an if ! guard")
     if marker and ('python3 bin/inspector-gate.py "${tag}" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json" .vex/fosterstack-cache.openvex.json') not in run:
         bad.append("the gate is not fed the SBOM and this inventory's findings file")
     if "$GITHUB_OUTPUT" not in run or "fresh=" not in run:
@@ -758,12 +894,21 @@ mut_def W_GATE_UNSCANNED <<'EOF'
 t = t.replace('"/tmp/insp/${key}.findings.json" .vex', '"/tmp/insp/${tag}.sbom.json" .vex', 1)
 EOF
 mut_def W_DECIDE_DAY_ONCE <<'EOF'
-import re
-t = re.sub(r'(inspector-reuse\.py decide \S+ )"\$\(date -u \+%F\)"', r'\1"$day"', t, count=1)
+t = t.replace('day=$(date -u +%F)', 'day=2000-01-01', 1)
 EOF
 mut_def W_STORE_DAY_ONCE <<'EOF'
 import re
-t = re.sub(r'(inspector-reuse\.py store \S+ )"\$\(date -u \+%F\)"', r'\1"$day"', t, count=1)
+t = re.sub(r'(inspector-reuse\.py store \S+ )"\$\{day\}"', r'\1"$(date -u +%F)"', t, count=1)
+EOF
+mut_def W_NO_RECHECK <<'EOF'
+t = t.replace('[ "$(date -u +%F)" != "${day}" ]', 'false', 1)
+EOF
+mut_def W_NO_VALIDATE <<'EOF'
+t = t.replace('inspector-reuse.py validate', 'true', 1)
+EOF
+mut_def W_VALIDATE_AFTER_STORE <<'EOF'
+import re
+t = t.replace('inspector-reuse.py validate', 'inspector-reuse.py store /tmp/x /tmp/y z w; python3 bin/inspector-reuse.py validate', 1)
 EOF
 mut_def W_SAVE_KEY_START_DAY <<'EOF'
 t = t.replace("key: inspector-${{ steps.insp-save-day.outputs.date }}-${{ github.run_id }}", "key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}", 1)
@@ -802,7 +947,10 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   wf "$f" "$k" save-fork-parentheses-removed bad "$W_SAVE_NO_PARENS"
   wf "$f" "$k" save-if-always-or bad "$W_SAVE_ALWAYS_OR"
   wf "$f" "$k" pull-request-target-in-the-if bad "$W_PR_TARGET_IN_IF"
-  wf "$f" "$k" decide-day-captured-once bad "$W_DECIDE_DAY_ONCE"
+  wf "$f" "$k" day-not-read-at-the-decision bad "$W_DECIDE_DAY_ONCE"
+  wf "$f" "$k" day-recheck-removed bad "$W_NO_RECHECK"
+  wf "$f" "$k" validate-removed bad "$W_NO_VALIDATE"
+  wf "$f" "$k" a-store-before-validate bad "$W_VALIDATE_AFTER_STORE"
   wf "$f" "$k" store-day-captured-once bad "$W_STORE_DAY_ONCE"
   wf "$f" "$k" save-key-uses-the-start-of-run-day bad "$W_SAVE_KEY_START_DAY"
   wf "$f" "$k" save-day-step-gone bad "$W_SAVE_DAY_STEP_GONE"

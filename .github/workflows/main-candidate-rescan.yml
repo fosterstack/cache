@@ -335,14 +335,19 @@ jobs:
               fi
               key=$(python3 bin/inspector-reuse.py key "${d}/sbom.cdx.json") \
                 || { echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue; }
-              verdict=$(python3 bin/inspector-reuse.py decide "$cdir" "$(date -u +%F)" "${d}/sbom.cdx.json") || verdict=call
+              day=$(date -u +%F)
+              verdict=$(python3 bin/inspector-reuse.py decide "$cdir" "${day}" "${d}/sbom.cdx.json") || verdict=call
               if [ "${verdict%%$'\n'*}" = reuse ] && cp "${verdict#*$'\n'}" "${d}/scan.json"; then
                 :
               elif aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json"; then
-                if python3 bin/inspector-reuse.py store "$cdir" "$(date -u +%F)" "${d}/sbom.cdx.json" "${d}/scan.json"; then
+                if ! python3 bin/inspector-reuse.py validate "${d}/sbom.cdx.json" "${d}/scan.json"; then
+                  echo "::warning::the ScanSbom answer for ${v}-${arch} is not the response for this inventory (the tally counts it as did not run)"; rm -f "${d}/scan.json"
+                elif [ "$(date -u +%F)" != "${day}" ]; then
+                  echo "::notice::UTC midnight passed during the ScanSbom call for ${v}-${arch}: used this run, not cached"
+                elif python3 bin/inspector-reuse.py store "$cdir" "${day}" "${d}/sbom.cdx.json" "${d}/scan.json"; then
                   fresh=$((fresh+1))
                 else
-                  echo "::warning::the ScanSbom answer for ${v}-${arch} is not a CycloneDX result (the tally counts it as did not run)"; rm -f "${d}/scan.json"
+                  echo "::warning::the validated ScanSbom answer for ${v}-${arch} could not be cached"
                 fi
               else
                 echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; rm -f "${d}/scan.json"

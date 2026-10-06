@@ -3,14 +3,16 @@
 #
 #   key SBOM.json                  print the key (full sha256, 64 hex) of the SBOM's package inventory
 #   decide DIR DATE SBOM.json      print "reuse" and the stored path, or "call"
+#   validate SBOM.json FILE        exit 0 only if FILE is the ScanSbom envelope for that SBOM; writes nothing
 #   store DIR DATE SBOM.json FILE  keep FILE as DIR/DATE/<key of SBOM>.findings.json; refuse otherwise
 #
 # Why the SBOM and not the image digest: every commit stamps its id into the
 # binary, so image digests never repeat; the package inventory does.
 #
 # The key is the sha256 of the sorted component identifiers of .components[]:
-# the purl with its qualifiers and subpath stripped (everything from "?" or
-# "#") when there is one, else name@version. Our own module
+# name@version from the explicit name and version fields (the purl is not read
+# then); only a component lacking them is parsed from its purl
+# (pkg:<type>/<namespace>/<name>@<version>, type, qualifiers and subpath ignored). Our own module
 # (github.com/fosterstack/cache, any version, any sub-package) is left out so
 # it never depends on our build stamp. Metadata, serial numbers and timestamps
 # are never read. An SBOM with no identifiers has no key (never a constant).
@@ -31,11 +33,25 @@ import os
 import re
 import sys
 import tempfile
+import urllib.parse
 
 OURS_NAME = re.compile(r"^github\.com/fosterstack/cache($|/)")
 OURS_PURL = re.compile(r"^pkg:golang/github\.com/fosterstack/cache($|[@?#/])")
 DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 KEY_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def purl_name_version(purl):
+    """pkg:<type>/<namespace>/<name>@<version>?q#sub -> "<namespace>/<name>@<version>" (type, qualifiers, subpath dropped)."""
+    s = re.split(r"[?#]", purl, maxsplit=1)[0]
+    if s.startswith("pkg:"):
+        s = s[4:]
+    s = s.split("/", 1)[1] if "/" in s else s     # drop the type
+    name, _, ver = s.rpartition("@") if "@" in s else (s, "", "")
+    name, ver = urllib.parse.unquote(name), urllib.parse.unquote(ver)
+    if not name:
+        raise ValueError("purl without a name")
+    return name + "@" + ver
 
 
 def component_key(comps):
@@ -51,8 +67,10 @@ def component_key(comps):
             raise ValueError("purl is not a string")
         if (purl and OURS_PURL.match(purl)) or (isinstance(name, str) and OURS_NAME.match(name)):
             continue
-        if purl:
-            ids.append(re.split(r"[?#]", purl, maxsplit=1)[0])
+        if isinstance(name, str) and name and isinstance(ver, str) and ver:
+            ids.append(name + "@" + ver)          # the explicit fields decide; the purl is not read
+        elif purl:
+            ids.append(purl_name_version(purl))   # no name/version fields: parse them, ignoring the purl type
         elif isinstance(name, str) and name:
             ids.append(name + "@" + (ver if isinstance(ver, str) else ""))
         else:
@@ -111,6 +129,11 @@ def cmd_decide(args):
     return "call"
 
 
+def cmd_validate(args):
+    sbom, src = args
+    check_answer(src, inventory_key(sbom))
+
+
 def fsync_dir(path):
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -154,13 +177,16 @@ def main(argv):
         if cmd == "key" and len(args) == 1:
             print(inventory_key(args[0]))
             return 0
+        if cmd == "validate" and len(args) == 2:
+            cmd_validate(args)
+            return 0
         if cmd == "store" and len(args) == 4:
             cmd_store(args)
             return 0
     except Exception as e:
         print("inspector-reuse %s: %s" % (cmd, e), file=sys.stderr)
         return 1
-    print("usage: inspector-reuse.py key SBOM | decide DIR DATE SBOM | store DIR DATE SBOM FILE", file=sys.stderr)
+    print("usage: inspector-reuse.py key SBOM | decide DIR DATE SBOM | store DIR DATE SBOM FILE | validate SBOM FILE", file=sys.stderr)
     return 2
 
 
