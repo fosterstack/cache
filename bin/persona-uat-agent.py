@@ -24,7 +24,11 @@ import sys
 from urllib.parse import urlparse
 
 # environment handed to a child: a shell's own settings plus the docker client's; a job credential is never inherited
-BASE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT")
+# SHELL_ENV and DOCKER_ENV are duplicated verbatim in persona-uat.py (a test asserts they are equal), so this process and the driver
+# address the same docker daemon
+SHELL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR")
+DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION")
+BASE_ENV = SHELL_ENV + DOCKER_ENV
 MODEL_ENV_PREFIX = "ANTHROPIC_"      # the model identity (key or federated-identity variables); the provider alone receives it
 OUT_LIMIT = 8000                     # characters of each stream returned to the model
 DOCKER_OWN_FAILURE = 125             # docker's exit status for ITS failure (daemon, image); 126/127 are indistinguishable from the command's own

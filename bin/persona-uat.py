@@ -40,7 +40,11 @@ TOOL_KEYS = ("jenkins", "gitlab-runner", "kind", "shell")
 DEFAULT_BUDGET = 400000
 # the environment an agent and the docker client get: a shell's settings and the docker client's, never a job credential;
 # the agent additionally gets the model identity (names starting with the provider's prefix), which only its provider uses
-BASE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "DOCKER_HOST", "DOCKER_CONFIG")
+# SHELL_ENV and DOCKER_ENV are duplicated verbatim in persona-uat-agent.py (a test asserts they are equal), so the agent and the
+# driver always address the same docker daemon
+SHELL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR")
+DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION")
+BASE_ENV = SHELL_ENV + DOCKER_ENV
 MODEL_ENV_PREFIX = "ANTHROPIC_"
 # docs a customer can read: README.md and the TOP-LEVEL docs/*.md; unreleased notes are not public yet
 DOCS_EXCLUDE = ("next-release-notes.md",)
@@ -80,7 +84,12 @@ VENDOR_RE = re.compile("|".join(r"\b" + re.escape("".join(p)) for p in _NAMES), 
 CRED_RES = [re.compile(x) for x in (
     r"gh[pousr]_[A-Za-z0-9]{8,}", r"github_pat_[A-Za-z0-9_]{8,}", r"\b(AKIA|ASIA)[0-9A-Z]{12,}", r"\bsk-[A-Za-z0-9_-]{12,}",
     r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}", r"-----BEGIN", r"\bxox[abprs]-[A-Za-z0-9-]{8,}", r"\bAIza[0-9A-Za-z_-]{16,}",
-    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}", r"[A-Fa-f0-9]{32,}")]
+    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}", r"[A-Fa-f0-9]{32,}",
+    # plain credentials: an Authorization header with a value; NAME=value / NAME: value for a secret-looking NAME (8+ characters);
+    # password/secret/token followed by = or : and a value of 4+ characters
+    r"(?i)authorization[\"']?\s*[:=]\s*[\"']?(basic|bearer|token)\s+[\"']?\S+",
+    r"(?i)[A-Za-z0-9_.-]*(secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*[\"']?[^\s\"']{8,}",
+    r"(?i)\b(password|passwd|pwd|secret|token)[\"']?\s*[=:]\s*[\"']?[^\s\"']{4,}")]
 BASE64_RUN = re.compile(r"[A-Za-z0-9+/_=-]{40,}")
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")      # a content digest is public by construction, not a credential
 
@@ -118,10 +127,8 @@ def clean_env(extra_prefix=None):
 
 
 def docker_env():
-    """the docker CLIENT's environment: a shell's settings plus its own DOCKER_* settings (host, config, context, tls); no job credential"""
-    env = clean_env()
-    env.update({k: v for k, v in os.environ.items() if k.startswith("DOCKER_")})
-    return env
+    """the docker CLIENT's environment: a shell's settings plus its own allowlisted DOCKER_* settings (host, config, context, tls); no job credential"""
+    return clean_env()
 
 
 class Docker:
@@ -203,6 +210,14 @@ def wait_ready(docker, cid, url, timeout):
         if time.time() >= deadline:
             raise RuntimeError("a container never answered on its endpoint")
         time.sleep(0.5)
+
+
+def open_modes(sandbox):
+    """the container runs as another uid: the sandbox and everything in it is readable and traversable by all, writable by the owner only"""
+    for d, dirs, fs in os.walk(sandbox):
+        os.chmod(d, 0o755)
+        for f in fs:
+            os.chmod(os.path.join(d, f), 0o644)
 
 
 def read_docs(repo):
@@ -317,6 +332,7 @@ def report_text(persona, verdict, findings, tokens, capped, did_not_run=None):
 WITHHELD = ("VERDICT: blocking\npersona: %s\n\nThis report was withheld by the public-surface scan (it held a model or vendor name, an "
             "owner-set value or a credential-looking string). The run counts this persona as BLOCKING; read the transcript artifact "
             "under access control, not this report.\n")
+CAP_NOTICE = "THIS PERSONA HIT ITS TOKEN CAP: its run may be incomplete.\n"
 
 
 class Gh:
@@ -376,6 +392,18 @@ def issue_body(heading, mode, run_id, image, rows):
     return "\n".join(lines) + "\n"
 
 
+def safe_issue_body(body, results, secrets):
+    """the issue body, or (when it hits the public-surface scan) a fixed notice of verdicts and counts with no free text"""
+    if not scan_hit(body, secrets):
+        return body
+    lines = ["The persona UAT issue text was withheld by the public-surface scan. Read the run's transcript artifact under access control.", ""]
+    for p in PERSONAS:
+        fs = results[p]["findings"]
+        lines.append("- %s: %s (blocking: %d, friction: %d)" % (
+            p, results[p]["verdict"], sum(f["kind"] == "blocking" for f in fs), sum(f["kind"] == "friction" for f in fs)))
+    return "\n".join(lines) + "\n"
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=("rc", "weekly"), required=True)
@@ -383,8 +411,8 @@ def parse_args():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--tools", required=True)
-    ap.add_argument("--docker", required=True)
-    ap.add_argument("--gh", required=True)
+    ap.add_argument("--docker", default="docker")
+    ap.add_argument("--gh", default="gh")
     ap.add_argument("--agent", required=True)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--ready-timeout", type=int, default=120)
@@ -458,7 +486,7 @@ def main():
             tokens, capped, verdict = None, False, "blocking"
             text = report_text(persona, verdict, [], None, False, did_not_run)
         if scan_hit(text, secrets):
-            text = WITHHELD % persona
+            text = WITHHELD % persona + (CAP_NOTICE if capped else "")
             findings = [{"kind": "blocking", "text": "the report was withheld by the public-surface scan"}]
             verdict = "blocking"
         with open(os.path.join(out_dir, persona + ".report.md"), "w") as fh:
@@ -480,7 +508,7 @@ def main():
         if docs is None:
             log("README.md is missing or is not a regular file: there is nothing public to test")
             all_did_not_run("the public README.md is missing")
-            finish(a, results, out_dir, gh, run_id, budget)
+            finish(a, results, out_dir, gh, run_id, budget, secrets)
             return 3
         # the image under test: by digest, loopback only
         try:
@@ -504,6 +532,7 @@ def main():
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
                     with open(dest, "wb") as fh:
                         fh.write(data)
+                open_modes(sandbox)
                 try:
                     for i, tool in enumerate(TOOLS_FOR.get(persona, ())):
                         if tool == "jenkins":
@@ -520,6 +549,7 @@ def main():
                             kc = kubeconfig_for(docker, tc, a.port + 2, a.ready_timeout)
                             with open(os.path.join(sandbox, "kubeconfig"), "w") as fh:
                                 fh.write(kc)
+                            open_modes(sandbox)
                             req_tools[tool] = {"container": tc, "endpoint": "https://127.0.0.1:%d" % (a.port + 2), "kubeconfig": "kubeconfig"}
                 except Exception as e:
                     record(persona, None, "did not run: %s\n" % e, "a tool container did not start or answer (%s)" % e)
@@ -554,10 +584,10 @@ def main():
         docker.remove(started)
         for s in sandboxes:
             shutil.rmtree(s, ignore_errors=True)
-    return finish(a, results, out_dir, gh, run_id, budget)
+    return finish(a, results, out_dir, gh, run_id, budget, secrets)
 
 
-def finish(a, results, out_dir, gh, run_id, budget):
+def finish(a, results, out_dir, gh, run_id, budget, secrets=()):
     blocking = [p for p in PERSONAS if results[p]["verdict"] == "blocking"]
     with open(os.path.join(out_dir, "summary.json"), "w") as fh:
         json.dump({"mode": a.mode, "image": a.image, "verdicts": {p: results[p]["verdict"] for p in PERSONAS},
@@ -568,13 +598,13 @@ def finish(a, results, out_dir, gh, run_id, budget):
         title = "Persona UAT friction: %s run %s" % (a.mode, run_id)
         path = os.path.join(out_dir, "friction-issue.md")
         with open(path, "w") as fh:
-            fh.write(issue_body("Friction found by the persona UAT. Information only: it blocks nothing.", a.mode, run_id, a.image, friction))
+            fh.write(safe_issue_body(issue_body("Friction found by the persona UAT. Information only: it blocks nothing.", a.mode, run_id, a.image, friction), results, secrets))
         if a.publish:
             gh.upsert(FRICTION_LABEL, "Persona UAT friction (information only)", "fbca04", "all", title, path)
     if a.mode == "weekly" and blocking:
         path = os.path.join(out_dir, "blocking-issue.md")
         with open(path, "w") as fh:
-            fh.write(issue_body("The weekly persona UAT found blocking findings.", a.mode, run_id, a.image, rows("blocking")))
+            fh.write(safe_issue_body(issue_body("The weekly persona UAT found blocking findings.", a.mode, run_id, a.image, rows("blocking")), results, secrets))
         if a.publish:
             gh.upsert(BLOCKING_LABEL, "Blocking finding", "b60205", "open", BLOCKING_TITLE, path)
     if gh.failed:

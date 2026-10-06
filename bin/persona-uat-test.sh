@@ -74,9 +74,14 @@ for f in seen:
         content[f] = open(fp, errors="replace").read()
     except OSError as e:
         content[f] = "UNREADABLE " + str(e)
+modes = {"<dir>": oct(os.stat(req["docs_dir"]).st_mode & 0o7777)}
+for d, ds, fs in os.walk(req["docs_dir"]):
+    for n in ds + fs:
+        fp = os.path.join(d, n)
+        modes[os.path.relpath(fp, req["docs_dir"])] = oct(os.lstat(fp).st_mode & 0o7777)
 with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
-                         "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links}) + "\n")
+                         "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links, "modes": modes}) + "\n")
 if p.get("crash"):
     sys.stderr.write("PARTIAL-TRANSCRIPT for " + req["persona"] + "\n")
     sys.exit(7)
@@ -222,7 +227,11 @@ mkprocnet "$work/procnet"
 run() {
   local name=$1 plan=$2 mode=$3; shift 3
   mkdir -p "$work/plain" "$work/$name"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
+  # the stub's failure switches are baked into the case's own docker script (the driver passes the docker client only its allowlisted DOCKER_* variables)
   sed "s#__LOG__#$work/$name/docker.log#" "$work/docker.tmpl" >"$work/$name/docker"; chmod +x "$work/$name/docker"
+  { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}")"; } >"$work/$name/docker.env"
+  sed -i.bak "2i\\
+. \"$work/$name/docker.env\"" "$work/$name/docker"; rm -f "$work/$name/docker.bak"
   rc=0
   env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/$name/gh.log" GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
@@ -1127,6 +1136,122 @@ CASE="guard: an unreadable proc-net (no tcp file) refuses: nothing can be said a
 check python3 - "$work/guardmissing" "$rc" <<'PY'
 import os, sys
 assert int(sys.argv[2]) != 0 and os.path.getsize(sys.argv[1] + "/log") == 0
+PY
+
+# --- FIX A: --docker and --gh are optional (default: the plain commands on PATH) ------------------------------------
+mkdir -p "$work/pathA" "$work/optional"; : >"$work/optional/log"; : >"$work/optional/gh.log"; : >"$work/optional/docker.log"
+echo '{"maven-jenkins-ci":{"findings":[{"kind":"friction","text":"a step is confusing"}]}}' >"$work/optional/plan.json"
+sed "s#__LOG__#$work/optional/docker.log#" "$work/docker.tmpl" >"$work/pathA/docker"; chmod +x "$work/pathA/docker"; cp "$work/gh" "$work/pathA/gh"
+rc=0
+env -u PERSONA_UAT_TOKEN_BUDGET PATH="$work/pathA:$PATH" GH_LOG="$work/optional/gh.log" GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
+  PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$repo" --out "$work/optional/out" \
+  --tools "$work/tools.json" --port 18080 --ready-timeout 5 --agent "python3 $work/stub.py $work/optional" --proc-net "$work/procnet" --publish \
+  >"$work/optional/stdout" 2>"$work/optional/stderr" || rc=$?
+CASE="--docker and --gh may be left out: the driver runs and uses the plain docker and gh found first on PATH"
+check test "$rc" -eq 0
+check grep -q "^run -d" "$work/optional/docker.log"
+check grep -q "^issue create" "$work/optional/gh.log"
+CASE="--docker and --gh are not required options of the driver"
+check python3 - "$driver" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+for o in ("--docker", "--gh"):
+    m = re.search(r'add_argument\("%s"[^)]*\)' % o, src)
+    assert m and "required=True" not in m.group(0), m
+PY
+
+# --- FIX B: the sandbox is readable by the container's uid, never writable by others ---------------------------------
+old_umask=$(umask); umask 077
+run sbxmode '{}' rc
+umask "$old_umask"
+CASE="the sandbox directory and every copied docs file/dir are world-readable and traversable (dirs 0755, files 0644), not writable by others, even under a strict umask"
+check python3 - "$work/sbxmode/log" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 5, rows
+for r in rows:
+    m = r["modes"]
+    assert m["<dir>"] == "0o755", m
+    for k, v in m.items():
+        if k == "<dir>":
+            continue
+        assert v in ("0o755", "0o644"), (k, v)
+    assert m["README.md"] == "0o644", m
+    if r["persona"] != "readme-evaluator":
+        assert m["docs"] == "0o755" and m["docs/install.md"] == "0o644", m
+    if r["persona"] == "on-call-engineer":
+        assert m["kubeconfig"] == "0o644", m
+PY
+
+# --- FIX C: plain credentials, the issue body, the cap notice -------------------------------------------------------------
+j=0
+for leak in "Authorization: Basic dXNlcjpwYXNzd29yZA==" "sent Authorization: Token abc123 to the API" "AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyzabcdefghijklmn" "export DB_PASSWORD: correcthorse" "MY_API_KEY=abcd1234xyz" "password=hunter2" "passwd: abcd" "token=wxyz1"; do
+  j=$((j+1)); scanrun "plain$j" "$leak"
+  CASE="fence 2 (plain credential): '$leak' withholds the report and reaches no issue body, gh call or public file"
+  check python3 - "$(out "scan-plain$j")" "$work/scan-plain$j/gh.log" "$leak" <<'PY'
+import glob, sys
+rep = open(sys.argv[1] + "/maven-jenkins-ci.report.md").read()
+assert rep.splitlines()[0] == "VERDICT: blocking" and "withheld" in rep.lower(), rep
+needle = sys.argv[3].split("Authorization: ")[-1].split("=", 1)[-1].split(": ")[-1].split()[-1]
+for f in glob.glob(sys.argv[1] + "/*.md") + glob.glob(sys.argv[1] + "/*.json") + [sys.argv[2]]:
+    c = open(f).read()
+    assert sys.argv[3] not in c and needle not in c, (f, needle)
+PY
+done
+CASE="fence 2: a lowercase hyphenated URL and the word 'token' in prose are still published as written"
+scanrun fp2 "step 4 says the token is required; see https://example.org/docs/getting-started/using-the-cache-with-gradle/index.html, tokens used are shown"
+check grep -q 'step 4 says' "$(out scan-fp2)/maven-jenkins-ci.report.md"
+check none_match 'withheld' "$(out scan-fp2)/maven-jenkins-ci.report.md"
+
+# the issue body is scanned too: a vendor-named repository inside the image reference lands only in the body
+VIMG="ghcr.io/anth""ropic/cache@sha256:$(printf 'd%.0s' $(seq 64))"
+mkdir -p "$work/bodyscan"
+echo '{"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"step 3 fails as written"}]},"readme-evaluator":{"findings":[{"kind":"friction","text":"unclear title"}]}}' >"$work/bodyscan/plan.json"
+PUBLISH=1 IMAGE="$VIMG" run bodyscan "$(cat "$work/bodyscan/plan.json")" weekly
+CASE="fence 2: an issue body that hits the scan (vendor name in the image reference) is replaced by a fixed notice of verdicts and counts; the issue is still opened"
+check python3 - "$work/bodyscan/gh.log" "$(out bodyscan)" <<'PY'
+import glob, re, sys
+log = open(sys.argv[1]).read()
+assert re.search(r"^issue create.*--label blocking", log, re.M), log
+assert re.search(r"^issue create.*--label persona-uat-friction", log, re.M), log
+bodies = [l for l in log.splitlines() if l.startswith("BODY: ")]
+assert len(bodies) == 2, bodies
+for b in bodies:
+    assert "anth" + "ropic" not in b.lower(), b
+    assert "withheld" in b.lower() and "maven-jenkins-ci" in b and "blocking" in b, b
+    assert "step 3 fails" not in b and "unclear title" not in b and "sha256" not in b and "ghcr" not in b, b
+for f in glob.glob(sys.argv[2] + "/*-issue.md"):
+    c = open(f).read()
+    assert "anth" + "ropic" not in c.lower(), f
+PY
+
+# a withheld report still says plainly that the persona hit its cap
+echo '{"maven-jenkins-ci":{"tokens":400000,"findings":[{"kind":"blocking","text":"password=hunter2 was needed"}]}}' >"$work/capscan.json"
+run capscan "$(cat "$work/capscan.json")" rc
+CASE="a persona that hit its token cap and whose report is withheld still has the cap stated plainly in the replacement report"
+check python3 - "$(out capscan)/maven-jenkins-ci.report.md" "$(out capscan)/summary.json" <<'PY'
+import json, sys
+rep = open(sys.argv[1]).read()
+assert "withheld" in rep.lower() and "hunter2" not in rep, rep
+assert "HIT ITS TOKEN CAP" in rep, rep
+assert json.load(open(sys.argv[2]))["capped"] == ["maven-jenkins-ci"]
+PY
+
+# --- FIX D: the agent and the driver address the same docker daemon (one allowlist, duplicated) --------------------------
+CASE="the docker-client environment allowlist is identical in the driver and in the agent"
+check python3 - "$root/bin/persona-uat.py" "$root/bin/persona-uat-agent.py" <<'PY'
+import ast, sys
+def lists(path):
+    out = {}
+    for n in ast.parse(open(path).read()).body:
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and n.targets[0].id in ("SHELL_ENV", "DOCKER_ENV"):
+            out[n.targets[0].id] = ast.literal_eval(n.value)
+    return out
+a, b = lists(sys.argv[1]), lists(sys.argv[2])
+assert sorted(a) == ["DOCKER_ENV", "SHELL_ENV"], a
+assert a == b, (a, b)
+for k in ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+    assert k in a["DOCKER_ENV"], k
 PY
 
 echo "persona-uat: $pass passed, $failn failed"
