@@ -18,7 +18,7 @@ ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
 check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
-none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -rqE "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
+none_match() { local fl=-E; if [ "$1" = -i ]; then fl=-iE; shift; fi; local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -r -q $fl "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
 NOW="2026-10-05T12:00:00Z"
 dago() { python3 -c "import datetime,sys;print((datetime.datetime(2026,10,5,12)-datetime.timedelta(days=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
 SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA4=$(printf '4%.0s' $(seq 40))
@@ -196,7 +196,7 @@ check grep -q 'actions/cache@v3' "$work/nested.out"; check grep -q 'docker://alp
 
 # --- AC10: disputed hits and checked-in exceptions ----------------------------------------------------------------------------------------------------
 DISPUTE="{\"lists\": {\"$ITEM_TRIVY\": {\"github\": [{\"id\": \"GHSA-69fq-xp46-6x23\", \"incident\": \"INC-T\", \"affected\": false, \"modified\": \"2026-09-01T00:00:00Z\"}], \"osv\": [{\"id\": \"GO-2026-4919\", \"incident\": \"INC-T\", \"affected\": true, \"modified\": \"2026-09-02T00:00:00Z\"}]}}, \"upstream\": {}, \"nested\": {}, \"versions\": {\"aquasecurity/trivy\": [{\"version\": \"0.69.3\", \"sha\": \"x\", \"published\": \"$(dago 400)\", \"lists\": {}}]}, \"prs\": []}"
-printf '[]' >"$work/no-exceptions.json"
+printf '{"exceptions": []}' >"$work/no-exceptions.json"
 run dispute "$DISPUTE" "$work/r-cur" --exceptions "$work/no-exceptions.json"
 CASE="two lists disagree about one incident (GitHub: not affected, OSV: affected) and there is NO exception: exit 1, one issue labelled supply-chain-hit that says DISPUTED"
 check test "$rc" -eq 1; check test "$(creates "$work/dispute.gh")" -eq 1; check grep -qi 'disputed' "$work/dispute.gh.bodies"; check grep -q 'supply-chain-hit' "$work/dispute.gh"
@@ -204,44 +204,44 @@ CASE="a disputed hit neither reports clean nor rolls back: no 'no known-compromi
 check none_match 'no known-compromised' "$work/dispute.out"; check bash -c "! grep -qiE 'roll ?back to|drop the action' '$work/dispute.gh.bodies'"
 CASE="the dispute's public facts are in the issue: both advisory ids, both verdicts, the version"
 check grep -q 'GHSA-69fq-xp46-6x23' "$work/dispute.gh.bodies"; check grep -q 'GO-2026-4919' "$work/dispute.gh.bodies"; check grep -q '0.74.0' "$work/dispute.gh.bodies"
-EXC='[{"advisories": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "version": "0.74.0", "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]'
+EXC='{"exceptions": [{"ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"], "package": "trivy", "version": "0.74.0", "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23"], "date": "2026-10-05", "modified": {"GO-2026-4919": "2026-09-02T00:00:00Z", "GHSA-69fq-xp46-6x23": "2026-09-01T00:00:00Z"}}]}'
 echo "$EXC" >"$work/exc.json"
 run excepted "$DISPUTE" "$work/r-cur" --exceptions "$work/exc.json"
 CASE="a MATCHING exception (same advisories, package, version, and both advisories unchanged since it was written): passes, exit 0, no issue, and says an exception applied"
 check test "$rc" -eq 0; check test "$(creates "$work/excepted.gh")" -eq 0; check grep -qi 'exception' "$work/excepted.out"
 python3 - "$work/exc.json" "$work/exc-stale.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1])); e[0]["modified"]["GO-2026-4919"] = "2026-08-01T00:00:00Z"; json.dump(e, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[1])); e["exceptions"][0]["modified"]["GO-2026-4919"] = "2026-08-01T00:00:00Z"; json.dump(e, open(sys.argv[2], "w"))
 PY
 run stale "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-stale.json"
 CASE="an exception goes STALE when an advisory changed after it was written (its recorded modified time differs): the dispute is reported again, exit 1"
 check test "$rc" -eq 1; check grep -qi 'disputed' "$work/stale.gh.bodies"
 python3 - "$work/exc.json" "$work/exc-otherver.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1])); e[0]["version"] = "0.74.1"; json.dump(e, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[1])); e["exceptions"][0]["version"] = "0.74.1"; json.dump(e, open(sys.argv[2], "w"))
 PY
 run otherver "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-otherver.json"
 CASE="an exception for a different version of the same package does not apply"
 check test "$rc" -eq 1
-python3 - "$work/exc.json" "$work/exc-oneadv.json" <<'PY'
+python3 - "$work/exc.json" "$work/exc-nomod.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1])); e[0]["advisories"] = ["GO-2026-4919"]; json.dump(e, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[1])); del e["exceptions"][0]["modified"]["GHSA-69fq-xp46-6x23"]; json.dump(e, open(sys.argv[2], "w"))
 PY
-run oneadv "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-oneadv.json"
-CASE="an exception that names only one of the two advisories does not apply (it must cover the whole dispute)"
+run nomod "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-nomod.json"
+CASE="an exception with no recorded last-modified time for one of its advisories cannot be shown unchanged, so it does not apply"
 check test "$rc" -eq 1
 echo '{"not": "a list"}' >"$work/exc-bad.json"
 run badexc "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-bad.json"
 CASE="an unreadable exceptions file fails the run loudly (exit 2), never as 'no exceptions'"
 check test "$rc" -eq 2
-CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the first ruling: OSV GO-2026-4919 against trivy 0.74.0 is a false positive, with GHSA-69fq-xp46-6x23, evidence links, a date and each advisory's last-modified time"
+CASE="the shipped exceptions file (.github/supply-chain-exceptions.json) holds the first ruling: OSV GO-2026-4919 against trivy 0.74.0 is a false positive, in the same format as ops (an "exceptions" list of ids, package, version, evidence, date and each advisory's last-modified time)"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
 import json, sys
-e = json.load(open(sys.argv[1]))
+e = json.load(open(sys.argv[1]))["exceptions"]
 m = [x for x in e if x["package"] == "trivy" and x["version"] == "0.74.0"]
 assert len(m) == 1, e
 x = m[0]
-assert sorted(x["advisories"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"], x
+assert sorted(x["ids"]) == ["GHSA-69fq-xp46-6x23", "GO-2026-4919"], x
 assert x["evidence"] and all(u.startswith("https://") for u in x["evidence"]) and x["date"]
 assert set(x["modified"]) == {"GO-2026-4919", "GHSA-69fq-xp46-6x23"} and all(x["modified"].values()), x
 PY
@@ -271,6 +271,45 @@ check grep -q '"rerun", "99"' "$work/heldfirst.gh"
 run heldunprov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"x\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {}}" "$work/r-clean" --rerun-held
 CASE="a held PR whose age cannot be proven is not re-run (it stays red)"
 check bash -c "! grep -q 'rerun' '$work/heldunprov.gh'"
+
+# --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
+CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+rec = {"affected": [{"package": {"name": "o/r"}, "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "3.26.11"}, {"fixed": "3.28.3"}]}]},
+                    {"package": {"name": "o/r"}, "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2.0.0"}, {"fixed": "2.5.0"}]}]}]}
+says = lambda v: pa.LiveNet._osv_says(rec, "o/r", v, versioned=False)
+assert says("v3.27.0") and says("2.1.0") and not says("v3.30.0") and not says("v4.38.1") and not says("v2.9.0") and not says("3.26.10"), "per-range"
+assert pa.LiveNet._osv_says({"affected": [{"package": {"name": "o/r"}, "versions": ["1.2.3"]}]}, "o/r", "1.2.3", False)
+assert pa.LiveNet._osv_says({"affected": [{"package": {"name": "o/r"}}]}, "o/r", "1.2.3", True), "a versioned query with no ranges to read is trusted"
+assert not pa.LiveNet._osv_says({"affected": [{"package": {"name": "o/r"}}]}, "o/r", "1.2.3", False)
+assert pa.in_range("3.28.2", ">= 3.26.11, <= 3.28.2") and not pa.in_range("3.28.3", ">= 3.26.11, <= 3.28.2") and pa.in_range("0.69.4", "= 0.69.4") and not pa.in_range("0.74.0", "= 0.69.4")
+assert pa.in_range("2.9", ">= 2.0, < 3.0|= 5.0") and pa.in_range("5.0", ">= 2.0, < 3.0|= 5.0") and not pa.in_range("4.0", ">= 2.0, < 3.0|= 5.0")
+net = pa.LiveNet(["false"], ".")
+it = pa.inv.Item("action", "o/r", "v4", "")
+assert net.upstream(it) is None and net._version_of(it) == "v4"
+PY
+
+printf '#!/bin/sh\necho "gh: API rate limit exceeded (HTTP 403)" >&2\nexit 1\n' >"$work/gh-ratelimit"; chmod +x "$work/gh-ratelimit"
+CASE="live: a rate-limited GitHub API makes the audit fail (Fail, exit 2); it is never read as 'no hit'"
+check python3 - "$aud" "$work/gh-ratelimit" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet([sys.argv[2]], ".")
+try:
+    net._gh_json("advisories/GHSA-x")
+except pa.Fail as e:
+    assert "rate limit" in str(e)
+else:
+    raise AssertionError("a rate limit was swallowed")
+try:
+    net.upstream(pa.inv.Item("action", "o/r", "a" * 40, ""))
+except pa.Fail:
+    pass
+else:
+    raise AssertionError("an upstream check swallowed a rate limit")
+PY
 
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"

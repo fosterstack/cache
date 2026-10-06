@@ -1,0 +1,14 @@
+{
+  "_format": "One entry per advisor ruling on a disputed hit (REQ-SUP-001-AC10). ids: every advisory id involved. modified: each id's last-modified time when the ruling was made; the exception lapses the moment either changes. Same format as the ops repo's docs/supply-chain-exceptions.json.",
+  "exceptions": [
+    {
+      "ids": ["GO-2026-4919", "GHSA-69fq-xp46-6x23"],
+      "package": "trivy",
+      "version": "0.74.0",
+      "ruling": "false positive: OSV GO-2026-4919 has an open-ended range from 0.69.4; the incident's GitHub advisory lists exactly 0.69.4, and 0.74.0 shipped on Aug 14",
+      "evidence": ["https://github.com/advisories/GHSA-69fq-xp46-6x23", "https://osv.dev/vulnerability/GO-2026-4919"],
+      "date": "2026-10-05",
+      "modified": {"GO-2026-4919": "2026-06-16T13:29:16.436842048Z", "GHSA-69fq-xp46-6x23": "2026-03-30T20:51:04Z"}
+    }
+  ]
+}

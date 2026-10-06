@@ -85,7 +85,7 @@ runck() {
   local n=$1 fx=$2; shift 2; echo "$fx" >"$work/$n.fx.json"; rc=0
   python3 "$chk" --root "$work/$n" --base HEAD~1 --head HEAD --fixtures "$work/$n.fx.json" --now "$NOW" --json "$work/$n.json" "$@" >"$work/$n.out" 2>&1 || rc=$?
 }
-sub() { echo "import re,pathlib; p=pathlib.Path('$1'); p.write_text(p.read_text().replace('$2','$3'))"; }
+sub() { python3 -c "import sys;print('import pathlib; p=pathlib.Path(%r); p.write_text(p.read_text().replace(%r,%r))' % tuple(sys.argv[1:]))" "$@"; }
 OLD=$(d 10); YOUNG=$(d 3)
 
 # --- nothing moves ------------------------------------------------------------------------------------------------------
@@ -203,7 +203,7 @@ PY
 
 # --- a NEW pin counts as moved; a removed pin is no age problem --------------------------------------------------------------
 NEW6=$(printf 'c%.0s' $(seq 40))
-newcase added "$(sub .github/workflows/ci.yml "      - uses: actions/checkout@$SHA1 # v4.1.0" "      - uses: actions/checkout@$SHA1 # v4.1.0\n      - uses: actions/upload-artifact@$NEW6 # v7.0.1")"
+newcase added "$(sub .github/workflows/ci.yml "      - uses: actions/checkout@$SHA1 # v4.1.0" "      - uses: actions/checkout@$SHA1 # v4.1.0"$'\n'"      - uses: actions/upload-artifact@$NEW6 # v7.0.1")"
 runck added '{"times": {}}'
 CASE="a brand-new action pin counts as moved: with no age data it fails"
 check test "$rc" -eq 1; check grep -qF "action:actions/upload-artifact@$NEW6" "$work/added.out"
@@ -216,6 +216,26 @@ check test "$rc" -eq 0
 runck none '{"times": {}}'
 CASE="an unchanged workflow with 5 pins needs no data (only what MOVED is measured)"
 check test "$rc" -eq 0
+
+# --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
+mkdir -p "$work/stubbin"
+cat >"$work/stubbin/gh" <<'STUB'
+#!/bin/sh
+case "$GH_MODE" in
+  ratelimit) echo "gh: API rate limit exceeded for user ID 1 (HTTP 403)" >&2; exit 1;;
+  notfound)  echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+esac
+exit 1
+STUB
+chmod +x "$work/stubbin/gh"
+newcase livea "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")"
+live() { rc=0; ( cd "$work" && env -u GITHUB_REPOSITORY GH_MODE="$1" PATH="$work/stubbin:$PATH" python3 "$chk" --root "$work/livea" --base HEAD~1 --head HEAD --now "$NOW" ) >"$work/live.out" 2>&1 || rc=$?; }
+live ratelimit
+CASE="live: GitHub's rate limit is 'could not look': exit 2, says so and is not a pass"
+check test "$rc" -eq 2; check grep -qi 'rate limit' "$work/live.out"
+live notfound
+CASE="live: a 404 (no release for that commit) is 'age not provable': exit 1"
+check test "$rc" -eq 1; check grep -qi 'not provable' "$work/live.out"
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

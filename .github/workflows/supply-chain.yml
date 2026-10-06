@@ -1,0 +1,84 @@
+name: supply-chain
+
+# REQ-SUP-001 (owner ratified Oct 5): the actions supply-chain checks.
+#   pin-age        every pull request: a version the PR moves must be public 7 days by a server-side time (AC2-AC4). It runs the base branch's
+#                  checker against the PR's tree, on pull_request (never pull_request_target), with a read-only token and nothing secret.
+#   daily-audit    once a day: the inventory, advisories, malicious-package reports, upstream reachability, disputed hits (AC5, AC7-AC10).
+#   rerun-held     once a day: re-runs the pin-age check of a held PR whose moved versions have reached 7 days (AC6). The only job with actions: write.
+# It never produces a run, environment or secret name (AC8): the private details are written on the owner's machine, not here.
+
+on:
+  pull_request: {}
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  pin-age:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Trusted checker (the base branch)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: The pull request's tree
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Age of every moved version, and what advisories say about it
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 trusted/bin/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }}
+          python3 trusted/bin/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --report-only
+
+  daily-audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 bin/pin-audit.py
+
+  rerun-held:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Re-run held pull requests whose versions are old enough
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 bin/pin-audit.py --rerun-held
