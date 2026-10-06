@@ -85,11 +85,12 @@ def _hide(text):
 class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
+        self.step = ""   # a placeholder's identity: the hash of the step it sits in
 
     @property
     def key(self):
         sub = f"/{self.path}" if self.path else ""
-        return f"{self.kind}:{self.name}{sub}@{self.version}"
+        return f"{self.kind}:{self.name}{sub}@{self.version}" + (f"#{self.step}" if self.step else "")
 
     def __repr__(self):
         return self.key
@@ -204,7 +205,21 @@ def _docker_images(cmd_args):
     return []
 
 
+_NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
+
+
 def _step(node, out, labels):
+    n0 = len(out)
+    _step_items(node, out, labels)
+    run = node.get("run")
+    if isinstance(run, str):
+        tag = "step:" + hashlib.sha256(" ".join(run.split()).encode("utf-8", "replace")).hexdigest()[:10]
+        for it in out[n0:]:
+            if _NONPIN.search(it.version or "") and not it.step:
+                it.step = tag     # a placeholder (variable, @latest, @main, unpinned) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused
+
+
+def _step_items(node, out, labels):
     """A step (or a job-level reusable-workflow call): `uses` and `run` mean something only here; the same word in `env:` or `with:` is data."""
     if isinstance(node.get("uses"), str):
         _uses(node["uses"], node, out, labels)
@@ -330,7 +345,7 @@ _UNMEASURED = [
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
     (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*\s-r\s*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
-    (re.compile(r"\b(?:curl|wget)\b[^\n]*(?:https?://|ftp://|\s[A-Za-z0-9.-]+\.[a-z]{2,}(?:/|\s|$))(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
+    (re.compile(r"\b(?:curl|wget)\b[^\n]*(?:https?://|ftp://|\s(?![^\s/]*\.(?:tgz|gz|zip|sh|txt|json|tar|bz2|xz|deb|rpm|bin|exe|ya?ml|log|out|py|md|toml|cfg|conf|sig|sha256|asc|pem)(?:\s|$))[A-Za-z0-9.-]+\.[a-z]{2,}(?:/|\s|$))(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
 
@@ -371,11 +386,6 @@ def unmeasured(files):
             flat = " ".join(line.split())
             if len(flat) > MAX_LINE:
                 raise RuntimeError(f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
-            measured = []
-            _step({"run": flat}, measured, {})
-            _walk(flat, measured, {})
-            if measured:
-                continue                                 # the inventory measures this line: not an unmeasured form
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])  # the WHOLE line decides identity (its hash), never a truncation
