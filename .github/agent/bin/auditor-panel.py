@@ -919,7 +919,7 @@ def automerge_allowed(changed, env=os.environ):
     that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
     on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
     # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a workflow or any other path waits for the owner.
-    return on and all(c in (STATE, VEX) for c in changed)
+    return on and bool(changed) and all(c in (STATE, VEX) for c in changed)   # an empty change set arms nothing
 
 
 def _load_json(path, default=None):
@@ -1256,10 +1256,13 @@ def cmd_deliver(a, run=subprocess.run):
         merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
         if merge_base:  # the PR's own files come from git itself, not from what a listing says
             pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
-    if existing and merge_base and real:
+    if existing and real:
         tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip()
-        recorded = open(a.state_source).read().strip() if getattr(a, "state_source", None) and os.path.exists(a.state_source) else None
-        if recorded is not None and recorded != tip:
+        # the judgment read ONE tip of the open PR's branch (state-source records it): a real delivery with an open PR needs that record and the same tip
+        if not getattr(a, "state_source", None) or not os.path.exists(a.state_source):
+            raise RuntimeError("auditor-panel: delivery with an open PR needs --state-source (the PR tip the judgment read); refusing to publish a judgment about an unknown state")
+        recorded = open(a.state_source).read().strip()
+        if recorded != tip:
             raise RuntimeError("auditor-panel: the open PR's branch moved from %s (read for the judgment) to %s (now): refusing to publish a judgment about a different state"
                                % (recorded[:12] or "none", tip[:12]))
         if pr_files:

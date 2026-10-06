@@ -506,7 +506,8 @@ class Deliver(Tmp):
         json.dump(d, open(os.path.join(self.out, "day.json"), "w"))
 
     def a(self, dry=False):
-        return args(out=self.out, repo=self.repo, dry_run=dry, today="2026-10-03")
+        ss = os.path.join(self.d, "state-source"); open(ss, "w").write("")      # the fake rev-parse answers "": the judgment read the same tip
+        return args(out=self.out, repo=self.repo, dry_run=dry, today="2026-10-03", state_source=ss)
 
     def fake(self, outputs=None):
         calls = []
@@ -721,6 +722,9 @@ class RebuildReal(Tmp):
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
         env.update(env_extra or {})
+        if state_source is None and existing:
+            state_source = os.path.join(self.d, "ss-auto")
+            open(state_source, "w").write(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0])
         a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06", state_source=state_source)
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
             rc = P.cmd_deliver(a, run=run)
@@ -747,8 +751,27 @@ class RebuildReal(Tmp):
 
     def test_a_profile_entry_still_blocks_auto_merge_and_disarms(self):
         rc, calls = self.deliver()
-        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], calls)           # the carried profile entry keeps it manual
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)                       # the carried profile entry keeps it manual
         self.assertTrue(any(c[:3] == ["gh", "pr", "view"] for c in calls))                              # and an armed PR is checked for disarming
+
+    def test_a_carried_profile_entry_blocks_auto_merge_even_when_the_listing_hides_it(self):     # review r4 B1
+        rc, calls = self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))                 # the (stub) gh listing says only state and VEX
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)           # but the branch carried a profile entry: still manual
+
+    def test_a_pr_with_only_the_panels_own_records_is_armed_by_number(self):
+        self.git("checkout", "-q", "-B", "auditor/panel", self.m0)
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["statements"].append(self.stmt("CVE-9-ONLY")); doc["version"] = 2
+        self.write(P.VEX, doc)
+        self.git("add", "-A"); self.git("commit", "-q", "-m", "vex only"); self.git("push", "-q", "-f", "origin", "auditor/panel"); self.git("checkout", "-q", "main")
+        rc, calls = self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))
+        self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)               # state + VEX only: armed, through the PR's number
+        self.assertIn(["gh", "pr", "ready", "17"], calls)
+
+    def test_a_real_delivery_with_an_open_pr_needs_the_state_source_record(self):
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(state_source=os.path.join(self.d, "missing"))
+        self.assertIn("--state-source", str(e.exception))
+        self.assertEqual(P.automerge_allowed([], env={"AUDITOR_AUTOMERGE": "on"}), False)       # nothing changed arms nothing
 
     def test_the_pr_branch_not_the_listing_decides_what_is_carried(self):
         rc, calls = self.deliver(pr_files="%s\n" % P.STATE)
