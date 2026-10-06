@@ -62,6 +62,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age does not run the BASE branch's checker (trusted/) and fall back to the PR's copy only when the base has none")
     if "exceptions=trusted/.github/supply-chain-exceptions.json" not in runs or '--exceptions "$exceptions"' not in runs or "pr/.github/supply-chain-exceptions.json" in runs:
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
+    if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
+        bad.append("pin-age stops at the first failure: the age check and the advisory audit must both run, and the job fails if either did")
     if "${{ github.event.pull_request.base.sha }}" not in runs or "${{ github.event.pull_request.head.sha }}" not in runs:
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
@@ -102,6 +104,11 @@ def judge_db(d):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or str(cd.get("default-days")) != "7":
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
+    want = {"gomod": ("/", "weekly"), "docker": ("/build/docker", "daily")}  # the product's CVE-fix targets: unchanged by this rule
+    for eco, (directory, interval) in want.items():
+        u = ups.get(eco) or {}
+        if u and (u.get("directory"), (u.get("schedule") or {}).get("interval")) != (directory, interval):
+            bad.append(f"the {eco} entry is not unchanged ({directory}, {interval})")
     for eco in ("gomod", "docker"):
         if eco not in ups:
             bad.append(f"the {eco} entry is missing")
@@ -195,6 +202,8 @@ mut_wf("the fallback is unconditional", "does not run the BASE branch's checker"
 mut_wf("the checker is taken from the PR even when the base has it", "does not run the BASE branch's checker", lambda d: [s.update(run=s["run"].replace('"$checker/bin/pin-age-check.py"', "pr/bin/pin-age-check.py")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("exceptions are read from the PR's tree", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace("exceptions=trusted/.github", "exceptions=pr/.github")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("the audit stops passing --exceptions", "does not take the exceptions from the BASE branch", lambda d: [s.update(run=s["run"].replace(' --exceptions "$exceptions"', "")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("the age check's failure hides the audit", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("set -uo pipefail", "set -euo pipefail")) for s in J(d, "pin-age")["steps"] if "run" in s])
+mut_wf("the audit's exit status is dropped", "pin-age stops at the first failure", lambda d: [s.update(run=s["run"].replace("--report-only || status=1", "--report-only")) for s in J(d, "pin-age")["steps"] if "run" in s])
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))
@@ -210,6 +219,10 @@ mut_wf("a job gets an environment", "has an environment or secrets", lambda d: J
 mut_wf("a fourth job appears", "the jobs are not exactly", lambda d: d["jobs"].update(extra={"runs-on": "ubuntu-latest", "steps": []}))
 mut_wf("top-level permissions widened", "no top-level permissions block", lambda d: d.update(permissions={"contents": "write"}))
 # --- dependabot (AC1) ---
+mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
+mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
+mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))
+mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
 mut_db("github-actions loses its cooldown", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions").pop("cooldown"))
 mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: eco(d, "pip").pop("cooldown"))
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))

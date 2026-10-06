@@ -145,12 +145,20 @@ class LiveNet:
         return val
 
     def _osv_post(self, q):
-        req = urllib.request.Request("https://api.osv.dev/v1/query", json.dumps(q).encode(), {"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.load(r).get("vulns", [])
-        except (OSError, ValueError) as e:
-            raise Fail(f"the OSV query failed: {e}")
+        vulns, token = [], None
+        for _ in range(20):
+            body = dict(q, **({"page_token": token} if token else {}))
+            req = urllib.request.Request("https://api.osv.dev/v1/query", json.dumps(body).encode(), {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    d = json.load(r)
+            except (OSError, ValueError) as e:
+                raise Fail(f"the OSV query failed: {e}")
+            vulns += d.get("vulns", [])
+            token = d.get("next_page_token")
+            if not token:
+                return vulns
+        raise Fail("the OSV query has more than 20 pages")
 
     def _version_of(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):
@@ -184,6 +192,18 @@ class LiveNet:
                             if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() in names]
                     if adv and rngs:
                         ghs.append({"id": alias, "incident": v["id"], "affected": in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
+        eco = {"action": "actions", "package": "pip", "gotool": "go", "tool": "go" if item.kind == "tool" and item.name in GO_TOOLS else None}.get(item.kind)
+        pkg = q["package"]["name"]
+        if eco:
+            seen = {g["id"] for g in ghs}
+            page = self._gh_json(f"advisories?ecosystem={eco}&affects={urllib.parse.quote(pkg)}&per_page=100") or []
+            for adv in page:  # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to a filter
+                if adv.get("ghsa_id") in seen:
+                    continue
+                rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
+                        if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() == pkg.lower()]
+                if rngs and in_range(version, "|".join(rngs)):
+                    ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"), "malicious": adv.get("type") == "malware"})
         return ghs, osv
 
     @staticmethod
@@ -211,9 +231,18 @@ class LiveNet:
             return False
         c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"], capture_output=True, text=True)
         self._api_ok(c, item)
-        if c.stdout.strip() in ("identical", "behind"):
+        # compare/<pin>...<branch>: the branch is "ahead" of (or identical to) the pin exactly when the pin is an ancestor of the branch
+        if c.stdout.strip() in ("identical", "ahead"):
             return True
-        return age._tag_for_commit(item.name, item.version) is not None
+        if age._tag_for_commit(item.name, item.version) is not None:
+            return True
+        for br in (self._gh_json(f"repos/{item.name}/branches?per_page=30") or []):  # a release branch of the same repository
+            if br.get("name") != branch:
+                c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
+                self._api_ok(c, item)
+                if c.stdout.strip() in ("identical", "ahead"):
+                    return True
+        return False
 
     @staticmethod
     def _api_ok(r, item):
@@ -243,15 +272,27 @@ class LiveNet:
         return out
 
     def versions(self, item):
-        repo = item.name if item.kind == "action" else age.TOOL_REPOS.get(item.name)
+        """Candidate versions with their publish times; None when this kind of item cannot be enumerated (then nobody searched, and it is a decision)."""
+        if item.kind == "package":
+            d = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(item.name.split('/', 1)[1])}/json")
+            if not d:
+                return None
+            out = []
+            for ver, files in (d.get("releases") or {}).items():
+                ups = [f.get("upload_time_iso_8601") for f in files if f.get("upload_time_iso_8601") and not f.get("yanked")]
+                if ups:
+                    out.append({"version": ver, "sha": None, "published": min(ups), "_item": inv.Item("package", item.name, ver, ver)})
+            return out
+        repo = item.name if item.kind == "action" else (age.TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None))
         if not repo:
-            return []
-        rels = self._gh_json(f"repos/{repo}/releases?per_page=30") or []
+            return None
+        rels = self._gh_json(f"repos/{repo}/releases?per_page=100")
+        if rels is None:
+            return None
         out = []
         for r in rels:
             if r.get("draft") or r.get("prerelease") or not r.get("published_at"):
                 continue
-            cand = inv.Item(item.kind, item.name, r["tag_name"], r["tag_name"])
             sha = None
             if item.kind == "action":
                 ref = self._gh_json(f"repos/{repo}/git/ref/tags/{urllib.parse.quote(r['tag_name'])}")
@@ -260,15 +301,14 @@ class LiveNet:
                 elif ref and ref.get("object", {}).get("type") == "tag":
                     t = self._gh_json(f"repos/{repo}/git/tags/{ref['object']['sha']}")
                     sha = (t or {}).get("object", {}).get("sha")
-            gh_l, osv_l = self.lists(cand) if item.kind != "action" else self.lists(cand)
-            out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "lists": {"github": gh_l, "osv": osv_l}})
+            out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "_item": inv.Item(item.kind, item.name, r["tag_name"], r["tag_name"])})
         return out
 
     def prs(self):
         repo = os.environ.get("GITHUB_REPOSITORY")
         if not repo:
             raise Fail("GITHUB_REPOSITORY is not set")
-        r = subprocess.run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "100"], capture_output=True, text=True)
+        r = subprocess.run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True, text=True)
         if r.returncode:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
@@ -284,8 +324,9 @@ class LiveNet:
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except RuntimeError:
                 continue
-            runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=30") or {}
-            failed = [x for x in runs.get("workflow_runs", []) if x.get("name") == "supply-chain" and x.get("conclusion") == "failure"]
+            runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
+            mine = sorted((x for x in runs.get("workflow_runs", []) if x.get("path") == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
+            failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
                 out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved})
         return out
@@ -319,6 +360,7 @@ def load_exceptions(path, required):
             assert isinstance(e["ids"], list) and e["ids"] and all(isinstance(i, str) for i in e["ids"])
             assert isinstance(e["modified"], dict) and e["package"] and e["authoritative"] in ("github", "osv")
             assert isinstance(e["ranges"], list) and e["ranges"] and all(isinstance(r, str) for r in e["ranges"])
+            assert isinstance(e["evidence"], list) and e["evidence"] and isinstance(e["date"], str) and e["date"]
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         raise Fail(f"the exceptions file {path} is unreadable or malformed: {e}")
     return ex
@@ -390,26 +432,33 @@ def judge(item, net, exceptions, notes, current=True):
     return findings
 
 
-def undisputed_affected(entry_lists):
-    advs = list(entry_lists.get("github") or []) + list(entry_lists.get("osv") or [])
-    by = {}
-    for a in advs:
-        by.setdefault(a.get("incident") or a["id"], []).append(a)
-    return any(any(a.get("affected") for a in v) and all(a.get("affected") for a in v) for v in by.values())
+def any_affected(entry_lists):
+    """Disputed or not, an advisory that says affected keeps a candidate out of 'clean'."""
+    return any(a.get("affected") for a in list(entry_lists.get("github") or []) + list(entry_lists.get("osv") or []))
+
+
+UNKNOWN = "unknown"
 
 
 def rollback(item, net, now):
-    """The newest clean version public at least 7 days; never a younger one. None: drop it."""
-    best = None
-    for v in net.versions(item):
+    """The newest clean version public at least 7 days; never a younger one. None: drop it. UNKNOWN: this kind of item could not be searched."""
+    versions = net.versions(item)
+    if versions is None:
+        return UNKNOWN
+    eligible = []
+    for v in versions:
         pub = age.parse_time(v.get("published"))
         if pub is None or (now - pub).total_seconds() < WAIT_DAYS * 86400 or v["version"] == (item.label or item.version) or v.get("sha") == item.version:
             continue
-        if undisputed_affected(v.get("lists") or {}):
-            continue
-        if best is None or pub > best[0]:
-            best = (pub, v)
-    return best[1] if best else None
+        eligible.append((pub, v))
+    for pub, v in sorted(eligible, key=lambda x: x[0], reverse=True):  # newest first; the lists of a candidate are fetched only when it is reached
+        lists = v.get("lists")
+        if lists is None:
+            gh_l, osv_l = net.lists(v["_item"])
+            lists = {"github": gh_l, "osv": osv_l}
+        if not any_affected(lists):
+            return v
+    return None
 
 
 def clean(text):
@@ -436,7 +485,9 @@ def body_of(f, rb, owner, ran, today):
         lines.append(f"This action is called inside `{f.via}`: replace or drop the outer action. Nothing here can be pinned by us.")
         lines.append("There is no rollback of ours to a clean version of a nested action: the owner decides.")
         return "\n".join(lines) + "\n"
-    if rb:
+    if rb == UNKNOWN:
+        lines.append("Rollback: this kind of item cannot be searched for older versions automatically; nobody has looked for a clean one, so the owner decides.")
+    elif rb:
         lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {rb['version']}" + (f" (commit {rb['sha']})" if rb.get("sha") else "") + f", published {rb['published']}.")
     else:
         lines.append(f"No clean version public at least {WAIT_DAYS} days exists: drop it (remove its use) until one does.")
@@ -477,14 +528,14 @@ def file_issues(gh, plan, today):
     gh.run("label", "create", HIT_LABEL, "--description", "A supply-chain hit on a pinned version", ok_fail=True)
     if any(p["owner"] for p in plan):
         gh.run("label", "create", OWNER_LABEL, "--description", "Needs the owner's decision", ok_fail=True)
-    r = gh.run("issue", "list", "--label", HIT_LABEL, "--state", "open", "--json", "number,title", "--limit", "200")
+    r = gh.run("issue", "list", "--label", HIT_LABEL, "--state", "open", "--json", "number,title", "--limit", "1000")
     try:
         open_issues = json.loads(r.stdout or "[]")
     except ValueError:
         raise Fail("gh issue list did not return JSON")
     for p in plan:
         prefix, title = p["title"]
-        existing = next((i for i in open_issues if str(i.get("title", "")).startswith(prefix + " (")), None)
+        existing = next((i for i in open_issues if str(i.get("title", "")) == title), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
             path = f.name
@@ -613,7 +664,7 @@ def main(argv=None):
                 continue
             rb = None if f.via else rollback(f.item, net, now)
             ran = f.item.key in ran_keys
-            owner = rb is None or ran or bool(f.via)
+            owner = rb is None or rb == UNKNOWN or ran or bool(f.via)
             plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
         for (pkg, ids), fs in sorted(disputes.items()):
             versions = sorted({x.item.label or x.item.version for x in fs})

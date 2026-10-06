@@ -86,7 +86,7 @@ class CouldNotLook(Exception):
 
 def _gh_failed(r):
     """True for a plain miss (404 and friends); raises when the failure is the service's, not the answer's."""
-    if re.search(r"rate limit|abuse detection|secondary rate|\b(500|502|503|504)\b|timed out|connection", r.stderr + r.stdout, re.I):
+    if not re.search(r"\b(404|410|422)\b", r.stderr + r.stdout):  # only "not there" is an answer; a 401/403, a rate limit or an outage means we could not look
         raise CouldNotLook(f"GitHub API: {(r.stderr or r.stdout).strip()[:120]}")
     return True
 
@@ -140,19 +140,30 @@ def _release_time(repo, tags):
 _TAGS = {}
 
 
-def _tag_for_commit(repo, sha):
+def _tags_for_commit(repo, sha):
+    """EVERY tag that points at the commit (annotated ones peeled): v4 and v4.1.0 may both."""
     if repo not in _TAGS:
         _TAGS[repo] = _gh_pages(f"repos/{repo}/git/matching-refs/tags?per_page=100") or []
-    refs = _TAGS[repo]
-    for r in refs:
+    found = []
+    for r in _TAGS[repo]:
         o = r.get("object", {})
         if o.get("sha") == sha:
-            return r["ref"][len("refs/tags/"):]
-        if o.get("type") == "tag":
+            found.append(r["ref"][len("refs/tags/"):])
+        elif o.get("type") == "tag":
             t = _gh_api(f"repos/{repo}/git/tags/{o['sha']}")
             if t and t.get("object", {}).get("sha") == sha:
-                return r["ref"][len("refs/tags/"):]
-    return None
+                found.append(r["ref"][len("refs/tags/"):])
+    return found
+
+
+def _tag_for_commit(repo, sha):
+    tags = _tags_for_commit(repo, sha)
+    return tags[0] if tags else None
+
+
+def _commit_date(repo, sha):
+    c = _gh_api(f"repos/{repo}/commits/{sha}")
+    return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
 
 
 def _go_module(path, version):
@@ -185,29 +196,41 @@ def _go_index_time(mod, version, vcs_time):
 
 
 def _first_seen(item, root):
-    """The first time this exact version appeared in one of OUR pull requests (the PR's server-side creation time)."""
+    """The first time this version appeared in one of OUR update pull requests: that PR's server-side creation time, counted only when the PR itself
+    names the version (its title or body, as a whole token) and comes from a branch of our own repository (a stranger's fork PR cannot start the clock)."""
     repo = os.environ.get("GITHUB_REPOSITORY")
-    needle = item.version
-    if not repo or not needle:
+    needles = [n for n in (item.version, item.label, item.version[:7] if re.fullmatch(r"[0-9a-f]{40}", item.version or "") else "") if n]
+    if not repo or not needles:
         return None
-    token = r"(^|[^0-9A-Za-z._+-])" + re.escape(needle) + r"($|[^0-9A-Za-z._+-])"  # the whole version, never a longer string containing it
-    r = subprocess.run(["git", "-C", root, "log", "--all", "--format=%H", "-G", token, "--", ".github", "bin"], capture_output=True, text=True)
-    shas = [s for s in r.stdout.split() if s]
+    toks = [re.compile(r"(^|[^0-9A-Za-z._+-])" + re.escape(n) + r"($|[^0-9A-Za-z._+-])") for n in needles]
+    r = subprocess.run(["git", "-C", root, "log", "--all", "--format=%H", "-G", toks[0].pattern, "--", ".github", "bin"], capture_output=True, text=True)
+    shas = [x for x in r.stdout.split() if x]
     times = []
     for sha in shas[-3:]:
-        prs = _gh_api(f"repos/{repo}/commits/{sha}/pulls") or []
-        # only a pull request from a branch of our own repository: an outsider's fork PR must not be able to start the clock
-        times += [p["created_at"] for p in prs if p.get("created_at") and ((p.get("head") or {}).get("repo") or {}).get("full_name") == repo]
+        for p in _gh_api(f"repos/{repo}/commits/{sha}/pulls") or []:
+            if ((p.get("head") or {}).get("repo") or {}).get("full_name") != repo or not p.get("created_at"):
+                continue
+            text = f"{p.get('title') or ''}\n{p.get('body') or ''}"
+            if any(t.search(text) for t in toks):
+                times.append(p["created_at"])
     return min(times) if times else None
 
 
 def live_proofs(item, root):
     out = []
     if item.kind == "action":
-        tag = _tag_for_commit(item.name, item.version)
-        t = _release_time(item.name, [tag]) if tag else None
-        if t:
-            out.append((t, "github-release"))
+        # every tag at the commit is tried (v4 may have no release while v4.1.0 does); a release only proves the commit if the commit already
+        # existed when it was published (a tag redirected to a fresh commit would otherwise borrow the old release's age)
+        cdate = None
+        for tag in _tags_for_commit(item.name, item.version):
+            t = _release_time(item.name, [tag])
+            if not t:
+                continue
+            cdate = cdate or _commit_date(item.name, item.version)
+            cd, pd = parse_time(cdate), parse_time(t)
+            if cd is not None and pd is not None and cd <= pd:
+                out.append((t, "github-release"))
+                break
     elif item.kind == "tool":
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
         v = item.version

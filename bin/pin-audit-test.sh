@@ -357,6 +357,80 @@ else:
     raise AssertionError("an upstream check swallowed a rate limit")
 PY
 
+# --- the live source against a gh stub (no network): reachability direction, GitHub-only advisories, rollback rules ---------------------------------------------------------------
+cat >"$work/ghmap" <<'STUB'
+#!/usr/bin/env python3
+# a gh stub for the offline tests: GH_MAP is a JSON file {api path: value}; --jq supports .field, .a.b and .[]
+import json, os, sys
+a = sys.argv[1:]
+if a[0] != "api":
+    sys.exit(1)
+jq = a[a.index("--jq") + 1] if "--jq" in a else None
+path = [x for x in a[1:] if not x.startswith("-") and x != jq][0]
+m = json.load(open(os.environ["GH_MAP"]))
+if path not in m:
+    sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
+v = m[path]
+if isinstance(v, dict) and "__err" in v:
+    sys.stderr.write(v["__err"] + "\n"); sys.exit(1)
+if jq == ".[]":
+    for x in v: print(json.dumps(x))
+elif jq and jq.startswith("."):
+    for k in jq[1:].split("."):
+        v = v[k]
+    print(v if isinstance(v, str) else json.dumps(v))
+else:
+    print(json.dumps(v))
+STUB
+chmod +x "$work/ghmap"
+CASE="live upstream: the pin is an ancestor of a branch when compare says ahead/identical (NOT behind); a release branch counts; a pin ahead of every branch is a fork-only commit"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]; sha = "a" * 40
+pa.age._tag_for_commit = lambda r, s: None
+def net(m):
+    json.dump(m, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+    return pa.LiveNet([work + "/ghmap"], ".")
+it = pa.inv.Item("action", "o/r", sha, "v1")
+base = {"repos/o/r": {"default_branch": "main"}}
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "ahead"}}).upstream(it) is True
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "identical"}}).upstream(it) is True
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "behind"}, "repos/o/r/branches?per_page=30": []}).upstream(it) is False, "behind: the pin is beyond the branch"
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "diverged"}, "repos/o/r/branches?per_page=30": [{"name": "main"}, {"name": "v1"}], f"repos/o/r/compare/{sha}...v1": {"status": "ahead"}}).upstream(it) is True
+assert net({**base, f"repos/o/r/compare/{sha}...main": {"status": "diverged"}, "repos/o/r/branches?per_page=30": [{"name": "main"}, {"name": "v1"}], f"repos/o/r/compare/{sha}...v1": {"status": "behind"}}).upstream(it) is False
+PY
+CASE="live advisories: a GitHub-only advisory (OSV knows nothing of it) is read directly and its ranges evaluated for the version"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+adv = [{"ghsa_id": "GHSA-only-only-only", "updated_at": "2026-01-01T00:00:00Z", "type": "malware", "vulnerabilities": [{"package": {"name": "o/r"}, "vulnerable_version_range": ">= 1.0, < 2.0"}]}]
+json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100": adv}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+net = pa.LiveNet([work + "/ghmap"], ".")
+net._osv_post = lambda q: []
+gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+assert [g["id"] for g in gh] == ["GHSA-only-only-only"] and gh[0]["affected"] and gh[0]["malicious"], gh
+assert net.lists(pa.inv.Item("action", "o/r", "v2.1", "")) == ([], [])
+PY
+CASE="rollback: a candidate that any advisory marks affected (a DISPUTED one too) is never 'clean'; a kind of item that cannot be searched is a decision (unknown), never 'drop it'"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
+old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+disp = {"github": [{"id": "G", "incident": "I", "affected": False}], "osv": [{"id": "O", "incident": "I", "affected": True}]}
+fx = pa.FixtureNet({"versions": {"o/r": [{"version": "v3", "sha": None, "published": old(20), "lists": disp},
+                                         {"version": "v2", "sha": None, "published": old(40), "lists": {}}, {"version": "v1", "sha": None, "published": old(80), "lists": {}}]}})
+assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["version"] == "v2"
+net = pa.LiveNet(["false"], ".")
+assert pa.rollback(pa.inv.Item("gotool", "golang.org/x/vuln/cmd/govulncheck", "v1.0.0"), net, now) == pa.UNKNOWN
+PY
+printf '{"exceptions": [{"ids": ["A"], "package": "p", "authoritative": "github", "ranges": ["= 1"], "modified": {"A": "t"}}]}' >"$work/exc-noev.json"
+run noev "$DISPUTE" "$work/r-cur" --exceptions "$work/exc-noev.json"
+CASE="an exception without evidence links and a date is malformed: exit 2, never applied"
+check test "$rc" -eq 2
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

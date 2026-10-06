@@ -34,7 +34,8 @@ INSTALLER_INPUTS = {
     "helm/kind-action": [("version", "kind"), ("kubectl_version", "kubectl"), ("node_image", None)],  # None: the input names an image
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
-_GO_INSTALL = re.compile(r"\bgo\s+install\s+(?:-\S+\s+)*([\w.\-/]+)@([\w.\-+]+)")
+_GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@([\w.\-+]+)")
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?([\w.+-]+)/")
 _PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\;'\"]+)")
@@ -106,33 +107,46 @@ def _image_item(ref, label=""):
     return Item("image", ref, "", label)  # tag only: kept so the age check can fail it
 
 
-def _walk(node, out, labels, path):
-    if isinstance(node, dict):
-        u = node.get("uses")
-        if isinstance(u, str):
-            u = u.strip()
-            if u.startswith("docker://"):
-                out.append(_image_item(u[len("docker://"):]))
-            elif not u.startswith("./"):
-                ref_path, _, ref = u.partition("@")
-                repo = "/".join(ref_path.split("/")[:2])
-                out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", "")))
-                w = node.get("with")
-                for inp, tool in INSTALLER_INPUTS.get(repo, []):
-                    if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip() and "${{" not in w[inp]:
-                        val = w[inp].strip()
-                        out.append(_image_item(val) if tool is None else Item("tool", tool, val))
-        run = node.get("run")
-        if isinstance(run, str):
-            for m in _GO_INSTALL.finditer(run):
-                out.append(Item("gotool", m.group(1), m.group(2)))
-            for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version
-                out.append(Item("tool", m.group(1), m.group(2)))
-            for m in _PIP_INSTALL.finditer(run):
-                for p in _PIP_PIN.finditer(m.group(1)):
-                    out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
-            for m in _RUN_IMAGE.finditer(run):  # docker run/pull of an image by digest
+def _uses(u, node, out, labels):
+    u = u.strip()
+    if u.startswith("docker://"):
+        out.append(_image_item(u[len("docker://"):]))
+    elif u and not u.startswith("./") and "${{" not in u:
+        ref_path, _, ref = u.partition("@")
+        repo = "/".join(ref_path.split("/")[:2])
+        out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", "")))
+        w = node.get("with")
+        for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
+            if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip() and "${{" not in w[inp]:
+                val = w[inp].strip()
+                out.append(_image_item(val) if tool is None else Item("tool", tool, val))
+
+
+def _step(node, out, labels):
+    """A step (or a job-level reusable-workflow call): `uses` and `run` mean something only here; the same word in `env:` or `with:` is data."""
+    if isinstance(node.get("uses"), str):
+        _uses(node["uses"], node, out, labels)
+    run = node.get("run")
+    if isinstance(run, str):
+        run = re.sub(r"\\\n\s*", " ", run)  # a backslash continuation is one command
+        for m in _GO_INSTALL.finditer(run):
+            for t in _GO_TARGET.finditer(m.group(1)):
+                out.append(Item("gotool", t.group(1), t.group(2)))
+        for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version
+            out.append(Item("tool", m.group(1), m.group(2)))
+        for m in _PIP_INSTALL.finditer(run):
+            for p in _PIP_PIN.finditer(m.group(1)):
+                out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
+
+
+def _walk(node, out, labels, path="", in_step=False):
+    if isinstance(node, str):
+        if "${{" not in node:
+            for m in _RUN_IMAGE.finditer(node):  # a digest-pinned image in ANY value: run text, env, driver-opts, an action input
                 out.append(_image_item(m.group(1)))
+    elif isinstance(node, dict):
+        if in_step or path.startswith("job:"):
+            _step(node, out, labels)
         for k, v in node.items():
             if k in ("container", "image") and isinstance(v, (str, dict)):
                 img = v if isinstance(v, str) else v.get("image")
@@ -143,10 +157,14 @@ def _walk(node, out, labels, path):
                 for svc in v.values():
                     if isinstance(svc, dict) and isinstance(svc.get("image"), str) and "${{" not in svc["image"]:
                         out.append(_image_item(svc["image"]))
-            _walk(v, out, labels, k)
+            if k == "jobs" and isinstance(v, dict):
+                for job in v.values():
+                    _walk(job, out, labels, "job:" + k)
+                continue
+            _walk(v, out, labels, k, in_step=(k == "steps"))
     elif isinstance(node, list):
         for v in node:
-            _walk(v, out, labels, path)
+            _walk(v, out, labels, path, in_step=in_step)
 
 
 def inventory(files):
@@ -165,7 +183,8 @@ def inventory(files):
             try:
                 doc = yaml.load(text, Loader=yaml.BaseLoader)
             except yaml.YAMLError as e:
-                raise RuntimeError(f"{path} does not parse: {e}")
+                mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
+                raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
             _walk(doc, found, labels, "")
         for it in found:
             items.setdefault(it.key, it)

@@ -246,14 +246,14 @@ mkdir -p "$work/stubfs"
 cat >"$work/stubfs/gh" <<'STUB'
 #!/bin/sh
 case "$*" in
-  *pulls*) if [ "$GH_PR_FORK" = 1 ]; then echo '[{"created_at":"2026-01-01T00:00:00Z","head":{"repo":{"full_name":"stranger/cache"}}}]'; else echo '[{"created_at":"2026-01-01T00:00:00Z","head":{"repo":{"full_name":"o/r"}}}]'; fi;;
+  *pulls*) if [ "$GH_PR_FORK" = 1 ]; then echo '[{"created_at":"2026-01-01T00:00:00Z","title":"Bump java to 21","head":{"repo":{"full_name":"stranger/cache"}}}]'; elif [ "$GH_PR_NOTNAMED" = 1 ]; then echo '[{"created_at":"2026-01-01T00:00:00Z","title":"Unrelated old PR","body":"nothing","head":{"repo":{"full_name":"o/r"}}}]'; else echo '[{"created_at":"2026-01-01T00:00:00Z","title":"Bump java to 21","head":{"repo":{"full_name":"o/r"}}}]'; fi;;
   *) exit 1;;
 esac
 STUB
 chmod +x "$work/stubfs/gh"
 rm -rf "$work/fs"; mkdir -p "$work/fs/.github/workflows"; git -C "$work/fs" init -q
 printf 'note: released in 2021 and 12.1\n' >"$work/fs/.github/workflows/a.yml"; git -C "$work/fs" add -A; git -C "$work/fs" -c user.name=t -c user.email=t@x commit -q -m a
-firstseen() { ( cd "$work" && GITHUB_REPOSITORY=o/r GH_PR_FORK="${3:-0}" PATH="$work/stubfs:$PATH" python3 - "$chk" "$work/fs" "$1" "$2" <<'PY'
+firstseen() { ( cd "$work" && GITHUB_REPOSITORY=o/r GH_PR_FORK="${3:-0}" GH_PR_NOTNAMED="${4:-0}" PATH="$work/stubfs:$PATH" python3 - "$chk" "$work/fs" "$1" "$2" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 print(ac._first_seen(ac.inv.Item("tool", "java", sys.argv[4]), sys.argv[2]))
@@ -266,6 +266,89 @@ CASE="first seen: the whole version as its own token IS found, and gives the PR'
 check test "$(firstseen x 21)" = 2026-01-01T00:00:00Z
 CASE="first seen: a pull request from someone's FORK never starts the clock"
 check test "$(firstseen x 21 1)" = None
+CASE="first seen: an OLD pull request that does not name the version (a pin added to it later) lends it no age"
+check test "$(firstseen x 21 0 1)" = None
+
+# --- inventory edge cases from review: the word `uses` in env is data, digests anywhere, continuation lines, several go install targets, case-folded installer names -------------
+DIG6=sha256:$(printf '6%.0s' $(seq 64))
+newcase envuses "$(sub .github/workflows/ci.yml '      - run: |' $'      - env:\n          uses: \'${{ secrets.SECRETNAME_Y }}\'\n        run: echo hi\n      - run: |')"
+runck envuses '{"times": {}}'
+CASE="the word uses inside env: is data, not an action: nothing moved, and the secret name it carries is never printed"
+check test "$rc" -eq 0; check bash -c "! grep -q SECRETNAME_Y '$work/envuses.out'"
+newcase badyaml "open('.github/workflows/ci.yml','a').write('\\n  broken: [SECRETNAME_Y\\n')"
+runck badyaml '{"times": {}}'
+CASE="a workflow that does not parse fails the check (exit 2) and the message names the file and line only, never the source text"
+check test "$rc" -eq 2; check bash -c "! grep -q SECRETNAME_Y '$work/badyaml.out'"; check grep -q 'does not parse (line' "$work/badyaml.out"
+newcase driveropts "$(sub .github/workflows/ci.yml '      - run: |' $'      - uses: docker/setup-buildx-action@'$SHA6$' # v3\n        with:\n          driver-opts: image=moby/buildkit@'$DIG4$'\n      - run: |')"
+git -C "$work/driveropts" commit -q --amend -m head
+newcase driveropts2 "$(sub .github/workflows/ci.yml '      - run: |' $'      - uses: docker/setup-buildx-action@'$SHA6$' # v3\n        with:\n          driver-opts: image=moby/buildkit@'$DIG6$'\n      - run: |')"
+CASE="a digest-pinned image inside a with: value (BuildKit's driver-opts) is an inventory item: named, and judged like any image"
+runck driveropts2 '{"times": {}}'; check test "$rc" -eq 1; check grep -qF "image:moby/buildkit@$DIG6" "$work/driveropts2.out"
+newcase multipip "import pathlib; p=pathlib.Path('.github/workflows/ci.yml'); t=p.read_text(); p.write_text(t.replace('          python3 -m pip install --require-hashes', '          python3 -m pip install --quiet \\\\\\n            isort==5.13.0 \\\\\\n            ruff==0.5.0\\n          python3 -m pip install --require-hashes'))"
+runck multipip '{"times": {}}'
+CASE="a pip install continued over several lines is read as one command: both pinned packages are named"
+check test "$rc" -eq 1; check grep -qF "package:pypi/isort@5.13.0" "$work/multipip.out"; check grep -qF "package:pypi/ruff@0.5.0" "$work/multipip.out"
+newcase twogo "$(sub .github/workflows/ci.yml 'go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0' 'go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0 example.org/other/cmd/tool@v1.2.3')"
+runck twogo '{"times": {}}'
+CASE="a go install of two targets names both"
+check test "$rc" -eq 1; check grep -qF "gotool:example.org/other/cmd/tool@v1.2.3" "$work/twogo.out"
+newcase casefold "$(sub .github/workflows/ci.yml 'golangci/golangci-lint-action@' 'Golangci/Golangci-Lint-Action@')
+$(sub .github/workflows/ci.yml 'version: v2.13.2' 'version: v2.14.0')"
+runck casefold '{"times": {}}'
+CASE="GitHub folds case in action names: Golangci/Golangci-Lint-Action still counts as the installer action, so its version input is measured"
+check test "$rc" -eq 1; check grep -qF "tool:golangci-lint@v2.14.0" "$work/casefold.out"
+
+# --- an action's age from its release: every tag at the commit is tried, and the commit must already have existed when the release was published --------------------------
+cat >"$work/stubfs/ghmap" <<'STUB'
+#!/usr/bin/env python3
+# a gh stub for the offline tests: GH_MAP is a JSON file {api path: value}; --jq supports .field, .a.b and .[]
+import json, os, sys
+a = sys.argv[1:]
+if a[0] != "api":
+    sys.exit(1)
+jq = a[a.index("--jq") + 1] if "--jq" in a else None
+path = [x for x in a[1:] if not x.startswith("-") and x != jq][0]
+m = json.load(open(os.environ["GH_MAP"]))
+if path not in m:
+    sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
+v = m[path]
+if isinstance(v, dict) and "__err" in v:
+    sys.stderr.write(v["__err"] + "\n"); sys.exit(1)
+if jq == ".[]":
+    for x in v: print(json.dumps(x))
+elif jq and jq.startswith("."):
+    for k in jq[1:].split("."):
+        v = v[k]
+    print(v if isinstance(v, str) else json.dumps(v))
+else:
+    print(json.dumps(v))
+STUB
+chmod +x "$work/stubfs/ghmap"; cp "$work/stubfs/ghmap" "$work/stubfs/gh2"
+liveproof() { # $1 = commit date of the pinned commit
+  python3 - "$work/map.json" "$1" "$SHA1" <<'PY'
+import json, sys
+m = {"repos/o/act/git/matching-refs/tags?per_page=100": [{"ref": "refs/tags/v4", "object": {"type": "commit", "sha": sys.argv[3]}}, {"ref": "refs/tags/v4.1.0", "object": {"type": "commit", "sha": sys.argv[3]}}],
+     "repos/o/act/releases/tags/v4.1.0": {"published_at": "2026-09-01T00:00:00Z"},
+     "repos/o/act/commits/" + sys.argv[3]: {"commit": {"committer": {"date": sys.argv[2]}}}}
+json.dump(m, open(sys.argv[1], "w"))
+PY
+  ( cd "$work" && env -u GITHUB_REPOSITORY GH_MAP="$work/map.json" PATH="$work/stubfs:$PATH" python3 - "$chk" "$SHA1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+ac._gh_api.__globals__["subprocess"]  # real module
+import subprocess
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = ["gh2", *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+print(ac.live_proofs(ac.inv.Item("action", "o/act", sys.argv[2], ""), "."))
+PY
+) 2>&1 | tail -1; }
+CASE="live action proof: v4 has no release but v4.1.0 does, and the commit is older than the release: github-release proof from the SECOND tag"
+out=$(liveproof 2026-08-01T00:00:00Z); case "$out" in *github-release*) ok "$CASE";; *) bad "$CASE";; esac
+CASE="live action proof: a tag redirected to a commit NEWER than the release it carries (commit date after the publish time) gives no proof"
+out=$(liveproof 2026-09-30T00:00:00Z); case "$out" in *github-release*) bad "$CASE";; *) ok "$CASE";; esac
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
