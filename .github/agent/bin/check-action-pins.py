@@ -1184,6 +1184,11 @@ def _downloaded_commands(script):
             continue
         base = _base(words[-1])
         if base in ("curl", "wget", "aria2c"):
+            for tgt in _redirect_targets(chunk):                 # curl URL > /tmp/tool (r31, B4)
+                tgt = tgt.strip("\"'")
+                downloads.add(tgt)
+                if re.fullmatch(r"(?:/usr/local/s?bin|/usr/s?bin|/s?bin|/opt/[\w.-]+/bin|\$\{?HOME\}?/\.local/bin|~/\.local/bin|\$\{?HOME\}?/bin)/[\w.-]+", tgt):
+                    names.add(_base(tgt))
             vch = "O" if base == "wget" else "o"          # the short option that names the output file (curl -o, wget -O, aria2c -o)
             for j, a in enumerate(toks):
                 dest = None
@@ -1288,6 +1293,10 @@ def _build(args):
         a = args[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument (`- < Dockerfile`)
             i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
+            continue
+        if re.search(r"\$\{?[A-Za-z_]\w*\[[@*]\]", a):             # "${OPTS[@]}": words this check cannot see (r31, B1)
+            unknown = unknown or a
+            i += 1
             continue
         if a == "--" or a == "-" or not a.startswith("-"):
             pos.append(a)
@@ -1522,6 +1531,8 @@ def script_images(script):
             for val in vals:
                 if SUBST in val:
                     ev.append(("finding", f"`{cmd}` takes its image from a command substitution ({val!r}); it cannot be checked"))
+                elif _mixed_unpinned(val):
+                    ev.append(("finding", f"`{cmd}` is given {val!r}, which mixes a variable with a literal name and holds no digest; pin it by digest"))
                 elif not (_variable(val) or DIGEST_REF.search(val)):
                     ev.append(("finding", f"`{cmd}` is given an image not pinned by digest: {val!r}"))
                 elif _variable(val) and _var_unpinned_literal(val, _mask_shell(script)[0]) is not None:
@@ -1690,7 +1701,7 @@ def script_images(script):
                 continue
             if pos and pos[0].startswith("docker://"):
                 ev.append(("fetch", "skopeo " + args[0], pos[0][len("docker://"):]))   # a registry read (r3, C10)
-            elif pos and SUBST in pos[0]:                         # a substituted source could be docker://…
+            elif pos and (SUBST in pos[0] or re.fullmatch(r'"?\$\{?[A-Za-z_]\w*\}?"?', pos[0])):  # a substituted or variable source could be docker://… (a literal assignment is read: r31 B2)
                 ev.append(("fetch", "skopeo " + args[0], pos[0]))
             # a copy into the daemon (docker-daemon:NAME) registers nothing: no name a job made is trusted (r23); an archive copied in
             # (oci-archive:, dir:, docker-archive:) is NOT the job's own bytes either (Sonnet #164 r14, NEW-22)

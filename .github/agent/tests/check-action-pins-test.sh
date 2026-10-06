@@ -2350,5 +2350,21 @@ $(co "          ref: main")
 case_ r28-b2-kubectl-set-flag-image-bad bad "$(rb 'kubectl set -n production image deployment/web web=nginx:latest')"
 case_ r28-b2-kubectl-set-flag-image-digest-ok ok "$(rb 'kubectl set -n production image deployment/web web=nginx@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 
+# --- final verification (Codex r31 B1-B4): the same classes, one more plain spelling each
+case_ r31-b1-build-options-in-an-array-bad bad "$(rb 'BUILD_OPTS=(-f pin-probe/Unpinned)
+          docker build "${BUILD_OPTS[@]}" pin-probe')" "mkdir -p pin-probe; printf 'FROM scratch\\n' > pin-probe/Dockerfile; printf 'FROM alpine:latest\\n' > pin-probe/Unpinned"
+case_ r31-b2-skopeo-source-variable-literal-bad bad "$(rb 'SRC=docker://alpine:latest
+          skopeo copy "$SRC" docker-archive:/tmp/probe.tar')"
+case_ r31-b2-skopeo-source-variable-digest-ok ok "$(rb 'SRC=docker://alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          skopeo copy "$SRC" docker-archive:/tmp/probe.tar')"
+case_ r31-b3-kubectl-mixed-tag-bad bad "$(rb 'TAG=latest
+          kubectl run probe --image="alpine:$TAG" --restart=Never')"
+case_ r31-b4-curl-redirected-then-installed-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool > /tmp/tool
+          sudo install -m 0755 /tmp/tool /usr/local/bin/tool
+          tool --version')"
+case_ r31-b4-curl-redirected-into-a-path-directory-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool > /usr/local/bin/tool
+          chmod +x /usr/local/bin/tool
+          tool --version')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
