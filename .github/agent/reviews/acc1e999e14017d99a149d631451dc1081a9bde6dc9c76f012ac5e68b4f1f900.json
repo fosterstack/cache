@@ -1,0 +1,73 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "acc1e999e14017d99a149d631451dc1081a9bde6dc9c76f012ac5e68b4f1f900",
+ "change": "Auditor labels (advisor 0168; the first live auditor run, 37346474727, lost its owner report because `gh issue create --label owner-decision` fails when the label does not exist): every place that creates a labelled tracking or owner issue first creates its labels, tolerating 'already exists' and never forcing (policy.label_create_cmd; the panel's two issue creates, auditor-run.py's two owner-issue functions, and the rescan workflow's bash and github-script creators). Serves REQ-SCAN-005-AC1 and REQ-SCAN-009-AC5; test first (.github/agent/tests/auditor-labels-test.sh, 22 cases executing every creator against stateful fakes).",
+ "reviewed_commit": "a3f65fc",
+ "closed_commit": "a3f65fc",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "r1 (88eaf9d)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "6d62570d8b6bafc88030bf3c92b49254e2a7ebd22c0a147b64b2148919fe13d2"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "225afddbcd3268d5adfc885676e5c0a2cbd628d5d203594ef98309fb61f870e9"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 1 round 2 + row-78 adversarial pin pass (550e67a)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "04d8a86b54a993ce0835fca57a73696e6ee8039119c46f59bfe7181bd6e7c2ab"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "a690f4f27d6772e19adc13c03d61bf195071e9c63aa3539035a0277f20591c0c"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "closing verification (a3f65fc)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "6ed8c26bf745ce54ae7139aa4a5b438dde26d0ce602f7fdd4dcfa30dcb6f3985"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "71945464b92f617ecf880e9ea63bdfdcd0ee4ac2bcd64771e03a91f6e263f8d7"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "owner_decision": "none: codex reviewer rules (owner Oct 2) and the Oct 3 row-78 adversarial pass: both reviewers at zero blockers on the final verification",
+ "evidence_location": "private audit tree: audits/2026-10-05/auditor-labels/{r1,r2,r3}/{codex,sonnet}/review.md",
+ "residuals_fixed_after_the_cap": [],
+ "residuals": [
+  "Round 1 blockers (both reviewers, fixed in 550e67a): main-candidate-rescan.yml's tracking-issue bash step had no label creation, and the tests were text checks; the tests now execute every creator against stateful fakes. Round 2 Codex blocker (fixed in a3f65fc): a FOURTH creator, the rescan's github-script step (github.rest.issues.create with labels), had no label creation; now covered and executed in node.",
+  "Sonnet r3 R1 (non-blocking): the panel's label calls carry the issues token env (env=ienv) but the panel's fake run does not assert it (auditor-run.py's tests do); removing env=ienv would still pass the panel tests",
+  "Sonnet r3 R2 / Codex r2: the root cause of a FAILED label create (403, network) is discarded (check=False, an ignored subprocess result, 2>/dev/null || true, a JS catch); the original issue-create error still surfaces, so no report is lost, but the label failure's own message is not logged",
+  "Codex r3 R2 (non-blocking): the owner-issue subprocess fake ignores check=; production code is correct as written and passes",
+  "Sonnet r3 R3: the label values live in three places (policy.LABELS and the rescan workflow's bash and JS steps), pinned equal by a test",
+  "Codex r3 R1 (row-78 pass, informational): main's current pin checker still accepts a plain `run: docker run --rm alpine:latest true` (a documented exclusion that PR #164 closes); this PR adds no action, container or image reference and every action in it is a commit digest (26 files, 143 pinned actions, 0 findings)",
+  "Codex r1/r2/r3 (environment limitation): the read-only review sandbox denies temp-file creation, so the shell suites' exact pass counts were not re-run by Codex; re-verified directly in this session (auditor-labels 22/22, auditor-matrix 226/226, panel-wiring 63/63, check-action-pins 0 findings) and by Sonnet"
+ ]
+}

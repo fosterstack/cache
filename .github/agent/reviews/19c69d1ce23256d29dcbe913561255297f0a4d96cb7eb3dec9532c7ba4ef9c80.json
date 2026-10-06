@@ -1,0 +1,172 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "19c69d1ce23256d29dcbe913561255297f0a4d96cb7eb3dec9532c7ba4ef9c80",
+ "change": "auditor panel delivery rebuilds on the current main every run and carries the open PR's own additions forward (state-source authenticated by the reserved-branch guard, head-bound arming, serialised runs); superseded daily suppression PRs closed (advisor 0186, 0187; REQ-AUD-17) -- PR #184",
+ "reviewed_commit": "4808ee9ca4045da6b19f4602a8dfc1259becf7f8",
+ "closed_commit": "4808ee9ca4045da6b19f4602a8dfc1259becf7f8",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "step 8 round 1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "8165a9026c9596daba9a121df790510c32a43553dd98bc6762138f84ac97a522"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 1 round 2 (fix)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "b017f5b32c2616db07082d6dae609b336b811f94dc774fbb3f1a85cc745da91a"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "phase 1 round 3 (fix)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "d66733d2aacc5e8e8475f626d682b97ff906e9a198d737a0989da12b08879000"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "be3408764936b52bbab0c1a502772ba20901a4bc9e7d5612d057c10bd17b460a"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "phase 1 round 4 (fix)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "9bfc31cc703eb1119a68c2ca0905bbf9415d126cf7010b8e2751be25fb7e3067"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "332918f884cad1b91efd97b6426be6f825c63bc63f3eb5ad6aba3097746573ff"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "phase 1 round 5 -> phase 2 R1 (split: Sonnet green)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "f6969b82f6c3a34af37eb35923524474ddbb6c657a1a08dcadcc78636b7f251c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "4748093b8d5aef10b3215fe1634f8f0945fa22035ee735e6ea5d9e97cc5d93aa"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "label": "phase 2 R2 (independent re-review)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "04ba87193cebdd41b125c7eb6ca715fb066a319cab557423540e9f0126a2946f"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "c57ec5fc811f5bccee81036e3a7886bdc71c97c7849de3260d0536809da64c72"
+    }
+   }
+  },
+  {
+   "round": 7,
+   "label": "phase 2 R3 (consultation)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "84b69ecab3a048b48ad8691809ed7aac1d73cab409a2a89998cc0df4265a9f73"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "c609fc1be2589cd1118e75883eb675aece377fddc45689069526af1f3f421610"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "label": "phase 2 R4 (debate): both green",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "98c2786135b171f50eab64b95a65e71691a6117a9ca5498a550b0101dc1bbbe4"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "43ec5e45807c5fd86b5aa17720b2ac70d62aa6b6ce497b61ec0bd0879fc10e29"
+    }
+   }
+  },
+  {
+   "round": 9,
+   "label": "row 78 adversarial pass (both vendors, independent): zero blockers",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ac065ed03554749faee36f41c315fce0eb4463875fcfe4b40a2caec6428223ae"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "a8d6c9076877c37e1108b6c824c04944e3d77bd88628900baf5c01715d16ab18"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "label": "verify the one fix made after round 9 (the labels test harness): both zero",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "16863207a36d00b1fd6690b5e1e9c15f387d5272f2ce48f19fbb2b7a72253cbd"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "bc4a0140be7d005e211a1b0b116aa944f4d271060e0d764e7a722d6459622db4"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "--force without a lease on the App's own branch (rebuilt by design); a run that changes nothing leaves an old PR as it is",
+  "cleanup failures print a note and never fail the delivery; the cleanup identifies a Bot-authored non-draft same-repo PR on an older daily branch, not the App specifically",
+  "shallow history is deepened to 1000 commits; no shared history within that fails loudly",
+  "the guard's success is identified by check name only (a forged same-named check from another Checks writer would be accepted); the preventive control is the ruleset restricting auditor/* to the App, and the allowlist plus automerge_allowed still bound what such a push could carry",
+  "head verification and the arming are separate calls (gh pr merge --match-head-commit would close the window); the concurrency group serialises this workflow's own runs",
+  "Codex could not execute the unit suite in its read-only sandbox (it read the tests in full); the suite and the 100% auditor coverage gate pass locally and in CI",
+  "row 78: no action reference was added or changed; every uses: in auditor.yml stays a commit digest and check-action-pins reports 0 findings"
+ ]
+}

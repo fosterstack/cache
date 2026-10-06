@@ -180,6 +180,7 @@ def _emit_owner_issue(title, body, dry, would, cves=(), target=None):
             num = found[0]["number"]
             c = subprocess.run(["gh", "issue", "comment", str(num), "--body", body], capture_output=True, text=True, env=ienv)
             return (c.returncode == 0), num
+        subprocess.run(policy.label_create_cmd(policy.OWNER_LABEL), capture_output=True, text=True, env=ienv)  # a missing label would lose the issue; "already exists" is fine
         c = subprocess.run(["gh", "issue", "create", "--title", title, "--label", policy.OWNER_LABEL,
                             "--assignee", policy.OWNER_LOGIN, "--body", body], capture_output=True, text=True, env=ienv)
         if c.returncode != 0:
@@ -219,6 +220,32 @@ def _automerge_allowed(paths):
     the auditor delivers (VEX, ignores, inventory, proposals, knowledge) never include the prompt
     file, so this both permits records and hard-guards the instructions."""
     return _automerge_on() and not any((p or "").startswith(_PROMPT_PATH) for p in (paths or []))
+
+
+_DAILY_BRANCH = re.compile(r"^auditor/\d{4}-\d{2}-\d{2}-[0-9a-f]{4,40}$")
+
+
+def _close_superseded(branch, url, ws):
+    """Each day's suppression PR is a fresh branch off main (auditor/<date>-<sha>); the day before's, if still open, is behind main and will never
+    merge under strict checks, so it is closed with a pointer to today's (advisor 0187). Only older daily branches: never today's, auditor/panel or
+    a bump branch. Best effort: a failure here is reported and never fails the delivery."""
+    try:
+        # only PRs the App itself opened from a branch of THIS repository and that are not drafts (a draft waits for the owner; a fork's or a human's PR is never ours to close)
+        q = subprocess.run(["gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100", "--paginate", "--jq",
+                            '.[] | select(.head.repo.fork == false and .base.ref == "main" and .draft == false and .user.type == "Bot") | "\\(.number) \\(.head.ref)"'],
+                           cwd=ws, capture_output=True, text=True)
+        if q.returncode != 0:
+            print("note: could not list open PRs to close superseded suppression PRs")
+            return
+        for line in (q.stdout or "").splitlines():
+            num, _, ref = line.strip().partition(" ")
+            if num.isdigit() and ref != branch and _DAILY_BRANCH.match(ref) and ref[len("auditor/"):len("auditor/") + 10] < branch[len("auditor/"):len("auditor/") + 10]:
+                r = subprocess.run(["gh", "pr", "close", num, "--comment", "Superseded by %s (a fresh branch off the current main; this one is behind main and cannot merge)." % url],
+                                   cwd=ws, capture_output=True, text=True)
+                if r.returncode != 0:
+                    print("note: could not close superseded PR #%s" % num)
+    except Exception as e:   # never fails the delivery
+        print("note: superseded-PR cleanup skipped: %s" % type(e).__name__)
 
 
 def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
@@ -319,11 +346,12 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
     # it (no duplicate, no false failure) instead of a second `gh pr create`.
     def _existing_pr():
-        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
-                            "--jq", ".[0].url // \"\""], cwd=ws, capture_output=True, text=True)
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
+                            "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
         return (q.stdout or "").strip() if q.returncode == 0 else ""
     ex = _existing_pr()
     if ex:
+        _close_superseded(branch, ex, ws)
         if automerge:
             _arm_automerge(ex, ws)
         return ex, None
@@ -335,6 +363,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         if "already exists" in (r.stderr or "").lower():   # race: reuse the existing one
             ex = _existing_pr()
             if ex:
+                _close_superseded(branch, ex, ws)
                 if automerge:
                     _arm_automerge(ex, ws)
                 return ex, None
@@ -342,6 +371,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     url = r.stdout.strip()
     # AC3: enable auto-merge (squash). The merge still waits on all required checks + the main
     # rulesets — the App has no bypass — so this arms the merge, it does not force it.
+    if url:
+        _close_superseded(branch, url, ws)
     if automerge and url:
         _arm_automerge(url, ws)
     return url, None
@@ -511,8 +542,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
             return None, ("git push: " + (r.stderr or "").strip()), "error"
 
     def _existing():
-        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url",
-                            "--jq", ".[0].url // \"\""], cwd=ws, capture_output=True, text=True)
+        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
+                            "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
         return (q.stdout or "").strip() if q.returncode == 0 else ""
     def _arm(u):
         if automerge and u:
@@ -2198,6 +2229,7 @@ def _standing_issue(needs, dry, would, cves=()):
             ro = _sh("reopen", n); c = _sh("comment", n, "--body", body)
             ok = ro.returncode == 0 and c.returncode == 0
             return ok, ("reopened:%s" % n if ok else "standing reopen/comment failed")
+        subprocess.run(policy.label_create_cmd(policy.OWNER_LABEL), capture_output=True, text=True, env=ienv)  # create the label first (not forced)
         cr = _sh("create", "--title", title, "--label", policy.OWNER_LABEL, "--assignee", policy.OWNER_LOGIN, "--body", body)
         return (cr.returncode == 0), ("created" if cr.returncode == 0 else "standing create failed: %s" % _mask((cr.stderr or "").strip()))
     ok = True

@@ -918,7 +918,8 @@ def automerge_allowed(changed, env=os.environ):
     """REQ-AUD-17 AC3/AC4, as the auditor applies it: only when the owner turned auto-merge on, and never for a day
     that proposes a scanner-profile entry (rule 7: profile entries are reviewed like any other change)."""
     on = (env.get("AUDITOR_AUTOMERGE") or "").strip().lower() in ("on", "true", "1", "yes")
-    return on and PROFILES not in changed
+    # only the panel's own records may auto-merge: its state and its VEX statements. A profile entry, a prompt, a workflow or any other path waits for the owner.
+    return on and bool(changed) and all(c in (STATE, VEX) for c in changed)   # an empty change set arms nothing
 
 
 def _load_json(path, default=None):
@@ -1086,7 +1087,7 @@ def apply_files(root, st, day, today):
                                     action_statement="Under investigation: " + v["impact_statement"])
                         stmt.pop("justification", None)
                         stmt.pop("impact_statement", None)
-        doc["timestamp"], doc["version"] = ts, int(doc.get("version", 1)) + 1
+        doc["timestamp"], doc["version"] = _later(doc.get("timestamp"), ts), int(doc.get("version", 1)) + 1   # monotonic: a newer timestamp already in the file stays
         with open(vpath, "w") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")
@@ -1115,6 +1116,171 @@ def _sh(cmd, plan, real, run=subprocess.run, check=True, **kw):
     return ""
 
 
+GUARD_CHECK = "only-the-app-pushes-auditor-lane"
+
+
+def _require_app_tip(repo, tip, plan, real, run):
+    """Only what the App itself pushed may be read or carried: the reserved-branch guard (a check on every push to auditor/*) must have PASSED on this commit."""
+    # read with the JOB token (checks: read), never the delivery App's: the App must not hold Checks (it publishes the review gate's verdict elsewhere)
+    token = os.environ.get("AUDITOR_CHECKS_TOKEN") or os.environ.get("GH_TOKEN") or ""
+    verdict = _sh(["gh", "api", "repos/{owner}/{repo}/commits/%s/check-runs?check_name=%s" % (tip, GUARD_CHECK), "--jq",
+                   '.check_runs | map(.conclusion) | join(",")'], plan, real, run, env=dict(os.environ, GH_TOKEN=token)).strip()
+    if verdict != "success":
+        raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it may hold a push that was not the App's; refusing to use it"
+                           % (tip[:12], verdict))
+
+
+def cmd_state_source(a, run=subprocess.run):
+    """Yesterday's judgments for the judge: the open panel PR's branch if there is one (same repository, and its tip PASSED the reserved-branch guard), else main's
+    file. The exact commit read is recorded, and the delivery refuses to carry anything from a different tip (a human push between judgment and delivery)."""
+    plan, branch = [], "auditor/panel"
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository,baseRefName", "--jq",
+                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, True, run).strip().split("\n")[0].strip()
+    text, tip = None, ""
+    if existing:
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, True, run)
+        tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, True, run).strip()
+        _require_app_tip(a.repo, tip, plan, True, run)
+        if _sh(["git", "-C", a.repo, "ls-tree", "FETCH_HEAD", "--", STATE], plan, True, run).strip():
+            text = _sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run)
+        # main's own state must not have moved since the PR's base (someone merged a newer state): continuing from the PR's older one would publish a regression
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, True, run, check=False)
+        mb = _sh(["git", "-C", a.repo, "merge-base", tip, "HEAD"], plan, True, run).strip()
+        main_file = os.path.join(a.repo, STATE)
+        main_text = open(main_file).read() if os.path.exists(main_file) else ""
+        base_text = _sh(["git", "-C", a.repo, "show", "%s:%s" % (mb, STATE)], plan, True, run) if mb and _sh(["git", "-C", a.repo, "ls-tree", mb, "--", STATE], plan, True, run).strip() else ""
+        if mb and main_text != base_text and main_text != (text or ""):
+            raise RuntimeError("auditor-panel: main's panel state changed since the open PR's base, and the PR's older state would overwrite it; close the PR so the next run starts from main")
+    where = "the open panel PR #%s" % existing
+    if text is None:
+        main_file = os.path.join(a.repo, STATE)
+        text = open(main_file).read() if os.path.exists(main_file) else None
+        where = "main" if text is not None else "none (the first day)"
+    if os.path.exists(a.state):
+        os.remove(a.state)
+    if text is not None:
+        with open(a.state, "w") as fh:
+            fh.write(text)
+    with open(a.sha_out, "w") as fh:
+        fh.write(tip)
+    print("auditor-panel: state from %s" % where)
+    return 0
+
+
+def _instant(ts):
+    """An ISO timestamp as an aware datetime (offsets honoured), or None."""
+    try:
+        d = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _later(a, b):
+    """The later of two timestamps by INSTANT (main's 09:00-04:00 is 13:00Z); on a string that is no instant, the first."""
+    ia, ib = _instant(a), _instant(b)
+    if ia is None or ib is None:
+        return a if ia is not None or ib is None else b
+    return a if ia >= ib else b
+
+
+def _conflict(path, why):
+    return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); refusing to pick a winner" % (path, why))
+
+
+def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
+    """Carry the open PR's OWN additions onto the freshly checked-out main: a three-way merge by content, not a copy of the PR's files (a copy would
+    silently revert whatever main merged since). The state file is not carried: it is rewritten from the day's judgment. Returns the paths changed."""
+    def show(r, path):
+        if real and not _sh(["git", "-C", repo, "ls-tree", r, "--", path], plan, real, run).strip():
+            return ""                                   # PROVEN absent (the tree was read and does not list it); any read failure raised
+        return _sh(["git", "-C", repo, "show", "%s:%s" % (r, path)], plan, real, run)
+
+    def read(path):
+        full = os.path.join(repo, path)
+        return open(full).read() if os.path.exists(full) else ""
+
+    def write(path, text):
+        full = os.path.join(repo, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w") as fh:
+            fh.write(text)
+
+    for path in sorted(set(pr_files)):   # EVERY path first: a deletion or an identical copy of a foreign file is as foreign as an edit
+        if path not in (STATE, VEX, PROFILES):
+            raise RuntimeError("auditor-panel: the open PR's branch holds %s, which the panel never writes; refusing to carry it (a human pushed to the App's branch?)" % path)
+    carried = []
+    for path in sorted(set(pr_files)):
+        if path == STATE:
+            continue
+        pr_txt, base_txt = show(ref, path), show(base_ref, path)
+        if not pr_txt and base_txt:
+            raise _conflict(path, "the whole file (the PR deleted it)")   # a deletion is never silently dropped
+        if not pr_txt or pr_txt == base_txt:
+            continue                                   # absent on both sides, or untouched by the PR
+        cur_txt = read(path)
+        if cur_txt == pr_txt:
+            continue                                   # main already has exactly this
+        if path == VEX:
+            pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"statements": []}'), json.loads(cur_txt)
+            # a statement is known by its @id; the hand-written ones in the real file have none, so they are known by their whole content
+            # (never all collapsed onto one key: that once overwrote a published statement with another CVE's)
+            ident = lambda x: x.get("@id") or json.dumps(x, sort_keys=True)
+            base_by = {ident(x): x for x in base_doc.get("statements", [])}
+            cur_by = {ident(x): x for x in cur_doc.get("statements", [])}
+            touched = False
+            for stmt in pr_doc.get("statements", []):
+                sid = ident(stmt)
+                if sid not in base_by:                 # a statement the PR ADDED
+                    if sid not in cur_by:
+                        cur_doc["statements"].append(stmt)
+                        cur_by[sid] = stmt
+                        touched = True
+                    elif cur_by[sid] != stmt:
+                        raise _conflict(path, sid[:80])
+                elif stmt != base_by[sid]:             # a statement the PR CHANGED (it has an @id: a content-keyed statement cannot "change")
+                    if cur_by.get(sid) == base_by[sid]:
+                        cur_doc["statements"][[ident(x) for x in cur_doc["statements"]].index(sid)] = stmt
+                        cur_by[sid] = stmt
+                        touched = True
+                    elif cur_by.get(sid) != stmt:
+                        raise _conflict(path, sid[:80])
+            if touched:
+                cur_doc["timestamp"] = _later(cur_doc.get("timestamp"), pr_doc.get("timestamp"))   # never regress main's (by instant, not spelling)
+                cur_doc["version"] = int(cur_doc.get("version", 1)) + 1
+                write(path, json.dumps(cur_doc, indent=2) + "\n")
+                carried.append(path)
+        elif path == PROFILES:
+            pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"entries": []}'), json.loads(cur_txt)
+            key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
+            for doc_ in (pr_doc, base_doc, cur_doc):
+                ks = [key(e) for e in doc_["entries"]]
+                if len(ks) != len(set(ks)):
+                    raise _conflict(path, "entries that share a scanner/kind/package (ambiguous: refusing to guess which one changed)")
+            cur_by = {key(e): e for e in cur_doc["entries"]}
+            base_by = {key(e): e for e in base_doc["entries"]}
+            touched = False
+            for e in pr_doc["entries"]:
+                k = key(e)
+                if k not in base_by:                   # an entry the PR ADDED
+                    if k not in cur_by:
+                        cur_doc["entries"].append(e); cur_by[k] = e; touched = True
+                    elif cur_by[k] != e:
+                        raise _conflict(path, "the entry for %s" % (k,))      # main holds a DIFFERENT entry for the same scanner/kind/package
+                elif e != base_by[k]:                  # an entry the PR CHANGED
+                    if cur_by.get(k) == base_by[k]:
+                        cur_doc["entries"][[key(x) for x in cur_doc["entries"]].index(k)] = e; cur_by[k] = e; touched = True
+                    elif cur_by.get(k) != e:
+                        raise _conflict(path, "the entry for %s" % (k,))
+            for k in base_by:                          # an entry the PR REMOVED: not silently dropped either
+                if k not in {key(x) for x in pr_doc["entries"]}:
+                    raise _conflict(path, "the removed entry for %s" % (k,))
+            if touched:
+                write(path, json.dumps(cur_doc, indent=2) + "\n")
+                carried.append(path)
+    return carried
+
+
 def cmd_deliver(a, run=subprocess.run):
     """Rule 0: the day's changes reach main only through a pull request from the auditor lane's branch; the tracking
     issue (rule 5) and the owner report (rules 8, 9, 14) are issues. Real git/gh only with AUDITOR_ALLOW_REAL_GH=1
@@ -1126,16 +1292,41 @@ def cmd_deliver(a, run=subprocess.run):
         return 2
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
     plan, branch = [], "auditor/panel"
-    # the base: the open panel PR's branch (yesterday's unmerged proposals stay), else the main commit this run is on
-    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--jq", ".[0].number"],
-                   plan, real, run).strip()
+    # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
+    # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
+    base = os.environ.get("GITHUB_SHA") or "HEAD"
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository,baseRefName", "--jq",
+                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, real, run).strip().split("\n")[0].strip()   # a fork's PR from a branch of this name is not ours
+    pr_files, merge_base = [], ""
     if existing:
-        _sh(["git", "-C", a.repo, "fetch", "origin", branch], plan, real, run)
-        base = "FETCH_HEAD"
-    else:
-        base = os.environ.get("GITHUB_SHA") or "HEAD"
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, real, run, check=False)
+        _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, real, run)
+        # no shared history within the fetched depth fails the command (and so the run): never a rebuild without knowing what the PR itself added
+        merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
+        if merge_base:  # the PR's own files come from git itself, not from what a listing says
+            pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
+    if real:
+        # the judgment read ONE tip of the open PR's branch (or none): state-source records it, and the delivery must find exactly that, PR or no PR
+        if not getattr(a, "state_source", None) or not os.path.exists(a.state_source):
+            raise RuntimeError("auditor-panel: a real delivery needs --state-source (what the judgment read); refusing to publish a judgment about an unknown state")
+        recorded = open(a.state_source).read().strip()
+        tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip() if existing else ""
+        if recorded != tip:
+            raise RuntimeError("auditor-panel: the open PR's branch is %s now but the judgment read %s (it moved, was closed or appeared): refusing to publish a judgment about a different state"
+                               % (tip[:12] or "absent", recorded[:12] or "absent"))
+    if existing and real:
+        if pr_files:
+            _require_app_tip(a.repo, tip, plan, real, run)
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
-    changed = apply_files(a.repo, st, day, a.today)
+    carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
+    changed = list(carried)
+    for path in apply_files(a.repo, st, day, a.today):
+        if path not in changed:
+            changed.append(path)
+    if changed and existing:   # disarm BEFORE the head is replaced: an armed PR must never carry new content that auto-merge was not armed for
+        armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"], plan, real, run).strip()
+        if armed == "true":
+            _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)
     if changed:
         _sh(["git", "-C", a.repo, "add", "--"] + changed, plan, real, run)
         _sh(["git", "-C", a.repo, "commit", "-m", "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today], plan, real, run)
@@ -1151,9 +1342,18 @@ def cmd_deliver(a, run=subprocess.run):
         pr_paths = set(changed)
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
-        if automerge_allowed(sorted(pr_paths)):
-            _sh(["gh", "pr", "ready", branch], plan, real, run)
-            _sh(["gh", "pr", "merge", "--auto", "--squash", branch], plan, real, run)
+        allowed = automerge_allowed(sorted(pr_paths))
+        if allowed and not changed:
+            pass                # nothing was delivered today: nothing is armed or disarmed on the strength of old content
+        elif allowed:           # only content THIS run delivered is armed
+            target = existing or branch
+            if changed and existing and real:   # arm only the head THIS run pushed: another run's later push must never inherit this run's arming
+                pushed = _sh(["git", "-C", a.repo, "rev-parse", "HEAD"], plan, real, run).strip()
+                now_head = _sh(["gh", "api", "repos/{owner}/{repo}/pulls/%s" % existing, "--jq", ".head.sha"], plan, real, run).strip()
+                if now_head != pushed:
+                    raise RuntimeError("auditor-panel: the PR's head is %s, not the %s this run pushed (another run replaced it): not arming auto-merge" % (now_head[:12], pushed[:12]))
+            _sh(["gh", "pr", "ready", target], plan, real, run)
+            _sh(["gh", "pr", "merge", "--auto", "--squash", target], plan, real, run)
         elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
             armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
                         plan, real, run).strip()
@@ -1166,6 +1366,8 @@ def cmd_deliver(a, run=subprocess.run):
         if n:                   # the rescan's tracking issue, when it is open
             _sh(["gh", "issue", "comment", n, "--body", day["issue"]], plan, real, run, env=ienv)
         else:                   # one the auditor opens carries the auditor's subject prefix (REQ-AUD-17 AC1)
+            for lab in ("daily-rescan", "security"):    # a missing label would lose the issue: create it first (not forced)
+                _sh(policy.label_create_cmd(lab), plan, real, run, check=False, env=ienv)
             _sh(["gh", "issue", "create", "--title", policy.subject(ISSUE_TITLE), "--label", "daily-rescan",
                  "--label", "security", "--body", day["issue"]], plan, real, run, env=ienv)
     if day["owner"]:
@@ -1175,6 +1377,7 @@ def cmd_deliver(a, run=subprocess.run):
         if n:
             _sh(["gh", "issue", "comment", n, "--body", body], plan, real, run, env=ienv)
         else:
+            _sh(policy.label_create_cmd(policy.OWNER_LABEL), plan, real, run, check=False, env=ienv)
             _sh(["gh", "issue", "create", "--title", OWNER_TITLE, "--label", policy.OWNER_LABEL,
                  "--assignee", policy.OWNER_LOGIN, "--body", body], plan, real, run, env=ienv)
     with open(os.path.join(a.out, "plan.json"), "w") as fh:
@@ -1217,7 +1420,7 @@ def cmd_probe(a, seats=None):
     return 0 if ok else 1
 
 
-def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
+def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe, state_source=cmd_state_source):
     ap = argparse.ArgumentParser(prog="auditor-panel")
     sub = ap.add_subparsers(dest="cmd", required=True)
     j = sub.add_parser("judge")
@@ -1230,7 +1433,12 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     j.add_argument("--seats", choices=("real", "none"), default="none")
     j.add_argument("--today", default=datetime.date.today().isoformat())
     j.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
+    ss = sub.add_parser("state-source")
+    ss.add_argument("--repo", default=".")
+    ss.add_argument("--state", required=True)
+    ss.add_argument("--sha-out", required=True)
     d = sub.add_parser("deliver")
+    d.add_argument("--state-source", help="the file state-source wrote: the PR tip the judgment read; the delivery refuses a different tip")
     d.add_argument("--out", required=True)
     d.add_argument("--repo", default=".")
     d.add_argument("--dry-run", action="store_true")
@@ -1240,7 +1448,7 @@ def main(argv=None, judge=cmd_judge, deliver=cmd_deliver, probe=cmd_probe):
     pr.add_argument("--seats", choices=("real", "none"), default="none")
     pr.add_argument("--token-budget", type=int, default=policy.TOKEN_BUDGET)
     a = ap.parse_args(argv)
-    return {"judge": judge, "deliver": deliver, "probe": probe}[a.cmd](a)
+    return {"judge": judge, "deliver": deliver, "probe": probe, "state-source": state_source}[a.cmd](a)
 
 
 if __name__ == "__main__":
