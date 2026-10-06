@@ -1513,9 +1513,10 @@ def script_images(script):
                     vals.append(a[2:].lstrip("="))          # k3d cluster create -i IMAGE (attached or =)
                 elif cmd == "k3d" and a == "-i" and j + 1 < len(args):
                     vals.append(args[j + 1])
-            si = next((j for j in range(len(args) - 1) if cmd == "kubectl" and args[j] == "set" and args[j + 1] == "image"), None)   # after any global option (-n NS, --context X)
-            if si is not None:
-                vals += [x.split("=", 1)[1] for x in args[si + 2:] if "=" in x and not x.startswith("-")]     # kubectl set image deploy/x c=IMAGE
+            si = next((j for j in range(len(args)) if cmd == "kubectl" and args[j] == "set"), None)
+            ii = next((j for j in range(si + 1, len(args)) if args[j] == "image"), None) if si is not None else None   # `set -n NS image`, `-n NS set image`
+            if ii is not None:
+                vals += [x.split("=", 1)[1] for x in args[ii + 1:] if "=" in x and not x.startswith("-")]     # kubectl set image deploy/x c=IMAGE
             if cmd == "kind" and any(x == "--config" or x.startswith("--config=") for x in args):
                 ev.append(("finding", "`kind` reads its node images from a config file this check does not read; pass --image with a digest"))
             for val in vals:
@@ -2328,6 +2329,12 @@ def _made_executable(script, path):
     return None
 
 
+def _cd_subshell_runs(text, path):
+    """True when a ( … ) subshell that changes directory also runs `path`: `(cd /tmp/x && python3 bin/t.py)` resolves the path under /tmp."""
+    flat = re.sub(r"\\\n", " ", text)
+    return any(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(g)) and path in g for g in re.findall(r"\$?\(([^()]*)\)", flat))
+
+
 def _cd_outside_subshell(text):
     """True when the text changes directory outside a ( … ) subshell: `(cd dist && sha256sum -c …)` leaves the shell where it was, a bare
     `cd /tmp` moves every later relative path (Codex #164 r27: a committed namesake must not excuse a script generated under /tmp)."""
@@ -2368,7 +2375,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
-            elif moved and not t[1].startswith(("/", "$")) and (_cd_outside_subshell(text) or not re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text))):
+            elif moved and not t[1].startswith(("/", "$")) and (_cd_outside_subshell(text) or _cd_subshell_runs(text, t[1])
+                                                               or not re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text))):
                 found.append("runs %s from a working directory this check cannot place; refused" % t[1])    # main's copy at a literal path, but after a cd
             continue
         if t[0] not in ("__script__", "__exec__"):
