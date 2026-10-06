@@ -17,7 +17,7 @@ from auditorlib import signed_commit
 PREFIXES = signed_commit.ALLOWED_PREFIXES
 
 
-def _refuse_path(root, path):
+def _refuse_path(path):
     """A reason this path may not be read from the working directory, else None. (Symlinks in any component are refused by read_changes.)"""
     parts = path.split("/")
     if path.startswith("/") or any(p in ("", ".", "..") for p in parts):
@@ -37,7 +37,7 @@ def main(argv=None, run=None, root=None):
     root = root or os.getcwd()
     try:
         for p in a.path:
-            why = _refuse_path(root, p)
+            why = _refuse_path(p)
             if why:
                 raise signed_commit.CommitError(why)
         oid = signed_commit.commit_via_api(a.repo, a.branch, a.base, a.message, signed_commit.read_changes(root, a.path),

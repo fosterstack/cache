@@ -314,21 +314,28 @@ jobs:
           base=$(git rev-parse HEAD)
           paths=(--path docs/quality/releases/CHANGELOG.md)
           [ ! -f docs/next-release-notes.md ] || paths+=(--path docs/next-release-notes.md)
-          python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
-            --message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}"
+          oid=$(python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
+            --message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}")
           # RESIDUALS (documented, not handled here): (1) moving the live branch is not atomic: a writer between the head re-read and the forced
-          # ref update can be overwritten (inherited from the signed-commit helper, #190; only the App writes patch-notes/*, one run per tag);
+          # ref update can be overwritten (inherited from the signed-commit helper, #190; one run per tag; the branch name is not a reserved lane, so this is a residual);
           # (2) a rerun after the notes were published and merged can prepend the same changelog entry again (no already-published detection).
-          # Re-runnable: exactly the open PR from this branch INTO main is reused (any other base, or more than one, is a refusal), kept by NUMBER.
-          count=$(gh pr list --head "$branch" --base main --state open --json number --jq length)
+          # Re-runnable, bound to what THIS job made: the PR is the open one from this branch INTO main, in THIS repository (a fork PR with the same
+          # branch name is ignored), exactly one, kept by NUMBER, and its head must be the commit the helper just made ($oid); auto-merge is enabled
+          # only for that head (--match-head-commit). Any other state is a refusal.
+          own='[.[] | select(.isCrossRepository == false)]'
+          count=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | length")
           [ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
           if [ "$count" -eq 0 ]; then
             gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
               --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
           fi
-          number=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+          number=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].number")
+          head=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].headRefOid")
           [[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
-          gh pr merge --auto --squash "$number"
+          [ "$head" = "$oid" ] || { echo "the open PR's head is not the commit this job made; refusing" >&2; exit 1; }
+          gh pr merge --auto --squash --match-head-commit "$oid" "$number"
+          # main's ruleset requires up-to-date branches: bring a PR that is behind main up to date (a failure, e.g. already current, is not an error)
+          gh pr update-branch "$number" || true
 
   admission:
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}

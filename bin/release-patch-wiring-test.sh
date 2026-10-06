@@ -196,8 +196,8 @@ if len(cstep) != 1 or cenv != {"GH_TOKEN": "${{ steps.app-token.outputs.token }}
 if crun.count("auditor-signed-commit.py") != 1 or crun.count("--prefix") != 1 or crun.count("--branch ") != 1 or crun.count('--base "$base"') != 1:
     bad.append("the notes PR step does not call auditor-signed-commit.py exactly once with one prefix, one branch, one base")
 # the script's directory is captured, not spelled: the layout rule (REQ-AUD-18 AC1) keeps files outside the auditor's tree from naming it
-_call = re.search(r'^( *)python3 (\S+)/auditor-signed-commit\.py --repo "\$GITHUB_REPOSITORY" --branch "\$branch" --base "\$base" '
-                  r'--prefix patch-notes/ \\\n +--message "Release notes for \$\{VERSION\}: [^"\n]*" "\$\{paths\[@\]\}"$', crun, re.M)
+_call = re.search(r'^( *)oid=\$\(python3 (\S+)/auditor-signed-commit\.py --repo "\$GITHUB_REPOSITORY" --branch "\$branch" --base "\$base" '
+                  r'--prefix patch-notes/ \\\n +--message "Release notes for \$\{VERSION\}: [^"\n]*" "\$\{paths\[@\]\}"\)$', crun, re.M)
 if not _call:
     bad.append("the signed-commit call is not the exact pinned call (repo, branch $branch, base $base, prefix patch-notes/, message, paths)")
 if _call and not (_call.group(2).startswith(".github/") and _call.group(2).endswith("/bin") and _call.group(2).count("/") == 2 and
@@ -224,17 +224,21 @@ branch="patch-notes/${VERSION}"
 base=$(git rev-parse HEAD)
 paths=(--path docs/quality/releases/CHANGELOG.md)
 [ ! -f docs/next-release-notes.md ] || paths+=(--path docs/next-release-notes.md)
-python3 @CLI@ --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
---message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}"
-count=$(gh pr list --head "$branch" --base main --state open --json number --jq length)
+oid=$(python3 @CLI@ --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
+--message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}")
+own='[.[] | select(.isCrossRepository == false)]'
+count=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | length")
 [ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
 if [ "$count" -eq 0 ]; then
 gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
 --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
 fi
-number=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+number=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].number")
+head=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].headRefOid")
 [[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
-gh pr merge --auto --squash "$number"
+[ "$head" = "$oid" ] || { echo "the open PR's head is not the commit this job made; refusing" >&2; exit 1; }
+gh pr merge --auto --squash --match-head-commit "$oid" "$number"
+gh pr update-branch "$number" || true
 """
 _got = [re.sub(r"python3 \.github/[a-z]+/bin/auditor-signed-commit\.py", "python3 @CLI@", " ".join(l.split()))
         for l in crun.splitlines() if l.strip()]
@@ -245,6 +249,29 @@ if _got != _EXPECTED.splitlines():
                % (_extra[:2], _lost[:2], not (_extra or _lost)))
 if len([st for st in psteps if st.get("run")]) != 1:
     bad.append("the notes PR job has a run step other than the reviewed one")
+# review of #191 round 3 (execution context): the whole job and its steps are pinned, not only the run text. A `shell:` (it runs BEFORE the run
+# body with the step's token), a working-directory, a job env (BASH_ENV, PATH, ENV), defaults.run, a container or service, continue-on-error, an
+# extra step key, or a workflow-level env / defaults would all change what the whitelisted lines mean. Action digests are checked separately.
+_JOB = {"needs": "decide", "if": "${{ needs.decide.outputs.tagged == 'true' }}", "runs-on": "ubuntu-latest", "environment": "agent",
+        "permissions": {"contents": "read"}}
+if {k: v for k, v in pn.items() if k != "steps"} != _JOB:
+    bad.append("the notes PR job is not exactly the reviewed job (keys, env, defaults, container, services, environment): %s" % sorted(pn))
+def _shape(st):
+    st = dict(st)
+    if "uses" in st:
+        st["uses"] = st["uses"].split("@")[0]
+    if "run" in st:
+        st["run"] = "<RUN>"
+    return st
+_STEPS = [{"uses": "actions/checkout", "with": {"ref": "main", "persist-credentials": "false"}},
+          {"name": "mint the auditor App's token (contents + pull requests on cache only)", "id": "app-token", "uses": "actions/create-github-app-token",
+           "with": dict(want, **{"permission-pull-requests": "write"})},
+          {"name": "the changelog-and-clear PR (auto-merge on green)", "env": {"GH_TOKEN": "${{ steps.app-token.outputs.token }}",
+                                                                              "VERSION": "${{ needs.decide.outputs.version }}"}, "run": "<RUN>"}]
+if [_shape(st) for st in psteps] != _STEPS:
+    bad.append("the notes PR job's steps are not exactly the reviewed ones (keys such as shell, working-directory, if, continue-on-error, env, uses)")
+if set(d) - {"name", "on", "permissions", "jobs"}:
+    bad.append("the workflow has top-level keys (env, defaults, concurrency ...) beyond the reviewed ones: %s" % sorted(d))
 for st in psteps:
     u = str(st.get("uses", ""))
     if u and not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", u):
@@ -374,15 +401,26 @@ mutrun bash-c-in-step          "$BASE" "bash -c 'x'; $BASE"
 mutrun printf-v-branch         "$BASE" "printf -v branch main; $BASE"
 mutrun read-branch             "$BASE" "read -r branch <<< main; $BASE"
 PRL='gh pr list --head "$branch" --base main'
-MRG='gh pr merge --auto --squash "$number"'
+MRG='gh pr merge --auto --squash --match-head-commit "$oid" "$number"'
 mutrun pr-list-no-base         "$PRL" 'gh pr list --head "$branch"'
 mutrun pr-list-other-base      "$PRL" 'gh pr list --head "$branch" --base release'
 mutrun pr-create-other-base    'gh pr create --base main' 'gh pr create --base release'
-mutrun pr-merge-by-branch      "$MRG" 'gh pr merge --auto --squash "$branch"'
-mutrun pr-merge-no-auto        "$MRG" 'gh pr merge --squash "$number"'
+mutrun pr-merge-by-branch      "$MRG" 'gh pr merge --auto --squash --match-head-commit "$oid" "$branch"'
+mutrun pr-merge-no-auto        "$MRG" 'gh pr merge --squash --match-head-commit "$oid" "$number"'
+mutrun pr-merge-no-match-head  "$MRG" 'gh pr merge --auto --squash "$number"'
+mutrun pr-merge-wrong-oid      "$MRG" 'gh pr merge --auto --squash --match-head-commit "$base" "$number"'
+mutrun pr-merge-head-var       "$MRG" 'gh pr merge --auto --squash --match-head-commit "$head" "$number"'
+mutrun pr-fork-allowed         '.isCrossRepository == false' '.isCrossRepository == true'
+mutrun pr-no-fork-filter       'select(.isCrossRepository == false)' 'select(true)'
+mutrun pr-head-check-dropped   '[ "$head" = "$oid" ] ||' 'true ||'
+mutrun pr-head-check-inverted  '[ "$head" = "$oid" ]' '[ "$head" != "$oid" ]'
+mutrun pr-oid-not-captured     'oid=$(python3' 'python3'
+mutrun update-branch-dropped   'gh pr update-branch "$number" || true' 'true'
+mutrun update-branch-fatal     'gh pr update-branch "$number" || true' 'gh pr update-branch "$number"'
+mutrun update-branch-by-branch 'gh pr update-branch "$number"' 'gh pr update-branch "$branch"'
 mutrun pr-count-unchecked      '[ "$count" -le 1 ] ||' 'true ||'
 mutrun pr-number-unchecked     '[[ "$number" =~ ^[0-9]+$ ]] ||' 'true ||'
-mutrun pr-second-element       "'.[0].number'" "'.[1].number'"
+mutrun pr-second-element       '.[0].number' '.[1].number'
 mutrun pr-always-create        '[ "$count" -eq 0 ]' 'true'
 mutrun pr-state-all            '--state open' '--state all'
 mutrun idx-branch              "$MRG" $'branch[0]="patch-notes/other"\n'"$MRG"
@@ -415,6 +453,32 @@ case_ notes-job-contents-write bad "$N['permissions']['contents'] = 'write'"
 case_ notes-action-unpinned   bad "[s.__setitem__('uses', s['uses'].split('@')[0] + '@v7') for s in $N['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ notes-extra-action-tag  bad "$N['steps'].append({'name': 'x', 'uses': 'actions/cache@v4'})"
 case_ notes-pr-not-from-branch bad "[s.__setitem__('run', s['run'].replace('--head \"\$branch\"', '--head x')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-shell          bad "[s.__setitem__('shell', 'bash -c \"gh auth setup-git; bash {0}\"') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-shell-plain    bad "[s.__setitem__('shell', 'bash') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-workdir        bad "[s.__setitem__('working-directory', 'docs') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-continue       bad "[s.__setitem__('continue-on-error', 'true') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-if             bad "[s.__setitem__('if', '\${{ always() }}') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-env-bashenv    bad "[s['env'].__setitem__('BASH_ENV', 'bin/prep.sh') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-env-path       bad "[s['env'].__setitem__('PATH', '/tmp/evil') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-step-timeout        bad "[s.__setitem__('timeout-minutes', '1') for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
+case_ ctx-job-env-bashenv     bad "$N['env'] = {'BASH_ENV': 'bin/prep.sh'}"
+case_ ctx-job-env-path        bad "$N['env'] = {'PATH': '/tmp/evil:\$PATH'}"
+case_ ctx-job-defaults-shell  bad "$N['defaults'] = {'run': {'shell': 'bash -c \"x; bash {0}\"'}}"
+case_ ctx-job-defaults-wd     bad "$N['defaults'] = {'run': {'working-directory': 'docs'}}"
+case_ ctx-job-container       bad "$N['container'] = 'alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667'"
+case_ ctx-job-services        bad "$N['services'] = {'x': {'image': 'alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667'}}"
+case_ ctx-job-continue        bad "$N['continue-on-error'] = 'true'"
+case_ ctx-job-environment     bad "$N['environment'] = 'release'"
+case_ ctx-job-no-environment  bad "$N.pop('environment')"
+case_ ctx-job-timeout         bad "$N['timeout-minutes'] = '1'"
+case_ ctx-job-runs-on         bad "$N['runs-on'] = 'self-hosted'"
+case_ ctx-job-needs           bad "$N['needs'] = ['decide', 'admission']"
+case_ ctx-step-added-action   bad "$N['steps'].insert(1, {'name': 'x', 'uses': 'actions/cache@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
+case_ ctx-step-added-run      bad "$N['steps'].insert(2, {'name': 'x', 'run': 'true'})"
+case_ ctx-step-reordered      bad "$N['steps'].reverse()"
+case_ ctx-checkout-persist    bad "[s['with'].__setitem__('persist-credentials', 'true') for s in $N['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ ctx-wf-env              bad "d['env'] = {'BASH_ENV': 'bin/prep.sh'}"
+case_ ctx-wf-defaults         bad "d['defaults'] = {'run': {'shell': 'bash -c \"x; bash {0}\"'}}"
 case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
 sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
 if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"

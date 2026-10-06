@@ -350,11 +350,23 @@ class ReaderBranches(unittest.TestCase):
         M._mask_shell("echo 'a\nb'", info)
         self.assertTrue(info["nl_in_quote"])
 
-    def test_outside_destinations(self):
-        self.assertFalse(M._outside("/home/runner/work/x", ""))
-        self.assertTrue(M._outside("$HOME/.docker/x", ""))
-        self.assertTrue(M._outside("$d/x", "d=$RUNNER_TEMP/y\n"))
-        self.assertFalse(M._outside("$d", "d=/tmp/y; d=/home/runner/work/z"))
+    def test_resolve_target_places_a_destination_or_says_it_cannot(self):
+        O = M.OUTSIDE_PATH
+        self.assertEqual(M._resolve_target("/home/runner/work/r/r/bin/x", ""), ["bin/x"])      # the checkout's own absolute path
+        self.assertEqual(M._resolve_target("/github/workspace/bin/x", ""), ["bin/x"])
+        self.assertEqual(M._resolve_target("/tmp/x", ""), ["/tmp/x"])
+        self.assertEqual(M._resolve_target("$HOME/.docker/x", ""), [O])
+        self.assertIsNone(M._resolve_target("$HOME/work/x", ""))
+        self.assertEqual(M._resolve_target("$d/x", "d=$RUNNER_TEMP/y\n"), [O])
+        self.assertEqual(M._resolve_target("$GITHUB_OUTPUT", ""), [O])
+        self.assertEqual(M._resolve_target("${GITHUB_WORKSPACE}/bin/x", ""), ["bin/x"])
+        self.assertEqual(M._resolve_target("\"$PWD/bin/x\"", ""), ["bin/x"])
+        self.assertEqual(M._resolve_target("$d", "d=bin; d=docs"), ["bin", "docs"])
+        self.assertEqual(M._resolve_target("$d/x", "d=/tmp/y"), ["/tmp/y/x"])
+        self.assertIsNone(M._resolve_target("$d", ""))
+        self.assertIsNone(M._resolve_target("$1", "d=bin"))
+        self.assertIsNone(M._resolve_target("${d:-bin}", "d=bin"))
+        self.assertIsNone(M._resolve_target("$(echo x)", ""))
 
     def test_redirect_targets_through_escapes_quotes_and_fd_duplication(self):
         self.assertEqual(M._redirect_targets("echo x >&2 > out"), ["out"])

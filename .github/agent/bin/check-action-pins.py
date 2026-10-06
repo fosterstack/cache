@@ -1886,23 +1886,6 @@ def _touches(script, name, consumer):
 OUTSIDE = ("$RUNNER_TEMP", "${RUNNER_TEMP}", "/", "$(mktemp")   # outside the checkout: never the file's directory
 
 
-def _outside(target, script, depth=0):
-    """A destination that cannot be the checkout's directory: an absolute path outside the runner's workspace, a path
-    under $RUNNER_TEMP or a fresh $(mktemp …), or a variable every assignment of which in the job is one of those —
-    followed through other variables (f="$work/x", work=$(mktemp -d))."""
-    if target.startswith(("/home/runner/work", "/github/workspace")):
-        return False                                     # the checkout's own absolute path (Codex #164 r3, C11)
-    if target.startswith(OUTSIDE):
-        return True
-    if re.match(r"[\"']?\$\{?HOME\}?/(?!work(/|$))", target):
-        return True                                      # $HOME/.docker …: the workspace is under $HOME/work
-    m = re.match(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?$", target.strip("\"'"))
-    if not m or depth > 4:
-        return False
-    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", script)
-    return bool(values) and all(_outside(v, script, depth + 1) for v in values)
-
-
 def _redirect_targets(chunk):
     """The files a command's output redirections write, read outside quotes as bash reads them — attached too
     (printf 'x'>Dockerfile; Codex #164 r3, C11). `>&2` / `2>&1` duplicate a descriptor and write no file."""
@@ -1934,7 +1917,7 @@ def _redirect_targets(chunk):
     return out
 
 
-def _fills_dir(toks, name, script="", literal=False):
+def _fills_dir(toks, name, script="", unresolved_ok=False):
     """True when a copy, move, sync, archive extraction, git checkout or patch writes into the directory that holds
     `name` (or into a directory this check cannot place): it can replace the file without spelling its name (Codex #164
     adversarial r1, C11)."""
@@ -1946,13 +1929,11 @@ def _fills_dir(toks, name, script="", literal=False):
     pos = [t for t in rest if not t.startswith("-") and not re.match(r"^[0-9]*(<|>|&>)", t)]
 
     def hits(target):
-        if re.match(r"[\"']?(/home/runner/work|/github/workspace)(/|$)", target):
-            return True                                  # the checkout's own absolute path (Codex #164 r3, C11)
-        if _outside(target, script):
-            return False
-        t = os.path.normpath(target.rstrip("/") or "/")
+        c = _resolve_target(target.rstrip("/") or "/", script)
+        if c is None:                                    # cannot be placed: it may be the file's directory (waived only for a script on UNRESOLVED_OK)
+            return not unresolved_ok
         # the file's directory or any directory above it (cp -R evil/. . replaces safe/Dockerfile too; Codex r2, C11)
-        return (not literal and (_variable(target) or SUBST in target)) or t in (where, ".") or where.startswith(t + "/")
+        return any(not x.startswith("/") and (x in (where, ".") or where.startswith(x + "/")) for x in c)    # an absolute path is outside the checkout
     if cmd in ("cp", "mv", "rsync", "install", "ln") and len(pos) >= 2:
         # `cp -R dir dest` makes dest/dir; only dir/. , dir/* or rsync's dir/ put dir's CONTENTS into dest
         if all(not re.search(r"/(\.|\*)?$", src) for src in pos[:-1]) and cmd in ("cp", "rsync") \
@@ -1965,8 +1946,8 @@ def _fills_dir(toks, name, script="", literal=False):
         return hits(c)
     if cmd == "unzip":
         return hits(rest[rest.index("-d") + 1] if "-d" in rest[:-1] else ".")
-    if literal and cmd in ("git", "patch"):              # a script's own text: only a command that NAMES the file (git checkout -b x, a heredoc line "patch = y" do not)
-        return any(_norm_target(t) == name for t in rest)
+    if cmd == "git" and pos[:1] == ["checkout"] and len(pos) == 2 and any(t in ("-b", "-B") for t in rest):
+        return False                                     # `git checkout -b NAME` only creates a branch at HEAD: the tree is not rewritten
     if cmd == "git" and pos[:1] and pos[0] in ("checkout", "restore", "apply", "am", "pull", "merge", "reset", "stash",
                                                "switch", "cherry-pick", "rebase", "revert", "clone", "worktree"):
         return pos[0] != "clone" or len(pos) < 3 or hits(pos[-1])
@@ -2303,17 +2284,139 @@ def _all_texts(text, depth=0):
 SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S+\s+)*)?(ba|da|z)?sh\b")
 
 
-def _norm_target(t):
-    """A written path as a repository-relative path: quotes dropped, and the spellings of the workspace itself
-    ($GITHUB_WORKSPACE, ${GITHUB_WORKSPACE}, $PWD, ${PWD}, ./) removed (round 2 of #191, B1)."""
+# The committed scripts whose destinations stay UNRESOLVED (an argument or a mktemp / runner path the checker cannot follow) and that a job may run
+# before a committed program in another language (round 3 of #191). Exact committed paths, each with its reason; the exclusion waives ONLY the
+# "destination cannot be resolved" refusal: a literal write of the program, a git command that rewrites its directory, and everything else still count.
+UNRESOLVED_OK = {
+    "bin/install-scanner.sh":
+        "installs a pinned scanner binary into the directory it is given (DEST, an argument) from a mktemp download; it never writes a committed program",
+    "bin/scout-vex-scan.sh":
+        "writes Scout's report only to its third argument, which every workflow passes as a $RUNNER_TEMP path; it writes nothing else",
+    "bin/scout-root-cause.sh":
+        "writes its results only under its output directory argument (OUT/summary.md), a runner temp path; it writes no committed file",
+}
+# The same waiver for a committed program run by a step of one workflow whose own text writes through a shell function's positional
+# parameter ("$2"), which this check cannot resolve: (workflow, program) -> why it is safe. Fenced like GENERATED_OK.
+UNRESOLVED_OK_JOBS = {
+    (".github/workflows/main-candidate-rescan.yml", "bin/scout-selfcheck.py"):
+        "the step's mk() helper writes each VEX probe document to the path it is passed (always a $RUNNER_TEMP/probe/... path); nothing writes bin/",
+}
+
+_SAFE_FILES = ("RUNNER_TEMP", "GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_PATH", "GITHUB_STEP_SUMMARY", "GITHUB_STATE")
+OUTSIDE_PATH = "/outside"          # a destination that cannot be inside the checkout (the sentinel _resolve_target returns)
+
+
+def _canon(p):
+    """A resolved path as a repository-relative one: the checkout's own absolute path made relative; any other absolute path stays absolute."""
+    m = re.match(r"^(/home/runner/work/[^/]+/[^/]+|/github/workspace)(/|$)(.*)$", p)
+    if m:
+        p = m.group(3)
+    return os.path.normpath(re.sub(r"^\./", "", p) or ".")
+
+
+def _resolve_target(t, ctx, depth=0):
+    """The repository-relative paths a written target can name (or OUTSIDE_PATH for one outside the checkout), or None when this check cannot
+    place it: the spellings of the workspace ($GITHUB_WORKSPACE, $PWD, ./) are removed, a variable is replaced by each of its LITERAL
+    assignments in ctx (followed through other variables), the runner's own files and a fresh mktemp are outside; an argument-derived or
+    unassigned variable, a ${x:-…} form or a command substitution is unresolved."""
     t = t.replace("\"", "").replace("'", "")
-    t = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\$\{?PWD\}?/)", "", t)
-    return os.path.normpath(re.sub(r"^\./", "", t))
+    if t.startswith(tuple(o for o in OUTSIDE if o != "/")):
+        return [OUTSIDE_PATH]
+    if t.startswith("/") and "$" in t and not re.match(r"/(home/runner/work|github/workspace)(/|$)", t):
+        return [OUTSIDE_PATH]                            # an absolute path outside the checkout, whatever its tail expands to
+    if re.match(r"\$\{?(" + "|".join(_SAFE_FILES) + r")\}?(/|$)", t) or re.match(r"\$\{?HOME\}?/(?!work(/|$))", t):
+        return [OUTSIDE_PATH]
+    t = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?|\$\{?PWD\}?)(/|$)", "", t)
+    if "$" not in t and "`" not in t:
+        return [_canon(t)]
+    m = re.search(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", t)
+    if depth > 4 or not m or SUBST in t or "${" in t and not re.match(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", t[m.start():]):
+        return None
+    values = re.findall(r"(?:^|[\s;(])" + m.group(1) + r"=[\"']?([^\s\"';)]*)", ctx or "")
+    if not values:
+        return None
+    out = []
+    for v in values:
+        r = _resolve_target(t[:m.start()] + v + t[m.end():], ctx, depth + 1)
+        if r is None:
+            return None
+        out += r
+    return out
 
 
-def _unknown_name_in(target, rel):
-    """A download whose file name this check cannot read (`<dir>/*`) may be any file of that directory: the file rel is in it."""
-    return os.path.basename(target) == "*" and os.path.normpath(os.path.dirname(target) or ".") == (os.path.dirname(rel) or ".")
+def _short_cluster(tok, argset, skip1=""):
+    """[(letter, value)] for a cluster such as -fsSLobin/x: an option that takes a value takes the rest of the cluster (attached), else the next
+    token (value None); every other letter is a flag (value "")."""
+    out, i = [], 1
+    while i < len(tok):
+        c = tok[i]
+        if c in argset:
+            out.append((c, tok[i + 1:] or None))
+            break
+        out.append((c, ""))
+        i += 2 if c in skip1 else 1
+    return out
+
+
+_CURL = {"short": set("AbcCdDeEFHKmoPQrtTuUwxXyYz"), "keys": {"o": "output", "D": "dump-header", "c": "cookie-jar", "K": "config", "O": "remote-name",
+                                                               "J": "remote-header-name"},
+         "long_arg": {"output", "output-dir", "dump-header", "cookie-jar", "trace", "trace-ascii", "stderr", "etag-save", "libcurl", "hsts",
+                      "alt-svc", "config"},
+         "files": ("output", "dump-header", "cookie-jar", "trace", "trace-ascii", "etag-save", "libcurl", "hsts", "alt-svc", "stderr")}
+_WGET = {"short": set("OoaPieTtwQlARDIXBUu"), "keys": {"O": "output-document", "o": "output-file", "a": "append-output", "P": "directory-prefix",
+                                                         "i": "input-file", "r": "recursive", "m": "mirror"},
+         "long_arg": {"output-document", "output-file", "append-output", "directory-prefix", "input-file", "config", "save-cookies", "rejected-log",
+                      "warc-file"},
+         "files": ("output-document", "output-file", "append-output", "save-cookies", "rejected-log", "warc-file")}
+
+
+def _download_specs(cmd, rest):
+    """What a plain curl or wget command writes, as [("file", token) | ("any-in", dir token or None) | ("unknown",)]: every output-bearing option
+    (-o / --output, -D, -c, --trace, wget -O / -o / -a / --save-cookies …) with its value taken from an attached short option, a cluster, `=` or
+    the next token; -O / --remote-name / wget's default name (the URL's last segment, or any name for -J and a variable URL) in --output-dir /
+    -P / the working directory. An option that can name outputs this check cannot read (-K / --config, wget -i, -r, -m) is ("unknown",)."""
+    if cmd not in ("curl", "wget"):
+        return []
+    spec = _CURL if cmd == "curl" else _WGET
+    events, urls, i = [], [], 0
+    while i < len(rest):
+        t = rest[i]
+        nxt = rest[i + 1] if i + 1 < len(rest) else None
+        if t.startswith("--") and len(t) > 2:
+            name, eq, val = t[2:].partition("=")
+            if name in spec["long_arg"] and not eq:
+                val, i = nxt, i + (1 if nxt is not None else 0)
+            events.append((name, val if (eq or name in spec["long_arg"]) else ""))
+        elif t.startswith("-") and len(t) > 1:
+            for letter, val in _short_cluster(t, spec["short"], "n" if cmd == "wget" else ""):
+                if val is None:
+                    val, i = nxt, i + (1 if nxt is not None else 0)
+                events.append((spec["keys"].get(letter, letter), val))
+        else:
+            if "://" in t or not t.startswith("-"):
+                urls.append(t)
+        i += 1
+    keys = {k for k, _ in events}
+    outdir = next((v for k, v in events if k in ("output-dir", "directory-prefix")), None)
+    out = []
+    for k, v in events:
+        if k in spec["files"] and v not in (None, "", "-"):
+            out.append(("file", v))
+            if outdir and not v.startswith("/") and k == ("output" if cmd == "curl" else "output-document"):
+                out.append(("file", outdir.rstrip("/") + "/" + v))
+        if k in ("config", "input-file", "recursive", "mirror"):
+            out.append(("unknown",))
+    named = "output" in keys if cmd == "curl" else "output-document" in keys
+    if (cmd == "curl" and keys & {"remote-name", "remote-name-all"}) or (cmd == "wget" and not named):
+        for u in [u for u in urls if cmd == "wget" or True]:
+            seg = u.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1] if "://" in u else ""
+            if "remote-header-name" in keys or not seg or "$" in seg:
+                out.append(("any-in", outdir))
+            else:
+                out.append(("file", (outdir.rstrip("/") + "/" + seg) if outdir else seg))
+        if not urls:
+            out.append(("any-in", outdir))
+    return out
 
 
 def _target_dirs(rest):
@@ -2327,89 +2430,95 @@ def _target_dirs(rest):
     return out
 
 
-def _download_targets(cmd, rest):
-    """The files a plain curl or wget command writes: -o / --output (with --output-dir), -O / --remote-name (the URL's last
-    segment, in --output-dir or the working directory), wget -O / --output-document, -P / --directory-prefix and wget's default
-    name. A name this check cannot read (a variable URL) is `<dir>/*`: any file of that directory (_unknown_name_in)."""
-    if cmd not in ("curl", "wget"):
-        return []
-    names, remote, outdir, urls = [], False, None, []
-    i = 0
-    while i < len(rest):
-        t = rest[i]
-        nxt = rest[i + 1] if i + 1 < len(rest) else None
-        short = re.fullmatch(r"-[A-Za-z0-9]+", t) is not None
-        if cmd == "curl":
-            if t in ("-o", "--output") and nxt is not None:
-                names.append(nxt); i += 1
-            elif short and t[-1] == "o" and nxt is not None:
-                names.append(nxt); i += 1
-            elif t.startswith("-o") and not t.startswith("--") and len(t) > 2:
-                names.append(t[2:])
-            elif t == "--output-dir" and nxt is not None:
-                outdir = nxt; i += 1
-            elif t.startswith("--output-dir="):
-                outdir = t.split("=", 1)[1]
-            elif t == "--remote-name" or (short and "O" in t):
-                remote = True
-        else:
-            if t in ("-O", "--output-document") and nxt is not None:
-                names.append(nxt); i += 1
-            elif short and t[-1] == "O" and nxt is not None:
-                names.append(nxt); i += 1
-            elif t.startswith("--output-document="):
-                names.append(t.split("=", 1)[1])
-            elif t.startswith("-O") and not t.startswith("--") and len(t) > 2:
-                names.append(t[2:])
-            elif t in ("-P", "--directory-prefix") and nxt is not None:
-                outdir = nxt; i += 1
-            elif t.startswith("--directory-prefix="):
-                outdir = t.split("=", 1)[1]
-            elif t.startswith("-P") and not t.startswith("--") and len(t) > 2:
-                outdir = t[2:]
-            elif short and t[-1] == "P" and nxt is not None:
-                outdir = nxt; i += 1
-        if "://" in t:
-            urls.append(t)
-        i += 1
-    if cmd == "wget" and not names:
-        remote = True                                     # wget names the file after the URL
-    out = [(outdir.rstrip("/") + "/" + n) if outdir and not n.startswith("/") else n for n in names if n != "-"]
-    if remote:
-        for u in urls or ["?"]:
-            seg = u.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
-            seg = seg if seg and "$" not in seg and "://" in u else "*"
-            out.append((outdir.rstrip("/") + "/" + seg) if outdir else seg)
-    return out
+def _drop_heredocs(text):
+    """The text without the BODIES of heredocs (data written to a file, not commands): `cat > f <<EOF … EOF` keeps its command line. A
+    heredoc fed to a shell is kept (its body runs)."""
+    out, tag = [], None
+    for ln in text.split("\n"):
+        if tag is not None:
+            if ln.strip() == tag:
+                tag = None
+            continue
+        out.append(ln)
+        m = re.search(r"(?<!<)<<(?!<)-?\s*([\"']?)([A-Za-z_]\w*)\1", ln)
+        if m and not re.search(r"\b(ba|da|z)?sh\b|\bsource\b|\beval\b|\bxargs\b", ln):
+            tag = m.group(2)
+    return "\n".join(out)
 
 
-def _writes(script, rel, ctx=None, literal=False):
+def _writes(script, rel, ctx=None, strict=False, unresolved_ok=False):
     """True when a command of the job writes the exact file rel before it runs: a redirection onto it, tee, cp / mv /
-    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
-    import shlex
+    install / ln / rsync onto it, sed / perl -i on it, dd of=, truncate, a curl / wget output, or a copy or extraction over its
+    directory (_fills_dir). `strict` (the guard on a committed program in another language) also counts a write whose target this
+    check cannot place (a variable it cannot resolve to a safe path, a download configuration, ed / ex): that write might be the program.
+    `unresolved_ok` waives only that last refusal (a script on UNRESOLVED_OK)."""
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
     for sub in inner:
-        if _writes(sub, rel, ctx, literal):
+        if _writes(sub, rel, ctx, strict, unresolved_ok):
             return True
-    same = lambda t: _norm_target(t) == rel
+    where = os.path.normpath(os.path.dirname(rel) or ".")
+
+    def path_hit(t):
+        c = _resolve_target(t, ctx)
+        return (strict and not unresolved_ok) if c is None else rel in c
+
+    def any_in(d):
+        c = ["."] if d is None else _resolve_target(d, ctx)
+        return (strict and not unresolved_ok) if c is None else where in c
+
     for chunk in _split_commands(text):
         toks = _tokens(chunk)
-        if any(same(t) for t in _redirect_targets(chunk)):
+        if any(path_hit(t) for t in _redirect_targets(chunk)):
             return True
         words = _command_words(toks)
         if not words:
             continue
         cmd, rest = _base(words[-1]), toks[toks.index(words[-1]) + 1:]
         pos = [t for t in rest if not t.startswith("-")]
-        if any(same(o) or _unknown_name_in(o, rel) for o in _download_targets(cmd, rest)) or (cmd == "dd" and any(t.startswith("of=") and same(t[3:]) for t in rest)) or \
-                (cmd == "truncate" and pos and same(pos[-1])) or \
-                (cmd in ("cp", "mv", "install", "ln", "rsync") and any(same(d + "/" + _base(src)) for d in _target_dirs(rest)
-                                                                     for src in pos)) or \
-                (cmd == "tee" and any(same(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
-                                                              same(pos[-1])) or \
-                (cmd in ("sed", "perl") and any(t.startswith("-i") for t in rest) and any(same(t) for t in pos)) or \
-                _fills_dir(toks, rel, ctx, literal):
+        for spec in _download_specs(cmd, rest):
+            if (spec[0] == "file" and path_hit(spec[1])) or (spec[0] == "any-in" and any_in(spec[1])) or \
+                    (spec[0] == "unknown" and strict and not unresolved_ok):
+                return True
+        if (cmd == "dd" and any(t.startswith("of=") and path_hit(t[3:]) for t in rest)) or \
+                (cmd == "truncate" and pos and path_hit(pos[-1])) or \
+                (cmd in ("cp", "mv", "install", "ln", "rsync") and any(path_hit(d + "/" + _base(src)) for d in _target_dirs(rest) for src in pos)) or \
+                (cmd == "tee" and any(path_hit(t) for t in pos)) or \
+                (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and path_hit(pos[-1])) or \
+                (cmd in ("sed", "perl") and any(re.match(r"^(--in-place|-[A-Za-z]*i)", t) for t in rest) and any(path_hit(t) for t in pos)) or \
+                (cmd in ("ed", "ex", "vi", "vim") and strict and not unresolved_ok) or \
+                _fills_dir(toks, rel, ctx, unresolved_ok):
+            return True
+    return False
+
+
+def _script_writes(text, rel, tree, entries, bases, depth=0, seen=None):
+    """True when a committed shell script that `text` runs (bash / sh / source / ./path), or one such a script runs in turn, writes the file rel
+    (the strict detection of _writes over each script's own text, its own literal assignments resolved, heredoc bodies ignored) or changes
+    directory (a relative path then means something else). A script on UNRESOLVED_OK is excused only for destinations it cannot resolve.
+    Bounded: a chain deeper than 5 scripts cannot be read to the end, so it counts as a write (fail closed); a script that is not a committed
+    file is refused where it is run (_run_scripts)."""
+    seen = set() if seen is None else seen
+    for t in _commands(text):
+        if t[0] not in ("__script__", "__exec__"):
+            continue
+        sp = _resolve_script(t[1], text, entries, bases)
+        if sp is None or sp in seen or entries.get(sp) != "file":
+            continue
+        body = tree.read(sp)
+        if (body.startswith("#!") and not SHELL_SHEBANG.match(body)) or (t[0] == "__exec__" and not sp.endswith(".sh") and not SHELL_SHEBANG.match(body)):
+            continue                                     # another language's program, or a data file named as a command word: not shell text
+        seen.add(sp)
+        ok = sp in UNRESOLVED_OK or bool(TEST_HARNESS.search(sp))     # a test harness's own text is fixture data (documented at TEST_HARNESS)
+        flat = _drop_heredocs(body)
+        flat_cd = _SCRIPT_DIR_IDIOM.sub("", flat)
+        flat_cd = re.sub(r'(?m)^\s*cd\s+"\$\(\s*dirname\s+"?\$(?:0|\{BASH_SOURCE\[0\]\})"?\s*\)/([./]*)"\s*$',     # cd to the repository root from the script's own place
+                         lambda m: "" if os.path.normpath(os.path.join(os.path.dirname(sp), m.group(1))) == "." else m.group(0), flat_cd)
+        if not ok and re.search(_CD, _unquoted(flat_cd)):
+            return True
+        if any(_writes(x, rel, flat, True, ok) for x in _all_texts(flat)):
+            return True
+        if depth >= 5 or _script_writes(body, rel, tree, entries, bases, depth + 1, seen):
             return True
     return False
 
@@ -2430,26 +2539,33 @@ def _made_executable(script, path):
     return None
 
 
-def _script_writes(text, rel, tree, entries, bases, depth=0, seen=None):
-    """True when a committed shell script that `text` runs (bash / sh / source / ./path), or one such a script runs in turn, writes the
-    file rel (the same detection as _writes, over each script's own text). Bounded: a chain deeper than 5 scripts cannot be read to the end,
-    so it counts as a write (fail closed); a script that is not a committed file is refused where it is run (_run_scripts)."""
-    seen = set() if seen is None else seen
-    for t in _commands(text):
-        if t[0] not in ("__script__", "__exec__"):
-            continue
-        sp = _resolve_script(t[1], text, entries, bases)
-        if sp is None or sp in seen or entries.get(sp) != "file":
-            continue
-        body = tree.read(sp)
-        if body.startswith("#!") and not SHELL_SHEBANG.match(body):
-            continue                                     # another language's program: its own commands are not shell text
-        seen.add(sp)
-        if any(_writes(x, rel, body, True) for x in _all_texts(body)):
-            return True
-        if depth >= 5 or _script_writes(body, rel, tree, entries, bases, depth + 1, seen):
-            return True
-    return False
+# `$(cd "$(dirname "$0")" && pwd)`: a script finding its own directory (a cd that only lives inside the substitution and writes nothing)
+_SCRIPT_DIR_IDIOM = re.compile(r"\$\(\s*cd\s+\"\$\(\s*dirname\s+\"?\$(?:0|\{BASH_SOURCE\[0\]\})\"?\s*\)\"\s*&&\s*pwd\s*\)")
+_CD = r"(?<![\w./$-])(cd|pushd)(?![\w./-])"
+
+
+def _cd_before(text, shown):
+    """True when a cd / pushd that persists (not inside a ( … ) subshell or $( … )) comes before the LAST place `text` runs `shown`."""
+    prefix = text[:text.rfind(shown)] if shown in text else text
+    while True:
+        flat = re.sub(r"\([^()]*\)", " ", prefix)
+        if flat == prefix:
+            break
+        prefix = flat
+    return re.search(_CD, _unquoted(prefix)) is not None
+
+
+def _overwritten(rel, job, tree, entries, bases, moved, shown, where="", text=""):
+    """The finding for a committed program in another language (run through its interpreter or directly) that the job changes before it runs,
+    else None. The committed file is the boundary only as committed: any step of the job that writes it, or a committed shell script a step
+    runs, is refused (strict: a write whose target cannot be placed counts), and so is a run from a working directory this check cannot place
+    (a cd, or a working-directory), where the relative path means something else (rounds 1-3 of #191; row 78)."""
+    if moved and not shown.startswith(("/", "$")) and (not re.search(_CD, _unquoted(text)) or _cd_before(text, shown)):
+        return "runs %s from a working directory this check cannot place; refused" % shown
+    ok = (where.split(".jobs.", 1)[0], rel) in UNRESOLVED_OK_JOBS
+    if any(_writes(x, rel, job, True, ok) for x in _all_texts(_drop_heredocs(job))) or _script_writes(job, rel, tree, entries, bases):
+        return "runs %s, which the job overwrites before it runs (the committed bytes are not what runs); refused" % shown
+    return None
 
 
 def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
@@ -2480,11 +2596,10 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
-            elif entries.get(rel) == "file" and (any(_writes(x, rel, job or text) for x in _all_texts(job or text))
-                                                 or _script_writes(job or text, rel, tree, entries, bases)):
-                # the committed file is the boundary only as committed: any step of the job that writes it (redirect, tee,
-                # cp / mv / install / ln / rsync, sed -i, a fill of its directory) is refused, as for a shell script (review of #191, B3)
-                found.append("runs %s, which the job overwrites before it runs (the committed bytes are not what runs); refused" % t[1])
+            elif entries.get(rel) == "file":
+                why = _overwritten(rel, job or text, tree, entries, bases, moved, t[1], where, text)
+                if why:
+                    found.append(why)
             continue
         if t[0] not in ("__script__", "__exec__"):
             continue
@@ -2499,6 +2614,9 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
                 if not path.endswith(".sh"):
                     continue                             # a program, not a script of this repository
             elif tree.read(rel).startswith("#!") and not SHELL_SHEBANG.match(tree.read(rel)):
+                why = _overwritten(rel, job or text, tree, entries, bases, moved, path, where, text)     # the same guard as a program run through its interpreter
+                if why:
+                    found.append(why)
                 continue                                 # another language: the documented boundary (0094)
         if (where.split(".jobs.", 1)[0], path) in GENERATED_OK:
             # fenced: written only by the step's python heredoc; a shell write anywhere in the job breaks the fence
@@ -2541,6 +2659,10 @@ def check_runs(where_job, scripts, bad, tree=None):
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
+    for item in scripts:
+        if item[2] and re.match(r"^(bash|sh)(\s|$)", item[2]) and (not SAFE_SHELL.match(item[2].strip()) or re.search(r"\s-\w*c", item[2])):
+            bad.append(f"{item[0]}: the step's shell is {item[2]!r}, not a plain interpreter template; it would run its own text before the "
+                       f"step's script, refused")
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
     job0 = "\n".join(read(item[1]) for item, ok in zip(scripts, posix) if ok)
@@ -2792,6 +2914,15 @@ def check_runners(where, doc, bad):
                        f"runners only and refuses any other")
 
 
+# Environment names that make a run: step execute something other than its text (round 3 of #191): the shell's startup files, the program
+# search path, preloaded or imported libraries and start-up hooks. None is set in any workflow; setting one is refused outright.
+HIJACK_ENV = {"BASH_ENV", "ENV", "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "NODE_OPTIONS",
+              "SHELLOPTS", "BASHOPTS", "PS4", "IFS", "PROMPT_COMMAND"}
+# A step's `shell:` must be a plain interpreter template (`bash`, `sh`, `bash -e {0}`, `bash --noprofile --norc -eo pipefail {0}`): any other
+# value (bash -c "…; bash {0}") runs its own text with the step's token BEFORE the step's script.
+SAFE_SHELL = re.compile(r"^(bash|sh)((\s+--noprofile|\s+--norc|\s+-[A-Za-z]+|\s+pipefail)*(\s+\{0\})?)$")
+
+
 def check_file(tree, rel, pins, bad):
     text = tree.read(rel)
     lines = text.splitlines()
@@ -2818,6 +2949,9 @@ def check_file(tree, rel, pins, bad):
                                                                           "DOCKER_CONFIG"):
                             bad.append(f"{rel}: an env block sets {k.value}, which points docker or buildx elsewhere; "
                                        f"refused")
+                        if isinstance(k, yaml.ScalarNode) and k.value in HIJACK_ENV:
+                            bad.append(f"{rel}: an env block sets {k.value}, which changes what every run: step executes before or around its "
+                                       f"own text (the shell's startup file, the program search path, a preloaded or imported library); refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
                     stack.extend(n.value)

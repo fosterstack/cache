@@ -1300,7 +1300,7 @@ case_ fo-script-other-step    bad "$head
 case_ fo-script-clean-ok      ok  "$(rb 'bash bin/clean.sh; python3 bin/tool.py')" "$SETUP_PREP"
 case_ fo-script-unrelated-ok  ok  "$(rb 'python3 bin/tool.py')" "$SETUP_PREP"
 case_ fo-script-unreadable    bad "$(rb 'bash /tmp/gen.sh; python3 bin/tool.py')" "$SETUP_PREP"
-SETUP_LIT="$SETUP_TOOL; printf 'git checkout -b topic\\n' > bin/branch.sh; printf 'patch = subprocess\\n' > bin/cfg.sh; printf 'git checkout bin/tool.py\\n' > bin/restore.sh; printf 'patch bin/tool.py < /tmp/d\\n' > bin/patcher.sh; printf 'cp /tmp/e.py bin/\\n' > bin/fill.sh; printf '#!/usr/bin/env python3\\nopen(\"bin/tool.py\",\"w\")\\n' > bin/w.py; chmod +x bin/w.py; printf 'cp x \"\$DEST/\"\\n' > bin/varcopy.sh; printf 'bash /tmp/missing.sh\\n' > bin/calls-missing.sh
+SETUP_LIT="$SETUP_TOOL; printf 'git checkout -b topic\\n' > bin/branch.sh; printf 'W=\$(mktemp -d)\\ncat > "\$W/rc" <<EOF\\npatch = subprocess\\nEOF\\n' > bin/cfg.sh; printf 'git checkout bin/tool.py\\n' > bin/restore.sh; printf 'patch bin/tool.py < /tmp/d\\n' > bin/patcher.sh; printf 'cp /tmp/e.py bin/\\n' > bin/fill.sh; printf '#!/usr/bin/env python3\\nopen(\"bin/tool.py\",\"w\")\\n' > bin/w.py; chmod +x bin/w.py; printf 'cp x \"\$DEST/\"\\n' > bin/varcopy.sh; printf 'bash /tmp/missing.sh\\n' > bin/calls-missing.sh
 for i in 1 2 3 4 5 6 7; do printf 'bash bin/c%s.sh\\n' \$((i+1)) > bin/c\$i.sh; done; printf 'echo end\\n' > bin/c8.sh"
 case_ fo-lit-git-checkout-b-ok  ok  "$(rb 'bash bin/branch.sh; python3 bin/tool.py')" "$SETUP_LIT"
 case_ fo-lit-heredoc-patch-ok   ok  "$(rb 'bash bin/cfg.sh; python3 bin/tool.py')" "$SETUP_LIT"
@@ -1308,9 +1308,140 @@ case_ fo-lit-git-checkout-file  bad "$(rb 'bash bin/restore.sh; python3 bin/tool
 case_ fo-lit-patch-file         bad "$(rb 'bash bin/patcher.sh; python3 bin/tool.py')" "$SETUP_LIT"
 case_ fo-lit-cp-into-dir        bad "$(rb 'bash bin/fill.sh; python3 bin/tool.py')" "$SETUP_LIT"
 case_ fo-lit-python-script-ok   ok  "$(rb './bin/w.py; python3 bin/tool.py')" "$SETUP_LIT"
-case_ fo-lit-variable-dest-ok   ok  "$(rb 'bash bin/varcopy.sh; python3 bin/tool.py')" "$SETUP_LIT"
 case_ fo-lit-chain-too-deep     bad "$(rb 'bash bin/c1.sh; python3 bin/tool.py')" "$SETUP_LIT"
 case_ fo-lit-missing-callee     bad "$(rb 'bash bin/calls-missing.sh; python3 bin/tool.py')" "$SETUP_LIT"
+# round 3 (B1): option parsing, unresolved output, cd, sed spellings, direct execution, resolved assignments inside scripts, an exclusion list
+case_ fo-curl-cluster-attached bad "$(rb "curl -fsSLobin/tool.py $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-cluster-attachedO bad "$(rb "wget -qObin/tool.py $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-cluster-attachedP bad "$(rb "wget -qPbin $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-K-config        bad "$(rb "curl -K bin/dl.conf; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-config          bad "$(rb "curl --config bin/dl.conf $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-config          bad "$(rb "wget --config=bin/wgetrc $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-input-file      bad "$(rb "wget -i urls.txt; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-input-file-long bad "$(rb "wget --input-file=urls.txt; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-recursive       bad "$(rb "wget -r $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-J               bad "$(rb "curl -fsSLJO --output-dir bin $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-dump-header     bad "$(rb "curl -fsSL -D bin/tool.py -o /tmp/x $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-cookie-jar      bad "$(rb "curl -fsSL -c bin/tool.py -o /tmp/x $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-wget-log             bad "$(rb "wget -q -o bin/tool.py -O /tmp/x $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-outdir-var      bad "$(rb "curl -fsSL --output-dir \"\$D\" -o tool.py $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-outdir-assigned bad "$(rb "D=bin; curl -fsSL --output-dir \"\$D\" -o tool.py $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-outdir-tmp-ok   ok  "$(rb "D=\$(mktemp -d); curl -fsSL --output-dir \"\$D\" -o tool.py $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-o-var           bad "$(rb "curl -fsSL -o \"\$f\" $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-o-var-assigned  bad "$(rb "f=bin/tool.py; curl -fsSL -o \"\$f\" $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-curl-o-var-tmp-ok    ok  "$(rb "f=\"\$RUNNER_TEMP/x\"; curl -fsSL -o \"\$f\" $URL; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-var         bad "$(rb "printf x > \"\$f\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-var-append  bad "$(rb "printf x >> \$f; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-var-clobber bad "$(rb "printf x >| \"\$f\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-var-both    bad "$(rb "printf x &> \"\$f\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-tee-var              bad "$(rb "printf x | tee \"\$f\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-assigned    bad "$(rb "f=bin/tool.py; printf x > \"\$f\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-runner-ok   ok  "$(rb "printf x > \"\$RUNNER_TEMP/n.md\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-output-ok   ok  "$(rb "echo a=b >> \"\$GITHUB_OUTPUT\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-mktemp-ok   ok  "$(rb "t=\$(mktemp); printf x > \"\$t\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-devnull-ok  ok  "$(rb "python3 bin/tool.py > /dev/null 2>&1")" "$SETUP_TOOL"
+SETUP_BOTH="$SETUP_TOOL; printf 'print(2)\\n' > tool.py"
+case_ fo-cd-before-run        bad "$(rb "cd bin; python3 tool.py")" "$SETUP_BOTH"
+case_ fo-cd-write-then-run    bad "$(rb "cd bin; printf x > tool.py; python3 tool.py")" "$SETUP_BOTH"
+case_ fo-pushd-before-run     bad "$(rb "pushd bin; python3 tool.py")" "$SETUP_BOTH"
+case_ fo-wdir-step            bad "$head
+    steps:
+      - working-directory: bin
+        run: python3 tool.py" "$SETUP_BOTH"
+case_ fo-cd-subshell-ok       ok  "$(rb "(cd bin && true); python3 tool.py")" "$SETUP_BOTH"
+case_ fo-cd-substitution-ok   ok  "$(rb "x=\$(cd bin && pwd); python3 tool.py")" "$SETUP_BOTH"
+case_ fo-cd-after-run-ok      ok  "$(rb "python3 tool.py; cd bin")" "$SETUP_BOTH"
+case_ fo-sed-in-place         bad "$(rb "sed --in-place 's/1/2/' bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-sed-ni               bad "$(rb "sed -ni 'p' bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-sed-i-suffix         bad "$(rb "sed -i.bak 's/1/2/' bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-sed-Ei               bad "$(rb "sed -Ei 's/1/2/' bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-perl-pi              bad "$(rb "perl -pi -e 's/1/2/' bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-ed                   bad "$(rb "printf 'w\\nq\\n' | ed -s bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-ex-c                 bad "$(rb "ex -c wq bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-sed-print-ok         ok  "$(rb "sed -n p bin/tool.py > /tmp/o; python3 bin/tool.py")" "$SETUP_TOOL"
+SETUP_PYX="$SETUP_TOOL; chmod +x bin/tool.py; printf '#!/usr/bin/env python3\\nprint(1)\\n' > bin/tool.py"
+case_ fo-exec-py-overwrite    bad "$(rb "curl -fsSL $URL -o bin/tool.py; ./bin/tool.py")" "$SETUP_PYX"
+case_ fo-exec-py-redirect     bad "$(rb "printf x > bin/tool.py; ./bin/tool.py")" "$SETUP_PYX"
+case_ fo-exec-py-script       bad "$(rb "bash bin/prep.sh; ./bin/tool.py")" "$SETUP_PYX; printf 'printf x > bin/tool.py\\n' > bin/prep.sh"
+case_ fo-exec-py-unmodified   ok  "$(rb "./bin/tool.py --x")" "$SETUP_PYX"
+SETUP_T="$SETUP_TOOL; printf 'DEST=bin\\ncp /tmp/tool.py \"\$DEST/\"\\n' > bin/a1.sh; printf 'DEST=/tmp/x\\ncp /tmp/tool.py \"\$DEST/\"\\n' > bin/a2.sh; printf 'cp /tmp/tool.py \"\$GITHUB_WORKSPACE/bin/\"\\n' > bin/a3.sh; printf 'cp /tmp/tool.py \"\$1/\"\\n' > bin/a4.sh; printf 'git checkout origin/other -- bin\\n' > bin/g1.sh; printf 'git restore bin\\n' > bin/g2.sh; printf 'git reset --hard origin/other\\n' > bin/g3.sh; printf 'git apply /tmp/p.diff\\n' > bin/g4.sh; printf 'git stash pop\\n' > bin/g5.sh; printf 'git cherry-pick abc\\n' > bin/g6.sh; printf 'git merge other\\n' > bin/g7.sh; printf 'git pull\\n' > bin/g8.sh; printf 'git checkout -b topic\\n' > bin/g9.sh; mkdir -p tools; printf 'cp /tmp/x \"\$DEST/\"\\n' > tools/install-scanner.sh; printf 'cp /tmp/x \"\$DEST/\"\\n' > bin/install-scanner.sh; printf 'cp /tmp/x bin/\\n' > bin/install-scanner2.sh; printf 'cd bin\\ncp /tmp/x tool.py\\n' > bin/cd1.sh; printf 'W=\$(mktemp -d)\\nprintf x > \"\$W/o\"\\ncp /tmp/x \"\$W/\"\\n' > bin/ok1.sh"
+case_ fo-t-assigned-dest-bad  bad "$(rb 'bash bin/a1.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-assigned-safe-ok   ok  "$(rb 'bash bin/a2.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-workspace-dest     bad "$(rb 'bash bin/a3.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-unresolved-arg     bad "$(rb 'bash bin/a4.sh; python3 bin/tool.py')" "$SETUP_T"
+for g in 1 2 3 4 5 6 7 8; do
+case_ fo-t-git-dir-$g         bad "$(rb "bash bin/g$g.sh; python3 bin/tool.py")" "$SETUP_T"
+done
+case_ fo-t-git-checkout-b-ok  ok  "$(rb 'bash bin/g9.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-excluded-script-ok ok  "$(rb 'bash bin/install-scanner.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-excluded-name-only bad "$(rb 'bash tools/install-scanner.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-excluded-literal   bad "$(rb 'bash bin/install-scanner2.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-cd-in-script       bad "$(rb 'bash bin/cd1.sh; python3 bin/tool.py')" "$SETUP_T"
+case_ fo-t-tmp-only-ok        ok  "$(rb 'bash bin/ok1.sh; python3 bin/tool.py')" "$SETUP_T"
+SETUP_T2="$SETUP_TOOL; printf 'cp /tmp/x bin/\\n' > bin/install-scanner.sh"
+case_ fo-t-excluded-still-literal bad "$(rb 'bash bin/install-scanner.sh; python3 bin/tool.py')" "$SETUP_T2"
+# round 3 (execution context): a step's shell template and the environment names that change what a run: step executes
+case_ ctx-shell-c             bad "$head
+    steps:
+      - shell: bash -c 'echo x; bash {0}'
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-shell-sh-c          bad "$head
+    steps:
+      - shell: sh -c x
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-shell-default-c     bad "on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -c 'echo x; bash {0}'
+    steps:
+      - run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-shell-plain-ok      ok  "$head
+    steps:
+      - shell: bash
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-shell-e-ok          ok  "$head
+    steps:
+      - shell: bash -e {0}
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-shell-pipefail-ok   ok  "$head
+    steps:
+      - shell: bash --noprofile --norc -eo pipefail {0}
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+for name in BASH_ENV ENV PATH LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONSTARTUP NODE_OPTIONS SHELLOPTS; do
+case_ ctx-job-env-$name       bad "on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    env:
+      $name: bin/prep.sh
+    steps:
+      - run: python3 bin/tool.py" "$SETUP_TOOL"
+done
+case_ ctx-step-env-BASH_ENV   bad "$head
+    steps:
+      - env:
+          BASH_ENV: bin/prep.sh
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-workflow-env-PATH   bad "on: push
+env:
+  PATH: /tmp/evil
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ ctx-env-other-ok        ok  "$head
+    steps:
+      - env:
+          VERSION: v1
+        run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ fo-redirect-abs-var-ok  ok  "$(rb "printf x > /tmp/out-\$RANDOM; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-default-form bad "$(rb "printf x > \"\${f:-bin/tool.py}\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-command-sub bad "$(rb "printf x > \"\$(echo bin/tool.py)\"; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-redirect-chain-deep  bad "$(rb "a=\$b; b=\$c; c=\$d; d=\$e; e=\$f; f=\$g; printf x > \"\$a\"; python3 bin/tool.py")" "$SETUP_TOOL"
 case_ fo-curl-elsewhere-ok    ok  "$(rb "curl -fsSL $URL -o /tmp/x.py; python3 bin/tool.py")" "$SETUP_TOOL"
 case_ fo-curl-stdout-ok       ok  "$(rb "curl -fsSL $URL | wc -c; python3 bin/tool.py")" "$SETUP_TOOL"
 case_ fo-wget-elsewhere-ok    ok  "$(rb "wget -q -P /tmp $URL; python3 bin/tool.py")" "$SETUP_TOOL"

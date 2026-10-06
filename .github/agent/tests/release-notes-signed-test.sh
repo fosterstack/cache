@@ -25,7 +25,7 @@ for st in steps:
 if sorted(progs) != sorted(["bin/patch-decide.py", "bin/patch-decide.py", CLI]):
     bad.append("the patch-notes job runs python programs other than patch-decide.py (twice) and exactly %s: %s" % (CLI, progs))
 text = "\n".join(st.get("run") or "" for st in steps)
-if len(re.findall(r'^\s*python3 ' + re.escape(CLI) + r' --repo "\$GITHUB_REPOSITORY" --branch "\$branch"', text, re.M)) != 1:
+if len(re.findall(r'^\s*oid=\$\(python3 ' + re.escape(CLI) + r' --repo "\$GITHUB_REPOSITORY" --branch "\$branch"', text, re.M)) != 1:
     bad.append("the signed-commit call does not run exactly the literal path %s" % CLI)
 full = os.path.join(root, CLI)
 if not os.path.isfile(full):
