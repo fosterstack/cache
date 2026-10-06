@@ -812,6 +812,18 @@ d2 = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      -
 assert len([k for k in d2 if "(default)" in k]) == 2
 PY
 
+CASE="bumping an action whose step also carries a placeholder (a checkout with fetch-tags: true, a (default) installer input) moves ONLY the action: the placeholder's identity does not contain the pin, and a boolean input is not an installer input"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+co = lambda sha: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: actions/checkout@" + sha + " # v7\n        with:\n          fetch-tags: true\n"}
+a, b = inv.inventory(co("a" * 40)), inv.inventory(co("b" * 40))
+assert [k for k in b if k not in a] == ["action:actions/checkout@" + "b" * 40], [k for k in b if k not in a]
+assert not [k for k in a if "(input)" in k]
+lint = lambda sha: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: golangci/golangci-lint-action@" + sha + " # v9\n"}
+assert [k for k in inv.inventory(lint("b" * 40)) if k not in inv.inventory(lint("a" * 40))] == ["action:golangci/golangci-lint-action@" + "b" * 40]
+PY
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'

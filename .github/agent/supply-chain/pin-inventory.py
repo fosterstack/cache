@@ -193,6 +193,7 @@ def _cap(text):
 
 
 def _ctx_tag(node):
+    node = {k: v for k, v in node.items() if k != "uses"} if isinstance(node, dict) else node    # the action's own pin is measured separately: bumping it must not re-key its placeholders
     return "step:" + hashlib.sha256((json.dumps(node, sort_keys=True, default=str) + "\0" + _ENV_CTX[0]).encode("utf-8", "replace")).hexdigest()[:10]
 
 
@@ -210,14 +211,15 @@ def _uses(u, node, out, labels):
         known = {i for i, _ in INSTALLER_INPUTS.get(repo.lower(), [])}
         if isinstance(w, dict) and repo.lower() != "actions/setup-go":     # the Go toolchain is a product dependency (rule 1, amendment 2)
             for key, val in w.items():
-                if key not in known and isinstance(val, str) and val.strip() and re.search(r"(^|[-_])(versions?|tags?|releases?|tools|images?)(-file)?$", key):
+                if (key not in known and isinstance(val, str) and val.strip() and val.strip().lower() not in ("true", "false", "0", "1")
+                        and not key.startswith(("fetch-", "persist-")) and re.search(r"(^|[-_])(versions?|tags?|releases?|tools|images?)(-file)?$", key)):
                     it = Item("tool", f"{repo}:{key}", "(input)")       # an installer-shaped input nobody classified: a placeholder, so a new or changed one is refused
                     it.step = _ctx_tag(node)                           # identified by the whole step (its value included) and the env/matrix it reads
                     out.append(it)
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
             if tool is not None and not (isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip()):
                 it = Item("tool", tool, "(default)")       # no version given: the action installs whatever its default is, so removing the input must not remove the obligation
-                it.step = "default:" + inp + ":" + hashlib.sha256(json.dumps({k: v for k, v in node.items() if k != "with"}, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:8]
+                it.step = "default:" + inp + ":" + hashlib.sha256(json.dumps({k: v for k, v in node.items() if k not in ("with", "uses")}, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:8]
                 out.append(it)
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
