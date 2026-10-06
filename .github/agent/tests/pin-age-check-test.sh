@@ -514,6 +514,28 @@ newcase srcswap "$(printf 'import pathlib\np = pathlib.Path(\"bin/install-scanne
 runck srcswap '{"times": {}}'
 check test "$rc" -eq 1; check grep -q 'not a pin' "$work/srcswap.out"
 
+CASE="an unclosed run of expression openers in a huge script is read in linear time, a file over 1 MB is refused (not read), and a very long line cannot make the form scan quadratic"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$work" <<'PY'
+import importlib.util, os, subprocess, sys, time
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+t = time.time()
+inv.inventory({"bin/x.sh": "echo ${{ " * 60000})
+inv.unmeasured({"bin/x.sh": "curl " + "http://a " * 60000})
+assert time.time() - t < 3, time.time() - t
+repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
+subprocess.run(["git", "init", "-q", repo], check=True)
+open(repo + "/big.sh", "w").write("# x\n" * 300000)
+subprocess.run(["git", "-C", repo, "add", "-A"], check=True); subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "x"], check=True)
+for fn in (lambda: inv.tree_scripts(repo, "HEAD"), lambda: inv.tree_scripts(repo, None)):
+    try:
+        fn()
+    except RuntimeError as e:
+        assert "too large" in str(e)
+    else:
+        raise AssertionError("an over-size script was read")
+assert inv._strip_expressions("a ${{ x }} b ${{ y") == "a ${{expression}} b ${{expression}}"
+PY
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'

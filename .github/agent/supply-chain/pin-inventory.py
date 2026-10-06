@@ -55,11 +55,30 @@ WORKFLOW_GLOBS = (".github/workflows/*.yml", ".github/workflows/*.yaml", ".githu
 _EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
 
 
+MAX_FILE = 1_000_000
+
+
+def _strip_expressions(text):
+    """Every ${{ ... }} becomes the placeholder, in LINEAR time (a lazy regex over an unclosed run of '${{' is quadratic and could stall a reader for minutes)."""
+    out, i = [], 0
+    while True:
+        a = text.find("${{", i)
+        if a < 0:
+            out.append(text[i:])
+            return "".join(out)
+        b = text.find("}}", a + 3)
+        if b < 0:
+            out.append(text[i:a] + "${{expression}}")   # unclosed: the rest is one expression
+            return "".join(out)
+        out.append(text[i:a] + "${{expression}}")
+        i = b + 2
+
+
 def _hide(text):
     """An expression (which may name a secret or an environment) becomes a placeholder: it can never be proven, so it fails closed, and it never prints."""
     if not isinstance(text, str):
         return text
-    text = _EXPR.sub("${{expression}}", text)
+    text = _strip_expressions(text)
     return re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "${var}", text)  # a shell variable's name (an env var, maybe a secret's) never prints either
 
 
@@ -100,6 +119,8 @@ def tree_files(root, rev):
                     out[n] = open(f"{root}/{n}").read()
                 except OSError:
                     continue
+                if len(out[n]) > MAX_FILE:
+                    raise RuntimeError(f"{n} is too large to read safely")
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
@@ -108,6 +129,8 @@ def tree_files(root, rev):
         blob = meta.split()[2]
         if blob not in _BLOBS:
             _BLOBS[blob] = git(root, "cat-file", "blob", blob)
+        if len(_BLOBS[blob]) > MAX_FILE:
+            raise RuntimeError(f"{n} is too large to read safely")
         out[n] = _BLOBS[blob]
     return out
 
@@ -306,6 +329,8 @@ def tree_scripts(root, rev):
                 out[n] = open(f"{root}/{n}").read()
             except OSError:
                 continue
+            if len(out[n]) > MAX_FILE:
+                raise RuntimeError(f"{n} is too large to read safely")
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
@@ -313,6 +338,8 @@ def tree_scripts(root, rev):
             blob = meta.split()[2]
             if blob not in _BLOBS:
                 _BLOBS[blob] = git(root, "cat-file", "blob", blob)
+            if len(_BLOBS[blob]) > MAX_FILE:
+                raise RuntimeError(f"{n} is too large to read safely")
             out[n] = _BLOBS[blob]
     return out
 
@@ -325,7 +352,7 @@ def unmeasured(files):
         if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
             continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
         for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
-            flat = " ".join(line.split())
+            flat = " ".join(line.split())[:4000]
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])  # the WHOLE line decides identity (its hash), never a truncation
