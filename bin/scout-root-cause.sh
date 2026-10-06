@@ -89,7 +89,7 @@ echo "- scan the release copy from the registry (our author): exit $rc — findi
 # the fixture's glibc (the rescan self-check's own target). Each form gets its own scratch tag (an attestation cannot be removed);
 # scanned by tag with --vex-author for OUR published author. A fixture without the target records that and tries nothing.
 OUR_AUTHOR=$(jq -er .author "$here/../.vex/fosterstack-cache.openvex.json" 2>/dev/null || echo "")
-OUR_AUTHOR_RE=$(python3 -c 'import re, sys; print("^" + re.escape(sys.argv[1]) + "$")' "$OUR_AUTHOR")
+OUR_AUTHOR_RE=$(python3 bin/scout-root-cause.py author-re "$OUR_AUTHOR")
 g_purl=$(jq -r '[.vulnerabilities[]? | select(.cve == "CVE-2023-4911") | .location.dependency.package.name][0] // empty' "$a/control-before.json" 2>/dev/null)
 echo "- our statement on the fixture's CVE-2023-4911 (author \`${OUR_AUTHOR:-unreadable}\`, package \`${g_purl:-absent from the fixture report}\`):" >> "$summ"
 if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then

@@ -25,6 +25,7 @@ check("doc: one not_affected statement as vexctl writes it", st == {
 check("doc: no subcomponent when none is given", "subcomponents" not in R.vex_doc("a", "p", "C", None)["statements"][0]["products"][0])
 cases = R.cases()
 ids = [c["id"] for c in cases]
+check("author-re: an anchored, escaped regex (a dot and a space stay literal)", R.main(["author-re", "FosterStack LLC"]) == 0)
 check("cases: unique ids", len(ids) == len(set(ids)), ids)
 for v in ("1.26.0", "1.25.0", "1.24.0"):
     vc = {c["id"].split("@")[0]: c for c in cases if c["version"] == v}
