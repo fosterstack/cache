@@ -162,6 +162,44 @@ else
   echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"
 fi
 
+# --- 1d. the attestation-manifest child BUILT into a multi-platform index (advisor 0221, probe 3) -----------------------------------
+# Scout's own attach to an index stores nothing it can read (1c). Scout DOES rewrite a single image into an index with an
+# attestation-manifest child (1/1b), so: attach to a scratch copy of the amd64 child, take that child's attestation-manifest descriptor
+# (annotations kept: vnd.docker.reference.type / .digest) and add it to a scratch copy of the original index with
+# `docker buildx imagetools create`. The built index is scanned by tag and by exact digest with our author; children and attestations
+# are recorded. A fixture without the target tries nothing.
+echo -e "\n### 1d. built index (scratch tag \`multi-built\`: the debian 12.0 manifest list plus an attestation-manifest child for amd64)\n" >> "$summ"
+if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+  skopeo copy -q "docker://docker.io/library/debian@$CHILD" "docker://$PROBE_REPO:child-a" >> "$a/copy.log" 2>&1
+  python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" CVE-2023-4911 "$g_purl" "$a/built.vex.json"
+  docker scout attestation add --file "$a/built.vex.json" --predicate-type "$PRED" "$PROBE_REPO:child-a" > "$a/built-add.log" 2>&1
+  echo "- child copy: attestation add exit $? — \`$(tail -1 "$a/built-add.log" | cut -c1-160)\`" >> "$summ"
+  skopeo inspect --raw "docker://$PROBE_REPO:child-a" 2>/dev/null \
+    | jq -c '[.manifests[]? | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")][0] // empty' > "$a/built-descriptor.json"
+  if [ -s "$a/built-descriptor.json" ]; then
+    echo "- the child's attestation-manifest descriptor: \`$(cut -c1-300 "$a/built-descriptor.json")\`" >> "$summ"
+    skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$PROBE_REPO:multi-built" >> "$a/copy.log" 2>&1
+    docker buildx imagetools create --tag "$PROBE_REPO:multi-built" --file "$a/built-descriptor.json" "$PROBE_REPO:multi-built@$MULTI" > "$a/built-create.log" 2>&1
+    echo "- imagetools create (the original index plus the descriptor): exit $? — \`$(tail -1 "$a/built-create.log" | cut -c1-200)\`" >> "$summ"
+    bb=$(digest "$PROBE_REPO:multi-built"); children "$PROBE_REPO:multi-built" > "$a/built.children"
+    echo "- built index digest \`$bb\` (the original was \`$MULTI\`); children: $(cat "$a/built.children")" >> "$summ"
+    f="$a/built-after-tag.json"
+    docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi-built" > "$f" 2> "$f.err"; rc=$?
+    echo "- built index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+    if [ "$bb" != READ-FAILED ]; then
+      f="$a/built-after-digest.json"
+      docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:$bb" > "$f" 2> "$f.err"; rc=$?
+      echo "- built index scanned by its exact digest \`sha256:$bb\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+    fi
+    docker scout attestation list "registry://$PROBE_REPO:multi-built" > "$a/built-attestation-list.txt" 2>&1
+    echo "- built index attestation list: \`$(head -c 400 "$a/built-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+  else
+    echo "- built index not attempted: Scout created no attestation-manifest child on the child copy" >> "$summ"
+  fi
+else
+  echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"
+fi
+
 # --- 2. the matrix: control, one field at a time, our forms; three Scout versions --------------------------------------
 echo -e "\n## 2. Matrix\n\n| case | Scout | image | location | file | --vex-author | subcomponent | product | result |\n|---|---|---|---|---|---|---|---|---|" >> "$summ"
 current=""
