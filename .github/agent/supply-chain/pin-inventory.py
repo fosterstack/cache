@@ -232,22 +232,6 @@ def _uses(u, node, out, labels):
 _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target",
                    "--prefix", "--root", "--cache-dir", "--python", "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary", "--progress-bar",
                    "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action"}
-def _effective_pull(tail):
-    """The pull policy docker run/create ends up with: the LAST --pull among the options before the image operand (pflag keeps the final
-    value; an option's value is skipped, so a quoted value or a container argument after the image never counts; Codex #187 round 2)."""
-    toks, i, state = tail.split(), 0, None
-    while i < len(toks) and toks[i].startswith("-"):
-        t = toks[i]
-        if t.startswith("--pull="):
-            state = t.split("=", 1)[1]
-        elif t == "--pull" and i + 1 < len(toks):
-            state, i = toks[i + 1], i + 1
-        elif t in _DOCKER_VALUE_OPTS and "=" not in t:
-            i += 1
-        i += 1
-    return state
-
-
 def _docker_tails(run):
     return _tails(run, lambda t: t in ("docker", "podman", "nerdctl", "buildah"), {"run", "pull", "create"}, _DOCKER_VALUE_OPTS, keep_sub=True)
 _DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "--tlscacert", "--tlscert", "--tlskey", "--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
@@ -255,22 +239,32 @@ _DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-leve
 
 
 def _docker_images(cmd_args):
-    """The image of a docker run/pull/create: the first argument that is not an option or an option's value (quotes read as a shell would)."""
+    return _docker_operand(cmd_args)[0]
+
+
+def _docker_operand(cmd_args):
+    """(the image of a docker run/pull/create, the effective --pull policy): the image is the first argument that is not an option or an option's
+    value (quotes read as a shell would); the policy is the LAST --pull among the options before it (pflag keeps the final value), read by the SAME
+    walk so the two can never disagree about which words are options, values or the operand (Codex #187 rounds 2-3)."""
     try:
         toks = shlex.split(cmd_args)
     except ValueError:
         toks = cmd_args.split()
-    i = 0
+    i, pull = 0, None
     while i < len(toks):
         t = toks[i]
+        if t.startswith("--pull="):
+            pull = t.split("=", 1)[1]; i += 1; continue
+        if t == "--pull" and i + 1 < len(toks):
+            pull = toks[i + 1]; i += 2; continue
         if t.startswith("-"):
             takes = (t in _DOCKER_VALUE_OPTS and "=" not in t) or (i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--"))
             i += 2 if takes else 1
             continue
         if "$" in t:
-            return ["(variable)"]                      # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
-        return [t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []
-    return []
+            return ["(variable)"], pull                # the image is a shell variable: a placeholder item that cannot be proven, so a new one is refused
+        return ([t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) else []), pull
+    return [], pull
 
 
 _ENV_CTX = [""]
@@ -321,8 +315,9 @@ def _step_items(node, out, labels):
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             out.append(Item("tool", m.group(1), "latest"))
         for sub, tail in _docker_tails(run):
-            local_only = sub in ("run", "create") and _effective_pull(tail) == "never"
-            for img in _docker_images(tail):
+            images, pull = _docker_operand(tail)
+            local_only = sub in ("run", "create") and pull == "never"
+            for img in images:
                 it = _image_item(img)
                 if local_only and it.name.startswith("localhost/"):
                     continue      # run/create with --pull=never can only use an image already in the daemon: built or loaded by this job, never downloaded, no age to prove (advisor 0203); a pull, a container:/services: image, uses: docker:// and localhost:PORT/ stay items
