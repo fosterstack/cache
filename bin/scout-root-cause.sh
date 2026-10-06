@@ -174,12 +174,14 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
   python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" CVE-2023-4911 "$g_purl" "$a/built.vex.json"
   docker scout attestation add --file "$a/built.vex.json" --predicate-type "$PRED" "$PROBE_REPO:child-a" > "$a/built-add.log" 2>&1
   echo "- child copy: attestation add exit $? — \`$(tail -1 "$a/built-add.log" | cut -c1-160)\`" >> "$summ"
-  skopeo inspect --raw "docker://$PROBE_REPO:child-a" 2>/dev/null \
+  child_ref="$PROBE_REPO:child-a"
+  skopeo inspect --raw "docker://$child_ref" 2>/dev/null \
     | jq -c '[.manifests[]? | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")][0] // empty' > "$a/built-descriptor.json"
   if [ -s "$a/built-descriptor.json" ]; then
     echo "- the child's attestation-manifest descriptor: \`$(cut -c1-300 "$a/built-descriptor.json")\`" >> "$summ"
     skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$PROBE_REPO:multi-built" >> "$a/copy.log" 2>&1
-    docker buildx imagetools create --tag "$PROBE_REPO:multi-built" --file "$a/built-descriptor.json" "$PROBE_REPO:multi-built@$MULTI" > "$a/built-create.log" 2>&1
+    built_ref="$PROBE_REPO:multi-built"; built_src="$built_ref@$MULTI"
+    > "$a/built-create.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --file "$a/built-descriptor.json" "$built_src"
     crc=$?
     echo "- imagetools create (the original index plus the descriptor): exit $crc — \`$(tail -1 "$a/built-create.log" | cut -c1-200)\`" >> "$summ"
     bb=$(digest "$PROBE_REPO:multi-built"); children "$PROBE_REPO:multi-built" > "$a/built.children"
