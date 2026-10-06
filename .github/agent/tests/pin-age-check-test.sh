@@ -855,18 +855,23 @@ src = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    env:\n      PR
 assert not any("private_download_url" in k.lower() for k in src), sorted(src)
 PY
 
-CASE="an image named localhost/... (no port) is local to the job and is NOT an item (advisor 0203); localhost:PORT/... is a registry and stays an item, and so does a name that only starts with localhost (localhostx/...)"
+CASE="an image named localhost/... (no port) used by docker run/create with --pull=never is local to the job and is NOT an item (advisor 0203); a pull, a run without --pull=never, a container: or services: image, localhost:PORT/, localhostx/ and a mid-name localhost/ all stay items (a registry can answer for localhost; Codex #187)"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-wf = lambda img: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker run --rm " + img + " true\n"}
-assert not [k for k in inv.inventory(wf("localhost/fa-production")) if k.startswith("image:")], "a localhost/ image is local"
-assert not [k for k in inv.inventory(wf("localhost/fa-debug:latest")) if k.startswith("image:")]
-assert [k for k in inv.inventory(wf("localhost:5000/fa-production:1")) if k.startswith("image:")], "localhost:PORT is a registry"
-assert [k for k in inv.inventory(wf("localhostx/fa-production:1")) if k.startswith("image:")], "a name that only starts with localhost is not local"
-assert [k for k in inv.inventory(wf("registry.example/localhost/fa:1")) if k.startswith("image:")], "localhost/ in the middle of a name is not local"
-svc = {".github/workflows/a.yml": "jobs:\n  j:\n    services:\n      s:\n        image: localhost/fa-x\n    steps:\n      - run: echo hi\n"}
-assert not [k for k in inv.inventory(svc) if k.startswith("image:")], "a services: image named localhost/ is local too"
+step = lambda cmd: {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + cmd + "\n"}
+imgs = lambda files: [k for k in inv.inventory(files) if k.startswith("image:")]
+D = "@sha256:" + "a" * 64
+assert not imgs(step("docker run --pull=never --rm localhost/fa-production true")), "run --pull=never of a localhost/ image is local"
+assert not imgs(step("docker create --pull never localhost/fa-debug:latest")), "create --pull never too"
+assert imgs(step("docker run --rm localhost/fa-production true")), "a run without --pull=never may pull"
+assert imgs(step("docker pull localhost/x" + D)), "a pull downloads from a registry named localhost"
+assert imgs(step("docker run --pull=always localhost/x" + D)), "--pull=always downloads"
+assert imgs(step("docker run --pull=never localhost:5000/fa-production:1 true")), "localhost:PORT is a registry"
+assert imgs(step("docker run --pull=never localhostx/fa-production:1 true")), "a name that only starts with localhost is not local"
+assert imgs(step("docker run --pull=never registry.example/localhost/fa:1 true")), "localhost/ in the middle of a name is not local"
+cs = {".github/workflows/a.yml": "jobs:\n  j:\n    container: localhost/fa-x\n    services:\n      s:\n        image: localhost/fa-y\n    steps:\n      - uses: docker://localhost/fa-z" + D + "\n"}
+assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: docker:// pull their images
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
