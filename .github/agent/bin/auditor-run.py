@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
 from auditorlib import vex
+from auditorlib import signed_commit
 from auditorlib import knowledge as K
 
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
@@ -248,6 +249,55 @@ def _close_superseded(branch, url, ws):
         print("note: superseded-PR cleanup skipped: %s" % type(e).__name__)
 
 
+def _signed_delivery(ws, branch, base_sha, title, paths):
+    """ONE commit on `branch`, rebuilt on base_sha, made through the GitHub API with the App's token so GitHub signs it (the live branch moves only
+    after the signed commit exists). Returns (oid, None) or (None, the failure text)."""
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not repo:
+        return None, "signed commit: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit"
+    notes = []
+    try:
+        oid = signed_commit.commit_via_api(repo, branch, base_sha, title, signed_commit.read_changes(ws, paths), notes=notes)
+    except signed_commit.CommitError as e:
+        return None, str(e)
+    for n in notes:
+        print("warning: " + n)
+    return oid, None
+
+
+def _disarm_before_replace(ws, pr):
+    """An armed PR must never carry new content that auto-merge was not armed for (the panel's rule): disarm BEFORE the branch is replaced. None, or the failure text."""
+    if not pr:
+        return None
+    v = subprocess.run(["gh", "pr", "view", pr, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"], cwd=ws, capture_output=True, text=True)
+    if v.returncode != 0:
+        return "gh pr view: " + (v.stderr or "").strip()
+    if (v.stdout or "").strip() == "true":
+        d = subprocess.run(["gh", "pr", "merge", "--disable-auto", pr], cwd=ws, capture_output=True, text=True)
+        if d.returncode != 0:
+            return "could not disable auto-merge on %s before replacing its branch: %s" % (pr, (d.stderr or "").strip())
+    return None
+
+
+def _head_is(ws, pr, oid):
+    """Arm only the head THIS run wrote: another run's later replacement must never inherit this run's arming. None, or the failure text."""
+    h = subprocess.run(["gh", "pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid"], cwd=ws, capture_output=True, text=True)
+    now = (h.stdout or "").strip() if h.returncode == 0 else ""
+    if now != oid:
+        return "the PR's head is %s, not the verified %s (head changed since it was verified, or it could not be read): not arming auto-merge" % (now[:12] or "unknown", oid[:12])
+    return None
+
+
+def _find_pr(ws, branch):
+    """(url, None) for the open same-repo PR from `branch` into main, ("", None) when the lookup SUCCEEDED and found none, ("", error) when it failed:
+    a failed lookup is never "no PR" (the caller would replace the branch under a PR it could not see, armed)."""
+    q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
+                        "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
+    if q.returncode != 0:
+        return "", "gh pr list: " + ((q.stderr or q.stdout or "").strip() or "failed")
+    return (q.stdout or "").strip(), None
+
+
 def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json + .snyk + osv-scanner.toml in a single commit
@@ -295,9 +345,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
         seq = ["git checkout -B %s origin/main" % branch,
-               "git add " + " ".join(staged),
-               "git commit -m %s" % shlex.quote(title),
-               "git push -u origin %s" % branch,
+               "gh api graphql createCommitOnBranch %s -- %s" % (branch, " ".join(staged)),   # a signed commit made through the API: no git commit, no git push
                "gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title))]
         if automerge:
             seq.append("gh pr merge --auto --squash %s" % branch)
@@ -336,37 +384,47 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
             shutil.copyfile(s, d)
     except Exception as e:
         return None, "stage files: %s" % e
-    _git("add", ".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml", ".auditor/accepted-items.json", *extra)
-    r = _git("commit", "-m", title)
+    # the files THIS run changed against main (as `git add` + `git commit` once found them: a path that is absent and untracked is skipped)
+    r = _git("status", "--porcelain", "-z", "--untracked-files=all", "--", *staged)
     if r.returncode != 0:
-        return None, ("git commit: " + (r.stderr or "").strip())
-    r = _git("push", "-u", "origin", branch, "--force-with-lease")
-    if r.returncode != 0:
-        return None, ("git push: " + (r.stderr or "").strip())
+        return None, ("git status: " + (r.stderr or "").strip())
+    changed = [e[3:] for e in (r.stdout or "").split("\0") if len(e) > 3]
+    if not changed:
+        return None, "signed commit: nothing to commit (the run changed none of the suppression files)"
+    sha = _git("rev-parse", "origin/main")
+    if sha.returncode != 0:
+        return None, ("git rev-parse: " + (sha.stderr or "").strip())
     # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
     # it (no duplicate, no false failure) instead of a second `gh pr create`.
-    def _existing_pr():
-        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
-                            "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
-        return (q.stdout or "").strip() if q.returncode == 0 else ""
-    ex = _existing_pr()
+    def _arm_head(u):
+        err = _head_is(ws, u, oid)
+        if err:
+            return None, err
+        _arm_automerge(u, ws)
+        return u, None
+    ex, err = _find_pr(ws, branch)
+    if err:
+        return None, err                         # a discovery failure aborts BEFORE any ref write
+    err = _disarm_before_replace(ws, ex)         # the existing PR is found and DISARMED first, then its branch is replaced
+    if err:
+        return None, err
+    # the commit is made THROUGH THE API so GitHub signs it (main requires signed commits; a `git commit` is unsigned and left the PR BLOCKED)
+    oid, err = _signed_delivery(ws, branch, sha.stdout.strip(), title, changed)
+    if err:
+        return None, err
     if ex:
         _close_superseded(branch, ex, ws)
-        if automerge:
-            _arm_automerge(ex, ws)
-        return ex, None
+        return _arm_head(ex) if automerge else (ex, None)
     create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
     if not automerge:
         create.insert(3, "--draft")   # after "create": `gh pr create --draft ...`
     r = subprocess.run(create, cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         if "already exists" in (r.stderr or "").lower():   # race: reuse the existing one
-            ex = _existing_pr()
+            ex, _ = _find_pr(ws, branch)
             if ex:
                 _close_superseded(branch, ex, ws)
-                if automerge:
-                    _arm_automerge(ex, ws)
-                return ex, None
+                return _arm_head(ex) if automerge else (ex, None)
         return None, ("gh pr create: " + (r.stderr or "").strip())
     url = r.stdout.strip()
     # AC3: enable auto-merge (squash). The merge still waits on all required checks + the main
@@ -374,7 +432,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if url:
         _close_superseded(branch, url, ws)
     if automerge and url:
-        _arm_automerge(url, ws)
+        return _arm_head(url)                    # a new PR is bound to the verified head too
     return url, None
 
 
@@ -483,9 +541,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         seq = ["git checkout -B %s origin/main" % branch,
                "go get %s@%s" % (module, to),
                "go mod tidy",
-               "git add go.mod go.sum",
-               "git commit -m %s" % shlex.quote(title),
-               "git push -u origin %s --force-with-lease" % branch]
+               "gh api graphql createCommitOnBranch %s -- go.mod go.sum" % branch]   # a signed commit made through the API: no git commit, no git push
         if ("SHIM_TARGET %s " % branch) in prior:
             seq.append("gh pr edit %s --title %s" % (branch, shlex.quote(title)))       # same PR, updated
         else:
@@ -524,30 +580,49 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if t.returncode != 0:
         _git("reset", "--hard", "origin/main")
         return None, ("go mod tidy: " + (t.stderr or "").strip()), "error"
-    _git("add", "go.mod", "go.sum")
+    staged = [f for f in ("go.mod", "go.sum") if os.path.exists(os.path.join(ws, f))]   # a module with no dependencies has no go.sum
+    if "go.mod" not in staged:
+        return None, "go.mod is missing after go get / go mod tidy: nothing to stage", "error"
+    r = _git("add", *staged)
+    if r.returncode != 0:                        # a staging failure is an error, never "nothing changed"
+        return None, ("git add: " + (r.stderr or "").strip()), "error"
     if _git("diff", "--cached", "--quiet").returncode == 0:
         # the bump changed nothing (already at/after the fixed version) — nothing to deliver
         _git("reset", "--hard", "origin/main")
         return None, None, "unresolvable"
-    r = _git("commit", "-m", title)
-    if r.returncode != 0:
-        return None, ("git commit: " + (r.stderr or "").strip()), "error"
     # AC2: the target's branch may already carry an open PR from an earlier run. Unchanged
-    # go.mod/go.sum -> no push (the PR is left alone); changed -> push to the SAME branch.
+    # go.mod/go.sum (this run's tree against that branch) AND a head that GitHub verifies as signed,
+    # on today's main -> no commit (the PR is left alone). Anything else (changed files, an unsigned
+    # legacy head, a head on an older main, a lookup that fails) -> the branch is rebuilt on main
+    # and ONE signed commit is made on it, through the API.
     remote_same = (_git("fetch", "origin", branch).returncode == 0
-                   and _git("diff", "--quiet", "FETCH_HEAD", "HEAD", "--", "go.mod", "go.sum").returncode == 0)
-    if not remote_same:
-        r = _git("push", "-u", "origin", branch, "--force-with-lease")
-        if r.returncode != 0:
-            return None, ("git push: " + (r.stderr or "").strip()), "error"
+                   and _git("diff", "--quiet", "FETCH_HEAD", "--", "go.mod", "go.sum").returncode == 0)
+    sha = _git("rev-parse", "origin/main")
+    if sha.returncode != 0:
+        return None, ("git rev-parse: " + (sha.stderr or "").strip()), "error"
+    base_sha = sha.stdout.strip()
+    ex, err = _find_pr(ws, branch)
+    if err:
+        return None, err, "error"                # a discovery failure aborts BEFORE any ref write
+    files = [f for f in ("go.mod", "go.sum") if os.path.exists(os.path.join(ws, f))]    # a module with no dependencies has no go.sum
+    oid = None
+    if remote_same:                              # reuse = ONE verified commit on main changing only these files, with these exact bytes
+        oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, signed_commit.read_changes(ws, files))
+    if oid is None:
+        err = _disarm_before_replace(ws, ex)     # the existing PR is found and DISARMED first, then its branch is replaced
+        if err:
+            return None, err, "error"
+        oid, err = _signed_delivery(ws, branch, base_sha, title, files)
+        if err:
+            return None, err, "error"
 
-    def _existing():
-        q = subprocess.run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "url,isCrossRepository,baseRefName",
-                            "--jq", '[.[] | select(.isCrossRepository == false and .baseRefName == "main")][0].url // ""'], cwd=ws, capture_output=True, text=True)
-        return (q.stdout or "").strip() if q.returncode == 0 else ""
     def _arm(u):
         if automerge and u:
+            err = _head_is(ws, u, oid)           # EVERY path: the PR's actual head must be the verified one (made, or reused-and-verified)
+            if err:
+                return err
             _arm_automerge(u, ws)
+        return None
     def _reuse(u):
         # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never
         # armed, never reported delivered) — whichever discovery path found the PR
@@ -555,8 +630,8 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
                            capture_output=True, text=True)
         if e.returncode != 0:
             return None, ("gh pr edit: " + (e.stderr or "").strip()), "error"
-        _arm(u); return u, None, "delivered"
-    ex = _existing()
+        err = _arm(u)
+        return (None, err, "error") if err else (u, None, "delivered")
     if ex:
         return _reuse(ex)
     create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
@@ -565,12 +640,13 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     r = subprocess.run(create, cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         if "already exists" in (r.stderr or "").lower():
-            ex = _existing()
+            ex, _ = _find_pr(ws, branch)
             if ex:
                 return _reuse(ex)
         return None, ("gh pr create: " + (r.stderr or "").strip()), "error"
-    url = r.stdout.strip(); _arm(url)
-    return url, None, "delivered"
+    url = r.stdout.strip()
+    err = _arm(url)
+    return (None, err, "error") if err else (url, None, "delivered")
 
 
 def _ignores_from_statements(statements, expiry_map):
