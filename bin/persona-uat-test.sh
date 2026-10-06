@@ -199,6 +199,25 @@ for p in (18080, 18081):
     assert urllib.request.urlopen("http://127.0.0.1:%d/ours-%d.txt" % (p, p)).read().decode().strip() == "ours-%d" % p
 PY
 
+# proc-net fixtures for the loopback-listener guard (the driver reads /proc/net/tcp and tcp6 from --proc-net; production passes nothing)
+# mkprocnet <dir> [state:addr:port ...]: state 0A = LISTEN, 01 = ESTABLISHED; addr is a dotted IPv4 or the word ip6loop / ip6any
+mkprocnet() { local d=$1; shift; mkdir -p "$d"; python3 - "$d" "$@" <<'PYP'
+import socket, struct, sys
+d, rows = sys.argv[1], sys.argv[2:]
+hdr = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+t4, t6 = [hdr], [hdr]
+for n, r in enumerate(rows):
+    st, addr, port = r.split(":")
+    if addr in ("ip6loop", "ip6any"):
+        raw = "00000000000000000000000001000000" if addr == "ip6loop" else "0" * 32
+        t6.append("   %d: %s:%04X %s:0000 %s 00000000:00000000 00:00000000 00000000     0        0 %d 1 0\n" % (n, raw, int(port), "0" * 32, st, 1000 + n))
+    else:
+        raw = "%08X" % struct.unpack("<I", socket.inet_aton(addr))[0]
+        t4.append("   %d: %s:%04X 00000000:0000 %s 00000000:00000000 00:00000000 00000000     0        0 %d 1 0\n" % (n, raw, int(port), st, 1000 + n))
+open(d + "/tcp", "w").writelines(t4); open(d + "/tcp6", "w").writelines(t6)
+PYP
+}
+mkprocnet "$work/procnet"
 # run <name> <plan-json> <mode> [VAR=val ...]  (sets rc; dirs under $work/<name>/)
 run() {
   local name=$1 plan=$2 mode=$3; shift 3
@@ -214,7 +233,7 @@ run() {
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X "$@" \
       bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --gh "$work/gh" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
-        --agent "python3 $work/stub.py $work/$name" ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${PUBLISH+--publish} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
+        --agent "python3 $work/stub.py $work/$name" --proc-net "${PROCNET:-$work/procnet}" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${PUBLISH+--publish} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
 }
 out() { echo "$work/$1/out"; }
 nlines() { wc -l <"$1" | tr -d ' '; }
@@ -757,7 +776,7 @@ for kind in readme docs; do
   else echo "# README" >"$rp/README.md"; rm -rf "$rp/docs"; ln -s internal "$rp/docs"; fi
   mkdir -p "$work/sym-$kind"; : >"$work/sym-$kind/log"; : >"$work/sym-$kind/docker.log"; echo '{}' >"$work/sym-$kind/plan.json"
   sed "s#__LOG__#$work/sym-$kind/docker.log#" "$work/docker.tmpl" >"$work/sym-$kind/docker"; chmod +x "$work/sym-$kind/docker"; rc=0
-  env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/sym-$kind/gh.log" PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$rp" \
+  env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/sym-$kind/gh.log" PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$rp" \
     --out "$work/sym-$kind/out" --tools "$work/tools.json" --docker "$work/sym-$kind/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py $work/sym-$kind" \
     >/dev/null 2>"$work/sym-$kind/stderr" || rc=$?
   echo "$rc" >"$work/sym-$kind/rc"
@@ -895,7 +914,7 @@ sed "s#__LOG__#$work/integ/docker.log#" "$work/docker.tmpl" >"$work/integ/docker
     ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integ/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
     ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 \
     AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY SOME_UNKNOWN_SECRET=SECRET-UNK \
-    python3 bin/persona-uat.py --mode rc --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
+    python3 bin/persona-uat.py --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
       --docker "$work/integ/docker" --gh "$work/gh" --port 18080 --ready-timeout 5 --agent "python3 bin/persona-uat-agent.py" ) \
   >"$work/integ/stdout" 2>"$work/integ/stderr" || rc=$?
 CASE="integrated: the real driver, agent (given by a RELATIVE path) and provider run to completion with five reports, and the run FAILS because a documented step failed as written"
@@ -978,7 +997,7 @@ printf '#!/usr/bin/env bash\nenv | cut -d= -f1 | sort | tr "\\n" " " >>"%s"; ech
 rc=0
 env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/envdock/gh.log" GITHUB_REPOSITORY=own/cache GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY \
   AWS_ACCESS_KEY_ID=SECRET-AWS-ID ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED SOME_API_SECRET=SECRET-UNK \
-  PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$repo" --out "$work/envdock/out" --tools "$work/tools.json" \
+  PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/envdock/out" --tools "$work/tools.json" \
   --docker "$work/envdock/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py $work/envdock" >/dev/null 2>&1 || rc=$?
 CASE="fence 1: no job credential (GitHub, AWS, OIDC, model token, any *_TOKEN/*_KEY/*_SECRET, AWS_*, ACTIONS_*) is in the environment of ANY docker call the driver makes"
 check python3 - "$work/envdock/envs" <<'PY'
@@ -1049,7 +1068,7 @@ PY
 CASE="fence 3: without --port the image is published on 127.0.0.1:8080 and handed to the agent as http://127.0.0.1:8080"
 mkdir -p "$work/defport"; : >"$work/defport/log"; : >"$work/defport/docker.log"; echo '{}' >"$work/defport/plan.json"
 sed "s#__LOG__#$work/defport/docker.log#" "$work/docker.tmpl" >"$work/defport/docker"; chmod +x "$work/defport/docker"; rc=0
-PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$repo" --out "$work/defport/out" --tools "$work/tools.json" \
+PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/defport/out" --tools "$work/tools.json" \
   --docker "$work/defport/docker" --gh "$work/gh" --ready-timeout 1 --agent "python3 $work/stub.py $work/defport" >/dev/null 2>&1 || rc=$?
 check grep -q '127.0.0.1:8080:8080' "$work/defport/docker.log"
 CASE="fence 3: no AWS_*/ACTIONS_*/GITHUB_TOKEN/GH_TOKEN/*_TOKEN/*_KEY/*_SECRET variable reaches the agent (the model identity ANTHROPIC_* the provider needs is the one exception, pinned above)"
@@ -1074,5 +1093,41 @@ for path in glob.glob(sys.argv[1] + "/*/gh.log") + glob.glob(sys.argv[1] + "/int
         assert l.startswith(("issue create", "issue edit", "issue list", "label create")), (path, l)
 assert seen > 0
 PY
+# --- advisor 0206: host networking stays (the agent's shell containers reach the loopback endpoint), so the driver GUARDS the loopback:
+# before each persona's agent runs it reads the listening sockets from /proc/net/tcp and tcp6 and refuses (fail closed, the persona is
+# "did not run", the run is blocking) when a loopback-bound listener exists that is not one of its own (the endpoint port, the Jenkins and
+# kind ports above it), DNS (53) or one the caller names with --allow-listen. Wildcard binds and non-listening sockets are not loopback listeners.
+mkprocnet "$work/pn-bad" "0A:127.0.0.1:9999"
+PROCNET="$work/pn-bad" run guardbad '{}' rc
+CASE="guard: an unexpected loopback listener (127.0.0.1:9999) makes every persona 'did not run' (blocking, exit nonzero), and no agent ran"
+check python3 - "$work/guardbad" "$rc" <<'PY'
+import os, sys
+d, rc = sys.argv[1], int(sys.argv[2])
+assert rc != 0, rc
+assert os.path.getsize(d + "/log") == 0, "an agent ran next to an unexpected loopback listener"
+reports = [open(d + "/out/" + f).read() for f in sorted(os.listdir(d + "/out")) if f.endswith(".report.md")]
+assert len(reports) == 5 and all("did not run" in r and "9999" in r for r in reports), reports
+PY
+mkprocnet "$work/pn-bad6" "0A:ip6loop:9998"
+PROCNET="$work/pn-bad6" run guardbad6 '{}' rc
+CASE="guard: an IPv6 loopback listener (::1:9998) is refused too"
+check python3 - "$work/guardbad6" "$rc" <<'PY'
+import os, sys
+assert int(sys.argv[2]) != 0 and os.path.getsize(sys.argv[1] + "/log") == 0
+PY
+mkprocnet "$work/pn-ok" "0A:127.0.0.1:18080" "0A:127.0.0.1:18081" "0A:127.0.0.1:18082" "0A:127.0.0.53:53" "0A:0.0.0.0:22" "0A:ip6any:22" "01:127.0.0.1:9999"
+PROCNET="$work/pn-ok" run guardok '{}' rc
+CASE="guard: the endpoint and the two tool ports, DNS, a wildcard bind (0.0.0.0:22, ::22) and a non-listening loopback connection are NOT unexpected: the run is clean"
+check test "$rc" -eq 0
+PROCNET="$work/pn-bad" ALLOW_LISTEN=9999 run guardallow '{}' rc
+CASE="guard: --allow-listen 9999 names the listener and the run proceeds"
+check test "$rc" -eq 0
+PROCNET="$work/no-such-procnet" run guardmissing '{}' rc
+CASE="guard: an unreadable proc-net (no tcp file) refuses: nothing can be said about the loopback, so no agent runs"
+check python3 - "$work/guardmissing" "$rc" <<'PY'
+import os, sys
+assert int(sys.argv[2]) != 0 and os.path.getsize(sys.argv[1] + "/log") == 0
+PY
+
 echo "persona-uat: $pass passed, $failn failed"
 test "$failn" -eq 0

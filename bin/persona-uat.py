@@ -166,6 +166,32 @@ def http_ready(url):
         return False
 
 
+def loopback_listeners(proc_net):
+    """The ports with a LISTEN socket bound to a loopback address (127.0.0.0/8 or ::1), read from the kernel's tcp and tcp6 tables. The agent's
+    shell containers use host networking to reach the endpoint, so anything else listening on the loopback is reachable from a persona: the
+    driver refuses to run an agent next to one it does not know (advisor 0206). Wildcard binds and non-listening sockets are not counted.
+    Raises Refuse when neither table can be read: nothing can then be said about the loopback."""
+    ports, read = set(), 0
+    for name in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(proc_net, name)) as fh:
+                lines = fh.read().splitlines()[1:]
+        except OSError:
+            continue
+        read += 1
+        for ln in lines:
+            f = ln.split()
+            if len(f) < 4 or f[3] != "0A":
+                continue
+            addr, _, port = f[1].partition(":")
+            loop = addr.endswith("7F") if len(addr) == 8 else addr == "00000000000000000000000001000000"
+            if loop:
+                ports.add(int(port, 16))
+    if not read:
+        raise Refuse("the kernel's socket tables cannot be read (%s)" % proc_net)
+    return ports
+
+
 def wait_ready(docker, cid, url, timeout):
     """running AND answering; a container that stops is a failure at once"""
     deadline = time.time() + timeout
@@ -364,6 +390,8 @@ def parse_args():
     ap.add_argument("--ready-timeout", type=int, default=120)
     ap.add_argument("--agent-timeout", type=int, default=3600)
     ap.add_argument("--publish", action="store_true")
+    ap.add_argument("--proc-net", default="/proc/net", help="where the kernel's tcp and tcp6 tables are read (a test passes a fixture)")
+    ap.add_argument("--allow-listen", type=int, action="append", default=[], help="a loopback port that may listen besides the driver's own")
     try:
         return ap.parse_args()
     except SystemExit as e:
@@ -505,6 +533,15 @@ def main():
                     "model": models["PERSONA_UAT_COMPLIANCE_MODEL" if persona == "compliance-reviewer" else "PERSONA_UAT_MODEL"],
                     "persona": persona, "token_budget": budget, "tools": req_tools,
                 }
+                try:
+                    stray = sorted(loopback_listeners(a.proc_net) - {53, a.port, a.port + 1, a.port + 2} - set(a.allow_listen))
+                except Refuse as e:
+                    record(persona, None, "did not run: %s\n" % e, "the loopback could not be inspected (%s)" % e)
+                    continue
+                if stray:
+                    record(persona, None, "did not run: unexpected loopback listener(s)\n",
+                           "an unexpected listener is bound to the loopback (port%s %s): a persona's containers share the host network, so none runs" % ("s" if len(stray) > 1 else "", ", ".join(map(str, stray))))
+                    continue
                 args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--shell-image", tools["shell"]]
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, a.agent_timeout)
                 if answer is None:

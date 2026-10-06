@@ -1,6 +1,7 @@
 # The one hash-pinned install of the persona UAT provider SDK (REQ-UAT-001-AC5): the jobs run
 #   python3 -m pip install --quiet --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
 # Every wheel of each pinned version is listed so any runner platform resolves; bump the set by regenerating it, never by hand.
+# Dependency closure checked identical for Python 3.11 through 3.14 (no marker differs), so the job's setup-python version may be any of them.
 annotated-types==0.8.0 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
 anthropic==1.11.0 \
