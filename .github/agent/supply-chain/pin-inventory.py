@@ -172,6 +172,11 @@ def _uses(u, node, out, labels):
         repo = "/".join(ref_path.split("/")[:2])
         out.append(Item("action", repo, ref, labels.get(f"{ref_path}@{ref}", ""), "/".join(ref_path.split("/")[2:])))
         w = node.get("with")
+        known = {i for i, _ in INSTALLER_INPUTS.get(repo.lower(), [])}
+        if isinstance(w, dict) and repo.lower() != "actions/setup-go":     # the Go toolchain is a product dependency (rule 1, amendment 2)
+            for key, val in w.items():
+                if key not in known and isinstance(val, str) and val.strip() and re.search(r"(^|[-_])(versions?|tags?|releases?|tools|images?)$", key):
+                    out.append(Item("tool", f"{repo}:{key}", "(input)"))       # an installer-shaped input nobody classified: a placeholder, so a new or changed one is refused
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
@@ -247,6 +252,10 @@ def _step_items(node, out, labels):
                 prev = tok
                 if value_of_option:
                     continue
+                tok = tok.strip("'\"")
+                if "$" in tok and not tok.startswith("-"):
+                    out.append(Item("package", "pypi/(variable)", "(unpinned)"))     # pip install $DEPS: a variable list, a placeholder
+                    continue
                 if re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*(\[[\w,.-]*\])?", tok) and not tok.startswith("-"):
                     out.append(Item("package", f"pypi/{tok.split('[')[0].lower().replace('_', '-')}", "(unpinned)"))  # no version at all: it cannot be proven, so adding one fails closed
         if re.search(r"\bpip3?\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
@@ -297,6 +306,13 @@ def inventory(files):
             _step({"run": text}, found, {})          # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
+            for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
+                body = ln.split("#", 1)[0].strip()
+                if not body or body.startswith("--hash="):
+                    continue
+                if _REQ_PIN.match(body):
+                    continue                      # name==version (with its --hash options)
+                found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
         else:
             labels = {}
             for m in re.finditer(r"uses:\s*([^\s#'\"]+)\s*#\s*(\S+)", text):
@@ -345,7 +361,7 @@ _UNMEASURED = [
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
     (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*\s-r\s*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
-    (re.compile(r"\b(?:curl|wget)\b[^\n]*(?:https?://|ftp://|\s(?![^\s/]*\.(?:tgz|gz|zip|sh|txt|json|tar|bz2|xz|deb|rpm|bin|exe|ya?ml|log|out|py|md|toml|cfg|conf|sig|sha256|asc|pem)(?:\s|$))[A-Za-z0-9.-]+\.[a-z]{2,}(?:/|\s|$))(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
+    (re.compile(r"\b(?:curl|wget)\b(?![^\n]*github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
 
