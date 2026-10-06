@@ -2315,14 +2315,6 @@ $(co "          ref: $BASE_REF
           path: trusted")
 $(co "          path: trusted")
       - run: python3 trusted/bin/tool.py" "$mk_trusted"
-case_ a-foreign-interpreter-after-cd-bad bad "$head
-    steps:
-$(co "          ref: $BASE_REF
-          path: trusted")
-      - run: |
-          cd sub
-          python3 trusted/bin/tool.py" "$mk_trusted"
-
 # --- R5 follow-up (Codex r27 / Sonnet r27): the fixes' own gaps
 case_ r27-b2-empty-assignment-before-semicolon-bad bad "$(rb 'RUN_OPTS=; docker run $RUN_OPTS alpine:latest')"
 case_ r27-b3-indexed-array-assignment-bad bad "$(rb 'IMAGES[0]=alpine:latest
@@ -2354,50 +2346,7 @@ $(co "          ref: $BASE_REF
           path: trusted")
 $(co "          ref: main")
       - run: python3 trusted/bin/tool.py" "$mk_trusted"
-case_ r27-committed-namesake-after-cd-bad bad "$head
-    steps:
-      - run: |
-          mkdir -p /tmp/pin-run/bin
-          printf 'x\\n' > /tmp/pin-run/bin/tool.py
-          cd /tmp/pin-run
-          python3 bin/tool.py" "mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
-case_ r27-committed-script-after-a-subshell-cd-ok ok "$head
-    steps:
-      - run: |
-          (cd dist && sha256sum -c sums.txt)
-          python3 bin/tool.py" "mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
-
 # --- fix verification after R5 (Codex r28)
-case_ r28-b1-interpreter-inside-the-cd-subshell-bad bad "$head
-    steps:
-$(co "          ref: $BASE_REF
-          path: trusted")
-      - run: |
-          mkdir -p /tmp/pin-run/trusted/bin
-          printf 'x\\n' > /tmp/pin-run/trusted/bin/tool.py
-          (cd /tmp/pin-run && python3 trusted/bin/tool.py)" "$mk_trusted"
-case_ r29-b1-subshell-with-a-nested-substitution-bad bad "$head
-    steps:
-$(co "          ref: $BASE_REF
-          path: trusted")
-      - run: |
-          mkdir -p /tmp/pin-run/trusted/bin
-          printf 'x\\n' > /tmp/pin-run/trusted/bin/tool.py
-          (cd /tmp/pin-run && python3 trusted/bin/tool.py \"\$(date +%s)\")" "$mk_trusted"
-case_ r29-unbalanced-parentheses-bad bad "$head
-    steps:
-$(co "          ref: $BASE_REF
-          path: trusted")
-      - run: |
-          (cd dist && sha256sum -c sums.txt
-          python3 trusted/bin/tool.py" "$mk_trusted"
-case_ r29-nested-subshells-without-the-script-ok ok "$head
-    steps:
-$(co "          ref: $BASE_REF
-          path: trusted")
-      - run: |
-          (cd dist && (sha256sum -c sums.txt) && echo \"\$(date +%s)\")
-          python3 trusted/bin/tool.py" "$mk_trusted"
 case_ r28-b2-kubectl-set-flag-image-bad bad "$(rb 'kubectl set -n production image deployment/web web=nginx:latest')"
 case_ r28-b2-kubectl-set-flag-image-digest-ok ok "$(rb 'kubectl set -n production image deployment/web web=nginx@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
 

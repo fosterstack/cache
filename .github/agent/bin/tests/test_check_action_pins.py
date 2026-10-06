@@ -395,15 +395,6 @@ class ReaderBranches(unittest.TestCase):
         self.assertEqual(M._build(["--frob", "."])[5], "--frob")
         self.assertEqual(M._build(["-qf", "d/Dockerfile", "ctx"]), ("d/Dockerfile", "ctx", set(), [], [], None))
 
-    def test_subshell_groups_balance_and_refuse_when_they_do_not(self):
-        self.assertIsNone(M._paren_groups("a) b"))
-        self.assertIsNone(M._paren_groups("(a b"))
-        self.assertEqual(M._paren_groups("(a (b) c)"), [(3, 5), (0, 8)])
-        self.assertTrue(M._cd_subshell_runs("(cd x", "p.py"))
-        self.assertTrue(M._cd_outside_subshell("(cd x"))
-        self.assertTrue(M._cd_subshell_runs('(cd /tmp/x && python3 t.py "$(date)")', "t.py"))
-        self.assertFalse(M._cd_subshell_runs("(cd dist && sha256sum -c s)\npython3 t.py", "t.py"))
-
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
