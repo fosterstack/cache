@@ -43,7 +43,7 @@
         "https://github.com/advisories/GHSA-vqf5-2xx6-9wfm",
         "https://osv.dev/vulnerability/GHSA-vqf5-2xx6-9wfm"
       ],
-      "date": "2026-10-06",
+      "date": "2026-10-05",
       "modified": {
         "GHSA-vqf5-2xx6-9wfm": "2025-03-31T21:55:43Z"
       }

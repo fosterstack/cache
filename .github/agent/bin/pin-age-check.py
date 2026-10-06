@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push")
+SERVER_SIDE = ("github-release", "pypi", "go-index", "registry-push", "observer", "pr-clock")
 MIN_DAYS = 7.0
 
 
@@ -36,6 +36,7 @@ def _load(name):
 
 
 inv = _load("pin-inventory")
+tobs = _load("tag_observer")
 
 
 def parse_time(s):
@@ -65,6 +66,8 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
         seen.append(src)
         if src not in SERVER_SIDE and src != "first-seen":
             continue
+        if src == "github-release" and item.kind == "action":
+            continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
         d = parse_time(t)
         if d is None or d > now:
             continue
@@ -195,50 +198,85 @@ def _go_index_time(mod, version, vcs_time):
     return None
 
 
-def _first_seen(item, root):
-    """The first time this version appeared in one of OUR update pull requests: that PR's server-side creation time, counted only when the PR itself
-    names the version (its title or body, as a whole token) and comes from a branch of our own repository (a stranger's fork PR cannot start the clock)."""
-    repo = os.environ.get("GITHUB_REPOSITORY")
-    needles = [n for n in (item.version, item.label, item.version[:7] if re.fullmatch(r"[0-9a-f]{40}", item.version or "") else "") if n]
-    if not repo or not needles:
+_OBS = {}
+
+
+def _gh_bytes(path):
+    r = subprocess.run(["gh", "api", path], capture_output=True)
+    if r.returncode:
+        _gh_failed(type("R", (), {"stderr": r.stderr.decode("utf-8", "replace"), "stdout": ""})())
         return None
-    toks = [re.compile(r"(^|[^0-9A-Za-z._+-])" + re.escape(n) + r"($|[^0-9A-Za-z._+-])") for n in needles]
-    r = subprocess.run(["git", "-C", root, "log", "--all", "--format=%H", "-G", toks[0].pattern, "--", ".github", "bin"], capture_output=True, text=True)
-    shas = [x for x in r.stdout.split() if x]
-    times = []
-    for sha in shas[-3:]:
-        for p in _gh_api(f"repos/{repo}/commits/{sha}/pulls") or []:
-            if ((p.get("head") or {}).get("repo") or {}).get("full_name") != repo or not p.get("created_at"):
-                continue
-            text = f"{p.get('title') or ''}\n{p.get('body') or ''}"
-            if any(t.search(text) for t in toks):
-                times.append(p["created_at"])
+    return r.stdout
+
+
+def observed():
+    """The cumulative tag observations of OUR scheduled runs on main (None before the first one); loud if they exist and cannot be read.
+    Only runs that are event=schedule, branch main, success, of this workflow's path are read, so a pull request can never forge them."""
+    if "state" in _OBS:
+        return _OBS["state"]
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    state = None
+    if repo:
+        data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=success&per_page=100") or {}
+        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(r)), key=lambda r: r.get("created_at", ""), reverse=True)
+        for run in runs[:30]:
+            arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
+            art = next((x for x in arts if x.get("name") == tobs.STATE_NAME and not x.get("expired")), None)
+            if art:
+                raw = _gh_bytes(f"repos/{repo}/actions/artifacts/{art['id']}/zip")
+                try:
+                    state = tobs.unpack(raw)
+                except Exception as e:  # a state that exists but cannot be read is loud, never "nothing observed"
+                    raise CouldNotLook(f"the tag observations of run {run['id']} cannot be read: {type(e).__name__}")
+                break
+    _OBS["state"] = state  # None: runs that predate the artifact, or none yet: nothing observed, so ages only get younger
+    return state
+
+
+def _pr_clock(item, root, base):
+    """The PR clock: the earliest server-side time of a workflow run on the commit that INTRODUCED this version in the pull request (base..HEAD)."""
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not repo or not base or not item.version:
+        return None
+    r = subprocess.run(["git", "-C", root, "log", "--reverse", "--format=%H", f"{base}..HEAD", "-S" + item.version, "--", ".github", "bin"], capture_output=True, text=True)
+    commits = r.stdout.split()
+    if not commits:
+        return None
+    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={commits[0]}&per_page=100") or {}).get("workflow_runs", [])
+    times = [x["created_at"] for x in runs if x.get("created_at")]
     return min(times) if times else None
 
 
-def live_proofs(item, root):
+def _release_with_assets(repo, tags):
+    for tag in tags:
+        rel = _gh_api(f"repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
+        if rel and rel.get("published_at") and not rel.get("draft"):
+            return rel
+    return None
+
+
+def live_proofs(item, root, base=None):
     out = []
     if item.kind == "action":
-        # every tag at the commit is tried (v4 may have no release while v4.1.0 does); a release only proves the commit if the commit already
-        # existed when it was published (a tag redirected to a fresh commit would otherwise borrow the old release's age)
-        cdate = None
-        for tag in _tags_for_commit(item.name, item.version):
-            t = _release_time(item.name, [tag])
-            if not t:
-                continue
-            cdate = cdate or _commit_date(item.name, item.version)
-            cd, pd = parse_time(cdate), parse_time(t)
-            if cd is not None and pd is not None and cd <= pd:
-                out.append((t, "github-release"))
-                break
+        # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
+        # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
+        tags = _tags_for_commit(item.name, item.version)
+        want = [item.label] if item.label else tags
+        if not item.label or item.label in tags:
+            state = observed()
+            for tag in want:
+                t = tobs.first_seen(state, item.name, tag, item.version)
+                if t:
+                    out.append((t, "observer"))
     elif item.kind == "tool":
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
-        v = item.version
         if repo:
-            bare = v.lstrip("v")
-            t = _release_time(repo, [v, "v" + bare, bare])
-            if t:
-                out.append((t, "github-release"))
+            bare = item.version.lstrip("v")
+            rel = _release_with_assets(repo, [item.version, "v" + bare, bare])
+            if rel:
+                # the NEWEST of the release date and every asset's own created/updated time: a replaced asset in an old release is young again
+                stamps = [rel["published_at"]] + [a[k] for a in rel.get("assets", []) for k in ("created_at", "updated_at") if a.get(k)]
+                out.append((max(stamps, key=lambda x: parse_time(x) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)), "github-release"))
     elif item.kind == "gotool":
         mod, info = _go_module(item.name, item.version)
         if mod:
@@ -250,14 +288,14 @@ def live_proofs(item, root):
         d = _http_json(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
         ups = [u.get("upload_time_iso_8601") for u in (d or {}).get("urls", []) if u.get("upload_time_iso_8601")]
         if ups:
-            out.append((min(ups), "pypi"))
+            out.append((max(ups), "pypi"))  # the newest file: a wheel added later to an old release is young
     elif item.kind == "image" and item.version:
         t = _registry_push(item)
         if t:
             out.append((t, "registry-push"))
-    fs = _first_seen(item, root)
-    if fs:
-        out.append((fs, "first-seen"))
+    pc = _pr_clock(item, root, base)
+    if pc:
+        out.append((pc, "pr-clock"))
     return out
 
 
@@ -307,11 +345,11 @@ class Fixture:
 
 
 class Live:
-    def __init__(self, root):
-        self.root = root
+    def __init__(self, root, base=None):
+        self.root, self.base = root, base
 
     def proofs(self, item):
-        return live_proofs(item, self.root)
+        return live_proofs(item, self.root, self.base)
 
 
 def check(moved_items, source, now, min_days):
@@ -355,7 +393,7 @@ def _run(a, moved, fx, now):
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root), now, a.min_days)
+        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")

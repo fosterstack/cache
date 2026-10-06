@@ -1992,7 +1992,7 @@ requirements:
     title: Actions supply-chain checks
     statement: >
       Our workflows shall take no new version of an action, or of a tool, image or package they download, until it has been public 7 days; shall check every version we use, every day, against the public advisory and malware lists; and shall say publicly only what they know.
-    source: [bin/pin-inventory.py, bin/pin-age-check.py, bin/pin-audit.py, .github/workflows/supply-chain.yml, .github/dependabot.yml]
+    source: [.github/workflows/supply-chain.yml, .github/dependabot.yml, .github/supply-chain-exceptions.json]
     tier: community
     introduced: v0.3.0
     origin: actions supply-chain checks (owner, Oct 5 2026, ops/docs/ratify/2026-10-05-actions-supply-chain.md rules 1-3 and 5; advisor 0172, 0175)
@@ -2013,7 +2013,7 @@ requirements:
       - id: REQ-SUP-001-AC3
         given: "a moved version"
         when: "its age is measured"
-        then: "only a server-side time counts (GitHub's release publish time, a package index's upload time, the Go module index's timestamp, a registry's own push or creation time for an image, or when the exact version first appeared in one of our own pull requests); never a commit or tag date and never an image's own created field; a version public less than 7 days, or whose age cannot be proven, fails the check"
+        then: "only a server-side time counts: for an action, the first time our own scheduled run on main saw the tag point at the exact commit (the tag in the version comment must resolve to that commit) or the PR clock, whichever is older, and a release date alone never counts; for a downloaded tool, the newest of the release date and its asset's own created and updated times; a package index's newest upload time; the Go module index's timestamp; a registry's own push or creation time for an image; the PR clock is the earliest workflow run on the commit that introduced the version in the pull request; never a commit or tag date and never an image's own created field; a version public less than 7 days, or whose age cannot be proven, fails the check"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC4

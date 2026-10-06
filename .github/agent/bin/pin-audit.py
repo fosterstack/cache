@@ -41,6 +41,7 @@ def _load(name):
 
 inv = _load("pin-inventory")
 age = _load("pin-age-check")
+tobs = age.tobs
 
 
 class Fail(Exception):
@@ -130,8 +131,14 @@ class FixtureNet:
     def prs(self):
         return self.fx.get("prs") or []
 
-    def proofs(self, item):
+    def proofs(self, item, base=None):
         return age.Fixture(self.fx).proofs(item)
+
+    def tag_map(self, items):
+        return dict(self.fx.get("tags") or {})
+
+    def observed(self):
+        return self.fx.get("observed")
 
     def modified(self, advisory_id):
         return None
@@ -223,97 +230,6 @@ class LiveNet:
         """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked, never as clean.)"""
         v = self._version_of(item)
         return bool(v) and self._query(item, v) is not None
-
-    def lists(self, item):
-        d = (self.fx.get("lists") or {}).get(item.key) or {}
-        return list(d.get("github") or []), list(d.get("osv") or [])
-
-    def upstream(self, item):
-        return ((self.fx.get("upstream") or {}).get(f"{item.name}@{item.version}") or {}).get("reachable")
-
-    def nested(self, item):
-        return (self.fx.get("nested") or {}).get(f"{item.name}@{item.version}") or []
-
-    def versions(self, item):
-        return (self.fx.get("versions") or {}).get(item.name) or []
-
-    def prs(self):
-        return self.fx.get("prs") or []
-
-    def proofs(self, item):
-        return age.Fixture(self.fx).proofs(item)
-
-    def modified(self, advisory_id):
-        return None
-
-
-GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
-            "osv": "github.com/google/osv-scanner", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint",
-            "goreleaser": "github.com/goreleaser/goreleaser", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign",
-            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
-NPM_TOOLS = {"snyk": "snyk"}
-
-
-class LiveNet:
-    def __init__(self, gh, root):
-        self.gh, self.root = gh, root
-        self._memo, self._lock = {}, threading.Lock()
-
-    def _gh_json(self, path, strict=False):
-        """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
-        with self._lock:
-            if path in self._memo:
-                return self._memo[path]
-        r = subprocess.run([*self.gh, "api", path], capture_output=True, text=True)
-        if r.returncode:
-            try:
-                age._gh_failed(r)
-            except age.CouldNotLook as e:
-                raise Fail(str(e))
-        try:
-            val = None if r.returncode else json.loads(r.stdout)
-        except ValueError:
-            val = None
-            if strict:
-                raise Fail(f"gh api {path.split('?')[0]} did not return JSON")
-        if strict and r.returncode and not re.search(r"\b404\b", r.stderr + r.stdout):
-            raise Fail(f"gh api {path.split('?')[0]} failed: {(r.stderr or r.stdout).strip()[:100]}")
-        if strict and val is None:
-            val = []  # a 404 on a list endpoint: no entries
-        with self._lock:
-            self._memo[path] = val
-        return val
-
-    def _osv_post(self, q):
-        vulns, token = [], None
-        for _ in range(20):
-            body = dict(q, **({"page_token": token} if token else {}))
-            req = urllib.request.Request("https://api.osv.dev/v1/query", json.dumps(body).encode(), {"Content-Type": "application/json"})
-            try:
-                with urllib.request.urlopen(req, timeout=30) as r:
-                    d = json.load(r)
-            except (OSError, ValueError) as e:
-                raise Fail(f"the OSV query failed: {e}")
-            vulns += d.get("vulns", [])
-            token = d.get("next_page_token")
-            if not token:
-                return vulns
-        raise Fail("the OSV query has more than 20 pages")
-
-    def _version_of(self, item):
-        if item.kind == "action" and inv.SHA40.match(item.version):
-            return item.label or age._tag_for_commit(item.name, item.version)
-        return item.version  # a tag/branch ref, or a tool/package version
-
-    def _query(self, item, version):
-        if item.kind == "action":
-            return {"package": {"name": item.name, "ecosystem": "GitHub Actions"}}
-        if item.kind == "package":
-            return {"package": {"name": item.name.split("/", 1)[1], "ecosystem": "PyPI"}, "version": version}
-        mod = item.name if item.kind == "gotool" else GO_TOOLS.get(item.name)
-        if item.kind == "gotool":
-            mod = age._go_module(item.name, item.version)[0] or item.name
-        return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
 
     def lists(self, item):
         version = self._version_of(item)
@@ -479,11 +395,26 @@ class LiveNet:
             mine = sorted((x for x in runs.get("workflow_runs", []) if x.get("path") == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
             failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
-                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved})
+                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved, "_base": mb})
         return out
 
-    def proofs(self, item):
-        return age.live_proofs(item, self.root)
+    def proofs(self, item, base=None):
+        return age.live_proofs(item, self.root, base)
+
+    def observed(self):
+        return age.observed()
+
+    def tag_map(self, items):
+        """{"owner/repo@tag": commit} for the latest tags of every action we use plus the tags we pin: what today's run observed."""
+        out = {}
+        for repo in sorted({i.name for i in items if i.kind == "action"}):
+            for t in self._gh_json(f"repos/{repo}/tags?per_page=100", strict=True) or []:
+                out[f"{repo}@{t['name']}"] = t["commit"]["sha"]
+        for i in items:
+            if i.kind == "action" and inv.SHA40.match(i.version):
+                for tag in age._tags_for_commit(i.name, i.version):
+                    out[f"{i.name}@{tag}"] = i.version
+        return out
 
     def modified(self, advisory_id):
         if advisory_id.startswith("GHSA-"):
@@ -738,7 +669,7 @@ def rerun_held(gh, net, now):
     n = 0
     for pr in net.prs():
         items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
-        rows = [age.judge_item(it, net.proofs(it), now) for it in items]
+        rows = [age.judge_item(it, net.proofs(it, pr.get("_base")), now) for it in items]
         if rows and all(r[0] for r in rows):
             gh.run("run", "rerun", str(pr["run_id"]))
             print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
@@ -762,6 +693,7 @@ def main(argv=None):
     ap.add_argument("--gh", default="gh")
     ap.add_argument("--exceptions")
     ap.add_argument("--rerun-held", action="store_true")
+    ap.add_argument("--observations-out", help="write the cumulative tag observations (state.json) FIRST, before judging anything")
     ap.add_argument("--report-only", action="store_true", help="print findings and exit 1; never touch issues (the pull request job's token cannot write them)")
     a = ap.parse_args(argv)
     try:
@@ -794,9 +726,15 @@ def main(argv=None):
         except RuntimeError as e:
             raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
+        if a.observations_out and not a.base:
+            state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            os.makedirs(os.path.dirname(os.path.abspath(a.observations_out)), exist_ok=True)
+            with open(a.observations_out, "w") as f:
+                json.dump(state, f, sort_keys=True)
+            print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
-            print(f"  {k}")
+            print(f"  {clean(k)}")
         notes, findings = [], []
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
@@ -868,7 +806,7 @@ def main(argv=None):
             return 1
         print(f"audit: no known-compromised versions as of {today}" + (f" ({len(notes)} disputed hit(s) covered by a checked-in exception)" if notes else ""))
         return 0
-    except Fail as e:
+    except (Fail, age.CouldNotLook) as e:
         print(f"audit: cannot do its job: {e}", file=sys.stderr)
         return 2
 

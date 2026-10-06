@@ -10,8 +10,9 @@
 #   gh calls it may make: issue list / issue create / issue edit / label create, and (only with --rerun-held) run rerun. NEVER anything about runs, environments or
 #   secrets: the private details are produced on the Mac, not by this workflow (advisor 0175 amendment 5).
 set -euo pipefail
-root=$(cd "$(dirname "$0")/.." && pwd)
-aud="$root/bin/pin-audit.py"
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../../.." && pwd)
+aud="$here/../bin/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
@@ -318,7 +319,7 @@ check test "$rc" -eq 1; check test "$(creates "$work/twin.gh")" -eq 1; check gre
 HELD="{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [
   {\"number\": 7, \"title\": \"bump checkout\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]},
   {\"number\": 8, \"title\": \"bump trivy\", \"run_id\": 98, \"moved\": [\"$ITEM_TRIVY\"]}],
- \"times\": {\"$ITEM_CO\": {\"time\": \"$(dago 8)\", \"source\": \"github-release\"}, \"$ITEM_TRIVY\": {\"time\": \"$(dago 2)\", \"source\": \"github-release\"}}}"
+ \"times\": {\"$ITEM_CO\": {\"time\": \"$(dago 8)\", \"source\": \"observer\"}, \"$ITEM_TRIVY\": {\"time\": \"$(dago 2)\", \"source\": \"github-release\"}}}"
 run held "$HELD" "$work/r-clean" --rerun-held
 CASE="a held PR whose moved version is now 8 days old is RE-RUN (gh run rerun 99); one still 2 days old (run 98) is not"
 check python3 - "$work/held.gh" <<'PY'
@@ -376,30 +377,7 @@ else:
 PY
 
 # --- the live source against a gh stub (no network): reachability direction, GitHub-only advisories, rollback rules ---------------------------------------------------------------
-cat >"$work/ghmap" <<'STUB'
-#!/usr/bin/env python3
-# a gh stub for the offline tests: GH_MAP is a JSON file {api path: value}; --jq supports .field, .a.b and .[]
-import json, os, sys
-a = sys.argv[1:]
-if a[0] != "api":
-    sys.exit(1)
-jq = a[a.index("--jq") + 1] if "--jq" in a else None
-path = [x for x in a[1:] if not x.startswith("-") and x != jq][0]
-m = json.load(open(os.environ["GH_MAP"]))
-if path not in m:
-    sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
-v = m[path]
-if isinstance(v, dict) and "__err" in v:
-    sys.stderr.write(v["__err"] + "\n"); sys.exit(1)
-if jq == ".[]":
-    for x in v: print(json.dumps(x))
-elif jq and jq.startswith("."):
-    for k in jq[1:].split("."):
-        v = v[k]
-    print(v if isinstance(v, str) else json.dumps(v))
-else:
-    print(json.dumps(v))
-STUB
+cp "$here/gh-map-stub.py" "$work/ghmap"
 chmod +x "$work/ghmap"
 CASE="live upstream: the pin is an ancestor of a branch when compare says ahead/identical (NOT behind); a release branch counts; a pin ahead of every branch is a fork-only commit"
 check python3 - "$aud" "$work" <<'PY'
@@ -472,6 +450,59 @@ pa.file_issues(G(), plan, "2026-10-05")
 assert len([c for c in calls if c[:2] == ("issue", "create")]) == 1, calls
 PY
 
+CASE="no module-level name or class method is defined twice in the three programs (a duplicated block once silently replaced LiveNet), and LiveNet has every method the audit calls"
+check python3 - "$root" <<'PY'
+import ast, sys
+for n in ("pin-inventory", "pin-age-check", "pin-audit"):
+    tree = ast.parse(open(f"{sys.argv[1]}/.github/agent/bin/{n}.py").read())
+    names = [x.name for x in tree.body if isinstance(x, (ast.FunctionDef, ast.ClassDef))]
+    assert len(names) == len(set(names)), (n, sorted(x for x in names if names.count(x) > 1))
+    for c in (x for x in tree.body if isinstance(x, ast.ClassDef)):
+        ms = [m.name for m in c.body if isinstance(m, ast.FunctionDef)]
+        assert len(ms) == len(set(ms)), (n, c.name, sorted(x for x in ms if ms.count(x) > 1))
+        if c.name == "LiveNet":
+            assert {"lists", "covered", "live_ranges", "upstream", "nested", "versions", "prs", "proofs", "modified"} <= set(ms), ms
+PY
+
+# --- the daily run records what it saw of every tag we use, FIRST (before judging), cumulatively; a pull request run never writes it --------------------------------------------------------------------
+OBS_FX="{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [], \"tags\": {\"actions/checkout@v4.1.0\": \"$SHA1\", \"actions/checkout@v4\": \"$SHA1\"},
+ \"observed\": {\"version\": 1, \"first_seen\": {\"actions/checkout@v4.1.0@$SHA1\": \"2026-09-01T00:00:00Z\", \"actions/checkout@v3@$(printf 'd%.0s' $(seq 40))\": \"2026-08-01T00:00:00Z\"}}}"
+run obs "$OBS_FX" "$work/r-cur" --observations-out "$work/obsout/state.json"
+CASE="the daily run writes the tag observations: an old mapping keeps its first time, a new tag at a commit gets today, a mapping never seen before is not backdated, nothing is forgotten"
+check python3 - "$work/obsout/state.json" "$SHA1" <<'PY'
+import json, sys
+fs = json.load(open(sys.argv[1]))["first_seen"]
+sha = sys.argv[2]
+assert fs["actions/checkout@v4.1.0@" + sha] == "2026-09-01T00:00:00Z", fs
+assert fs["actions/checkout@v4@" + sha] == "2026-10-05T12:00:00Z", fs
+assert fs["actions/checkout@v3@" + "d" * 40] == "2026-08-01T00:00:00Z", fs
+assert len(fs) == 3, fs
+PY
+HIT_OBS=$(python3 - "$OBS_FX" "$HIT_GH" <<'PY'
+import json, sys
+a = json.loads(sys.argv[1]); b = json.loads(sys.argv[2]); b["tags"] = a["tags"]; b["observed"] = a["observed"]; print(json.dumps(b))
+PY
+)
+rm -rf "$work/obsout2"; run obs2 "$HIT_OBS" "$work/r-cur" --observations-out "$work/obsout2/state.json"
+CASE="the observations are written BEFORE anything is judged: a run that finds a hit (exit 1) has still recorded them"
+check test "$rc" -eq 1; check test -s "$work/obsout2/state.json"
+rm -rf "$work/obsout3"; run obs3 "$OBS_FX" "$work/r-pr" --base HEAD~1 --observations-out "$work/obsout3/state.json"
+CASE="a pull request run (--base) never writes observations: only the scheduled run on main does"
+check test ! -e "$work/obsout3/state.json"
+CASE="tag_observer.py accepts only a successful scheduled run on main of supply-chain.yml, and keeps a moved tag as a NEW mapping"
+check python3 - "$here/../bin/tag_observer.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("t", sys.argv[1]); t = importlib.util.module_from_spec(spec); spec.loader.exec_module(t)
+ok = {"event": "schedule", "head_branch": "main", "conclusion": "success", "path": ".github/workflows/supply-chain.yml"}
+assert t.accept_run(ok)
+for k, v in (("event", "pull_request"), ("head_branch", "feature"), ("conclusion", "failure"), ("path", ".github/workflows/ci.yml")):
+    assert not t.accept_run(dict(ok, **{k: v})), k
+s = t.update_state(None, {"o/r@v1": "a" * 40}, "2026-01-01T00:00:00Z")
+s = t.update_state(s, {"o/r@v1": "b" * 40}, "2026-02-01T00:00:00Z")
+assert t.first_seen(s, "o/r", "v1", "a" * 40) == "2026-01-01T00:00:00Z" and t.first_seen(s, "o/r", "v1", "b" * 40) == "2026-02-01T00:00:00Z"
+assert t.unpack(t.pack(s)) == s
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"
@@ -480,7 +511,7 @@ echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/bro
 CASE="unreadable input fails the run (exit 2), it never reports a clean day"
 check test "$rc" -eq 2
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
-check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$root/bin/pin-inventory.py" "$root/bin/pin-age-check.py" "$root/bin/pin-audit.py"
+check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../bin/pin-inventory.py" "$here/../bin/pin-age-check.py" "$here/../bin/pin-audit.py"
 
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
