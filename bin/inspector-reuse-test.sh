@@ -33,7 +33,9 @@ out, serial, ts, ours = sys.argv[1:5]
 comps = []
 for p in sys.argv[5:]:
     n, v = p.rsplit("@", 1)
-    if n.startswith("np:"):   # a component with no purl (name@version is its identifier)
+    if n.startswith("go:"):   # a Go module: purl pkg:golang/<path>@<ver>, name = the full path
+        comps.append({"type": "library", "name": n[3:], "version": v, "purl": "pkg:golang/%s@%s" % (n[3:], v), "bom-ref": "ref-%s-%s" % (n[3:], v)})
+    elif n.startswith("np:"):   # a component with no purl (name@version is its identifier)
         comps.append({"type": "library", "name": n[3:], "version": v, "bom-ref": "ref-%s-%s" % (n[3:], v)})
     else:
         comps.append({"type": "library", "name": n, "version": v, "purl": "pkg:generic/%s@%s" % (n, v), "bom-ref": "ref-%s-%s" % (n, v)})
@@ -45,20 +47,29 @@ doc = {"bomFormat": "CycloneDX", "specVersion": "1.5", "serialNumber": serial,
 json.dump(doc, open(out, "w"))
 PY
 }
-# mkenv out sbom.json [CVE:pkgname]: the ScanSbom answer for that SBOM, as the real service shapes it
-mkenv() {
-  python3 - "$@" <<'PY'
+# shape.py: the ScanSbom answer in the shape the real service gives (verified on CI run 37479078522): Go module names cut to
+# their LAST path segment, bom-refs renumbered comp-N, a properties list added, a component that was not submitted added,
+# the purl kept as it was. FAKE_VULN style argument CVE:pkgname adds one vulnerability affecting that package.
+cat > "$w/shape.py" <<'PY'
 import json, sys
-out, sbom = sys.argv[1:3]
-vuln = sys.argv[3] if len(sys.argv) > 3 else ""
+sbom, vuln = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
 comps = json.load(open(sbom))["components"]
+out = []
+for i, c in enumerate(comps):
+    n = dict(c); n["bom-ref"] = "comp-%d" % (i + 1)
+    if (c.get("purl") or "").startswith("pkg:golang/") and c.get("name"):
+        n["name"] = c["name"].rsplit("/", 1)[-1]
+    n["properties"] = [{"name": "amazon:inspector:sbom_scanner:info", "value": "Component skipped: no supported rules found."}]
+    out.append(n)
+out.append({"bom-ref": "comp-%d" % (len(out) + 1), "type": "library", "name": "extra", "version": None,
+            "purl": "pkg:golang/example.com/only-in-the-response?unresolved=true"})
 vs = []
 if vuln:
     vid, pkg = vuln.split(":")
-    vs = [{"id": vid, "ratings": [{"severity": "high"}], "affects": [{"ref": c["bom-ref"]} for c in comps if c.get("name") == pkg]}]
-json.dump({"sbom": {"bomFormat": "CycloneDX", "specVersion": "1.5", "components": comps, "vulnerabilities": vs}}, open(out, "w"))
+    vs = [{"id": vid, "ratings": [{"severity": "high"}], "affects": [{"ref": n["bom-ref"]} for n, c in zip(out, comps) if c.get("name") == pkg]}]
+print(json.dumps({"sbom": {"bomFormat": "CycloneDX", "specVersion": "1.5", "components": out, "vulnerabilities": vs}}))
 PY
-}
+mkenv() { python3 "$w/shape.py" "$2" "${3:-}" > "$1"; }   # out sbom.json [CVE:pkgname]
 
 mksbom "$w/a.json"  urn:uuid:1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 np:zlib@1.3
 mksbom "$w/a2.json" urn:uuid:2 2026-10-07T09:00:00Z v2 np:zlib@1.3 libc6@2.36 busybox@1.37.0   # same inventory, other order
@@ -117,8 +128,12 @@ def purlonly(typ, fmt="pkg:%s/%s@%s%s"):
     return f
 var("a-po-apk.json", purlonly("apk")); var("a-po-deb.json", purlonly("deb"))
 var("a-po-enc.json", purlonly("deb", "pkg:%s/%s@%s%s"))
-def vdiff(d): generic(d, lambda c: c.__setitem__("version", "9.9.9") if c["name"] == "busybox" else None)
-def ndiff(d): generic(d, lambda c: c.__setitem__("name", "busybox2") if c["name"] == "busybox" else None)
+def vdiff(d):
+    for c in d["components"]:
+        if c["name"] == "busybox": c["version"] = "9.9.9"; c["purl"] = "pkg:generic/busybox@9.9.9"
+def ndiff(d):
+    for c in d["components"]:
+        if c["name"] == "busybox": c["name"] = "busybox2"; c["purl"] = "pkg:generic/busybox2@1.37.0"
 var("a-vdiff.json", vdiff); var("a-ndiff.json", ndiff)
 PY
 expect "key: our module's sub-package and a purl-less entry of it are excluded" "$ka" "$(python3 "$prog" key "$w/a-sub.json")"
@@ -129,8 +144,8 @@ expect "key: a purl qualifier does not move the key" "$ka" "$(python3 "$prog" ke
 expect "key: several qualifiers (distro, epoch, arch) do not move the key" "$ka" "$(python3 "$prog" key "$w/a-qual.json")"
 expect "key: a purl subpath does not move the key" "$ka" "$(python3 "$prog" key "$w/a-subpath.json")"
 expect "key: qualifier and subpath together do not move the key" "$ka" "$(python3 "$prog" key "$w/a-both.json")"
-[ "$(python3 "$prog" key "$w/a-ver.json")" != "$ka" ] && ok "key: the explicit version field decides (purl ignored when name and version exist): other version, other key" || bad "key: an explicit version change must move the key"
-expect "key: the same name and version under purl type apk: the same key" "$ka" "$(python3 "$prog" key "$w/a-apk.json")"
+expect "key: the purl wins when there is one: the explicit name/version fields (which the real service rewrites) are not read" "$ka" "$(python3 "$prog" key "$w/a-ver.json")"
+expect "key: the same name and version under purl type apk (pkg:apk/busybox@1 = pkg:generic/busybox@1): the same key" "$ka" "$(python3 "$prog" key "$w/a-apk.json")"
 expect "key: the same name and version under purl type deb: the same key" "$ka" "$(python3 "$prog" key "$w/a-deb.json")"
 expect "key: the same name and version with NO purl: the same key" "$ka" "$(python3 "$prog" key "$w/a-nopurl.json")"
 expect "key: purl-only components (no name/version fields), type apk, with qualifiers and subpath: name and version parsed from the purl, the same key" "$ka" "$(python3 "$prog" key "$w/a-po-apk.json")"
@@ -163,7 +178,13 @@ kb=$(python3 "$prog" key "$w/b.json")
 mkenv "$w/f.json" "$w/a.json"                       # the answer for inventory a
 mkenv "$w/f-vuln.json" "$w/a.json" CVE-2099-0001:busybox
 mkenv "$w/f-b.json" "$w/b.json"                     # the answer for inventory b (one version differs)
-mkenv "$w/f-c.json" "$w/c.json"                     # the answer for inventory c (a package added)
+mkenv "$w/f-c.json" "$w/c.json"                     # the answer for inventory c (a package ADDED to a: a superset of a)
+mkenv "$w/f-d.json" "$w/d.json"                     # the answer for inventory d (zlib 1.4 instead of 1.3: a different inventory)
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+d = json.load(open(w + "/f.json")); d["sbom"]["components"] = [c for c in d["sbom"]["components"] if c.get("name") != "libc6"]; json.dump(d, open(w + "/f-missing.json", "w"))
+PY
 cdir="$w/cache"
 python3 "$prog" store "$cdir" "$D" "$w/a.json" "$w/f.json" > "$w/so.txt"; rc=$?
 expect "store: the envelope for the requested inventory is stored (exit 0)" 0 "$rc"
@@ -193,9 +214,346 @@ printf '%s' '{"bomFormat":"CycloneDX"}' > "$w/v-bare.json"
 vtry "a bare CycloneDX marker" 1 "$w/v-bare.json"
 vtry "the unscanned SBOM itself" 1 "$w/a.json"
 vtry "an envelope for another inventory" 1 "$w/f-b.json"
+vtry "an envelope missing one requested component" 1 "$w/f-missing.json"
+vtry "a superset envelope (extra components are ignored)" 0 "$w/f-c.json"
 vtry "a missing file" 1 "$w/nonexistent.json"
 vtry "an empty file" 1 "$w/m4.json"
 ls "$w" | grep -q "findings" && bad "validate: wrote something" || ok "validate: writes nothing"
+
+# --- a TRIMMED REAL pair: nine components copied from inspector-sbomgen's SBOM and ScanSbom's answer for production-amd64
+# (CI run 37479078522): the OS component without a purl, two deb packages with qualifiers, a generic purl without a version,
+# Go modules whose NAME the service cut to the last path segment (perks, v2, sys), an unresolved module (no version), and
+# our own module stamped with a commit-derived version. The response also renumbers bom-refs and adds properties.
+cat > "$w/real-sbom.json" <<'REALSBOM'
+{
+ "bomFormat": "CycloneDX",
+ "specVersion": "1.5",
+ "serialNumber": "urn:uuid:real-trimmed",
+ "metadata": {
+  "timestamp": "2026-10-06T12:35:00Z"
+ },
+ "components": [
+  {
+   "bom-ref": "comp-2",
+   "type": "operating-system",
+   "name": "Debian GNU/Linux",
+   "version": "13"
+  },
+  {
+   "bom-ref": "comp-3",
+   "type": "application",
+   "name": "ca-certificates",
+   "version": "20250419",
+   "purl": "pkg:deb/debian/ca-certificates@20250419?arch=all&distro=13"
+  },
+  {
+   "bom-ref": "comp-8",
+   "type": "application",
+   "name": "base-files",
+   "version": "13.8+deb13u7",
+   "purl": "pkg:deb/debian/base-files@13.8%2Bdeb13u7?arch=amd64&distro=13"
+  },
+  {
+   "bom-ref": "comp-9",
+   "type": "application",
+   "name": "fscache",
+   "hashes": [
+    {
+     "alg": "SHA-256",
+     "content": "61ca2fc84cba1574c70481527c8c0dae6c6d716534add07a23e4a127ec5049a1"
+    }
+   ],
+   "purl": "pkg:generic/fscache?distro=linux&go_toolchain=1.27.1",
+   "properties": [
+    {
+     "name": "amazon:inspector:sbom_generator:source_path",
+     "value": "/usr/local/bin/fscache"
+    }
+   ]
+  },
+  {
+   "bom-ref": "comp-10",
+   "type": "library",
+   "name": "github.com/beorn7/perks",
+   "version": "v1.0.1",
+   "purl": "pkg:golang/github.com/beorn7/perks@v1.0.1",
+   "properties": [
+    {
+     "name": "amazon:inspector:sbom_generator:source_path",
+     "value": "/usr/local/bin/fscache"
+    }
+   ]
+  },
+  {
+   "bom-ref": "comp-11",
+   "type": "library",
+   "name": "github.com/cespare/xxhash/v2",
+   "version": "v2.3.0",
+   "purl": "pkg:golang/github.com/cespare/xxhash/v2@v2.3.0",
+   "properties": [
+    {
+     "name": "amazon:inspector:sbom_generator:source_path",
+     "value": "/usr/local/bin/fscache"
+    }
+   ]
+  },
+  {
+   "bom-ref": "comp-12",
+   "type": "library",
+   "name": "github.com/munnerz/goautoneg",
+   "purl": "pkg:golang/github.com/munnerz/goautoneg?unresolved=true",
+   "properties": [
+    {
+     "name": "amazon:inspector:sbom_generator:source_path",
+     "value": "/usr/local/bin/fscache"
+    },
+    {
+     "name": "amazon:inspector:sbom_generator:unresolved_version",
+     "value": "v0.0.0-20191010083416-a7dc8b61c822"
+    }
+   ]
+  },
+  {
+   "bom-ref": "comp-18",
+   "type": "library",
+   "name": "golang.org/x/sys",
+   "version": "v0.47.0",
+   "purl": "pkg:golang/golang.org/x/sys@v0.47.0",
+   "properties": [
+    {
+     "name": "amazon:inspector:sbom_generator:source_path",
+     "value": "/usr/local/bin/fscache"
+    }
+   ]
+  },
+  {
+   "bom-ref": "comp-20",
+   "type": "library",
+   "name": "github.com/fosterstack/cache",
+   "version": "v0.2.2-0.20261006123452-5d3616aa0907",
+   "purl": "pkg:golang/github.com/fosterstack/cache@v0.2.2-0.20261006123452-5d3616aa0907",
+   "properties": [
+    {
+     "name": "amazon:inspector:sbom_generator:source_path",
+     "value": "/usr/local/bin/fscache"
+    }
+   ]
+  }
+ ]
+}
+REALSBOM
+cat > "$w/real-scan.json" <<'REALSCAN'
+{
+ "sbom": {
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:real-trimmed-resp",
+  "metadata": {
+   "timestamp": "2026-10-06T12:36:00Z"
+  },
+  "components": [
+   {
+    "bom-ref": "comp-1",
+    "name": "Debian GNU/Linux",
+    "type": "operating-system",
+    "version": "13"
+   },
+   {
+    "bom-ref": "comp-2",
+    "name": "ca-certificates",
+    "purl": "pkg:deb/debian/ca-certificates@20250419?arch=all&distro=13",
+    "type": "application",
+    "version": "20250419",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component skipped: no supported rules found."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-7",
+    "name": "base-files",
+    "purl": "pkg:deb/debian/base-files@13.8%2Bdeb13u7?arch=amd64&distro=13",
+    "type": "application",
+    "version": "13.8+deb13u7",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component skipped: no supported rules found."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-8",
+    "name": "fscache",
+    "purl": "pkg:generic/fscache?distro=linux&go_toolchain=1.27.1",
+    "type": "application",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:path",
+      "value": "/usr/local/bin/fscache"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component scanned: no known vulnerabilities."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-9",
+    "name": "perks",
+    "purl": "pkg:golang/github.com/beorn7/perks@v1.0.1",
+    "type": "library",
+    "version": "v1.0.1",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:path",
+      "value": "/usr/local/bin/fscache"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component skipped: no supported rules found."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-10",
+    "name": "v2",
+    "purl": "pkg:golang/github.com/cespare/xxhash/v2@v2.3.0",
+    "type": "library",
+    "version": "v2.3.0",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:path",
+      "value": "/usr/local/bin/fscache"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component skipped: no supported rules found."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-11",
+    "name": "goautoneg",
+    "purl": "pkg:golang/github.com/munnerz/goautoneg?unresolved=true",
+    "type": "library",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:path",
+      "value": "/usr/local/bin/fscache"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:unresolved_version",
+      "value": "v0.0.0-20191010083416-a7dc8b61c822"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:warning",
+      "value": "Component skipped: unresolved version provided."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-17",
+    "name": "sys",
+    "purl": "pkg:golang/golang.org/x/sys@v0.47.0",
+    "type": "library",
+    "version": "v0.47.0",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:path",
+      "value": "/usr/local/bin/fscache"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component scanned: no known vulnerabilities."
+     }
+    ]
+   },
+   {
+    "bom-ref": "comp-19",
+    "name": "cache",
+    "purl": "pkg:golang/github.com/fosterstack/cache@v0.2.2-0.20261006123452-5d3616aa0907",
+    "type": "library",
+    "version": "v0.2.2-0.20261006123452-5d3616aa0907",
+    "properties": [
+     {
+      "name": "amazon:inspector:sbom_scanner:path",
+      "value": "/usr/local/bin/fscache"
+     },
+     {
+      "name": "amazon:inspector:sbom_scanner:info",
+      "value": "Component skipped: no supported rules found."
+     }
+    ]
+   }
+  ]
+ }
+}
+REALSCAN
+kr=$(python3 "$prog" key "$w/real-sbom.json"); rcr=$?
+expect "real pair: the key of the real SBOM is computed (exit 0, 64 hex)" "0 64" "$rcr ${#kr}"
+python3 "$prog" validate "$w/real-sbom.json" "$w/real-scan.json"; expect "real pair: validate passes (truncated Go names, renumbered refs, properties)" 0 "$?"
+rd="$w/realcache"; python3 "$prog" store "$rd" "$D" "$w/real-sbom.json" "$w/real-scan.json"; expect "real pair: store accepts it" 0 "$?"
+expect "real pair: decide reuses it" "reuse
+$rd/$D/$kr.findings.json" "$(python3 "$prog" decide "$rd" "$D" "$w/real-sbom.json")"
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+s = json.load(open(w + "/real-sbom.json")); s["serialNumber"] = "urn:uuid:other"; s["metadata"] = {"timestamp": "2030-01-01T00:00:00Z"}
+for c in s["components"]:
+    if c["name"] == "github.com/fosterstack/cache": c["version"] = "v0.2.3-0.20271231000000-ffffffffffff"; c["purl"] = "pkg:golang/github.com/fosterstack/cache@v0.2.3-0.20271231000000-ffffffffffff"
+s["components"].reverse(); json.dump(s, open(w + "/real-sbom-next.json", "w"))
+r = json.load(open(w + "/real-scan.json")); r["sbom"]["components"] = [c for c in r["sbom"]["components"] if c["name"] != "perks"]; json.dump(r, open(w + "/real-scan-missing.json", "w"))
+r = json.load(open(w + "/real-scan.json")); r["sbom"]["components"] = [c for c in r["sbom"]["components"] if c["name"] != "sys"]; json.dump(r, open(w + "/real-scan-missing2.json", "w"))
+s = json.load(open(w + "/real-sbom.json"))
+for c in s["components"]:
+    if c["name"] == "github.com/beorn7/perks": c["purl"] = "pkg:golang/github.com/beorn7/perks@v1.0.2"; c["version"] = "v1.0.2"
+json.dump(s, open(w + "/real-sbom-other.json", "w"))
+PY
+expect "real pair: the next commit's SBOM (new serial, timestamp, our module's stamp, other order) has the same key" "$kr" "$(python3 "$prog" key "$w/real-sbom-next.json")"
+expect "real pair: ...and the stored answer is reused for it" reuse "$(python3 "$prog" decide "$rd" "$D" "$w/real-sbom-next.json" | head -1)"
+python3 "$prog" validate "$w/real-sbom.json" "$w/real-scan-missing.json" 2>/dev/null; [ $? -ne 0 ] && ok "real pair: a response missing a requested Go module (perks) is refused" || bad "real pair: response missing perks"
+python3 "$prog" validate "$w/real-sbom.json" "$w/real-scan-missing2.json" 2>/dev/null; [ $? -ne 0 ] && ok "real pair: a response missing another requested Go module (sys) is refused" || bad "real pair: response missing sys"
+python3 "$prog" validate "$w/real-sbom-other.json" "$w/real-scan.json" 2>/dev/null; [ $? -ne 0 ] && ok "real pair: the response for another inventory (perks v1.0.1, asked v1.0.2) is refused" || bad "real pair: other inventory"
+expect "real pair: ...and decide calls for that other inventory" call "$(python3 "$prog" decide "$rd" "$D" "$w/real-sbom-other.json")"
+python3 "$prog" validate "$w/real-sbom.json" "$w/real-sbom.json" 2>/dev/null; [ $? -ne 0 ] && ok "real pair: the unscanned SBOM in place of the answer is refused" || bad "real pair: unscanned SBOM accepted"
+# the real downloaded pairs of CI run 37479078522, when present locally (a local proof, not a CI dependency)
+if ls /tmp/lbl3/insp/inspector/*/scan.json >/dev/null 2>&1; then
+  nreal=0; nok=0
+  for dd in /tmp/lbl3/insp/inspector/*/; do
+    nreal=$((nreal+1)); python3 "$prog" validate "${dd}sbom.cdx.json" "${dd}scan.json" 2>/dev/null && nok=$((nok+1)) || echo "  real pair rejected: $dd"
+  done
+  expect "real pairs (/tmp/lbl3/insp/inspector/*): every one validates" "$nreal" "$nok"
+else
+  echo "NOTE: /tmp/lbl3/insp/inspector is absent: the local proof over the real pairs is skipped"
+fi
+
+# a name containing "@" cannot collide with another name/version split: identifiers are structured pairs
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+base = [{"name": "libc6", "version": "2.36", "purl": "pkg:generic/libc6@2.36"}]
+def sb(name, filename, comp):
+    json.dump({"bomFormat": "CycloneDX", "components": base + [comp]}, open("%s/%s" % (w, filename), "w"))
+sb("c1", "col1.json", {"name": "alpha@beta", "version": "1"})
+sb("c2", "col2.json", {"name": "alpha", "version": "beta@1"})
+sb("c3", "col3.json", {"purl": "pkg:generic/alpha%40beta@1"})
+sb("c4", "col4.json", {"purl": "pkg:generic/alpha@beta%401"})
+PY
+for n in 1 2 3 4; do mkenv "$w/fcol$n.json" "$w/col$n.json"; done
+[ "$(python3 "$prog" key "$w/col1.json")" != "$(python3 "$prog" key "$w/col2.json")" ] && ok "collision: name 'alpha@beta' version '1' and name 'alpha' version 'beta@1' have DIFFERENT keys" || bad "collision: keys equal"
+[ "$(python3 "$prog" key "$w/col3.json")" != "$(python3 "$prog" key "$w/col4.json")" ] && ok "collision: the same pair split differently inside a purl: different keys" || bad "collision: purl keys equal"
+expect "collision: an explicit pair and its purl form (alpha%40beta@1) are the same identifier" "$(python3 "$prog" key "$w/col1.json")" "$(python3 "$prog" key "$w/col3.json")"
+for pair in "1 2" "2 1" "3 4" "4 3"; do
+  set -- $pair
+  python3 "$prog" validate "$w/col$1.json" "$w/fcol$2.json" 2>/dev/null; [ $? -ne 0 ] && ok "collision: validate refuses the envelope of col$2 for col$1" || bad "collision: validate accepted col$2's envelope for col$1"
+  cc="$w/colcache$1$2"; python3 "$prog" store "$cc" "$D" "$w/col$1.json" "$w/fcol$2.json" 2>/dev/null; [ $? -ne 0 ] && [ ! -e "$cc" ] && ok "collision: store refuses the envelope of col$2 for col$1 and writes nothing" || bad "collision: store accepted col$2 for col$1"
+  mkdir -p "$cc/$D"; cp "$w/fcol$2.json" "$cc/$D/$(python3 "$prog" key "$w/col$1.json").findings.json"
+  expect "collision: decide calls for col$1 when the stored answer is col$2's" call "$(python3 "$prog" decide "$cc" "$D" "$w/col$1.json")"
+done
+python3 "$prog" validate "$w/col1.json" "$w/fcol1.json"; expect "collision: ...while an envelope for its own inventory validates" 0 "$?"
 
 # decide reads the stored file and keeps it only when it is Inspector's answer for THIS inventory
 bd="$w/badcache"; mkdir -p "$bd/$D"
@@ -224,7 +582,9 @@ PY
 cp "$w/f-nocomp.json" "$bd/$D/$K.findings.json";    expect "decide: an envelope with no components calls" call "$(dec)"
 cp "$w/f-emptycomp.json" "$bd/$D/$K.findings.json"; expect "decide: an envelope with an empty component list calls" call "$(dec)"
 cp "$w/f-dictcomp.json" "$bd/$D/$K.findings.json";  expect "decide: an envelope whose components are not a list calls" call "$(dec)"
-cp "$w/f-c.json" "$bd/$D/$K.findings.json";  expect "decide: an envelope for a DIFFERENT inventory (a package added) calls" call "$(dec)"
+cp "$w/f-d.json" "$bd/$D/$K.findings.json";  expect "decide: an envelope for a DIFFERENT inventory (zlib 1.4 instead of 1.3) calls" call "$(dec)"
+cp "$w/f-missing.json" "$bd/$D/$K.findings.json"; expect "decide: an envelope missing one requested component (libc6) calls" call "$(dec)"
+cp "$w/f-c.json" "$bd/$D/$K.findings.json";  expect "decide: a SUPERSET envelope (the requested components plus one more) is reused" reuse "$(dec | head -1)"
 cp "$w/f-b.json" "$bd/$D/$K.findings.json";  expect "decide: an envelope whose components differ by one version calls" call "$(dec)"
 cp "$w/f.json" "$bd/$D/$kb.findings.json";   expect "decide: a valid envelope under a DIFFERENT key name (asked for b) calls" call "$(python3 "$prog" decide "$bd" "$D" "$w/b.json")"
 cp "$w/f.json" "$bd/$D/$K.findings.json";    expect "decide: the valid envelope for this inventory reuses" reuse "$(dec | head -1)"
@@ -295,7 +655,8 @@ tryinv "a JSON object that is not CycloneDX" '{"vulnerabilities":[]}'
 tryinv "a bare CycloneDX marker" '{"bomFormat":"CycloneDX"}'
 tryinv "a bare CycloneDX document (no envelope)" '{"bomFormat":"CycloneDX","specVersion":"1.5","components":[],"vulnerabilities":[]}'
 tryfile "the unscanned SBOM itself" "$w/a.json"
-tryfile "an envelope for a different inventory (a package added)" "$w/f-c.json"
+tryfile "an envelope for a different inventory (zlib 1.4 instead of 1.3)" "$w/f-d.json"
+tryfile "an envelope missing one requested component" "$w/f-missing.json"
 tryfile "an envelope whose components differ by one version" "$w/f-b.json"
 tryfile "an envelope with no components" "$w/f-nocomp.json"
 tryfile "an envelope with an empty component list" "$w/f-emptycomp.json"
@@ -311,7 +672,7 @@ python3 "$prog" store "$sd" "$D" "$w/a.json" "$w/f.json" 0123456789abcdef >/dev/
 python3 "$prog" store "$sd" "$D" "$w/a.json" "$w/f.json"
 printf 'garbage' > "$w/inv.json"; rc=$(st "$w/inv.json")
 [ "$rc" -ne 0 ] && cmp -s "$w/f.json" "$sd/$D/$K.findings.json" && ok "store: an invalid file leaves the existing valid entry intact" || bad "store: an invalid file leaves the existing entry intact"
-rc=$(st "$w/f-c.json")
+rc=$(st "$w/f-d.json")
 [ "$rc" -ne 0 ] && cmp -s "$w/f.json" "$sd/$D/$K.findings.json" && ok "store: another inventory's answer leaves the existing entry intact" || bad "store: another inventory's answer leaves the entry intact"
 # a second store of the same key keeps a valid file
 python3 "$prog" store "$sd" "$D" "$w/a.json" "$w/f-vuln.json"; rc=$?
@@ -381,16 +742,8 @@ case "${FAKE_AWS_MODE:-}" in
   sbom)  cat "$sbom"; exit 0 ;;
   other) python3 -c 'import json,sys; print(json.dumps({"sbom":{"bomFormat":"CycloneDX","components":[{"name":"someone-else","version":"1","bom-ref":"x"}],"vulnerabilities":[]}}))'; exit 0 ;;
 esac
-# the realistic answer: {"sbom": the submitted components + a vulnerabilities list}; FAKE_VULN=CVE:pkgname adds one
-python3 - "$sbom" "${FAKE_VULN:-}" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-vs = []
-if sys.argv[2]:
-    vid, pkg = sys.argv[2].split(":")
-    vs = [{"id": vid, "ratings": [{"severity": "high"}], "affects": [{"ref": c["bom-ref"]} for c in d["components"] if c.get("name") == pkg]}]
-print(json.dumps({"sbom": {"bomFormat": "CycloneDX", "specVersion": "1.5", "components": d["components"], "vulnerabilities": vs}}))
-PY
+# the answer in the real service's shape (shape.py above); FAKE_VULN=CVE:pkgname adds one vulnerability
+exec python3 "$FAKE_SHAPE" "$sbom" "${FAKE_VULN:-}"
 EOF
 # the clock: FAKE_DAY, or FAKE_NEXT_DAY once any result has been stored (a run that crosses UTC midnight mid-loop)
 cat > "$sim/bin/date" <<'EOF'
@@ -405,19 +758,19 @@ EOF
 printf '#!/usr/bin/env bash\nexit 0\n' > "$sim/bin/sudo"; cp "$sim/bin/sudo" "$sim/bin/skopeo"
 chmod +x "$sim/bin/"*
 # the images: the two platform children of a variant carry the same inventory (different stamp); the variants differ
-mksbom "$sim/sboms/cand-production-amd64.json" urn:uuid:p1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36
-mksbom "$sim/sboms/cand-production-arm64.json" urn:uuid:p2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36
-mksbom "$sim/sboms/cand-debug-amd64.json"      urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 gdb@13
-mksbom "$sim/sboms/cand-debug-arm64.json"      urn:uuid:d2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 gdb@13
-mksbom "$sim/sboms/cand-fips-amd64.json"       urn:uuid:f1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 openssl@3
-mksbom "$sim/sboms/cand-fips-arm64.json"       urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 openssl@3
+mksbom "$sim/sboms/cand-production-amd64.json" urn:uuid:p1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
+mksbom "$sim/sboms/cand-production-arm64.json" urn:uuid:p2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
+mksbom "$sim/sboms/cand-debug-amd64.json"      urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
+mksbom "$sim/sboms/cand-debug-arm64.json"      urn:uuid:d2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
+mksbom "$sim/sboms/cand-fips-amd64.json"       urn:uuid:f1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@3
+mksbom "$sim/sboms/cand-fips-arm64.json"       urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@3
 
 # run_step <script-file> <day> [fail] [next-day]: the extracted step, /tmp moved into the sandbox, in a repo-shaped dir
 run_step() {
   : > "$sim/aws.log"; : > "$sim/summary.md"; : > "$sim/out.txt"
   ( cd "$sim/repo" && PATH="$sim/bin:$PATH" FAKE_SBOMS="$sim/sboms" FAKE_AWS_LOG="$sim/aws.log" FAKE_AWS_FAIL="${3:-}" \
       FAKE_DAY="$2" FAKE_NEXT_DAY="${4:-}" FAKE_CACHE="$sim/tmp/inspector-cache" FAKE_VULN="${FAKE_VULN:-}" \
-      FAKE_AWS_MODE="${FAKE_AWS_MODE:-}" FAKE_FLIP_FLAG="${FAKE_FLIP_FLAG:-}" \
+      FAKE_SHAPE="$w/shape.py" FAKE_AWS_MODE="${FAKE_AWS_MODE:-}" FAKE_FLIP_FLAG="${FAKE_FLIP_FLAG:-}" \
       GITHUB_STEP_SUMMARY="$sim/summary.md" GITHUB_OUTPUT="$sim/out.txt" bash "$1" ) > "$sim/log.txt" 2>&1
 }
 calls() { wc -l < "$sim/aws.log" | tr -d ' '; }
@@ -455,7 +808,7 @@ expect "scan.yml different UTC day: calls Inspector for each distinct inventory"
 expect "scan.yml different UTC day: gate still fed" 4 "$(gate_lines)"
 # a different hash: change one image's inventory
 cp "$sim/sboms/cand-debug-amd64.json" "$sim/debug-amd64.keep"
-mksbom "$sim/sboms/cand-debug-amd64.json" urn:uuid:d9 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 gdb@14
+mksbom "$sim/sboms/cand-debug-amd64.json" urn:uuid:d9 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@14
 run_step "$sim/scan-step.sh" 2026-10-06; rc=$?
 expect "scan.yml a different hash: exactly that image calls Inspector" 1 "$(calls)"
 expect "scan.yml a different hash: gate still fed" 4 "$(gate_lines)"
@@ -470,10 +823,10 @@ expect "scan.yml corrupted stored results: the fresh results replaced them (next
 # a stored result that is valid JSON of the right kind but answers ANOTHER inventory is not reused
 cdirs="$sim/tmp/inspector-cache/2026-10-06"
 kp=$(python3 "$prog" key "$sim/sboms/cand-production-amd64.json"); kdb=$(python3 "$prog" key "$sim/sboms/cand-debug-amd64.json")
-cp "$cdirs/$kdb.findings.json" "$cdirs/$kp.findings.json"
+cp "$cdirs/$kp.findings.json" "$cdirs/$kdb.findings.json"   # production's answer lacks gdb: not a cover of debug
 run_step "$sim/scan-step.sh" 2026-10-06; rc=$?
-expect "scan.yml another inventory's answer under this key: not reused (one call), and replaced" "0 1" "$rc $(calls)"
-python3 "$prog" decide "$sim/tmp/inspector-cache" 2026-10-06 "$sim/sboms/cand-production-amd64.json" | head -1 | { read -r v; expect "scan.yml ...the replaced entry is reused next time" reuse "$v"; }
+expect "scan.yml an answer that does not cover this inventory, under this key: not reused (one call), and replaced" "0 1" "$rc $(calls)"
+python3 "$prog" decide "$sim/tmp/inspector-cache" 2026-10-06 "$sim/sboms/cand-debug-amd64.json" | head -1 | { read -r v; expect "scan.yml ...the replaced entry is reused next time" reuse "$v"; }
 # a ScanSbom failure is a pipeline failure and stores nothing
 reset_scan
 run_step "$sim/scan-step.sh" 2026-10-06 1; rc=$?
@@ -592,7 +945,7 @@ sandbox < "$sim/rescan-raw.sh" > "$sim/rescan-step.sh"
 reset_rescan() { rm -rf "$sim/tmp"; mkdir -p "$sim/tmp"; }
 scans() { ls "$sim"/tmp/panel/inspector/*/scan.json 2>/dev/null | wc -l | tr -d ' '; }
 valid_scans() { for f in "$sim"/tmp/panel/inspector/*/scan.json; do python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d['sbom']['bomFormat']=='CycloneDX' else 1)" "$f" && echo y; done | wc -l | tr -d ' '; }
-mksbom "$sim/sboms/cand-debug-amd64.json" urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 gdb@13
+mksbom "$sim/sboms/cand-debug-amd64.json" urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
 reset_rescan
 run_step "$sim/rescan-step.sh" 2026-10-06; rc=$?
 expect "rescan run 1: step exits 0" 0 "$rc"
@@ -605,8 +958,8 @@ expect "rescan same day again: the tally still has a findings file for all six" 
 expect "rescan same day again: fresh=0" 0 "$(fresh)"
 run_step "$sim/rescan-step.sh" 2026-10-07
 expect "rescan a different UTC day: calls for each distinct inventory" 3 "$(calls)"
-mksbom "$sim/sboms/cand-fips-amd64.json" urn:uuid:f1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 openssl@4
-mksbom "$sim/sboms/cand-fips-arm64.json" urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 openssl@4
+mksbom "$sim/sboms/cand-fips-amd64.json" urn:uuid:f1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
+mksbom "$sim/sboms/cand-fips-arm64.json" urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
 run_step "$sim/rescan-step.sh" 2026-10-06
 expect "rescan a different hash: one fresh call (both fips children share the new inventory)" 1 "$(calls)"
 expect "rescan a different hash: the tally still has all six" "6 6" "$(scans) $(valid_scans)"
@@ -679,6 +1032,42 @@ t = t.replace('[ "$(date -u +%F)" != "${day}" ]', 'false', 1)
 EOF
 mresc2 "no validation (a rejected answer stays as scan.json)" "$M_NO_VALIDATE_R" bad_answer_rescan bare
 mresc2 "the store happens without the day re-check" "$M_NO_RECHECK_R" daycross_rescan
+
+# --- a name containing "@" cannot make one image reuse another's answer: both real call sites
+python3 - "$sim" <<'PY'
+import json, sys
+sim = sys.argv[1]
+base = [{"name": "libc6", "version": "2.36", "purl": "pkg:generic/libc6@2.36", "bom-ref": "b1"}]
+for fn, comp in (("col1", {"name": "alpha@beta", "version": "1", "bom-ref": "b2"}), ("col2", {"name": "alpha", "version": "beta@1", "bom-ref": "b2"})):
+    json.dump({"bomFormat": "CycloneDX", "components": base + [comp]}, open("%s/%s.json" % (sim, fn), "w"))
+PY
+kcol1=$(python3 "$prog" key "$sim/col1.json"); kcol2=$(python3 "$prog" key "$sim/col2.json")
+collide_scan() { # script -> "rc calls"
+  reset_scan; printf 'ghcr.io/fosterstack/cache:cand-production-amd64\n' > "$sim/tmp/refs.txt"
+  cp "$sim/col1.json" "$sim/sboms/cand-production-amd64.json"
+  run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06
+  mkdir -p "$sim/tmp/inspector-cache/2026-10-06"; cp "$sim/tmp/inspector-cache/2026-10-06/$kcol1.findings.json" "$sim/tmp/inspector-cache/2026-10-06/$kcol2.findings.json"
+  cp "$sim/col2.json" "$sim/sboms/cand-production-amd64.json"
+  run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06; r=$?
+  echo "$r $(calls)"
+}
+expect "scan.yml collision: col1's stored answer planted under col2's key is NOT reused for col2 (one ScanSbom call)" "0 1" "$(collide_scan)"
+collide_rescan() {
+  reset_rescan
+  for img in production-amd64 production-arm64 debug-amd64 debug-arm64 fips-amd64 fips-arm64; do cp "$sim/col1.json" "$sim/sboms/cand-$img.json"; done
+  run_step "${SCRIPT:-$sim/rescan-step.sh}" 2026-10-06
+  mkdir -p "$sim/tmp/inspector-cache/2026-10-06"; cp "$sim/tmp/inspector-cache/2026-10-06/$kcol1.findings.json" "$sim/tmp/inspector-cache/2026-10-06/$kcol2.findings.json"
+  for img in production-amd64 production-arm64 debug-amd64 debug-arm64 fips-amd64 fips-arm64; do cp "$sim/col2.json" "$sim/sboms/cand-$img.json"; done
+  run_step "${SCRIPT:-$sim/rescan-step.sh}" 2026-10-06; r=$?
+  echo "$r $(calls) $(scans)"
+}
+expect "rescan collision: col1's stored answer planted under col2's key is NOT reused for col2 (one call, then the other five reuse the fresh one; six scan.json)" "0 1 6" "$(collide_rescan)"
+mksbom "$sim/sboms/cand-production-amd64.json" urn:uuid:p1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
+mksbom "$sim/sboms/cand-production-arm64.json" urn:uuid:p2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
+mksbom "$sim/sboms/cand-debug-amd64.json"      urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
+mksbom "$sim/sboms/cand-debug-arm64.json"      urn:uuid:d2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
+mksbom "$sim/sboms/cand-fips-amd64.json"       urn:uuid:f1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
+mksbom "$sim/sboms/cand-fips-arm64.json"       urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
 
 # --- the save step's day is read at save time: the extracted day step prints the clock's day at that moment
 extract scan.yml scanner "Amazon Inspector - the UTC day at save time" > "$sim/saveday-raw.sh" 2>/dev/null || { bad "scan.yml has no save-time day step"; : > "$sim/saveday-raw.sh"; }

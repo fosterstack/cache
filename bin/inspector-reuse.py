@@ -9,19 +9,23 @@
 # Why the SBOM and not the image digest: every commit stamps its id into the
 # binary, so image digests never repeat; the package inventory does.
 #
-# The key is the sha256 of the sorted component identifiers of .components[]:
-# name@version from the explicit name and version fields (the purl is not read
-# then); only a component lacking them is parsed from its purl
-# (pkg:<type>/<namespace>/<name>@<version>, type, qualifiers and subpath ignored). Our own module
-# (github.com/fosterstack/cache, any version, any sub-package) is left out so
-# it never depends on our build stamp. Metadata, serial numbers and timestamps
-# are never read. An SBOM with no identifiers has no key (never a constant).
+# The key is the sha256 of the sorted component identifiers of the REQUEST SBOM.
+# An identifier is the structured pair [name, version] (never a joined string, so
+# a name containing "@" cannot collide): parsed from the purl when the component
+# has one (namespace kept in the name, type, qualifiers and subpath dropped,
+# percent-decoded), since the ScanSbom service rewrites the name and version
+# fields of Go modules; else its name and version fields (version "" if absent).
+# Our own module (github.com/fosterstack/cache, any version, any sub-package) is
+# left out so it never depends on our build stamp. Metadata, serial numbers and
+# timestamps are never read. An SBOM with no identifiers has no key.
 #
-# A stored file is reused only when it is Inspector's ScanSbom answer for THIS
-# inventory: a JSON object {"sbom": <CycloneDX object with a "components" list>}
-# (the envelope bin/inspector-gate.py and bin/panel.py read) whose own
-# components give the same key as the requested SBOM. It must be a regular file
-# (never a link) at DIR/DATE/KEY.findings.json whose real path lies under DIR.
+# A stored or fresh answer is accepted only when it is Inspector's ScanSbom
+# envelope {"sbom": <CycloneDX object with a "components" list>} (the shape
+# bin/inspector-gate.py and bin/panel.py read) whose component identifiers
+# INCLUDE every identifier of the request SBOM (a superset: the service adds
+# components; an extra can only add identifiers, never hide a finding for the
+# requested set). It is a regular file (never a link) at
+# DIR/DATE/<key of the request>.findings.json whose real path lies under DIR.
 # `store` verifies FILE the same way before it copies anything.
 #
 # DATE is an argument (the workflow reads the UTC clock at each decision and
@@ -42,7 +46,8 @@ KEY_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def purl_name_version(purl):
-    """pkg:<type>/<namespace>/<name>@<version>?q#sub -> "<namespace>/<name>@<version>" (type, qualifiers, subpath dropped)."""
+    """pkg:<type>/<namespace>/<name>@<version>?q#sub -> ("<namespace>/<name>", "<version>"), percent-decoded;
+    the type, qualifiers and subpath are dropped, the namespace stays in the name part."""
     s = re.split(r"[?#]", purl, maxsplit=1)[0]
     if s.startswith("pkg:"):
         s = s[4:]
@@ -51,33 +56,48 @@ def purl_name_version(purl):
     name, ver = urllib.parse.unquote(name), urllib.parse.unquote(ver)
     if not name:
         raise ValueError("purl without a name")
-    return name + "@" + ver
+    return (name, ver)
 
 
-def component_key(comps):
-    """The key of a component list; ValueError when it has no usable inventory."""
-    if not isinstance(comps, list) or not comps:
+def component_pairs(comps, strict):
+    """The identifiers of a component list: STRUCTURED (name, version) pairs, never a joined string (a name containing "@"
+    cannot collide with another name/version split). A component with a purl is identified by the pair parsed from the
+    purl (the service rewrites the name and version fields of Go modules); one without, by its name and version fields
+    (version "" when absent). Our own module is left out. strict: an unusable component is an error (the request SBOM);
+    otherwise it is skipped (the response: an unreadable extra can only make the binding fail, never pass)."""
+    if not isinstance(comps, list):
         raise ValueError("no components")
-    ids = []
+    pairs = []
     for c in comps:
-        if not isinstance(c, dict):
-            raise ValueError("component is not an object")
-        purl, name, ver = c.get("purl"), c.get("name"), c.get("version")
-        if purl is not None and not isinstance(purl, str):
-            raise ValueError("purl is not a string")
-        if (purl and OURS_PURL.match(purl)) or (isinstance(name, str) and OURS_NAME.match(name)):
-            continue
-        if isinstance(name, str) and name and isinstance(ver, str) and ver:
-            ids.append(name + "@" + ver)          # the explicit fields decide; the purl is not read
-        elif purl:
-            ids.append(purl_name_version(purl))   # no name/version fields: parse them, ignoring the purl type
-        elif isinstance(name, str) and name:
-            ids.append(name + "@" + (ver if isinstance(ver, str) else ""))
-        else:
-            raise ValueError("component without purl or name")
-    if not ids:
+        try:
+            if not isinstance(c, dict):
+                raise ValueError("component is not an object")
+            purl, name, ver = c.get("purl"), c.get("name"), c.get("version")
+            if purl is not None and not isinstance(purl, str):
+                raise ValueError("purl is not a string")
+            if (purl and OURS_PURL.match(purl)) or (isinstance(name, str) and OURS_NAME.match(name)):
+                continue
+            if purl:
+                pairs.append(purl_name_version(purl))
+            elif isinstance(name, str) and name:
+                pairs.append((name, ver if isinstance(ver, str) else ""))
+            else:
+                raise ValueError("component without purl or name")
+        except ValueError:
+            if strict:
+                raise
+    return pairs
+
+
+def request_pairs(comps):
+    pairs = component_pairs(comps, True)
+    if not pairs:
         raise ValueError("no package identifiers: an empty inventory has no key")
-    return hashlib.sha256(json.dumps(sorted(ids), separators=(",", ":")).encode()).hexdigest()
+    return pairs
+
+
+def pairs_key(pairs):
+    return hashlib.sha256(json.dumps(sorted([list(p) for p in pairs]), separators=(",", ":")).encode()).hexdigest()
 
 
 def read_json(path):
@@ -85,23 +105,22 @@ def read_json(path):
         return json.loads(f.read().decode("utf-8"))
 
 
-def inventory_key(path):
+def inventory_pairs(path):
     doc = read_json(path)
-    return component_key(doc.get("components") if isinstance(doc, dict) else None)
+    return request_pairs(doc.get("components") if isinstance(doc, dict) else None)
 
 
-def envelope_key(doc):
-    """The inventory key of a ScanSbom envelope, or ValueError when it is not one."""
+def check_answer(path, req_pairs):
+    """FILE must be the ScanSbom envelope {"sbom": <CycloneDX with a components list>} that carries EVERY identifier of the
+    request SBOM (a superset: the service adds components of its own). An extra response component only adds
+    identifiers; it can never hide a finding for the requested set, because a finding is read from the component it
+    affects and every requested component is present."""
+    doc = read_json(path)
     sbom = doc.get("sbom") if isinstance(doc, dict) else None
-    if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX":
+    if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX" or not isinstance(sbom.get("components"), list):
         raise ValueError("not a ScanSbom envelope")
-    return component_key(sbom.get("components"))
-
-
-def check_answer(path, key):
-    """FILE must be the ScanSbom envelope for the inventory with this key."""
-    if envelope_key(read_json(path)) != key:
-        raise ValueError("the answer is for another inventory")
+    if not set(req_pairs) <= set(component_pairs(sbom["components"], False)):
+        raise ValueError("the answer does not cover the requested inventory")
 
 
 def stored_path(d, date, key):
@@ -119,10 +138,10 @@ def stored_path(d, date, key):
 def cmd_decide(args):
     try:
         d, date, sbom = args
-        key = inventory_key(sbom)
-        p = stored_path(d, date, key)
+        pairs = inventory_pairs(sbom)
+        p = stored_path(d, date, pairs_key(pairs))
         if os.path.isfile(p):
-            check_answer(p, key)
+            check_answer(p, pairs)
             return "reuse\n" + p
     except Exception:
         pass
@@ -131,7 +150,7 @@ def cmd_decide(args):
 
 def cmd_validate(args):
     sbom, src = args
-    check_answer(src, inventory_key(sbom))
+    check_answer(src, inventory_pairs(sbom))
 
 
 def fsync_dir(path):
@@ -144,9 +163,10 @@ def fsync_dir(path):
 
 def cmd_store(args):
     d, date, sbom, src = args
-    key = inventory_key(sbom)
+    pairs = inventory_pairs(sbom)
+    key = pairs_key(pairs)
     dest = stored_path(d, date, key)
-    check_answer(src, key)
+    check_answer(src, pairs)
     with open(src, "rb") as f:
         data = f.read()
     ddir = os.path.dirname(dest)
@@ -175,7 +195,7 @@ def main(argv):
         return 0
     try:
         if cmd == "key" and len(args) == 1:
-            print(inventory_key(args[0]))
+            print(pairs_key(inventory_pairs(args[0])))
             return 0
         if cmd == "validate" and len(args) == 2:
             cmd_validate(args)
