@@ -18,12 +18,10 @@ PREFIXES = signed_commit.ALLOWED_PREFIXES
 
 
 def _refuse_path(root, path):
-    """A reason this path may not be read from the working directory, else None."""
+    """A reason this path may not be read from the working directory, else None. (Symlinks in any component are refused by read_changes.)"""
     parts = path.split("/")
     if path.startswith("/") or any(p in ("", ".", "..") for p in parts):
         return "refusing path %r (not a plain relative path)" % path
-    if os.path.islink(os.path.join(root, path)):
-        return "refusing path %r (a symlink is never followed)" % path
     return None
 
 

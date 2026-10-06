@@ -2372,6 +2372,10 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
+            elif entries.get(rel) == "file" and any(_writes(x, rel, job or text) for x in _all_texts(job or text)):
+                # the committed file is the boundary only as committed: any step of the job that writes it (redirect, tee,
+                # cp / mv / install / ln / rsync, sed -i, a fill of its directory) is refused, as for a shell script (review of #191, B3)
+                found.append("runs %s, which the job overwrites before it runs (the committed bytes are not what runs); refused" % t[1])
             continue
         if t[0] not in ("__script__", "__exec__"):
             continue

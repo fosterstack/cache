@@ -108,6 +108,18 @@ class Cli(unittest.TestCase):
             rc, out, err, rec = self.run_cli(argv() + ["--path", p])
             self.assertEqual((rc, out), (1, ""), p); self.assertIn("symlink", err); self.assertEqual(rec.calls, [])
 
+    def test_a_symlinked_directory_in_the_path_is_refused_before_anything_is_read(self):
+        with tempfile.TemporaryDirectory() as out:
+            with open(os.path.join(out, "secret.txt"), "wb") as f:
+                f.write(b"SECRET")
+            os.symlink(out, os.path.join(self.dir.name, "outside"))                  # out of the tree
+            os.symlink(os.path.join(self.dir.name, "docs"), os.path.join(self.dir.name, "inside"))   # stays in the tree
+            for p in ("outside/secret.txt", "inside/a.md"):
+                rc, o, err, rec = self.run_cli(argv() + ["--path", p])
+                self.assertEqual((rc, o), (1, ""), p); self.assertIn("symlink", err); self.assertEqual(rec.calls, [], p)
+        rc, o, err, rec = self.run_cli(argv() + ["--path", "docs/a.md"])             # the plain case still works
+        self.assertEqual((rc, o), (0, OID + "\n"))
+
     def test_a_commit_error_is_a_nonzero_exit_with_the_reason_and_no_oid(self):
         class Fail(Fake):
             def __call__(self, cmd, **kw):

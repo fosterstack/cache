@@ -316,6 +316,8 @@ jobs:
           [ ! -f docs/next-release-notes.md ] || paths+=(--path docs/next-release-notes.md)
           python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
             --message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}"
+          # re-runnable: an open PR for the branch (an earlier run's) is reused, not created twice
+          [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ] || \
           gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
             --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
           gh pr merge --auto --squash "$branch"

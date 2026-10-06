@@ -314,6 +314,38 @@ class Commit(unittest.TestCase):
                 fh.write(b"\x00\xff")
             self.assertEqual(S.read_changes(d, ["a/f", "missing", "a"]), {"a/f": b"\x00\xff", "missing": None, "a": None})
 
+    def test_read_changes_never_follows_a_symlink_in_any_component(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as out:
+            root = os.path.join(d, "repo"); os.makedirs(os.path.join(root, "real"))
+            with open(os.path.join(out, "secret.txt"), "wb") as fh:
+                fh.write(b"SECRET")
+            with open(os.path.join(root, "real", "f.txt"), "wb") as fh:
+                fh.write(b"ok")
+            os.symlink(out, os.path.join(root, "docs"))                              # a directory link out of the tree
+            os.symlink(os.path.join(root, "real"), os.path.join(root, "inner"))      # a directory link that stays inside the tree
+            os.symlink(os.path.join(out, "secret.txt"), os.path.join(root, "link.txt"))   # a file link
+            os.symlink("/nonexistent/x", os.path.join(root, "dangling.txt"))         # a dangling file link
+            os.symlink(out, os.path.join(root, "real", "deep"))                      # a link below a plain directory
+            self.assertEqual(S.read_changes(root, ["real/f.txt", "gone.txt", "real/gone.txt"]), {"real/f.txt": b"ok", "gone.txt": None, "real/gone.txt": None})
+            for p in ("docs/secret.txt", "docs/new.txt", "docs", "inner/f.txt", "inner", "link.txt", "dangling.txt", "real/deep/secret.txt", "real/deep"):
+                with self.assertRaises(S.CommitError, msg=p) as cm:
+                    S.read_changes(root, [p])
+                self.assertIn("symlink", str(cm.exception), p)
+            with self.assertRaises(S.CommitError) as cm:                             # a path that climbs out of the root resolves outside it
+                S.read_changes(root, [".."])
+            self.assertIn("outside", str(cm.exception))
+            with self.assertRaises(S.CommitError):                                   # one bad path refuses the whole set, before anything is returned
+                S.read_changes(root, ["real/f.txt", "docs/secret.txt"])
+
+    def test_a_root_that_is_itself_reached_through_a_symlink_is_fine(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "repo")); os.symlink(os.path.join(d, "repo"), os.path.join(d, "alias"))
+            with open(os.path.join(d, "repo", "f"), "wb") as fh:
+                fh.write(b"1")
+            self.assertEqual(S.read_changes(os.path.join(d, "alias"), ["f"]), {"f": b"1"})
+
 
 class Reusable(unittest.TestCase):
     """branch_reusable: an existing delivery branch is reused only when its head is ONE verified commit on today's main, changing only the wanted

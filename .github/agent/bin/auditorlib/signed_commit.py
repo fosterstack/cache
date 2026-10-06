@@ -268,8 +268,26 @@ def branch_reusable(repo, branch, base_sha, want, run=None):
     return head
 
 
+def _no_symlink(root, path):
+    """Refuse a path with a symlink in ANY component (a link out of the tree reads a file outside it; a link inside the tree is refused too,
+    so what is read is exactly the file the path names), and a real path that leaves the root. A component that does not exist ends the walk."""
+    base = os.path.realpath(root)
+    cur = base
+    for part in path.split("/"):
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise CommitError("signed commit: refusing path %r: %s is a symlink; a symlink is never followed" % (path, part))
+        if not os.path.lexists(cur):
+            return
+    if os.path.commonpath([base, os.path.realpath(cur)]) != base:
+        raise CommitError("signed commit: refusing path %r: it resolves outside the working directory" % path)
+
+
 def read_changes(root, paths):
-    """{path: bytes} for each path present under root; None (a deletion) for one that is not."""
+    """{path: bytes} for each path present under root; None (a deletion) for one that is not. A symlink in any component of any path is a
+    CommitError, raised before anything is read."""
+    for p in paths:
+        _no_symlink(root, p)
     out = {}
     for p in paths:
         full = os.path.join(root, p)

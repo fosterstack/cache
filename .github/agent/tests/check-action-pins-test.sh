@@ -1234,6 +1234,30 @@ case_ c02-python-heredoc-ok    ok  "$(rb "python3 - <<'PY'
           print('boundary')
           PY")"
 case_ c02-committed-py-ok      ok  "$(rb 'python3 bin/tool.py --x')" "mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
+# B3 (review of #191): a committed program in another language is the boundary only as committed: a job that overwrites it first is refused
+SETUP_TOOL="mkdir -p bin; printf 'print(1)\\n' > bin/tool.py"
+case_ fo-overwrite-redirect    bad "$(rb 'printf "import os\\n" > bin/tool.py; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-append      bad "$(rb 'echo x >> bin/tool.py; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-cp          bad "$(rb 'cp /tmp/evil.py bin/tool.py; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-mv          bad "$(rb 'mv /tmp/evil.py bin/tool.py; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-tee         bad "$(rb 'echo x | tee bin/tool.py; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-sed-i       bad "$(rb "sed -i 's/1/2/' bin/tool.py; python3 bin/tool.py")" "$SETUP_TOOL"
+case_ fo-overwrite-fills-dir   bad "$(rb 'cp /tmp/evil.py bin/; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-dot-slash   bad "$(rb 'printf x > ./bin/tool.py; python3 ./bin/tool.py')" "$SETUP_TOOL"
+case_ fo-overwrite-other-step  bad "$head
+    steps:
+      - run: printf 'import os\\n' > bin/tool.py
+      - run: python3 bin/tool.py" "$SETUP_TOOL"
+case_ fo-overwrite-after-step  bad "$head
+    steps:
+      - run: python3 bin/tool.py
+      - run: printf 'x\\n' > bin/tool.py" "$SETUP_TOOL"
+case_ fo-other-file-written-ok ok  "$(rb 'printf x > bin/other.txt; python3 bin/tool.py')" "$SETUP_TOOL"
+case_ fo-unmodified-ok         ok  "$(rb 'python3 bin/tool.py --x')" "$SETUP_TOOL"
+case_ fo-two-steps-unmodified  ok  "$head
+    steps:
+      - run: echo hi > /tmp/x
+      - run: python3 bin/tool.py" "$SETUP_TOOL"
 case_ c02-arith-ok             ok  "$(rb 'age=$(( $(date -u +%s) - 1 ))')"
 case_ c02-arith-inner-run      bad "$(rb 'x=$(( $(docker run alpine) + 1 ))')"
 case_ c02-workspace-script     bad "$(rb 'bash "${GITHUB_WORKSPACE}/ci-image.sh"')" "printf 'docker run alpine\\n' > ci-image.sh"
