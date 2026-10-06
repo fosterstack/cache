@@ -84,6 +84,27 @@ f="$a/release-after.json"
 docker scout cves --format gitlab --vex-author '^FosterStack LLC$' "registry://$PROBE_REPO:release" > "$f" 2> "$f.err"; rc=$?
 echo "- scan the release copy from the registry (our author): exit $rc — findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)" >> "$summ"
 
+# --- 1b. OUR statement, attached to a fixture that HAS the target (advisor 0202): the control above proved the attestation path
+# applies a statement of the documented shape; this proves it for OUR author and OUR product forms. The target is CVE-2023-4911 in
+# the fixture's glibc (the rescan self-check's own target). Each form gets its own scratch tag (an attestation cannot be removed);
+# scanned by tag with --vex-author for OUR published author. A fixture without the target records that and tries nothing.
+OUR_AUTHOR=$(jq -er .author "$here/../.vex/fosterstack-cache.openvex.json" 2>/dev/null || echo "")
+OUR_AUTHOR_RE=$(python3 -c 'import re, sys; print("^" + re.escape(sys.argv[1]) + "$")' "$OUR_AUTHOR")
+g_purl=$(jq -r '[.vulnerabilities[]? | select(.cve == "CVE-2023-4911") | .location.dependency.package.name][0] // empty' "$a/control-before.json" 2>/dev/null)
+echo "- our statement on the fixture's CVE-2023-4911 (author \`${OUR_AUTHOR:-unreadable}\`, package \`${g_purl:-absent from the fixture report}\`):" >> "$summ"
+if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+  for form in "published:pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "probe-tag:pkg:docker/$PROBE_REPO@ours-probe-tag"; do
+    k=${form%%:*}; prod=${form#*:}; tag="ours-$k"
+    skopeo copy -q --all "docker://$FIXTURE" "docker://$PROBE_REPO:$tag" >> "$a/copy.log" 2>&1
+    python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "$prod" CVE-2023-4911 "$g_purl" "$a/$tag.vex.json"
+    docker scout attestation add --file "$a/$tag.vex.json" --predicate-type "$PRED" "$PROBE_REPO:$tag" > "$a/$tag-add.log" 2>&1
+    echo "  - $k (product \`$prod\`): attestation add exit $? — \`$(tail -1 "$a/$tag-add.log" | cut -c1-160)\`" >> "$summ"
+    f="$a/$tag-after.json"
+    docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:$tag" > "$f" 2> "$f.err"; rc=$?
+    echo "  - $k scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  done
+fi
+
 # --- 2. the matrix: control, one field at a time, our forms; three Scout versions --------------------------------------
 echo -e "\n## 2. Matrix\n\n| case | Scout | image | location | file | --vex-author | subcomponent | product | result |\n|---|---|---|---|---|---|---|---|---|" >> "$summ"
 current=""

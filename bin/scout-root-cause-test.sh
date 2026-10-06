@@ -143,5 +143,41 @@ else echo "FAIL: the tag+author control-after scan is missing or changed"; fail=
 if grep -qF "docker scout attestation add --file $e2e/out/attest/control.vex.json --predicate-type https://openvex.dev/ns/v0.2.0 ghcr.io/fosterstack/cache-scout-probe:control" "$LOG"; then
   echo "ok: the control attestation add still runs with the same flags"; pass=$((pass+1))
 else echo "FAIL: the control attestation add is missing or changed"; fail=$((fail+1)); fi
-rm -rf "$e2e"
+# advisor 0202: a fixture that HAS CVE-2023-4911: our statement is attached in two product forms (each on its own scratch tag)
+# and scanned by tag with --vex-author for OUR published author; a fixture without the target tries nothing (above: 36, unchanged)
+e4=$(mktemp -d); LOG4="$e4/docker.log"
+cat > "$e4/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $*" >> "$LOG"
+case "$1 $2" in
+  "scout cves") echo '{"vulnerabilities": [{"id": "x1", "cve": "CVE-2023-4911", "identifiers": [{"type": "cve", "name": "CVE-2023-4911", "value": "CVE-2023-4911"}], "location": {"dependency": {"package": {"name": "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm"}, "version": "2.36-9"}}}]}' ;;
+  "scout attestation") echo "attestation added" ;;
+  "scout version") echo "v1.26.0" ;;
+esac
+STUB
+cp "$e2e/skopeo" "$e4/skopeo" 2>/dev/null || true
+cat > "$e4/skopeo" <<'STUB'
+#!/usr/bin/env bash
+echo "skopeo $*" >> "$LOG"
+case "$1" in
+  inspect) echo '{"manifests": []}' ;;
+esac
+STUB
+cp "$e2e/install" "$e4/install" 2>/dev/null || printf '#!/usr/bin/env bash\n: > "${@: -1}"\n' > "$e4/install"
+chmod +x "$e4/docker" "$e4/skopeo" "$e4/install"
+mkdir -p "$e4/home"
+SCOUT_DIR="$e4" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$LOG4" HOME="$e4/home" \
+  PATH="$e4:$PATH" bash "$here/scout-root-cause.sh" "$e4/out" > "$e4/run.log" 2>&1 || true
+for k in published probe-tag; do
+  if grep -qF "docker scout attestation add --file $e4/out/attest/ours-$k.vex.json --predicate-type https://openvex.dev/ns/v0.2.0 ghcr.io/fosterstack/cache-scout-probe:ours-$k" "$LOG4" \
+     && grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe:ours-'"$k" "$LOG4"; then
+    echo "ok: our statement ($k form) is attached to its own scratch tag and scanned by tag with our author"; pass=$((pass+1))
+  else echo "FAIL: our statement ($k form) is not attached or not scanned with our author"; fail=$((fail+1)); fi
+done
+if grep -qF 'pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache' "$e4/out/attest/ours-published.vex.json" && grep -qF 'pkg:docker/ghcr.io/fosterstack/cache-scout-probe@ours-probe-tag' "$e4/out/attest/ours-probe-tag.vex.json" \
+   && grep -qF 'CVE-2023-4911' "$e4/out/attest/ours-published.vex.json"; then echo "ok: the two documents carry our product forms and the target CVE"; pass=$((pass+1))
+else echo "FAIL: the probe documents are wrong"; fail=$((fail+1)); fi
+if grep -q 'ghcr.io/fosterstack/cache-scout-probe:ours-' "$LOG4" && ! grep -E 'skopeo copy .*docker://ghcr.io/fosterstack/cache:' "$LOG4" | grep -qE 'docker://ghcr.io/fosterstack/cache:[0-9a-z.-]+$'; then
+  echo "ok: only the scratch package is written to"; pass=$((pass+1)); else echo "FAIL: a write outside the scratch package"; fail=$((fail+1)); fi
+rm -rf "$e2e" "$e4"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
