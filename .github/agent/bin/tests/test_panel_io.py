@@ -722,9 +722,9 @@ class RebuildReal(Tmp):
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
         env.update(env_extra or {})
-        if state_source is None and existing:
+        if state_source is None:
             state_source = os.path.join(self.d, "ss-auto")
-            open(state_source, "w").write(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0])
+            open(state_source, "w").write(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0] if existing else "")
         a = types.SimpleNamespace(out=self.out, repo=self.work, dry_run=False, today="2026-10-06", state_source=state_source)
         with mock.patch.dict(os.environ, env), mock.patch("sys.stdout", new=io.StringIO()):
             rc = P.cmd_deliver(a, run=run)
@@ -766,6 +766,39 @@ class RebuildReal(Tmp):
         rc, calls = self.deliver(pr_files="%s\n%s\n" % (P.STATE, P.VEX))
         self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "17"], calls)               # state + VEX only: armed, through the PR's number
         self.assertIn(["gh", "pr", "ready", "17"], calls)
+
+    def test_closing_the_source_pr_before_delivery_does_not_launder_the_judgment(self):     # review r5 B1
+        tip = self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0]
+        ss = os.path.join(self.d, "ss-closed"); open(ss, "w").write(tip)
+        with self.assertRaises(RuntimeError) as e:
+            self.deliver(existing="", state_source=ss)                                      # the PR the judgment read is gone
+        self.assertIn("absent", str(e.exception))
+        ss2 = os.path.join(self.d, "ss-none"); open(ss2, "w").write("")
+        with self.assertRaises(RuntimeError):
+            self.deliver(existing="17", state_source=ss2)                                   # a PR appeared that the judgment never read
+        with self.assertRaises(RuntimeError):
+            self.deliver(existing="", state_source=os.path.join(self.d, "no-such-record"))   # no record at all: refused, PR or not
+
+    def test_both_lookups_select_only_a_same_repo_pr_into_main(self):                       # review r5 B3
+        rc, calls = self.deliver()
+        lst = [c for c in calls if c[:3] == ["gh", "pr", "list"]][0]
+        self.assertIn('.baseRefName == "main"', lst[lst.index("--jq") + 1])
+        self.assertIn("isCrossRepository == false", lst[lst.index("--jq") + 1])
+
+    def test_main_vex_timestamp_never_regresses_by_instant_through_the_whole_delivery(self):   # review r5 B2
+        self.assertEqual(P._later("2026-10-05T09:00:00-04:00", "2026-10-05T10:00:00Z"), "2026-10-05T09:00:00-04:00")   # 13:00Z beats 10:00Z
+        self.assertEqual(P._later("2026-10-05T18:00:00Z", "2026-10-06T00:00:00Z"), "2026-10-06T00:00:00Z")
+        self.assertEqual(P._later("not a time", "2026-10-06T00:00:00Z"), "2026-10-06T00:00:00Z")
+        self.assertEqual(P._later("2026-10-06T00:00:00Z", "not a time"), "2026-10-06T00:00:00Z")
+        self.assertEqual(P._later("x", "y"), "x")
+        self.git("checkout", "-q", "main")
+        doc = json.load(open(os.path.join(self.work, P.VEX))); doc["timestamp"] = "2026-10-06T18:00:00Z"
+        self.write(P.VEX, doc); self.git("add", "-A"); self.git("commit", "-q", "-m", "later ts"); self.git("push", "-q", "origin", "main")
+        self.m1 = self.git("rev-parse", "HEAD")
+        self.deliver(vex=[{"image": "fips-arm64", "id": "CVE-3-TODAY", "package": "tzdata", "version": "1", "status": "not_affected",
+                           "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}])
+        self.git("fetch", "-q", "origin")
+        self.assertEqual(self.pushed(P.VEX)["timestamp"], "2026-10-06T18:00:00Z")           # today's midnight must not replace main's later instant
 
     def test_a_real_delivery_with_an_open_pr_needs_the_state_source_record(self):
         with self.assertRaises(RuntimeError) as e:
@@ -936,14 +969,14 @@ class CarryForward(Tmp):
 
     def test_vex_additions_changes_and_conflicts(self):
         base = {"version": 1, "statements": [self.st("A"), self.st("B")]}
-        pr = {"version": 2, "timestamp": "t-pr", "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]}
+        pr = {"version": 2, "timestamp": "2026-02-01T00:00:00Z", "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]}
         self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base)
-        self.cur(P.VEX, {"version": 5, "timestamp": "t-main", "statements": [self.st("A"), self.st("B"), self.st("MAIN")]})
+        self.cur(P.VEX, {"version": 5, "timestamp": "2026-01-01T00:00:00Z", "statements": [self.st("A"), self.st("B"), self.st("MAIN")]})
         self.assertEqual(self.go([P.VEX]), [P.VEX])
         doc = json.load(open(os.path.join(self.repo, P.VEX)))
         by = {x["@id"].split("#")[1]: x for x in doc["statements"]}
         self.assertEqual((by["B"]["status"], sorted(by)), ("affected", ["A", "B", "MAIN", "NEW"]))   # changed statement carried, main's own kept
-        self.assertEqual((doc["version"], doc["timestamp"]), (6, "t-pr"))
+        self.assertEqual((doc["version"], doc["timestamp"]), (6, "2026-02-01T00:00:00Z"))
         # the same addition already on main, identical: nothing to carry
         self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "affected"), self.st("NEW")]})
         self.assertEqual(self.go([P.VEX]), [])

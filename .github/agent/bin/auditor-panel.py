@@ -1087,7 +1087,7 @@ def apply_files(root, st, day, today):
                                     action_statement="Under investigation: " + v["impact_statement"])
                         stmt.pop("justification", None)
                         stmt.pop("impact_statement", None)
-        doc["timestamp"], doc["version"] = ts, int(doc.get("version", 1)) + 1
+        doc["timestamp"], doc["version"] = _later(doc.get("timestamp"), ts), int(doc.get("version", 1)) + 1   # monotonic: a newer timestamp already in the file stays
         with open(vpath, "w") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")
@@ -1132,8 +1132,8 @@ def cmd_state_source(a, run=subprocess.run):
     """Yesterday's judgments for the judge: the open panel PR's branch if there is one (same repository, and its tip PASSED the reserved-branch guard), else main's
     file. The exact commit read is recorded, and the delivery refuses to carry anything from a different tip (a human push between judgment and delivery)."""
     plan, branch = [], "auditor/panel"
-    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository", "--jq",
-                    ".[] | select(.isCrossRepository == false) | .number"], plan, True, run).strip().split("\n")[0].strip()
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository,baseRefName", "--jq",
+                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, True, run).strip().split("\n")[0].strip()
     text, tip = None, ""
     if existing:
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", branch], plan, True, run)
@@ -1155,6 +1155,23 @@ def cmd_state_source(a, run=subprocess.run):
         fh.write(tip)
     print("auditor-panel: state from %s" % where)
     return 0
+
+
+def _instant(ts):
+    """An ISO timestamp as an aware datetime (offsets honoured), or None."""
+    try:
+        d = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _later(a, b):
+    """The later of two timestamps by INSTANT (main's 09:00-04:00 is 13:00Z); on a string that is no instant, the first."""
+    ia, ib = _instant(a), _instant(b)
+    if ia is None or ib is None:
+        return a if ia is not None or ib is None else b
+    return a if ia >= ib else b
 
 
 def _conflict(path, why):
@@ -1214,7 +1231,7 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                     elif cur_by.get(sid) != stmt:
                         raise _conflict(path, sid[:80])
             if touched:
-                cur_doc["timestamp"] = max(str(pr_doc.get("timestamp") or ""), str(cur_doc.get("timestamp") or ""))   # never regress main's
+                cur_doc["timestamp"] = _later(cur_doc.get("timestamp"), pr_doc.get("timestamp"))   # never regress main's (by instant, not spelling)
                 cur_doc["version"] = int(cur_doc.get("version", 1)) + 1
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
@@ -1246,8 +1263,8 @@ def cmd_deliver(a, run=subprocess.run):
     # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
     # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
-    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository", "--jq",
-                    ".[] | select(.isCrossRepository == false) | .number"], plan, real, run).strip().split("\n")[0].strip()   # a fork's PR from a branch of this name is not ours
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository,baseRefName", "--jq",
+                    '.[] | select(.isCrossRepository == false and .baseRefName == "main") | .number'], plan, real, run).strip().split("\n")[0].strip()   # a fork's PR from a branch of this name is not ours
     pr_files, merge_base = [], ""
     if existing:
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, real, run, check=False)
@@ -1256,15 +1273,16 @@ def cmd_deliver(a, run=subprocess.run):
         merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
         if merge_base:  # the PR's own files come from git itself, not from what a listing says
             pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
-    if existing and real:
-        tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip()
-        # the judgment read ONE tip of the open PR's branch (state-source records it): a real delivery with an open PR needs that record and the same tip
+    if real:
+        # the judgment read ONE tip of the open PR's branch (or none): state-source records it, and the delivery must find exactly that, PR or no PR
         if not getattr(a, "state_source", None) or not os.path.exists(a.state_source):
-            raise RuntimeError("auditor-panel: delivery with an open PR needs --state-source (the PR tip the judgment read); refusing to publish a judgment about an unknown state")
+            raise RuntimeError("auditor-panel: a real delivery needs --state-source (what the judgment read); refusing to publish a judgment about an unknown state")
         recorded = open(a.state_source).read().strip()
+        tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip() if existing else ""
         if recorded != tip:
-            raise RuntimeError("auditor-panel: the open PR's branch moved from %s (read for the judgment) to %s (now): refusing to publish a judgment about a different state"
-                               % (recorded[:12] or "none", tip[:12]))
+            raise RuntimeError("auditor-panel: the open PR's branch is %s now but the judgment read %s (it moved, was closed or appeared): refusing to publish a judgment about a different state"
+                               % (tip[:12] or "absent", recorded[:12] or "absent"))
+    if existing and real:
         if pr_files:
             _require_app_tip(a.repo, tip, plan, real, run)
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
