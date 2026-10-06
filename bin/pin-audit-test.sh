@@ -30,9 +30,9 @@ ITEM_TRIVY="tool:trivy@0.74.0"
 # git history of the last 90 days: a bad version we ran (even one already replaced) is a hit with the owner (rule 3), one replaced 100 days ago is not.
 CLEANSHA=$(printf '9%.0s' $(seq 40))
 mkrepo() { # <dir> <days-ago:sha> ...   (oldest first)
-  local r=$1; shift; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin" "$r/.github/agent"; git -C "$r" init -q
+  local r=$1; shift; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin" "$r/.github/pins"; git -C "$r" init -q
   printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
-  printf 'requests==2.32.0 \\\n    --hash=sha256:bbbb\n' >"$r/.github/agent/adjudicator-requirements.txt"
+  printf 'requests==2.32.0 \\\n    --hash=sha256:bbbb\n' >"$r/.github/pins/adjudicator-requirements.txt"
   local spec days sha
   for spec in "$@"; do
     days=${spec%%:*}; sha=${spec##*:}

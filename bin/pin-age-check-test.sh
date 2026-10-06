@@ -24,7 +24,7 @@ SHA1=$(printf '1%.0s' $(seq 40)); SHA2=$(printf '2%.0s' $(seq 40)); SHA3=$(print
 SHA6=$(printf '6%.0s' $(seq 40)); DIG4=sha256:$(printf '4%.0s' $(seq 64)); DIG5=sha256:$(printf '5%.0s' $(seq 64)); DIG1=sha256:$(printf '1%.0s' $(seq 64)); DIG2=sha256:$(printf '2%.0s' $(seq 64)); DIG3=sha256:$(printf '3%.0s' $(seq 64))
 
 # --- the base repository: one of every kind of pin --------------------------------------------------------------------
-base="$work/base"; mkdir -p "$base/.github/workflows" "$base/.github/actions/local" "$base/.github/agent" "$base/bin" "$base/build/docker"
+base="$work/base"; mkdir -p "$base/.github/workflows" "$base/.github/actions/local" "$base/.github/pins" "$base/bin" "$base/build/docker"
 cat >"$base/.github/workflows/ci.yml" <<EOF
 on: pull_request
 jobs:
@@ -45,7 +45,7 @@ jobs:
           python-version: '3.12'
       - run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
-          python3 -m pip install --require-hashes -r .github/agent/adjudicator-requirements.txt
+          python3 -m pip install --require-hashes -r .github/pins/adjudicator-requirements.txt
       - uses: goreleaser/goreleaser-action@$SHA6 # v7.2.3
         with:
           version: '2.17.1'
@@ -70,7 +70,7 @@ TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
 GITSIGN_VER=0.17.1
 EOF
-cat >"$base/.github/agent/adjudicator-requirements.txt" <<'EOF'
+cat >"$base/.github/pins/adjudicator-requirements.txt" <<'EOF'
 # hash-pinned
 anthropic==1.9.0 \
     --hash=sha256:aaaa
@@ -162,7 +162,7 @@ cover tool-gitsign "$(sub bin/install-scanner.sh 'GITSIGN_VER=0.17.1' 'GITSIGN_V
 cover tool-installer-input "$(sub .github/workflows/ci.yml 'version: v2.13.2' 'version: v2.14.0')" "tool:golangci-lint@v2.14.0" github-release
 cover tool-python-version "$(sub .github/workflows/ci.yml "python-version: '3.12'" "python-version: '3.13'")" "tool:python@3.13" github-release
 cover gotool "$(sub .github/workflows/ci.yml 'gosec@v2.29.0' 'gosec@v2.30.0')" "gotool:github.com/securego/gosec/v2/cmd/gosec@v2.30.0" go-index
-cover package "$(sub .github/agent/adjudicator-requirements.txt 'anthropic==1.9.0' 'anthropic==1.10.0')" "package:pypi/anthropic@1.10.0" pypi
+cover package "$(sub .github/pins/adjudicator-requirements.txt 'anthropic==1.9.0' 'anthropic==1.10.0')" "package:pypi/anthropic@1.10.0" pypi
 cover image-container "$(sub .github/workflows/ci.yml "ghcr.io/own/ci@$DIG1" "ghcr.io/own/ci@$DIG3")" "image:ghcr.io/own/ci@$DIG3" registry-push
 cover tool-goreleaser "$(sub .github/workflows/ci.yml "version: '2.17.1'" "version: '2.18.0'")" "tool:goreleaser@2.18.0" github-release
 cover tool-curl-download "$(sub .github/workflows/ci.yml 'releases/download/v2.40.0/gh_2.40.0_linux_amd64' 'releases/download/v2.41.0/gh_2.41.0_linux_amd64')" "tool:cli/cli@2.41.0" github-release
@@ -203,7 +203,7 @@ check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/notcovered.out"
 # --- several moves: every one is named, one young one fails the whole check ---------------------------------------------------------
 newcase multi "$(sub .github/workflows/ci.yml "actions/checkout@$SHA1 # v4.1.0" "actions/checkout@$NEW1 # v4.2.0")
 $(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')
-$(sub .github/agent/adjudicator-requirements.txt 'requests==2.32.0' 'requests==2.33.0')"
+$(sub .github/pins/adjudicator-requirements.txt 'requests==2.32.0' 'requests==2.33.0')"
 runck multi "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$OLD\", \"source\": \"github-release\"}, \"tool:trivy@0.75.0\": {\"time\": \"$YOUNG\", \"source\": \"github-release\"}, \"package:pypi/requests@2.33.0\": {\"time\": \"$OLD\", \"source\": \"pypi\"}}}"
 CASE="three moves, one of them 3 days old: exit 1, and the output names ALL THREE (so a reviewer sees what moved) and blames the young one"
 check test "$rc" -eq 1
