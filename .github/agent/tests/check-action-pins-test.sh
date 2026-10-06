@@ -1373,7 +1373,7 @@ case_ r4b2-trap-dashdash-ok    ok  "$(rb "trap -- 'docker run --rm alpine@$DIG e
 case_ r4b2-trap-dashdash-dash-cmd-bad bad "$(rb "trap -- '-rf; docker run --rm alpine:3.20 echo x' EXIT; true")"
 case_ r4b2-trap-dashdash-dash-cmd-ok  ok  "$(rb "trap -- '-rf; docker run --rm alpine@$DIG echo x' EXIT; true")"
 case_ r4b3-pull-never-then-always-bad bad "$(rb 'docker run --pull=never --pull=always --rm alpine:3.20 true')"
-case_ r4b3-pull-always-then-never-ok  ok  "$(rb 'docker run --pull=always --pull=never --rm alpine:3.20 true')"
+case_ r4b3-pull-always-then-never-ok  ok  "$(rb 'docker run --pull=always --pull=never --rm localhost/fa-x true')"
 case_ r4b3-pull-bare-always-last-bad  bad "$(rb 'docker run --pull never --pull always --rm alpine:3.20 true')"
 case_ r4b4-cache-from-tag-bad  bad "$(rb 'docker build --cache-from alpine:3.20 -f build/docker/Dockerfile.production .')" 'mkdir -p build/docker; printf "FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 " > build/docker/Dockerfile.production'
@@ -2256,6 +2256,72 @@ case_ cov-main-copy-in-a-for-loop-ok ok "$(rb 'for f in bin/g.sh; do
           bash "${RUNNER_TEMP}/g.sh"')" "mkdir -p bin; printf 'docker run alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > bin/g.sh"
 case_ cov-another-language-script-run-directly-ok ok "$(rb './bin/t')" "mkdir -p bin; printf '#!/usr/bin/env python3\\nprint(1)\\n' > bin/t; chmod +x bin/t"
 case_ cov-scripts-nested-past-the-limit-bad bad "$(rb 'bash bin/a.sh')" "mkdir -p bin; for p in a:b b:c c:d d:e e:f; do printf 'bash bin/%s.sh\\n' \"\${p#*:}\" > bin/\${p%%:*}.sh; done; printf 'echo hi\\n' > bin/f.sh"
+
+# --- R5 of round 26 (Codex r26 B1-B9, Sonnet B8/B9, option-A residuals): each case names the plain form it refuses (or the fixed form it still accepts)
+DF2='mkdir -p pin-context; printf "FROM scratch\\n" > Dockerfile; printf "FROM alpine:latest\\n" > pin-context/Dockerfile'
+case_ r26-b1-build-debug-flag-then-context-bad bad "$(rb 'docker build --debug pin-context')" "$DF2"
+case_ r26-b1-build-clustered-qf-bad bad "$(rb 'docker build -qf pin-context/Dockerfile .')" "$DF2"
+case_ r26-b1-build-compress-then-context-bad bad "$(rb 'docker build --compress pin-context')" "$DF2"
+case_ r26-b1-build-unknown-option-bad bad "$(rb 'docker build --frobnicate .')" "$DF2"
+case_ r26-b1-build-known-options-ok ok "$(rb 'docker build -q --debug -f pin-context/Dockerfile pin-context')" "mkdir -p pin-context; printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > pin-context/Dockerfile"
+case_ r26-b2-empty-assignment-then-literal-bad bad "$(rb 'RUN_OPTS=
+          docker run $RUN_OPTS alpine:latest')"
+case_ r26-b2-empty-assignment-then-digest-ok ok "$(rb 'RUN_OPTS=
+          docker run $RUN_OPTS alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ r26-b3-literal-array-bad bad "$(rb 'IMAGES=(alpine:latest)
+          docker run "${IMAGES[0]}"')"
+case_ r26-b4-kubectl-set-image-bad bad "$(rb 'kubectl set image deployment/web web=nginx:latest')"
+case_ r26-b4-kubectl-set-image-digest-ok ok "$(rb 'kubectl set image deployment/web web=nginx@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ r26-b4-k3d-short-image-bad bad "$(rb 'k3d cluster create demo -i rancher/k3s:v1.31.5-k3s1')"
+case_ r26-b4-k3d-attached-image-bad bad "$(rb 'k3d cluster create demo -irancher/k3s:v1.31.5-k3s1')"
+case_ r26-b4-k3d-image-digest-ok ok "$(rb 'k3d cluster create demo -i rancher/k3s@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ r26-b4-kind-config-bad bad "$(rb 'kind create cluster --config pin-kind.yaml')"
+case_ r26-b5-kind-image-substitution-bad bad "$(rb 'kind create cluster --image "$(cat pin-image.txt)"')"
+case_ r26-b5-kubectl-run-substitution-bad bad "$(rb 'kubectl run probe --image="$(echo alpine:latest)" --restart=Never')"
+case_ r26-b6-oras-bad bad "$(rb 'oras cp --to-oci-layout docker.io/library/alpine:latest downloaded:latest')"
+case_ r26-b6-helm-bad bad "$(rb 'helm upgrade --install pin-probe ./pin-chart --set image=alpine:latest')"
+case_ r26-b7-pull-never-other-tag-bad bad "$(rb 'docker run --pull=never alpine:latest')"
+case_ r26-b7-pull-never-localhost-ok ok "$(rb 'docker run --pull=never localhost/fa-production')"
+case_ r26-b8-crane-pull-literal-variable-bad bad "$(rb 'IMG=alpine:latest
+          crane pull "$IMG" out.tar')"
+case_ r26-b8-crane-pull-mixed-word-bad bad "$(rb 'crane pull "$REG/x:latest" o.tar')"
+case_ r26-b8-skopeo-literal-variable-bad bad "$(rb 'IMG=alpine:latest
+          skopeo copy "docker://$IMG" oci:out:latest')"
+case_ r26-b8-crane-pull-bare-variable-ok ok "$(rb 'crane pull "$IMG" o.tar')"
+case_ r26-b8-skopeo-positional-parameter-ok ok "$(rb 'skopeo inspect "docker://$1"')"
+case_ r26-b9-curl-clustered-o-then-install-bad bad "$(rb 'curl -fsSLo /tmp/cosign https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+          sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
+          cosign version')"
+case_ r26-b9-curl-straight-into-path-bad bad "$(rb 'curl -fsSL -o /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+          chmod +x /usr/local/bin/cosign
+          cosign version')"
+case_ r26-b9-wget-straight-into-path-bad bad "$(rb 'wget -qO /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+          chmod +x /usr/local/bin/cosign
+          cosign version')"
+case_ r26-b9-curl-attached-o-then-copy-bad bad "$(rb 'curl -o/tmp/y https://e.example/y
+          cp /tmp/y /usr/bin/y
+          y version')"
+case_ r26-b9-curl-remote-name-alone-ok ok "$(rb 'curl -fsSLO https://e.example/notes.txt')"
+case_ a-later-checkout-into-the-same-path-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+$(co "          ref: \${{ github.event.pull_request.head.sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-later-checkout-without-ref-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+$(co "          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-foreign-interpreter-after-cd-bad bad "$head
+    steps:
+$(co "          ref: $BASE_REF
+          path: trusted")
+      - run: |
+          cd sub
+          python3 trusted/bin/tool.py" "$mk_trusted"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

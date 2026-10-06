@@ -567,10 +567,10 @@ PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
          "buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor",
-         "kind", "kubectl", "k3d", "minikube"}      # their --image flags are read (Codex #164 r23, B8)
+         "kind", "kubectl", "k3d", "minikube", "oras", "helm"}      # their --image flags are read (Codex #164 r23, B8); oras and helm are refused (r26, B6)
 # container CLIs this check does not parse (Sonnet #164 r3): any use is a finding — run images through docker,
 # podman, nerdctl, skopeo or crane, whose arguments are read
-UNREAD_CONTAINER = {"buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor"}
+UNREAD_CONTAINER = {"buildah", "ctr", "crictl", "apptainer", "singularity", "kaniko", "executor", "oras", "helm"}   # oras and helm: refused outright (the repository uses neither; r26 B6)
 PRINTERS = {"echo", "printf", ":"}  # commands that only print their arguments
 # package installers (handoff 0070): matched by the command word's basename, so a venv path (…/bin/pip) counts
 PKG_TOOL = re.compile(r"^(pip3?(\.[0-9]+)?|python3?(\.[0-9]+)?|pipx|uv|uvx|npm|npx|gem|yarn|pnpm|bun|conda|mamba|micromamba"
@@ -1165,7 +1165,7 @@ def _variable(tok):
 def _options_variables(script):
     """Names this script assigns OPTIONS (a literal starting with a dash, or an array whose first element does): `RUN_OPTS=--rm` and
     `RUN_OPTS=(--rm)`. As docker run's first word such a variable is options, and the image is the word after it (r23, B4)."""
-    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*\)|[\"']{2}(?![\w])|(?:\(\s*)?[\"']?-)", script))   # also EMPTY (""/()): r24
+    return set(re.findall(r"(?<![\w$.-])([A-Za-z_]\w*)=(?:\(\s*\)|[\"']{2}(?![\w])|(?=\s|$)|(?:\(\s*)?[\"']?-)", script))   # also EMPTY (NAME=, ""/()): r24, r26 B2
 
 
 def _is_optvar(tok, optvars):
@@ -1184,11 +1184,22 @@ def _downloaded_commands(script):
             continue
         base = _base(words[-1])
         if base in ("curl", "wget", "aria2c"):
+            vch = "O" if base == "wget" else "o"          # the short option that names the output file (curl -o, wget -O, aria2c -o)
             for j, a in enumerate(toks):
-                if a in ("-o", "-O", "--output", "--output-document") and j + 1 < len(toks):
-                    downloads.add(toks[j + 1].strip("\"'"))
+                dest = None
+                if a in ("--output", "--output-document") and j + 1 < len(toks):
+                    dest = toks[j + 1]
                 elif a.startswith(("--output=", "--output-document=")):
-                    downloads.add(a.split("=", 1)[1].strip("\"'"))
+                    dest = a.split("=", 1)[1]
+                elif a.startswith("-") and not a.startswith("--") and vch in a[1:]:
+                    k = a.index(vch, 1)                     # a cluster (-fsSLo FILE, -qO FILE) or an attached value (-oFILE, -O=FILE)
+                    attached = a[k + 1:].lstrip("=")
+                    dest = attached if attached else (toks[j + 1] if j + 1 < len(toks) else None)
+                if dest:
+                    dest = dest.strip("\"'")
+                    downloads.add(dest)
+                    if re.fullmatch(r"(?:/usr/local/s?bin|/usr/s?bin|/s?bin|/opt/[\w.-]+/bin|\$\{?HOME\}?/\.local/bin|~/\.local/bin|\$\{?HOME\}?/bin)/[\w.-]+", dest):
+                        names.add(_base(dest))          # downloaded straight into a PATH directory: running it by name runs unchecked bytes (r26, B9)
         elif base in ("install", "cp", "mv", "ln"):
             skip, pos, tdir = False, [], False
             for a in toks[toks.index(words[-1]) + 1:]:
@@ -1220,7 +1231,7 @@ def _mixed_unpinned(tok):
     review pass (Sonnet #164 r25, B1: the real repo uses no mixed word as a run or pull source)."""
     if "$" not in tok and "${{" not in tok:
         return False
-    if re.fullmatch(r'"?\$\{?[A-Za-z_]\w*(?:\[[@*0-9]+\])?\}?"?', tok):
+    if re.fullmatch(r'"?\$\{?(?:[A-Za-z_]\w*(?:\[[@*0-9]+\])?|[0-9]+|[@*#?])\}?"?', tok):
         return False                       # a bare variable
     return "@" not in tok                   # `repo@$DIGEST` and `repo@sha256:...` name a digest
 
@@ -1231,10 +1242,12 @@ def _var_unpinned_literal(tok, text):
     command substitution or another variable is left to the review pass (the documented boundary): it holds something this check cannot
     read, but a literal sitting in the same script it CAN, and `IMG=ubuntu:latest; docker run "$IMG"` is the plainest unpinned form there
     is (Sonnet #164 r23, R1; it was also the one-assignment bypass of the removed local-name trust)."""
-    m = re.fullmatch(r'"?\$\{?([A-Za-z_]\w*)\}?"?', tok)
+    m = re.fullmatch(r'"?\$\{?([A-Za-z_]\w*)(?:\[[^\]]*\])?\}?"?', tok)
     if not m:
         return None
     name, vals = m.group(1), []
+    for arr in re.findall(r"(?<![\w$.-])" + name + r"=\(([^)]*)\)", text):      # NAME=(a b): its literal words (r26, B3)
+        vals += [w.strip("\"'") for w in arr.split() if "$" not in w]
     for v in re.findall(r"(?<![\w$.-])" + name + r"=(\"[^\"$`\\]*\"|'[^']*'|[^\s\"'$`;&|()<>\\]+)(?=[\s;&|)]|$)", text):
         vals.append(v.strip("\"'"))
     for lst in re.findall(r"(?<![\w$.-])for\s+" + name + r"\s+in\s+([^;\n]*?)\s*(?:;|\n)\s*do(?![\w.-])", text):
@@ -1245,50 +1258,68 @@ def _var_unpinned_literal(tok, text):
     return None
 
 
+BUILD_VAL = {"--add-host", "--allow", "--annotation", "--attest", "--build-arg", "--build-context", "--builder", "--cache-from", "--cache-to",
+             "--call", "--cgroup-parent", "--cpu-period", "--cpu-quota", "--cpu-shares", "--cpuset-cpus", "--cpuset-mems", "--file", "--iidfile",
+             "--isolation", "--label", "--memory", "--memory-swap", "--metadata-file", "--network", "--no-cache-filter", "--output", "--platform",
+             "--progress", "--provenance", "--sbom", "--secret", "--security-opt", "--shm-size", "--ssh", "--tag", "--target", "--ulimit"}
+BUILD_BOOL = {"--check", "--compress", "--debug", "--disable-content-trust", "--force-rm", "--help", "--load", "--no-cache", "--pull", "--push",
+              "--quiet", "--rm", "--squash"}
+BUILD_SHORT_VAL = set("fotcm")                      # -f FILE, -t TAG, -o DEST, -c SHARES, -m MEMORY (the value is the rest of the word or the next word)
+BUILD_SHORT_BOOL = set("qDh")                       # -q quiet, -D debug, -h help
+
+
 def _build(args):
-    """(dockerfile, context, tags, named, cache_from) of a docker build / buildx build: dockerfile None = the default
-    name. cache_from: each --cache-from registry image (a type=local/gha/... source names nothing remote)."""
-    dockerfile, tags, pos, named, cache_from, i = None, set(), [], [], [], 0
+    """(dockerfile, context, tags, named, cache_from, unknown) of a docker build / buildx build: dockerfile None = the default
+    name. cache_from: each --cache-from registry image (a type=local/gha/... source names nothing remote). Every option is read
+    with its arity from a table: an option the table does not know is returned as `unknown` and the caller refuses the build
+    (a guessed arity once read the context as an option's value and checked the wrong Dockerfile; Codex #164 r25-26, B1)."""
+    dockerfile, tags, pos, named, cache_from, unknown, i = None, set(), [], [], [], None, 0
     while i < len(args):
         a = args[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument (`- < Dockerfile`)
             i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
             continue
-        if a in ("-f", "--file"):
-            dockerfile, i = (args[i + 1] if i + 1 < len(args) else "-"), i + 2
-            continue
-        if a.startswith("--file="):
-            dockerfile = a.split("=", 1)[1]
-        elif a.startswith("-f") and not a.startswith("--") and len(a) > 2:
-            dockerfile = a[2:][1:] if a[2] == "=" else a[2:]       # -fFILE / -f=FILE (Codex #164 adversarial r1, C07)
-        elif a in ("-t", "--tag") and i + 1 < len(args):
-            tags.add(args[i + 1]); i += 2
-            continue
-        elif a.startswith(("--tag=", "-t=")):
-            tags.add(a.split("=", 1)[1])
-        elif a.startswith("-t") and not a.startswith("--") and len(a) > 2:
-            tags.add(a[2:])                          # -tNAME (Codex #164 r23, B2): never read the context as its value
-        elif a == "--build-context" and i + 1 < len(args):
-            named.append(args[i + 1].split("=", 1)[-1]); i += 2
-            continue
-        elif a.startswith("--build-context="):
-            named.append(a.split("=", 2)[-1])
-        elif a == "--cache-from" and i + 1 < len(args):
-            cache_from.append(args[i + 1]); i += 2
-            continue
-        elif a.startswith("--cache-from="):
-            cache_from.append(a.split("=", 1)[1])
-        elif a.startswith("-") and not a.startswith("--") and len(a) > 2 and a[1] in "oOfTtqPLbcmu" and "=" not in a[:2]:
-            pass                                     # an attached short value (-oDEST, -PTYPE ...): it consumes nothing after it
-        elif a.startswith("-") and a != "-":
-            if "=" not in a and i + 1 < len(args) and not args[i + 1].startswith("-") and a not in (
-                    "--push", "--load", "--no-cache", "--pull", "-q", "--quiet", "--rm", "--force-rm"):
-                i += 2
-                continue
-        else:
+        if a == "--" or a == "-" or not a.startswith("-"):
             pos.append(a)
+            i += 1
+            continue
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name in BUILD_VAL:
+                if not eq:
+                    val, i = (args[i + 1] if i + 1 < len(args) else "-"), i + 1
+                if name == "--file":
+                    dockerfile = val
+                elif name == "--tag":
+                    tags.add(val)
+                elif name == "--build-context":
+                    named.append(val.split("=", 1)[-1])
+                elif name == "--cache-from":
+                    cache_from.append(val)
+            elif name not in BUILD_BOOL:
+                unknown = unknown or a
+            i += 1
+            continue
+        k = 1                                                # a cluster of short options: -qf FILE, -tNAME, -f=FILE
+        while k < len(a):
+            ch = a[k]
+            if ch in BUILD_SHORT_VAL:
+                val = a[k + 1:]
+                if val.startswith("="):
+                    val = val[1:]
+                if not val:
+                    val, i = (args[i + 1] if i + 1 < len(args) else "-"), i + 1
+                if ch == "f":
+                    dockerfile = val
+                elif ch == "t":
+                    tags.add(val)
+                break
+            if ch not in BUILD_SHORT_BOOL:
+                unknown = unknown or a
+                break
+            k += 1
         i += 1
-    return dockerfile, (pos[-1] if pos else "."), tags, named, cache_from
+    return dockerfile, (pos[-1] if pos else "."), tags, named, cache_from, unknown
 
 
 def _pip_install(args):
@@ -1462,11 +1493,26 @@ def script_images(script):
             ev.append(("finding", "`%s` runs images named in compose files, which this check does not read" % cmd))
             continue
         if cmd in ("kind", "kubectl", "k3d", "minikube"):
+            vals = []
             for j, a in enumerate(args):
-                val = a.split("=", 1)[1] if a.startswith("--image=") else (args[j + 1] if a == "--image" and j + 1 < len(args) else None)
-                if val is not None and not (_variable(val) or DIGEST_REF.search(val)):
+                if a.startswith("--image="):
+                    vals.append(a.split("=", 1)[1])
+                elif a == "--image" and j + 1 < len(args):
+                    vals.append(args[j + 1])
+                elif cmd == "k3d" and a.startswith("-i=") or (cmd == "k3d" and a.startswith("-i") and len(a) > 2 and not a.startswith("--")):
+                    vals.append(a[2:].lstrip("="))          # k3d cluster create -i IMAGE (attached or =)
+                elif cmd == "k3d" and a == "-i" and j + 1 < len(args):
+                    vals.append(args[j + 1])
+            if cmd == "kubectl" and args[:2] == ["set", "image"]:
+                vals += [x.split("=", 1)[1] for x in args[2:] if "=" in x and not x.startswith("-")]     # kubectl set image deploy/x c=IMAGE
+            if cmd == "kind" and any(x == "--config" or x.startswith("--config=") for x in args):
+                ev.append(("finding", "`kind` reads its node images from a config file this check does not read; pass --image with a digest"))
+            for val in vals:
+                if SUBST in val:
+                    ev.append(("finding", f"`{cmd}` takes its image from a command substitution ({val!r}); it cannot be checked"))
+                elif not (_variable(val) or DIGEST_REF.search(val)):
                     ev.append(("finding", f"`{cmd}` is given an image not pinned by digest: {val!r}"))
-                elif val is not None and _variable(val) and _var_unpinned_literal(val, _mask_shell(script)[0]) is not None:
+                elif _variable(val) and _var_unpinned_literal(val, _mask_shell(script)[0]) is not None:
                     ev.append(("finding", f"`{cmd}` is given {val!r}, which this script assigns the unpinned name "
                                           f"{_var_unpinned_literal(val, _mask_shell(script)[0])!r}"))
         if cmd in UNREAD_CONTAINER:
@@ -1565,7 +1611,10 @@ def script_images(script):
                             pull_state = a.split("=", 1)[1]
                     never = verb != "pull" and pull_state == "never"
                     fetch = verb == "pull" or (pull_state == "always" if pull_state is not None else False)
-                    if not never:     # --pull=never can only use an image already in the daemon (Codex r3, C10)
+                    operand = rest[k].strip("\"'") if k < len(rest) else None
+                    if not (never and operand is not None and operand.startswith("localhost/")):
+                        # --pull=never can only use an image already in the daemon, and only a localhost/ name is one this job's own
+                        # build or load makes: any other tag may come from an archive nobody pinned (Codex #164 r26, B7)
                         if k >= len(rest) and had_help:
                             pass                                            # `docker run --help`: usage only
                         elif k >= len(rest) and not ({"-h", "--version"} & set(rest)):
@@ -1583,7 +1632,9 @@ def script_images(script):
                 ev.append(("finding", "`%s %s` is not a verb this check reads or has reviewed as pulling nothing; "
                                       "it is refused" % (cmd, verb)))
             elif verb == "build":
-                dockerfile, context, tags, named, cache_from = _build(rest)
+                dockerfile, context, tags, named, cache_from, unknown_opt = _build(rest)
+                if unknown_opt:
+                    ev.append(("finding", "`%s build` has an option this check does not know (%s); the build's Dockerfile and context cannot be placed, refused" % (cmd, unknown_opt)))
                 # a BUILDKIT_SYNTAX build argument selects the frontend image that runs the build (C09)
                 for k, b in enumerate(rest):
                     v = rest[k + 1] if b == "--build-arg" and k + 1 < len(rest) else (
@@ -2294,6 +2345,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
+            elif entries.get(rel) != "file" and moved and not t[1].startswith(("/", "$")):
+                found.append("runs %s from a working directory this check cannot place; refused" % t[1])    # main's copy at a literal path, but after a cd
             continue
         if t[0] not in ("__script__", "__exec__"):
             continue
@@ -2468,12 +2521,13 @@ def check_runs(where_job, scripts, bad, tree=None):
                 if img is not None and SUBST in img:
                     bad.append(f"{where}: `{c}` takes its image from a command substitution; it cannot be checked")
                     continue
-                lit = (_var_unpinned_literal(img, own_nc) if img is not None and _variable(img)
-                       and re.fullmatch(r"(?:docker|podman|nerdctl) (?:run|create|pull)", c) else None)   # not a scan (docker scout) or a read
+                pulls = re.fullmatch(r"(?:docker|podman|nerdctl) (?:run|create|pull)|crane (?:copy|cp|pull|export)|crane index \w+|skopeo (?:copy|inspect)|"
+                                     r"docker (?:buildx )?build --cache-from", c)       # a fetch of an image; not a scan (docker scout) or a read
+                lit = (_var_unpinned_literal(img, own_nc) if img is not None and _variable(img) and pulls else None)
                 if lit is not None:
                     bad.append(f"{where}: `{c}` names {img!r}, which this script assigns the unpinned name {lit!r}; pin it by digest")
                     continue
-                if (img is not None and _mixed_unpinned(img) and re.fullmatch(r"(?:docker|podman|nerdctl) (?:run|create|pull)", c)):
+                if img is not None and _mixed_unpinned(img) and pulls:
                     bad.append(f"{where}: `{c}` names {img!r}, which mixes a variable with a literal name and holds no digest; pin it by digest")
                     continue
                 if img is None or _variable(img) or DIGEST_REF.search(img):
@@ -2544,12 +2598,16 @@ def run_scripts(doc):
                         groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft,
                                                               ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
                     uses, w = m.get("uses"), m.get("with")
-                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip()) and isinstance(w, yaml.MappingNode):
-                        wm = {key_of(k): v for k, v in w.value}
+                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip()):
+                        wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
+                        pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
                         if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
-                                and isinstance(pth, yaml.ScalarNode) and re.fullmatch(r"[\w][\w-]*", pth.value.strip())):
-                            base_dirs.append(pth.value.strip())
+                                and re.fullmatch(r"[\w][\w-]*", pdir)):
+                            if pdir not in base_dirs:
+                                base_dirs.append(pdir)
+                        elif pdir in base_dirs:
+                            base_dirs.remove(pdir)       # a LATER checkout into the same directory (another ref, repository or none) replaces main's copy
     jobs = top.get("jobs")
     if isinstance(jobs, yaml.MappingNode):
         for k, j in jobs.value:

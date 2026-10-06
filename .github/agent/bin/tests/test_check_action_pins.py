@@ -241,8 +241,8 @@ class RunScriptImages(unittest.TestCase):              # handoff 0068: literal i
         self.assertEqual(M.check_dockerfile("FROM --platform=x\n"), [])
 
     def test_build_option_forms(self):
-        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set(), [], []))
-        self.assertEqual(M._build(["-f"]), ("-", ".", set(), [], []))
+        self.assertEqual(M._build(["--file=D", "--platform", "x", "--push", "ctx"]), ("D", "ctx", set(), [], [], None))
+        self.assertEqual(M._build(["-f"]), ("-", ".", set(), [], [], None))
         self.assertEqual(M._build(["--build-context=a=./x", "."])[3], ["./x"])
 
     def test_short_option_forms(self):
@@ -388,6 +388,12 @@ class ReaderBranches(unittest.TestCase):
         marks = M._heredoc_marks(['echo "`date`"', "cat <<EOF", "x", "EOF"])
         self.assertEqual([len(m) for m in marks], [0, 1, 0, 0])
         self.assertEqual(M._made_executable("curl -o /usr/local/bin/t https://e/t", "/usr/local/bin/t"), "downloads")
+
+    def test_download_long_output_and_unknown_short_build_option(self):
+        self.assertEqual(M._downloaded_commands("curl --output /usr/local/bin/x https://e/x"), {"x"})
+        self.assertEqual(M._build(["-Z", "."])[5], "-Z")
+        self.assertEqual(M._build(["--frob", "."])[5], "--frob")
+        self.assertEqual(M._build(["-qf", "d/Dockerfile", "ctx"]), ("d/Dockerfile", "ctx", set(), [], [], None))
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
