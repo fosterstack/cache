@@ -49,30 +49,42 @@ class FakeRun:
 
 SHA = "a" * 40
 OID = "b" * 40
+OLDHEAD = "c" * 40
 GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": True, "state": "VALID"}}}}})
 
 
+def head_lookup(verified=True, parent=SHA):
+    return (0, json.dumps({"parents": [{"sha": parent}], "commit": {"verification": {"verified": verified}}}), "")
+
+
 class ApiRun(FakeRun):
-    """FakeRun plus the GitHub API the signed delivery uses: the branch ref GET / PATCH / POST, the createCommitOnBranch GraphQL call (its
-    stdin kept in .stdins) and the commit lookup. Defaults: the branch exists, the mutation succeeds with a VALID signature, `git status`
-    lists the suppression files as changed and `git rev-parse` answers SHA. Override `ref`, `reset`, `create`, `mutation`, `lookup`."""
-    def __init__(self, rules=None, ref=(0, "{}", ""), reset=(0, "{}", ""), create=(0, "{}", ""), mutation=(0, GQL_OK, ""), lookup=(0, "{}", "")):
+    """FakeRun plus the GitHub API the signed delivery uses: the delivery branch's ref (GET answers `live`, None = absent), the temporary ref
+    POST / DELETE, the live ref PATCH, the createCommitOnBranch GraphQL call (its stdin kept in .stdins), the commit lookup and a PR's head oid.
+    Defaults: the branch exists at OLDHEAD, every write succeeds with a VALID signature, `git status` lists the suppression files as changed and
+    `git rev-parse` answers SHA. Override `live`, `post`, `patch`, `delete`, `mutation`, `lookup`, `pr_head`."""
+    def __init__(self, rules=None, live=OLDHEAD, post=(0, "{}", ""), patch=(0, "{}", ""), delete=(0, "{}", ""), mutation=(0, GQL_OK, ""),
+                 lookup=None, pr_head=OID):
         defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
                     ("git", "rev-parse"): (0, SHA + "\n", "")}
         super().__init__({**defaults, **(rules or {})})
-        self.ref, self.reset, self.create, self.mutation, self.lookup = ref, reset, create, mutation, lookup
+        self.live, self.post, self.patch, self.delete, self.mutation = live, post, patch, delete, mutation
+        self.lookup = lookup or head_lookup()
+        self.pr_head = pr_head
         self.stdins = []
 
     def __call__(self, argv, **kw):
         argv = list(argv)
+        if argv[:3] == ["gh", "pr", "view"] and "headRefOid" in argv and self.pr_head is not None:
+            self.calls.append((argv, kw))
+            return subprocess.CompletedProcess(argv, 0, self.pr_head + "\n", "")
         if argv[:2] == ["gh", "api"] and not any(argv[:len(p)] == list(p) for p in self.rules):
             self.calls.append((argv, kw))
             if argv[2] == "graphql":
                 self.stdins.append(json.loads(kw["input"])); resp = self.mutation
             elif argv[2] == "--method":
-                resp = self.reset if argv[3] == "PATCH" else self.create
+                resp = {"POST": self.post, "PATCH": self.patch, "DELETE": self.delete}[argv[3]]
             elif "/git/ref/heads/" in argv[2]:
-                resp = self.ref
+                resp = (1, "", "gh: Not Found (HTTP 404)") if self.live is None else (0, json.dumps({"object": {"sha": self.live}}), "")
             elif "/commits/" in argv[2]:
                 resp = self.lookup
             else:
@@ -83,6 +95,19 @@ class ApiRun(FakeRun):
     def no_unsigned(self):
         """Nothing here ever ran `git commit` or `git push`."""
         return not any(a[:2] in (["git", "commit"], ["git", "push"]) for a in self.argvs())
+
+    def ref_writes(self):
+        """The writes that move or create a ref or make a commit, in order: ("POST"|"PATCH"|"DELETE"|"COMMIT", target)."""
+        out = []
+        for a in self.argvs():
+            if a[:2] == ["gh", "api"] and a[2] == "graphql":
+                out.append(("COMMIT", None))
+            elif a[:2] == ["gh", "api"] and a[2] == "--method" and a[3] != "GET":
+                out.append((a[3], a[4]))
+        return out
+
+    def index(self, argv):
+        return self.argvs().index(argv)
 
 
 def F(fid, purl, pkg, sev="Low", fixed=None, scanner="grype", extra=None):
@@ -458,12 +483,13 @@ class SuppressionPR(Base):
         self.assertFalse(any(a[:2] == ["git", "add"] for a in fr.argvs()))
         self.assertEqual(len(fr.stdins), 1)
         inp = fr.stdins[0]["variables"]["input"]
-        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": self.BR})
-        self.assertEqual(inp["expectedHeadOid"], SHA)                      # the branch is rebuilt on origin/main's tip
+        self.assertEqual(inp["branch"]["repositoryNameWithOwner"], "o/r")
+        self.assertTrue(inp["branch"]["branchName"].startswith("auditor/tmp-"))   # the commit is made on a TEMPORARY branch; the live one moves after
+        self.assertEqual(inp["expectedHeadOid"], SHA)                      # rebuilt on origin/main's tip
         self.assertEqual([x["path"] for x in inp["fileChanges"]["additions"]], [".auditor/knowledge.md", ".vex/fosterstack-cache.openvex.json"])
         self.assertEqual(inp["fileChanges"]["deletions"], [])
         a = fr.argvs()
-        self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/" + self.BR, "-f", "sha=" + SHA, "-F", "force=true"]))
+        self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/" + self.BR, "-f", "sha=" + OID, "-F", "force=true"]))
         self.assertLess(a.index(["gh", "api", "graphql", "--input", "-"]), a.index(a[[i for i, x in enumerate(a) if x[:3] == ["gh", "pr", "create"]][0]]))
         # a deleted file is a deletion; a signed commit that cannot be made stops the delivery before any PR
         fr = ApiRun({("git", "status"): (0, " D gone/file.txt\0", "")}); self.real(fr)
@@ -477,6 +503,47 @@ class SuppressionPR(Base):
         with mock.patch.object(R.subprocess, "run", fr):
             res = R._deliver_suppression_pr(self.out, self.supp, 1, "2026-09-22", "abcdef1234567890", False, [])
         self.assertIn("GITHUB_REPOSITORY is not set", res[1])
+
+    ARMED = {("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+    DIS = ["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"]
+
+    def test_an_armed_suppression_pr_is_disarmed_before_its_branch_is_replaced_and_stays_disarmed_on_failure(self):
+        fr = ApiRun(self.ARMED)
+        self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/7", None))
+        a = fr.argvs()
+        first_write = next(i for i, x in enumerate(a) if x[:2] == ["gh", "api"] and x[2] in ("graphql", "--method"))
+        self.assertLess(a.index(self.DIS), first_write)                           # disarmed BEFORE any ref write or commit
+        self.assertEqual(a[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"])   # re-armed afterwards
+        self.assertIn(["gh", "pr", "view", "https://x/pull/7", "--json", "headRefOid", "--jq", ".headRefOid"], a)
+        fr = ApiRun(self.ARMED, mutation=(1, "", "HTTP 403"))
+        res = self.real(fr, automerge=True)
+        self.assertIsNone(res[0]); self.assertIn("createCommitOnBranch", res[1])
+        self.assertIn(self.DIS, fr.argvs())                                        # a failure leaves it disarmed ...
+        self.assertFalse(any(x[:3] == ["gh", "pr", "merge"] and "--auto" in x for x in fr.argvs()))   # ... never re-armed
+        self.assertEqual([w for w in fr.ref_writes() if w[1] == "repos/o/r/git/refs/heads/" + self.BR], [])
+        fr = ApiRun({**self.ARMED, ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")})
+        res = self.real(fr, automerge=True)
+        self.assertIn("disable auto-merge", res[1]); self.assertEqual(fr.ref_writes(), [])
+        fr = ApiRun({**self.ARMED, ("gh", "pr", "view"): (1, "", "HTTP 500")})
+        res = self.real(fr, automerge=True)
+        self.assertIsNotNone(res[1]); self.assertEqual(fr.ref_writes(), [])
+        fr = ApiRun(self.ARMED, pr_head="e" * 40)                                  # another run replaced the head: never armed
+        res = self.real(fr, automerge=True)
+        self.assertIsNone(res[0]); self.assertIn("not arming", res[1])
+        self.assertFalse(any(x[:3] == ["gh", "pr", "merge"] and "--auto" in x for x in fr.argvs()))
+        fr = ApiRun({("gh", "pr", "view"): (0, "false\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
+        self.assertEqual(self.real(fr), ("https://x/pull/7", None))
+        self.assertNotIn(self.DIS, fr.argvs())                                     # not armed: nothing to disarm
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})      # no existing PR: no `pr view`
+        self.real(fr); self.assertFalse(any(x[:3] == ["gh", "pr", "view"] for x in fr.argvs()))
+
+    def test_a_temporary_ref_that_cannot_be_deleted_is_a_warning_not_a_failure(self):
+        fr = ApiRun(delete=(1, "", "HTTP 500"))
+        os.environ["GITHUB_REPOSITORY"] = "o/r"
+        with mock.patch.object(R.subprocess, "run", fr):
+            res, out = self.quiet(R._signed_delivery, self.ws, self.BR, SHA, "title", ["gone.txt"])
+        self.assertEqual(res[0], OID); self.assertIsNone(res[1])
+        self.assertIn("warning: temporary branch auditor/tmp-", out); self.assertIn("could not be deleted", out)
 
     def test_stage_failure(self):
         fr = ApiRun()
@@ -613,8 +680,8 @@ class FixPR(Base):
         res, fr = self.real({("git", "diff"): (1, "", "")}, api={"mutation": (1, "", "HTTP 422 empty")})
         self.assertEqual(res[2], "error"); self.assertIn("signed commit: createCommitOnBranch", res[1]); self.assertIn("HTTP 422 empty", res[1])
         self.assertTrue(fr.no_unsigned())
-        res, fr = self.real({("git", "diff"): (1, "", "")}, api={"ref": (1, "", "HTTP 500")})
-        self.assertEqual(res[2], "error"); self.assertIn("reading branch", res[1])
+        res, fr = self.real({("git", "diff"): (1, "", "")}, api={"post": (1, "", "HTTP 500")})
+        self.assertEqual(res[2], "error"); self.assertIn("creating temporary branch", res[1])
         res, fr = self.real({("git", "diff"): (1, "", "")}, repo="")
         self.assertEqual(res[2], "error"); self.assertIn("GITHUB_REPOSITORY is not set", res[1])
 
@@ -624,11 +691,66 @@ class FixPR(Base):
         self.assertEqual(res, ("https://x/pull/3", None, "delivered"))
         self.assertTrue(fr.no_unsigned(), fr.argvs())
         inp = fr.stdins[0]["variables"]["input"]
-        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": self.BR})
+        self.assertTrue(inp["branch"]["branchName"].startswith("auditor/tmp-"))
         self.assertEqual(inp["expectedHeadOid"], SHA)
         self.assertEqual(inp["fileChanges"], {"additions": [{"path": "go.mod", "contents": "bW9kdWxlIG0K"}], "deletions": []})
         self.assertIn("bump example.com/m", inp["message"]["headline"])
         self.assertIn(["gh", "api", "repos/o/r/git/ref/heads/" + self.BR], fr.argvs())
+
+    ARMED = {("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+    CHG = {("git", "diff"): (1, "", "")}
+
+    def assert_disarmed_before_any_write(self, fr, label):
+        a = fr.argvs()
+        dis = ["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"]
+        self.assertIn(dis, a, label)
+        first_write = next(i for i, x in enumerate(a) if x[:2] == ["gh", "api"] and (x[2] in ("graphql", "--method")))
+        self.assertLess(a.index(dis), first_write, label)                   # disarmed BEFORE any ref write or commit
+
+    def test_an_armed_bump_pr_is_disarmed_before_its_branch_is_replaced_and_stays_disarmed_on_failure(self):
+        res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True)
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered"))
+        self.assert_disarmed_before_any_write(fr, "bump")
+        self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"])   # re-armed, bound to the head we wrote
+        self.assertIn(["gh", "pr", "view", "https://x/pull/7", "--json", "headRefOid", "--jq", ".headRefOid"], fr.argvs())
+        res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True, api={"mutation": (1, "", "HTTP 403")})
+        self.assertEqual(res[2], "error"); self.assert_disarmed_before_any_write(fr, "failed")
+        self.assertFalse(any(a[:4] == ["gh", "pr", "merge", "--auto"][:4] or a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        self.assertEqual([w for w in fr.ref_writes() if w[1] == "repos/o/r/git/refs/heads/" + self.BR], [])    # the live branch was never moved
+        # a disarm that fails stops the delivery before anything is written
+        res, fr = self.real({**self.CHG, **self.ARMED, ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, automerge=True)
+        self.assertEqual(res[2], "error"); self.assertIn("disable auto-merge", res[1]); self.assertEqual(fr.ref_writes(), [])
+        res, fr = self.real({**self.CHG, **self.ARMED, ("gh", "pr", "view"): (1, "", "HTTP 500")}, automerge=True)
+        self.assertEqual(res[2], "error"); self.assertEqual(fr.ref_writes(), [])
+        # an unarmed PR is not disarmed; a head that is not the one written is not armed
+        res, fr = self.real({**self.CHG, ("gh", "pr", "view"): (0, "false\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}, automerge=True)
+        self.assertEqual(res[0], "https://x/pull/7"); self.assertFalse(any(a[:4] == ["gh", "pr", "merge", "--disable-auto"][:4] and "--disable-auto" in a for a in fr.argvs()))
+        res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True, api={"pr_head": "e" * 40})
+        self.assertEqual(res[2], "error"); self.assertIn("not arming", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+
+    REUSE = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+
+    def test_an_existing_bump_branch_is_reused_only_when_its_head_is_verified_and_on_current_main(self):
+        # signed head on the CURRENT main: reused, no write at all
+        res, fr = self.real(self.REUSE, api={"lookup": head_lookup(True, SHA)})
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])
+        self.assertIn(["gh", "api", "repos/o/r/commits/" + OLDHEAD], fr.argvs())
+        # an unsigned head, a signed head on an OLD main, a failed lookup, an absent branch: rebuilt through the API, the PR is then updated
+        for label, api in (("unsigned", {"lookup": head_lookup(False, SHA)}), ("old main", {"lookup": head_lookup(True, "9" * 40)}),
+                           ("lookup failure", {"lookup": (1, "", "HTTP 500")}), ("absent", {"live": None})):
+            res, fr = self.real(self.REUSE, api=api)
+            self.assertEqual(res, ("https://x/pull/7", None, "delivered"), label)
+            self.assertEqual([w[0] for w in fr.ref_writes()], ["POST", "COMMIT", "PATCH" if label != "absent" else "POST", "DELETE"], label)
+            self.assertTrue(fr.no_unsigned(), label)
+        # never delivered on an unverified head: the rebuild itself failing is an error, and the live branch was not touched
+        for api in ({"lookup": head_lookup(False, SHA), "mutation": (1, "", "HTTP 403")}, {"lookup": (1, "", "HTTP 500"), "post": (1, "", "HTTP 403")}):
+            res, fr = self.real(self.REUSE, api=api)
+            self.assertEqual(res[0], None); self.assertEqual(res[2], "error")
+            self.assertEqual([w for w in fr.ref_writes() if w[1] == "repos/o/r/git/refs/heads/" + self.BR], [])
+        # an unchanged branch with no repository to verify against is an error, never "delivered"
+        res, fr = self.real(self.REUSE, repo="")
+        self.assertEqual(res[2], "error")
 
     def test_go_get_unresolvable_and_tidy_error(self):
         res, fr = self.real({("go", "get"): (1, "", "unknown revision")})

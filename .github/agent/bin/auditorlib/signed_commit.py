@@ -4,17 +4,29 @@ main's ruleset requires signed commits. A commit made by `git commit` in the run
 carried stayed BLOCKED forever. A commit made through the GraphQL `createCommitOnBranch` mutation with the App's
 installation token is created and signed by GitHub. The same App, the same permissions, no new token.
 
-commit_via_api(repo, branch, base_sha, message, changes):
-  1. the branch is created, or force-reset, at base_sha with the REST git-data refs API (a branch is rebuilt on the
-     CURRENT main every run);
-  2. ONE commit is made on it with expectedHeadOid = base_sha (a concurrent change to the branch fails the call
-     instead of being overwritten);
-  3. the new commit must be confirmed signed (the mutation's signature, else a follow-up GET of the commit);
-  4. the new commit's oid is returned.
-Anything else (an API error, no oid, an unconfirmed signature, a file over 5 MB, a branch outside auditor/) is a
-CommitError: the delivery fails closed and says so. A commit that is not provably signed is never reported delivered.
+commit_via_api(repo, branch, base_sha, message, changes): the LIVE branch is touched only AFTER a signed replacement commit exists.
+  1. read the live branch's head H1 (absent = none);
+  2. create a TEMPORARY ref auditor/tmp-<id> at base_sha (REST);
+  3. make ONE commit on the temporary branch (expectedHeadOid = base_sha) and confirm it is signed (the mutation's signature, else a
+     follow-up GET of the commit);
+  4. read the live head again: if it is not H1, someone wrote since step 1: delete the temporary ref and FAIL CLOSED, nothing overwritten;
+  5. point the live branch at the new commit (PATCH force when it exists, POST create when absent);
+  6. ALWAYS delete the temporary ref (best effort: a failure to delete is not fatal and is reported in `notes` / the error).
+So a failed mutation, a failed signature check or a lease miss leaves the live branch, its open PR and the PR's pending additions exactly as
+they were; the live branch is never reset to main and the PR never has an empty-diff head.
+
+branch_reusable(repo, branch, base_sha): an EXISTING delivery branch may be left as it is only when its head commit is verified by GitHub and its
+first parent is base_sha (today's main); otherwise the caller rebuilds it through commit_via_api.
+
+Anything else (an API error, no oid, an unconfirmed signature, a file over 5 MB, a branch outside auditor/) is a CommitError: the delivery fails
+closed and says so. A commit that is not provably signed is never reported delivered.
+
+KNOWN RESIDUAL: between step 4 and step 5 a concurrent writer to the live branch can still be overwritten (the refs API has no
+compare-and-swap for a forced update). The window is two API calls long; the auditor's workflow runs in the concurrency group
+`auditor-daily-delivery` (cancel-in-progress: false), so two deliveries never overlap, and only the App writes auditor/* (the
+only-the-app-pushes-auditor-lane guard).
 """
-import base64, json, os, re, subprocess
+import base64, hashlib, json, os, re, subprocess, time
 
 MAX_FILE_BYTES = 5 * 1024 * 1024        # createCommitOnBranch is a request body, not a git push: refuse what it cannot take
 BRANCH_PREFIX = "auditor/"              # the reserved lane: the only branches the App writes
@@ -48,31 +60,47 @@ def _json(text, what):
     return doc
 
 
-def ref_commands(repo, branch, base_sha):
-    """The REST calls that create the branch (it is absent) or force it onto base_sha (it exists)."""
-    return {
-        "get": ["gh", "api", "repos/%s/git/ref/heads/%s" % (repo, branch)],
-        "reset": ["gh", "api", "--method", "PATCH", "repos/%s/git/refs/heads/%s" % (repo, branch),
-                  "-f", "sha=%s" % base_sha, "-F", "force=true"],
-        "create": ["gh", "api", "--method", "POST", "repos/%s/git/refs" % repo,
-                   "-f", "ref=refs/heads/%s" % branch, "-f", "sha=%s" % base_sha],
-    }
-
-
 GRAPHQL_COMMAND = ["gh", "api", "graphql", "--input", "-"]
 
 
+def _tmp_branch(base_sha):
+    """A temporary branch name in the reserved lane, unique per run, time and base."""
+    seed = "%s/%s/%d/%s" % (os.environ.get("GITHUB_RUN_ID", ""), os.getpid(), time.time_ns(), base_sha)
+    return "auditor/tmp-" + hashlib.sha256(seed.encode()).hexdigest()[:12]
+
+
+def _get_cmd(repo, branch):
+    return ["gh", "api", "repos/%s/git/ref/heads/%s" % (repo, branch)]
+
+
+def _patch_cmd(repo, branch, sha):
+    return ["gh", "api", "--method", "PATCH", "repos/%s/git/refs/heads/%s" % (repo, branch), "-f", "sha=%s" % sha, "-F", "force=true"]
+
+
+def _post_cmd(repo, branch, sha):
+    return ["gh", "api", "--method", "POST", "repos/%s/git/refs" % repo, "-f", "ref=refs/heads/%s" % branch, "-f", "sha=%s" % sha]
+
+
+def _delete_cmd(repo, branch):
+    return ["gh", "api", "--method", "DELETE", "repos/%s/git/refs/heads/%s" % (repo, branch)]
+
+
 def planned_commands(repo, branch, base_sha):
-    """What a dry run plans (nothing is called): the ref calls, then the signed commit."""
-    c = ref_commands(repo, branch, base_sha)
-    return [c["get"], c["reset"], list(GRAPHQL_COMMAND)]
+    """What a dry run plans (nothing is called)."""
+    tmp = "auditor/tmp-<run>"
+    return [_get_cmd(repo, branch), _post_cmd(repo, tmp, base_sha), list(GRAPHQL_COMMAND),
+            _patch_cmd(repo, branch, "<new signed commit>"), _delete_cmd(repo, tmp)]
+
+
+def _check_branch(branch):
+    if not isinstance(branch, str) or not _BRANCH.match(branch) or ".." in branch or branch.endswith(("/", ".lock")):
+        raise CommitError("signed commit: refusing branch %r: the App writes only %s* branches" % (branch, BRANCH_PREFIX))
 
 
 def _check(repo, branch, base_sha, message, changes):
     if not isinstance(repo, str) or not _REPO.match(repo):
         raise CommitError("signed commit: the repository %r is not owner/name" % (repo,))
-    if not isinstance(branch, str) or not _BRANCH.match(branch) or ".." in branch or branch.endswith(("/", ".lock")):
-        raise CommitError("signed commit: refusing branch %r: the App writes only %s* branches" % (branch, BRANCH_PREFIX))
+    _check_branch(branch)
     if not isinstance(base_sha, str) or not _SHA.match(base_sha):
         raise CommitError("signed commit: the base %r is not a full commit sha" % (base_sha,))
     if not isinstance(message, str) or not message.strip():
@@ -91,19 +119,18 @@ def _check(repo, branch, base_sha, message, changes):
                                   % (path, len(content), MAX_FILE_BYTES))
 
 
-def _point_branch(run, repo, branch, base_sha):
-    cmds = ref_commands(repo, branch, base_sha)
-    rc, out, err = _api(run, cmds["get"])
-    if rc == 0:
-        rc, out, err = _api(run, cmds["reset"])
-        what = "resetting"
-    elif "404" in err + out or "Not Found" in err + out:
-        rc, out, err = _api(run, cmds["create"])
-        what = "creating"
-    else:
-        raise CommitError("signed commit: reading branch %s failed: %s" % (branch, (err or out).strip()[-300:]))
+def _head(run, repo, branch):
+    """The branch's head sha, or None when it is absent (404). Any other failure, or an answer without a sha, is an error."""
+    rc, out, err = _api(run, _get_cmd(repo, branch))
     if rc != 0:
-        raise CommitError("signed commit: %s branch %s at %s failed: %s" % (what, branch, base_sha[:12], (err or out).strip()[-300:]))
+        if "404" in err + out or "Not Found" in err + out:
+            return None
+        raise CommitError("signed commit: reading branch %s failed: %s" % (branch, (err or out).strip()[-300:]))
+    obj = _json(out, "the branch lookup").get("object")
+    sha = obj.get("sha") if isinstance(obj, dict) else None
+    if not isinstance(sha, str) or not _SHA.match(sha):
+        raise CommitError("signed commit: the lookup of branch %s returned no commit sha" % branch)
+    return sha
 
 
 def _confirm_signed(run, repo, oid, signature):
@@ -123,30 +150,85 @@ def _confirm_signed(run, repo, oid, signature):
                           % (oid[:12], (verification or {}).get("reason") if isinstance(verification, dict) else None))
 
 
-def commit_via_api(repo, branch, base_sha, message, changes, run=None):
-    """repo: "owner/name". changes: {path: bytes to write, or None to delete}. Returns the new commit's oid."""
-    _check(repo, branch, base_sha, message, changes)
-    _point_branch(run, repo, branch, base_sha)
+def _make_commit(run, repo, tmp, base_sha, message, changes):
+    """ONE commit on the temporary branch; returns its oid once it is confirmed signed."""
     headline, _, body = message.strip().partition("\n")
     additions = [{"path": p, "contents": base64.b64encode(bytes(c)).decode("ascii")} for p, c in sorted(changes.items()) if c is not None]
     deletions = [{"path": p} for p, c in sorted(changes.items()) if c is None]
-    variables = {"input": {"branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+    variables = {"input": {"branch": {"repositoryNameWithOwner": repo, "branchName": tmp},
                            "message": {"headline": headline.strip(), "body": body.strip()},
                            "expectedHeadOid": base_sha,
                            "fileChanges": {"additions": additions, "deletions": deletions}}}
     rc, out, err = _api(run, GRAPHQL_COMMAND, json.dumps({"query": MUTATION, "variables": variables}))
     if rc != 0:
-        raise CommitError("signed commit: createCommitOnBranch on %s failed: %s" % (branch, (err or out).strip()[-300:]))
+        raise CommitError("signed commit: createCommitOnBranch failed: %s" % (err or out).strip()[-300:])
     doc = _json(out, "createCommitOnBranch")
     if doc.get("errors"):
-        raise CommitError("signed commit: createCommitOnBranch on %s returned errors: %s" % (branch, json.dumps(doc["errors"])[:300]))
+        raise CommitError("signed commit: createCommitOnBranch returned errors: %s" % json.dumps(doc["errors"])[:300])
     payload = (doc.get("data") or {}).get("createCommitOnBranch")
     commit = payload.get("commit") if isinstance(payload, dict) else None
     oid = commit.get("oid") if isinstance(commit, dict) else None
     if not isinstance(oid, str) or not _SHA.match(oid):
-        raise CommitError("signed commit: createCommitOnBranch on %s returned no commit oid; nothing is confirmed delivered" % branch)
+        raise CommitError("signed commit: createCommitOnBranch returned no commit oid; nothing is confirmed delivered")
     _confirm_signed(run, repo, oid, commit.get("signature"))
     return oid
+
+
+def commit_via_api(repo, branch, base_sha, message, changes, run=None, notes=None):
+    """repo: "owner/name". changes: {path: bytes to write, or None to delete}. Returns the new signed commit's oid; the live `branch` then holds it.
+    notes: an optional list that receives non-fatal remarks (a temporary ref that could not be deleted)."""
+    _check(repo, branch, base_sha, message, changes)
+    tmp = _tmp_branch(base_sha)
+    _check_branch(tmp)
+    h1 = _head(run, repo, branch)                                            # 1. observe the live branch
+    rc, out, err = _api(run, _post_cmd(repo, tmp, base_sha))                 # 2. the temporary ref, at main
+    if rc != 0:
+        raise CommitError("signed commit: creating temporary branch %s at %s failed: %s" % (tmp, base_sha[:12], (err or out).strip()[-300:]))
+    leftover = None
+    try:
+        oid = _make_commit(run, repo, tmp, base_sha, message, changes)       # 3. signed commit, off to the side
+        if _head(run, repo, branch) != h1:                                   # 4. the lease
+            raise CommitError("signed commit: branch %s changed while the commit was being made (lease lost): nothing was overwritten, the delivery stops" % branch)
+        if h1 is None:                                                       # 5. only now does the live branch move
+            rc, out, err = _api(run, _post_cmd(repo, branch, oid)); what = "creating"
+        else:
+            rc, out, err = _api(run, _patch_cmd(repo, branch, oid)); what = "moving"
+        if rc != 0:
+            raise CommitError("signed commit: %s branch %s to the signed commit %s failed: %s" % (what, branch, oid[:12], (err or out).strip()[-300:]))
+        return oid
+    except CommitError as e:
+        leftover = e
+        raise
+    finally:                                                                 # 6. always
+        rc, out, err = _api(run, _delete_cmd(repo, tmp))
+        if rc != 0:
+            note = "temporary branch %s could not be deleted (delete it by hand): %s" % (tmp, (err or out).strip()[-200:])
+            if notes is not None:
+                notes.append(note)
+            if leftover is not None:
+                leftover.args = (str(leftover) + "; " + note,)
+
+
+def branch_reusable(repo, branch, base_sha, run=None):
+    """True only when `branch` exists, its head commit is VERIFIED by GitHub and its first parent is base_sha. Every other answer, including a
+    lookup that fails, is False: the caller rebuilds the branch through commit_via_api, which is itself fail-closed."""
+    try:
+        _check_branch(branch)
+        if not isinstance(repo, str) or not _REPO.match(repo) or not isinstance(base_sha, str) or not _SHA.match(base_sha):
+            return False
+        head = _head(run, repo, branch)
+        if head is None or head == base_sha:      # absent, or exactly main (nothing delivered on it): rebuild
+            return False
+        rc, out, err = _api(run, ["gh", "api", "repos/%s/commits/%s" % (repo, head)])
+        if rc != 0:
+            return False
+        doc = _json(out, "the commit lookup")
+    except CommitError:
+        return False
+    commit, parents = doc.get("commit"), doc.get("parents")
+    verification = commit.get("verification") if isinstance(commit, dict) else None
+    first = parents[0].get("sha") if isinstance(parents, list) and parents and isinstance(parents[0], dict) else None
+    return isinstance(verification, dict) and verification.get("verified") is True and first == base_sha
 
 
 def read_changes(root, paths):

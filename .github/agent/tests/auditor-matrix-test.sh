@@ -1249,6 +1249,7 @@ cat > "$fb/gh" <<EOF
 echo "GH_TOKEN=\${GH_TOKEN} ARGS=\$*" >> "$glog"
 if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "[]"; fi
 if [ "\$1" = "pr" ] && [ "\$2" = "create" ]; then echo "https://github.com/OWNER/REPO/pull/1"; fi
+case "\$2" in */git/ref/heads/*) echo '{"object":{"sha":"cccccccccccccccccccccccccccccccccccccccc"}}';; esac
 if [ "\$1" = "api" ] && [ "\$2" = "graphql" ]; then cat >/dev/null; echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","signature":{"isValid":true,"state":"VALID"}}}}}'; fi
 exit 0
 EOF

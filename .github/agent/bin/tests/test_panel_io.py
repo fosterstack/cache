@@ -523,7 +523,9 @@ class Deliver(Tmp):
                 out = "success"
             elif cmd[:3] == ["gh", "api", "graphql"]:
                 run.stdins.append(json.loads(kw["input"])); out = GQL_OK     # the signed commit, made through the API
-            elif cmd[:2] == ["gh", "api"] and "/git/ref" in cmd[2] + " ".join(cmd):
+            elif cmd[:2] == ["gh", "api"] and "/git/ref/heads/" in cmd[2]:
+                out = json.dumps({"object": {"sha": SHA40}})
+            elif cmd[:2] == ["gh", "api"] and cmd[2] == "--method":
                 out = "{}"
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         run.stdins = []
@@ -563,13 +565,18 @@ class Deliver(Tmp):
         self.assertEqual(cmds[1], ["git", "-C", self.repo, "checkout", "--force", "-B", "auditor/panel", SHA40])
         # (changed: the old cmds[2..4] were `git add`, `git commit`, `git push --force origin HEAD:refs/heads/auditor/panel`; now the
         # branch is read, force-reset onto the run's main commit, and ONE commit is made through the API, which GitHub signs)
-        self.assertEqual(cmds[2], ["gh", "api", "repos/o/r/git/ref/heads/auditor/panel"])
-        self.assertEqual(cmds[3], ["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/auditor/panel", "-f", "sha=" + SHA40, "-F", "force=true"])
+        self.assertEqual(cmds[2], ["gh", "api", "repos/o/r/git/ref/heads/auditor/panel"])              # the live head is observed first
+        tmp = cmds[3][cmds[3].index("-f") + 1][len("ref=refs/heads/"):]
+        self.assertRegex(tmp, r"^auditor/tmp-[0-9a-f]+$")
+        self.assertEqual(cmds[3], ["gh", "api", "--method", "POST", "repos/o/r/git/refs", "-f", "ref=refs/heads/" + tmp, "-f", "sha=" + SHA40])   # a TEMPORARY ref at main
         self.assertEqual(cmds[4], ["gh", "api", "graphql", "--input", "-"])
+        self.assertEqual(cmds[5], ["gh", "api", "repos/o/r/git/ref/heads/auditor/panel"])             # the lease re-check
+        self.assertEqual(cmds[6], ["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/auditor/panel", "-f", "sha=" + OID40, "-F", "force=true"])
+        self.assertEqual(cmds[7], ["gh", "api", "--method", "DELETE", "repos/o/r/git/refs/heads/" + tmp])
         self.assertFalse([c for c in cmds if c[:4] in (["git", "-C", self.repo, "commit"], ["git", "-C", self.repo, "push"], ["git", "-C", self.repo, "add"])])   # no unsigned commit, no push
         self.assertFalse([c for c in cmds if "push" in c])
         inp = run.stdins[0]["variables"]["input"]
-        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": "auditor/panel"})   # never main
+        self.assertEqual(inp["branch"], {"repositoryNameWithOwner": "o/r", "branchName": tmp})   # the commit is made on the temporary auditor/ branch, never main
         self.assertEqual(inp["expectedHeadOid"], SHA40)
         self.assertEqual(sorted(x["path"] for x in inp["fileChanges"]["additions"]), sorted([P.STATE, P.VEX, P.PROFILES]))
         self.assertEqual(inp["message"]["headline"], "Scanner panel audits, 2026-10-03 (rules 7-9, 13, 14)")
@@ -724,6 +731,7 @@ class RebuildReal(Tmp):
         self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
         self.guard = "success"
         self.stdins = []
+        self.live_gets, self.on_live_get = 0, None
         self.pr_head = None
 
     def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None, state_source=None, view_armed=False):
@@ -792,13 +800,22 @@ class RebuildReal(Tmp):
             oid = g("commit-tree", tree, "-p", head, "-m", msg, env=env).stdout.strip()
             g("update-ref", ref, oid)
             return ok(json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": oid, "signature": {"isValid": True, "state": "VALID"}}}}}))
+        if cmd[2] == "--method" and cmd[3] == "DELETE":
+            g("update-ref", "-d", "refs/heads/" + cmd[4].split("/git/refs/heads/")[1])
+            return ok()
         if cmd[2].endswith("git/refs") or cmd[2] == "--method":
             ref, sha = [x.split("=", 1)[1] for x in cmd if x.startswith(("ref=", "sha="))][:2] if cmd[3] == "POST" else \
                        ("refs/heads/" + cmd[4].split("/git/refs/heads/")[1], [x.split("=", 1)[1] for x in cmd if x.startswith("sha=")][0])
             g("update-ref", ref, sha)
             return ok()
         if "/git/ref/heads/" in cmd[2]:
-            return ok() if g("rev-parse", "--verify", "-q", "refs/heads/" + cmd[2].split("/git/ref/heads/")[1]).returncode == 0 else bad("gh: Not Found (HTTP 404)")
+            br = cmd[2].split("/git/ref/heads/")[1]
+            if br == "auditor/panel":
+                self.live_gets += 1
+                if self.on_live_get:
+                    self.on_live_get(self.live_gets)
+            r = g("rev-parse", "--verify", "-q", "refs/heads/" + br)
+            return ok(json.dumps({"object": {"sha": r.stdout.strip()}})) if r.returncode == 0 else bad("gh: Not Found (HTTP 404)")
         return bad("unexpected gh api call %r" % (cmd,))
 
     def test_the_rebuilt_branch_is_one_commit_on_the_runs_main_commit(self):
@@ -821,36 +838,46 @@ class RebuildReal(Tmp):
             self.assertEqual(flat.count("gh api graphql --input -"), 1)               # ONE signed commit through the API
             self.assertEqual(self.pushed(P.STATE)["note"], "today")
 
-    def test_the_branch_is_reset_onto_the_runs_main_commit_before_the_signed_commit(self):
+    def live(self):
+        return subprocess.run(["git", "--git-dir", self.origin, "rev-parse", "--verify", "-q", "refs/heads/auditor/panel"], capture_output=True, text=True).stdout.strip()
+
+    def test_the_live_branch_is_replaced_only_after_the_signed_commit_exists(self):
+        before = self.live()
         rc, calls = self.deliver()
         flat = self.commands(calls)
-        reset = flat.index("gh api --method PATCH repos/o/r/git/refs/heads/auditor/panel -f sha=%s -F force=true" % self.m1)
-        self.assertEqual(flat[reset - 1], "gh api repos/o/r/git/ref/heads/auditor/panel")
-        self.assertEqual(flat[reset + 1], "gh api graphql --input -")
-        self.assertEqual(self.stdins[0]["variables"]["input"]["expectedHeadOid"], self.m1)     # a concurrent change to the branch fails the commit
+        i_post = next(i for i, c in enumerate(flat) if c.startswith("gh api --method POST repos/o/r/git/refs -f ref=refs/heads/auditor/tmp-"))
+        i_commit = flat.index("gh api graphql --input -")
+        i_patch = next(i for i, c in enumerate(flat) if c.startswith("gh api --method PATCH repos/o/r/git/refs/heads/auditor/panel "))
+        self.assertLess(i_post, i_commit); self.assertLess(i_commit, i_patch)          # nothing touches the live branch before the commit exists
+        self.assertIn("sha=%s" % self.m1, flat[i_post])                                    # the temporary ref starts at the run's main commit
+        self.assertEqual(self.stdins[0]["variables"]["input"]["expectedHeadOid"], self.m1)
+        self.assertEqual(self.git("rev-parse", "refs/remotes/origin/auditor/panel") if False else self.live() != before, True)
+        self.assertEqual(subprocess.run(["git", "--git-dir", self.origin, "for-each-ref", "--format=%(refname)", "refs/heads/auditor/"], capture_output=True, text=True).stdout.split(),
+                         ["refs/heads/auditor/panel"])                                      # the temporary ref is deleted
 
-    def test_an_absent_branch_is_created_at_the_runs_main_commit(self):
+    def test_an_absent_branch_is_created_at_the_new_commit(self):
         subprocess.run(["git", "--git-dir", self.origin, "update-ref", "-d", "refs/heads/auditor/panel"], check=True)
         rc, calls = self.deliver(existing="")
         flat = self.commands(calls)
-        self.assertIn("gh api --method POST repos/o/r/git/refs -f ref=refs/heads/auditor/panel -f sha=%s" % self.m1, flat)
+        new = self.live()
+        self.assertIn("gh api --method POST repos/o/r/git/refs -f ref=refs/heads/auditor/panel -f sha=%s" % new, flat)
         self.assertFalse([c for c in flat if "--method PATCH" in c])
         self.git("fetch", "-q", "origin")
         self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)
 
-    def test_a_branch_that_moves_under_the_delivery_fails_closed_and_nothing_is_armed(self):
-        orig = self.github_api
-        def racing(cmd, kw):
-            if cmd[2] == "graphql":                                                  # another writer lands a commit between the reset and ours
+    def test_a_branch_that_moves_during_the_delivery_fails_closed_and_overwrites_nothing(self):
+        def race(n):
+            if n == 2:                                                              # another writer lands a commit after the head was observed
                 env = dict(os.environ, GIT_AUTHOR_NAME="x", GIT_AUTHOR_EMAIL="x@x", GIT_COMMITTER_NAME="x", GIT_COMMITTER_EMAIL="x@x")
                 tree = subprocess.run(["git", "--git-dir", self.origin, "rev-parse", self.m1 + "^{tree}"], capture_output=True, text=True).stdout.strip()
                 other = subprocess.run(["git", "--git-dir", self.origin, "commit-tree", tree, "-p", self.m1, "-m", "other"], capture_output=True, text=True, env=env).stdout.strip()
                 subprocess.run(["git", "--git-dir", self.origin, "update-ref", "refs/heads/auditor/panel", other], check=True)
-            return orig(cmd, kw)
-        self.github_api = racing
+                self.other = other
+        self.on_live_get = race
         with self.assertRaises(RuntimeError) as e:
             self.deliver()
-        self.assertIn("returned errors", str(e.exception))
+        self.assertIn("lease", str(e.exception))
+        self.assertEqual(self.live(), self.other)                                          # the other writer's commit stands: nothing was overwritten
 
     def test_a_commit_that_is_not_confirmed_signed_is_not_delivered(self):
         orig = self.github_api
@@ -862,8 +889,10 @@ class RebuildReal(Tmp):
             return r
         self.github_api = unsigned
         rc, calls = None, []
+        before = self.live()
         with self.assertRaises(RuntimeError) as e:
             self.deliver()
+        self.assertEqual(self.live(), before)                                             # an unsigned commit never replaces the PR's branch
         self.assertIn("NOT validly signed", str(e.exception))
         self.assertIn("unsigned", str(e.exception))
 
@@ -872,10 +901,11 @@ class RebuildReal(Tmp):
             orig = self.github_api
             self.github_api = lambda cmd, kw, fail=fail, orig=orig: types.SimpleNamespace(returncode=1, stdout="", stderr="HTTP 500 for openai seat") \
                 if (cmd[2] == fail or (fail in cmd[2])) else orig(cmd, kw)
-            calls = []
+            before = self.live()
             with self.assertRaises(RuntimeError) as e:
                 self.deliver()
             self.assertNotIn("openai", str(e.exception))
+            self.assertEqual(self.live(), before)                                         # the PR's branch (and its pending additions) is exactly as it was
             self.github_api = orig
 
     def test_a_delivery_without_a_repository_or_a_full_main_sha_is_refused(self):
@@ -1066,6 +1096,8 @@ class RebuildReal(Tmp):
         order = [c[:3] + c[-1:] for c in calls if c[:3] in (["gh", "pr", "merge"], ["git", "-C", self.work])]
         flat = [" ".join(c) for c in calls]
         disarm = next(i for i, c in enumerate(flat) if "merge --disable-auto 17" in c)
+        first_write = next(i for i, c in enumerate(flat) if c.startswith("gh api --method POST"))
+        self.assertLess(disarm, first_write)                                              # disarmed before ANY ref is written
         push = next(i for i, c in enumerate(flat) if c == "gh api graphql --input -")     # (changed: the head is replaced by the signed API commit, once a `git push --force`)
         self.assertLess(disarm, push)                                                   # disarmed first, even if a later command fails
 
