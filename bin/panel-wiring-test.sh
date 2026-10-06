@@ -216,7 +216,9 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         # same-repo condition; bin/inspector-reuse-test.sh pins their exact form. No other step of any job may be conditional.
         cache = j == "panel-inspector" and re.match(r"actions/cache/(restore|save)@[0-9a-f]{40}$", str(st.get("uses", ""))) \
             and "github.event_name!='pull_request'||github.event.pull_request.head.repo.full_name==github.repository" in cond
-        if cond and not diag and not cache and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        # the save-time UTC day step (midnight fix) runs under plain always(), like the save it feeds
+        saveday = j == "panel-inspector" and st.get("id") == "insp-save-day" and cond == "always()"
+        if cond and not diag and not cache and not saveday and not cond.startswith("${{always()") and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")

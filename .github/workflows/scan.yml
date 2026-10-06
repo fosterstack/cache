@@ -238,8 +238,6 @@ jobs:
       - name: Amazon Inspector scan every loaded image
         id: insp-scan
         if: matrix.scanner == 'inspector'
-        env:
-          INSPECTOR_DAY: ${{ steps.insp-date.outputs.date }}
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
           # inspector-sbomgen inventories each child on the runner; only the
@@ -251,7 +249,7 @@ jobs:
           # applies the published VEX to the findings, reused or fresh, and
           # returns 0 clean / 1 findings / 2 did not run.
           mkdir -p /tmp/insp /tmp/inspector-cache; rc=0; sent=0; reused=0
-          day="${INSPECTOR_DAY:-$(date -u +%F)}"
+          # the UTC day is read from the clock at each decision and each store, never once per run (midnight)
           echo "## Amazon Inspector" >> "$GITHUB_STEP_SUMMARY"
           while read -r ref; do
             tag="${ref##*:}"
@@ -259,14 +257,14 @@ jobs:
               echo "::error::inspector-sbomgen could not inventory ${ref} — did not run, not a clean pass" >&2; rc=2; continue
             fi
             key=$(python3 bin/inspector-reuse.py key "/tmp/insp/${tag}.sbom.json") || { echo "::error::no inventory key for ${ref} — did not run, not a clean pass" >&2; rc=2; continue; }
-            verdict=$(python3 bin/inspector-reuse.py decide /tmp/inspector-cache "${day}" "${key}") || verdict=call
+            verdict=$(python3 bin/inspector-reuse.py decide /tmp/inspector-cache "$(date -u +%F)" "/tmp/insp/${tag}.sbom.json") || verdict=call
             if [ "${verdict%%$'\n'*}" = reuse ] && cp "${verdict#*$'\n'}" "/tmp/insp/${key}.findings.json"; then
               reused=$((reused+1))
             else
               rm -f "/tmp/insp/${key}.findings.json"
               aws inspector-scan scan-sbom --sbom "file:///tmp/insp/${tag}.sbom.json" --output-format CYCLONE_DX_1_5 \
                 > "/tmp/insp/${key}.findings.json" || { echo "::error::inspector-scan:ScanSbom failed for ${ref} — did not run, not a clean pass" >&2; rm -f "/tmp/insp/${key}.findings.json"; rc=2; continue; }
-              if python3 bin/inspector-reuse.py store /tmp/inspector-cache "${day}" "${key}" "/tmp/insp/${key}.findings.json"; then
+              if python3 bin/inspector-reuse.py store /tmp/inspector-cache "$(date -u +%F)" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json"; then
                 sent=$((sent+1))
               else
                 echo "::warning::the ScanSbom answer for ${ref} is not a CycloneDX result; the gate will not read it as clean, and it is not stored" >&2
@@ -285,12 +283,16 @@ jobs:
           fi
           exit "$rc"
 
+      - name: Amazon Inspector - the UTC day at save time
+        id: insp-save-day
+        if: always() && matrix.scanner == 'inspector'
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)
         if: always() && matrix.scanner == 'inspector' && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/inspector-cache
-          key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}
+          key: inspector-${{ steps.insp-save-day.outputs.date }}-${{ github.run_id }}
 
       # The SBOMs and the raw ScanSbom responses, as evidence of what was
       # inventoried and what came back (kept even when the leg is red).

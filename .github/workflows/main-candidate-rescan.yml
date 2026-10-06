@@ -320,14 +320,12 @@ jobs:
           restore-keys: inspector-${{ steps.insp-date.outputs.date }}-
       - name: Amazon Inspector every image (our pipeline applies the VEX, rule 4)
         id: insp-scan
-        env:
-          INSPECTOR_DAY: ${{ steps.insp-date.outputs.date }}
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           # Same-day reuse (REQ-REL-004-AC5): an inventory Inspector already scanned today is copied from the cache
           # to scan.json; anything else calls ScanSbom once and stores the answer. The tally reads scan.json either way.
-          day="${INSPECTOR_DAY:-$(date -u +%F)}"; cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
+          cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
           for v in production debug fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
@@ -337,11 +335,11 @@ jobs:
               fi
               key=$(python3 bin/inspector-reuse.py key "${d}/sbom.cdx.json") \
                 || { echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue; }
-              verdict=$(python3 bin/inspector-reuse.py decide "$cdir" "$day" "$key") || verdict=call
+              verdict=$(python3 bin/inspector-reuse.py decide "$cdir" "$(date -u +%F)" "${d}/sbom.cdx.json") || verdict=call
               if [ "${verdict%%$'\n'*}" = reuse ] && cp "${verdict#*$'\n'}" "${d}/scan.json"; then
                 :
               elif aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json"; then
-                if python3 bin/inspector-reuse.py store "$cdir" "$day" "$key" "${d}/scan.json"; then
+                if python3 bin/inspector-reuse.py store "$cdir" "$(date -u +%F)" "${d}/sbom.cdx.json" "${d}/scan.json"; then
                   fresh=$((fresh+1))
                 else
                   echo "::warning::the ScanSbom answer for ${v}-${arch} is not a CycloneDX result (the tally counts it as did not run)"; rm -f "${d}/scan.json"
@@ -352,12 +350,16 @@ jobs:
             done
           done
           echo "fresh=${fresh}" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - the UTC day at save time
+        id: insp-save-day
+        if: always()
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)
         if: always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/inspector-cache
-          key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}
+          key: inspector-${{ steps.insp-save-day.outputs.date }}-${{ github.run_id }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ always() }}
         with:
