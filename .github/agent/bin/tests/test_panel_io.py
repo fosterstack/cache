@@ -514,6 +514,8 @@ class Deliver(Tmp):
         def run(cmd, **kw):
             calls.append((cmd, kw.get("env", {}).get("GH_TOKEN")))
             out = (outputs or {}).get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                out = "success"
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         return calls, run
 
@@ -699,6 +701,7 @@ class RebuildReal(Tmp):
         self.git("add", "-A"); self.git("commit", "-q", "-m", "m1 (main moved)"); self.git("push", "-q", "origin", "main")
         self.m1 = self.git("rev-parse", "HEAD")
         self.out = os.path.join(self.d, "out"); os.makedirs(self.out)
+        self.guard = "success"
 
     def deliver(self, vex=(), existing="17", pr_files=None, env_extra=None):
         st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A", "note": "today"}
@@ -712,6 +715,8 @@ class RebuildReal(Tmp):
             if cmd[0] == "git":
                 return subprocess.run(cmd, capture_output=True, text=True)
             out = {("gh", "pr", "list"): existing + "\n" if existing else "", ("gh", "pr", "diff"): files}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                out = self.guard
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         env = {"AUDITOR_ALLOW_REAL_GH": "1", "GITHUB_SHA": self.m1, "AUDITOR_AUTOMERGE": "on"}
         env.update(env_extra or {})
@@ -764,6 +769,22 @@ class RebuildReal(Tmp):
         with self.assertRaises(RuntimeError) as e:
             self.deliver()
         self.assertIn("conflict", str(e.exception).lower())
+
+    def test_a_tip_that_did_not_pass_the_reserved_branch_guard_is_never_carried(self):      # Sonnet r2 blocker: a human's push must not be laundered
+        for verdict in ("failure", "", "success,failure", "cancelled"):
+            self.guard = verdict
+            before = self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0]
+            with self.assertRaises(RuntimeError) as e:
+                self.deliver()
+            self.assertIn("reserved-branch guard", str(e.exception))
+            self.assertEqual(self.git("ls-remote", "origin", "refs/heads/auditor/panel").split()[0], before)   # nothing pushed
+        self.guard = "success"
+        self.assertEqual(self.deliver()[0], 0)
+
+    def test_a_forks_pr_from_a_branch_of_the_same_name_is_not_the_panel_pr(self):
+        rc, calls = self.deliver()
+        lst = [c for c in calls if c[:3] == ["gh", "pr", "list"]][0]
+        self.assertIn("isCrossRepository == false", lst[lst.index("--jq") + 1])
 
     def test_a_pr_branch_with_a_planted_file_fails_the_run_before_any_push(self):
         self.git("checkout", "-q", "auditor/panel")

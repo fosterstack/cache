@@ -1198,8 +1198,8 @@ def cmd_deliver(a, run=subprocess.run):
     # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
     # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
-    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--jq", ".[0].number"],
-                   plan, real, run).strip()
+    existing = _sh(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number,isCrossRepository", "--jq",
+                    ".[] | select(.isCrossRepository == false) | .number"], plan, real, run).strip().split("\n")[0].strip()   # a fork's PR from a branch of this name is not ours
     pr_files, merge_base = [], ""
     if existing:
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, real, run, check=False)
@@ -1208,6 +1208,15 @@ def cmd_deliver(a, run=subprocess.run):
         merge_base = _sh(["git", "-C", a.repo, "merge-base", "FETCH_HEAD", base], plan, real, run).strip()
         if merge_base:  # the PR's own files come from git itself, not from what a listing says
             pr_files = [x for x in _sh(["git", "-C", a.repo, "diff", "--name-only", "-z", merge_base, "FETCH_HEAD"], plan, real, run).split("\0") if x]
+    if existing and merge_base and pr_files and real:
+        # only what the App itself pushed may be carried: the reserved-branch guard (a check on every push to auditor/*) must have passed on the PR branch's tip.
+        # A human push to the App's branch fails that guard; carrying it into a fresh App commit would launder it past the guard and into auto-merge.
+        tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, real, run).strip()
+        verdict = _sh(["gh", "api", "repos/{owner}/{repo}/commits/%s/check-runs?check_name=only-the-app-pushes-auditor-lane" % tip, "--jq",
+                       '.check_runs | map(.conclusion) | join(",")'], plan, real, run).strip()
+        if verdict != "success":
+            raise RuntimeError("auditor-panel: the open PR's branch tip %s has no passing reserved-branch guard (%r): it may hold a push that was not the App's; refusing to carry it forward"
+                               % (tip[:12], verdict))
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
     carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
     changed = list(carried)
