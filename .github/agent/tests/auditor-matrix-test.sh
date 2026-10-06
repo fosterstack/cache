@@ -1800,6 +1800,7 @@ def fake(cmd,*a,**kw):
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
     if cmd[:2]==["gh","issue"]: return subprocess.CompletedProcess(cmd,0,"","")
+    if cmd[:2]==["gh","label"]: return subprocess.CompletedProcess(cmd,0,"","")   # the delivery now ensures its labels (auditor-labels-test.sh)
     if cmd[0]=="gh": raise AssertionError(cmd)
     return R.subprocess.run.__wrapped__(cmd,*a,**kw) if hasattr(R.subprocess.run,"__wrapped__") else __import__("subprocess").run(cmd,*a,**kw)
 import subprocess as _sp
@@ -1808,6 +1809,7 @@ def fake2(cmd,*a,**kw):
     if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
     if cmd[:2]==["gh","issue"]: return _sp.CompletedProcess(cmd,0,"","")
+    if cmd[:2]==["gh","label"]: return _sp.CompletedProcess(cmd,0,"","")   # the delivery now ensures its labels (auditor-labels-test.sh)
     if cmd and cmd[0]=="gh": raise AssertionError(cmd)
     return _sp.run(cmd,*a,**kw)
 with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
@@ -1933,6 +1935,7 @@ def fake(cmd,*a,**kw):
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
     if cmd[:2]==["gh","issue"]: return subprocess.CompletedProcess(cmd,0,"","")
+    if cmd[:2]==["gh","label"]: return subprocess.CompletedProcess(cmd,0,"","")   # the delivery now ensures its labels (auditor-labels-test.sh)
     if cmd and cmd[0]=="gh": raise AssertionError(cmd)
     return subprocess.run(cmd,*a,**kw)
 def go(day):

@@ -258,6 +258,7 @@ jobs:
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
           bash .github/agent/tests/auditor-matrix-test.sh
+          bash .github/agent/tests/auditor-labels-test.sh
 
       # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
       # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).
@@ -297,6 +298,12 @@ jobs:
         run: bash bin/panel-wiring-test.sh
       - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
         run: bash .github/agent/tests/k8s-harness-fence-test.sh
+      - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
+        run: bash .github/agent/tests/pin-age-check-test.sh
+      - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
+        run: bash .github/agent/tests/pin-audit-test.sh
+      - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
+        run: bash .github/agent/tests/supply-chain-wiring-test.sh
 
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: bash bin/inspector-gate-test.sh

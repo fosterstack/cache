@@ -441,6 +441,50 @@ class SuppressionPR(Base):
         fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403")})
         self.assertEqual(self.real(fr), (None, "gh pr create: HTTP 403"))
 
+    LIST = ("gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100")
+    OPEN = ("5 auditor/2026-09-20-aaaaaaaaaaaa\n6 auditor/2026-09-22-abcdef123456\n7 auditor/panel\n8 auditor/bump-example.com-m-1.1.0\n"
+            "9 feature/x\n10 auditor/2026-09-21-bbbbbbbbbbbb\n12 auditor/2026-09-23-cccccccccccc\n")
+
+    def test_superseded_daily_suppression_prs_are_closed(self):          # advisor 0187: stale PRs must not pile up behind main
+        for how, rules in (("created", {("gh", "pr", "create"): (0, "https://x/pull/11\n", "")}),
+                           ("existing", {("gh", "pr", "list"): (0, "https://x/pull/6\n", "")})):
+            fr = FakeRun({**rules, self.LIST: (0, self.OPEN, "")})
+            self.assertIsNotNone(self.real(fr)[0], how)
+            closed = sorted(a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "close"])
+            self.assertEqual(closed, ["10", "5"], how)              # only OLDER daily branches: not today's, not a NEWER one (12), not panel/bump/feature
+            first = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "close"]][0]
+            self.assertIn("--comment", first)
+            self.assertIn("supersed", first[first.index("--comment") + 1].lower())
+            self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
+
+    def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # reviewer r1 blocker 2
+        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
+        self.real(fr)
+        lst = [a for a in fr.argvs() if a[:3] == list(self.LIST)][0]
+        self.assertIn("--paginate", lst)
+        jq = lst[lst.index("--jq") + 1]
+        for needle in ('.head.repo.fork == false', '.draft == false', '.user.type == "Bot"', '.base.ref == "main"'):
+            self.assertIn(needle, jq)                                          # a fork's, a human's and an owner-held draft are never closed
+
+    def test_todays_replacement_must_be_a_same_repo_pr_into_main(self):                            # review r6 B2
+        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", ""), self.LIST: (0, self.OPEN, "")})
+        self.real(fr, automerge=True)
+        lst = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "list"]][0]
+        jq = lst[lst.index("--jq") + 1]
+        self.assertIn("isCrossRepository == false", jq); self.assertIn('baseRefName == "main"', jq)
+
+    def test_nothing_is_closed_when_todays_pr_was_not_delivered(self):
+        fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
+        self.assertIsNone(self.real(fr)[0])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "close"] for a in fr.argvs()))
+
+    def test_a_failing_cleanup_never_fails_the_delivery(self):
+        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (1, "", "HTTP 500"),
+                      ("gh", "pr", "close"): (1, "", "HTTP 500")})
+        self.assertEqual(self.real(fr), ("https://x/pull/11", None))
+        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, ""), ("gh", "pr", "close"): (1, "", "HTTP 500")})
+        self.assertEqual(self.real(fr), ("https://x/pull/11", None))
+
     def test_create_draft_vs_automerge(self):
         fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/9", None))

@@ -7,6 +7,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # REQ-SUP-001-AC1 (owner, Oct 5): a new version waits 7 days before Dependabot proposes it.
+    cooldown:
+      default-days: 7
     # codeql-action ships init/autobuild/analyze/upload-sarif as separate
     # action paths behind ONE shared version. Ungrouped, Dependabot opens a
     # PR per path, each bumping one pin and leaving the others behind — the
@@ -47,6 +50,9 @@ updates:
     directory: "/.github/agent"
     schedule:
       interval: "weekly"
+    # REQ-SUP-001-AC1: the same 7-day wait as github-actions; gomod and docker keep their CVE-fix targets.
+    cooldown:
+      default-days: 7
     # pydantic pins pydantic-core EXACTLY. The group bundles them when both update; it does NOT
     # stop a lone pydantic-core bump (the #106/#111 case that broke the auditor's SDK install).
     # The guard is ci.yml's resolve step: a PR whose pins do not resolve fails the
