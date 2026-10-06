@@ -84,6 +84,19 @@ f="$a/release-after.json"
 docker scout cves --format gitlab --vex-author '^FosterStack LLC$' "registry://$PROBE_REPO:release" > "$f" 2> "$f.err"; rc=$?
 echo "- scan the release copy from the registry (our author): exit $rc — findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)" >> "$summ"
 
+# advisor 0214: the post-attachment index scanned by its EXACT new digest (attaching changes the index digest, so the attestation has
+# to be in the index BEFORE signing; the question is whether Scout applies a statement when it is given that digest, not a tag)
+for t in control release; do
+  nd=$(digest "$PROBE_REPO:$t"); f="$a/$t-after-exact-digest.json"; extra=(--vex-author "$AUTHOR_RE"); [ "$t" = release ] && extra=(--vex-author '^FosterStack LLC$')
+  if [ "$nd" = READ-FAILED ]; then echo "- scan $t by its exact post-attachment digest: inconclusive (the digest could not be read)" >> "$summ"; continue; fi
+  docker scout cves --format gitlab "${extra[@]}" "registry://$PROBE_REPO@sha256:$nd" > "$f" 2> "$f.err"; rc=$?
+  if [ "$t" = control ]; then verdict=$(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" "${cve:-CVE-0000-0000}" "${purl:--}" 2>&1 | tail -1)
+  else verdict="findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)"; fi
+  echo "- scan $t by its exact post-attachment digest \`sha256:$nd\` with --vex-author: exit $rc — $verdict" >> "$summ"
+done
+docker scout attestation list "registry://$PROBE_REPO:release" > "$a/release-attestation-list.txt" 2>&1
+echo "- release copy attestation list: \`$(head -c 300 "$a/release-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+
 # --- 1b. OUR statement, attached to a fixture that HAS the target (advisor 0202): the control above proved the attestation path
 # applies a statement of the documented shape; this proves it for OUR author and OUR product forms. The target is CVE-2023-4911 in
 # the fixture's glibc (the rescan self-check's own target). Each form gets its own scratch tag (an attestation cannot be removed);
@@ -102,6 +115,12 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
     f="$a/$tag-after.json"
     docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:$tag" > "$f" 2> "$f.err"; rc=$?
     echo "  - $k scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+    nd=$(digest "$PROBE_REPO:$tag"); f="$a/$tag-after-exact-digest.json"
+    if [ "$nd" = READ-FAILED ]; then echo "  - $k by its exact post-attachment digest: inconclusive (the digest could not be read)" >> "$summ"
+    else
+      docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:$nd" > "$f" 2> "$f.err"; rc=$?
+      echo "  - $k scanned by its exact post-attachment digest \`sha256:$nd\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+    fi
   done
 fi
 
