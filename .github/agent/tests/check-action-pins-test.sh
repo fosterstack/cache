@@ -2366,5 +2366,17 @@ case_ r31-b4-curl-redirected-into-a-path-directory-bad bad "$(rb 'curl -fsSL htt
           chmod +x /usr/local/bin/tool
           tool --version')"
 
+# --- narrow verification (Codex r32 B1, B2, B4): the incomplete spellings of the r31 fixes
+case_ r32-b1-array-as-an-option-value-bad bad "$(rb 'BUILD_OPTS=(probe -f pin-probe/Unpinned)
+          docker build --tag "${BUILD_OPTS[@]}" pin-probe')" "mkdir -p pin-probe; printf 'FROM scratch\\n' > pin-probe/Dockerfile; printf 'FROM alpine:latest\\n' > pin-probe/Unpinned"
+case_ r32-b2-skopeo-indexed-source-bad bad "$(rb 'SRC=(docker://alpine:latest)
+          skopeo copy "${SRC[0]}" docker-archive:/tmp/probe.tar')"
+case_ r32-b4-curl-ampersand-redirect-then-installed-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool &> /tmp/tool
+          sudo install -m 0755 /tmp/tool /usr/local/bin/tool
+          tool --version')"
+case_ r32-b4-curl-ampersand-redirect-into-a-path-directory-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool &> /usr/local/bin/tool
+          chmod +x /usr/local/bin/tool
+          tool --version')"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -1177,6 +1177,11 @@ def _downloaded_commands(script):
     """Command names this script INSTALLS from a download: `curl -o /tmp/x URL`, then `install|cp|mv|ln /tmp/x /usr/local/bin/x`: running
     `x` runs bytes nobody checked (Codex #164 r23, B9); their basenames, and the install destinations."""
     downloads, names = set(), set()
+    for m in re.finditer(r"\b(?:curl|wget|aria2c)\b[^\n;|]*?&>>?\s*([^\s;|&]+)", script):      # curl URL &> /tmp/tool (r32, B4)
+        dest = m.group(1).strip("\"'")
+        downloads.add(dest)
+        if re.fullmatch(r"(?:/usr/local/s?bin|/usr/s?bin|/s?bin|/opt/[\w.-]+/bin|\$\{?HOME\}?/\.local/bin|~/\.local/bin|\$\{?HOME\}?/bin)/[\w.-]+", dest):
+            names.add(_base(dest))
     for chunk in _split_commands(_cut_substitutions(script)[0]):
         toks = _tokens(chunk)
         words = _command_words(toks)
@@ -1289,14 +1294,13 @@ def _build(args):
     with its arity from a table: an option the table does not know is returned as `unknown` and the caller refuses the build
     (a guessed arity once read the context as an option's value and checked the wrong Dockerfile; Codex #164 r25-26, B1)."""
     dockerfile, tags, pos, named, cache_from, unknown, i = None, set(), [], [], [], None, 0
+    for a in args:
+        if re.search(r"\$\{?[A-Za-z_]\w*\[[@*]\]", a):             # "${OPTS[@]}" anywhere (an option's value included): words this check cannot see
+            unknown = unknown or a
     while i < len(args):
         a = args[i]
         if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)", a):     # a shell redirection is not an argument (`- < Dockerfile`)
             i += 1 if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>)[^<>]", a) else 2
-            continue
-        if re.search(r"\$\{?[A-Za-z_]\w*\[[@*]\]", a):             # "${OPTS[@]}": words this check cannot see (r31, B1)
-            unknown = unknown or a
-            i += 1
             continue
         if a == "--" or a == "-" or not a.startswith("-"):
             pos.append(a)
@@ -1701,7 +1705,7 @@ def script_images(script):
                 continue
             if pos and pos[0].startswith("docker://"):
                 ev.append(("fetch", "skopeo " + args[0], pos[0][len("docker://"):]))   # a registry read (r3, C10)
-            elif pos and (SUBST in pos[0] or re.fullmatch(r'"?\$\{?[A-Za-z_]\w*\}?"?', pos[0])):  # a substituted or variable source could be docker://… (a literal assignment is read: r31 B2)
+            elif pos and (SUBST in pos[0] or re.fullmatch(r'"?\$\{?[A-Za-z_]\w*(?:\[[^\]]*\])?\}?"?', pos[0])):  # a substituted or variable source could be docker://… (a literal assignment is read: r31 B2)
                 ev.append(("fetch", "skopeo " + args[0], pos[0]))
             # a copy into the daemon (docker-daemon:NAME) registers nothing: no name a job made is trusted (r23); an archive copied in
             # (oci-archive:, dir:, docker-archive:) is NOT the job's own bytes either (Sonnet #164 r14, NEW-22)
