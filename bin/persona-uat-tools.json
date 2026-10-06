@@ -1,0 +1,6 @@
+{
+  "jenkins": "docker.io/jenkins/jenkins@sha256:cce1eeb79902722f3cf7a8831c41e95c39f4a42b9a2981959630cc66539b3c2d",
+  "gitlab-runner": "docker.io/gitlab/gitlab-runner@sha256:1114649f86b818a030549f94624aa1b38a2275045bd47d37027a87f21c48feec",
+  "kind": "docker.io/kindest/node@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30",
+  "shell": "docker.io/library/debian@sha256:d365f4920711a9074c4bcd178e8f457ee59250426441ab2a5f8106ed8fe948eb"
+}

@@ -35,7 +35,7 @@ plan = json.load(open(os.path.join(case, "plan.json")))
 log = os.path.join(case, "fp.log")
 n = sum(1 for _ in open(log)) if os.path.exists(log) else 0
 with open(log, "a") as fh:
-    fh.write(json.dumps({"req": req, "key": os.environ.get("ANTHROPIC_API_KEY")}) + "\n")
+    fh.write(json.dumps({"req": req, "key": os.environ.get("ANTHROPIC_API_KEY"), "env": sorted(os.environ)}) + "\n")
 step = plan[min(n, len(plan) - 1)]
 if step.get("exit"):
     sys.exit(step["exit"])
@@ -228,6 +228,28 @@ check python3 - "$work/finish/fp.log" <<'PY'
 import json, sys
 assert all(json.loads(l)["key"] == "SECRET-MODEL-KEY" for l in open(sys.argv[1]))
 PY
+CASE="fence 1: docker flags typed by the model stay INSIDE the command argument: the docker argv is the same fixed shape (12 tokens), never a new option"
+agent flags '[{"usage":{"tokens":10},"action":{"type":"shell","command":"--privileged -v /:/host --network host --pid=host -e AWS_SECRET_ACCESS_KEY=x /var/run/docker.sock"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+check python3 - "$work/flags/fd.log" "$work/flags/sandbox" "$SHL" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 1
+a = rows[0]["argv"]
+assert a[:10] == ["run", "--rm", "--network", "host", "-v", sys.argv[2] + ":/work", "-w", "/work", sys.argv[3], "sh"] and a[10] == "-c" and len(a) == 12, a
+assert a.count("-v") == 1 and "--privileged" not in a[:10] and "--pid=host" not in a[:10]
+PY
+CASE="fence 1: the provider's environment holds the model identity and no job credential (no GitHub, AWS, ACTIONS_* or unknown variable)"
+check python3 - "$work/finish/fp.log" <<'PY'
+import json, re, sys
+bad = re.compile(r"^(AWS_.*|ACTIONS_.*|GITHUB_.*|GH_.*|RUNNER_.*|SOME_UNKNOWN_SECRET)$")
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert rows
+for r in rows:
+    assert not [k for k in r["env"] if bad.match(k)], r["env"]
+    assert "ANTHROPIC_API_KEY" in r["env"]
+PY
+CASE="fence 2: the agent never echoes its transcript or the shell output to its own stderr (the driver captures stderr, but nothing there is a transcript)"
+check none_match 'step 2 fails|first step unclear|42' "$work/finish/err.txt"
 agent timeout '[{"usage":{"tokens":10},"action":{"type":"shell","command":"sleep 5"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' --shell-timeout 1
 CASE="a shell action that runs too long is cut off, the model is told, and the persona carries on"
 check test "$rc" -eq 0 -a "$(calls timeout)" -eq 2

@@ -324,7 +324,7 @@ for ln in open(sys.argv[1]):
     assert a[a.index("--docker") + 1].endswith("/docker"), a
 assert sys.argv[3] not in open(sys.argv[2]).read(), "the driver itself must not start the shell image: the agent does, per action"
 PY
-CASE="every container the driver starts is `run -d` with the pinned image as its LAST argument, only loopback-published ports, no mount, no env, no network override; privileged only for kind"
+CASE="every container the driver starts is run -d with the pinned image as its LAST argument, only loopback-published ports, no mount, no env, no network override; privileged only for kind"
 check python3 - "$work/clean/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
 import re, sys
 img, jen, glr, knd = sys.argv[2:6]
@@ -944,6 +944,123 @@ assert len(models) == 15 and models.count("INTEG-COMPLIANCE") == 3 and models.co
 PY
 CASE="integrated: no GitHub credential reached the shell containers or the provider's environment"
 check none_match 'SECRET-GH-TOKEN' "$work/integ/out" "$work/integ/docker.log"
+
+# --- advisor fences (public repo; job logs and artifacts are public) ---------------------------------------------------
+# Fence 1: containers are FIXED-ARGUMENT. The driver builds every docker command from the allowlisted images and fixed options.
+CASE="fence 1: the docker calls the driver builds (run -d) carry no mount, no network option, no env, no privilege except kind, no socket, no pid/ipc/cap/device/user option; the agent's shell calls carry exactly one mount and nothing else beyond the pinned --network host"
+check python3 - "$work/clean/docker.log" "$work/integ/docker.log" "$KND" <<'PY'
+import re, sys
+knd = sys.argv[3]
+forbidden = re.compile(r"^(--privileged|--net(work)?(=.*)?|--pid(=.*)?|--ipc(=.*)?|--uts(=.*)?|--cap-add(=.*)?|--cap-drop(=.*)?|--device(=.*)?|--userns(=.*)?|--user|-u|-e|--env(=.*)?|--env-file(=.*)?|--mount(=.*)?|--volume(=.*)?|-v|--security-opt(=.*)?|--volumes-from(=.*)?)$")
+total_run = 0
+for path in sys.argv[1:3]:
+    for l in open(path):
+        assert "docker.sock" not in l, ("the docker socket must not reach any container", l)
+        t = l.split()
+        if t[0] != "run":
+            continue
+        total_run += 1
+        if t[1] == "-d":
+            opts = t[2:-1]
+            bad = [o for o in opts if forbidden.match(o) and not (o == "--privileged" and t[-1] == knd)]
+            assert not bad, ("a driver-built container carries a forbidden option", bad, l)
+            assert not any(":/" in o and o.count(":") == 1 and not o.startswith("127.0.0.1") for o in opts), ("a host mount", l)
+        else:
+            # the agent's shell action (its own, test-pinned shape): exactly one -v, host network is the only network option, nothing else
+            assert t[1] == "--rm" and t.count("-v") == 1 and not [x for x in t if x in ("--privileged", "--pid", "--ipc", "--cap-add", "--device", "-e", "--env", "--user")], l
+            assert not [x for x in t if x.startswith(("--pid=", "--ipc=", "--cap-add=", "--device=", "--env=", "--mount", "--volume", "--net=", "--network="))], l
+assert total_run > 5, total_run
+PY
+# no job credential in any docker call's environment (a container only ever sees what -e passes; the docker client must not carry the job's credentials either)
+mkdir -p "$work/envdock"; : >"$work/envdock/log"; : >"$work/envdock/docker.log"; : >"$work/envdock/envs"; echo '{}' >"$work/envdock/plan.json"
+sed "s#__LOG__#$work/envdock/docker.log#" "$work/docker.tmpl" >"$work/envdock/inner"; chmod +x "$work/envdock/inner"
+printf '#!/usr/bin/env bash\nenv | cut -d= -f1 | sort | tr "\\n" " " >>"%s"; echo >>"%s"\nexec "%s" "$@"\n' "$work/envdock/envs" "$work/envdock/envs" "$work/envdock/inner" >"$work/envdock/docker"; chmod +x "$work/envdock/docker"
+rc=0
+env -u PERSONA_UAT_TOKEN_BUDGET GH_LOG="$work/envdock/gh.log" GITHUB_REPOSITORY=own/cache GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY \
+  AWS_ACCESS_KEY_ID=SECRET-AWS-ID ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED SOME_API_SECRET=SECRET-UNK \
+  PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$repo" --out "$work/envdock/out" --tools "$work/tools.json" \
+  --docker "$work/envdock/docker" --gh "$work/gh" --port 18080 --agent "python3 $work/stub.py $work/envdock" >/dev/null 2>&1 || rc=$?
+CASE="fence 1: no job credential (GitHub, AWS, OIDC, model token, any *_TOKEN/*_KEY/*_SECRET, AWS_*, ACTIONS_*) is in the environment of ANY docker call the driver makes"
+check python3 - "$work/envdock/envs" <<'PY'
+import re, sys
+rows = [l.split() for l in open(sys.argv[1])]
+assert len(rows) >= 8, rows
+cred = re.compile(r"^(AWS_.*|ACTIONS_.*|GITHUB_TOKEN|GH_TOKEN|GH_.*|ANTHROPIC_.*|.*_TOKEN|.*_KEY|.*_SECRET|SOME_API_SECRET|PERSONA_UAT_.*)$")
+for r in rows:
+    assert not [k for k in r if cred.match(k)], r
+PY
+
+# Fence 2: public surfaces. One short report per persona, SCANNED before it is written; transcripts are written under --out and never echoed.
+scanrun() { # <case> <finding text>  (rc run, one blocking finding from maven-jenkins-ci, the rest clean)
+  python3 - "$2" >"$work/scanplan-$1.json" <<'PY'
+import json, sys
+print(json.dumps({"maven-jenkins-ci": {"findings": [{"kind": "blocking", "text": sys.argv[1]}]}}))
+PY
+  PUBLISH=1 IMAGE="$IMG2" run "scan-$1" "$(cat "$work/scanplan-$1.json")" weekly
+}
+FAKEHEX=$(printf 'ab12%.0s' $(seq 12))
+i=0
+for leak in "the guide says to ask Anthropic support" "reply from the CLAUDE assistant was empty" "an OpenAI key was needed" "gpt-style answer" "Codex said so" "uses Gemini under the hood" "google ai studio link" "a llama backend" "Mistral tips" \
+            "token ghp_abcdefghijklmnopqrstuvwxyz0123456789" "github_pat_11ABCDEFG0abcdefghijkl_xyz" "AKIAABCDEFGHIJKLMNOP is shown" "key sk-abcdefghijklmnopqrstuvwx" "Authorization: Bearer abcdefghijklmnop" \
+            "-----BEGIN PRIVATE KEY-----" "hex $FAKEHEX" "blob QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OTBBQkNERUZHSElKS0xNTk9QUVJT" "uses MODEL-DEFAULT-X for it" "uses MODEL-COMPLIANCE-X for it"; do
+  i=$((i+1)); scanrun "$i" "$leak"
+  CASE="fence 2: a finding that carries '$leak' withholds that persona's report (fixed notice, blocking), keeps the other four, and nothing of it reaches any issue body or public file"
+  check python3 - "$(out "scan-$i")/maven-jenkins-ci.report.md" "$leak" "$(out "scan-$i")" "$work/scan-$i/gh.log" <<'PY'
+import glob, sys
+rep = open(sys.argv[1]).read()
+assert rep.splitlines()[0] == "VERDICT: blocking", rep
+assert "withheld" in rep.lower() and "scan" in rep.lower(), rep
+assert sys.argv[2] not in rep
+needle = sys.argv[2].split()[-1] if len(sys.argv[2].split()) > 1 and sys.argv[2].startswith(("token", "key", "blob", "hex", "Authorization")) else sys.argv[2]
+for f in glob.glob(sys.argv[3] + "/*.md") + glob.glob(sys.argv[3] + "/*.json") + [sys.argv[4]]:
+    c = open(f).read()
+    assert needle not in c and sys.argv[2] not in c, f
+assert len(glob.glob(sys.argv[3] + "/*.report.md")) == 5
+PY
+  check test "$(head -1 "$(out "scan-$i")/gradle-platform-engineer.report.md")" = "VERDICT: pass"
+  check grep -q '^issue create.*--label blocking' "$work/scan-$i/gh.log"
+done
+scanrun clean "docs/maven.md step 3 fails as written: HTTP 404 from https://example.org/a/very-long-lowercase-path/segment/that-keeps-going-and-going/index.html; image sha256:$(printf 'c%.0s' $(seq 64))"
+CASE="fence 2: a long lowercase URL path and a published image digest are not credentials: that finding is published as written"
+check grep -q 'step 3 fails as written' "$(out scan-clean)/maven-jenkins-ci.report.md"
+check none_match 'withheld' "$(out scan-clean)/maven-jenkins-ci.report.md"
+CASE="fence 2: the driver prints no raw transcript or agent stderr to stdout or stderr (they are written under --out only)"
+check none_match 'TRANSCRIPT for|PARTIAL-TRANSCRIPT' "$work/clean/stdout" "$work/clean/stderr" "$work/fc-crash/stdout" "$work/fc-crash/stderr" "$work/blocking/stdout" "$work/blocking/stderr" "$work/integ/stdout" "$work/integ/stderr"
+CASE="fence 2: ...and the transcripts are still there under --out"
+check grep -q 'PARTIAL-TRANSCRIPT' "$(out fc-crash)/compliance-reviewer.transcript.txt"
+CASE="fence 2: the report the driver writes is short: one file per persona, no transcript in it"
+check python3 - "$(out clean)" <<'PY'
+import glob, sys
+for r in glob.glob(sys.argv[1] + "/*.report.md"):
+    c = open(r).read()
+    assert len(c) < 4000 and "TRANSCRIPT" not in c, r
+PY
+
+# Fence 3: dogfood access. The sandbox only ever sees http://127.0.0.1:<port>; no job variable reaches the agent.
+CASE="fence 3: every request names only a 127.0.0.1 endpoint (the image's and every tool's), and the default --port is 8080"
+check python3 - "$work/clean/log" <<'PY'
+import json, re, sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)["request"]
+    urls = [r["endpoint"]] + [v["endpoint"] for v in r["tools"].values() if v["endpoint"]]
+    assert all(re.fullmatch(r"https?://127\.0\.0\.1:\d+", u) for u in urls), urls
+    assert not re.search(r"localhost|0\.0\.0\.0|\.invalid|amazonaws|github", json.dumps(r)), r
+PY
+CASE="fence 3: without --port the image is published on 127.0.0.1:8080 and handed to the agent as http://127.0.0.1:8080"
+mkdir -p "$work/defport"; : >"$work/defport/log"; : >"$work/defport/docker.log"; echo '{}' >"$work/defport/plan.json"
+sed "s#__LOG__#$work/defport/docker.log#" "$work/docker.tmpl" >"$work/defport/docker"; chmod +x "$work/defport/docker"; rc=0
+PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --image "$IMG" --repo "$repo" --out "$work/defport/out" --tools "$work/tools.json" \
+  --docker "$work/defport/docker" --gh "$work/gh" --ready-timeout 1 --agent "python3 $work/stub.py $work/defport" >/dev/null 2>&1 || rc=$?
+check grep -q '127.0.0.1:8080:8080' "$work/defport/docker.log"
+CASE="fence 3: no AWS_*/ACTIONS_*/GITHUB_TOKEN/GH_TOKEN/*_TOKEN/*_KEY/*_SECRET variable reaches the agent (the model identity ANTHROPIC_* the provider needs is the one exception, pinned above)"
+check python3 - "$work/clean/log" <<'PY'
+import json, re, sys
+bad = re.compile(r"^(AWS_.*|ACTIONS_.*|GITHUB_.*|GH_.*|.*_TOKEN|.*_KEY|.*_SECRET|.*_SECRET_.*|SOME_UNKNOWN_SECRET|RUNNER_.*|REPO_CHECKOUT|PERSONA_UAT_.*)$")
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert len(rows) == 5
+for r in rows:
+    assert not [k for k in r["env"] if bad.match(k) and not k.startswith("ANTHROPIC_")], r["env"]
+PY
 
 CASE="across every case, the only gh calls ever made are issue create/edit/list and label create (a stray call is a failure, not a quiet success)"
 check python3 - "$work" <<'PY'
