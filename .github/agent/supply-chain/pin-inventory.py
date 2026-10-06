@@ -232,6 +232,22 @@ def _uses(u, node, out, labels):
 _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target",
                    "--prefix", "--root", "--cache-dir", "--python", "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary", "--progress-bar",
                    "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action"}
+def _effective_pull(tail):
+    """The pull policy docker run/create ends up with: the LAST --pull among the options before the image operand (pflag keeps the final
+    value; an option's value is skipped, so a quoted value or a container argument after the image never counts; Codex #187 round 2)."""
+    toks, i, state = tail.split(), 0, None
+    while i < len(toks) and toks[i].startswith("-"):
+        t = toks[i]
+        if t.startswith("--pull="):
+            state = t.split("=", 1)[1]
+        elif t == "--pull" and i + 1 < len(toks):
+            state, i = toks[i + 1], i + 1
+        elif t in _DOCKER_VALUE_OPTS and "=" not in t:
+            i += 1
+        i += 1
+    return state
+
+
 def _docker_tails(run):
     return _tails(run, lambda t: t in ("docker", "podman", "nerdctl", "buildah"), {"run", "pull", "create"}, _DOCKER_VALUE_OPTS, keep_sub=True)
 _DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "--tlscacert", "--tlscert", "--tlskey", "--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
@@ -305,7 +321,7 @@ def _step_items(node, out, labels):
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             out.append(Item("tool", m.group(1), "latest"))
         for sub, tail in _docker_tails(run):
-            local_only = sub in ("run", "create") and re.search(r"(^|\s)--pull(=|\s+)never(\s|$)", tail) is not None
+            local_only = sub in ("run", "create") and _effective_pull(tail) == "never"
             for img in _docker_images(tail):
                 it = _image_item(img)
                 if local_only and it.name.startswith("localhost/"):
