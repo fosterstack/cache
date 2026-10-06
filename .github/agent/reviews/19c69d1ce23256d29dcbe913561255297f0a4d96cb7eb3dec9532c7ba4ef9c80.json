@@ -1,9 +1,9 @@
 {
  "schema": "auditor-review-record/v1",
- "tree": "33ad6563de0f7694b1c12fa4e74a3ef416a142effab3f15bc9fbc032ae9a505c",
- "change": "auditor panel delivery rebuilds on the current main every run and carries the open PR's own additions forward (state-source authenticated, guard-verified, head-bound arming); superseded daily suppression PRs closed (advisor 0186, 0187; REQ-AUD-17) -- PR #184",
- "reviewed_commit": "7ef297a6b5388916262097629411dfc6c115f00f",
- "closed_commit": "7ef297a6b5388916262097629411dfc6c115f00f",
+ "tree": "19c69d1ce23256d29dcbe913561255297f0a4d96cb7eb3dec9532c7ba4ef9c80",
+ "change": "auditor panel delivery rebuilds on the current main every run and carries the open PR's own additions forward (state-source authenticated by the reserved-branch guard, head-bound arming, serialised runs); superseded daily suppression PRs closed (advisor 0186, 0187; REQ-AUD-17) -- PR #184",
+ "reviewed_commit": "4808ee9ca4045da6b19f4602a8dfc1259becf7f8",
+ "closed_commit": "4808ee9ca4045da6b19f4602a8dfc1259becf7f8",
  "rounds": [
   {
    "round": 1,
@@ -122,6 +122,38 @@
      "evidence_sha256": "43ec5e45807c5fd86b5aa17720b2ac70d62aa6b6ce497b61ec0bd0879fc10e29"
     }
    }
+  },
+  {
+   "round": 9,
+   "label": "row 78 adversarial pass (both vendors, independent): zero blockers",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ac065ed03554749faee36f41c315fce0eb4463875fcfe4b40a2caec6428223ae"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "a8d6c9076877c37e1108b6c824c04944e3d77bd88628900baf5c01715d16ab18"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "label": "verify the one fix made after round 9 (the labels test harness): both zero",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "16863207a36d00b1fd6690b5e1e9c15f387d5272f2ce48f19fbb2b7a72253cbd"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "bc4a0140be7d005e211a1b0b116aa944f4d271060e0d764e7a722d6459622db4"
+    }
+   }
   }
  ],
  "stop": {
@@ -130,22 +162,11 @@
  },
  "residuals": [
   "--force without a lease on the App's own branch (rebuilt by design); a run that changes nothing leaves an old PR as it is",
-  "cleanup failures print a note and never fail the delivery",
+  "cleanup failures print a note and never fail the delivery; the cleanup identifies a Bot-authored non-draft same-repo PR on an older daily branch, not the App specifically",
   "shallow history is deepened to 1000 commits; no shared history within that fails loudly",
+  "the guard's success is identified by check name only (a forged same-named check from another Checks writer would be accepted); the preventive control is the ruleset restricting auditor/* to the App, and the allowlist plus automerge_allowed still bound what such a push could carry",
+  "head verification and the arming are separate calls (gh pr merge --match-head-commit would close the window); the concurrency group serialises this workflow's own runs",
   "Codex could not execute the unit suite in its read-only sandbox (it read the tests in full); the suite and the 100% auditor coverage gate pass locally and in CI",
-  "row 78 adversarial pass (both vendors, zero blockers): the guard's success is identified by check name only, so a forged same-named check from another Checks writer would be accepted; the preventive control is the ruleset restricting auditor/* to the App (named in the guard's own header), and the allowlist plus automerge_allowed still bound what such a push could carry",
-  "row 78: head verification and the arming are separate calls (gh pr merge --match-head-commit would close the window); the concurrency group serialises this workflow's own runs",
-  "row 78: cleanup identifies any Bot-authored non-draft same-repo PR on an older daily branch, not the App specifically",
   "row 78: no action reference was added or changed; every uses: in auditor.yml stays a commit digest and check-action-pins reports 0 findings"
- ],
- "adversarial_pass": {
-  "codex": {
-   "blockers_open": 0,
-   "evidence_sha256": "a8d6c9076877c37e1108b6c824c04944e3d77bd88628900baf5c01715d16ab18"
-  },
-  "sonnet": {
-   "blockers_open": 0,
-   "evidence_sha256": "ac065ed03554749faee36f41c315fce0eb4463875fcfe4b40a2caec6428223ae"
-  }
- }
+ ]
 }
