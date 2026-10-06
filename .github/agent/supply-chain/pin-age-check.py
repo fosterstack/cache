@@ -241,7 +241,7 @@ def observed():
     state = None
     if repo:
         data = _gh_api(f"repos/{repo}/actions/workflows/supply-chain.yml/runs?event=schedule&branch=main&status=success&per_page=100") or {}
-        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(r)), key=lambda r: r.get("created_at", ""), reverse=True)
+        runs = sorted((r for r in data.get("workflow_runs", []) if tobs.accept_run(dict(r, path=str(r.get("path") or "").split("@")[0]))), key=lambda r: r.get("created_at", ""), reverse=True)
         for run in runs[:30]:
             arts = (_gh_api(f"repos/{repo}/actions/runs/{run['id']}/artifacts") or {}).get("artifacts", [])
             art = next((x for x in arts if x.get("name") == tobs.STATE_NAME and not x.get("expired")), None)
@@ -256,6 +256,9 @@ def observed():
     return state
 
 
+_INV_CACHE = {}
+
+
 def _pr_clock(item, root, base, head="HEAD"):
     """The PR clock: the earliest server-side time of a workflow run on the first commit of base..head whose INVENTORY holds this exact item
     (not a text match: a comment mentioning the version, or digits that happen to equal it, never start the clock)."""
@@ -266,7 +269,9 @@ def _pr_clock(item, root, base, head="HEAD"):
     first = None
     for c in r.stdout.split():
         try:
-            if item.key in inv.load_at(root, c):
+            if (root, c) not in _INV_CACHE:
+                _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
+            if item.key in _INV_CACHE[(root, c)]:
                 first = c
                 break
         except RuntimeError:

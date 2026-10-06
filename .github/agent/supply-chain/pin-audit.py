@@ -512,7 +512,7 @@ class LiveNet:
             except (RuntimeError, ValueError):
                 continue
             runs = self._gh_json(f"repos/{repo}/actions/runs?head_sha={p['headRefOid']}&event=pull_request&per_page=100") or {}
-            mine = sorted((x for x in runs.get("workflow_runs", []) if x.get("path") == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
+            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
             failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
                 out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved, "_base": mb, "_head": p["headRefOid"]})
@@ -803,8 +803,12 @@ def file_issues(gh, plan, today):
 def rerun_held(gh, net, now):
     n = 0
     for pr in net.prs():
-        items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
-        rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
+        try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
+            items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
+            rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
+        except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
+            print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
+            continue
         if rows and all(r[0] for r in rows):
             gh.run("run", "rerun", str(pr["run_id"]))
             print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
