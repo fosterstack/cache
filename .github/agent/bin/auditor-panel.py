@@ -1148,25 +1148,30 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
             continue                                   # main already has exactly this
         if path == VEX:
             pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"statements": []}'), json.loads(cur_txt)
-            base_by = {x.get("@id"): x for x in base_doc.get("statements", [])}
-            cur_by = {x.get("@id"): x for x in cur_doc.get("statements", [])}
+            # a statement is known by its @id; the hand-written ones in the real file have none, so they are known by their whole content
+            # (never all collapsed onto one key: that once overwrote a published statement with another CVE's)
+            ident = lambda x: x.get("@id") or json.dumps(x, sort_keys=True)
+            base_by = {ident(x): x for x in base_doc.get("statements", [])}
+            cur_by = {ident(x): x for x in cur_doc.get("statements", [])}
             touched = False
             for stmt in pr_doc.get("statements", []):
-                sid = stmt.get("@id")
+                sid = ident(stmt)
                 if sid not in base_by:                 # a statement the PR ADDED
                     if sid not in cur_by:
                         cur_doc["statements"].append(stmt)
+                        cur_by[sid] = stmt
                         touched = True
                     elif cur_by[sid] != stmt:
-                        raise _conflict(path, sid)
-                elif stmt != base_by[sid]:             # a statement the PR CHANGED (e.g. turned to affected)
+                        raise _conflict(path, sid[:80])
+                elif stmt != base_by[sid]:             # a statement the PR CHANGED (it has an @id: a content-keyed statement cannot "change")
                     if cur_by.get(sid) == base_by[sid]:
-                        cur_doc["statements"][[x.get("@id") for x in cur_doc["statements"]].index(sid)] = stmt
+                        cur_doc["statements"][[ident(x) for x in cur_doc["statements"]].index(sid)] = stmt
+                        cur_by[sid] = stmt
                         touched = True
                     elif cur_by.get(sid) != stmt:
-                        raise _conflict(path, sid)
+                        raise _conflict(path, sid[:80])
             if touched:
-                cur_doc["timestamp"] = pr_doc.get("timestamp", cur_doc.get("timestamp"))
+                cur_doc["timestamp"] = max(str(pr_doc.get("timestamp") or ""), str(cur_doc.get("timestamp") or ""))   # never regress main's
                 cur_doc["version"] = int(cur_doc.get("version", 1)) + 1
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
@@ -1239,8 +1244,9 @@ def cmd_deliver(a, run=subprocess.run):
         if existing:            # the whole PR, not just today's change: yesterday's profile proposal still needs review
             pr_paths |= set(_sh(["gh", "pr", "diff", existing, "--name-only"], plan, real, run).split())
         if automerge_allowed(sorted(pr_paths)):
-            _sh(["gh", "pr", "ready", branch], plan, real, run)
-            _sh(["gh", "pr", "merge", "--auto", "--squash", branch], plan, real, run)
+            target = existing or branch
+            _sh(["gh", "pr", "ready", target], plan, real, run)
+            _sh(["gh", "pr", "merge", "--auto", "--squash", target], plan, real, run)
         elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
             armed = _sh(["gh", "pr", "view", existing, "--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
                         plan, real, run).strip()

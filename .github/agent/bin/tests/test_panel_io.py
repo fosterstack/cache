@@ -610,7 +610,7 @@ class Deliver(Tmp):
                 mock.patch("sys.stdout", new=io.StringIO()):
             P.cmd_deliver(self.a(), run=run)
         cmds = [c for c, _ in calls]
-        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "auditor/panel"], cmds)   # the open PR holds a profile entry (r2 R7)
+        self.assertNotIn(["gh", "pr", "merge", "--auto", "--squash", "17"], cmds)   # the open PR holds a profile entry (r2 R7)
         # advisor 0186 (replaces "builds on the open PR's FETCH_HEAD", which left the branch behind main forever): the open PR's branch is
         # READ (fetched) so its files carry forward, but the branch is rebuilt on the run's main commit
         self.assertTrue(any(c[:4] == ["git", "-C", self.repo, "fetch"] and c[-1] == "auditor/panel" and "origin" in c for c in cmds))
@@ -866,6 +866,34 @@ class CarryForward(Tmp):
         self.cur(P.VEX, {"version": 5, "statements": [self.st("A"), self.st("B", "under_investigation"), self.st("NEW")]})
         with self.assertRaises(RuntimeError):
             self.go([P.VEX])
+
+    def test_hand_written_statements_without_an_id_are_never_collapsed(self):      # Sonnet r3 blocker: the real VEX file has four of them
+        legacy = [{"vulnerability": {"name": "CVE-2024-51744"}, "status": "not_affected"}, {"vulnerability": {"name": "CVE-2025-60876"}, "status": "not_affected"},
+                  {"vulnerability": {"name": "CVE-2025-46394"}, "status": "not_affected"}]
+        base = {"version": 1, "timestamp": "2026-01-01T00:00:00Z", "statements": legacy}
+        pr = {"version": 2, "timestamp": "2026-02-01T00:00:00Z", "statements": legacy + [self.st("NEW")]}
+        self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base)
+        self.cur(P.VEX, {"version": 3, "timestamp": "2026-03-01T00:00:00Z", "statements": legacy + [self.st("MAIN")]})
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        doc = json.load(open(os.path.join(self.repo, P.VEX)))
+        self.assertEqual([x.get("vulnerability", {}).get("name") or x["@id"].split("#")[1] for x in doc["statements"]],
+                         ["CVE-2024-51744", "CVE-2025-60876", "CVE-2025-46394", "MAIN", "NEW"])      # every legacy statement intact, in order
+        self.assertEqual(doc["timestamp"], "2026-03-01T00:00:00Z")                                  # main's newer timestamp is never regressed
+        # a statement without an id that the PR ADDED is carried by its content, once
+        extra = {"vulnerability": {"name": "CVE-2099-1"}, "status": "not_affected"}
+        self.put("PR", P.VEX, dict(pr, statements=legacy + [extra]))
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        self.assertEqual(self.go([P.VEX]), [])                                                         # already there now: nothing more to carry
+
+    def test_the_real_vex_file_of_this_repository_survives_a_carry_intact(self):
+        real = open(os.path.join(REPO, P.VEX)).read()
+        base = json.loads(real)
+        pr = json.loads(real); pr["statements"].append(self.st("CVE-2099-REAL")); pr["version"] = int(pr.get("version", 1)) + 1
+        self.put("PR", P.VEX, pr); self.put("BASE", P.VEX, base); self.cur(P.VEX, real)
+        self.assertEqual(self.go([P.VEX]), [P.VEX])
+        doc = json.load(open(os.path.join(self.repo, P.VEX)))
+        self.assertEqual(doc["statements"][:len(base["statements"])], base["statements"])           # every published statement untouched, in order
+        self.assertEqual(len(doc["statements"]), len(base["statements"]) + 1)
 
     def test_profile_entries_are_carried_once(self):
         e1 = {"scanner": "scout", "kind": "k", "match": {"package": "^a$"}}
