@@ -1,0 +1,93 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "8861c222c8dec22560152b9602475df583600a4bdbdf917a84d2e065918dcda2",
+ "change": "the release-notes commit of the patch-notes job in release.yml is made through the GitHub API (signed), through a small CLI over the #190 signed-commit helper (prefixes auditor/ and patch-notes/ only, a symlink in any path component refused, path components URL-encoded); the step reuses only a same-repo open PR into main whose head is the commit it made, merges by number with the head matched, and updates the branch only when behind; the wiring tests pin the whole job, step and workflow structure (advisor 0210) -- PR #191. The generic pin-checker overwrite guard tried in rounds 1-4 was removed (advisor 0194; AC partly not met, information)",
+ "reviewed_commit": "42df307f4a5a2b2b0e2a66c3d54a336218dc208f",
+ "closed_commit": "42df307f4a5a2b2b0e2a66c3d54a336218dc208f",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "release-notes r1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "916b93f5f672fe831e2b88164f9b06657672a88e3cbcc1d5b31bb0d040d5043c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "104c5650ed9340df403bd0b03b7e059815480802409cd992c9193cde3468316c"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "release-notes r2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "61757bef0be446781c3c5f9689a83adadb21c6cc56f7eb0fc3457211cd0dcb0e"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "115f37e66be8966ed407e8ec01a2b58eaf19071d8e3b3d49fae8b8dca761bd3b"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "release-notes r3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "7d3ffcf73daf29263fea9ace2abea6f328322981d2679aeaaaf3c699e472a231"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 5,
+     "evidence_sha256": "e82be2cc987dd5bf8e96d35101be1eccc77040f1e119e8793b31767407ad7413"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "release-notes r4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 4,
+     "evidence_sha256": "14b49a51d5159660198c85d63096a4afbd8b0d739bccccd9e395ae0e5927ad63"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "e9854e97c1d7e3ef40fd3c98af3a03cbe936868c1e18cfa5f9280e6c943050f3"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "release-notes r5",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b1c29615efd725813a2a053fcd801e01df2ea55074d3eb580ab0584dc72a76a9"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "41090522871ee5ca5a48649076df26d138309c3170002a80d98ef8eaf0caaa1a"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ }
+}
