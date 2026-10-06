@@ -801,6 +801,26 @@ assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), fx, now)["versi
 assert pa._norm_name("Jaraco.Context") == pa._norm_name("jaraco_context") == "jaraco-context"
 PY
 
+CASE="a failing re-run of one held PR never stops the others; two commits that collide on one issue identity are ONE issue carrying BOTH (never one dropped)"
+check python3 - "$aud" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc); old = (now - dt.timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%SZ")
+class N:
+    def prs(self):
+        return [{"number": 1, "title": "a", "run_id": 11, "moved": ["tool:o/a@1.0"]}, {"number": 2, "title": "b", "run_id": 22, "moved": ["tool:o/b@1.0"]}]
+    def proofs(self, item, base=None, head="HEAD"):
+        return [(old, "github-release")]
+calls = []
+class G:
+    def run(self, *a, ok_fail=False):
+        if a[2] == "11":
+            raise pa.Fail("simulated")
+        calls.append(a)
+pa.rerun_held(G(), N(), now)
+assert calls == [("run", "rerun", "22")], calls
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"

@@ -85,6 +85,8 @@ def judge_wf(d, real=False):
         bad.append("daily-audit does not write the tag observations (--observations-out)")
     if any("--observations-out" in str(st.get("run", "")) for jn, jj in jobs.items() if jn != "daily-audit" for st in jj.get("steps", [])):
         bad.append("only daily-audit may write the tag observations")
+    if str(j.get("if", "")) != "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'":
+        bad.append("daily-audit's condition is not exactly the ratified one")
     if "schedule" not in str(j.get("if", "")):
         bad.append("daily-audit does not run on the schedule")
     if ".github/agent/supply-chain/pin-audit.py" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])) or "--rerun-held" in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
@@ -139,11 +141,20 @@ def judge_wf(d, real=False):
                 bad.append(f"{name}: a step has a condition ({st.get('if')!r}) other than the ratified one ({allowed_if!r}): it could skip the check")
             if "timeout-minutes" in st:
                 bad.append(f"{name}: a step has its own timeout-minutes")
+            for forbidden in ("shell", "working-directory"):
+                if forbidden in st:
+                    bad.append(f"{name}: a step sets {forbidden}: it could replace what actually runs")
+            if "include-hidden-files" in (st.get("with") or {}):
+                bad.append(f"{name}: a step uploads hidden files")
+            if str(st.get("uses", "")).startswith("actions/upload-artifact@") and (st.get("with") or {}).get("path") != "${{ runner.temp }}/tag-observations/state.json":
+                bad.append(f"{name}: the artifact path is not exactly the tag-observations state file (only public tag mappings may be uploaded)")
             extra_env = set(st.get("env") or {}) - {"GH_TOKEN", "GITHUB_REPOSITORY"}
             if extra_env:
                 bad.append(f"{name}: a step sets env {sorted(extra_env)}: only GH_TOKEN and GITHUB_REPOSITORY may be set (PYTHONPATH and friends redirect the trusted checker)")
         for st in [x for x in jj.get("steps", []) if "run" in x]:
             run_text = str(st["run"])
+            if re.search(r"GITHUB_ENV|GITHUB_PATH|BASH_ENV|ENV=", run_text):
+                bad.append(f"{name}: a run step writes the job's environment or path (it could replace python3)")
             if re.search(r"--fixtures|--now\b|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONSAFEPATH=0", run_text):
                 bad.append(f"{name}: a run step passes a test-only flag or a Python path override (--fixtures, --now, PYTHONPATH): production runs never take fixtures")
             if re.search(r"(^|[;&|\n])\s*exit\s+(?!\$status\b)", run_text) or re.search(r"\|\|\s*true\b", run_text):
@@ -299,6 +310,11 @@ mut_wf("--min-days 0 is added", "differ from the ratified text", lambda d: [x.up
 mut_wf("a duplicated --base argument", "differ from the ratified text", lambda d: [x.update(run=x["run"].replace("--report-only", "--base ${{ github.event.pull_request.head.sha }} --report-only")) for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
 mut_wf("--report-only on the daily audit", "differ from the ratified text", lambda d: [x.update(run=x["run"] + " --report-only") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
 mut_wf("a secret indexed with brackets", "indexes secrets", lambda d: [x["env"].update(GH_TOKEN="${{ secrets['PAT'] }}") for x in J(d, "daily-audit")["steps"] if "pin-audit" in str(x.get("run", ""))])
+mut_wf("a step sets shell", "sets shell", lambda d: [x.update(shell='bash -c "true" {0}') for x in J(d, "pin-age")["steps"] if "run" in x][-1:])
+mut_wf("a step writes BASH_ENV", "writes the job's environment", lambda d: J(d, "pin-age")["steps"].insert(0, {"run": 'echo "BASH_ENV=/tmp/x" >> "$GITHUB_ENV"'}))
+mut_wf("the daily condition gains && false", "not exactly the ratified one", lambda d: J(d, "daily-audit").update({"if": "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && false"}))
+mut_wf("the artifact path widens", "artifact path is not exactly", lambda d: [x["with"].update(path=".github/workflows") for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
+mut_wf("hidden files are uploaded", "uploads hidden files", lambda d: [x["with"].update({"include-hidden-files": "true"}) for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
 mut_wf("a secret is used", "uses secrets", lambda d: J(d, "daily-audit")["steps"][-1].setdefault("env", {}).update(X="${{ secrets.PAT }}"))
 mut_wf("an unpinned action", "is not pinned to a commit digest", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "actions/checkout@v4"}))
 mut_wf("an action off the allowlist", "is not on the allowlist", lambda d: J(d, "pin-age")["steps"].insert(0, {"uses": "evil/action@" + "a" * 40}))

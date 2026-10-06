@@ -300,8 +300,8 @@ class LiveNet:
             return None
         adv = self._gh_json(f"advisories/{advisory_id}", strict=True)
         q = self._query(item, self._version_of(item) or "")
-        names = {package_of(item).lower(), item.name.lower()} | ({q["package"]["name"].lower()} if q else set())
-        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", []) if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() in names]
+        names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
+        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
         return rngs or None
 
     def covered(self, item):
@@ -335,7 +335,7 @@ class LiveNet:
                     adv = self._gh_json(f"advisories/{alias}", strict=True)
                     names = {_norm_name(q["package"]["name"]), _norm_name(item.name)}
                     rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
-                            if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() in names]
+                            if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
                     if adv and rngs:
                         ghs.append({"id": alias, "incident": v["id"], "affected": in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
         eco = {"actions": "actions", "PyPI": "pip", "Go": "go", "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
@@ -846,7 +846,11 @@ def rerun_held(gh, net, now):
             print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
             continue
         if rows and all(r[0] for r in rows):
-            gh.run("run", "rerun", str(pr["run_id"]))
+            try:
+                gh.run("run", "rerun", str(pr["run_id"]))
+            except Fail as e:
+                print(f"information: pull request #{pr.get('number')}: the re-run failed: {clean(e)}")
+                continue
             print(f"audit: pull request #{pr['number']} ({clean(pr['title'])}): every moved version is now {WAIT_DAYS} days old; re-ran its check")
             n += 1
     if not n:
@@ -1037,8 +1041,19 @@ def main(argv=None):
             ran = f.item.key in ran_keys
             owner = rb is None or rb == UNKNOWN or ran or bool(f.via)
             pending.append((f, rb, ran, owner))
+        by_prefix = {}
         for f, rb, ran, owner in pending:
-            plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
+            t = title_of(f)
+            if t[0] in by_prefix:        # same identity (e.g. two commits both labelled v4): one issue carrying both
+                e = by_prefix[t[0]]
+                e["body"] += "\n---\nAlso, at commit `%s`:\n\n%s" % (_safe(f.item.version, 80), body_of(f, rb, owner, ran, today))
+                e["owner"] = e["owner"] or owner
+                e["ids"] = sorted(set(e["ids"]) | set(f.ids))
+                e["title"] = (t[0], "%s (%s)" % (t[0], ", ".join(_safe(i) for i in e["ids"])))
+                continue
+            e = {"finding": f, "title": t, "body": body_of(f, rb, owner, ran, today), "owner": owner, "ids": list(f.ids)}
+            by_prefix[t[0]] = e
+            plan.append(e)
         for pkg, fs in sorted(disputes.items()):
             versions = sorted({x.item.label or x.item.version for x in fs})
             first = fs[0]

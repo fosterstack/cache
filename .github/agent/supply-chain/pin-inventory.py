@@ -40,10 +40,10 @@ INSTALLER_INPUTS = {
 # NOT here, on purpose (rule 1, amendment 2): actions/setup-go's go-version and go.mod's toolchain line; the standard library ships in our binary.
 _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
 _GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expression\}\}|\$\{var\}|[\w.\-+()]|\$(?!\{\{))+)")
-_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/")
+_GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
-_PIP_INSTALL = re.compile(r"\bpip3?\b(?:\s+-\S+(?:\s+(?!install\b)\S+)?)*\s+install\b([^\n]*)")
+_PIP_INSTALL = re.compile(r"\bpip[0-9.]*\b(?:\s+-\S+(?:\s+(?!install\b)\S+)?)*\s+install\b([^\n]*)")
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|\$\{var\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
@@ -254,6 +254,8 @@ def _step_items(node, out, labels):
                 tok = tok.strip("'\"")
                 if not tok.startswith("-") and "@" not in tok and re.fullmatch(r"[\w.\-]+\.[\w.\-]+/[\w.\-/]+", tok):
                     out.append(Item("gotool", tok, "(unversioned)"))     # go install with no @version: a placeholder, refused when added
+                elif not tok.startswith("-") and "$" in tok:
+                    out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             out.append(Item("tool", m.group(1), "latest"))
         for m in _DOCKER_CMD.finditer(run):
@@ -264,7 +266,7 @@ def _step_items(node, out, labels):
             if m:
                 out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
-            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3)))
+            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4)))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for m in _PIP_INSTALL.finditer(run):
             for p in _PIP_PIN.finditer(m.group(1)):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
@@ -282,7 +284,7 @@ def _step_items(node, out, labels):
                     continue
                 if re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*(\[[\w,.-]*\])?", tok) and not tok.startswith("-"):
                     out.append(Item("package", f"pypi/{tok.split('[')[0].lower().replace('_', '-')}", "(unpinned)"))  # no version at all: it cannot be proven, so adding one fails closed
-        if re.search(r"\bpip3?\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
+        if re.search(r"\bpip[0-9.]*\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
             for p in _REQ_PIN.finditer(run):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
 
@@ -341,8 +343,15 @@ def inventory(files):
                 _step({"run": ln}, found, {})
         elif path.endswith(".sh"):
             found = []
-            for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line, never the whole file
-                _step({"run": ln}, found, {})          # a script's go install / pip install / docker run / release download are measured like a run step's
+            joined = re.sub(r"\\\n\s*", " ", text).split("\n")
+            assigns = {}
+            for ln in joined:
+                am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
+                if am:
+                    assigns[am.group(1)] = am.group(2)
+            for ln in joined:   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
+                refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
+                _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})   # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
@@ -398,8 +407,8 @@ _UNMEASURED = [
     (re.compile(r"\bgh\s+(?:release\s+download|extension\s+install)\b"), "a gh release or extension download"),
     (re.compile(r"\bgit\s+(?:-\S+\s+)*(?:clone|submodule\s+update|fetch\s+\S*https?://|archive\s+--remote)\b"), "a git clone or remote fetch"),
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
-    (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
-    (re.compile(r"\bpip3?\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),
+    (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
+    (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
 
@@ -441,7 +450,9 @@ def unmeasured(files):
             if len(flat) > MAX_LINE:
                 raise RuntimeError(f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
-                if re.search(r"\b(?:curl|wget)\b", seg) and not (_GH_DOWNLOAD.search(_hide(seg)) or _GH_LATEST.search(seg)):
+                urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
+                plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
+                if re.search(r"\b(?:curl|wget)\b", seg) and not plain:
                     key = (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100])
                     out[key] = out.get(key, 0) + 1
             for rx, what in _UNMEASURED:
