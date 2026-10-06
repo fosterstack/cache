@@ -212,10 +212,39 @@ if min(_order) < 0 or _order != sorted(_order):
     bad.append("the notes PR step is out of order (notes, changelog, base, signed commit, PR, auto-merge)")
 if _call and crun.find('base=$(git rev-parse HEAD)') > crun.find("auditor-signed-commit.py"):
     bad.append("the base is derived after the commit")
-if not re.search(r'\[ -n "\$\(gh pr list --head "\$branch" --state open --json number --jq \'\.\[\]\.number\'\)" \] \|\| \\\n\s*gh pr create ', crun):
-    bad.append("the notes PR step is not re-runnable: an open PR for the branch must be reused before gh pr create")
-if '--head "$branch"' not in crun or "gh pr merge --auto --squash \"$branch\"" not in crun:
-    bad.append("the PR is not made from, and auto-merged for, the API-made branch")
+# review of #191 round 2 (B2/B3): the notes step is closed by an EXACT whitelist of its lines (comments and blank lines dropped, whitespace
+# normalised), so no other assignment form (indexed, +=, nameref, ${x:=}, read, declare) and no other PR selection can be added. The signed-commit
+# call's directory is normalised to @CLI@ (the agent-owned test binds it; the layout rule keeps that directory's name out of this file).
+_EXPECTED = r"""set -euo pipefail
+git fetch --no-tags origin "+refs/tags/${VERSION}:refs/tags/${VERSION}"
+git cat-file tag "$VERSION" | python3 bin/patch-decide.py tag-notes > "$RUNNER_TEMP/notes.md"
+python3 bin/patch-decide.py changelog --notes "$RUNNER_TEMP/notes.md" --changelog docs/quality/releases/CHANGELOG.md \
+--next-notes docs/next-release-notes.md
+branch="patch-notes/${VERSION}"
+base=$(git rev-parse HEAD)
+paths=(--path docs/quality/releases/CHANGELOG.md)
+[ ! -f docs/next-release-notes.md ] || paths+=(--path docs/next-release-notes.md)
+python3 @CLI@ --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
+--message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}"
+count=$(gh pr list --head "$branch" --base main --state open --json number --jq length)
+[ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
+if [ "$count" -eq 0 ]; then
+gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
+--body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
+fi
+number=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number')
+[[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
+gh pr merge --auto --squash "$number"
+"""
+_got = [re.sub(r"python3 \.github/[a-z]+/bin/auditor-signed-commit\.py", "python3 @CLI@", " ".join(l.split()))
+        for l in crun.splitlines() if l.strip()]
+if _got != _EXPECTED.splitlines():
+    _extra = [l for l in _got if l not in _EXPECTED.splitlines()]
+    _lost = [l for l in _EXPECTED.splitlines() if l not in _got]
+    bad.append("the notes PR step is not exactly the reviewed text (extra: %s; missing: %s; order or count differs: %s)"
+               % (_extra[:2], _lost[:2], not (_extra or _lost)))
+if len([st for st in psteps if st.get("run")]) != 1:
+    bad.append("the notes PR job has a run step other than the reviewed one")
 for st in psteps:
     u = str(st.get("uses", ""))
     if u and not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", u):
@@ -344,9 +373,33 @@ mutrun source-in-step          "$BASE" "source ./x.sh; $BASE"
 mutrun bash-c-in-step          "$BASE" "bash -c 'x'; $BASE"
 mutrun printf-v-branch         "$BASE" "printf -v branch main; $BASE"
 mutrun read-branch             "$BASE" "read -r branch <<< main; $BASE"
-mutrun not-rerunnable          '[ -n "$(gh pr list --head "$branch" --state open --json number --jq '"'"'.[].number'"'"')" ] || \
-' ''
-mutrun rerun-checks-any-state  '--state open' '--state all'
+PRL='gh pr list --head "$branch" --base main'
+MRG='gh pr merge --auto --squash "$number"'
+mutrun pr-list-no-base         "$PRL" 'gh pr list --head "$branch"'
+mutrun pr-list-other-base      "$PRL" 'gh pr list --head "$branch" --base release'
+mutrun pr-create-other-base    'gh pr create --base main' 'gh pr create --base release'
+mutrun pr-merge-by-branch      "$MRG" 'gh pr merge --auto --squash "$branch"'
+mutrun pr-merge-no-auto        "$MRG" 'gh pr merge --squash "$number"'
+mutrun pr-count-unchecked      '[ "$count" -le 1 ] ||' 'true ||'
+mutrun pr-number-unchecked     '[[ "$number" =~ ^[0-9]+$ ]] ||' 'true ||'
+mutrun pr-second-element       "'.[0].number'" "'.[1].number'"
+mutrun pr-always-create        '[ "$count" -eq 0 ]' 'true'
+mutrun pr-state-all            '--state open' '--state all'
+mutrun idx-branch              "$MRG" $'branch[0]="patch-notes/other"\n'"$MRG"
+mutrun idx-paths               "$MRG" $'paths[1]=x\n'"$MRG"
+mutrun idx-base                "$MRG" $'base[0]=x\n'"$MRG"
+mutrun assoc-branch            "$MRG" $'declare -A branch=([a]=b)\n'"$MRG"
+mutrun read-into-branch        "$MRG" $'read -r unused branch <<< x\n'"$MRG"
+mutrun read-anything           "$MRG" $'read x\n'"$MRG"
+mutrun plus-equals-branch      "$MRG" $'branch+=x\n'"$MRG"
+mutrun plus-equals-base        "$MRG" $'base+=x\n'"$MRG"
+mutrun nameref                 "$MRG" $'declare -n branch=other\n'"$MRG"
+mutrun default-assign-colon    "$MRG" $': "${branch:=x}"\n'"$MRG"
+mutrun default-assign-plain    "$MRG" $': "${branch=x}"\n'"$MRG"
+mutrun extra-line-anywhere     "$MRG" $'true\n'"$MRG"
+mutrun extra-gh-call           "$MRG" $'gh api -X DELETE repos/o/r/git/refs/heads/main\n'"$MRG"
+mutrun line-reordered          'set -euo pipefail' $'base=x\nset -euo pipefail'
+mutrun whitespace-only-ok-not  'set -euo pipefail' 'set -eo pipefail'
 case_ notes-no-prefix         bad "[s.__setitem__('run', s['run'].replace(' --prefix patch-notes/', '')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-other-prefix      bad "[s.__setitem__('run', s['run'].replace('--prefix patch-notes/', '--prefix auditor/')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
 case_ notes-two-prefixes      bad "[s.__setitem__('run', s['run'].replace('--prefix patch-notes/', '--prefix patch-notes/ --prefix auditor/')) for s in $N['steps'] if 'gh pr create' in (s.get('run') or '')]"
