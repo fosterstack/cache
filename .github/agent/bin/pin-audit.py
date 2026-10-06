@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -56,7 +57,7 @@ _POST = re.compile(r"(?i)^(post|p|rev|r)(?=\d|\.|-|_|$)")
 def _vt(v):
     """(release numbers without trailing zeros, class, suffix parts): class 0 = pre-release (before the final), 1 = final, 2 = post-release.
     1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.0.post1 is AFTER 1.0; 1.2 equals 1.2.0. A suffix of any other kind raises ValueError (callers read it as affected)."""
-    m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", str(v).strip(), re.I)
+    m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", str(v).split("+", 1)[0].strip(), re.I)  # build metadata (+build.1) does not order versions
     if not m:
         raise ValueError(f"not a version: {v}")
     nums = [int(x) for x in m.group(1).split(".")]
@@ -138,7 +139,13 @@ class FixtureNet:
         return list(d.get("github") or []), list(d.get("osv") or [])
 
     def covered(self, item):
-        return True
+        return item.key not in (self.fx.get("uncovered") or [])
+
+    def version_of(self, item):
+        return version_of(item)
+
+    def open_pr_items(self):
+        return [(p["number"], [inv.Item(*_split_key(k)) for k in p.get("items", [])]) for p in (self.fx.get("open_prs") or [])]
 
     def live_ranges(self, item, source, advisory_id):
         return (self.fx.get("live_ranges") or {}).get(advisory_id)
@@ -223,6 +230,20 @@ class LiveNet:
                 return vulns
         raise Fail("the OSV query has more than 20 pages")
 
+    def _osv_get(self, advisory_id):
+        try:
+            with urllib.request.urlopen(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(advisory_id)}", timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None  # OSV does not hold this incident
+            raise Fail(f"the OSV lookup of {advisory_id} failed: HTTP {e.code}")
+        except (OSError, ValueError) as e:
+            raise Fail(f"the OSV lookup of {advisory_id} failed: {type(e).__name__}")
+
+    def version_of(self, item):
+        return self._version_of(item)
+
     def _version_of(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):
             tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]
@@ -299,7 +320,7 @@ class LiveNet:
                         if x.get("vulnerable_version_range") and (x.get("package") or {}).get("name", "").lower() == pkg.lower()]
                 if rngs and in_range(version, "|".join(rngs)):
                     ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"), "malicious": adv.get("type") == "malware"})
-                    rec = age._http_json(f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(adv['ghsa_id'])}")
+                    rec = self._osv_get(adv["ghsa_id"])
                     if rec and rec.get("id"):  # OSV knows this incident too: its own verdict for this version decides whether the lists AGREE
                         osv.append({"id": rec["id"], "incident": adv["ghsa_id"], "affected": self._osv_says(rec, pkg, version, versioned=False),
                                     "modified": rec.get("modified"), "malicious": rec["id"].startswith("MAL-")})
@@ -311,15 +332,20 @@ class LiveNet:
         entries = [a for a in v.get("affected", []) if (a.get("package") or {}).get("name", "").lower() == name.lower()] or v.get("affected", [])
         judged = False
         for a in entries:
-            if version in (a.get("versions") or []):
-                return True
+            for ev in (a.get("versions") or []):
+                try:
+                    if _cmp(version, ev) == 0:
+                        return True
+                except ValueError:
+                    if str(version) == str(ev):
+                        return True
             for rg in a.get("ranges", []):
                 if rg.get("type") in ("SEMVER", "ECOSYSTEM"):
                     judged = True
                     if covered_by_events(version, rg.get("events", [])):
                         return True
-        if not judged and any(rg.get("type") == "GIT" for a in entries for rg in a.get("ranges", [])):
-            return True  # a record that only has commit ranges cannot be judged by version: unresolved, never "not affected"
+        if not versioned and any(rg.get("type") == "GIT" for a in entries for rg in a.get("ranges", [])):
+            return True  # a commit range cannot be judged by version: unresolved is never "not affected", whatever the other ranges say
         return versioned and not judged  # a versioned query already filtered by version; with no ranges to read, trust it
 
     def upstream(self, item):
@@ -409,7 +435,28 @@ class LiveNet:
                 elif ref and ref.get("object", {}).get("type") == "tag":
                     t = self._gh_json(f"repos/{repo}/git/tags/{ref['object']['sha']}")
                     sha = (t or {}).get("object", {}).get("sha")
-            out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "_item": inv.Item(item.kind, item.name, r["tag_name"], r["tag_name"])})
+            cand = inv.Item(item.kind, item.name, sha, r["tag_name"]) if (item.kind == "action" and sha) else inv.Item(item.kind, item.name, r["tag_name"], r["tag_name"])
+            out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "_item": cand})
+        return out
+
+    def open_pr_items(self):
+        """(number, [moved items]) for every open pull request, forks included: what each PR adds over its base."""
+        repo = os.environ.get("GITHUB_REPOSITORY")
+        if not repo:
+            return []
+        out = []
+        for p in self._gh_json(f"repos/{repo}/pulls?state=open&per_page=100", strict=True) or []:
+            tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+            hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
+            f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
+            if f.returncode:
+                continue
+            try:
+                mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
+                items = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["head"]["sha"])) if mb else []
+            except RuntimeError:
+                continue
+            out.append((p["number"], items))
         return out
 
     def prs(self):
@@ -509,15 +556,15 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
     Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
     an exception never covers a version the authoritative source lists as affected)."""
-    ver = version_of(item)
+    ver = net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        if not all(e["modified"].get(i) and current.get(i) == e["modified"][i] for i in e["ids"]):
+        if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged
-        if any(e.get("osv_modified", {}).get(i) != t for i, t in (osv_times or {}).items() if i in e["ids"]):
-            continue
+        if any(t is None or e.get("osv_modified", {}).get(i) != t for i, t in (osv_times or {}).items() if i in e["ids"]):
+            continue  # unknown is not unchanged: a missing time refuses
         if not ver:
             return None  # no version to compare with the ranges: stays disputed
         # the ruling verifies itself (advisor 0182): its copied ranges must equal the authoritative advisory's LIVE ranges, or a wrong entry could hide a hit
@@ -534,6 +581,7 @@ class Finding:
     def __init__(self, item, kind, ids, why, disputed=False):
         self.item, self.kind, self.ids, self.why, self.disputed = item, kind, sorted(set(ids)), why, disputed
         self.via = None  # the pinned action that calls this one
+        self.pr = None   # the open pull request this pin was found in (not merged yet)
 
 
 def judge(item, net, exceptions, notes, current=True):
@@ -683,7 +731,7 @@ def file_issues(gh, plan, today):
         if title in done:
             continue
         done.add(title)
-        existing = next((i for i in open_issues if str(i.get("title", "")) == title), None)
+        existing = next((i for i in open_issues if str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " (")), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
             path = f.name
@@ -796,6 +844,16 @@ def main(argv=None):
             for fs, n2 in pool.map(one, audited):
                 findings += fs
                 notes += n2
+        if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
+            seen_keys = {i.key for i in audited}
+            for number, items in net.open_pr_items():
+                for it in items:
+                    if it.key in seen_keys:
+                        continue
+                    seen_keys.add(it.key)
+                    for f in judge(it, net, exceptions, notes, current=True):
+                        f.pr = number
+                        findings.append(f)
         # actions and images INSIDE the actions we pin (depth 3): listed when on a moving tag, and checked against the same advisory lists
         seen = {it.key for it in audited} | set(head)
         queue = [(it, 0) for it in (audited if a.base else head.values()) if it.kind == "action"]
@@ -829,15 +887,23 @@ def main(argv=None):
             queue = nxt
         for n in notes:
             print(f"audit: {n}")
-        plan, disputes = [], {}
+        plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
-            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {f.item.key} ({', '.join(f.ids)}): {f.why}" + (f" [inside {f.via}]" if f.via else ""))
+            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault((package_of(f.item), tuple(f.ids)), []).append(f)
                 continue
+            if (f.item.key, f.via) in per_item:  # several incidents on one pinned item: one finding, every id
+                g = per_item[(f.item.key, f.via)]
+                g.ids = sorted(set(g.ids) | set(f.ids))
+                g.why += "; " + f.why
+                continue
+            per_item[(f.item.key, f.via)] = f
             rb = None if f.via else rollback(f.item, net, now)
             ran = f.item.key in ran_keys
             owner = rb is None or rb == UNKNOWN or ran or bool(f.via)
+            pending.append((f, rb, ran, owner))
+        for f, rb, ran, owner in pending:
             plan.append({"finding": f, "title": title_of(f), "body": body_of(f, rb, owner, ran, today), "owner": owner})
         for (pkg, ids), fs in sorted(disputes.items()):
             versions = sorted({x.item.label or x.item.version for x in fs})
@@ -849,7 +915,9 @@ def main(argv=None):
             if not a.report_only:
                 file_issues(gh, plan, today)
             return 1
-        print(f"audit: no known-compromised versions as of {today}" + (f" ({len(notes)} disputed hit(s) covered by a checked-in exception)" if notes else ""))
+        unchecked = [i for i in audited if not net.covered(i)]
+        print(f"audit: no known-compromised versions as of {today}" + (f" ({len(notes)} disputed hit(s) covered by a checked-in exception)" if notes else "")
+              + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
         print(f"audit: cannot do its job: {e}", file=sys.stderr)

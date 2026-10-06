@@ -399,6 +399,26 @@ whats = {w for _, w in inv.unmeasured(f)}
 assert whats == {"a package-manager install", "an apt install", "a gh release download", "a pip install from a URL", "a download from a non-release URL"}, whats
 PY
 
+CASE="inventory: docker run with a quoted image, with --cpus 2, and bare pip install names are items; a range, (unpinned) or an expression is NEVER a pin that can pass the age check"
+check python3 - "$here/../bin/pin-inventory.py" "$chk" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+got = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - run: |\n          docker run --rm \"alpine:3.99\" true\n          docker run --cpus 2 --memory 1g busybox:1.36 true\n          pip install requests flask[async]\n"})
+for k in ("image:alpine:3.99@", "image:busybox:1.36@", "package:pypi/requests@(unpinned)", "package:pypi/flask@(unpinned)"):
+    assert k in got, (k, sorted(got))
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+now = dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+for v in (">=2.0", "(unpinned)", "latest", "${{expression}}"):
+    ok, why, _ = ac.judge_item(inv.Item("package", "pypi/p", v), [("2020-01-01T00:00:00Z", "pypi"), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert not ok and "not a pin" in why, (v, why)
+PY
+CASE="inventory: a subdirectory taken from untrusted action metadata is redacted like every other part of a key"
+check python3 - "$here/../bin/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+assert "PRIVATE_CANARY" not in inv.Item("action", "o/r", "a" * 40, "", "x/${{secrets.PRIVATE_CANARY}}").key
+PY
+
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
 cat >"$work/stubbin/gh" <<'STUB'

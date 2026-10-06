@@ -61,6 +61,8 @@ def parse_time(s):
 
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
+    if re.match(r"^(>=|<=|~=|!=|>|<|latest$|\(unpinned\)$)", item.version or "") or "${{" in (item.version or ""):
+        return False, f"not a pin: {item.version!r} is a range, a moving name or an expression, so it has no age", None
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
@@ -227,7 +229,7 @@ def observed():
                 try:
                     state = tobs.unpack(raw)
                 except Exception as e:  # a state that exists but cannot be read is loud, never "nothing observed"
-                    raise CouldNotLook(f"the tag observations of run {run['id']} cannot be read: {type(e).__name__}")
+                    raise CouldNotLook(f"the tag observations of a scheduled run cannot be read: {type(e).__name__}")
                 break
     _OBS["state"] = state  # None: runs that predate the artifact, or none yet: nothing observed, so ages only get younger
     return state

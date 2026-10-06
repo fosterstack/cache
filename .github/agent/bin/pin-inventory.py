@@ -12,6 +12,7 @@ NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
 import fnmatch
+import shlex
 import json
 import re
 import subprocess
@@ -60,7 +61,7 @@ def _hide(text):
 
 class Item:
     def __init__(self, kind, name, version, label="", path=""):
-        self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), path  # path: an action's subdirectory
+        self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
 
     @property
     def key(self):
@@ -144,17 +145,22 @@ def _uses(u, node, out, labels):
 
 
 _DOCKER_CMD = re.compile(r"\bdocker\s+(?:run|pull|create)\b([^\n;&|]*)")
-_DOCKER_VALUE_OPTS = {"-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
+_DOCKER_VALUE_OPTS = {"--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
                       "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull"}
 
 
 def _docker_images(cmd_args):
-    """The image of a docker run/pull/create: the first argument that is not an option or an option's value."""
-    toks, i = cmd_args.split(), 0
+    """The image of a docker run/pull/create: the first argument that is not an option or an option's value (quotes read as a shell would)."""
+    try:
+        toks = shlex.split(cmd_args)
+    except ValueError:
+        toks = cmd_args.split()
+    i = 0
     while i < len(toks):
         t = toks[i]
         if t.startswith("-"):
-            i += 2 if (t in _DOCKER_VALUE_OPTS and "=" not in t) else 1
+            takes = (t in _DOCKER_VALUE_OPTS and "=" not in t) or (i + 1 < len(toks) and re.fullmatch(r"[\d.]+[kmgb]?", toks[i + 1]) is not None and "=" not in t and t.startswith("--"))
+            i += 2 if takes else 1
             continue
         return [t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) and "$" not in t else []
     return []
@@ -181,6 +187,10 @@ def _step(node, out, labels):
             for p in _PIP_PIN.finditer(m.group(1)):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", ver))
+        for m in _PIP_INSTALL.finditer(run):
+            for tok in m.group(1).split():
+                if re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*(\[[\w,.-]*\])?", tok) and not tok.startswith("-"):
+                    out.append(Item("package", f"pypi/{tok.split('[')[0].lower().replace('_', '-')}", "(unpinned)"))  # no version at all: it cannot be proven, so adding one fails closed
         if re.search(r"\bpip3?\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
             for p in _REQ_PIN.finditer(run):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))

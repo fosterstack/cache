@@ -552,6 +552,49 @@ class N:
 assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N(), now)["version"] == "v2"
 PY
 
+GH_LIST='[{"number": 60, "state": "OPEN", "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run alias "$(python3 - "$HIT_GH" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); d["lists"]["action:actions/checkout@" + "1" * 40]["osv"] = [{"id": "GO-2026-0001", "incident": "INC-1", "affected": True, "modified": "2026-01-01T00:00:00Z"}]
+d["lists"]["action:actions/checkout@" + "1" * 40]["github"][0]["incident"] = "INC-1"; print(json.dumps(d))
+PY
+)" "$work/r-cur"
+CASE="ONE issue per pinned item: the same incident reported under another advisory id (an alias) updates the existing issue and its title, it never opens a second"
+check test "$(creates "$work/alias.gh")" -eq 0; check grep -q '"issue", "edit", "60"' "$work/alias.gh"
+OPENPR="{\"lists\": {\"action:actions/cache@v9\": {\"github\": [{\"id\": \"GHSA-pr-pr-pr\", \"incident\": \"INC-P\", \"affected\": true, \"modified\": \"2026-01-01T00:00:00Z\"}], \"osv\": []}}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [], \"open_prs\": [{\"number\": 77, \"items\": [\"action:actions/cache@v9\"]}]}"
+run openpr "$OPENPR" "$work/r-clean"
+CASE="the daily run also audits the pins of OPEN pull requests: a hit that exists only in an unmerged PR still reaches a supply-chain-hit issue, which names the PR"
+check test "$rc" -eq 1; check test "$(creates "$work/openpr.gh")" -eq 1; check grep -q 'GHSA-pr-pr-pr' "$work/openpr.gh.bodies"
+run uncov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [], \"uncovered\": [\"$ITEM_TRIVY\"]}" "$work/r-clean"
+CASE="the clean line says what it did NOT check: an item with no advisory source is counted in the same line, never silently included in 'no known-compromised'"
+check test "$rc" -eq 0; check grep -q 'no known-compromised versions as of 2026-10-05; 1 of [0-9]* item(s) have no advisory source and were not checked' "$work/uncov.out"
+CASE="a reverse OSV lookup that fails (HTTP 500, a timeout) fails the run; only a 404 means OSV does not hold the incident"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.error, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet(["false"], ".")
+def boom(code):
+    def f(*a, **k): raise urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(b""))
+    return f
+urllib.request.urlopen = boom(404); assert net._osv_get("GHSA-x") is None
+urllib.request.urlopen = boom(500)
+try: net._osv_get("GHSA-x")
+except pa.Fail: pass
+else: raise AssertionError("a 500 was read as absent")
+PY
+CASE="exceptions refuse on unknown times (None is not unchanged) and use the version the net resolves (the most specific tag), not a coarse label"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+it = pa.inv.Item("action", "o/r", "a" * 40, "v3")
+class N:
+    def live_ranges(self, i, s, a): return [">= 3.26.11, <= 3.28.2"]
+    def version_of(self, i): return "v3.27.0"
+e = {"ids": ["A"], "package": "o/r", "authoritative": {"source": "GitHub", "id": "A", "ranges": [">= 3.26.11, <= 3.28.2"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "hit", "the precise tag v3.27.0 is inside the range"
+assert pa.excepted(it, {"A"}, {"A": None}, [e], N(), {}) is None
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [dict(e, osv_modified={"A": None})], N(), {"A": None}) is None
+PY
+
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
 GH_FAIL="issue create" run ghfail "$HIT_GH" "$work/r-cur"
 CASE="gh failing while opening the issue fails the run (exit 2): a lost hit is never a quiet success"
