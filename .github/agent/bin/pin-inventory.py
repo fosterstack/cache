@@ -40,10 +40,10 @@ _GO_INSTALL = re.compile(r"\bgo\s+install\b([^\n;&|]*)")
 _GO_TARGET = re.compile(r"(?<![\w.\-/@])([\w.\-/]+)@((?:\$\{\{.*?\}\}|[\w.\-+$(){}])+)")
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/v?((?:\$\{\{.*?\}\}|[\w.+$(){}-])+)/")
 _PIP_INSTALL = re.compile(r"\bpip3?\s+install\b([^\n]*)")
-_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)==((?:\$\{\{.*?\}\}|[^\s\\;'\"])+)")
+_PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{.*?\}\}|[^\s\\;'\",])+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
-_REQ_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)", re.M)
+_REQ_PIN = re.compile(r"^[ \t]*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?==([^\s;\\]+)", re.M)
 WORKFLOW_GLOBS = (".github/workflows/*.yml", ".github/workflows/*.yaml", ".github/actions/*/action.yml", ".github/actions/*/action.yaml",
                   ".github/actions/*/*/action.yml", ".github/actions/*/*/action.yaml")
 
@@ -62,7 +62,8 @@ class Item:
 
     @property
     def key(self):
-        return f"{self.kind}:{self.name}@{self.version}"
+        sub = f"/{self.path}" if self.path else ""
+        return f"{self.kind}:{self.name}{sub}@{self.version}"
 
     def __repr__(self):
         return self.key
@@ -132,21 +133,42 @@ def _uses(u, node, out, labels):
                 out.append(_image_item(val) if tool is None else Item("tool", tool, val))
 
 
+_DOCKER_CMD = re.compile(r"\bdocker\s+(?:run|pull|create)\b([^\n;&|]*)")
+_DOCKER_VALUE_OPTS = {"-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
+                      "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull"}
+
+
+def _docker_images(cmd_args):
+    """The image of a docker run/pull/create: the first argument that is not an option or an option's value."""
+    toks, i = cmd_args.split(), 0
+    while i < len(toks):
+        t = toks[i]
+        if t.startswith("-"):
+            i += 2 if (t in _DOCKER_VALUE_OPTS and "=" not in t) else 1
+            continue
+        return [t] if re.fullmatch(r"[\w.\-/:]+(@sha256:[0-9a-f]{64})?", t) and "$" not in t else []
+    return []
+
+
 def _step(node, out, labels):
     """A step (or a job-level reusable-workflow call): `uses` and `run` mean something only here; the same word in `env:` or `with:` is data."""
     if isinstance(node.get("uses"), str):
         _uses(node["uses"], node, out, labels)
     run = node.get("run")
     if isinstance(run, str):
-        run = re.sub(r"\\\n\s*", " ", run)  # a backslash continuation is one command
+        run = _hide(re.sub(r"\\\n\s*", " ", run))  # a backslash continuation is one command; an expression becomes a placeholder before any pattern can cut it
         for m in _GO_INSTALL.finditer(run):
             for t in _GO_TARGET.finditer(m.group(1)):
                 out.append(Item("gotool", t.group(1), t.group(2)))
+        for m in _DOCKER_CMD.finditer(run):
+            for img in _docker_images(m.group(1)):
+                out.append(_image_item(img))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version
             out.append(Item("tool", m.group(1), m.group(2)))
         for m in _PIP_INSTALL.finditer(run):
-            for p in _PIP_PIN.finditer(m.group(1)):
-                out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
+            for p in _PIP_PIN.finditer(m.group(1)):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
+                ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
+                out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", ver))
         if re.search(r"\bpip3?\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
             for p in _REQ_PIN.finditer(run):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))

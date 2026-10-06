@@ -1,5 +1,5 @@
 {
-  "_format": "One entry per advisor ruling: ONE advisory incident and ONE package (REQ-SUP-001-AC10; advisor 0179). ids: every advisory id involved. authoritative: the source ruled correct for this incident, one of its ids, and its affected ranges verbatim in GitHub range syntax ('|' between alternatives is OR, ',' is AND); a version inside them is a hit, outside passes. modified: each id's last-modified time when ruled (GitHub's for a GHSA id, OSV's otherwise); the entry lapses the moment any differs. Same format and semantics as the ops repo's docs/supply-chain-exceptions.json.",
+  "_format": "One entry per advisor ruling: ONE advisory incident and ONE package (REQ-SUP-001-AC10; advisor 0179). ids: every advisory id involved. authoritative: the source ruled correct for this incident, one of its ids, and its affected ranges verbatim in GitHub range syntax ('|' between alternatives is OR, ',' is AND); a version inside them is a hit, outside passes. modified: each id's last-modified time when ruled (GitHub's for a GHSA id, OSV's otherwise); the entry lapses the moment any differs. Same format and semantics as the ops repo's docs/supply-chain-exceptions.json. osv_modified (optional): OSV's own last-modified time for an id both databases hold; required for such an id.",
   "exceptions": [
     {
       "ids": [
@@ -46,6 +46,9 @@
       "date": "2026-10-05",
       "modified": {
         "GHSA-vqf5-2xx6-9wfm": "2025-03-31T21:55:43Z"
+      },
+      "osv_modified": {
+        "GHSA-vqf5-2xx6-9wfm": "2026-04-01T17:41:21.034151Z"
       }
     }
   ]

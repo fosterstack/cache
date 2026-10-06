@@ -71,7 +71,7 @@ elif a[:2] in (["issue", "create"], ["issue", "edit"]):
         sys.stderr.write("gh: empty body\n"); sys.exit(1)
     open(os.environ["GH_LOG"] + ".bodies", "a").write(open(bf).read() + "\n=====\n")
     if a[1] == "create": print("https://github.com/x/y/issues/9")
-elif a[:2] in (["label", "create"], ["run", "rerun"]):
+elif a[:2] in (["label", "create"], ["run", "rerun"], ["issue", "reopen"]):
     pass
 else:
     sys.stderr.write("gh: unexpected call " + " ".join(a) + "\n"); sys.exit(1)
@@ -178,7 +178,7 @@ import glob, json, sys
 for p in glob.glob(sys.argv[1] + "/*.gh"):
     for l in open(p):
         c = json.loads(l)
-        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["label", "create"], ["run", "rerun"]), (p, c)
+        assert c[:2] in (["issue", "list"], ["issue", "create"], ["issue", "edit"], ["issue", "reopen"], ["label", "create"], ["run", "rerun"]), (p, c)
         if c[:2] == ["run", "rerun"] and "held" not in p:
             raise AssertionError("a run rerun without --rerun-held: " + p)
 PY
@@ -501,6 +501,55 @@ s = t.update_state(None, {"o/r@v1": "a" * 40}, "2026-01-01T00:00:00Z")
 s = t.update_state(s, {"o/r@v1": "b" * 40}, "2026-02-01T00:00:00Z")
 assert t.first_seen(s, "o/r", "v1", "a" * 40) == "2026-01-01T00:00:00Z" and t.first_seen(s, "o/r", "v1", "b" * 40) == "2026-02-01T00:00:00Z"
 assert t.unpack(t.pack(s)) == s
+PY
+
+CASE="a version this check cannot order, and a record with only commit ranges, are read as AFFECTED (never as safe); post-releases sort after the final"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+assert pa.in_range("1.0.0-zzz", "< 1.0.0") and pa.in_range("1.0.post1", "> 1.0, < 1.1") and not pa.in_range("1.0.post1", "< 1.0") and pa.in_range("1.0.0-rc.1", "< 1.0.0")
+assert pa.LiveNet._osv_says({"affected": [{"package": {"name": "o/r"}, "ranges": [{"type": "GIT", "events": [{"introduced": "0"}]}]}]}, "o/r", "v1", versioned=False)
+PY
+python3 - "$DISPUTE" "$work/dispute-bothdb.json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); t = d["lists"]["tool:trivy@0.74.0"]
+t["github"] = [{"id": "GO-2026-4919", "incident": "INC-T", "affected": False, "modified": "2026-09-02T00:00:00Z"}]  # the same id in BOTH databases
+json.dump(d, open(sys.argv[2], "w"))
+PY
+CASE="an id both databases hold needs OSV's own time recorded in the SAME entry (osv_modified): another entry's time is never borrowed, and a missing one lapses the ruling"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+it = pa.inv.Item("tool", "trivy", "0.74.0")
+net = type("N", (), {"live_ranges": lambda self, i, s, a: ["= 0.69.4"]})()
+e = {"ids": ["A"], "package": "trivy", "authoritative": {"source": "GitHub", "id": "A", "ranges": ["= 0.69.4"]}, "modified": {"A": "t1"}, "evidence": ["x"], "date": "d", "ruling": "r"}
+other = dict(e, package="other", osv_modified={"A": "t2"})
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], net, {"A": "t2"}) is None, "no osv_modified in THIS entry"
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [other, e], net, {"A": "t2"}) is None, "another entry's time must not be borrowed"
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [dict(e, osv_modified={"A": "t2"})], net, {"A": "t2"}) == "pass"
+assert pa.excepted(it, {"A"}, {"A": "t1"}, [dict(e, osv_modified={"A": "t2"})], net, {"A": "t3"}) is None, "OSV's copy changed"
+PY
+GH_LIST='[{"number": 50, "state": "CLOSED", "title": "supply-chain: actions/checkout@v4.1.0 (GHSA-aaaa-bbbb-cccc)"}]' run reopen "$HIT_GH" "$work/r-cur"
+CASE="a hit whose issue was CLOSED is found again: that issue is updated and reopened, never a second issue"
+check test "$rc" -eq 1; check test "$(creates "$work/reopen.gh")" -eq 0
+check python3 - "$work/reopen.gh" <<'PY'
+import json, sys
+calls = [json.loads(l) for l in open(sys.argv[1])]
+assert any(c[:3] == ["issue", "reopen", "50"] for c in calls) and any(c[:3] == ["issue", "edit", "50"] for c in calls), calls
+PY
+CASE="a rollback candidate must itself be provably old: a candidate whose own proofs say too young is skipped, the next older clean one is chosen"
+check python3 - "$aud" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+now = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
+old = lambda d: (now - dt.timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+class N:
+    def versions(self, item):
+        return [{"version": "v3", "sha": None, "published": old(30), "_item": pa.inv.Item("action", "o/r", "3" * 40, "v3")},
+                {"version": "v2", "sha": None, "published": old(60), "_item": pa.inv.Item("action", "o/r", "2" * 40, "v2")}]
+    def lists(self, item): return [], []
+    def proofs(self, item, base=None): return [(old(2), "observer")] if item.version[0] == "3" else [(old(50), "observer")]
+assert pa.rollback(pa.inv.Item("action", "o/r", "x" * 40, "v4"), N(), now)["version"] == "v2"
 PY
 
 # --- failure modes: loud, never a quiet pass -----------------------------------------------------------------------------------------------------------------------
