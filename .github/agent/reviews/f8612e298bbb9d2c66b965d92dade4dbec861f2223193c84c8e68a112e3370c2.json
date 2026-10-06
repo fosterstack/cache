@@ -1,0 +1,363 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "f8612e298bbb9d2c66b965d92dade4dbec861f2223193c84c8e68a112e3370c2",
+ "change": "REQ-SUP-001 the actions supply-chain checks: 7-day age gate on every pin (server-side times only), daily advisory/malware audit with one issue per hit, exceptions in the shared ops format, held-PR re-runs, tag observer -- PR #183",
+ "reviewed_commit": "8637de29a37b07d7fbd611fc7819583b233e17f4",
+ "closed_commit": "8637de29a37b07d7fbd611fc7819583b233e17f4",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "phase 1 round 1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 5,
+     "evidence_sha256": "26ba4b909193fd5dc2505221014d163231ec176d387f79254f8c543bfb96f2be"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 15,
+     "evidence_sha256": "8778eeb30044e2b2f0a19820decaa33623d56c05d946f3254ab2597cfec249ee"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 1 round 2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "b0fbc3072a86ece28f229f5d4c0e2251036c4f1ed9b83ae562de595e0b737e17"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 15,
+     "evidence_sha256": "fd646f3ac1f86faa1eff615fa0bd5f16704e2dd66a9de2341f5013467c0a9229"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "phase 1 round 3",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "0e17a27ec19d1881b79a8014ccbc4aec652526a128fa7372254fac3c9d711df5"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 14,
+     "evidence_sha256": "50d02cd663e58f433d8a61134987e77e2fe60512264726e73fbf0bd8f43522da"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "phase 1 round 4",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 4,
+     "evidence_sha256": "88e8fc1812bd37585068f692e3eac16276a4bc3eed336a533caaf36a84fc0209"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 12,
+     "evidence_sha256": "3549851f804d9faf13f2a9da858059210b79c88caff88c1763e15027c767ecab"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "phase 1 round 5",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 4,
+     "evidence_sha256": "019054e70ac1e30452f2389ecf44a605a1bf0999969e893be3c0692300e2dd2c"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 11,
+     "evidence_sha256": "868df4305ca542970617c5674c467c47ad9a9b98ab52479278fa8805ebc55782"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "label": "phase 1 round 6",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "376bf32a430fcbbcd78293ced878d67821f3337072ccba5f69cc96de0fb0c6ca"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 11,
+     "evidence_sha256": "862e9945e3079d14350893420a00faaab77d6e95645d3ed1adcc22cfaa9c5dcd"
+    }
+   }
+  },
+  {
+   "round": 7,
+   "label": "phase 1 round 7",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 4,
+     "evidence_sha256": "bec762a769205c860332b5c66a430eb0914ac17070e198c69fca5752e8165b27"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "label": "phase 1 round 8",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 3,
+     "evidence_sha256": "38af4581df231f8da21ce2f9a44daf9271c3b06087998fdefa4473d3e47c7c5c"
+    }
+   }
+  },
+  {
+   "round": 9,
+   "label": "phase 1 round 9",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "73c02511b7ad2e4c5479de486334b93024a876ba20c9a9a2ec5e9b51a0ce96f6"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "label": "phase 1 round 10",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "eb7d46b602935127c7cae69cef3893c063562358b7d5d45a89f3b70542ba4be5"
+    }
+   }
+  },
+  {
+   "round": 11,
+   "label": "phase 1 round 11",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "a9bc4adc6473206e97b7a8e8b55eda9f40104e1bdf60ad9c51bc577abe80af41"
+    }
+   }
+  },
+  {
+   "round": 12,
+   "label": "phase 1 round 12",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "aa174f76282b03ec4a083790660a3b613f9b0f1f96969ba2e35e47f65a9d6c58"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 12,
+     "evidence_sha256": "5eaf18e655c47fd012a4534a2fdd38b87908a1c06aa341d5662b4b39177de51d"
+    }
+   }
+  },
+  {
+   "round": 13,
+   "label": "phase 1 round 13",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 2,
+     "evidence_sha256": "e469c91df6881d69948ecfe9b0945f42e92948df5ab5a325695d1fc792c609c3"
+    }
+   }
+  },
+  {
+   "round": 14,
+   "label": "phase 1 round 14",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 3,
+     "evidence_sha256": "a6ee0ed9dba833de06b35fe4bdc54e9020f4accdcf46149571ecad113f9403fd"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 12,
+     "evidence_sha256": "97f68c70a8c15e9a7b18d609ecb60b49ef362f88066b048e13f09b4aa5501309"
+    }
+   }
+  },
+  {
+   "round": 15,
+   "label": "phase 1 round 15",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 3,
+     "evidence_sha256": "9b14cb14ca64894ec58467eb6122292eb2d6ed9122811a4af26fdf38a67c5236"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 11,
+     "evidence_sha256": "c0ec7eaf734c09a1dc7bdeaedb7870557a3ee64b450367870f832b630020fa24"
+    }
+   }
+  },
+  {
+   "round": 16,
+   "label": "phase 1 round 16",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "77a9b8c25fad8f536751b2fc6de4aa2ecb13e9e7b88b4b9681df34ee23cc3dd9"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 9,
+     "evidence_sha256": "4ac004b5789d7b526e0a6cd87745c3b2e59029963d45fe1572465bc3325d79da"
+    }
+   }
+  },
+  {
+   "round": 17,
+   "label": "phase 1 round 17",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "6a606307a1575ee6e431bb8e50c8613e1d29e38c41673df8d45ea4065340db05"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 11,
+     "evidence_sha256": "5823075db2a11eb2fecf9f2ed1bcfd9ed39f5d93fb166abcf799118795fead44"
+    }
+   }
+  },
+  {
+   "round": 18,
+   "label": "phase 1 round 18",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "03a364dc052575a873d4ccddfc0a96a8e6e00dcae1bd87e9a71c4d0ca8407355"
+    }
+   }
+  },
+  {
+   "round": 19,
+   "label": "phase 2 R1 split (Sonnet green)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b4aeb76b9ac505c5c1dd169cf90e9907acc110e7975ec4416c68fa7493ac4be8"
+    }
+   }
+  },
+  {
+   "round": 20,
+   "label": "phase 2 R2 independent re-review",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "da2c5512e216d6884356838633f92d2bbf5faca100ba022ea87aed7a1ba547a2"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 7,
+     "evidence_sha256": "85b19cb7d0b14f69aeb35e58462e3ac02782525e1871e8ac4a229212f4d7fbd2"
+    }
+   }
+  },
+  {
+   "round": 21,
+   "label": "phase 2 R3 consultation",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "86e70daa53dc22e78e8d979284219a22d0e59f4cdf485bffa7da37405a54e0c6"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 10,
+     "evidence_sha256": "79d38793f31597508a05d01e74fafd7b804414e67c354d6e547cdb6adcfd84a1"
+    }
+   }
+  },
+  {
+   "round": 22,
+   "label": "phase 2 R4 debate",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "638d1c56cd1e0265c92c96326f383146d89450cdb084e9ab5302647b72a1684b"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 7,
+     "evidence_sha256": "907464c0f147b8dcf6ff99514a6810a84d6d3b71c74e6ab4bbfc5aff1d63680e"
+    }
+   }
+  },
+  {
+   "round": 23,
+   "label": "phase 2 R5 fixes verified",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "1e510cf9844e471c676ee8543771cd917287dee98816c6a367577bfea69686f6"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "e7822eac19b10403e2ec6507f9b6de4581fdafba121e833d9d84e43fbaf99c63"
+    }
+   }
+  },
+  {
+   "round": 24,
+   "label": "verification of the R5 fix (both green)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "92034dc07195643c90c4c4d2710ad8f22d4e59827cb47b83c52c84e087aef0b3"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "52d0b90a7103cbd2e5087382c20014180b5368c54dbc45c2b3abada588b3eb3a"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "advisory coverage for digest images and python/java/node installers is information (advisor 0194), counted in the clean line",
+  "required-check wiring: pin-age joins the ruleset when the owner applies it; a PR-authored workflow can skip its own step (standard pull_request behaviour); bootstrap fallback runs the PR's checker only while the base lacks it",
+  "obfuscated installs are outside the checker's scope (owner Oct 3)"
+ ],
+ "row78": "adversarial pass in every round: every action reference in supply-chain.yml is a commit digest with a version comment; no container/services images; no generated references; check-action-pins.py not bypassed by this change (both reviewers, zero findings)"
+}
