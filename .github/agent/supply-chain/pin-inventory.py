@@ -43,7 +43,35 @@ _GO_TARGET = re.compile(r"(?<![\w.\-/@])((?:\$\{var\}|[\w.\-/])+)@((?:\$\{\{expr
 _GH_DOWNLOAD = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/download/(v?)((?:\$\{\{expression\}\}|\$\{var\}|[\w.+()-]|\$(?!\{\{))+)/([^\s/'\x22?#;|&]+)")
 _GH_LATEST = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/releases/latest/download/")
 _GO_RUN_GET = re.compile(r"\bgo\s+(?:run|get)\b([^\n;&|]*)")
-_PIP_INSTALL = re.compile(r"\bpip[0-9.]*\b(?:\s+-\S+(?:\s+(?!install\b)\S+)?)*\s+install\b([^\n]*)")
+_SEP = re.compile(r"[;&|]")
+
+
+def _tails(run, is_cmd, subcommands, skip_values=()):
+    """For every command word `is_cmd` accepts, the text after its subcommand: found by walking tokens (linear time: a regex over an option chain can backtrack exponentially)."""
+    out = []
+    for line in run.split("\n"):
+        toks = line.split()
+        for i, t in enumerate(toks):
+            if not is_cmd(t):
+                continue
+            j = i + 1
+            while j < len(toks) and toks[j].startswith("-"):
+                j += 2 if (toks[j] in skip_values and "=" not in toks[j]) else 1
+            while j < len(toks) and toks[j] in ("container", "image") and toks[j] not in subcommands:
+                j += 1
+            if j < len(toks) and toks[j] in subcommands:
+                tail = []
+                for tk in toks[j + 1:]:
+                    if _SEP.search(tk):
+                        tail.append(_SEP.split(tk)[0])
+                        break
+                    tail.append(tk)
+                out.append(" ".join(tail))
+    return out
+
+
+def _pip_tails(run):
+    return _tails(run, lambda t: re.fullmatch(r"pip[0-9.]*", t) is not None, {"install"})
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|\$\{var\}|[^\s\\;'\",$]|\$(?!\{\{))+)")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
 _VER_PIN = re.compile(r"^[ \t]*(?:(?:export|readonly|declare(?:\s+-\w+)?|local)\s+)?([A-Z][A-Z0-9]*)_VER=['\"]?([^\s'\"#]+)", re.M)
@@ -195,8 +223,9 @@ def _uses(u, node, out, labels):
 _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target",
                    "--prefix", "--root", "--cache-dir", "--python", "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary", "--progress-bar",
                    "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action"}
-_DOCKER_CMD = re.compile(r"\b(?:docker|podman|nerdctl|buildah)\b(?:\s+-{1,2}[\w-]+(?:[= ]\S+)?)*(?:\s+(?:container|image))?\s+(?:run|pull|create)\b([^\n;&|]*)")
-_DOCKER_VALUE_OPTS = {"--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
+def _docker_tails(run):
+    return _tails(run, lambda t: t in ("docker", "podman", "nerdctl", "buildah"), {"run", "pull", "create"}, _DOCKER_VALUE_OPTS)
+_DOCKER_VALUE_OPTS = {"--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "--tlscacert", "--tlscert", "--tlskey", "--cpus", "--memory", "-m", "--cpu-shares", "--pids-limit", "--shm-size", "--ulimit", "--restart", "--log-driver", "--log-opt", "--group-add", "--security-opt", "--tmpfs", "--init-path", "--stop-signal", "--stop-timeout", "--ip", "--ip6", "--hostname", "--cidfile", "--cgroupns", "--ipc", "--pid", "--uts", "--userns", "--gpus", "--runtime", "--sysctl", "--annotation", "--volumes-from", "--link", "--expose", "--detach-keys", "--health-cmd", "--health-interval", "--pull","-e", "--env", "-v", "--volume", "-p", "--publish", "--name", "--network", "--net", "-w", "--workdir", "-u", "--user", "--entrypoint",
                       "--platform", "-l", "--label", "--mount", "--env-file", "-h", "--hostname", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "--pull"}
 
 
@@ -258,8 +287,8 @@ def _step_items(node, out, labels):
                     out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
             out.append(Item("tool", m.group(1), "latest"))
-        for m in _DOCKER_CMD.finditer(run):
-            for img in _docker_images(m.group(1)):
+        for tail in _docker_tails(run):
+            for img in _docker_images(tail):
                 out.append(_image_item(img))
         for ln in run.split("\n"):    # where a script downloads FROM: an assignment of a URL/BASE variable is a source line identified by its own text
             m = _SOURCE_ASSIGN.match(ln)
@@ -267,13 +296,13 @@ def _step_items(node, out, labels):
                 out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4)))   # the asset's name is part of the identity: a different file under the same tag is a moved item
-        for m in _PIP_INSTALL.finditer(run):
-            for p in _PIP_PIN.finditer(m.group(1)):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
+        for tail in _pip_tails(run):
+            for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", ver))
-        for m in _PIP_INSTALL.finditer(run):
+        for tail in _pip_tails(run):
             prev = ""
-            for tok in m.group(1).split():
+            for tok in tail.split():
                 value_of_option = prev in _PIP_VALUE_OPTS      # `-r deps.txt` names a file, not a package
                 prev = tok
                 if value_of_option:
