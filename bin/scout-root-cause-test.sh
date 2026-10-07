@@ -242,9 +242,10 @@ if grep -qF "skopeo copy -q docker://docker.io/library/debian@$CHILD_FIX docker:
   echo "ok: the amd64 child is copied to its own scratch tag and our statement attached to it"; pass=$((pass+1))
 else echo "FAIL: the child copy or its attachment is missing"; fail=$((fail+1)); fi
 if grep -qF 'docker buildx imagetools create --tag ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
-   && grep -qF -- "--file $e4/out/attest/built-descriptor.json ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b" "$LOG4" \
+   && grep -qF -- "--file $e4/out/attest/built-descriptor-nomt.json ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b" "$LOG4" \
    && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor.json" \
-   && grep -qF 'vnd.docker.reference.digest' "$e4/out/attest/built-descriptor.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor.json"; then
+   && grep -qF 'vnd.docker.reference.digest' "$e4/out/attest/built-descriptor.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor.json" \
+   && ! grep -qF mediaType "$e4/out/attest/built-descriptor-nomt.json" && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor-nomt.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor-nomt.json"; then
   echo "ok: the attestation-manifest descriptor (annotations kept) is added to a copy of the original index"; pass=$((pass+1))
 else echo "FAIL: the built index step or the descriptor is wrong"; fail=$((fail+1)); fi
 if grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
