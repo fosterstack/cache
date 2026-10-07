@@ -9,6 +9,12 @@
 # --publish. The pinned CI tools file (advisor 0207, delta 2) holds exactly eight entries, each by digest, distinct, and each naming its own OFFICIAL repository:
 # cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven and the persona shell (the curl image); no driver, agent or provider source may run a
 # privileged container (the kind cluster is created by the job's kind binary).
+# MODEL IDS ARE SECRETS (advisor 0233, owner's rule): GitHub prints a step's `env:` values in the step header before its script runs, so a model id from `vars.*` would be
+# public in the job log. PERSONA_UAT_MODEL and PERSONA_UAT_COMPLIANCE_MODEL therefore arrive on the DRIVER step as ${{ secrets.PERSONA_UAT_MODEL }} / ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
+# (masked automatically) and nowhere else; PERSONA_UAT_TOKEN_BUDGET stays ${{ vars.PERSONA_UAT_TOKEN_BUDGET }}. The judge rejects `vars.` for a model id, a literal model id, and a model
+# id in any other step, job or workflow env or in any run text.
+# Results stay private (amendment 0215): the persona jobs open no issue, upload ONLY the encrypted <persona>.cms files under ONE fixed artifact name that the local
+# decrypt script (bin/persona-uat-decrypt.sh) downloads by that exact name, and a failed persona run fails the job without any job opening a public issue.
 # Neither job nor the driver, agent or provider may name a cloud CLI. The real workflows must pass; each of ~30 mutations
 # (structurally valid YAML/JSON, made through the parsed document) must be rejected FOR THE REASON NAMED, so a checker
 # crash or an unrelated failure cannot count as a catch.
@@ -33,6 +39,7 @@ PIN_USES = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 PIN_IMG = re.compile(r"^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$")
 CREDS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID")
 VARS = ("PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "PERSONA_UAT_TOKEN_BUDGET")
+MODEL_SECRETS = ("PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL")       # secrets (masked), on the driver step only; the budget is the one variable
 
 def norm(expr):
     """a workflow expression with the ${{ }} wrapper removed and whitespace removed only OUTSIDE quoted strings, for an EXACT
@@ -274,6 +281,24 @@ def judge_workflow_env(doc, label, bad):
         if k in CREDS or k in VARS or k.startswith(("ANTHROPIC_", "AWS_", "ACTIONS_")) or CRED_REF.search(str(v)) or MODEL.search(str(v)) or MODEL.search(str(k)):
             bad.append(f"{label} declares {k} in a workflow-level env: it would be inherited by every step, not only the driver's")
 
+def decrypt_text():
+    try:
+        return open(os.path.join(root, "bin/persona-uat-decrypt.sh")).read()
+    except OSError:
+        return None
+DECRYPT_TEXT = decrypt_text()
+SYN_DECRYPT = 'gh run download "$run" -R "$repo" -n persona-uat-encrypted --dir "$art"\n'
+
+def judge_script_artifact(text, upload_name, name, bad):
+    """the local decrypt script downloads the persona artifact by an EXACT name (a single -n); the upload must publish under that very name (when the script is not
+    committed yet the synthetic default stands in for it, and the real-file case below stays red)"""
+    t = SYN_DECRYPT if text is None else text
+    names = re.findall(r"(?:-n|--name)[ =]+[\"']?([A-Za-z0-9._-]+)", t)
+    if len(names) != 1:
+        bad.append(f"{name}: the decrypt script must download the persona artifact with exactly ONE -n/--name (found {names}): without -n gh downloads every artifact, nested")
+    elif names[0] != upload_name:
+        bad.append(f"{name}: the upload publishes the artifact as {upload_name!r} but the decrypt script downloads {names[0]!r}: the run could never be decrypted")
+
 def common(name, job, bad):
     steps = job.get("steps", [])
     weekly = name.startswith("weekly")
@@ -356,8 +381,16 @@ def common(name, job, bad):
     if extra_env:
         bad.append(f"{name}: the driver step carries environment outside the contract (no other credential, and no override of the identity token file the identity step exports): {extra_env}")
     for v in VARS:
-        if not expr_is(env.get(v, ""), f"vars.{v}"):
-            bad.append(f"{name}: {v} is not exactly vars.{v} on the driver step (the owner's variable)")
+        kind = "secrets" if v in MODEL_SECRETS else "vars"
+        if not expr_is(env.get(v, ""), f"{kind}.{v}"):
+            bad.append(f"{name}: {v} is not exactly {kind}.{v} on the driver step ({'the model id is a masked secret: a vars.* value would be printed in the step header' if kind == 'secrets' else 'the owner variable'})")
+    if re.search(r"PERSONA_UAT_(COMPLIANCE_)?MODEL|secrets\.", run):
+        bad.append(f"{name}: the driver's command text names a model id or a secret: they arrive only through the step's env")
+    for s_ in steps:
+        if s_ is not d and re.search(r"PERSONA_UAT_(COMPLIANCE_)?MODEL", json.dumps(s_)):
+            bad.append(f"{name}: a step other than the driver names a model id (PERSONA_UAT_MODEL / PERSONA_UAT_COMPLIANCE_MODEL): the model ids reach the driver step's env only")
+    if re.search(r"PERSONA_UAT_(COMPLIANCE_)?MODEL", json.dumps({k: v for k, v in job.items() if k != "steps"})):
+        bad.append(f"{name}: the job (outside the driver step) names a model id: the model ids reach the driver step's env only")
     if "GH_TOKEN" in env or "GITHUB_TOKEN" in env:
         bad.append(f"{name}: the driver step carries a GitHub token: it makes no gh call and opens no issue (results stay private)")
     for c in CREDS:
@@ -388,8 +421,8 @@ def common(name, job, bad):
                 bad.append(f"{name}: a step input names a cloud CLI ({k})")
     for s_ in steps:
         blob = json.dumps(s_)
-        if re.search(r"PRIVATE KEY|persona-uat\.key|-inkey|cms\s+-decrypt|PERSONA_UAT_(PRIVATE|KEY)|\.key\b", blob) or re.search(r"secrets\.(?!ANTHROPIC_(FEDERATION_RULE_ID|ORGANIZATION_ID|SERVICE_ACCOUNT_ID|WORKSPACE_ID)\b)", blob):
-            bad.append(f"{name}: a step writes or reads a private key or a secret that holds one (only the four ANTHROPIC_* identity secrets may reach the job; the decryption key never touches CI)")
+        if re.search(r"PRIVATE KEY|persona-uat\.key|-inkey|cms\s+-decrypt|PERSONA_UAT_(PRIVATE|KEY)|\.key\b", blob) or re.search(r"secrets\.(?!ANTHROPIC_(FEDERATION_RULE_ID|ORGANIZATION_ID|SERVICE_ACCOUNT_ID|WORKSPACE_ID)\b|PERSONA_UAT_(COMPLIANCE_)?MODEL\b)", blob):
+            bad.append(f"{name}: a step writes or reads a private key or a secret that holds one (only the four ANTHROPIC_* identity secrets and the two model-id secrets may reach the job; the decryption key never touches CI)")
     ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact")
     for s in steps:
         u = str(s.get("uses", ""))
@@ -452,9 +485,14 @@ def common(name, job, bad):
         path = str(u.get("with", {}).get("path", "")).strip()
         if not outdir or path != outdir.group(1).strip("\"'").rstrip("/") + "/*.cms":
             bad.append(f"{name}: the upload path {path!r} is not exactly <the driver's --out directory>/*.cms: only the encrypted artifacts may ever be uploaded, never a plaintext file")
-        un = str(u.get("with", {}).get("name", "persona-uat-encrypted"))
-        if "${{" in un or not re.fullmatch(r"persona-uat-[a-z0-9-]+", un):
-            bad.append(f"{name}: the artifact name {un!r} is not a fixed literal persona-uat-<words> (artifact names are public: they carry no result)")
+        un = u.get("with", {}).get("name")
+        if un is None:
+            bad.append(f"{name}: the upload has no artifact name (the action's default is 'artifact', which the decrypt script does not download): set name: <the script's name>")
+        else:
+            un = str(un)
+            if "${{" in un or not re.fullmatch(r"persona-uat-[a-z0-9-]+", un):
+                bad.append(f"{name}: the artifact name {un!r} is not a fixed literal persona-uat-<words> (artifact names are public: they carry no result)")
+            judge_script_artifact(DECRYPT_TEXT, un, name, bad)
         if str(u.get("with", {}).get("if-no-files-found", "")) != "error":
             bad.append(f"{name}: the upload must fail on missing files (if-no-files-found: error)")
     for s in steps:
@@ -542,6 +580,36 @@ def workflow_defaults(doc, label, bad):
     if str(run.get("shell", "bash")) != "bash":
         bad.append(f"{label} has a workflow-level default shell that is not plain bash")
 
+ISSUE_STEP = re.compile(r"gh\s+issue\s+(create|comment|edit|reopen)|issues\.(create|createComment|update)|gh\s+api\b[^\n]*issues|/issues\b")
+
+def judge_release_graph(r, bad):
+    """the RELEASE GRAPH with ONLY persona-uat failing (every other job succeeds): a job runs if its `if` has always()/!cancelled(), or failure() with persona-uat among its
+    transitive needs, or no status function and persona-uat is NOT an ancestor; no job AFFECTED by that failure (an ancestor-failure runner, or always()) may open or touch
+    a public issue, and persona-uat's own steps never do"""
+    jobs = r.get("jobs", {}) or {}
+    def needs_of(n):
+        v = (jobs.get(n) or {}).get("needs", [])
+        return [v] if isinstance(v, str) else list(v or [])
+    def ancestors(n, seen=None):
+        seen = set() if seen is None else seen
+        for m in needs_of(n):
+            if m not in seen:
+                seen.add(m); ancestors(m, seen)
+        return seen
+    for n, j in jobs.items():
+        j = j or {}
+        cond = str(j.get("if", ""))
+        always = bool(re.search(r"always\(\)|!\s*cancelled\(\)", cond))
+        failure = "failure()" in cond
+        anc = ancestors(n)
+        affected = n == "persona-uat" or always or (failure and "persona-uat" in anc)
+        if not affected:
+            continue
+        for st in j.get("steps", []) or []:
+            blob = str(st.get("run", "")) + " " + json.dumps(st.get("with", {}) or {})
+            if ISSUE_STEP.search(blob):
+                bad.append(f"release.yml: job {n} runs when only persona-uat fails and opens or touches a public issue ({blob.strip()[:60]!r}): a persona result must stay private")
+
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
     judge_workflow_env(r, "release.yml", bad)
@@ -551,8 +619,9 @@ def judge_release(r, bad):
         bad.append("release.yml's push tags are not exactly ['v*'] (a negation or tags-ignore could disable the release-candidate trigger)")
     pf = r.get("jobs", {}).get("patch-failed", {}) or {}
     pfn = pf.get("needs", [])
-    if "persona-uat" not in ([pfn] if isinstance(pfn, str) else pfn):
-        bad.append("release.yml's patch-failed does not list persona-uat in needs (a failed RC persona run must open the failure issue)")
+    if "persona-uat" in ([pfn] if isinstance(pfn, str) else pfn):
+        bad.append("release.yml's patch-failed lists persona-uat in needs: a failed persona run would then open a public issue (results stay private: it only fails the job)")
+    judge_release_graph(r, bad)
     j = r.get("jobs", {}).get("persona-uat")
     if not j:
         bad.append("release.yml has no persona-uat job"); return
@@ -833,7 +902,7 @@ IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https:
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token);\ncore.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n")
 def synth_driver(weekly):
     pre = "harness/" if weekly else ""
-    env = {v: "${{ vars.%s }}" % v for v in VARS}
+    env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
     env.update({c: "${{ secrets.%s }}" % c for c in CREDS}); 
     img = '"${{ steps.resolve.outputs.image }}"' if weekly else '"ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
@@ -857,7 +926,10 @@ def synth_persona_job(weekly):
         j["needs"] = ["image", "promotion"]
         j["if"] = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}"
     return j
-RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {"patch-failed": {"needs": ["persona-uat"]}, "persona-uat": synth_persona_job(False)}}
+RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
+    "image": {"steps": [{"run": "true"}]}, "promotion": {"needs": ["image"], "steps": [{"run": "true"}]},
+    "patch-failed": {"needs": ["image", "promotion"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
+    "persona-uat": synth_persona_job(False)}}
 FS = {"on": {"schedule": [{"cron": "43 6 * * 1"}]}, "jobs": {"persona-uat": synth_persona_job(True)}}
 SRC_OVER.update(CLEAN_SRC)
 bd = judge(RS, FS, TGOOD)
@@ -991,12 +1063,12 @@ mutate("rc driver step ends with || true", "not exactly one bare driver command"
 mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
        lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "github.ref_name", drv(j)["run"])))
 mutate("rc job leaves the persona-uat environment", "persona-uat environment", lambda j: j.update(environment="release"))
-mutate("rc model variable hard-coded", "PERSONA_UAT_MODEL is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
-mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly vars.PERSONA_UAT_MODEL",
+mutate("rc model id hard-coded", "PERSONA_UAT_MODEL is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
+mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly secrets.PERSONA_UAT_MODEL",
        lambda j: (up(j).update(env={v: drv(j)["env"].pop(v) for v in VARS if v in drv(j).get("env", {})})))
 mutate("rc budget variable dropped", "PERSONA_UAT_TOKEN_BUDGET is not exactly vars.PERSONA_UAT_TOKEN_BUDGET", lambda j: drv(j)["env"].pop("PERSONA_UAT_TOKEN_BUDGET"))
-mutate("rc compliance variable replaced by the default one", "PERSONA_UAT_COMPLIANCE_MODEL is not exactly vars.PERSONA_UAT_COMPLIANCE_MODEL",
-       lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ vars.PERSONA_UAT_MODEL }}"))
+mutate("rc compliance model replaced by the default one", "PERSONA_UAT_COMPLIANCE_MODEL is not exactly secrets.PERSONA_UAT_COMPLIANCE_MODEL",
+       lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ secrets.PERSONA_UAT_MODEL }}"))
 mutate("rc federation secret dropped", "ANTHROPIC_WORKSPACE_ID is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].pop("ANTHROPIC_WORKSPACE_ID"))
 mutate("rc upload path is not the driver's output", "not exactly", lambda j: up(j)["with"].update(path="/tmp/unrelated"))
 mutate("rc upload skipped on failure", "must run always()", lambda j: up(j).update({"if": "${{ always() && false }}"}))
@@ -1022,7 +1094,13 @@ mutate("release tags gain a negation", "push tags are not exactly", lambda j: No
 mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK install", lambda j: j.update(steps=[s for s in j["steps"] if "pip install" not in str(s.get("run", ""))]))
 mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
        lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "pip install" in str(s.get("run", "")))))
-mutate("patch-failed no longer names persona-uat", "patch-failed does not list persona-uat", lambda j: None, "rel_patchfailed")
+mutate("persona-uat is added to patch-failed.needs (a persona failure would open a public issue)", "lists persona-uat in needs", lambda d: d["jobs"]["patch-failed"].update(needs=["image", "promotion", "persona-uat"]), "rel_wf")
+mutate("a notify job needs persona-uat and opens an issue on failure()", "opens or touches a public issue", lambda d: d["jobs"].update(notify={"needs": ["persona-uat"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), "rel_wf")
+mutate("a job with always() after persona-uat opens an issue through github-script", "opens or touches a public issue", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"uses": "actions/github-script@" + "c" * 40, "with": {"script": "await github.rest.issues.create({owner: o, repo: r, title: 't'})"}}]}), "rel_wf")
+mutate("patch-failed becomes always() (it then runs when only persona-uat fails)", "opens or touches a public issue", lambda d: d["jobs"]["patch-failed"].update({"if": "${{ always() }}"}), "rel_wf")
+mutate("a job that survives cancellation (!cancelled()) comments on an issue", "opens or touches a public issue", lambda d: d["jobs"].update(note={"needs": ["persona-uat"], "if": "${{ !cancelled() }}", "steps": [{"run": "gh issue comment 5 --body x"}]}), "rel_wf")
+mutate("a job two hops after persona-uat opens an issue on failure()", "opens or touches a public issue", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "if": "${{ success() }}", "steps": [{"run": "true"}]}, second={"needs": ["first"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), "rel_wf")
+mutate("the persona job itself calls gh api issues", "opens or touches a public issue", lambda j: j["steps"].append({"run": "gh api repos/o/r/issues -f title=x"}))
 def _tokvar(script):
     m = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*await\s+core\.getIDToken", script)
     return m.group(1) if m else "token"
@@ -1109,7 +1187,7 @@ mutate("weekly resolver emits an unrelated fixed digest", "built from the digest
 mutate("rc driver is given a second --mode (last wins)", "--mode exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --mode weekly"))
 mutate("rc driver is given a second --image (last wins)", "--image exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --image ghcr.io/x/cache@sha256:" + "b" * 64))
 mutate("rc driver --repo points elsewhere", "--repo is not the docs checkout", lambda j: drv(j).update(run=re.sub(r"--repo\s+\S+", "--repo /tmp/empty", drv(j)["run"])))
-mutate("rc owner variable is the literal text", "is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="vars.PERSONA_UAT_MODEL"))
+mutate("rc model id is the literal text of the expression", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="secrets.PERSONA_UAT_MODEL"))
 mutate("rc secret is the literal text", "is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].update(ANTHROPIC_WORKSPACE_ID="secrets.ANTHROPIC_WORKSPACE_ID"))
 mutate("rc driver step carries GH_TOKEN (no gh call is made)", "carries a GitHub token", lambda j: drv(j)["env"].update(GH_TOKEN="${{ github.token }}"))
 mutate("rc identity step provisions cloud inside github-script", "runs a command or names a cloud CLI",
@@ -1160,6 +1238,20 @@ for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
     mutate(f"{lab}: workflow-level env holds a cloud credential", "workflow-level env", lambda d: d.update(env={"AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}"}), w)
     mutate(f"{lab}: workflow-level env carries the job token under another name", "workflow-level env", lambda d: d.update(env={"X": "${{ github.token }}"}), w)
 mutate("go-freshness.yml gets a workflow-level default shell", "workflow-level default shell", lambda d: d.update(defaults={"run": {"shell": "pwsh"}}), "fresh_wf")
+mutate("rc upload with NO artifact name (the action defaults to 'artifact')", "no artifact name", lambda j: up(j)["with"].pop("name"))
+mutate("weekly upload with NO artifact name", "no artifact name", lambda j: up(j)["with"].pop("name"), "fresh")
+mutate("rc upload under another fixed name than the decrypt script downloads", "decrypt script downloads", lambda j: up(j)["with"].update(name="persona-uat-results"))
+mutate("weekly upload under another fixed name than the decrypt script downloads", "decrypt script downloads", lambda j: up(j)["with"].update(name="persona-uat-results"), "fresh")
+for lab_, txt_ in (("without any -n (downloads every artifact, nested)", 'gh run download "$run" -R "$repo" --dir "$art"\n'),
+                   ("with two -n (nested again)", 'gh run download "$run" -n persona-uat-encrypted -n other --dir "$art"\n'),
+                   ("with another name", 'gh run download "$run" -n persona-uat-results --dir "$art"\n'),
+                   ("with --name=", 'gh run download "$run" --name=persona-uat-other --dir "$art"\n')):
+    bd_ = []
+    judge_script_artifact(txt_, "persona-uat-encrypted", "synth", bd_)
+    result(bool(bd_), f"caught: a decrypt script {lab_}" + ("" if bd_ else "; saw nothing"))
+bd_ = []
+judge_script_artifact('gh run download "$run" -n persona-uat-encrypted --dir "$art"\n', "persona-uat-encrypted", "synth", bd_)
+result(not bd_, "a decrypt script that downloads exactly the upload's name passes the tie" + ("" if not bd_ else ": " + "; ".join(bd_)))
 mutate("rc job-level env aliases a secret", "job-level env", lambda j: j.setdefault("env", {}).update(HARMLESS="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc job-level env writes a model name", "job-level env", lambda j: j.setdefault("env", {}).update(M=VEND))
 mutate("weekly job-level env aliases a secret", "job-level env", lambda j: j.setdefault("env", {}).update(HARMLESS="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"), "fresh")
@@ -1215,6 +1307,25 @@ else:
 if not (os.path.isfile(dsh) and os.access(dsh, os.X_OK)):
     good.append("bin/persona-uat-decrypt.sh is not committed and executable")
 result(not good, "the recipient certificate (bin/persona-uat-recipient.pem, a certificate and no key) and the local decryption script (bin/persona-uat-decrypt.sh) are committed" + ("" if not good else ": " + "; ".join(good)))
+
+# --- model ids are secrets (advisor 0233) ---------------------------------------------------------------------------------------------------------------
+for lab, w in (("rc", "rel"), ("weekly", "fresh")):
+    mutate(f"{lab} the default model id arrives as a VARIABLE (printed in the step header)", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="${{ vars.PERSONA_UAT_MODEL }}"), w)
+    mutate(f"{lab} the compliance model id arrives as a VARIABLE", "is not exactly secrets.PERSONA_UAT_COMPLIANCE_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ vars.PERSONA_UAT_COMPLIANCE_MODEL }}"), w)
+    mutate(f"{lab} a literal model id on the driver step", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL=VEND), w)
+    mutate(f"{lab} a literal model id on the driver step (compliance)", "is not exactly secrets.PERSONA_UAT_COMPLIANCE_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL=VEND), w)
+    mutate(f"{lab} the model id missing from the driver step", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].pop("PERSONA_UAT_MODEL"), w)
+    mutate(f"{lab} the token budget delivered as a secret", "is not exactly vars.PERSONA_UAT_TOKEN_BUDGET", lambda j: drv(j)["env"].update(PERSONA_UAT_TOKEN_BUDGET="${{ secrets.PERSONA_UAT_TOKEN_BUDGET }}"), w)
+    mutate(f"{lab} the model id also in another step's env", "names a model id", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(env={"M": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
+    mutate(f"{lab} the model id in a run step's text", "names a model id", lambda j: j["steps"].insert(0, {"run": 'echo "${{ secrets.PERSONA_UAT_MODEL }}"'}), w)
+    mutate(f"{lab} the model id in the job-level env", "names a model id", lambda j: j.setdefault("env", {}).update(M="${{ secrets.PERSONA_UAT_MODEL }}"), w)
+    mutate(f"{lab} the compliance model id in the identity step's script", "names a model id", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update(script=IDENT + "// ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}"), w)
+    mutate(f"{lab} the model id in the driver's command text", "names a model id or a secret", lambda j: drv(j).update(run=drv(j)["run"] + ' --model "${{ secrets.PERSONA_UAT_MODEL }}"'), w)
+    mutate(f"{lab} a model id reaches the artifact name", "artifact name", lambda j: up(j)["with"].update(name="persona-uat-${{ secrets.PERSONA_UAT_MODEL }}"), w)
+for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+    mutate(f"{lab}: workflow-level env holds the model id as a secret", "workflow-level env", lambda d: d.update(env={"PERSONA_UAT_MODEL": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
+    mutate(f"{lab}: workflow-level env holds the compliance model id", "workflow-level env", lambda d: d.update(env={"PERSONA_UAT_COMPLIANCE_MODEL": "${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}"}), w)
+    mutate(f"{lab}: workflow-level env aliases a model secret", "workflow-level env", lambda d: d.update(env={"X": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
 
 print(f"persona-uat wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

