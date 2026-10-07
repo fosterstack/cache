@@ -179,7 +179,7 @@ jobs:
 
   # Persona UAT, weekly (owner ratified Oct 3 and Oct 4; REQ-UAT-001): on the Monday cron only, the five personas follow the docs AS
   # PUBLISHED with the latest release (checked out under release-docs) against that release's public image, resolved to its digest.
-  # The harness (this ref's bin/) is checked out separately, so a persona never edits the code that judges it. Results stay
+  # The harness is the root checkout (today's main, bin/), so a persona never edits the code that judges it; the released docs sit under release-docs/. Results stay
   # private exactly as in the release chain: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona
   # fails this job. The model identities are environment SECRETS (masked); the token budget is the one variable.
   persona-uat:
@@ -207,7 +207,6 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: harness
           persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -217,11 +216,11 @@ jobs:
           persist-credentials: false
 
       - name: install the pinned kind binary
-        run: ./harness/bin/install-scanner.sh kind
+        run: ./bin/install-scanner.sh kind
 
       - name: install the provider SDK (hash-pinned)
         run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r harness/bin/persona-uat-requirements.txt
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
 
       - name: mint the federated identity token for the model provider
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -243,7 +242,7 @@ jobs:
           ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
-        run: python3 harness/bin/persona-uat.py --mode weekly --image "${{ steps.resolve.outputs.image }}" --repo release-docs --out persona-uat-out --tools harness/bin/persona-uat-tools.json --recipient harness/bin/persona-uat-recipient.pem --agent "python3 harness/bin/persona-uat-agent.py"
+        run: python3 bin/persona-uat.py --mode weekly --image "${{ steps.resolve.outputs.image }}" --repo release-docs --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
 
       - name: upload the encrypted reports and transcripts
         if: ${{ always() }}

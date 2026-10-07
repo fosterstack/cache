@@ -83,7 +83,7 @@ def judge_install(name, steps, d, pre, bad):
     if i > di:
         bad.append(f"{name}: kind is installed AFTER the driver step: the driver would run without it")
     cos = [(k, x) for k, x in enumerate(steps) if "actions/checkout" in str(x.get("uses", ""))]
-    prov = next((k for k, x in cos if str((x.get("with") or {}).get("path", "")) == "harness"), None) if pre else (cos[0][0] if cos else None)
+    prov = next((k for k, x in cos if not str((x.get("with") or {}).get("path", ""))), None)       # the checkout at the repository ROOT provides bin/ (in both jobs)
     if prov is None or i < prov:
         bad.append(f"{name}: the kind install step runs BEFORE the checkout that provides bin/install-scanner.sh (or there is none): the installer would not exist yet")
     dest = install_re(pre).match(str(s["run"]).strip()).group(1)
@@ -254,7 +254,7 @@ def step_kind(x, pre, weekly):
 
 def judge_prereqs(name, job, steps, bad):
     weekly = name.startswith("weekly")
-    pre = "harness/" if weekly else ""
+    pre = ""         # every harness command is a plain committed path (the pin checker reads only paths relative to the repository root): the root checkout is today's main in BOTH jobs
     ro = str(job.get("runs-on", ""))
     if not re.fullmatch(r"ubuntu-[0-9]{2}\.[0-9]{2}(-arm)?|ubuntu-latest", ro):
         bad.append(f"{name}: runs-on is {ro!r}, not an ubuntu runner (the host kubectl and the docker the personas use are the ubuntu image's)")
@@ -308,7 +308,7 @@ def judge_script_artifact(text, upload_name, name, bad):
 def common(name, job, bad):
     steps = job.get("steps", [])
     weekly = name.startswith("weekly")
-    pre = "harness/" if weekly else ""                    # the weekly job keeps TODAY's tested harness apart from the release's docs
+    pre = ""                                              # the harness is the ROOT checkout (today's main) in both jobs; the weekly job's released docs are under release-docs/
     repo_dir = "release-docs" if weekly else "."
     if not literal_false(job.get("continue-on-error")):
         bad.append(f"{name}: continue-on-error on the job lets a persona failure pass")
@@ -467,14 +467,14 @@ def common(name, job, bad):
         if "path" in wi or ("ref" in wi and not expr_is(wi["ref"], "github.sha")):
             bad.append(f"{name}: the release-candidate checkout is not of the candidate commit (no path, no ref other than github.sha): the personas would read other docs than the candidate's")
     if weekly and len(cos) == 2:
-        paths = sorted(str((c.get("with", {}) or {}).get("path", "")) for c in cos)
-        if paths != ["harness", "release-docs"]:
-            bad.append(f"{name}: the two checkouts must be path: harness (today's tested driver) and path: release-docs (the released docs): {paths}")
+        paths = [str((c.get("with", {}) or {}).get("path", "")) for c in cos]
+        if paths != ["", "release-docs"]:
+            bad.append(f"{name}: the two checkouts must be, in this order, the repository ROOT (no path: today's tested driver) and path: release-docs (the released docs): {paths}")
         for c in cos:
-            if str((c.get("with", {}) or {}).get("path", "")) == "harness" and "ref" in (c.get("with", {}) or {}):
-                bad.append(f"{name}: the harness checkout must be today's main (no ref): an old release has no driver")
+            if not str((c.get("with", {}) or {}).get("path", "")) and ("ref" in (c.get("with", {}) or {}) or "repository" in (c.get("with", {}) or {})):
+                bad.append(f"{name}: the root checkout must be today's main (no ref): an old release has no driver")
     boots = [s for s in steps if re.fullmatch(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*", str(s.get("run", "")).strip())]
-    harness_co = [c for c in cos if str((c.get("with", {}) or {}).get("path", "")) in ("", "harness")]
+    harness_co = [c for c in cos if not str((c.get("with", {}) or {}).get("path", ""))]
     if len(boots) != 1 or (harness_co and steps.index(boots[0]) < steps.index(harness_co[0])) or steps.index(boots[0]) > di:
         bad.append(f"{name}: expected exactly one hash-pinned SDK install, after the harness checkout and before the driver")
     ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
@@ -789,15 +789,15 @@ SRC_OVER.update(CLEAN_SRC); judge_source(good); SRC_OVER.clear()
 result(not good, "a clean source set is accepted by the source judge" + ("" if not good else ": " + "; ".join(good)))
 
 def synth_steps(weekly):
-    pre = "harness/" if weekly else ""
-    cos = [{"uses": "actions/checkout@" + "0" * 40, "with": {"path": "harness"}}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
+    pre = ""
+    cos = [{"uses": "actions/checkout@" + "0" * 40}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
     return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
                        {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
     pre, st = synth_steps(weekly)
     bd = []
     judge_install("synth", st, st[-1], pre, bd)
-    result(not bd, f"the install judge accepts the pinned kind install step ({'weekly, harness/' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
+    result(not bd, f"the install judge accepts the pinned kind install step ({'weekly' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
 bd = []
 judge_installer(GOODINST, bd)
 result(not bd, "the installer judge accepts a installer with kind pinned by version and sha256" + ("" if not bd else ": " + "; ".join(bd)))
@@ -848,7 +848,7 @@ for weekly in (False, True):
     imutate("kind install conditional" + w, "conditional or non-fatal", lambda st: ins(st).update({"if": "github.event_name == 'push'"}), weekly)
     imutate("kind install continue-on-error" + w, "conditional or non-fatal", lambda st: ins(st).update({"continue-on-error": "true"}), weekly)
     imutate("kind install with another tool name" + w, "exactly one step", lambda st: ins(st).update(run=ins(st)["run"].replace(" kind", " trivy") + "; echo kind"), weekly)
-    imutate("kind install from the other tree" + w, "exactly one step", lambda st: ins(st).update(run="./" + ("" if weekly else "harness/") + "bin/install-scanner.sh kind"), weekly)
+    imutate("kind install from the other tree" + w, "exactly one step", lambda st: ins(st).update(run="./harness/bin/install-scanner.sh kind"), weekly)
     imutate("kind install piped" + w, "exactly one step", lambda st: ins(st).update(run=ins(st)["run"] + " | sh"), weekly)
     imutate("kind installed twice" + w, "exactly one step", lambda st: st.insert(st.index(ins(st)), dict(ins(st))), weekly)
     imutate("kind install with a custom shell" + w, "custom shell", lambda st: ins(st).update(shell="pwsh"), weekly)
@@ -886,15 +886,15 @@ H40 = "a" * 40
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token);\ncore.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n")
 def synth_driver(weekly):
-    pre = "harness/" if weekly else ""
+    pre = ""
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
     env.update({c: "${{ secrets.%s }}" % c for c in CREDS}); 
     img = '"${{ steps.resolve.outputs.image }}"' if weekly else '"ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
                                 f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"'}
 def synth_persona_job(weekly):
-    pre = "harness/" if weekly else ""
-    co = ([{"uses": "actions/checkout@" + H40, "with": {"path": "harness", "persist-credentials": "false"}},
+    pre = ""
+    co = ([{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}},
            {"uses": "actions/checkout@" + H40, "with": {"path": "release-docs", "ref": "${{ steps.resolve.outputs.tag }}", "persist-credentials": "false"}}] if weekly
           else [{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}}])
     resolver = [{"id": "resolve", "env": {"GH_REPO": "${{ github.repository }}", "REGISTRY_OWNER": "${{ github.repository_owner }}", "GH_TOKEN": "${{ github.token }}"},
@@ -982,9 +982,9 @@ def _mutate(name, expect, fn, which, BR, BF):
         elif which == "rel_tags":
             r["on"]["push"]["tags"] = ["v*", "!v*-rc.*"]
         elif which == "rel_defaults":
-            r["defaults"] = {"run": {"working-directory": "harness"}}
+            r["defaults"] = {"run": {"working-directory": "release-docs"}}
         elif which == "fresh_defaults":
-            f["defaults"] = {"run": {"working-directory": "harness"}}
+            f["defaults"] = {"run": {"working-directory": "release-docs"}}
         elif which == "rel_defaults_shell":
             r["defaults"] = {"run": {"shell": "pwsh"}}
         elif which == "rel_patchfailed":
@@ -1091,12 +1091,12 @@ mutate("rc identity step prints the token", "logs the token",
 mutate("rc identity step masks a literal, not the token", "mask THE TOKEN",
        lambda j: _id_step(j)["with"].update(script=re.sub(r"core\.setSecret\(\s*\w+\s*\)", "core.setSecret('x')", _id_step(j)["with"]["script"])))
 mutate("rc driver's --recipient is commented out", "is not run with --recipient exactly once", lambda j: drv(j).update(run=drv(j)["run"].replace("--recipient", "# --recipient")))
-mutate("rc driver step gets a working-directory", "a working-directory on the driver step", lambda j: drv(j).update({"working-directory": "harness"}))
+mutate("rc driver step gets a working-directory", "a working-directory on the driver step", lambda j: drv(j).update({"working-directory": "release-docs"}))
 mutate("rc job default working-directory", "a working-directory on the driver step", lambda j: j.update(defaults={"run": {"working-directory": "x"}}))
 mutate("release.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="rel_defaults")
 mutate("go-freshness.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="fresh_defaults")
 mutate("release.yml gets a workflow-level default shell", "workflow-level default shell", lambda j: None, which="rel_defaults_shell")
-mutate("weekly driver script is a .py.bak copy and gets a stray argument", "is not exactly `python3 harness/bin/persona-uat.py", lambda j: drv(j).update(run=drv(j)["run"].replace("persona-uat.py", "persona-uat.py.bak", 1).rstrip() + " extra"), which="fresh")
+mutate("weekly driver script is a .py.bak copy and gets a stray argument", "is not exactly `python3 bin/persona-uat.py", lambda j: drv(j).update(run=drv(j)["run"].replace("persona-uat.py", "persona-uat.py.bak", 1).rstrip() + " extra"), which="fresh")
 mutate("rc driver script is a .py.bak copy", "is not exactly `python3 bin/persona-uat.py", lambda j: drv(j).update(run=drv(j)["run"].replace("persona-uat.py", "persona-uat.py.bak", 1)))
 mutate("rc driver gets a stray positional token", "tokens that are no option or option value", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " extra"))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
@@ -1122,10 +1122,18 @@ mutate("weekly driver image argument fully replaced", "does not hand the resolve
 mutate("weekly image is the literal text, not an expression", "does not hand the resolved latest-release image digest",
        lambda j: set_image(j, "steps." + next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))["id"] + ".outputs.image"), "fresh")
 def _docs_checkout(j): return next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")) and str((s.get("with", {}) or {}).get("path", "")) == "release-docs")
-def _harness_checkout(j): return next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")) and str((s.get("with", {}) or {}).get("path", "")) == "harness")
+def _harness_checkout(j): return next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")) and not str((s.get("with", {}) or {}).get("path", "")))
 def _resolver(j): return next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))
+def _swap_checkouts(j):
+    a, b = _harness_checkout(j), _docs_checkout(j)
+    ia, ib = j["steps"].index(a), j["steps"].index(b)
+    j["steps"][ia], j["steps"][ib] = b, a
 mutate("weekly docs checkout is of main, not the resolved tag", "checkout is not of the resolved release's tag", lambda j: _docs_checkout(j)["with"].pop("ref"), "fresh")
-mutate("weekly harness checkout takes a ref (an old release has no driver)", "harness checkout must be today's main", lambda j: _harness_checkout(j)["with"].update(ref="v0.2.1"), "fresh")
+mutate("weekly root checkout takes a ref (an old release has no driver)", "root checkout must be today's main", lambda j: _harness_checkout(j)["with"].update(ref="v0.2.1"), "fresh")
+mutate("weekly root checkout takes the resolved tag as its ref", "root checkout must be today's main", lambda j: _harness_checkout(j)["with"].update(ref="${{ steps.resolve.outputs.tag }}"), "fresh")
+mutate("weekly root checkout is another repository", "root checkout must be today's main", lambda j: _harness_checkout(j)["with"].update(repository="evil/other"), "fresh")
+mutate("weekly harness checkout under path: harness (the old layout)", "the two checkouts must be, in this order", lambda j: _harness_checkout(j).setdefault("with", {}).update(path="harness"), "fresh")
+mutate("weekly checkouts in the other order (docs first)", "the two checkouts must be, in this order", lambda j: _swap_checkouts(j), "fresh")
 mutate("weekly job has a single checkout", "expected exactly 2 actions/checkout", lambda j: j.update(steps=[s for s in j["steps"] if s is not _harness_checkout(j)]), "fresh")
 mutate("weekly job gains needs (skipped on the Monday cron)", "has needs", lambda j: j.update(needs=["check"]), "fresh")
 mutate("weekly resolver emits tag=main", "does not write tag=<release tag>",
