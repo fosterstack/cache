@@ -62,6 +62,8 @@ with open(log, "a") as fh:
 step = plan[min(n, len(plan) - 1)]
 if step.get("stderr"):
     sys.stderr.write(step["stderr"] + "\n")
+if step.get("sleep"):
+    import time; time.sleep(step["sleep"])
 if step.get("exit"):
     sys.exit(step["exit"])
 if "raw" in step:
@@ -145,27 +147,59 @@ agent() {
 }
 calls() { wc -l <"$work/$1/fp.log" | tr -d ' '; }
 
-# --- AC5: the budget is a hard, cumulative stop -----------------------------------------------------------------
+# --- AC5: the budget is a hard, cumulative stop; 15% of it is RESERVED for one forced final `finish` call --------------------
+# (step 8 round 1, Sonnet B3): the loop works while used < 85% of the budget, then asks ONCE for a finish ("report your findings so far"). A
+# model that finishes then keeps its findings; one that does not (another action, a failing provider) is BLOCKING ("did not finish within its
+# budget"), never a quiet pass. The tokens are the provider's own numbers, summed per call (never recomputed from the resent history).
 STEPS='[{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}}]'
 BUDGET=1000 agent cap "$STEPS"
-CASE="a model that never finishes is stopped at the budget: exactly 3 calls at 400 tokens each against 1000, then no more"
-check test "$rc" -eq 0 -a "$(calls cap)" -eq 3
-CASE="the answer reports the tokens used (1200 across the 3 calls) and keeps the transcript of all three steps"
+CASE="a model that never finishes is worked until 85% of the budget (3 calls at 400 tokens: 800 < 850, then 1200), asked ONCE more to finish (the 4th, forced call), and never called again"
+check test "$rc" -eq 0 -a "$(calls cap)" -eq 4
+CASE="the answer reports the provider's own tokens (1600 across the 4 calls), keeps the transcript of the three executed steps (the forced call's non-finish answer is never executed), and is BLOCKING: did not finish within its budget"
 check python3 - "$work/cap/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
-assert a["tokens"] == 1200 and a["findings"] == [], a
-assert a["transcript"].count("echo step") == 3, a["transcript"]
+assert a["tokens"] == 1600, a
+assert any(f["kind"] == "blocking" and "did not finish within its budget" in f["text"] for f in a["findings"]), a
+assert a["transcript"].count("$ echo step") == 3, a["transcript"]
+PY
+CASE="the forced call is a request to FINISH: its last message names the token budget and asks for a finish action with the findings so far, and it is the only such message"
+check python3 - "$work/cap/fp.log" <<'PY'
+import json, sys
+calls = [json.loads(l)["req"] for l in open(sys.argv[1])]
+last = calls[-1]["messages"][-1]["content"].lower()
+assert "token budget" in last and "finish" in last and "findings so far" in last, last
+for c in calls[:-1]:
+    assert "findings so far" not in json.dumps(c["messages"][-1]).lower()
 PY
 BUDGET=1200 agent capexact "$STEPS"
-CASE="reaching the budget exactly stops the loop: 400 x 3 = 1200 is the cap, a 4th call is never made"
-check test "$(calls capexact)" -eq 3
-BUDGET=1201 agent capover "$STEPS"
-CASE="one token under the next call's end is still allowed to continue to a 4th call"
-check test "$(calls capover)" -eq 4
+CASE="1200 tokens spent against a 1200 budget: no more work calls, exactly one forced finish call (4 in all), never a 5th"
+check test "$(calls capexact)" -eq 4
 BUDGET=500 agent capone '[{"usage":{"tokens":900},"action":{"type":"shell","command":"echo only"}}]'
-CASE="a single call that blows through the budget ends the run after that one call"
-check test "$(calls capone)" -eq 1
+CASE="a single call that blows through the budget is followed by exactly one forced finish call (2 calls)"
+check test "$(calls capone)" -eq 2
+BUDGET=1000 agent capfin '[{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},
+               {"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":100},"action":{"type":"finish","findings":[{"kind":"blocking","text":"step 2 fails as written (seen at step 2)"}]}}]'
+CASE="a model that DOES finish when forced keeps what it observed: its findings are returned as they are (no extra 'did not finish' finding), the forced call's tokens are counted (1300), and the transcript marks the forced finish"
+check python3 - "$work/capfin/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert a["findings"] == [{"kind": "blocking", "text": "step 2 fails as written (seen at step 2)"}], a
+assert a["tokens"] == 1300, a
+assert "forced" in a["transcript"].lower() and "[finish]" in a["transcript"], a["transcript"]
+PY
+BUDGET=1000 agent capfail '[{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},
+               {"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},{"exit":1,"stderr":"provider down"}]'
+CASE="a provider that FAILS on the forced call does not crash the agent (rc 0, an answer): the persona is BLOCKING (did not finish within its budget) with the three steps it ran kept"
+check python3 - "$work/capfail/out.json" "$work/capfail/err.txt" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert any(f["kind"] == "blocking" and "did not finish within its budget" in f["text"] for f in a["findings"]), a
+assert a["tokens"] == 1200 and a["transcript"].count("$ echo step") == 3, a
+PY
+CASE="no forced call when the model finishes by itself under the reserve: a finish at call 2 ends the run with 2 calls"
+BUDGET=1000 agent capearly '[{"usage":{"tokens":100},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":100},"action":{"type":"finish","findings":[]}}]'
+check test "$(calls capearly)" -eq 2
 agent steplimit '[{"usage":{"tokens":0},"action":{"type":"shell","command":"echo again"}}]' --max-steps 5
 CASE="a model that spends no tokens and never finishes is still stopped, by the step limit (5 calls)"
 check test "$rc" -eq 0 -a "$(calls steplimit)" -eq 5
@@ -183,13 +217,52 @@ import json, sys
 a = json.load(open(sys.argv[1]))
 assert any(f["kind"] == "blocking" and "without running" in f["text"].lower() for f in a["findings"]), a
 PY
-BUDGET=1000 agent capnote "$STEPS"
-CASE="the token cap is only FLAGGED (the owner's rule): it adds no blocking finding of its own"
-check python3 - "$work/capnote/out.json" <<'PY'
+agent exits '[{"usage":{"tokens":1},"action":{"type":"shell","command":"exit 3"}},{"usage":{"tokens":1},"action":{"type":"shell","command":"echo ok"}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"nosuchtool","args":["x"]}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+CASE="the answer's exits are the executed commands' exit statuses, in order (3 then 0); a refused action has neither a command nor an exit"
+check python3 - "$work/exits/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
-assert a["findings"] == [] and a["tokens"] >= 1000, a
+assert a["commands"] == ["exit 3", "echo ok"] and a["exits"] == [3, 0], a
 PY
+# --- the transcript is STREAMED to a file after every action (step 8 round 1, Codex B5): a timeout kill keeps the completed actions ------------------------
+# --transcript-file PATH (the driver passes a private file OUTSIDE the sandbox, so no shell action can read or delete it): every executed action is appended,
+# scrubbed, and flushed and fsynced before the next model call.
+agent tfile '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo first-action-output"}},{"usage":{"tokens":10},"action":{"type":"shell","command":"echo second-action"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[{"kind":"friction","text":"f"}]}}]' --transcript-file "$work/tfile.log"
+CASE="the transcript file holds every executed action and its output, scrubbed, and equals the answer's transcript when the run ends normally"
+check python3 - "$work/tfile.log" "$work/tfile/out.json" <<'PY'
+import json, sys
+f = open(sys.argv[1]).read()
+a = json.load(open(sys.argv[2]))
+assert "$ echo first-action-output" in f and "first-action-output" in f.split("$ echo first-action-output", 1)[1] and "$ echo second-action" in f, f
+assert f.strip() == a["transcript"].strip(), (f, a["transcript"])
+PY
+BUDGET=1000 MODEL=MODEL-TF-X agent tscrub '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo MODEL-TF-X ghp_abcdefghijkl"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' --transcript-file "$work/tscrub.log"
+CASE="the transcript file is scrubbed like the answer: neither the model name nor a credential-looking string is in it"
+check none_match 'MODEL-TF-X|ghp_abcdefghijkl' "$work/tscrub.log"
+# a REAL agent subprocess killed after one completed action (the second model call hangs): the file keeps the first action
+mkdir -p "$work/tkill/sandbox"; echo README >"$work/tkill/sandbox/README.md"; echo '[{"usage":{"tokens":10},"action":{"type":"shell","command":"echo completed-before-kill"}},{"usage":{"tokens":10},"sleep":300,"action":{"type":"finish","findings":[]}}]' >"$work/tkill/plan.json"
+: >"$work/tkill/fp.log"; : >"$work/tkill/fd.log"; sed "s#__LOG__#$work/tkill/fd.log#" "$work/docker.tmpl" >"$work/tkill/docker"; chmod +x "$work/tkill/docker"; rm -f "$work/tkill/t.log"
+printf '{"persona":"readme-evaluator","instructions":"x","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"M-K","token_budget":400000,"tools":{}}' "$work/tkill/sandbox" "$(printf 'a%.0s' $(seq 64))" >"$work/tkill/req.json"
+python3 - "$agent" "$work" <<'PY'
+import os, signal, subprocess, sys, time
+agent, w = sys.argv[1:3]
+d = w + "/tkill"
+p = subprocess.Popen(["python3", agent, "--docker", d + "/docker", "--tools", w + "/tools.json", "--provider-cmd", "python3 %s/fp.py %s" % (w, d), "--label", "persona-uat=11111111-2222-3333-4444-555555555555",
+                      "--transcript-file", d + "/t.log"], stdin=open(d + "/req.json"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+end = time.time() + 30
+while time.time() < end and not (os.path.exists(d + "/t.log") and "completed-before-kill" in open(d + "/t.log").read()):
+    time.sleep(0.2)
+try:
+    os.killpg(p.pid, signal.SIGKILL)
+except (ProcessLookupError, PermissionError):
+    pass
+p.wait()
+PY
+CASE="a REAL agent process killed (SIGKILL) while its second model call hangs keeps the completed action in the transcript file (written and flushed before the next call)"
+check grep -q 'completed-before-kill' "$work/tkill/t.log"
+CASE="an unwritable --transcript-file fails the agent closed (non-zero, nothing on stdout): a transcript that cannot be kept is not a run"
+agent tbad '[{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' --transcript-file /nonexistent-dir/t.log
+check test "$rc" -ne 0 -a ! -s "$work/tbad/out.json"
 
 # --- the loop works: actions run, their output goes back, a finish ends it ----------------------------------------
 agent finish '[{"usage":{"tokens":300},"action":{"type":"shell","command":"echo $((6*7)) > made.txt; cat made.txt"}},
@@ -204,6 +277,7 @@ assert "42" not in first_cmd and "42" in json.dumps(calls[1]["req"]["messages"])
 a = json.load(open(sys.argv[2]))
 assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"kind": "blocking", "text": "step 2 fails as written"}], a
 assert a["tokens"] == 550, a
+assert a["commands"] == ["echo $((6*7)) > made.txt; cat made.txt"] and a["exits"] == [0], ("every executed command has its exit status, in order", a)
 assert "42" in a["transcript"] and "step 2 fails" in a["transcript"], a
 PY
 CASE="the first model call carries the restriction: only the public documentation, do not clone the repository, do not read its source"
@@ -658,6 +732,11 @@ class _Msg:
 class Anthropic:
     def __init__(self, *a, **k):
         open(os.environ["SDK_LOG"], "a").write(json.dumps({"init": True, "env_has_key": "ANTHROPIC_API_KEY" in os.environ}) + "\n")
+        truth = os.environ.get("SDK_TOKEN_TRUTH")      # the identity provider's current assertion: a federated client presents the token file's CURRENT content, a stale one is refused
+        if truth:
+            tf = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")
+            if not tf or open(tf).read().strip() != open(truth).read().strip():
+                raise RuntimeError("federation refused: the identity assertion is expired")
         self.messages = self
     def create(self, **kw):
         open(os.environ["SDK_LOG"], "a").write(json.dumps({"create": {k: v for k, v in kw.items()}}) + "\n")
@@ -668,6 +747,18 @@ prov() { # <case> <model text> <request json>; sets rc; stdout in $work/<case>/o
   SDK_TEXT="$2" SDK_LOG="$work/$name/sdk.log" PYTHONPATH="$work/sdk" ANTHROPIC_API_KEY=SECRET-MODEL-KEY \
     python3 "$provider" <<<"$3" >"$work/$name/out" 2>"$work/$name/err" || rc=$?
 }
+# the identity token is refreshed in the background by the job (a new file content every few minutes) and every model call is a NEW process: the provider reads
+# the token file as it is at THAT call (never a copy made earlier), so a rotated file is used and a stale one is a failure that leaves nothing on stdout
+echo TOKEN-ONE >"$work/idfile"; echo TOKEN-ONE >"$work/idtruth"; mkdir -p "$work/p-fresh1" "$work/p-fresh2" "$work/p-stale"
+for c in p-fresh1 p-fresh2 p-stale; do : >"$work/$c/sdk.log"; done
+SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-fresh1/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/p-fresh1/out" 2>/dev/null || true
+echo TOKEN-TWO >"$work/idfile"; echo TOKEN-TWO >"$work/idtruth"            # the refresher re-minted: file and provider agree on the new assertion
+SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-fresh2/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/p-fresh2/out" 2>/dev/null || true
+echo TOKEN-THREE >"$work/idtruth"                                         # the provider moved on, the file did NOT (no refresher): the assertion the file holds is stale
+rc=0; SDK_TEXT='{"action":"shell","command":"ls"}' SDK_LOG="$work/p-stale/sdk.log" SDK_TOKEN_TRUTH="$work/idtruth" ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idfile" PYTHONPATH="$work/sdk" python3 "$provider" <<<'{"model":"M","system":"s","messages":[{"role":"user","content":"a"}]}' >"$work/p-stale/out" 2>"$work/p-stale/err" || rc=$?
+CASE="identity expiry across calls (fake provider that refuses a stale token file): two calls with a file that was ROTATED between them both succeed (the file is read at each call), a call whose file went stale fails closed (non-zero, nothing on stdout, the refusal on stderr)"
+check test -s "$work/p-fresh1/out" -a -s "$work/p-fresh2/out" -a "$rc" -ne 0 -a ! -s "$work/p-stale/out"
+check grep -q 'expired' "$work/p-stale/err"
 REQ='{"model":"SDK-MODEL-Z","system":"be a persona","messages":[{"role":"user","content":"start"}]}'
 prov p-shell '{"action":"shell","command":"ls"}' "$REQ"
 CASE="provider: asks the SDK for the request's model, passes the system prompt and messages, and bounds max_tokens"

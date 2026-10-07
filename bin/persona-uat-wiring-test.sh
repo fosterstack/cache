@@ -418,7 +418,7 @@ def common(name, job, bad):
                 bad.append(f"{name}: the github-script body runs a command or names a cloud CLI (it may only mint and write the identity token)")
             if "if" in s or str(s.get("continue-on-error", "false")) not in ("false",):
                 bad.append(f"{name}: the identity step has an if or continue-on-error: the persona job could run without its identity")
-            wm = re.search(r"fs\.writeFileSync\(\s*(\w+)\s*,\s*token\s*\)", body)
+            wm = re.search(r"fs\.writeFileSync\(\s*(\w+)\s*,\s*token\s*(?:,\s*\{[^}]*\}\s*)?\)", body)
             if not wm or not re.search(r"exportVariable\(\s*'ANTHROPIC_IDENTITY_TOKEN_FILE'\s*,\s*" + re.escape(wm.group(1)) + r"\s*\)", body.replace('"', "'")):
                 bad.append(f"{name}: the identity step does not write the token to a file and export ANTHROPIC_IDENTITY_TOKEN_FILE for THAT file")
     for s in steps:
@@ -447,7 +447,7 @@ def common(name, job, bad):
         isrun = "run" in s
         is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
         is_install = isrun and install_re(pre).match(str(s.get("run", "")).strip()) is not None
-        is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
+        is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
         if i > di and "upload-artifact" not in str(s.get("uses", "")):
             bad.append(f"{name}: a step after the driver other than the transcript upload could alter the files before upload")
@@ -473,7 +473,7 @@ def common(name, job, bad):
         for c in cos:
             if not str((c.get("with", {}) or {}).get("path", "")) and ("ref" in (c.get("with", {}) or {}) or "repository" in (c.get("with", {}) or {})):
                 bad.append(f"{name}: the root checkout must be today's main (no ref): an old release has no driver")
-    boots = [s for s in steps if re.fullmatch(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*", str(s.get("run", "")).strip())]
+    boots = [s for s in steps if re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*", str(s.get("run", "")).strip())]
     harness_co = [c for c in cos if not str((c.get("with", {}) or {}).get("path", ""))]
     if len(boots) != 1 or (harness_co and steps.index(boots[0]) < steps.index(harness_co[0])) or steps.index(boots[0]) > di:
         bad.append(f"{name}: expected exactly one hash-pinned SDK install, after the harness checkout and before the driver")
@@ -535,8 +535,10 @@ def run_resolver(script):
     return out
 
 def run_identity(step):
-    """EXECUTE the identity step's script in node against a fake core and a capturing console: the token is minted (awaited), the TOKEN ITSELF is
-    registered for masking, it is written to a file, that file is what ANTHROPIC_IDENTITY_TOKEN_FILE is exported as, and it is never logged."""
+    """EXECUTE the identity step's script in node against a fake core, a capturing console and a CAPTURED setInterval: the token is minted (awaited), the TOKEN ITSELF is
+    registered for masking, it is written to a mode-0600 file, that file is what ANTHROPIC_IDENTITY_TOKEN_FILE is exported as, and it is never logged; then the job's
+    REFRESHER is run once (the GitHub assertion lives about five minutes and a persona job runs for up to two hours, every model call being a new process): one timer, at
+    most five minutes, and its callback re-mints into the SAME file (new content, masked, mode still 0600, never logged)."""
     import subprocess, shutil
     if not shutil.which("node"):
         return ["node is required to execute the identity step's script (the proof must not be skipped)"]
@@ -545,14 +547,22 @@ def run_identity(step):
         open(d + "/s.js", "w").write(body)
         open(d + "/run.js", "w").write("""
 const fs = require('fs'); const body = fs.readFileSync(process.argv[2], 'utf8');
-const calls = {exported: {}, masked: [], logs: []};
-const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN:' + aud), 5)), setSecret: (t) => calls.masked.push(t),
-               exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {}, info: (m) => calls.logs.push(String(m)), debug: (m) => calls.logs.push(String(m)) };
+const calls = {exported: {}, masked: [], logs: [], timers: []};
+let n = 0;
+const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN-' + (++n) + ':' + aud), 5)), setSecret: (t) => calls.masked.push(t),
+               exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {}, info: (m) => calls.logs.push(String(m)), debug: (m) => calls.logs.push(String(m)),
+               warning: (m) => calls.logs.push(String(m)) };
 const cons = { log: (...a) => calls.logs.push(a.join(' ')), info: (...a) => calls.logs.push(a.join(' ')), warn: (...a) => calls.logs.push(a.join(' ')), error: (...a) => calls.logs.push(a.join(' ')) };
+const fakeSetInterval = (fn, ms) => { calls.timers.push({fn, ms}); return { unref() {} }; };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-new AsyncFunction('core', 'require', 'process', 'console', body)(core, require, process, cons).then(() => {
-  const f = calls.exported.ANTHROPIC_IDENTITY_TOKEN_FILE; let content = null; try { content = fs.readFileSync(f, 'utf8'); } catch (e) {}
-  fs.writeFileSync(process.argv[3], JSON.stringify({file: f || null, content, masked: calls.masked, logs: calls.logs}));
+const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return null; } };
+const mode = (f) => { try { return (fs.statSync(f).mode & 0o777).toString(8); } catch (e) { return null; } };
+new AsyncFunction('core', 'require', 'process', 'console', 'setInterval', body)(core, require, process, cons, fakeSetInterval).then(async () => {
+  const f = calls.exported.ANTHROPIC_IDENTITY_TOKEN_FILE;
+  const out = {file: f || null, content: read(f), mode: mode(f), masked: calls.masked.slice(), timers: calls.timers.map((t) => t.ms)};
+  if (calls.timers.length) { try { await calls.timers[0].fn(); } catch (e) { out.refreshError = String(e); } }
+  out.content2 = read(f); out.mode2 = mode(f); out.masked2 = calls.masked.slice(); out.logs = calls.logs;
+  fs.writeFileSync(process.argv[3], JSON.stringify(out));
 }).catch((e) => fs.writeFileSync(process.argv[3], JSON.stringify({error: String(e)})));
 """)
         env = dict(os.environ, RUNNER_TEMP=d)
@@ -561,12 +571,25 @@ new AsyncFunction('core', 'require', 'process', 'console', body)(core, require, 
             res = json.load(open(d + "/res.json"))
         except Exception:
             return ["the identity step's script could not be executed"]
-        tok = "FIXTURE-TOKEN:https://api.anthropic.com"
+        tok = "FIXTURE-TOKEN-1:https://api.anthropic.com"
         if res.get("error") or not res.get("file") or res.get("content") != tok or tok not in (res.get("masked") or []):
             return [f"the identity step does not mint (await), mask THE TOKEN and write it to the file it exports: {res}"]
         if any("FIXTURE-TOKEN" in l for l in res.get("logs", [])):
             return ["the identity step logs the token"]
-    return []
+        probs = []
+        if res.get("mode") != "600":
+            probs.append(f"the identity token file is created with mode {res.get('mode')}, not 0600 (it is a credential: the owner only)")
+        if len(res.get("timers") or []) != 1:
+            probs.append(f"the identity step does not start exactly one background refresher (setInterval calls: {res.get('timers')}): the job runs for up to two hours and the assertion expires in minutes")
+        elif not 30000 <= res["timers"][0] <= 300000:
+            probs.append(f"the identity refresher's interval is {res['timers'][0]} ms: it must re-mint at least every five minutes (and not busy-loop)")
+        else:
+            tok2 = "FIXTURE-TOKEN-2:https://api.anthropic.com"
+            if res.get("refreshError") or res.get("content2") != tok2 or tok2 not in (res.get("masked2") or []):
+                probs.append(f"the refresher does not re-mint into the SAME file and mask THE NEW TOKEN: {res}")
+            if res.get("mode2") != "600":
+                probs.append(f"the refreshed identity token file has mode {res.get('mode2')}, not 0600")
+    return probs
 
 def judge_requirements(bad):
     p = os.path.join(root, "bin/persona-uat-requirements.txt")
@@ -791,7 +814,7 @@ result(not good, "a clean source set is accepted by the source judge" + ("" if n
 def synth_steps(weekly):
     pre = ""
     cos = [{"uses": "actions/checkout@" + "0" * 40}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
-    return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+    return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
                        {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
     pre, st = synth_steps(weekly)
@@ -884,7 +907,9 @@ xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.
 # --- a COMPLETE known-good synthetic release.yml and go-freshness.yml, run through the REAL entry point judge() -> judge_release/judge_weekly -> common() ----------
 H40 = "a" * 40
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
-         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token);\ncore.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n")
+         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\ncore.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n"
+         "const refresh = async () => {\n  try {\n    const t = await core.getIDToken('https://api.anthropic.com');\n    core.setSecret(t); fs.writeFileSync(f, t, { mode: 0o600 });\n"
+         "  } catch (e) { core.warning(`identity refresh failed: ${e}`); }\n};\nsetInterval(refresh, 4 * 60 * 1000).unref?.();\n")
 def synth_driver(weekly):
     pre = ""
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
@@ -901,7 +926,7 @@ def synth_persona_job(weekly):
                  "run": 'tag=$(gh release view --json tagName -q .tagName)\nd=$(docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\')\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
     steps = (resolver + co + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
-             {"run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+             {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
              {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, synth_driver(weekly),
              {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}}])
     j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write", "packages": "read"}, "steps": steps}
@@ -1312,6 +1337,21 @@ if not (os.path.isfile(dsh) and os.access(dsh, os.X_OK)):
 result(not good, "the recipient certificate (bin/persona-uat-recipient.pem, a certificate and no key) and the local decryption script (bin/persona-uat-decrypt.sh) are committed" + ("" if not good else ": " + "; ".join(good)))
 
 # --- model ids are secrets (advisor 0233) ---------------------------------------------------------------------------------------------------------------
+# the IDENTITY REFRESHER (step 8 round 1, B1 of both reviewers): the federated assertion lives about five minutes and a persona job runs up to two hours, every model call a new
+# process. The identity step re-mints into the same file on a timer (the auditor's pattern), the file is created 0600, and the pip install passes --break-system-packages (PEP 668
+# on the hosted ubuntu runner). A mutant without any of these must fail for ITS reason in both jobs.
+def _idscript(j): return next(x for x in j["steps"] if "github-script" in str(x.get("uses", "")))["with"]
+for lab, w in (("rc", "rel"), ("weekly", "fresh")):
+    mutate(f"{lab} identity step has NO refresher (the token expires mid-run)", "does not start exactly one background refresher", lambda j: _idscript(j).update(script=re.sub(r"setInterval\(.*\n", "", _idscript(j)["script"])), w)
+    mutate(f"{lab} identity refresher every 10 minutes (longer than the assertion lives)", "must re-mint at least every five minutes", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("4 * 60 * 1000", "10 * 60 * 1000")), w)
+    mutate(f"{lab} identity refresher busy-loops (every 10 ms)", "must re-mint at least every five minutes", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("4 * 60 * 1000", "10")), w)
+    mutate(f"{lab} identity refresher writes another file", "does not re-mint into the SAME file", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("fs.writeFileSync(f, t,", "fs.writeFileSync(f + '.new', t,")), w)
+    mutate(f"{lab} identity refresher does not mask the new token", "mask THE NEW TOKEN", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("core.setSecret(t); ", "")), w)
+    mutate(f"{lab} identity refresher logs the new token", "logs the token", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("core.setSecret(t); ", "core.setSecret(t); core.info(t); ")), w)
+    mutate(f"{lab} identity token file created world-readable", "not 0600", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("{ mode: 0o600 }", "{ mode: 0o644 }")), w)
+    mutate(f"{lab} identity token file created with the default mode", "not 0600", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace(", { mode: 0o600 }", "")), w)
+    mutate(f"{lab} refreshed token file loses its mode", "refreshed identity token file has mode", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("fs.writeFileSync(f, t, { mode: 0o600 })", "fs.unlinkSync(f); fs.writeFileSync(f, t, { mode: 0o644 })")), w)
+    mutate(f"{lab} pip install without --break-system-packages (PEP 668 refuses it on the hosted runner)", "expected exactly one hash-pinned SDK install", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(run=next(x for x in j["steps"] if "pip install" in str(x.get("run", "")))["run"].replace(" --break-system-packages", "")), w)
 for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the default model id arrives as a VARIABLE (printed in the step header)", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="${{ vars.PERSONA_UAT_MODEL }}"), w)
     mutate(f"{lab} the compliance model id arrives as a VARIABLE", "is not exactly secrets.PERSONA_UAT_COMPLIANCE_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ vars.PERSONA_UAT_COMPLIANCE_MODEL }}"), w)

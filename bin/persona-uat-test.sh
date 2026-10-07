@@ -56,7 +56,7 @@
 #       started with exactly that argument vector. Both are reached over http://127.0.0.1:<port> by the persona's shell tool. The kind node image
 #       is never run through docker by the driver. The sandbox directories are mode 0777 (the tool images run as other non-root uids and must be
 #       able to create files); the docs files stay 0644 (read-only for others).
-#   (3) the answer's optional `commands` list is where the driver derives each report's single line `Hosts contacted outside the docs: a, b`
+#   (3) the answer's optional `commands` list is where the driver derives each report's single line `Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed): a, b`
 #       (or `none`). CLAIM, narrowed: "hosts NAMED in the persona's commands" (URLs, and the host argument of curl/wget/kubectl --server style
 #       commands); redirects, Maven repository configuration and tool-internal contacts are NOT observed (documented limitation). A host is listed
 #       unless it is a host of a URL in the public docs (README.md and docs/*.md), 127.0.0.1, localhost, or the registry host of an image in the
@@ -77,14 +77,16 @@
 #       CounterVec has NO sample line until its first counted request: a fresh server's scrape holds NO fscache_http_requests_total family at all
 #       (no HELP, no TYPE, no samples); HELP and TYPE without samples is the other valid zero. A scrape that fails or is garbage at EITHER end is blocking.
 #       The driver scrapes GET <endpoint>/metrics (sum of every fscache_http_requests_total sample) immediately before the agent starts and
-#       immediately after it returns; persona_requests = after - before (no correction); a persona that finished with NO findings and
+#       immediately after it returns; persona_requests = after - before (no correction); a persona that finished with
 #       persona_requests <= 0 (counter backwards, or a scrape that cannot be taken or parsed) is blocking: "the endpoint was never exercised".
 #       The windows of two personas never overlap, in rc and in weekly mode alike, and nothing the persona's agent started survives its window
 #       (a timed-out agent's leftovers are terminated). The fixture counts a request BEFORE it flushes the response (deterministic; the real
 #       server counts just after the handler returns, a race the tests cannot model: a very late request may miss the after-scrape). The stub
 #       agent makes plan["requests"] counted requests (default 1; plan["methods"] varies the verb) and plan["uncounted"] uncounted ones.
-#   RATIFIED RULE (advisor 0207, kept on purpose): a persona that reports ONLY friction and made zero counted requests stays pass (case proof2): friction is information, never
-#       a blocker. The endpoint-proof rule blocks only a persona that reports NO findings and made no counted request.
+#   PROOF RULE (advisor 0250, replacing the 0207 friction-only rule): a persona with NO proof of exercising the RC image is BLOCKING whatever else it reported (friction stays
+#       informational; "did not exercise the image" blocks that persona). Proof = the counted-request delta (after - before > 0) for every persona except the compliance reviewer,
+#       whose proof is a recorded verification action (cosign verify / attestation / SBOM / VEX) naming the RC's digest that exited 0 (the answer's `exits` list, parallel to
+#       `commands`); counter traffic alone never proves the compliance reviewer (fail closed). Cases: proof2, cmp1..cmp8, proofreset.
 #   LIMITATION (stated, AC5): the hosts line lists hosts NAMED in a persona's commands; a tool's own contacts (Maven or Gradle dependency resolution, cosign's Rekor/TUF, redirects)
 #       are not observed, so "any host its commands contact" means the hosts the commands name.
 #   Model identities are job SECRETS (masked by GitHub in every log, step headers included): the wiring test pins where they may appear; the log cases here pin that the driver never prints them.
@@ -131,7 +133,7 @@ mkdir -p "$repo/ops/docs" "$repo/docs/dev"
 echo "SECRET-OPS-DOC"      >"$repo/ops/docs/plan.md"
 echo "SECRET-CLAUDE-MD"    >"$repo/CLAUDE.md"
 echo "SECRET-DEV-DOC"      >"$repo/docs/dev/notes.md"
-echo "SECRET-RELEASING"    >"$repo/RELEASING.md"
+echo "releasing guide (public: how a customer verifies a release)" >"$repo/RELEASING.md"
 echo "SECRET-DOTFILE"      >"$repo/docs/.hidden.md"
 echo '{"SECRET-JSON":1}'   >"$repo/docs/grafana-dashboard.json"
 ln -s ../internal/x.go "$repo/docs/leak.md"
@@ -251,8 +253,15 @@ if p.get("leak"):
     ans["transcript"] += "model=%s key=%s\n" % (req["model"], LEAK) + "\n".join(CORPUS) + "\n"
     if os.path.exists(kc):      # the persona's own ServiceAccount token, as a pasted kubeconfig line
         ans["transcript"] += open(kc).read() + "\n"
-if "commands" in p:
-    ans["commands"] = p["commands"]
+cmds = list(p.get("commands", []))
+exits = list(p.get("exits", [0] * len(cmds)))
+if req["persona"] == "compliance-reviewer" and not p.get("noverify"):
+    # the compliance reviewer's PROOF of exercising the RC image (advisor 0250): a verification action naming the image by the RC's digest that exited 0
+    dg = ("sha256:" + "9" * 64) if p.get("verify_other") else req["image"].split("@")[-1]
+    cmds.append("cosign verify-attestation " + dg); exits.append(p.get("verify_exit", 0))
+if cmds or "commands" in p:
+    ans["commands"] = cmds
+    ans["exits"] = exits
 ans.update(p.get("override", {}))
 for k in p.get("drop", []):
     ans.pop(k, None)
@@ -289,6 +298,15 @@ if [ "$1" = run ] && [ "$2" = -d ] && [[ "$*" =~ -p\ 127\.0\.0\.1:([0-9]+):9252\
   # the runner's metrics mux: /metrics is registered, every other route (including /) is a 404
   nohup python3 "$CASEDIR/../runnerfix.py" "${BASH_REMATCH[1]}" "$CASEDIR/runner-hits.log" </dev/null >/dev/null 2>&1 &
   echo $! >"$CASEDIR/../runner.pid"
+fi
+# injected TEARDOWN failures: from the n-th `ps` (DOCKER_PS_FAIL_AT) or the n-th `rm` (DOCKER_RM_FAIL_AT) on, the daemon is unreachable (exit 1)
+if [ "$1" = ps ] && [ -n "${DOCKER_PS_FAIL_AT:-}" ]; then
+  n=$(( $(cat "$CASEDIR/ps.count" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$CASEDIR/ps.count"
+  if [ "$n" -ge "$DOCKER_PS_FAIL_AT" ]; then echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1; fi
+fi
+if [ "$1" = rm ] && [ -n "${DOCKER_RM_FAIL_AT:-}" ]; then
+  n=$(( $(cat "$CASEDIR/rm.count" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$CASEDIR/rm.count"
+  if [ "$n" -ge "$DOCKER_RM_FAIL_AT" ]; then echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1; fi
 fi
 # DAEMON-MANAGED containers: a `run --rm ... --label L ... sh -c 'DAEMON...'` starts work that belongs to the DAEMON, not to the docker client: it keeps
 # requesting the endpoint (X-Persona: CONTAINER) after the client is killed, until `rm -f`, `stop` or `kill` names its id (ps --filter label=L lists it)
@@ -993,7 +1011,7 @@ run() {
   mkdir -p "$work/plain" "$work/$name" "$work/$name/tmp"; : >"$work/$name/summary.md"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
   # the stub's failure switches are baked into the case's own docker script (the driver passes the docker client only its allowlisted DOCKER_* variables)
   sed "s#__LOG__#$work/$name/docker.log#" "$work/docker.tmpl" >"$work/$name/docker"; chmod +x "$work/$name/docker"
-  { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}"); DOCKER_NOISE=$(printf %q "${DOCKER_NOISE:-}"); DOCKER_RUNNER_DEAD=$(printf %q "${DOCKER_RUNNER_DEAD:-}")"; } >"$work/$name/docker.env"
+  { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}"); DOCKER_NOISE=$(printf %q "${DOCKER_NOISE:-}"); DOCKER_RUNNER_DEAD=$(printf %q "${DOCKER_RUNNER_DEAD:-}"); DOCKER_PS_FAIL_AT=$(printf %q "${DOCKER_PS_FAIL_AT:-}"); DOCKER_RM_FAIL_AT=$(printf %q "${DOCKER_RM_FAIL_AT:-}")"; } >"$work/$name/docker.env"
   # the host binaries (kind, kubectl) first on PATH; KIND_LISTEN=1: the kind API port shows up in (a per-case copy of) the proc-net table while the cluster exists
   local pnet="${PROCNET:-$work/procnet}"
   if [ -n "${KIND_LISTEN:-}" ]; then rm -rf "$work/$name/procnet"; cp -R "$pnet" "$work/$name/procnet"; pnet="$work/$name/procnet"; fi
@@ -1052,10 +1070,42 @@ for p, words in need.items():
 for p, text in rows.items():          # every persona is told how to classify what it finds, and what a doc step is
     for w in ("broken behavior", "friction", "as written"):
         assert w in text.lower(), (p, w)
-    # steps that need a tool the environment does not have (gh, docker, jq, kubectl exec) are ENVIRONMENT LIMITS, reported as friction, never 'fails as written'
-    for w in ("environment limit", "docker", "jq", "kubectl exec", "not as blocking", "friction"):
-        assert w in text.lower(), (p, w, "the persona is not told that missing tools are environment limits")
-    assert re.search(r"\bgh\b", text.lower()), (p, "gh")
+    # the sandbox's missing tools are NAMED, truthfully (the shell image has curl and sh only; each tool image holds its own program): a step that needs one of them is
+    # friction, not blocking; kubectl exec is an environment limit; nothing exempts a documented step that CAN run
+    low = text.lower()
+    assert "these tools are not in the sandbox: gh, docker, jq" in low, (p, "the missing tools are not named exactly")
+    assert "report as friction" in low and "not as blocking" in low and "kubectl exec" in low, (p, low[-600:])
+    assert "never as a step that" not in low and "environment limit" not in low.replace("kubectl exec is an environment limit", ""), (p, "a blanket exemption of documented steps is back")
+    assert "a step that can run in the sandbox is judged as written" in low, (p, "steps that can run must be judged")
+PY
+CASE="the GitLab omission is NAMED (advisor 0207: drop unavailable infrastructure and name the omission): the Maven persona is told that no GitLab server or runner registration exists and the runner container has its metrics endpoint only, and ITS report header says so; no other persona's report does"
+check python3 - "$work/clean" "$(out clean)" <<'PY'
+import json, sys
+d, o = sys.argv[1:3]
+rows = {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(d + "/log")}
+low = rows["maven-jenkins-ci"].lower()
+assert "no gitlab server" in low and "registration" in low and "metrics" in low, low
+for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
+    assert "no gitlab server" not in rows[p].lower(), p
+SENT = "Omitted infrastructure: no GitLab server or runner registration exists in this environment; the GitLab runner container exposes its metrics endpoint only."
+r = open(o + "/maven-jenkins-ci.report.md").read()
+assert SENT in r and r.index(SENT) < r.index("tokens used") if "tokens used" in r else SENT in r, r
+for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
+    assert SENT not in open(o + "/" + p + ".report.md").read(), p
+PY
+CASE="the driver hands every agent --transcript-file: a private file OUTSIDE the sandbox (its directory 0700, a different path per persona), and nothing of it is left when the run ends"
+check python3 - "$work/clean/log" <<'PY'
+import json, os, sys
+paths = []
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    a = r["argv"]
+    assert a.count("--transcript-file") == 1, (r["persona"], a)
+    f = a[a.index("--transcript-file") + 1]
+    assert not f.startswith(r["request"]["docs_dir"]), ("the transcript file is inside the sandbox the shell containers mount", f)
+    assert not os.path.exists(f) and not os.path.exists(os.path.dirname(f)), ("left behind", f)
+    paths.append(f)
+assert len(set(paths)) == 5, paths
 PY
 CASE="a clean run leaves no issue file anywhere and calls gh never: --out holds only <persona>.cms"
 check test ! -e "$work/clean/out/friction-issue.md" -a ! -e "$work/clean/out/blocking-issue.md" -a ! -s "$work/clean/gh.log"
@@ -1498,6 +1548,7 @@ ns = [a[k + 1] for k, x in enumerate(a) if x in ("-n", "--namespace")] + [x.spli
 assert ns == ["persona"], a
 dur = [a[k + 1] for k, x in enumerate(a) if x == "--duration"] + [x.split("=", 1)[1] for x in a if x.startswith("--duration=")]
 assert len(dur) == 1 and kh.duration_ok(dur[0]), ("not a valid duration of 1h..24h", dur)
+assert kh.go_duration(dur[0]) == 3600 + 900, ("the persona's token must outlive its window: --agent-timeout (3600 by default) + a 15 minute margin", dur)
 iss = kh.issued(d)
 assert len(iss) == 1
 pl = json.loads(base64.urlsafe_b64decode(iss[0]["token"].split(".")[1] + "=="))
@@ -1641,7 +1692,51 @@ d = sys.argv[1]
 assert "Traceback" not in open(d + "/stderr").read()
 assert len(glob.glob(sys.argv[3] + "/*.report.md")) == 5
 assert not os.path.exists(kh.create(d)["kc"])
+r = open(sys.argv[3] + "/on-call-engineer.report.md").read()
+assert r.splitlines()[0] == "VERDICT: blocking" and "teardown failed: window not attributable" in r, r      # a cluster that cannot be deleted is a failed teardown (step 8, Codex B6)
 PY
+# --- TEARDOWN failures are hard failures (step 8 round 1, Codex B6): a failed `docker ps`/`rm`, root cleanup or kind delete means a survivor may still be sending traffic, so that
+# persona AND every later one is blocking ("teardown failed: window not attributable") and the run starts NOTHING new (no container, no cluster) after it
+tdcheck() { # <case> <index of the first persona that must read teardown failed> <max docker run -d calls>
+  python3 - "$work/$1" "$(out "$1")" "$2" "$3" "$PERSONAS" "$work" <<'PYT'
+import json, re, sys
+d, o, idx, maxrun, personas, w = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5].split(), sys.argv[6]
+sys.path.insert(0, w); import kh
+for i, p in enumerate(personas):
+    r = open("%s/%s.report.md" % (o, p)).read()
+    if i < idx:
+        assert r.splitlines()[0] == "VERDICT: pass" and "teardown failed" not in r, (p, r)
+    else:
+        assert r.splitlines()[0] == "VERDICT: blocking" and "teardown failed: window not attributable" in r, (p, r)
+runs = [l for l in open(d + "/docker.log") if l.startswith("run -d")]
+assert len(runs) <= maxrun, ("a container was started after the teardown failed", len(runs), maxrun)
+if idx <= 4:
+    assert not [r for r in kh.kind(d) if r["argv"][:2] == ["create", "cluster"]], "a cluster was created after the teardown failed"
+assert "Traceback" not in open(d + "/stderr").read()
+PYT
+}
+DOCKER_PS_FAIL_AT=1 run tdps1 '{}' rc
+CASE="teardown: the FIRST persona's label sweep fails (docker ps unreachable): that persona and all four after it are blocking 'teardown failed: window not attributable', the run fails, and no container or cluster is started after it (one 'run -d' in all: the image)"
+check tdcheck tdps1 0 1
+check test "$rc" -ne 0
+check publiclog tdps1
+DOCKER_PS_FAIL_AT=3 run tdps3 '{}' rc
+CASE="teardown: the THIRD persona's sweep fails: the first two keep their verdicts, the third, fourth and fifth read teardown failed, no cluster is created, and nothing is started after the third persona (the image, Jenkins and the runner: 3)"
+check tdcheck tdps3 2 3
+check test "$rc" -ne 0
+check publiclog tdps3
+DOCKER_FAIL_MATCH="--user 0:0" run tdclean '{}' rc
+CASE="teardown: the ROOT cleanup container fails (the sandbox may still hold another uid's files and a live process): the first persona and every later one is blocking teardown failed"
+check tdcheck tdclean 0 1
+check publiclog tdclean
+DOCKER_RM_FAIL_AT=1 run tdrm '{}' rc
+CASE="teardown: removing the Maven persona's tool containers fails (docker rm unreachable): the first persona passes, the Maven persona and every later one read teardown failed, no cluster is created"
+check tdcheck tdrm 1 3
+check publiclog tdrm
+DOCKER_RM_FAIL_AT=1 run tdrmd '{"gradle-platform-engineer":{"daemon":true}}' rc
+CASE="teardown: a daemon-managed container the persona left behind and 'docker rm -f' cannot remove: that persona and all later ones are blocking (the survivor may keep sending traffic)"
+check tdcheck tdrmd 0 1
+for f in "${work:?}/containers"/*; do [ -e "$f" ] || continue; kill -9 "$(sed -n 2p "$f")" 2>/dev/null || true; rm -f "$f"; done      # the survivor the fake daemon could not remove
 KIND_FAIL=1 KIND_DELETE_FAIL=1 run kindbothfail '{}' rc
 CASE="kind lifecycle: kind create AND delete failing: the on-call persona did not run, no traceback, the other four are unaffected, the run fails"
 check python3 - "$work/kindbothfail" "$(out kindbothfail)" "$rc" <<'PY'
@@ -1822,7 +1917,7 @@ import glob, sys
 d = sys.argv[1]
 for f in glob.glob(d + "/out/*.cms"):
     b = open(f, "rb").read()
-    for marker in (b"VERDICT", b"persona:", b"TRANSCRIPT for", b"tokens used", b"Hosts contacted"):
+    for marker in (b"VERDICT", b"persona:", b"TRANSCRIPT for", b"tokens used", b"Hosts named"):
         assert marker not in b, (f, marker)
 for f in glob.glob(d + "/plain/*.payload"):
     t = open(f).read()
@@ -2219,9 +2314,9 @@ check python3 - "$work/clean/log" <<'PY'
 import json, sys
 for ln in open(sys.argv[1]):
     r = json.loads(ln)
-    want = ["README.md"] if r["persona"] == "readme-evaluator" else ["README.md", "docs/gradle.md", "docs/install.md"]
+    want = ["README.md"] if r["persona"] == "readme-evaluator" else ["README.md", "RELEASING.md", "docs/gradle.md", "docs/install.md"]
     if r["persona"] == "on-call-engineer":
-        want = ["README.md", "docs/gradle.md", "docs/install.md", "kubeconfig"]
+        want = ["README.md", "RELEASING.md", "docs/gradle.md", "docs/install.md", "kubeconfig"]
     assert r["docs"] == want, (r["persona"], r["docs"])
 PY
 CASE="what the agent could READ (every file's content) holds no source, internal doc, dotfile, symlink target or unreleased note"
@@ -2235,7 +2330,7 @@ for ln in open(sys.argv[1]):
         assert not any(b in c for b in bad), (r["persona"], f)
     assert r["links"] == [], ("symlink in the sandbox", r["links"])
     assert all(not f.startswith(".") and "/." not in f for f in r["content"]), r["content"].keys()
-    assert all(f == "README.md" or (f.startswith("docs/") and f.endswith(".md") and f.count("/") == 1) or (r["persona"] == "on-call-engineer" and f == "kubeconfig") for f in r["content"]), list(r["content"])
+    assert all(f in ("README.md", "RELEASING.md") or (f.startswith("docs/") and f.endswith(".md") and f.count("/") == 1) or (r["persona"] == "on-call-engineer" and f == "kubeconfig") for f in r["content"]), list(r["content"])
 PY
 CASE="nothing the agent was handed or the driver wrote leaks source, internal docs or unreleased notes"
 check none_match 'SECRET-|INTERNAL TRACE|UNRELEASED NOTES|package internal' "$(out clean)"
@@ -2431,6 +2526,8 @@ class Anthropic:
             "leaked": sorted(k for k in os.environ if k in ("GITHUB_TOKEN", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY", "SOME_UNKNOWN_SECRET"))}}) + "\n")
         self.messages = self
     def create(self, **kw):
+        if os.environ.get("ANTHROPIC_FAKE_HANG_AFTER") and len(kw["messages"]) >= 3:
+            import time; time.sleep(600)         # the second model call never returns (an agent timeout must keep the first action)
         open(LOG, "a").write(json.dumps({"model": kw["model"], "turn": len(kw["messages"]), "system": kw.get("system", ""),
             "first": kw["messages"][0]["content"] if isinstance(kw["messages"][0]["content"], str) else json.dumps(kw["messages"][0]["content"])}) + "\n")
         msgs = kw["messages"]
@@ -2506,6 +2603,30 @@ PY
 CASE="integrated: no GitHub credential reached the shell containers or the provider's environment"
 check none_match 'SECRET-GH-TOKEN' "$work/integ/plain" "$work/integ/out" "$work/integ/docker.log"
 
+# TIMEOUT KEEPS THE COMPLETED ACTIONS (step 8, Codex B5): the REAL agent, a fake SDK whose second model call hangs, a driver agent timeout of 8 seconds: the agent is killed
+# after ONE completed action, and the encrypted transcript still holds that action (streamed to the transcript file) with the timeout marker
+mkdir -p "$work/integt"; echo FIXTURE-OIDC-TOKEN >"$work/integt/token"; : >"$work/integt/docker.log"; : >"$work/integt/gh.log"; : >"$work/sdk/sdk.log"; rc=0
+sed "s#__LOG__#$work/integt/docker.log#" "$work/docker.tmpl" >"$work/integt/docker"; chmod +x "$work/integt/docker"; mkhost "$work/integt"
+( cd "$root" && env -u PERSONA_UAT_TOKEN_BUDGET -u ANTHROPIC_API_KEY PATH="$work/pybin:$work/integt/hostbin:$PATH" GITHUB_RUN_ID=4242 \
+    PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE ANTHROPIC_FAKE_HANG_AFTER=1 \
+    ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integt/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
+    ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
+    python3 bin/persona-uat.py --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integt/out" --tools "$work/tools.json" \
+      --docker "$work/integt/docker" --recipient "$work/test.pem" --port 18080 --ready-timeout 5 --agent-timeout 8 --agent "python3 bin/persona-uat-agent.py" ) \
+  >"$work/integt/stdout" 2>"$work/integt/stderr" || rc=$?
+decout integt
+CASE="timeout (real agent killed after one completed action): every persona is blocking 'timed out', the run fails, and each encrypted transcript holds the action that COMPLETED before the kill (its command and its output) with the timeout marker"
+check python3 - "$work/integt/plain" "$rc" <<'PY'
+import glob, sys
+assert int(sys.argv[2]) != 0
+ts = glob.glob(sys.argv[1] + "/*.transcript.txt")
+assert len(ts) == 5, ts
+for t in ts:
+    c = open(t).read()
+    assert "agent timed out after 8s" in c, (t, c[:300])
+    assert "$ cat README.md" in c and "# fscache README" in c, ("the completed action is lost", t, c[:400])
+PY
+check publiclog integt
 # --- advisor fences (public repo; job logs and artifacts are public) ---------------------------------------------------
 # Fence 1: containers are FIXED-ARGUMENT. The driver builds every docker command from the allowlisted images and fixed options.
 CASE="fence 1: the docker calls the driver builds (run -d) carry no mount, no network option, no privilege AT ALL, no socket, no pid/ipc/cap/device/user option, no env except Jenkins' one fixed value; the agent's shell calls carry exactly one mount and nothing else beyond the pinned --network host"
@@ -2576,12 +2697,13 @@ for l in open(sys.argv[1]):
     assert all(re.fullmatch(r"https?://127\.0\.0\.1:\d+", u) for u in urls), urls
     assert not re.search(r"localhost|0\.0\.0\.0|\.invalid|amazonaws|github", json.dumps(r)), r
 PY
-CASE="fence 3: without --port the image is published on 127.0.0.1:8080 and handed to the agent as http://127.0.0.1:8080"
+CASE="fence 3: without --port the image is published on the high default port 127.0.0.1:38080 (never 8080: the docs' 'kubectl port-forward svc/fscache 8080:80' must work next to the driver), the Jenkins and runner ports follow it, and no docker call publishes 8080, 8081 or 8082"
 mkdir -p "$work/defport"; : >"$work/defport/log"; : >"$work/defport/docker.log"; echo '{}' >"$work/defport/plan.json"
 sed "s#__LOG__#$work/defport/docker.log#" "$work/docker.tmpl" >"$work/defport/docker"; chmod +x "$work/defport/docker"; rc=0
 PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/defport/out" --tools "$work/tools.json" \
   --docker "$work/defport/docker" --recipient "$work/test.pem" --ready-timeout 1 --agent "python3 $work/stub.py $work/defport" >/dev/null 2>&1 || rc=$?
-check grep -q '127.0.0.1:8080:8080' "$work/defport/docker.log"
+check grep -q '127.0.0.1:38080:8080' "$work/defport/docker.log"
+check none_match '127\.0\.0\.1:80(80|81|82):' "$work/defport/docker.log"
 CASE="fence 3: no AWS_*/ACTIONS_*/GITHUB_TOKEN/GH_TOKEN/*_TOKEN/*_KEY/*_SECRET variable reaches the agent (the model identity ANTHROPIC_* the provider needs is the one exception, pinned above)"
 check python3 - "$work/clean/log" <<'PY'
 import json, re, sys
@@ -2743,7 +2865,7 @@ PY
 # Limitation, stated: redirects, Maven repository configuration and a tool's own internal contacts are not observed; only what the commands name is.
 hostsline() { python3 - "$1" <<'PY'
 import re, sys
-lines = [l for l in open(sys.argv[1]).read().splitlines() if l.startswith("Hosts contacted outside the docs:")]
+lines = [l for l in open(sys.argv[1]).read().splitlines() if l.startswith("Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):")]
 assert len(lines) == 1, ("exactly one line", lines)
 v = lines[0].split(":", 1)[1].strip()
 print("" if v == "none" else ",".join(sorted(x.strip() for x in v.split(","))))
@@ -2770,7 +2892,7 @@ print(json.dumps({
  "on-call-engineer": {"commands": ["kubectl get pods --kubeconfig kubeconfig # https://127.0.0.1:18090"]}}))
 PY
 run hosts "$(cat "$work/hostsplan.json")" rc
-CASE="hosts: every report carries ONE 'Hosts contacted outside the docs:' line"
+CASE="hosts: every report carries ONE 'Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):' line, and the label says what it IS (hosts NAMED in commands; redirects and tool-internal contacts are not observed), never 'contacted'"
 allhosts() { local q; for q in $PERSONAS; do hostsline "$(out hosts)/$q.report.md" >/dev/null || return 1; done; }
 check allhosts
 for p in gradle-platform-engineer compliance-reviewer on-call-engineer; do
@@ -2819,7 +2941,7 @@ d, c, v1, v2 = sys.argv[1:5]
 g = open(d + "/gradle-platform-engineer.report.md").read()
 r = open(d + "/readme-evaluator.report.md").read()
 m = open(d + "/maven-jenkins-ci.report.md").read()
-line = lambda t: t.split("Hosts contacted outside the docs:")[1].splitlines()[0]
+line = lambda t: t.split("Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):")[1].splitlines()[0]
 assert "api.%s.com" % v1 in line(g) and "evil.example" in line(g), line(g)
 assert "%s.com" % v2 in line(r) and "0123456789abcdef0123456789abcdef.evil.example" in line(r) and "plain.example" in line(r), line(r)
 assert "www.%s.com" % v1 in line(m), line(m)
@@ -2892,15 +3014,65 @@ want = {"readme-evaluator": "blocking", "gradle-platform-engineer": "pass", "mav
 for p, v in want.items():
     assert open(sys.argv[1] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
 PY
-CASE="proof: a persona with findings of its own and no counted requests is not given a second finding: friction-only without requests stays friction, a blocking one stays blocking (the rule is: NO findings and no counted requests)"
-run proof2 '{"readme-evaluator":{"requests":0,"findings":[{"kind":"friction","text":"the README is vague"}]},"gradle-platform-engineer":{"requests":0,"findings":[{"kind":"blocking","text":"step 1 fails as written"}]}}' rc
-check test "$(head -1 "$(out proof2)/readme-evaluator.report.md")" = "VERDICT: friction"
-check none_match 'never exercised' "$(out proof2)/readme-evaluator.report.md" "$(out proof2)/gradle-platform-engineer.report.md"
-check test "$(head -1 "$(out proof2)/gradle-platform-engineer.report.md")" = "VERDICT: blocking"
-run proofreset '{"gradle-platform-engineer":{"requests":3},"maven-jenkins-ci":{"requests":3},"compliance-reviewer":{"reset":true,"requests":1}}' rc
+# RULE CHANGED (advisor 0250, replacing the 0207 friction-only rule): a persona with NO proof of exercising the RC image is BLOCKING whatever else it reported. Friction stays
+# informational, but "did not exercise the image" blocks that persona. The proof is the counted-request delta (after - before > 0) for every persona EXCEPT the compliance
+# reviewer, whose proof is a recorded verification action (cosign verify / attestation / SBOM / VEX) that names the RC's DIGEST and exited 0.
+CASE="proof (rule of advisor 0250): friction-only with NO counted request is BLOCKING for each of the four endpoint personas (the friction is kept in the report, the verdict is blocking, 'did not exercise the image' is said); a persona that reports a blocking finding of its own and no requests stays blocking (and also says it did not exercise)"
+run proof2 '{"readme-evaluator":{"requests":0,"findings":[{"kind":"friction","text":"the README is vague"}]},"gradle-platform-engineer":{"requests":0,"findings":[{"kind":"blocking","text":"step 1 fails as written"}]},"maven-jenkins-ci":{"requests":0,"findings":[{"kind":"friction","text":"jenkins slow"}]},"on-call-engineer":{"requests":0,"findings":[{"kind":"friction","text":"logs hard to find"}]}}' rc
+check python3 - "$(out proof2)" "$rc" <<'PY'
+import sys
+o, rc = sys.argv[1], int(sys.argv[2])
+assert rc == 1, rc
+for p in ("readme-evaluator", "gradle-platform-engineer", "maven-jenkins-ci", "on-call-engineer"):
+    r = open(o + "/" + p + ".report.md").read()
+    assert r.splitlines()[0] == "VERDICT: blocking" and "did not exercise the image" in r, (p, r)
+assert "the README is vague" in open(o + "/readme-evaluator.report.md").read(), "the friction must stay in the report"
+assert open(o + "/compliance-reviewer.report.md").read().splitlines()[0] == "VERDICT: pass"
+PY
+check publiclog proof2
+# the compliance reviewer's proof is a DIGEST verification, not the counter
+cmpcase() { # <name> <plan for compliance-reviewer>
+  run "$1" "{\"compliance-reviewer\":$2}" rc
+}
+cmpcase cmp1 '{"requests":0}'
+CASE="compliance proof: a verification action naming the RC digest that exited 0 proves the run WITHOUT any counted request (the reviewer never calls the endpoint): pass"
+check test "$(head -1 "$(out cmp1)/compliance-reviewer.report.md")" = "VERDICT: pass"
+cmpcase cmp2 '{"noverify":true,"requests":3}'
+CASE="compliance proof: counter traffic alone is NOT the compliance reviewer's proof (fail closed): no digest verification => blocking, 'did not exercise the image'"
+check python3 - "$(out cmp2)" <<'PY'
+import sys
+r = open(sys.argv[1] + "/compliance-reviewer.report.md").read()
+assert r.splitlines()[0] == "VERDICT: blocking" and "did not exercise the image" in r and "digest" in r, r
+PY
+cmpcase cmp3 '{"verify_exit":1}'
+CASE="compliance proof: a verification action that FAILED (exit 1) is no proof: blocking"
+check test "$(head -1 "$(out cmp3)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp4 '{"verify_other":true}'
+CASE="compliance proof: a verification action that names ANOTHER digest than the RC's is no proof: blocking"
+check test "$(head -1 "$(out cmp4)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp5 '{"noverify":true,"requests":0,"findings":[{"kind":"friction","text":"sbom steps unclear"}]}'
+CASE="compliance proof: friction-only with no verification and no traffic is blocking, not friction (the friction stays in the report)"
+check python3 - "$(out cmp5)" <<'PY'
+import sys
+r = open(sys.argv[1] + "/compliance-reviewer.report.md").read()
+assert r.splitlines()[0] == "VERDICT: blocking" and "sbom steps unclear" in r, r
+PY
+cmpcase cmp6 "{\"noverify\":true,\"commands\":[\"echo sha256:$(printf 'a%.0s' $(seq 64))\"],\"exits\":[0]}"
+CASE="compliance proof: the RC digest merely NAMED by a command that is not a verification (echo) is no proof: blocking"
+check test "$(head -1 "$(out cmp6)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp7 "{\"noverify\":true,\"commands\":[\"cosign verify ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 64))\",\"cosign download sbom ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 64))\"],\"exits\":[1,0]}"
+CASE="compliance proof: AT LEAST ONE successful digest verification is enough (a failed cosign verify followed by a successful SBOM download of the RC digest): pass"
+check test "$(head -1 "$(out cmp7)/compliance-reviewer.report.md")" = "VERDICT: pass"
+cmpcase cmp8 '{"noverify":true,"commands":["cosign verify-attestation x"]}'
+CASE="compliance proof: an answer with commands but no exits is no proof (fail closed): blocking"
+check python3 - "$(out cmp8)" <<'PY'
+import sys
+assert open(sys.argv[1] + "/compliance-reviewer.report.md").read().splitlines()[0] == "VERDICT: blocking"
+PY
+run proofreset '{"gradle-platform-engineer":{"requests":3},"maven-jenkins-ci":{"requests":3},"readme-evaluator":{"reset":true,"requests":1}}' rc
 CASE="proof: a counter that went BACKWARDS during the window (the server restarted: fewer samples after than before) is no proof: that persona, with no findings, is blocking; the others pass"
-check test "$(head -1 "$(out proofreset)/compliance-reviewer.report.md")" = "VERDICT: blocking" -a "$(head -1 "$(out proofreset)/gradle-platform-engineer.report.md")" = "VERDICT: pass"
-check grep -qi 'endpoint' "$(out proofreset)/compliance-reviewer.report.md"
+check test "$(head -1 "$(out proofreset)/readme-evaluator.report.md")" = "VERDICT: blocking" -a "$(head -1 "$(out proofreset)/gradle-platform-engineer.report.md")" = "VERDICT: pass"
+check grep -qi 'endpoint' "$(out proofreset)/readme-evaluator.report.md"
 for ma in garbage nometric; do
   run "proofafter-$ma" "{\"on-call-engineer\":{\"requests\":2,\"mode_after\":\"$ma\"}}" rc
   srvctl __mode m "ok"
@@ -2911,12 +3083,15 @@ for m in garbage status500 nometric nofamily; do
   srvctl __mode m "$m"
   run "proofmode-$m" '{}' rc
   srvctl __mode m "ok"
-  CASE="proof ($m): when /metrics cannot be read or holds no fscache_http_requests_total sample at all, no persona may finish clean: all five are blocking and the run fails"
+  CASE="proof ($m): when /metrics cannot be read or holds no fscache_http_requests_total sample at all, no ENDPOINT persona may finish clean: the four are blocking and the run fails (the compliance reviewer's proof is its digest verification, not the counter: it passes)"
   check python3 - "$(out "proofmode-$m")" "$rc" <<'PY'
 import glob, sys
 assert int(sys.argv[2]) != 0
 rs = sorted(glob.glob(sys.argv[1] + "/*.report.md"))
-assert len(rs) == 5 and all(open(r).read().splitlines()[0] == "VERDICT: blocking" for r in rs), rs
+assert len(rs) == 5, rs
+for r in rs:
+    want = "pass" if r.endswith("compliance-reviewer.report.md") else "blocking"
+    assert open(r).read().splitlines()[0] == "VERDICT: " + want, (r, want)
 PY
 done
 cat >"$work/windows.py" <<'PY'
@@ -3111,6 +3286,28 @@ for d in sys.argv[1:3]:
     assert len(pc) == 1 and t["t0"] < pc[0]["t"] < t["t1"], (pc, t)
     dels = [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]]
     assert len(dels) == 1 and dels[0]["t"] > t["t1"], ("the cluster was deleted before the persona's recorded end", dels[0]["t"], t["t1"])
+PY
+AGENT_TIMEOUT=5000 run kindtmo '{}' rc
+CASE="the persona kubeconfig's token duration follows --agent-timeout: 5000s + 15 minutes = 5900s (within 1h..24h); a very long agent timeout is capped at 24h; a short one keeps the 1h floor"
+check python3 - "$work/kindtmo" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+a = [r for r in kh.kubectl(sys.argv[1]) if "create" in r["argv"] and "token" in r["argv"]][0]["argv"]
+assert kh.go_duration(a[a.index("--duration") + 1]) == 5900, a
+PY
+AGENT_TIMEOUT=100000 run kindtmo2 '{}' rc
+check python3 - "$work/kindtmo2" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+a = [r for r in kh.kubectl(sys.argv[1]) if "create" in r["argv"] and "token" in r["argv"]][0]["argv"]
+assert kh.go_duration(a[a.index("--duration") + 1]) == 86400, a
+PY
+AGENT_TIMEOUT=60 run kindtmo3 '{}' rc
+check python3 - "$work/kindtmo3" "$work" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2]); import kh
+a = [r for r in kh.kubectl(sys.argv[1]) if "create" in r["argv"] and "token" in r["argv"]][0]["argv"]
+assert kh.go_duration(a[a.index("--duration") + 1]) == 3600, a
 PY
 KIND_TOKEN_LIFETIME=1800 run kindshort '{}' rc
 CASE="token lifetime: the API server issued a 30-minute token although 1h+ was asked: shorter than a persona window, so the on-call persona did not run (blocking), cluster deleted, others unaffected"
@@ -3537,6 +3734,15 @@ for p, v in want.items():
     assert open(sys.argv[1] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
 PY
 check python3 "$work/windows.py" "$work/delayed2" 5 settle
+# the federated identity token file (re-minted by the job every few minutes) is the driver's to remove when it is done: nothing of it outlives the run
+echo FIXTURE-IDENTITY >"$work/idtok.file"
+run idtok '{}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idtok.file"
+CASE="the driver removes the identity token file named by ANTHROPIC_IDENTITY_TOKEN_FILE when the run ends (a clean run), and still runs fine without the variable"
+check test ! -e "$work/idtok.file" -a "$rc" -eq 0
+echo FIXTURE-IDENTITY >"$work/idtok2.file"
+run idtok2 '{"compliance-reviewer":{"crash":true}}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idtok2.file"
+CASE="... also when a persona crashed (the file is removed whatever the outcome)"
+check test ! -e "$work/idtok2.file" -a "$rc" -ne 0
 # STATED BOUNDS, asserted: the quiet interval RESTARTS on every change (a second increment 0.7s after the first, 1.3s after the response: a fixed sleep or a
 # single "quiet since the first change" reading misses it) and a counter that never settles reaches the DEADLINE (8 seconds) and the persona is blocking, not credited
 srvctl __reset
@@ -3614,7 +3820,7 @@ import subprocess, sys
 w = sys.argv[1]
 def line(p):
     t = open("%s/hosts5/plain/%s.report.md" % (w, p)).read().splitlines()
-    v = [l for l in t if l.startswith("Hosts contacted outside the docs:")][0].split(":", 1)[1].strip()
+    v = [l for l in t if l.startswith("Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):")][0].split(":", 1)[1].strip()
     return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
 want = {"gradle-platform-engineer": "github.com (repository source)", "maven-jenkins-ci": "github.com (repository source)", "compliance-reviewer": "codeload.github.com (repository source)",
         "readme-evaluator": "api.github.com (repository source)", "on-call-engineer": "api.github.com,evil.example"}
@@ -3622,6 +3828,30 @@ for p, v in want.items():
     assert line(p) == v, (p, line(p), v)
 PY
 check publiclog hosts5
+# more curl/wget spellings that NAME a host: --url=host/path, --url host/path, a proxy (--proxy, --proxy=, -x), wget --post-data=... host
+python3 - >"$work/hostsplan6.json" <<'PY'
+import json
+print(json.dumps({
+ "gradle-platform-engineer": {"commands": ["curl --url=url-a.example/p", "curl -s --url url-b.example/q -o /dev/null", "curl -sS --proxy proxy-c.example:3128 https://docs.example.org/x",
+                                           "curl --proxy=http://proxy-d.example:8080 https://docs.example.org/y", "curl -x proxy-e.example:3128 https://docs.example.org/z",
+                                           "curl --url=https://docs.example.org/fine"]},
+ "maven-jenkins-ci": {"commands": ["wget --post-data=x url-f.example/upload", "wget --header=X:y url-g.example/h", "curl --max-time 5 url-i.example"]},
+ "compliance-reviewer": {"commands": ["curl --url=http://127.0.0.1:18080/x", "curl --output=out.txt http://localhost:18080/y"]}}))
+PY
+run hosts6 "$(cat "$work/hostsplan6.json")" rc
+CASE="hosts (spellings): curl --url=host/path, --url host/path, proxies (--proxy host, --proxy=http://host, -x host) and wget with option=value words name their hosts; a docs host, loopback and an output name do not"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+def line(p):
+    t = open("%s/hosts6/plain/%s.report.md" % (w, p)).read().splitlines()
+    v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
+assert line("gradle-platform-engineer") == "proxy-c.example,proxy-d.example,proxy-e.example,url-a.example,url-b.example", line("gradle-platform-engineer")
+assert line("maven-jenkins-ci") == "url-f.example,url-g.example,url-i.example", line("maven-jenkins-ci")
+assert line("compliance-reviewer") == "", line("compliance-reviewer")
+PY
+check publiclog hosts6
 # the auth layer wraps the metrics middleware: a 401 is never counted
 run proofauth '{"readme-evaluator":{"requests":0,"unauth":3}}' rc
 CASE="a persona whose only traffic was answered 401 (withAuth wraps withMetrics, so it is never counted) made no counted request: blocking, the others pass"
@@ -3644,7 +3874,7 @@ check python3 - "$work" <<'PY'
 import glob, json, os, sys
 w = sys.argv[1]
 n = 0
-MARK = (b"VERDICT", b"TRANSCRIPT for", b"persona: ", b"tokens used", b"Hosts contacted", b"MODEL-DEFAULT-X", b"PARTIAL-TRANSCRIPT", b"PARTIAL-CIPHERTEXT")
+MARK = (b"VERDICT", b"TRANSCRIPT for", b"persona: ", b"tokens used", b"Hosts named", b"MODEL-DEFAULT-X", b"PARTIAL-TRANSCRIPT", b"PARTIAL-CIPHERTEXT")
 roots = sorted(t for t in glob.glob(w + "/*/tmp") if os.path.exists(os.path.dirname(t) + "/plan.json")) + [w + "/plain"]       # every run's private TMPDIR, and the directory the driver ran in
 assert len(roots) > 20, roots
 for top in roots:
@@ -3665,7 +3895,7 @@ check python3 - "$work/hosts" <<'PY'
 import os, sys
 d = sys.argv[1]
 blob = (open(d + "/stdout").read() + open(d + "/stderr").read() + " ".join(os.listdir(d + "/out"))).lower()
-for w in ("evil", "repository source", "github", "outside", "169.254", "hosts contacted", "example"):
+for w in ("evil", "repository source", "github", "outside", "169.254", "hosts named", "example"):
     assert w not in blob, w
 PY
 CASE="the encrypted artifacts of a run with leaking content (model value, credentials, findings, hosts) hold none of it as readable bytes, and the job log nothing"

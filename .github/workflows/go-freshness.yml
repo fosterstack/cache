@@ -220,7 +220,7 @@ jobs:
 
       - name: install the provider SDK (hash-pinned)
         run: |
-          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
+          python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
 
       - name: mint the federated identity token for the model provider
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -230,8 +230,17 @@ jobs:
             const token = await core.getIDToken('https://api.anthropic.com');
             core.setSecret(token);
             const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
-            fs.writeFileSync(f, token);
+            fs.writeFileSync(f, token, { mode: 0o600 });
             core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);
+            // The assertion lives about five minutes, the job up to two hours and every model call is a new process: re-mint
+            // into the same file every four minutes (the auditor's pattern); the driver removes the file when it is done.
+            const refresh = async () => {
+              try {
+                const t = await core.getIDToken('https://api.anthropic.com');
+                core.setSecret(t); fs.writeFileSync(f, t, { mode: 0o600 });
+              } catch (e) { core.warning(`identity refresh failed: ${e}`); }
+            };
+            setInterval(refresh, 4 * 60 * 1000).unref?.();
 
       - name: run the five personas against the latest release
         env:

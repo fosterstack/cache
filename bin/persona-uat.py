@@ -50,6 +50,8 @@ JENKINS_ENV = "JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
 URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
 METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
+DEFAULT_PORT = 38080        # the image's host port; never 8080: the docs' `kubectl port-forward svc/fscache 8080:80` must work next to the driver (Jenkins and the runner take the next two)
+TOKEN_MARGIN = 900          # seconds the persona's kubeconfig token outlives --agent-timeout
 # the environment an agent and the docker client get: a shell's settings and the docker client's, never a job credential;
 # the agent additionally gets the model identity (names starting with the provider's prefix), which only its provider uses
 # SHELL_ENV and DOCKER_ENV are duplicated verbatim in persona-uat-agent.py (a test asserts they are equal), so the agent and the
@@ -58,8 +60,9 @@ SHELL_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR")
 DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION")
 BASE_ENV = SHELL_ENV + DOCKER_ENV
 MODEL_ENV_PREFIX = "ANTHROPIC_"
-# docs a customer can read: README.md and the TOP-LEVEL docs/*.md; unreleased notes are not public yet
+# docs a customer can read: README.md, RELEASING.md (public customer-facing guidance: how a release is verified) and the TOP-LEVEL docs/*.md; unreleased notes are not public yet
 DOCS_EXCLUDE = ("next-release-notes.md",)
+ROOT_DOCS = ("README.md", "RELEASING.md")
 
 INSTRUCTIONS = {
     "gradle-platform-engineer": (
@@ -68,8 +71,9 @@ INSTRUCTIONS = {
         "using only what is written."),
     "maven-jenkins-ci": (
         "You are a Maven user whose builds run in CI on Jenkins and on a GitLab runner. Following the documentation, wire a Maven "
-        "build to this cache from a Jenkins job and from a GitLab runner job, using the Jenkins and GitLab runner containers you "
-        "are given."),
+        "build to this cache from a Jenkins job, using the Jenkins container you are given. A GitLab runner container is given too, but "
+        "there is no GitLab server in this environment and so no runner registration is possible: it exposes its metrics endpoint only. "
+        "Do not try to run a GitLab job; report what a customer could not do here as friction."),
     "compliance-reviewer": (
         "You are a compliance reviewer. Following the documentation's guide, verify the image's signature, fetch and inspect its "
         "SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is complete and verifiable."),
@@ -81,8 +85,9 @@ INSTRUCTIONS = {
         "version and a rollback to the previous one on the Kubernetes cluster you are given (its kubeconfig is in your working "
         "directory), and find and read the logs you need to diagnose a problem."),
 }
-ENV_LIMITS = ("Some documented steps need tools this environment does not provide (gh, docker, jq, kubectl exec): these are environment limits, not documentation defects. "
-              "Report each as friction, not as blocking, and never as a step that 'fails as written'. ")
+ENV_LIMITS = ("These tools are not in the sandbox: gh, docker, jq (the shell has curl and sh; each other tool image holds only its own program). "
+              "A documented step that needs one of them cannot run here: report as friction, not as blocking. kubectl exec is an environment limit "
+              "(your Role does not allow it): report it as friction too. A step that can run in the sandbox is judged as written: if it fails, that is blocking. ")
 CLASSIFY = ENV_LIMITS + (
     "Classify everything you find. A finding is blocking when it is broken behavior or a documented step that fails as written "
     "(quote the step and what happened). A finding is friction when everything works but something is confusing, slow or easy to "
@@ -145,11 +150,13 @@ class Docker:
         return p.returncode == 0 and p.stdout.strip() == "true"
 
     def remove(self, cids):
-        if cids:
-            try:
-                self.call("rm", "-f", *cids)
-            except Exception:
-                pass
+        """True when every container is gone (nothing to remove counts); a failing `docker rm` is a failed teardown, never ignored"""
+        if not cids:
+            return True
+        try:
+            return self.call("rm", "-f", *cids).returncode == 0
+        except Exception:
+            return False
 
 
 def http_ready(url, strict=False):
@@ -210,13 +217,16 @@ def open_modes(sandbox):
 
 
 def read_docs(repo):
-    """{relative name: bytes} for README.md and top-level docs/*.md; symlinks, dotfiles, subdirectories, other types are never read"""
+    """{relative name: bytes} for README.md, RELEASING.md and top-level docs/*.md; symlinks, dotfiles, subdirectories, other types are never read"""
     files = {}
-    rp = os.path.join(repo, "README.md")
-    data = read_regular(rp)
+    data = read_regular(os.path.join(repo, "README.md"))
     if data is None:
         return None
     files["README.md"] = data
+    for name in ROOT_DOCS[1:]:
+        extra = read_regular(os.path.join(repo, name))
+        if extra is not None:
+            files[name] = extra
     d = os.path.join(repo, "docs")
     if os.path.isdir(d) and not os.path.islink(d):
         for name in sorted(os.listdir(d)):
@@ -244,10 +254,12 @@ def validate_answer(text):
         a = json.loads(text)
     except ValueError:
         raise ValueError("the answer is not JSON")
-    if not isinstance(a, dict) or sorted(k for k in a if k != "commands") != ["findings", "tokens", "transcript"]:
+    if not isinstance(a, dict) or sorted(k for k in a if k not in ("commands", "exits")) != ["findings", "tokens", "transcript"]:
         raise ValueError("the answer does not have exactly findings, tokens and transcript")
     if "commands" in a and not (isinstance(a["commands"], list) and all(isinstance(c, str) for c in a["commands"])):
         raise ValueError("commands is not a list of strings")
+    if "exits" in a and not (isinstance(a["exits"], list) and all(isinstance(c, int) and not isinstance(c, bool) for c in a["exits"]) and len(a["exits"]) == len(a.get("commands", []))):
+        raise ValueError("exits is not a list of integers matching commands")
     if isinstance(a["tokens"], bool) or not isinstance(a["tokens"], int) or a["tokens"] < 0:
         raise ValueError("tokens is not a non-negative integer")
     if not isinstance(a["transcript"], str):
@@ -282,22 +294,24 @@ def settled(ep):
 
 
 def cleanup(docker, label, sandbox, image):
-    """files a tool image created as another uid cannot be removed by the runner: empty the mount from inside, as root"""
+    """files a tool image created as another uid cannot be removed by the runner: empty the mount from inside, as root. -> False when that failed"""
     try:
-        docker.call("run", "--rm", "--network", "none", "--user", "0:0", "--label", label, "-v", "%s:/work" % sandbox, "-w", "/work", image,
-                    "sh", "-c", "rm -rf /work/* /work/.[!.]* /work/..?*", timeout=300)
+        return docker.call("run", "--rm", "--network", "none", "--user", "0:0", "--label", label, "-v", "%s:/work" % sandbox, "-w", "/work", image,
+                           "sh", "-c", "rm -rf /work/* /work/.[!.]* /work/..?*", timeout=300).returncode == 0
     except Exception:
-        pass
+        return False
 
 
 def sweep(docker, label):
+    """remove every container that carries the persona's label. -> False when the daemon could not list or remove them: a survivor may still be sending traffic"""
     try:
         p = docker.call("ps", "-aq", "--filter", "label=" + label)
+        if p.returncode != 0:
+            return False
         ids = p.stdout.split()
-        if ids:
-            docker.call("rm", "-f", *ids)
+        return docker.remove(ids)
     except Exception:
-        pass
+        return False
 
 
 REPO_SRC = "\0repo"
@@ -326,8 +340,18 @@ def descendants(root):
     return out
 
 
-def run_agent(agent_cmd, agent_args, request, sandbox, timeout):
-    """-> (answer or None, transcript text, failure reason or None). The agent's stderr is kept for the transcript FILE only."""
+def streamed(tfile):
+    """what the agent had written to its transcript file (every completed action) before it ended, killed or not"""
+    try:
+        with open(tfile, errors="replace") as fh:
+            return fh.read()[-400000:]
+    except (OSError, TypeError):
+        return ""
+
+
+def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None):
+    """-> (answer or None, transcript text, failure reason or None). The agent's stderr is kept for the transcript FILE only; the actions it completed before a
+    timeout or a failure come from its streamed transcript file."""
     p = subprocess.Popen(agent_cmd + agent_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=sandbox,
                          env=clean_env(MODEL_ENV_PREFIX), text=True, errors="replace", start_new_session=True)
     try:
@@ -343,13 +367,13 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout):
         except ProcessLookupError:
             pass
         out, err = p.communicate()
-        return None, "agent timed out after %ss\n%s" % (timeout, (err or "")[-200000:]), "timed out after %ss" % timeout
+        return None, "agent timed out after %ss\n%s\n%s" % (timeout, streamed(tfile), (err or "")[-200000:]), "timed out after %ss" % timeout
     if p.returncode != 0:
-        return None, "agent failed (exit %d)\n%s" % (p.returncode, err[-200000:]), "the agent failed (exit %d)" % p.returncode
+        return None, "agent failed (exit %d)\n%s\n%s" % (p.returncode, streamed(tfile), err[-200000:]), "the agent failed (exit %d)" % p.returncode
     try:
         return validate_answer(out), None, None
     except ValueError as e:
-        return None, "the agent's answer was refused: %s\n%s" % (e, err[-200000:]), "the agent's answer is outside the contract (%s)" % e
+        return None, "the agent's answer was refused: %s\n%s\n%s" % (e, streamed(tfile), err[-200000:]), "the agent's answer is outside the contract (%s)" % e
 
 
 def absolutize(tokens):
@@ -366,7 +390,10 @@ def host_run(argv, stdin=None, timeout=300):
 
 class Cluster:
     """kind via the job's binary; the admin kubeconfig stays in a private directory of the driver"""
+    leaked = False        # a cluster that could not be deleted exists somewhere: the run's windows are no longer attributable
+
     def __init__(self, image, timeout=300):
+        self.deleted = False
         self.dir = tempfile.mkdtemp(prefix="persona-uat-kube-")
         self.kc = os.path.join(self.dir, "admin.kubeconfig")
         self.created = True
@@ -397,7 +424,7 @@ class Cluster:
             raise RuntimeError("kubectl %s failed" % args[0])
         return p.stdout
 
-    def provision(self):
+    def provision(self, duration):
         ns = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": PERSONA_NS, "labels": {"pod-security.kubernetes.io/" + k: "restricted" for k in ("enforce", "warn", "audit")}}}
         sa = {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "persona", "namespace": PERSONA_NS}}
         role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "persona", "namespace": PERSONA_NS}, "rules": [
@@ -410,7 +437,7 @@ class Cluster:
         rb = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": {"name": "persona", "namespace": PERSONA_NS},
               "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "persona"}, "subjects": [{"kind": "ServiceAccount", "name": "persona", "namespace": PERSONA_NS}]}
         self.kubectl("apply", "-f", "-", stdin=json.dumps({"apiVersion": "v1", "kind": "List", "items": [ns, sa, role, rb]}))
-        token = self.kubectl("create", "token", "persona", "-n", PERSONA_NS, "--duration", "1h").strip()
+        token = self.kubectl("create", "token", "persona", "-n", PERSONA_NS, "--duration", "%ds" % duration).strip()
         if not token:
             raise RuntimeError("no token")
         try:
@@ -426,12 +453,20 @@ class Cluster:
                            "current-context": name}, indent=1)
 
     def delete(self):
+        """-> True when the cluster is gone (or never existed); a failing `kind delete cluster` is a failed teardown"""
+        if self.deleted:
+            return True
+        self.deleted = True
+        ok = True
         if self.created:
             try:
-                host_run(["kind", "delete", "cluster", "--name", KIND_NAME])
+                ok = host_run(["kind", "delete", "cluster", "--name", KIND_NAME]).returncode == 0
             except Exception:
-                pass
+                ok = False
         shutil.rmtree(self.dir, ignore_errors=True)
+        if not ok:
+            Cluster.leaked = True
+        return ok
 
 
 def scrape(endpoint):
@@ -508,7 +543,11 @@ def url_hosts(text):
                 if v and "://" not in v and HOST_RE.match(v):
                     out.add(_host_of(v).lower())
                 continue
-            if t in VALUE_OPTS[prog]:
+            if t.startswith(("--url=", "--proxy=")):         # option=value spellings name a host too
+                v = t.split("=", 1)[1]
+                if "://" not in v and HOST_RE.match(v):
+                    out.add(_host_of(v).lower())
+            elif t in VALUE_OPTS[prog]:
                 skip = True
             elif not t.startswith("-") and "://" not in t and t != prog and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
                 out.add(_host_of(t).lower())
@@ -520,10 +559,29 @@ def registry_of(ref):
     return first.lower() if "/" in ref and ("." in first or ":" in first or first == "localhost") else "docker.io"
 
 
+HOSTS_LABEL = "Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):"
+GITLAB_OMISSION = ("Omitted infrastructure: no GitLab server or runner registration exists in this environment; "
+                   "the GitLab runner container exposes its metrics endpoint only.")
+
+
+VERIFY_RE = re.compile(r"verify|attest|sbom|vex", re.I)
+
+
+def verified_digest(answer, image):
+    """the compliance reviewer's proof: an executed verification action whose command names the RC's DIGEST and exited 0 (the answer's `exits` run parallel to its `commands`)"""
+    digest = image.split("@")[-1]
+    cmds, exits = answer.get("commands", []), answer.get("exits")
+    if not digest.startswith("sha256:") or not isinstance(exits, list) or len(exits) != len(cmds):
+        return False
+    return any(digest in c and e == 0 and VERIFY_RE.search(c) for c, e in zip(cmds, exits))
+
+
 def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None):
     lines = ["VERDICT: %s" % verdict, "persona: %s" % persona, ""]
+    if persona == "maven-jenkins-ci":
+        lines += [GITLAB_OMISSION, ""]
     if hosts is not None:
-        lines += ["Hosts contacted outside the docs: %s" % (", ".join(hosts) if hosts else "none"), ""]
+        lines += ["%s %s" % (HOSTS_LABEL, ", ".join(hosts) if hosts else "none"), ""]
     if did_not_run:
         lines += ["This persona did not run: %s." % did_not_run, ""]
     for kind, title in (("blocking", "Blocking findings"), ("friction", "Friction (information only)")):
@@ -549,7 +607,7 @@ def parse_args():
     ap.add_argument("--docker", default="docker")
     ap.add_argument("--recipient", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "persona-uat-recipient.pem"))
     ap.add_argument("--agent", required=True)
-    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--ready-timeout", type=int, default=120)
     ap.add_argument("--agent-timeout", type=int, default=3600)
     ap.add_argument("--proc-net", default="/proc/net", help="where the kernel's tcp and tcp6 tables are read (a test passes a fixture)")
@@ -634,8 +692,14 @@ def main():
     def record(persona, answer, transcript, did_not_run=None, proven=True):
         if answer:
             findings, tokens = list(answer["findings"]), answer["tokens"]
-            if not findings and not proven:
-                findings.append({"kind": "blocking", "text": "the endpoint was never exercised (its request counter did not move during this persona's run)"})
+            if persona == "compliance-reviewer":
+                proven = verified_digest(answer, a.image)         # the reviewer never calls the endpoint: its proof is a successful verification of the RC's digest
+            if not proven:
+                # no proof of exercising the RC image blocks the persona whatever else it reported (friction stays information, and stays in the report)
+                findings.append({"kind": "blocking", "text": (
+                    "the persona did not exercise the image under test: no verification action (cosign verify, attestation, SBOM or VEX) naming the release candidate's digest exited 0"
+                    if persona == "compliance-reviewer" else
+                    "the persona did not exercise the image under test: the endpoint was never exercised (its request counter did not move during this persona's run)")})
             capped = tokens >= budget
             verdict = "blocking" if any(f["kind"] == "blocking" for f in findings) else ("friction" if findings else "pass")
             hosts = set()
@@ -666,6 +730,9 @@ def main():
     docs = read_docs(os.path.abspath(a.repo))
     started = []
     sandboxes = []
+    teardown_failed = False
+    TD = "teardown failed: window not attributable"
+    token_seconds = min(86400, max(3600, a.agent_timeout + TOKEN_MARGIN))      # the persona's kubeconfig token outlives its window
     try:
         if docs is None:
             all_did_not_run("the public README.md is missing")
@@ -681,10 +748,21 @@ def main():
         for persona in PERSONAS:
             if persona in results:
                 continue
+            if teardown_failed:         # a survivor may still be sending traffic: no window after it is attributable, and nothing new is started
+                record(persona, None, "did not run: %s\n" % TD, "%s (an earlier teardown failed)" % TD)
+                continue
             tool_cids, req_tools = [], {}
             cluster = None
             sandbox = tempfile.mkdtemp(prefix="persona-uat-")
             sandboxes.append(sandbox)
+            tdir = tempfile.mkdtemp(prefix="persona-uat-tr-")          # the agent's streamed transcript: private, outside the sandbox the shell containers mount
+
+            def teardown_tools():
+                """every tool container and the cluster of THIS persona are gone. -> False when one could not be removed"""
+                ok = cluster.delete() if cluster else True
+                ok = docker.remove(tool_cids) and ok
+                del tool_cids[:]
+                return ok and not Cluster.leaked
             try:
                 files = dict(docs)
                 if persona == "readme-evaluator":
@@ -707,13 +785,17 @@ def main():
                             req_tools[tool] = {"container": tc, "endpoint": "http://127.0.0.1:%d" % (a.port + 2)}
                         else:
                             cluster = Cluster(tools[tool], timeout=max(a.ready_timeout * 2, 3))
-                            kc = cluster.provision()
+                            kc = cluster.provision(token_seconds)
                             with open(os.path.join(sandbox, "kubeconfig"), "w") as fh:
                                 fh.write(kc)
                             open_modes(sandbox)
                             req_tools[tool] = {"endpoint": cluster.server, "kubeconfig": "kubeconfig", "namespace": PERSONA_NS}
                 except Exception as e:
-                    record(persona, None, "did not run: %s\n" % e, "a tool container did not start or answer (%s)" % e)
+                    reason = "a tool container did not start or answer (%s)" % e
+                    if not teardown_tools():
+                        teardown_failed = True
+                        reason += "; " + TD
+                    record(persona, None, "did not run: %s\n" % reason, reason)
                     continue
                 if not docker.running(started[0]):
                     record(persona, None, "did not run: the image under test stopped\n", "the image under test stopped")
@@ -734,33 +816,43 @@ def main():
                            "an unexpected listener is bound to the loopback (port%s %s): a persona's containers share the host network, so none runs" % ("s" if len(stray) > 1 else "", ", ".join(map(str, stray))))
                     continue
                 label = "persona-uat=%s" % uuid.uuid4()
-                args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label]
+                tfile = os.path.join(tdir, "transcript")
+                args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label, "--transcript-file", tfile]
                 ep = "http://127.0.0.1:%d" % a.port
                 before = scrape(ep)
-                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, a.agent_timeout)
-                sweep(docker, label)                # containers are the daemon's: whatever this persona's agent left is removed before the window closes
+                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, a.agent_timeout, tfile)
+                swept = sweep(docker, label)        # containers are the daemon's: whatever this persona's agent left is removed before the window closes
                 after = settled(ep)
-                cleanup(docker, label, sandbox, tools["shell"])
+                cleaned = cleanup(docker, label, sandbox, tools["shell"])
+                tools_gone = teardown_tools()       # the tool containers and the cluster go after the window is read, before the next persona's
                 ok = before is not None and after is not None and after - before > 0 and not (before == 0 and prev[0] > 0)
                 if after is not None:
                     prev[0] = after
-                if answer is None:
+                if not (swept and tools_gone and cleaned):
+                    teardown_failed = True          # this persona and every later one: a survivor may have sent traffic into a window we cannot attribute
+                    record(persona, None, (transcript if answer is None else answer["transcript"]) or "", "%s%s" % (TD, "" if answer is not None else "; " + why))
+                elif answer is None:
                     record(persona, None, transcript, why)
                 else:
                     record(persona, answer, answer["transcript"], proven=ok)
             finally:
-                if cluster:
-                    cluster.delete()
-                docker.remove(tool_cids)
+                teardown_tools()
+                shutil.rmtree(tdir, ignore_errors=True)
     finally:
         docker.remove(started)
-        for s in sandboxes:
-            for d, dirs, fs in os.walk(s):
+        for s_ in sandboxes:
+            for d, dirs, fs in os.walk(s_):
                 try:
                     os.chmod(d, 0o777)
                 except OSError:
                     pass
-            shutil.rmtree(s, ignore_errors=True)
+            shutil.rmtree(s_, ignore_errors=True)
+        tf = os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE")       # the job re-mints it every few minutes; nothing of it outlives this run
+        if tf:
+            try:
+                os.remove(tf)
+            except OSError:
+                pass
     return finish(results, out_dir)
 
 
