@@ -1,6 +1,10 @@
 {
-  "jenkins": "docker.io/jenkins/jenkins@sha256:cce1eeb79902722f3cf7a8831c41e95c39f4a42b9a2981959630cc66539b3c2d",
+  "cosign": "gcr.io/projectsigstore/cosign@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8",
   "gitlab-runner": "docker.io/gitlab/gitlab-runner@sha256:1114649f86b818a030549f94624aa1b38a2275045bd47d37027a87f21c48feec",
-  "kind": "docker.io/kindest/node@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30",
+  "gradle": "docker.io/library/gradle@sha256:3695cd3c4b617ccb7b351ff1481c0f141c5e87a89872dc8ca1e5a8eeac6a85e3",
+  "jenkins": "docker.io/jenkins/jenkins@sha256:cce1eeb79902722f3cf7a8831c41e95c39f4a42b9a2981959630cc66539b3c2d",
+  "kind": "docker.io/kindest/node@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5",
+  "kubectl": "registry.k8s.io/kubectl@sha256:5ed410ebac5dc976cc717098994dcdb29bbbd38f6bd65f582311f5be4ba719cf",
+  "maven": "docker.io/library/maven@sha256:d6e32a254897415a445654a3c43c30fbc731a4d946cf5c66d1cb9184141c20c1",
   "shell": "docker.io/curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69"
 }

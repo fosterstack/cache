@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""The persona UAT driver (REQ-UAT-001-AC1..AC5; owner ratified Oct 3 and Oct 4, point 9).
+"""The persona UAT driver (REQ-UAT-001-AC1..AC5; owner ratified Oct 3 and Oct 4, point 9; results stay private, amendment 0215).
 
 Five agents, each playing a different customer, read only our PUBLIC documents and exercise the image under test by digest.
-The driver owns everything with authority: it starts the image and the pinned CI tools (Jenkins, a GitLab runner, kind) as
-digest-pinned containers on loopback, builds a sandbox holding only README.md and the top-level docs, runs one agent per
-persona with a scrubbed environment, validates what each agent answers (anything that is not exactly the contract is
-blocking, "did not run"), writes ONE short report per persona, and publishes issues (--publish) through gh.
+The driver owns everything with authority: it starts the image and the pinned CI tools (Jenkins, a GitLab runner) as
+digest-pinned containers on loopback, creates the on-call persona's kind cluster with the job's kind binary, builds a sandbox
+holding only README.md and the top-level docs, runs one agent per persona with a scrubbed environment, validates what each
+agent answers (anything that is not exactly the contract is blocking, "did not run"), proves each persona reached the
+endpoint (the image's request counter), and writes ONE encrypted artifact per persona.
 
-  persona-uat.py --mode rc|weekly --image REF@sha256:... --repo DIR --out DIR --tools FILE --docker CMD --gh CMD
-                 --agent CMD [--port N] [--ready-timeout S] [--agent-timeout S] [--publish]
+  persona-uat.py --mode rc|weekly --image REF@sha256:... --repo DIR --out DIR --tools FILE [--docker CMD] [--recipient CERT]
+                 --agent CMD [--port N] [--ready-timeout S] [--agent-timeout S]
   env PERSONA_UAT_MODEL, PERSONA_UAT_COMPLIANCE_MODEL (required; no built-in default), PERSONA_UAT_TOKEN_BUDGET (default 400000)
 
-Public surfaces (this repository is public; job logs and artifacts are public): a report is SCANNED before it is written; a
-hit replaces it with a fixed notice and counts that persona as blocking. Raw transcripts are written under --out and are
-never echoed to stdout or stderr. Containers are FIXED-ARGUMENT: every docker command is built here from the allowlisted
-images and fixed options, the docker client gets an allowlisted environment, and no credential is passed to a container.
-Exit status: 0 clean (or weekly with its blocking issue published), 1 a blocking finding or a publication failure, 2 a refused
-configuration (nothing was started), 3 the public docs are missing.
+Results are private (this repository is public; job logs and artifacts are public): the only output is one
+`persona-uat: <persona|overall>: pass|fail` line per persona and overall, on stdout and in GITHUB_STEP_SUMMARY. Each persona's
+report and transcript are encrypted (openssl cms, AES-256, to the committed recipient certificate) into <out>/<persona>.cms;
+if any encryption fails, no file is left in --out. The driver opens no issue and calls no gh. Containers are FIXED-ARGUMENT: every
+docker command is built here from the allowlisted images and fixed options, the docker client gets an allowlisted environment,
+and no credential is passed to a container.
+Exit status: 0 clean (friction is information, never a failure), 1 a blocking persona (in rc and weekly mode alike) or a failed
+encryption, 2 a refused configuration (nothing was started), 3 the public docs are missing.
 """
 import argparse
 import json
@@ -31,12 +34,21 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import base64
+import uuid
+import shlex as _shlex
 
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
-TOOL_KEYS = ("jenkins", "gitlab-runner", "kind", "shell")
+TOOL_KEYS = ("cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell")
+KIND_NAME = "persona-uat"
+PERSONA_NS = "persona"
+JENKINS_ENV = "JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
+URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
+METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
 # the environment an agent and the docker client get: a shell's settings and the docker client's, never a job credential;
 # the agent additionally gets the model identity (names starting with the provider's prefix), which only its provider uses
@@ -48,9 +60,6 @@ BASE_ENV = SHELL_ENV + DOCKER_ENV
 MODEL_ENV_PREFIX = "ANTHROPIC_"
 # docs a customer can read: README.md and the TOP-LEVEL docs/*.md; unreleased notes are not public yet
 DOCS_EXCLUDE = ("next-release-notes.md",)
-FRICTION_LABEL = "persona-uat-friction"
-BLOCKING_LABEL = "blocking"
-BLOCKING_TITLE = "Persona UAT: blocking findings (weekly)"
 
 INSTRUCTIONS = {
     "gradle-platform-engineer": (
@@ -72,15 +81,14 @@ INSTRUCTIONS = {
         "version and a rollback to the previous one on the Kubernetes cluster you are given (its kubeconfig is in your working "
         "directory), and find and read the logs you need to diagnose a problem."),
 }
-CLASSIFY = (
+ENV_LIMITS = ("Some documented steps need tools this environment does not provide (gh, docker, jq, kubectl exec): these are environment limits, not documentation defects. "
+              "Report each as friction, not as blocking, and never as a step that 'fails as written'. ")
+CLASSIFY = ENV_LIMITS + (
     "Classify everything you find. A finding is blocking when it is broken behavior or a documented step that fails as written "
     "(quote the step and what happened). A finding is friction when everything works but something is confusing, slow or easy to "
     "get wrong. Report nothing you did not observe.")
 
 # The driver's own source holds no model or vendor name (a rule the tests enforce), so the scan's list is assembled from parts.
-_NAMES = [("anth", "ropic"), ("cla", "ude"), ("open", "ai"), ("g", "pt"), ("co", "dex"), ("gem", "ini"), ("google", " ai"), ("lla", "ma"),
-          ("mist", "ral"), ("son", "net"), ("op", "us"), ("hai", "ku"), ("fa", "ble")]
-VENDOR_RE = re.compile("|".join(r"\b" + re.escape("".join(p)) for p in _NAMES), re.I)
 CRED_RES = [re.compile(x) for x in (
     r"gh[pousr]_[A-Za-z0-9]{8,}", r"github_pat_[A-Za-z0-9_]{8,}", r"\b(AKIA|ASIA)[0-9A-Z]{12,}", r"\bsk-[A-Za-z0-9_-]{12,}",
     r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}", r"-----BEGIN", r"\bxox[abprs]-[A-Za-z0-9-]{8,}", r"\bAIza[0-9A-Za-z_-]{16,}",
@@ -90,8 +98,6 @@ CRED_RES = [re.compile(x) for x in (
     r"(?i)authorization[\"']?\s*[:=]\s*[\"']?(basic|bearer|token)\s+[\"']?\S+",
     r"(?i)[A-Za-z0-9_.-]*(secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*[\"']?[^\s\"']{8,}",
     r"(?i)\b(password|passwd|pwd|secret|token)[\"']?\s*[=:]\s*[\"']?[^\s\"']{4,}")]
-BASE64_RUN = re.compile(r"[A-Za-z0-9+/_=-]{40,}")
-IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")      # a content digest is public by construction, not a credential
 
 
 class Refuse(Exception):
@@ -100,23 +106,6 @@ class Refuse(Exception):
 
 def log(msg):
     sys.stderr.write("persona-uat: %s\n" % msg)
-
-
-def scan_hit(text, secrets):
-    """True when text holds a model/vendor name, an owner-set model value, or a credential-looking string"""
-    t = IMAGE_DIGEST.sub("", text)
-    if VENDOR_RE.search(t):
-        return True
-    low = t.lower()
-    if any(s and s.lower() in low for s in secrets):
-        return True
-    if any(r.search(t) for r in CRED_RES):
-        return True
-    for m in BASE64_RUN.finditer(t):          # a long run that looks random: upper, lower and a digit (paths and words are not)
-        v = m.group(0)
-        if re.search(r"[A-Z]", v) and re.search(r"[a-z]", v) and re.search(r"[0-9]", v):
-            return True
-    return False
 
 
 def clean_env(extra_prefix=None):
@@ -138,14 +127,14 @@ class Docker:
     def call(self, *args, timeout=120):
         return subprocess.run(self.cmd + list(args), capture_output=True, text=True, timeout=timeout, env=docker_env())
 
-    def start(self, ref, port_map=None, privileged=False):
-        """`run -d [--privileged] [-p 127.0.0.1:H:C] REF`: the only shapes the driver ever builds"""
+    def start(self, ref, port_map=None, env=None, tail=()):
+        """`run -d [-e FIXED] [-p 127.0.0.1:H:C] REF`: the only shapes the driver ever builds"""
         args = ["run", "-d"]
-        if privileged:
-            args.append("--privileged")
+        if env:
+            args += ["-e", env]
         if port_map:
             args += ["-p", "127.0.0.1:%d:%d" % port_map]
-        p = self.call(*args, ref)
+        p = self.call(*args, ref, *tail)
         cid = p.stdout.strip()
         if p.returncode != 0 or not cid or len(cid.split()) != 1:
             raise RuntimeError("could not start a container")
@@ -163,12 +152,12 @@ class Docker:
                 pass
 
 
-def http_ready(url):
+def http_ready(url, strict=False):
     try:
         urllib.request.urlopen(url, timeout=2)
         return True
     except urllib.error.HTTPError as e:
-        return e.code < 500
+        return False if strict else e.code < 500
     except Exception:
         return False
 
@@ -199,13 +188,13 @@ def loopback_listeners(proc_net):
     return ports
 
 
-def wait_ready(docker, cid, url, timeout):
+def wait_ready(docker, cid, url, timeout, strict=False):
     """running AND answering; a container that stops is a failure at once"""
     deadline = time.time() + timeout
     while True:
         if not docker.running(cid):
             raise RuntimeError("a container is not running")
-        if url is None or http_ready(url):
+        if url is None or http_ready(url, strict):
             return
         if time.time() >= deadline:
             raise RuntimeError("a container never answered on its endpoint")
@@ -215,7 +204,7 @@ def wait_ready(docker, cid, url, timeout):
 def open_modes(sandbox):
     """the container runs as another uid: the sandbox and everything in it is readable and traversable by all, writable by the owner only"""
     for d, dirs, fs in os.walk(sandbox):
-        os.chmod(d, 0o755)
+        os.chmod(d, 0o777)
         for f in fs:
             os.chmod(os.path.join(d, f), 0o644)
 
@@ -255,8 +244,10 @@ def validate_answer(text):
         a = json.loads(text)
     except ValueError:
         raise ValueError("the answer is not JSON")
-    if not isinstance(a, dict) or sorted(a) != ["findings", "tokens", "transcript"]:
+    if not isinstance(a, dict) or sorted(k for k in a if k != "commands") != ["findings", "tokens", "transcript"]:
         raise ValueError("the answer does not have exactly findings, tokens and transcript")
+    if "commands" in a and not (isinstance(a["commands"], list) and all(isinstance(c, str) for c in a["commands"])):
+        raise ValueError("commands is not a list of strings")
     if isinstance(a["tokens"], bool) or not isinstance(a["tokens"], int) or a["tokens"] < 0:
         raise ValueError("tokens is not a non-negative integer")
     if not isinstance(a["transcript"], str):
@@ -271,6 +262,70 @@ def validate_answer(text):
     return a
 
 
+def settled(ep):
+    """the real server counts AFTER its response: wait until the total has been UNCHANGED across readings spanning 0.8s, giving up after 8s"""
+    v = scrape(ep)
+    if v is None:
+        return None
+    t0 = quiet = time.time()
+    while time.time() - quiet < 0.8:
+        if time.time() - t0 >= 8:
+            return None                 # never settles: not attributable
+        
+        time.sleep(0.2)
+        w = scrape(ep)
+        if w is None:
+            return None
+        if w != v:
+            v, quiet = w, time.time()
+    return v
+
+
+def cleanup(docker, label, sandbox, image):
+    """files a tool image created as another uid cannot be removed by the runner: empty the mount from inside, as root"""
+    try:
+        docker.call("run", "--rm", "--network", "none", "--user", "0:0", "--label", label, "-v", "%s:/work" % sandbox, "-w", "/work", image,
+                    "sh", "-c", "rm -rf /work/* /work/.[!.]* /work/..?*", timeout=300)
+    except Exception:
+        pass
+
+
+def sweep(docker, label):
+    try:
+        p = docker.call("ps", "-aq", "--filter", "label=" + label)
+        ids = p.stdout.split()
+        if ids:
+            docker.call("rm", "-f", *ids)
+    except Exception:
+        pass
+
+
+REPO_SRC = "\0repo"
+GH_API_SRC = re.compile(r"^https?://api\.github\.com/repos/[^/\s]+/[^/\s]+/(?:tarball|zipball)(?:[/?]|$)", re.I)
+GH_SRC = re.compile(r"^https?://github\.com/[^/\s]+/[^/\s]+/(?:archive|raw|blob|tree)/", re.I)
+
+
+def scrub(text, secrets):
+    for v in secrets:
+        if v:
+            text = text.replace(v, "[scrubbed]")
+    for r in CRED_RES:
+        text = r.sub("[scrubbed]", text)
+    return text
+
+
+def descendants(root):
+    q = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout.split()
+    kids = {}
+    for pid, ppid in zip(q[::2], q[1::2]):
+        kids.setdefault(int(ppid), []).append(int(pid))
+    out, todo = [], [root]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            out.append(c); todo.append(c)
+    return out
+
+
 def run_agent(agent_cmd, agent_args, request, sandbox, timeout):
     """-> (answer or None, transcript text, failure reason or None). The agent's stderr is kept for the transcript FILE only."""
     p = subprocess.Popen(agent_cmd + agent_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=sandbox,
@@ -278,6 +333,11 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout):
     try:
         out, err = p.communicate(json.dumps(request), timeout=timeout)
     except subprocess.TimeoutExpired:
+        for pid in descendants(p.pid):          # work the agent started in other sessions survives a killpg: find it first
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         try:
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -300,20 +360,170 @@ def absolutize(tokens):
     return out
 
 
-def kubeconfig_for(docker, cid, port, timeout):
-    deadline = time.time() + timeout
-    while True:
-        p = docker.call("exec", cid, "cat", "/etc/kubernetes/admin.conf")
-        if p.returncode == 0 and "server:" in p.stdout:
-            kc = re.sub(r"server:\s*https://[^\s:]+:\d+", "server: https://127.0.0.1:%d" % port, p.stdout)
-            return kc
-        if time.time() >= deadline:
-            raise RuntimeError("no kubeconfig from the kind container")
-        time.sleep(0.5)
+def host_run(argv, stdin=None, timeout=300):
+    return subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout, env=clean_env())
 
 
-def report_text(persona, verdict, findings, tokens, capped, did_not_run=None):
+class Cluster:
+    """kind via the job's binary; the admin kubeconfig stays in a private directory of the driver"""
+    def __init__(self, image, timeout=300):
+        self.dir = tempfile.mkdtemp(prefix="persona-uat-kube-")
+        self.kc = os.path.join(self.dir, "admin.kubeconfig")
+        self.created = True
+        try:
+            self._create(image, timeout)
+        except BaseException:
+            self.delete()
+            raise
+
+    def _create(self, image, timeout):
+        try:
+            p = host_run(["kind", "create", "cluster", "--image", image, "--name", KIND_NAME, "--kubeconfig", self.kc], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("kind create cluster timed out")
+        if p.returncode != 0:
+            raise RuntimeError("kind create cluster failed")
+        admin = open(self.kc).read()
+        m = re.search(r"server:\s*(https://127\.0\.0\.1:(\d+))", admin)
+        c = re.search(r"certificate-authority-data:\s*(\S+)", admin)
+        if not m or not c:
+            raise RuntimeError("the admin kubeconfig is not readable")
+        self.server, self.port, self.ca = m.group(1), int(m.group(2)), c.group(1)
+        self.kubectl("wait", "--for=condition=Ready", "node", "--all", "--timeout=120s")       # `kind create cluster --wait 0s` returns before the node is Ready
+
+    def kubectl(self, *args, stdin=None):
+        p = host_run(["kubectl", "--kubeconfig", self.kc] + list(args), stdin)
+        if p.returncode != 0:
+            raise RuntimeError("kubectl %s failed" % args[0])
+        return p.stdout
+
+    def provision(self):
+        ns = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": PERSONA_NS, "labels": {"pod-security.kubernetes.io/" + k: "restricted" for k in ("enforce", "warn", "audit")}}}
+        sa = {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "persona", "namespace": PERSONA_NS}}
+        role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "persona", "namespace": PERSONA_NS}, "rules": [
+            {"apiGroups": [""], "resources": ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims", "events"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+            {"apiGroups": ["apps"], "resources": ["deployments", "replicasets"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+            {"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+            {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get", "list"]},
+            {"apiGroups": [""], "resources": ["pods/portforward"], "verbs": ["create"]},
+            {"apiGroups": ["apps"], "resources": ["deployments/scale"], "verbs": ["get", "update", "patch"]}]}
+        rb = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": {"name": "persona", "namespace": PERSONA_NS},
+              "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "persona"}, "subjects": [{"kind": "ServiceAccount", "name": "persona", "namespace": PERSONA_NS}]}
+        self.kubectl("apply", "-f", "-", stdin=json.dumps({"apiVersion": "v1", "kind": "List", "items": [ns, sa, role, rb]}))
+        token = self.kubectl("create", "token", "persona", "-n", PERSONA_NS, "--duration", "1h").strip()
+        if not token:
+            raise RuntimeError("no token")
+        try:
+            pl = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
+            life = pl["exp"] - pl["iat"]
+        except Exception:
+            life = 0
+        if life < 3600 or life > 86400:
+            raise RuntimeError("the issued token is shorter-lived than a persona window")
+        name = "kind-" + KIND_NAME
+        return json.dumps({"apiVersion": "v1", "kind": "Config", "clusters": [{"name": name, "cluster": {"server": self.server, "certificate-authority-data": self.ca}}],
+                           "users": [{"name": "persona", "user": {"token": token}}], "contexts": [{"name": name, "context": {"cluster": name, "user": "persona", "namespace": PERSONA_NS}}],
+                           "current-context": name}, indent=1)
+
+    def delete(self):
+        if self.created:
+            try:
+                host_run(["kind", "delete", "cluster", "--name", KIND_NAME])
+            except Exception:
+                pass
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def scrape(endpoint):
+    """sum of every fscache_http_requests_total sample (0 when the exposition holds none), or None when /metrics cannot be read"""
+    try:
+        with urllib.request.urlopen(endpoint + "/metrics", timeout=10) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    total, valid = 0.0, False
+    for ln in body.splitlines():
+        if ln.startswith("# TYPE") or ln.startswith("# HELP"):
+            valid = True
+        m = METRIC_RE.match(ln)
+        if m:
+            valid = True
+            total += float(m.group(2))
+    return total if valid else None
+
+
+HOST_RE = re.compile(r"^(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::[0-9]+)?(?:/.*)?$|^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?(?:/.*)?$")
+VALUE_OPTS = {"curl": {"-o", "--output", "-u", "--user", "-H", "--header", "-d", "--data", "-X", "--request", "-A", "--user-agent", "-e", "--referer", "-T", "-F", "--cacert", "--max-time", "-m", "--retry"},
+              "wget": {"-O", "-o", "-P", "--output-document", "--user", "--password", "--header", "-t", "-T"}}
+
+
+def _host_of(tok):
+    try:
+        return urllib.parse.urlsplit("//" + tok).hostname
+    except ValueError:
+        return None
+
+
+def url_hosts(text):
+    out = set()
+    lines_ = []
+    for l in text.splitlines():
+        if l.lstrip().startswith("#"):
+            continue
+        try:
+            l = " ".join(_shlex.split(l, comments=True))        # an inline `# comment` is not a contact either
+        except ValueError:
+            pass
+        lines_.append(l)
+    text = "\n".join(lines_)
+    clone_urls = {u for ln in text.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
+    for u in URL_RE.findall(text):
+        try:
+            h = urllib.parse.urlsplit(u).hostname
+        except ValueError:
+            continue
+        if h:
+            h = h.lower()
+            out.add(h + REPO_SRC if (h in ("raw.githubusercontent.com", "codeload.github.com") or GH_SRC.match(u) or GH_API_SRC.match(u) or (u in clone_urls and h == "github.com")) else h)
+    for line in text.splitlines():
+        try:
+            toks = _shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        prog = next((t for t in toks if t in ("curl", "wget", "kubectl", "cosign")), None)
+        if prog is None:
+            continue
+        if prog == "cosign":
+            for t in toks:
+                if "://" not in t and re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::[0-9]+)?/\S+$", t):
+                    out.add(t.split("/")[0].lower())
+            continue
+        skip = False
+        for i, t in enumerate(toks):
+            if skip:
+                skip = False
+                continue
+            if prog == "kubectl":
+                v = t.split("=", 1)[1] if t.startswith("--server=") else (toks[i + 1] if t == "--server" and i + 1 < len(toks) else None)
+                if v and "://" not in v and HOST_RE.match(v):
+                    out.add(_host_of(v).lower())
+                continue
+            if t in VALUE_OPTS[prog]:
+                skip = True
+            elif not t.startswith("-") and "://" not in t and t != prog and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
+                out.add(_host_of(t).lower())
+    return out
+
+
+def registry_of(ref):
+    first = ref.split("/")[0]
+    return first.lower() if "/" in ref and ("." in first or ":" in first or first == "localhost") else "docker.io"
+
+
+def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None):
     lines = ["VERDICT: %s" % verdict, "persona: %s" % persona, ""]
+    if hosts is not None:
+        lines += ["Hosts contacted outside the docs: %s" % (", ".join(hosts) if hosts else "none"), ""]
     if did_not_run:
         lines += ["This persona did not run: %s." % did_not_run, ""]
     for kind, title in (("blocking", "Blocking findings"), ("friction", "Friction (information only)")):
@@ -329,81 +539,6 @@ def report_text(persona, verdict, findings, tokens, capped, did_not_run=None):
     return "\n".join(lines).rstrip() + "\n"
 
 
-WITHHELD = ("VERDICT: blocking\npersona: %s\n\nThis report was withheld by the public-surface scan (it held a model or vendor name, an "
-            "owner-set value or a credential-looking string). The run counts this persona as BLOCKING; read the transcript artifact "
-            "under access control, not this report.\n")
-CAP_NOTICE = "THIS PERSONA HIT ITS TOKEN CAP: its run may be incomplete.\n"
-
-
-class Gh:
-    def __init__(self, cmd):
-        self.cmd = cmd
-        self.failed = False
-        self.env = dict(os.environ)
-        if os.environ.get("GITHUB_REPOSITORY"):
-            self.env["GH_REPO"] = os.environ["GITHUB_REPOSITORY"]      # the weekly workspace root has no .git
-
-    def call(self, *args):
-        p = subprocess.run(self.cmd + list(args), capture_output=True, text=True, env=self.env, timeout=120)
-        return p
-
-    def ensure_label(self, name, description, color):
-        p = self.call("label", "create", name, "--force", "--description", description, "--color", color)
-        if p.returncode != 0:
-            log("could not create the label %s" % name)
-            self.failed = True
-
-    def find(self, label, state, title):
-        """-> issue number of the exact-title match, None when there is none; raises on a failing or unreadable list"""
-        p = self.call("issue", "list", "--label", label, "--state", state, "--search", "%s in:title" % title, "--json", "number,title", "--limit", "100")
-        if p.returncode != 0:
-            raise RuntimeError("issue list failed")
-        try:
-            items = json.loads(p.stdout)
-        except ValueError:
-            raise RuntimeError("the issue list is not JSON")
-        if not isinstance(items, list) or not all(isinstance(i, dict) and isinstance(i.get("title"), str) and isinstance(i.get("number"), int)
-                                                  and not isinstance(i.get("number"), bool) for i in items):
-            raise RuntimeError("the issue list is not a list of issues")
-        for i in items:
-            if i["title"] == title:
-                return i["number"]
-        return None
-
-    def upsert(self, label, description, color, state, title, body_file):
-        try:
-            self.ensure_label(label, description, color)
-            n = self.find(label, state, title)
-            if n is None:
-                p = self.call("issue", "create", "--title", title, "--label", label, "--body-file", body_file)
-            else:
-                p = self.call("issue", "edit", str(n), "--body-file", body_file)
-            if p.returncode != 0:
-                raise RuntimeError("issue create/edit failed")
-        except Exception as e:
-            log("publishing the %s issue failed: %s" % (label, e))
-            self.failed = True
-
-
-def issue_body(heading, mode, run_id, image, rows):
-    lines = [heading, "", "mode: %s, run: %s, image: %s" % (mode, run_id, image), ""]
-    for persona, kind, text in rows:
-        lines.append("- %s (%s): %s" % (persona, kind, text.strip()))
-    return "\n".join(lines) + "\n"
-
-
-def safe_issue_body(body, results, secrets):
-    """the issue body, or (when it hits the public-surface scan) a fixed notice of verdicts and counts with no free text"""
-    if not scan_hit(body, secrets):
-        return body
-    lines = ["The persona UAT issue text was withheld by the public-surface scan. Read the run's transcript artifact under access control.", ""]
-    for p in PERSONAS:
-        fs = results[p]["findings"]
-        lines.append("- %s: %s (blocking: %d, friction: %d)" % (
-            p, results[p]["verdict"], sum(f["kind"] == "blocking" for f in fs), sum(f["kind"] == "friction" for f in fs)))
-    return "\n".join(lines) + "\n"
-
-
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=("rc", "weekly"), required=True)
@@ -412,12 +547,11 @@ def parse_args():
     ap.add_argument("--out", required=True)
     ap.add_argument("--tools", required=True)
     ap.add_argument("--docker", default="docker")
-    ap.add_argument("--gh", default="gh")
+    ap.add_argument("--recipient", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "persona-uat-recipient.pem"))
     ap.add_argument("--agent", required=True)
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--ready-timeout", type=int, default=120)
     ap.add_argument("--agent-timeout", type=int, default=3600)
-    ap.add_argument("--publish", action="store_true")
     ap.add_argument("--proc-net", default="/proc/net", help="where the kernel's tcp and tcp6 tables are read (a test passes a fixture)")
     ap.add_argument("--allow-listen", type=int, action="append", default=[], help="a loopback port that may listen besides the driver's own")
     try:
@@ -452,6 +586,12 @@ def configure(a):
             raise Refuse("the tool %s is not pinned by a full sha256 digest" % k)
     if not 1 <= a.port <= 65533:
         raise Refuse("--port is out of range")
+    try:
+        cert = open(a.recipient).read()
+    except OSError:
+        raise Refuse("--recipient is not readable")
+    if "PRIVATE KEY" in cert or "BEGIN CERTIFICATE" not in cert:
+        raise Refuse("--recipient is not a certificate (a private key is never accepted)")
     return models, budget, tools
 
 
@@ -467,34 +607,56 @@ def main():
         docker_cmd[0] = os.path.abspath(docker_cmd[0])
     docker = Docker(docker_cmd)
     agent_cmd = absolutize(shlex.split(a.agent))
-    gh = Gh(shlex.split(a.gh))
     out_dir = os.path.abspath(a.out)
     os.makedirs(out_dir, exist_ok=True)
     secrets = [v for v in models.values() if len(v) >= 4]
     run_id = os.environ.get("GITHUB_RUN_ID") or "local"
 
+    prev = [0.0]
     results = {}        # persona -> {"verdict", "findings", "tokens", "capped"}
 
-    def record(persona, answer, transcript, did_not_run=None):
+    def known_hosts():
+        doc_hosts = set()
+        for data in (docs or {}).values():
+            doc_hosts |= url_hosts(data.decode("utf-8", "replace"))
+        return doc_hosts | {"127.0.0.1", "localhost"} | {registry_of(v) for v in tools.values()}
+
+    def labelled(hosts):
+        src = {h for h in hosts if h.endswith(REPO_SRC)}
+        plain = {h for h in hosts if not h.endswith(REPO_SRC)}
+        out = set()
+        for h in (plain - known_hosts()):
+            out.add(h)
+        for h in src:
+            out.add(h[:-len(REPO_SRC)] + " (repository source)")
+        return sorted(out)
+
+    def record(persona, answer, transcript, did_not_run=None, proven=True):
         if answer:
             findings, tokens = list(answer["findings"]), answer["tokens"]
+            if not findings and not proven:
+                findings.append({"kind": "blocking", "text": "the endpoint was never exercised (its request counter did not move during this persona's run)"})
             capped = tokens >= budget
             verdict = "blocking" if any(f["kind"] == "blocking" for f in findings) else ("friction" if findings else "pass")
-            text = report_text(persona, verdict, findings, tokens, capped)
+            hosts = set()
+            for c in answer.get("commands", []):
+                hosts |= url_hosts(c)
+            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts))
         else:       # fail closed: whatever is not exactly the contract is a blocking persona that did not run
             findings = [{"kind": "blocking", "text": "%s did not run: %s" % (persona, did_not_run)}]
             tokens, capped, verdict = None, False, "blocking"
-            text = report_text(persona, verdict, [], None, False, did_not_run)
-        if scan_hit(text, secrets):
-            text = WITHHELD % persona + (CAP_NOTICE if capped else "")
-            findings = [{"kind": "blocking", "text": "the report was withheld by the public-surface scan"}]
+            hosts = set()
+            for ln in transcript.splitlines():
+                if ln.startswith("$ "):
+                    hosts |= url_hosts(ln[2:])
+            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts))
+        transcript = scrub(transcript, secrets)
+        ok = encrypt(a.recipient, persona, out_dir, text + "\n=== TRANSCRIPT ===\n" + transcript)
+        if not ok:          # no readable fallback: the persona fails closed and nothing plaintext exists
+            findings = [{"kind": "blocking", "text": "the report could not be encrypted"}]
             verdict = "blocking"
-        with open(os.path.join(out_dir, persona + ".report.md"), "w") as fh:
-            fh.write(text)
-        with open(os.path.join(out_dir, persona + ".transcript.txt"), "w") as fh:
-            fh.write(transcript)
-        results[persona] = {"verdict": verdict, "findings": findings, "tokens": tokens, "capped": capped}
-        log("%s: %s" % (persona, verdict))
+        results[persona] = {"verdict": verdict, "findings": findings, "tokens": tokens, "capped": capped, "encfail": not ok}
+        sys.stderr.write("persona-uat: %s: %s\n" % (persona, "fail" if verdict == "blocking" else "pass"))
 
     def all_did_not_run(reason):
         for p in PERSONAS:
@@ -506,9 +668,8 @@ def main():
     sandboxes = []
     try:
         if docs is None:
-            log("README.md is missing or is not a regular file: there is nothing public to test")
             all_did_not_run("the public README.md is missing")
-            finish(a, results, out_dir, gh, run_id, budget, secrets)
+            finish(results, out_dir)
             return 3
         # the image under test: by digest, loopback only
         try:
@@ -521,6 +682,7 @@ def main():
             if persona in results:
                 continue
             tool_cids, req_tools = [], {}
+            cluster = None
             sandbox = tempfile.mkdtemp(prefix="persona-uat-")
             sandboxes.append(sandbox)
             try:
@@ -536,21 +698,20 @@ def main():
                 try:
                     for i, tool in enumerate(TOOLS_FOR.get(persona, ())):
                         if tool == "jenkins":
-                            tc = docker.start(tools[tool], (a.port + 1, 8080)); tool_cids.append(tc)
-                            wait_ready(docker, tc, "http://127.0.0.1:%d" % (a.port + 1), a.ready_timeout)
+                            tc = docker.start(tools[tool], (a.port + 1, 8080), env=JENKINS_ENV); tool_cids.append(tc)
+                            wait_ready(docker, tc, "http://127.0.0.1:%d" % (a.port + 1), a.ready_timeout, strict=True)
                             req_tools[tool] = {"container": tc, "endpoint": "http://127.0.0.1:%d" % (a.port + 1)}
                         elif tool == "gitlab-runner":
-                            tc = docker.start(tools[tool]); tool_cids.append(tc)
-                            wait_ready(docker, tc, None, a.ready_timeout)
-                            req_tools[tool] = {"container": tc, "endpoint": ""}
+                            tc = docker.start(tools[tool], (a.port + 2, 9252), tail=("run", "--listen-address=0.0.0.0:9252")); tool_cids.append(tc)
+                            wait_ready(docker, tc, "http://127.0.0.1:%d/metrics" % (a.port + 2), a.ready_timeout)
+                            req_tools[tool] = {"container": tc, "endpoint": "http://127.0.0.1:%d" % (a.port + 2)}
                         else:
-                            tc = docker.start(tools[tool], (a.port + 2, 6443), privileged=True); tool_cids.append(tc)
-                            wait_ready(docker, tc, None, a.ready_timeout)
-                            kc = kubeconfig_for(docker, tc, a.port + 2, a.ready_timeout)
+                            cluster = Cluster(tools[tool], timeout=max(a.ready_timeout * 2, 3))
+                            kc = cluster.provision()
                             with open(os.path.join(sandbox, "kubeconfig"), "w") as fh:
                                 fh.write(kc)
                             open_modes(sandbox)
-                            req_tools[tool] = {"container": tc, "endpoint": "https://127.0.0.1:%d" % (a.port + 2), "kubeconfig": "kubeconfig"}
+                            req_tools[tool] = {"endpoint": cluster.server, "kubeconfig": "kubeconfig", "namespace": PERSONA_NS}
                 except Exception as e:
                     record(persona, None, "did not run: %s\n" % e, "a tool container did not start or answer (%s)" % e)
                     continue
@@ -564,7 +725,7 @@ def main():
                     "persona": persona, "token_budget": budget, "tools": req_tools,
                 }
                 try:
-                    stray = sorted(loopback_listeners(a.proc_net) - {53, a.port, a.port + 1, a.port + 2} - set(a.allow_listen))
+                    stray = sorted(loopback_listeners(a.proc_net) - {53, a.port, a.port + 1, a.port + 2} - set(a.allow_listen) - ({cluster.port} if cluster else set()))
                 except Refuse as e:
                     record(persona, None, "did not run: %s\n" % e, "the loopback could not be inspected (%s)" % e)
                     continue
@@ -572,46 +733,75 @@ def main():
                     record(persona, None, "did not run: unexpected loopback listener(s)\n",
                            "an unexpected listener is bound to the loopback (port%s %s): a persona's containers share the host network, so none runs" % ("s" if len(stray) > 1 else "", ", ".join(map(str, stray))))
                     continue
-                args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--shell-image", tools["shell"]]
+                label = "persona-uat=%s" % uuid.uuid4()
+                args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label]
+                ep = "http://127.0.0.1:%d" % a.port
+                before = scrape(ep)
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, a.agent_timeout)
+                sweep(docker, label)                # containers are the daemon's: whatever this persona's agent left is removed before the window closes
+                after = settled(ep)
+                cleanup(docker, label, sandbox, tools["shell"])
+                ok = before is not None and after is not None and after - before > 0 and not (before == 0 and prev[0] > 0)
+                if after is not None:
+                    prev[0] = after
                 if answer is None:
                     record(persona, None, transcript, why)
                 else:
-                    record(persona, answer, answer["transcript"])
+                    record(persona, answer, answer["transcript"], proven=ok)
             finally:
+                if cluster:
+                    cluster.delete()
                 docker.remove(tool_cids)
     finally:
         docker.remove(started)
         for s in sandboxes:
+            for d, dirs, fs in os.walk(s):
+                try:
+                    os.chmod(d, 0o777)
+                except OSError:
+                    pass
             shutil.rmtree(s, ignore_errors=True)
-    return finish(a, results, out_dir, gh, run_id, budget, secrets)
+    return finish(results, out_dir)
 
 
-def finish(a, results, out_dir, gh, run_id, budget, secrets=()):
+def finish(results, out_dir=None):
     blocking = [p for p in PERSONAS if results[p]["verdict"] == "blocking"]
-    with open(os.path.join(out_dir, "summary.json"), "w") as fh:
-        json.dump({"mode": a.mode, "image": a.image, "verdicts": {p: results[p]["verdict"] for p in PERSONAS},
-                   "capped": [p for p in PERSONAS if results[p]["capped"]]}, fh, indent=1)
-    rows = lambda kind: [(p, kind, f["text"]) for p in PERSONAS for f in results[p]["findings"] if f["kind"] == kind]
-    friction = rows("friction")
-    if friction:
-        title = "Persona UAT friction: %s run %s" % (a.mode, run_id)
-        path = os.path.join(out_dir, "friction-issue.md")
-        with open(path, "w") as fh:
-            fh.write(safe_issue_body(issue_body("Friction found by the persona UAT. Information only: it blocks nothing.", a.mode, run_id, a.image, friction), results, secrets))
-        if a.publish:
-            gh.upsert(FRICTION_LABEL, "Persona UAT friction (information only)", "fbca04", "all", title, path)
-    if a.mode == "weekly" and blocking:
-        path = os.path.join(out_dir, "blocking-issue.md")
-        with open(path, "w") as fh:
-            fh.write(safe_issue_body(issue_body("The weekly persona UAT found blocking findings.", a.mode, run_id, a.image, rows("blocking")), results, secrets))
-        if a.publish:
-            gh.upsert(BLOCKING_LABEL, "Blocking finding", "b60205", "open", BLOCKING_TITLE, path)
-    if gh.failed:
-        return 1
-    if a.mode == "weekly":
-        return 1 if blocking and not a.publish else 0       # published: the issue is the signal; a dry run must not look green
+    enc_failed = [p for p in PERSONAS if results[p].get("encfail")]
+    if out_dir is not None:
+        publish_artifacts(out_dir, not enc_failed)
+    line = "persona-uat: overall: %s\n" % ("fail" if blocking else "pass")
+    sys.stderr.write(line)
+    summ = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summ:
+        with open(summ, "a") as fh:
+            for p in PERSONAS:
+                fh.write("persona-uat: %s: %s\n" % (p, "fail" if results[p]["verdict"] == "blocking" else "pass"))
+            fh.write(line)
     return 1 if blocking else 0
+
+
+STAGE = []        # destination paths written so far: one failure and every one of them (and the failed one) is removed
+
+
+def encrypt(recipient, persona, out_dir, payload):
+    dest = os.path.join(out_dir, persona + ".cms")
+    STAGE.append(dest)
+    try:
+        r = subprocess.run(["openssl", "cms", "-encrypt", "-aes-256-cbc", "-binary", "-outform", "DER", "-recip", recipient, "-out", dest], input=payload.encode("utf-8", "replace"),
+                           capture_output=True, env=clean_env(), timeout=120)
+    except Exception:
+        return False
+    return r.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0
+
+
+def publish_artifacts(out_dir, ok):
+    if not ok:
+        for d in STAGE:
+            try:
+                os.remove(d)
+            except OSError:
+                pass
+    STAGE.clear()
 
 
 if __name__ == "__main__":

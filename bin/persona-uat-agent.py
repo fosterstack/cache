@@ -31,6 +31,8 @@ DOCKER_ENV = ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS", "D
 BASE_ENV = SHELL_ENV + DOCKER_ENV
 MODEL_ENV_PREFIX = "ANTHROPIC_"      # the model identity (key or federated-identity variables); the provider alone receives it
 OUT_LIMIT = 8000                     # characters of each stream returned to the model
+ACTION_TOOLS = ("shell", "cosign", "kubectl", "gradle", "maven")
+DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
 DOCKER_OWN_FAILURE = 125             # docker's exit status for ITS failure (daemon, image); 126/127 are indistinguishable from the command's own
 
 
@@ -89,31 +91,46 @@ def call_provider(cmd, model, system, messages, timeout):
     act = a.get("action") if isinstance(a, dict) else None
     if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0 or not isinstance(act, dict):
         raise Fail("the provider's answer is outside the protocol")
-    if act.get("type") == "shell" and isinstance(act.get("command"), str) and act["command"].strip():
-        return tokens, act
+    if act.get("type") == "shell":
+        t = act.get("tool", "shell")
+        if not isinstance(t, str):
+            raise Fail("the provider's action is outside the protocol")
+        if t == "shell" or "tool" not in act:
+            if isinstance(act.get("command"), str) and act["command"].strip() and "args" not in act:
+                return tokens, act
+        elif t in ACTION_TOOLS or True:
+            if "command" not in act and isinstance(act.get("args"), list) and act["args"] and all(isinstance(x, str) for x in act["args"]):
+                return tokens, act
     if act.get("type") == "finish" and valid_findings(act.get("findings")):
         return tokens, act
     raise Fail("the provider's action is outside the protocol")
 
 
-def run_shell(docker, shell_image, sandbox, command, timeout):
-    # FIXED argument vector (pinned by the tests): the model's text is only ever the last argument
-    argv = docker + ["run", "--rm", "--network", "host", "-v", "%s:/work" % sandbox, "-w", "/work", shell_image, "sh", "-c", command]
+LABEL_RE = re.compile(r"^persona-uat=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+SCRUB = [re.compile(x) for x in (r"gh[pousr]_[A-Za-z0-9]{8,}", r"github_pat_[A-Za-z0-9_]{8,}", r"\bsk-[A-Za-z0-9_-]{12,}", r"\b(AKIA|ASIA)[0-9A-Z]{12,}", r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}", r"-----BEGIN", r"(?i)bearer[\s-]+\S+", r"(?i)password\s*[=:]\s*\S+")]
+
+
+def scrub(text, model):
+    if model:
+        text = text.replace(model, "[scrubbed]")
+    for r in SCRUB:
+        text = r.sub("[scrubbed]", text)
+    return text
+
+
+def run_shell(docker, image, sandbox, act, timeout, label=None):
+    # FIXED argument vector (pinned by the tests): the model's text is only ever after the image
+    tail = ["sh", "-c", act["command"]] if "command" in act else list(act["args"])
+    argv = docker + ["run", "--rm", "--network", "host", "--label", label, "-v", "%s:/work" % sandbox, "-w", "/work", image] + tail
     rc, out, err, timed_out = run_bounded(argv, None, timeout, child_env(False))
     if timed_out:
+        ids = run_bounded(docker + ["ps", "-aq", "--filter", "label=" + label], None, 30, child_env(False))[1].split()
+        if ids:
+            run_bounded(docker + ["rm", "-f"] + ids, None, 60, child_env(False))
         return "timed out after %ss (the command was cut off)" % timeout, None, False
     if rc == DOCKER_OWN_FAILURE:
         raise Fail("docker could not run the shell action: %s" % err.strip()[:200])
     return "exit status: %d\nstdout:\n%s\nstderr:\n%s" % (rc, clip(out), clip(err)), (rc, out), True
-
-
-def reached(endpoint, command, res):
-    """the command named the cache endpoint AND got an answer from it: exit 0 and output (a refused connection hidden by `|| true` leaves no output)"""
-    if res is None or res[0] != 0 or not res[1].strip():
-        return False
-    u = urlparse(endpoint)
-    hp = "%s:%s" % (u.hostname, u.port)
-    return hp in command or ("localhost:%s" % u.port) in command
 
 
 def system_prompt(req):
@@ -123,7 +140,9 @@ def system_prompt(req):
         "Do not clone the repository, do not read its source, do not look for internal documents: a real customer cannot.",
         "Follow the documentation as written, step by step, with shell commands. Each command runs in a fresh minimal container whose "
         "working directory is /work (your documentation) on the host network, so the endpoint and tool endpoints below are reachable on 127.0.0.1.",
-        "Reply with exactly one JSON object and nothing else. To run a command: {\"action\": \"shell\", \"command\": \"<sh command>\"}. "
+        "Reply with exactly one JSON object and nothing else. To run a command: {\"action\": \"shell\", \"tool\": \"shell\", \"command\": \"<sh command>\"}. "
+        "To run another tool (cosign, kubectl, gradle, maven) give its args as a list: {\"action\": \"shell\", \"tool\": \"cosign\", \"args\": [\"version\"]}. "
+        "For gradle and maven the FIRST element of args is the program (\"gradle\", \"mvn\"); for cosign and kubectl it is the subcommand. ",
         "When you are done: {\"action\": \"finish\", \"findings\": [{\"kind\": \"blocking\" or \"friction\", \"text\": \"<what happened>\"}]}.",
         "Each command's result comes back with its exit status, stdout and stderr. Report only what you observed, quoting the failing step.",
         "",
@@ -142,9 +161,11 @@ def first_message(req):
 
 
 def main():
+    holder = []
     ap = argparse.ArgumentParser()
     ap.add_argument("--docker", required=True)
-    ap.add_argument("--shell-image", required=True)
+    ap.add_argument("--tools", required=True)
+    ap.add_argument("--label", required=True)
     ap.add_argument("--provider-cmd")
     ap.add_argument("--shell-timeout", type=int, default=300)
     ap.add_argument("--provider-timeout", type=int, default=600)
@@ -157,14 +178,23 @@ def main():
                 or isinstance(req["token_budget"], bool) or req["token_budget"] <= 0 or not isinstance(req["tools"], dict)
                 or not all(isinstance(req[k], str) and req[k] for k in ("instructions", "docs_dir", "endpoint", "model"))):
             raise Fail("the request is not the driver's contract")
+        try:
+            tools = json.load(open(a.tools))
+        except (OSError, ValueError):
+            raise Fail("the tools file is unreadable")
+        if not isinstance(tools, dict) or "shell" not in tools or not all(isinstance(v, str) and DIGEST_REF.match(v) for v in tools.values()):
+            raise Fail("the tools file is not a map of digest-pinned images with a shell")
+        if not LABEL_RE.match(a.label):
+            raise Fail("--label is not persona-uat=<uuid>")
         docker = shlex.split(a.docker)
         # the provider is started with `python3` from PATH (never sys.executable: the SDK lives with the PATH's interpreter)
         provider = shlex.split(a.provider_cmd) if a.provider_cmd else ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)), "persona-uat-provider.py")]
         system = system_prompt(req)
         messages = [{"role": "user", "content": first_message(req)}]
         transcript, findings, ended = [], None, "finish"
+        holder.append(transcript); holder.append(req["model"])
         used = steps = shells = 0
-        contacted = False
+        commands = []
         while True:
             if used >= req["token_budget"]:
                 transcript.append("[token budget reached: the model is not called again]")
@@ -182,20 +212,28 @@ def main():
                 findings = act["findings"]
                 transcript.append("[finish] %s" % json.dumps(findings))
                 break
+            tool = act.get("tool", "shell")
+            label = act["command"] if "command" in act else "%s %s" % (tool, " ".join(act["args"]))
+            if tool not in ACTION_TOOLS or tool not in tools:
+                text = "refused: unknown tool %r; the tools are %s" % (tool, ", ".join(ACTION_TOOLS))
+                transcript.append("$ %s\n%s" % (label, text))
+                messages.append({"role": "assistant", "content": json.dumps(act)})
+                messages.append({"role": "user", "content": text})
+                continue
             shells += 1
-            text, res, ran = run_shell(docker, a.shell_image, req["docs_dir"], act["command"], a.shell_timeout)
-            contacted = contacted or reached(req["endpoint"], act["command"], res)
-            transcript.append("$ %s\n%s" % (act["command"], text))
+            commands.append(label)
+            text, res, ran = run_shell(docker, tools[tool], req["docs_dir"], act, a.shell_timeout, a.label)
+            transcript.append("$ %s\n%s" % (label, text))
             messages.append({"role": "assistant", "content": json.dumps(act)})
             messages.append({"role": "user", "content": text})
         findings = list(findings or [])
         # a pass must be earned: the persona ran something, and a clean finish needs an answer from the endpoint
         if ended == "finish" and shells == 0:
             findings.append({"kind": "blocking", "text": "the persona finished without running a single shell action: nothing was exercised"})
-        elif ended == "finish" and not findings and not contacted:
-            findings.append({"kind": "blocking", "text": "the persona never got an answer from the cache endpoint (no command named it and exited 0 with output): a clean pass is not credible"})
-        out = {"findings": findings, "tokens": used, "transcript": "\n".join(transcript) + "\n"}
+        out = {"findings": findings, "tokens": used, "transcript": scrub("\n".join(transcript) + "\n", req["model"]), "commands": [scrub(c, req["model"]) for c in commands]}
     except Fail as e:
+        if holder:
+            sys.stderr.write(scrub("\n".join(holder[0]), holder[1]) + "\n")
         sys.stderr.write("persona-uat-agent: %s\n" % e)
         return 1
     sys.stdout.write(json.dumps(out))

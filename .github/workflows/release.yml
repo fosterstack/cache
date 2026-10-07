@@ -425,6 +425,65 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
     secrets: inherit
 
+  # Persona UAT (owner ratified Oct 3 and Oct 4; REQ-UAT-001): on a release-candidate tag only (v*-rc.*), after the image is built and
+  # the chain has promoted it, five personas follow the public docs against that exact image digest (bin/persona-uat.py, pinned CI
+  # tools by digest, a kind cluster made by the pinned kind binary). Results stay private: the driver opens no issue and prints only
+  # pass/fail lines; each persona's report and transcript are ONE artifact encrypted to the committed recipient certificate
+  # (bin/persona-uat-recipient.pem) that only the owner can open (bin/persona-uat-decrypt.sh <run id>). A blocking persona fails this
+  # job; no other job needs it, so a persona failure never starts the patch-failed issue. The model identities are environment
+  # SECRETS (masked), the token budget the one variable. The `persona-uat` environment holds them.
+  persona-uat:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}
+    needs: [image, promotion]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: persona-uat
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: install the pinned kind binary
+        run: ./bin/install-scanner.sh kind
+
+      - name: install the provider SDK (hash-pinned)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
+
+      - name: mint the federated identity token for the model provider
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const token = await core.getIDToken('https://api.anthropic.com');
+            core.setSecret(token);
+            const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
+            fs.writeFileSync(f, token);
+            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);
+
+      - name: run the five personas
+        env:
+          PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
+          PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
+          PERSONA_UAT_TOKEN_BUDGET: ${{ vars.PERSONA_UAT_TOKEN_BUDGET }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+        run: python3 bin/persona-uat.py --mode rc --image "ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
+
+      - name: upload the encrypted reports and transcripts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: persona-uat-encrypted
+          path: persona-uat-out/*.cms
+          if-no-files-found: error
+
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:

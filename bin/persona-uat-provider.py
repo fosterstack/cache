@@ -44,10 +44,21 @@ def parse_action(text):
         fail("the reply holds no JSON action")
     kind = obj.get("action")
     if kind == "shell":
-        cmd = obj.get("command")
-        if not isinstance(cmd, str) or not cmd.strip():
-            fail("a shell action needs a non-empty command")
-        return {"type": "shell", "command": cmd}
+        tool = obj.get("tool")
+        if "tool" in obj and not isinstance(tool, str):
+            fail("tool is not a string")
+        if "tool" not in obj or tool == "shell":
+            cmd = obj.get("command")
+            if not isinstance(cmd, str) or not cmd.strip() or "args" in obj:
+                fail("a shell action needs a non-empty command and no args")
+            out = {"type": "shell", "command": cmd}
+            if "tool" in obj:
+                out = {"type": "shell", "tool": tool, "command": cmd}
+            return out
+        args = obj.get("args")
+        if "command" in obj or not isinstance(args, list) or not args or not all(isinstance(x, str) for x in args):
+            fail("a tool action needs args (a list of strings) and no command")
+        return {"type": "shell", "tool": tool, "args": args}
     if kind == "finish":
         fs = obj.get("findings")
         if not isinstance(fs, list):

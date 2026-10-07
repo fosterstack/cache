@@ -176,3 +176,79 @@ jobs:
             /tmp/mutation-req.json
             /tmp/mutation-req.log
           retention-days: 90
+
+  # Persona UAT, weekly (owner ratified Oct 3 and Oct 4; REQ-UAT-001): on the Monday cron only, the five personas follow the docs AS
+  # PUBLISHED with the latest release (checked out under release-docs) against that release's public image, resolved to its digest.
+  # The harness (this ref's bin/) is checked out separately, so a persona never edits the code that judges it. Results stay
+  # private exactly as in the release chain: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona
+  # fails this job. The model identities are environment SECRETS (masked); the token budget is the one variable.
+  persona-uat:
+    if: ${{ github.event.schedule == '43 6 * * 1' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: persona-uat
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    steps:
+      - name: resolve the latest release and its image digest
+        id: resolve
+        env:
+          GH_REPO: ${{ github.repository }}
+          REGISTRY_OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh release view --json tagName -q .tagName)
+          digest=$(docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format '{{.Manifest.Digest}}')
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${REGISTRY_OWNER}/cache@${digest}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: harness
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: release-docs
+          ref: ${{ steps.resolve.outputs.tag }}
+          persist-credentials: false
+
+      - name: install the pinned kind binary
+        run: ./harness/bin/install-scanner.sh kind
+
+      - name: install the provider SDK (hash-pinned)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r harness/bin/persona-uat-requirements.txt
+
+      - name: mint the federated identity token for the model provider
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const token = await core.getIDToken('https://api.anthropic.com');
+            core.setSecret(token);
+            const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
+            fs.writeFileSync(f, token);
+            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);
+
+      - name: run the five personas against the latest release
+        env:
+          PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
+          PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
+          PERSONA_UAT_TOKEN_BUDGET: ${{ vars.PERSONA_UAT_TOKEN_BUDGET }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+        run: python3 harness/bin/persona-uat.py --mode weekly --image "${{ steps.resolve.outputs.image }}" --repo release-docs --out persona-uat-out --tools harness/bin/persona-uat-tools.json --recipient harness/bin/persona-uat-recipient.pem --agent "python3 harness/bin/persona-uat-agent.py"
+
+      - name: upload the encrypted reports and transcripts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: persona-uat-encrypted
+          path: persona-uat-out/*.cms
+          if-no-files-found: error

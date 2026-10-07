@@ -82,7 +82,8 @@ for j, v in jobs.items():
         # REQ-UAT-001's weekly job (its exact shape is pinned by persona-uat-wiring-test.sh): its own environment and the model identity secrets ONLY;
         # never the App token, never the privileged check job's environment, outputs or secrets
         t = json.dumps(v)
-        allowed = {"ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
+        allowed = {"ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
+                   "PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL"}      # the model ids are environment secrets (advisor 0233)
         used = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", t))
         if used - allowed or "app-token" in t or "create-github-app-token" in t or v.get("environment") != "persona-uat" or "check" in str(v.get("needs", "")):
             bad.append("the persona-uat job touches more than its own environment and the model identity secrets (%s)" % sorted(used - allowed))
