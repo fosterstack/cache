@@ -178,6 +178,14 @@ check test "$(calls capexact)" -eq 4
 BUDGET=500 agent capone '[{"usage":{"tokens":900},"action":{"type":"shell","command":"echo only"}}]'
 CASE="a single call that blows through the budget is followed by exactly one forced finish call (2 calls)"
 check test "$(calls capone)" -eq 2
+BUDGET=1000 agent capres '[{"usage":{"tokens":450},"action":{"type":"shell","command":"echo step"}}]'
+CASE="the reserve is 15%: at 900 of 1000 tokens (past 850) the loop stops working and makes the forced finish call: 2 work calls + 1 forced = 3, not a 3rd work call"
+check test "$(calls capres)" -eq 3
+check python3 - "$work/capres/out.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))
+assert a["transcript"].count("$ echo step") == 2, a["transcript"]
+PY
 BUDGET=1000 agent capfin '[{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},
                {"usage":{"tokens":400},"action":{"type":"shell","command":"echo step"}},{"usage":{"tokens":100},"action":{"type":"finish","findings":[{"kind":"blocking","text":"step 2 fails as written (seen at step 2)"}]}}]'
 CASE="a model that DOES finish when forced keeps what it observed: its findings are returned as they are (no extra 'did not finish' finding), the forced call's tokens are counted (1300), and the transcript marks the forced finish"
@@ -217,13 +225,56 @@ import json, sys
 a = json.load(open(sys.argv[1]))
 assert any(f["kind"] == "blocking" and "without running" in f["text"].lower() for f in a["findings"]), a
 PY
-agent exits '[{"usage":{"tokens":1},"action":{"type":"shell","command":"exit 3"}},{"usage":{"tokens":1},"action":{"type":"shell","command":"echo ok"}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"nosuchtool","args":["x"]}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
-CASE="the answer's exits are the executed commands' exit statuses, in order (3 then 0); a refused action has neither a command nor an exit"
-check python3 - "$work/exits/out.json" <<'PY'
+agent actions '[{"usage":{"tokens":1},"action":{"type":"shell","command":"exit 3"}},{"usage":{"tokens":1},"action":{"type":"shell","command":"echo ok"}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"nosuchtool","args":["x"]}},{"usage":{"tokens":1},"action":{"type":"shell","tool":"cosign","args":["version"]}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+CASE="the answer's actions record WHAT was executed, in order: the TOOL, the argv and the exit status (shell: sh -c <command>; a tool: its args); a refused action is not among them; commands stay the display labels"
+check python3 - "$work/actions/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
-assert a["commands"] == ["exit 3", "echo ok"] and a["exits"] == [3, 0], a
+assert a["commands"] == ["exit 3", "echo ok", "cosign version"], a
+assert a["actions"] == [{"tool": "shell", "argv": ["sh", "-c", "exit 3"], "exit": 3}, {"tool": "shell", "argv": ["sh", "-c", "echo ok"], "exit": 0}, {"tool": "cosign", "argv": ["version"], "exit": 0}], a
+assert "exits" not in a, a
 PY
+# --- the compliance reviewer's PROOF identifies the operation actually executed (advisor 0250, step 8 round 2): a recorded action whose TOOL is cosign, whose first
+# argument (the subcommand) is `verify` (the only cosign verification docs/verify-images.md documents for an image; `verify-blob` checks a file, `gh attestation verify`
+# is not a cosign command), that names the RC image by its DIGEST as an argument, and exited 0. Words in echo, a comment, a quoted string or a shell action are no proof.
+RC="ghcr.io/example/cache@sha256:$(printf 'c%.0s' $(seq 64))"
+OTHER="ghcr.io/example/cache@sha256:$(printf 'd%.0s' $(seq 64))"
+cat >"$work/proof.py" <<'PY'
+import importlib.util, json, os, sys
+sp = importlib.util.spec_from_file_location("driver", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+a = json.load(open(sys.argv[2]))
+print("PROOF" if m.verified_digest(a, sys.argv[3]) else "NOPROOF")
+PY
+driver_py="$root/bin/persona-uat.py"
+verdict() { python3 "$work/proof.py" "$driver_py" "$work/$1/out.json" "$RC"; }
+PROOFCASES=(
+ 'px-echo|{"type":"shell","command":"echo verify '"$RC"'"}|NOPROOF'
+ 'px-comment|{"type":"shell","command":"true # sbom '"$RC"'"}|NOPROOF'
+ 'px-shellcosign|{"type":"shell","command":"cosign verify '"$RC"'"}|NOPROOF'
+ 'px-quoted|{"type":"shell","command":"sh -c \"cosign verify '"$RC"'\""}|NOPROOF'
+ 'px-shelltoolcosign|{"type":"shell","tool":"shell","command":"cosign verify-attestation '"$RC"'"}|NOPROOF'
+ 'px-version|{"type":"shell","tool":"cosign","args":["version","'"$RC"'"]}|NOPROOF'
+ 'px-otherdigest|{"type":"shell","tool":"cosign","args":["verify","'"$OTHER"'"]}|NOPROOF'
+ 'px-flagvalue|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity=x@sha256:'"$(printf 'c%.0s' $(seq 64))"'","ghcr.io/example/cache:1.0"]}|NOPROOF'
+ 'px-verifyblob|{"type":"shell","tool":"cosign","args":["verify-blob","'"$RC"'"]}|NOPROOF'
+ 'px-tagonly|{"type":"shell","tool":"cosign","args":["verify","ghcr.io/example/cache:1.0"]}|NOPROOF'
+ 'px-kubectlverify|{"type":"shell","tool":"kubectl","args":["verify","'"$RC"'"]}|NOPROOF'
+ 'px-good|{"type":"shell","tool":"cosign","args":["verify","--certificate-oidc-issuer=https://token.actions.githubusercontent.com","'"$RC"'"]}|PROOF'
+ 'px-goodother|{"type":"shell","tool":"cosign","args":["verify","registry.example/other/repo@sha256:'"$(printf 'c%.0s' $(seq 64))"'"]}|PROOF'
+)
+for pc in "${PROOFCASES[@]}"; do
+  name=${pc%%|*}; rest=${pc#*|}; act=${rest%|*}; want=${rest##*|}
+  agent "$name" "[{\"usage\":{\"tokens\":1},\"action\":$act},{\"usage\":{\"tokens\":1},\"action\":{\"type\":\"finish\",\"findings\":[]}}]"
+  CASE="compliance proof via the REAL agent loop ($name): the driver's predicate reads $want (the tool field, the subcommand and the digest argument decide, never keywords in text)"
+  check test "$(verdict "$name")" = "$want"
+done
+CASE="compliance proof: a verification action that FAILED (cosign exit 1) is no proof, whatever it names"
+python3 - "$work" <<'PY'
+import json, sys
+a = {"commands": ["cosign verify x"], "actions": [{"tool": "cosign", "argv": ["verify", "ghcr.io/example/cache@sha256:" + "c" * 64], "exit": 1}], "findings": [], "tokens": 1, "transcript": ""}
+json.dump(a, open(sys.argv[1] + "/failedproof.json", "w"))
+PY
+check test "$(python3 "$work/proof.py" "$driver_py" "$work/failedproof.json" "$RC")" = "NOPROOF"
 # --- the transcript is STREAMED to a file after every action (step 8 round 1, Codex B5): a timeout kill keeps the completed actions ------------------------
 # --transcript-file PATH (the driver passes a private file OUTSIDE the sandbox, so no shell action can read or delete it): every executed action is appended,
 # scrubbed, and flushed and fsynced before the next model call.
@@ -260,6 +311,17 @@ p.wait()
 PY
 CASE="a REAL agent process killed (SIGKILL) while its second model call hangs keeps the completed action in the transcript file (written and flushed before the next call)"
 check grep -q 'completed-before-kill' "$work/tkill/t.log"
+agent tcap '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo first-line-kept"}},{"usage":{"tokens":1},"action":{"type":"shell","command":"seq 1 400"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]' --transcript-file "$work/tcap.log" --transcript-max-bytes 600
+CASE="the streamed transcript file is capped (--transcript-max-bytes, 16 MiB by default): the first actions are kept, one explicit marker says the rest was not written, the file never grows past the cap, and the ANSWER's transcript is complete"
+check python3 - "$work/tcap.log" "$work/tcap/out.json" <<'PY'
+import json, sys
+f = open(sys.argv[1]).read()
+a = json.load(open(sys.argv[2]))
+assert "echo first-line-kept" in f and "first-line-kept" in f.split("echo first-line-kept", 1)[1], f
+assert f.count("[... the transcript file reached its cap") == 1, f[-200:]
+assert len(f.encode()) <= 600 + 200, len(f.encode())
+assert "400" in a["transcript"], "the answer's own transcript must stay complete"
+PY
 CASE="an unwritable --transcript-file fails the agent closed (non-zero, nothing on stdout): a transcript that cannot be kept is not a run"
 agent tbad '[{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' --transcript-file /nonexistent-dir/t.log
 check test "$rc" -ne 0 -a ! -s "$work/tbad/out.json"
@@ -277,7 +339,7 @@ assert "42" not in first_cmd and "42" in json.dumps(calls[1]["req"]["messages"])
 a = json.load(open(sys.argv[2]))
 assert a["findings"] == [{"kind": "friction", "text": "first step unclear"}, {"kind": "blocking", "text": "step 2 fails as written"}], a
 assert a["tokens"] == 550, a
-assert a["commands"] == ["echo $((6*7)) > made.txt; cat made.txt"] and a["exits"] == [0], ("every executed command has its exit status, in order", a)
+assert a["commands"] == ["echo $((6*7)) > made.txt; cat made.txt"] and a["actions"] == [{"tool": "shell", "argv": ["sh", "-c", "echo $((6*7)) > made.txt; cat made.txt"], "exit": 0}], ("every executed action has its tool, argv and exit status, in order", a)
 assert "42" in a["transcript"] and "step 2 fails" in a["transcript"], a
 PY
 CASE="the first model call carries the restriction: only the public documentation, do not clone the repository, do not read its source"

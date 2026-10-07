@@ -482,16 +482,26 @@ jobs:
             core.setSecret(token);
             const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
             fs.writeFileSync(f, token, { mode: 0o600 });
-            core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);
-            // The assertion lives about five minutes, the job up to two hours and every model call is a new process: re-mint
-            // into the same file every four minutes (the auditor's pattern); the driver removes the file when it is done.
-            const refresh = async () => {
-              try {
-                const t = await core.getIDToken('https://api.anthropic.com');
-                core.setSecret(t); fs.writeFileSync(f, t, { mode: 0o600 });
-              } catch (e) { core.warning(`identity refresh failed: ${e}`); }
-            };
-            setInterval(refresh, 4 * 60 * 1000).unref?.();
+
+      - name: keep the identity token fresh for the whole job (a detached refresher)
+        # The assertion lives about five minutes, the job up to two hours and every model call is a NEW process. A timer inside
+        # actions/github-script dies with its step, so this is a process of its own: detached (nohup, output redirected, disowned),
+        # it re-mints from the runner's OIDC endpoint into the same 0600 file until the file is removed by the last step.
+        run: |
+          set -euo pipefail
+          f="${RUNNER_TEMP}/anthropic-identity-token"
+          [ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }
+          nohup bash -c '
+            f="$1"; every="$2"
+            while [ -e "$f" ] && sleep "$every"; do
+              [ -e "$f" ] || break
+              tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue
+              [ -n "$tok" ] && [ "$tok" != "null" ] || continue
+              [ -e "$f" ] || break
+              ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"
+            done
+          ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
+          disown
 
       - name: run the five personas
         env:
@@ -502,6 +512,7 @@ jobs:
           ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
         run: python3 bin/persona-uat.py --mode rc --image "ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
 
       - name: upload the encrypted reports and transcripts
@@ -511,6 +522,10 @@ jobs:
           name: persona-uat-encrypted
           path: persona-uat-out/*.cms
           if-no-files-found: error
+
+      - name: delete the identity token file
+        if: ${{ always() }}
+        run: rm -f "${RUNNER_TEMP}/anthropic-identity-token"
 
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.

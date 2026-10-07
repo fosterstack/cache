@@ -85,8 +85,9 @@
 #       agent makes plan["requests"] counted requests (default 1; plan["methods"] varies the verb) and plan["uncounted"] uncounted ones.
 #   PROOF RULE (advisor 0250, replacing the 0207 friction-only rule): a persona with NO proof of exercising the RC image is BLOCKING whatever else it reported (friction stays
 #       informational; "did not exercise the image" blocks that persona). Proof = the counted-request delta (after - before > 0) for every persona except the compliance reviewer,
-#       whose proof is a recorded verification action (cosign verify / attestation / SBOM / VEX) naming the RC's digest that exited 0 (the answer's `exits` list, parallel to
-#       `commands`); counter traffic alone never proves the compliance reviewer (fail closed). Cases: proof2, cmp1..cmp8, proofreset.
+#       whose proof is a recorded ACTION (the answer's `actions`: tool, argv, exit; parallel to `commands`) whose tool is cosign, whose subcommand is verify, that names the
+#       RC image by its digest as an argument and exited 0 (step 8 round 2: words in echo, comments or shell actions are no proof); counter traffic alone never proves the
+#       compliance reviewer (fail closed). Cases: proof2, cmp1..cmp11, proofreset.
 #   LIMITATION (stated, AC5): the hosts line lists hosts NAMED in a persona's commands; a tool's own contacts (Maven or Gradle dependency resolution, cosign's Rekor/TUF, redirects)
 #       are not observed, so "any host its commands contact" means the hosts the commands name.
 #   Model identities are job SECRETS (masked by GitHub in every log, step headers included): the wiring test pins where they may appear; the log cases here pin that the driver never prints them.
@@ -239,6 +240,11 @@ if p.get("foreign"):        # entries a tool image created as ANOTHER uid: hidde
         open(os.path.join(base, rel), "w").write("x"); os.chmod(os.path.join(base, rel), mode)
     for d_ in ("created", ".hidden-dir/deep", "build/out/.cache", "..weird", "locked"):
         os.chmod(os.path.join(base, d_), 0o555)
+if p.get("stream"):         # the agent's streamed transcript file: a first completed action, filler, a last completed action, N characters in all
+    av_ = sys.argv[2:]
+    head, tail = "$ first-completed-action\nout-first\n", "$ last-completed-action\nout-last\n"
+    with open(av_[av_.index("--transcript-file") + 1], "w") as fh_:
+        fh_.write(head + "y" * (p["stream"] - len(head) - len(tail)) + tail)
 if p.get("sleep"):
     time.sleep(p["sleep"])
 kube_rc = None
@@ -254,14 +260,17 @@ if p.get("leak"):
     if os.path.exists(kc):      # the persona's own ServiceAccount token, as a pasted kubeconfig line
         ans["transcript"] += open(kc).read() + "\n"
 cmds = list(p.get("commands", []))
-exits = list(p.get("exits", [0] * len(cmds)))
+acts = [dict(x) for x in p["actions"]] if "actions" in p else [{"tool": "shell", "argv": ["sh", "-c", c], "exit": 0} for c in cmds]
+if "actions" in p and not cmds:
+    cmds = [x["tool"] + " " + " ".join(x["argv"]) for x in acts]
 if req["persona"] == "compliance-reviewer" and not p.get("noverify"):
-    # the compliance reviewer's PROOF of exercising the RC image (advisor 0250): a verification action naming the image by the RC's digest that exited 0
-    dg = ("sha256:" + "9" * 64) if p.get("verify_other") else req["image"].split("@")[-1]
-    cmds.append("cosign verify-attestation " + dg); exits.append(p.get("verify_exit", 0))
-if cmds or "commands" in p:
+    # the compliance reviewer's PROOF of exercising the RC image (advisor 0250, step 8 round 2): a cosign TOOL action whose subcommand is verify, naming the RC image by its digest, exit 0
+    ref = ("ghcr.io/example/cache@sha256:" + "9" * 64) if p.get("verify_other") else req["image"]
+    av = ["verify", ref]
+    acts.append({"tool": "cosign", "argv": av, "exit": p.get("verify_exit", 0)}); cmds.append("cosign " + " ".join(av))
+if cmds or "commands" in p or "actions" in p:
     ans["commands"] = cmds
-    ans["exits"] = exits
+    ans["actions"] = acts
 ans.update(p.get("override", {}))
 for k in p.get("drop", []):
     ans.pop(k, None)
@@ -1021,6 +1030,8 @@ run() {
 . \"$work/$name/docker.env\"" "$work/$name/docker"; rm -f "$work/$name/docker.bak"
   rc=0
   local tw=(); [ -n "${RUN_TIMEOUT:-}" ] && tw=(perl -e 'alarm shift; exec @ARGV' "$RUN_TIMEOUT")
+  # the counter's settle window is 3.0s of quiet with a 20s ceiling by DEFAULT; the cases use shorter ones (SETTLE_QUIET, SETTLE_MAX) except where SETTLE_DEFAULT=1 (the stated bounds)
+  local sflags=(--settle-quiet "${SETTLE_QUIET:-0.8}" --settle-max "${SETTLE_MAX:-8}"); [ -z "${SETTLE_DEFAULT:-}" ] || sflags=()
   local t_start=$SECONDS
   env -u PERSONA_UAT_TOKEN_BUDGET TMPDIR="$work/$name/tmp" GITHUB_STEP_SUMMARY="$work/$name/summary.md" GITHUB_RUN_ID=4242 GITHUB_REPOSITORY=own/cache \
       GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY REPO_CHECKOUT="$repo" \
@@ -1031,7 +1042,7 @@ run() {
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X PATH="$work/$name/hostbin:$PATH" "$@" \
       ${tw[@]+"${tw[@]}"} bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --recipient "${RECIPIENT:-$work/test.pem}" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
-        --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
+        --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${sflags[@]+"${sflags[@]}"} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
   RUNSECS=$((SECONDS - t_start))
   srvctl __case dir ""
   decout "$name"
@@ -1070,28 +1081,35 @@ for p, words in need.items():
 for p, text in rows.items():          # every persona is told how to classify what it finds, and what a doc step is
     for w in ("broken behavior", "friction", "as written"):
         assert w in text.lower(), (p, w)
-    # the sandbox's missing tools are NAMED, truthfully (the shell image has curl and sh only; each tool image holds its own program): a step that needs one of them is
-    # friction, not blocking; kubectl exec is an environment limit; nothing exempts a documented step that CAN run
     low = text.lower()
-    assert "these tools are not in the sandbox: gh, docker, jq" in low, (p, "the missing tools are not named exactly")
-    assert "report as friction" in low and "not as blocking" in low and "kubectl exec" in low, (p, low[-600:])
-    assert "never as a step that" not in low and "environment limit" not in low.replace("kubectl exec is an environment limit", ""), (p, "a blanket exemption of documented steps is back")
+    assert "these tools are not in the sandbox: gh, docker, jq" in low and "kubectl exec" in low, (p, "the missing tools are not named exactly")
+    assert "report each as friction, not as blocking" in low, (p, low[-700:])
+    assert "never as a step that" not in low, (p, "a blanket exemption of documented steps is back")
     assert "a step that can run in the sandbox is judged as written" in low, (p, "steps that can run must be judged")
 PY
-CASE="the GitLab omission is NAMED (advisor 0207: drop unavailable infrastructure and name the omission): the Maven persona is told that no GitLab server or runner registration exists and the runner container has its metrics endpoint only, and ITS report header says so; no other persona's report does"
+CASE="the environment limits are NAMED, once each, in the prompt and in the encrypted report header (advisor 0250/0207, step 8 round 2): (a) a foreground kubectl port-forward cannot be held across disposable actions, (b) no pre-seeded Jenkins job or credentials and no GitLab server or runner registration, (c) gh, docker, jq not in the sandbox and kubectl exec not permitted, (d) the provenance step needing GitHub's attestation store (gh attestation verify) cannot run; they are friction, never blocking; a step that CAN run is judged as written; the counter's attribution limit (3 seconds) is in every header too"
 check python3 - "$work/clean" "$(out clean)" <<'PY'
 import json, sys
 d, o = sys.argv[1:3]
 rows = {json.loads(l)["persona"]: json.loads(l)["request"]["instructions"] for l in open(d + "/log")}
-low = rows["maven-jenkins-ci"].lower()
-assert "no gitlab server" in low and "registration" in low and "metrics" in low, low
-for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
-    assert "no gitlab server" not in rows[p].lower(), p
-SENT = "Omitted infrastructure: no GitLab server or runner registration exists in this environment; the GitLab runner container exposes its metrics endpoint only."
-r = open(o + "/maven-jenkins-ci.report.md").read()
-assert SENT in r and r.index(SENT) < r.index("tokens used") if "tokens used" in r else SENT in r, r
-for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
-    assert SENT not in open(o + "/" + p + ".report.md").read(), p
+ITEMS = ("another terminal", "no pre-seeded jenkins job or credentials", "no gitlab server or runner registration", "these tools are not in the sandbox: gh, docker, jq", "gh attestation verify")
+for p, t in rows.items():
+    low = t.lower()
+    for it in ITEMS:
+        assert low.count(it) == 1, (p, it, low.count(it))
+    assert low.count("a step that can run in the sandbox is judged as written") == 1, p
+    assert "metrics endpoint only" in rows["maven-jenkins-ci"].lower()
+import re
+for p in rows:
+    r = open("%s/%s.report.md" % (o, p)).read()
+    hdr = [l for l in r.splitlines() if l.startswith("Environment limits of this run")]
+    assert len(hdr) == 1, (p, hdr)
+    low = hdr[0].lower()
+    for it in ITEMS:
+        assert low.count(it) == 1, (p, "header", it, low.count(it))
+    assert "friction, never blocking" in low, hdr[0]
+    lim = [l for l in r.splitlines() if l.startswith("Counter limit:")]
+    assert len(lim) == 1 and "3 seconds" in lim[0] and "not attributed" in lim[0], (p, lim)
 PY
 CASE="the driver hands every agent --transcript-file: a private file OUTSIDE the sandbox (its directory 0700, a different path per persona), and nothing of it is left when the run ends"
 check python3 - "$work/clean/log" <<'PY'
@@ -1710,7 +1728,7 @@ for i, p in enumerate(personas):
         assert r.splitlines()[0] == "VERDICT: blocking" and "teardown failed: window not attributable" in r, (p, r)
 runs = [l for l in open(d + "/docker.log") if l.startswith("run -d")]
 assert len(runs) <= maxrun, ("a container was started after the teardown failed", len(runs), maxrun)
-if idx <= 4:
+if idx < 4:
     assert not [r for r in kh.kind(d) if r["argv"][:2] == ["create", "cluster"]], "a cluster was created after the teardown failed"
 assert "Traceback" not in open(d + "/stderr").read()
 PYT
@@ -1733,6 +1751,11 @@ DOCKER_RM_FAIL_AT=1 run tdrm '{}' rc
 CASE="teardown: removing the Maven persona's tool containers fails (docker rm unreachable): the first persona passes, the Maven persona and every later one read teardown failed, no cluster is created"
 check tdcheck tdrm 1 3
 check publiclog tdrm
+DOCKER_RM_FAIL_AT=2 run tdfinal '{}' rc
+CASE="teardown: the LAST persona's final removal of the image under test fails (docker rm unreachable at the end): the run is not clean: that persona reads teardown failed (blocking), the earlier four keep their verdicts, the run exits 1"
+check tdcheck tdfinal 4 3
+check test "$rc" -eq 1
+check publiclog tdfinal
 DOCKER_RM_FAIL_AT=1 run tdrmd '{"gradle-platform-engineer":{"daemon":true}}' rc
 CASE="teardown: a daemon-managed container the persona left behind and 'docker rm -f' cannot remove: that persona and all later ones are blocking (the survivor may keep sending traffic)"
 check tdcheck tdrmd 0 1
@@ -2512,8 +2535,8 @@ class _Msg:
     def __init__(self, text):
         self.content = [type("B", (), {"type": "text", "text": text})()]
         self.usage = type("U", (), {"input_tokens": 120, "output_tokens": 30})()
-ROLE_WORDS = (("gradle", ("first-time", "gradle", "proxy")), ("maven", ("maven", "jenkins")), ("compliance", ("signature", "sbom", "vex")),
-              ("readme", ("only the readme", "ten minutes")), ("oncall", ("upgrade", "rollback", "logs")))   # each persona's own instruction words
+ROLE_WORDS = (("gradle", ("you are a first-time user, a gradle platform engineer",)), ("maven", ("you are a maven user whose builds run in ci",)), ("compliance", ("you are a compliance reviewer",)),
+              ("readme", ("you are an evaluator who has only the readme",)), ("oncall", ("you are an on-call engineer",)))   # each persona's own role sentence (the shared environment limits name Jenkins and GitLab for everyone)
 
 class Anthropic:
     def __init__(self, *a, **k):
@@ -3057,18 +3080,25 @@ import sys
 r = open(sys.argv[1] + "/compliance-reviewer.report.md").read()
 assert r.splitlines()[0] == "VERDICT: blocking" and "sbom steps unclear" in r, r
 PY
-cmpcase cmp6 "{\"noverify\":true,\"commands\":[\"echo sha256:$(printf 'a%.0s' $(seq 64))\"],\"exits\":[0]}"
-CASE="compliance proof: the RC digest merely NAMED by a command that is not a verification (echo) is no proof: blocking"
+cmpcase cmp6 "{\"noverify\":true,\"commands\":[\"echo sha256:$(printf 'a%.0s' $(seq 64))\"]}"
+CASE="compliance proof: the RC digest merely NAMED by a command that is not a verification (echo, a shell action) is no proof: blocking"
 check test "$(head -1 "$(out cmp6)/compliance-reviewer.report.md")" = "VERDICT: blocking"
-cmpcase cmp7 "{\"noverify\":true,\"commands\":[\"cosign verify ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 64))\",\"cosign download sbom ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 64))\"],\"exits\":[1,0]}"
-CASE="compliance proof: AT LEAST ONE successful digest verification is enough (a failed cosign verify followed by a successful SBOM download of the RC digest): pass"
+RCD="ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 64))"
+cmpcase cmp7 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":1},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: AT LEAST ONE successful cosign verify of the RC digest is enough (a failed one first): pass"
 check test "$(head -1 "$(out cmp7)/compliance-reviewer.report.md")" = "VERDICT: pass"
-cmpcase cmp8 '{"noverify":true,"commands":["cosign verify-attestation x"]}'
-CASE="compliance proof: an answer with commands but no exits is no proof (fail closed): blocking"
-check python3 - "$(out cmp8)" <<'PY'
-import sys
-assert open(sys.argv[1] + "/compliance-reviewer.report.md").read().splitlines()[0] == "VERDICT: blocking"
-PY
+cmpcase cmp8 '{"noverify":true,"commands":["cosign verify x"],"drop":["actions"]}'
+CASE="compliance proof: an answer with commands but no actions is no proof (fail closed): blocking"
+check test "$(head -1 "$(out cmp8)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp9 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"download\",\"sbom\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: only cosign verify (the one verification docs/verify-images.md documents for an image) proves; verify-attestation, verify-blob and download sbom of the RC digest do not: blocking"
+check test "$(head -1 "$(out cmp9)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp10 "{\"noverify\":true,\"actions\":[{\"tool\":\"shell\",\"argv\":[\"sh\",\"-c\",\"cosign verify $RCD\"],\"exit\":0},{\"tool\":\"kubectl\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: a shell action with the words, or another tool's 'verify', is no proof (the TOOL field must be cosign): blocking"
+check test "$(head -1 "$(out cmp10)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp11 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity=x@sha256:$(printf 'a%.0s' $(seq 64))\",\"ghcr.io/example/cache:1.0\"],\"exit\":0}]}"
+CASE="compliance proof: the digest inside a flag's value (not an image argument) is no proof: blocking"
+check test "$(head -1 "$(out cmp11)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 run proofreset '{"gradle-platform-engineer":{"requests":3},"maven-jenkins-ci":{"requests":3},"readme-evaluator":{"reset":true,"requests":1}}' rc
 CASE="proof: a counter that went BACKWARDS during the window (the server restarted: fewer samples after than before) is no proof: that persona, with no findings, is blocking; the others pass"
 check test "$(head -1 "$(out proofreset)/readme-evaluator.report.md")" = "VERDICT: blocking" -a "$(head -1 "$(out proofreset)/gradle-platform-engineer.report.md")" = "VERDICT: pass"
@@ -3100,6 +3130,7 @@ import json, sys
 d = sys.argv[1]
 n_expect = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 mult = 2 if "double" in sys.argv[3:] else 1       # the fixture counts every request twice (a late second increment)
+qmin = float(next((x.split("=")[1] for x in sys.argv[3:] if x.startswith("quiet=")), "0.75"))     # the quiet interval asserted from the recorded scrape instants (the default window is 3.0s: quiet=2.9)
 settle = "settle" in sys.argv[3:]      # the real server counts AFTER the response: the after-scrape is the LAST one before the next persona's before-scrape
 tim = sorted((json.loads(l) for l in open(d + "/timing.log")), key=lambda r: r["t0"])
 srv = [json.loads(l) for l in open(d + "/srv.log")]
@@ -3122,7 +3153,7 @@ for i, r in enumerate(tim):
         k = len(seq) - 1
         while k > 0 and seq[k - 1]["total"] == seq[-1]["total"]:
             k -= 1
-        assert seq[-1]["t"] - seq[k]["t"] >= 0.75, ("the final equal readings span %.2fs after the last observed change: not the stated 0.8s quiet interval" % (seq[-1]["t"] - seq[k]["t"]), r["persona"])
+        assert seq[-1]["t"] - seq[k]["t"] >= qmin, ("the final equal readings span %.2fs after the last observed change: not the stated quiet interval (%.2fs)" % (seq[-1]["t"] - seq[k]["t"], qmin), r["persona"])
     else:
         after = [e for e in scr if e["t"] > r["t1"]]
         assert after, ("a persona window without a scrape after it", r["persona"])
@@ -3330,6 +3361,17 @@ assert [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]], "no cl
 assert "did not run" in open(sys.argv[3] + "/on-call-engineer.report.md").read().lower() and int(sys.argv[4]) != 0
 for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator"):
     assert open(sys.argv[3] + "/" + p + ".report.md").read().splitlines()[0].startswith("VERDICT: "), p
+PY
+KIND_TOKEN_LIFETIME=3600 run kindeq '{}' rc
+CASE="token lifetime: 4500 seconds were requested (1h agent timeout + 15 minutes) and the API server issued only 3600: shorter than the window it must cover, so the on-call persona did not run (blocking, cluster deleted): the ISSUED token's validity is compared with the REQUESTED duration"
+check python3 - "$work/kindeq" "$work" "$(out kindeq)" "$rc" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2]); import kh
+d = sys.argv[1]
+assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/log")]
+assert [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]]
+r = open(sys.argv[3] + "/on-call-engineer.report.md").read()
+assert "did not run" in r.lower() and int(sys.argv[4]) != 0, r
 PY
 KIND_TOKEN_LIFETIME=7200 run kindlong '{}' rc
 CASE="token lifetime: the API server issued 2h although 1h was asked: fine (the issued lifetime covers the window): the persona runs, its kubeconfig holds exactly that token"
@@ -3703,7 +3745,7 @@ PY
 srvctl __reset
 srvctl __silent v 1
 srvctl __delay s 0.25
-run delayed '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
+SETTLE_DEFAULT=1 run delayed '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
 srvctl __delay s 0
 srvctl __silent v 0
 python3 -c "import time; time.sleep(1)"
@@ -3715,25 +3757,26 @@ for p, v in want.items():
     r = open(sys.argv[1] + "/" + p + ".report.md").read()
     assert r.splitlines()[0] == "VERDICT: " + v, (p, r)
 PY
-check python3 "$work/windows.py" "$work/delayed" 5 settle
+check python3 "$work/windows.py" "$work/delayed" 5 settle quiet=2.9
 # QUIESCENCE (stated bound): two equal readings do not prove the previous persona's work has drained. The driver's after-scrape therefore waits until the total has been
-# UNCHANGED across readings spanning at least 0.8 seconds, and gives up after 8 seconds; an increment landing later than that cannot be told from the next persona's own
-# traffic (documented limit, not tested). A delay of 0.6 s lands AFTER two quick equal readings but inside the quiet window.
+# UNCHANGED across readings spanning at least 3.0 seconds (the default; the other cases run with a shorter one), and gives up after 20 seconds; an increment landing later than
+# that cannot be told from the next persona's own traffic: the LIMIT is stated in every report's header (no in-flight gauge is invented). A delay of 0.6 s lands AFTER two
+# quick equal readings but well inside the quiet window (a 2.4 s margin: the case no longer depends on scheduling luck under load).
 srvctl __reset
 srvctl __silent v 1
 srvctl __delay s 0.6
-run delayed2 '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
+SETTLE_DEFAULT=1 run delayed2 '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
 srvctl __delay s 0
 srvctl __silent v 0
 python3 -c "import time; time.sleep(1.5)"
-CASE="late completion after two equal readings (the server counts 0.6s AFTER the response; the driver waits for 0.8s of quiet, at most 8s): the persona's last request is still attributed to ITS window and the next persona (no counted request) is blocking, not credited"
+CASE="late completion after two equal readings (the server counts 0.6s AFTER the response; the driver waits for 3.0s of quiet, at most 20s): the persona's last request is still attributed to ITS window and the next persona (no counted request) is blocking, not credited"
 check python3 - "$(out delayed2)" <<'PY'
 import sys
 want = {"gradle-platform-engineer": "pass", "maven-jenkins-ci": "blocking", "compliance-reviewer": "pass", "readme-evaluator": "pass", "on-call-engineer": "pass"}
 for p, v in want.items():
     assert open(sys.argv[1] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
 PY
-check python3 "$work/windows.py" "$work/delayed2" 5 settle
+check python3 "$work/windows.py" "$work/delayed2" 5 settle quiet=2.9
 # the federated identity token file (re-minted by the job every few minutes) is the driver's to remove when it is done: nothing of it outlives the run
 echo FIXTURE-IDENTITY >"$work/idtok.file"
 run idtok '{}' rc ANTHROPIC_IDENTITY_TOKEN_FILE="$work/idtok.file"
@@ -3749,7 +3792,7 @@ srvctl __reset
 srvctl __silent v 1
 srvctl __delay s 0.6
 srvctl __extra s 0.7
-run delayed3 '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
+SETTLE_DEFAULT=1 run delayed3 '{"gradle-platform-engineer":{"requests":1},"maven-jenkins-ci":{"requests":0,"uncounted":["/healthz"]},"compliance-reviewer":{"requests":2},"readme-evaluator":{"requests":1},"on-call-engineer":{"requests":1}}' rc
 srvctl __extra s 0
 srvctl __delay s 0
 srvctl __silent v 0
@@ -3761,16 +3804,16 @@ want = {"gradle-platform-engineer": "pass", "maven-jenkins-ci": "blocking", "com
 for p, v in want.items():
     assert open(sys.argv[1] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
 PY
-check python3 "$work/windows.py" "$work/delayed3" 5 settle double
+check python3 "$work/windows.py" "$work/delayed3" 5 settle double quiet=2.9
 check python3 "$work/windows.py" "$work/clean" 5 settle
 srvctl __reset
 python3 - <<'PYD'
 import urllib.request
-urllib.request.urlopen("http://127.0.0.1:18080/__drift?p=on-call-engineer&s=9.6", timeout=5).read()
+urllib.request.urlopen("http://127.0.0.1:18080/__drift?p=on-call-engineer&s=23", timeout=5).read()
 PYD
-run drift '{}' rc
+SETTLE_DEFAULT=1 run drift '{}' rc
 srvctl __reset
-CASE="a counter that NEVER settles (every scrape of the last persona's window changes it, for 9.6s): the driver gives up at its 8-second deadline (not sooner, not after the drift ends) and that persona is blocking and the run exits 1, the other four unaffected"
+CASE="a counter that NEVER settles (every scrape of the last persona's window changes it, for 23s): the driver gives up at its 20-second deadline (not sooner, not after the drift ends) and that persona is blocking and the run exits 1, the other four unaffected"
 check python3 - "$work/drift" "$(out drift)" "$rc" <<'PY'
 import json, sys
 d, o, rc = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -3779,7 +3822,7 @@ sc = [r["t"] for r in rows if r["path"] == "/metrics"]
 tim = [json.loads(l) for l in open(d + "/timing.log") if '"on-call-engineer"' in l][0]
 mine = [t for t in sc if t > tim["t1"] - 0.5]
 span = max(mine) - tim["t1"]
-assert 6.8 <= span <= 9.3, ("the driver must stop re-reading at about 8 seconds after the window", span)
+assert 18.0 <= span <= 22.5, ("the driver must stop re-reading at about 20 seconds after the window", span)
 assert open(o + "/on-call-engineer.report.md").read().splitlines()[0] == "VERDICT: blocking"
 for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator"):
     assert open(o + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: pass", p
@@ -3852,6 +3895,62 @@ assert line("maven-jenkins-ci") == "url-f.example,url-g.example,url-i.example", 
 assert line("compliance-reviewer") == "", line("compliance-reviewer")
 PY
 check publiclog hosts6
+# TRANSCRIPT HEAD AND TAIL (step 8 round 2, B5): the persisted transcript is not cut to its last 400000 characters. Up to 1,000,000 characters it is kept whole; beyond that
+# the first 200000 and the last 800000 are kept with an explicit marker of how many were omitted. 400,038 characters keep the first completed action.
+AGENT_TIMEOUT=1 run trstream1 '{"gradle-platform-engineer":{"stream":400038,"sleep":30}}' rc
+CASE="a persisted transcript of 400,038 characters (a timed-out agent) keeps its FIRST completed action and its last: nothing is cut below one million characters"
+check python3 - "$(out trstream1)" <<'PY'
+import sys
+t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
+assert "agent timed out" in t and "$ first-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
+assert t.count("y") >= 399900, "the filler was cut"
+PY
+AGENT_TIMEOUT=1 run trstream2 '{"gradle-platform-engineer":{"stream":1500000,"sleep":30}}' rc
+CASE="a persisted transcript of 1,500,000 characters keeps the first 200000 (with the first action) and the last 800000 (with the last action) and says '[... 500000 characters omitted ...]' once"
+check python3 - "$(out trstream2)" <<'PY'
+import sys
+t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
+assert "$ first-completed-action" in t and "$ last-completed-action" in t, t[:200]
+assert t.count("[... 500000 characters omitted ...]") == 1, [l for l in t.splitlines() if "omitted" in l][:3]
+assert 1000000 <= len(t) <= 1001500, len(t)
+PY
+AGENT_TIMEOUT=1 run trstream3 '{"gradle-platform-engineer":{"stream":18000000,"sleep":30}}' rc
+CASE="a persisted transcript above the 16 MiB cap (18,000,000 characters, as if the agent ignored its own cap) is still read bounded: first and last kept, the omission counted, the encrypted transcript about one million characters"
+check python3 - "$(out trstream3)" <<'PY'
+import sys
+t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
+assert "$ first-completed-action" in t and "$ last-completed-action" in t and t.count("[... 17000000 characters omitted ...]") == 1
+assert len(t) <= 1001500, len(t)
+PY
+# curl/wget SHORT-OPTION CLUSTERS with attached values and the other host-naming options (step 8 round 2, B4): -xHOST, -sxHOST, -x HOST, --connect-to, --resolve, wget -e http_proxy=HOST,
+# wget -B HOST; -K/--config FILE and wget -i FILE name a file whose content is not observed (the file name is never mistaken for a host); localhost and docs hosts stay unlisted
+python3 - >"$work/hostsplan7.json" <<'PY'
+import json
+print(json.dumps({
+ "gradle-platform-engineer": {"commands": ["curl -xoutside.example:8080 localhost", "curl -sxcluster-a.example:3128 https://docs.example.org/x", "curl -sS -x cluster-b.example:3128 https://docs.example.org/y",
+                                           "curl -sSLxhttp://cluster-c.example:3128 https://docs.example.org/z", "curl -K conf.example https://docs.example.org/q", "curl --config conf2.example https://docs.example.org/r"]},
+ "maven-jenkins-ci": {"commands": ["curl --connect-to ::connect-d.example:443 https://docs.example.org/x", "curl --connect-to from-e.example:443:to-f.example:8443 https://docs.example.org/y",
+                                   "curl --resolve resolve-g.example:443:10.9.8.7 https://docs.example.org/z", "curl --resolve=resolve-h.example:443:127.0.0.1 https://docs.example.org/w"]},
+ "compliance-reviewer": {"commands": ["wget -e http_proxy=wproxy-i.example:3128 https://docs.example.org/a", "wget -ehttps_proxy=http://wproxy-j.example:3128 https://docs.example.org/b",
+                                      "wget -B base-k.example/ rel/path", "wget -i list.example https://docs.example.org/c", "wget --execute=http_proxy=wproxy-l.example:80 https://docs.example.org/d"]},
+ "readme-evaluator": {"commands": ["curl -o out.example.txt https://docs.example.org/", "curl -H 'Host: hdr.example' https://docs.example.org/", "curl -u user:pass.example https://docs.example.org/"]}}))
+PY
+run hosts7 "$(cat "$work/hostsplan7.json")" rc
+CASE="hosts (clusters): -xHOST, -sxHOST, -x HOST, -sSLxURL, --connect-to, --resolve, wget -e/-ehttp_proxy=, --execute= and -B name their hosts; a -K/--config/-i file name, an -o output name, a header value and a user:password are not hosts; the counterexample 'curl -xoutside.example:8080 localhost' lists outside.example"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+def line(p):
+    t = open("%s/hosts7/plain/%s.report.md" % (w, p)).read().splitlines()
+    v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
+want = {"gradle-platform-engineer": "cluster-a.example,cluster-b.example,cluster-c.example,outside.example",
+        "maven-jenkins-ci": "10.9.8.7,connect-d.example,from-e.example,resolve-g.example,resolve-h.example,to-f.example",
+        "compliance-reviewer": "base-k.example,wproxy-i.example,wproxy-j.example,wproxy-l.example", "readme-evaluator": ""}
+for p, v in want.items():
+    assert line(p) == v, (p, line(p), v)
+PY
+check publiclog hosts7
 # the auth layer wraps the metrics middleware: a 401 is never counted
 run proofauth '{"readme-evaluator":{"requests":0,"unauth":3}}' rc
 CASE="a persona whose only traffic was answered 401 (withAuth wraps withMetrics, so it is never counted) made no counted request: blocking, the others pass"

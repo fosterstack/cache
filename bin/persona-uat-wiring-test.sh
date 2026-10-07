@@ -240,6 +240,8 @@ STEP_ALLOW = {      # STRUCTURAL rule: a prerequisite step may carry only these 
     "resolver": ({"run", "env", "name", "id"}, None),
     "identity": ({"uses", "with", "name", "id"}, {"script"}),
     "upload": ({"uses", "with", "if", "continue-on-error", "name", "id"}, {"name", "path", "if-no-files-found", "retention-days"}),
+    "refresher": ({"run", "name", "id"}, None),
+    "cleanup": ({"run", "name", "if"}, None),
 }
 
 def step_kind(x, pre, weekly):
@@ -247,6 +249,8 @@ def step_kind(x, pre, weekly):
     if "actions/checkout" in u: return "checkout"
     if "actions/github-script" in u: return "identity"
     if "upload-artifact" in u: return "upload"
+    if "nohup" in r and "ACTIONS_ID_TOKEN_REQUEST_URL" in r: return "refresher"
+    if re.fullmatch(r'rm -f "?\$\{?RUNNER_TEMP\}?/anthropic-identity-token"?', r): return "cleanup"
     if install_re(pre).match(r): return "install"
     if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
     if weekly and "gh release view" in r: return "resolver"
@@ -269,8 +273,8 @@ def judge_prereqs(name, job, steps, bad):
             bad.append(f"{name}: the {kind} step {i} carries keys outside its allowlist {sorted(keys)}: {sorted(set(x) - keys)}")
         if withs is not None and set(x.get("with") or {}) - withs:
             bad.append(f"{name}: the {kind} step {i} carries options outside its allowlist {sorted(withs)} (sparse-checkout, filter, fetch-depth, ... could drop docs/): {sorted(set(x.get('with') or {}) - withs)}")
-        if kind in ("checkout", "sdk") and (x.get("if") is not None or not literal_false(x.get("continue-on-error"))):
-            bad.append(f"{name}: the {'checkout' if kind == 'checkout' else 'SDK install'} step is conditional or non-fatal: the persona UAT could run without it")
+        if kind in ("checkout", "sdk", "refresher") and (x.get("if") is not None or not literal_false(x.get("continue-on-error"))):
+            bad.append(f"{name}: the {kind if kind != 'sdk' else 'SDK install'} step is conditional or non-fatal: the persona UAT could run without it")
         if kind != "upload" and kind != "resolver" and "env" in x:
             bad.append(f"{name}: the {kind} step has an env")
     # the checked-out tree must hold the public docs: the repository under test has them, and no checkout option may thin the tree
@@ -383,9 +387,11 @@ def common(name, job, bad):
                 if re.search(r"secrets\.|vars\.PERSONA_UAT|ANTHROPIC_", str(v)) or MODEL.search(str(v)) or (CRED_REF.search(str(v)) and not (k == "GH_TOKEN" and expr_is(v, "github.token") and "gh release view" in str(s.get("run", "")))):
                     bad.append(f"{name}: the env {k} of a step other than the driver carries a credential reference or a model name ({v!r})")
     env = d.get("env", {})
-    extra_env = sorted(set(env) - set(VARS) - set(CREDS))
+    extra_env = sorted(set(env) - set(VARS) - set(CREDS) - {"ANTHROPIC_IDENTITY_TOKEN_FILE"})
     if extra_env:
-        bad.append(f"{name}: the driver step carries environment outside the contract (no other credential, and no override of the identity token file the identity step exports): {extra_env}")
+        bad.append(f"{name}: the driver step carries environment outside the contract (the six secrets, the budget and the identity token file path only): {extra_env}")
+    if not re.fullmatch(r"\$\{\{\s*runner\.temp\s*\}\}/anthropic-identity-token", str(env.get("ANTHROPIC_IDENTITY_TOKEN_FILE", ""))):
+        bad.append(f"{name}: the driver step's ANTHROPIC_IDENTITY_TOKEN_FILE is not exactly ${{{{ runner.temp }}}}/anthropic-identity-token (the file the identity step writes and the refresher renews; it reaches the driver step only, never a later step)")
     for v in VARS:
         kind = "secrets" if v in MODEL_SECRETS else "vars"
         if not expr_is(env.get(v, ""), f"{kind}.{v}"):
@@ -402,11 +408,9 @@ def common(name, job, bad):
     for c in CREDS:
         if not expr_is(env.get(c, ""), f"secrets.{c}"):
             bad.append(f"{name}: {c} is not exactly secrets.{c} on the driver step")
-    if "ANTHROPIC_IDENTITY_TOKEN_FILE" not in env and not any("ANTHROPIC_IDENTITY_TOKEN_FILE" in json.dumps(s) for s in steps):
-        bad.append(f"{name}: nothing provides ANTHROPIC_IDENTITY_TOKEN_FILE (the OIDC identity for the model)")
     before = steps[:steps.index(d)]
-    if not any("getIDToken" in json.dumps(s) and "ANTHROPIC_IDENTITY_TOKEN_FILE" in json.dumps(s) for s in before):
-        bad.append(f"{name}: no step before the driver mints the model identity token (OIDC, no keys)")
+    if not any("getIDToken" in json.dumps(s) and "anthropic-identity-token" in json.dumps(s) for s in before):
+        bad.append(f"{name}: no step before the driver mints the model identity token (OIDC, no keys) into RUNNER_TEMP/anthropic-identity-token")
     if MODEL.search(json.dumps(job)):
         bad.append(f"{name}: a model name is written in the workflow")
     if CLOUD.search("\n".join(str(s.get("run", "")) for s in steps)):
@@ -419,8 +423,10 @@ def common(name, job, bad):
             if "if" in s or str(s.get("continue-on-error", "false")) not in ("false",):
                 bad.append(f"{name}: the identity step has an if or continue-on-error: the persona job could run without its identity")
             wm = re.search(r"fs\.writeFileSync\(\s*(\w+)\s*,\s*token\s*(?:,\s*\{[^}]*\}\s*)?\)", body)
-            if not wm or not re.search(r"exportVariable\(\s*'ANTHROPIC_IDENTITY_TOKEN_FILE'\s*,\s*" + re.escape(wm.group(1)) + r"\s*\)", body.replace('"', "'")):
-                bad.append(f"{name}: the identity step does not write the token to a file and export ANTHROPIC_IDENTITY_TOKEN_FILE for THAT file")
+            if not wm or not re.search(r"(?:const|let|var)\s+" + re.escape(wm.group(1)) + r"\s*=\s*process\.env\.RUNNER_TEMP\s*\+\s*['\"]/anthropic-identity-token['\"]", body):
+                bad.append(f"{name}: the identity step does not write the token to a file, RUNNER_TEMP/anthropic-identity-token, which is the file the driver step reads")
+            if "exportVariable" in body or re.search(r"\bset(Interval|Timeout)\b", body):
+                bad.append(f"{name}: the identity step exports the token file's path to every later step or starts a timer: the path reaches the driver step's env only, and a timer inside github-script dies with the step (the refresher is its own detached process)")
     for s in steps:
         for k, v in (s.get("with") or {}).items():
             if k != "script" and CLOUD.search(str(v)):
@@ -449,12 +455,15 @@ def common(name, job, bad):
         is_install = isrun and install_re(pre).match(str(s.get("run", "")).strip()) is not None
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
-        if i > di and "upload-artifact" not in str(s.get("uses", "")):
-            bad.append(f"{name}: a step after the driver other than the transcript upload could alter the files before upload")
-        if i < di and isrun and not is_resolver and not is_boot and not is_install:
+        is_cleanup = step_kind(s, pre, name.startswith("weekly")) == "cleanup"
+        is_refresher = step_kind(s, pre, name.startswith("weekly")) == "refresher"
+        if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
+            bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
+        if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher:
             bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install and the one pinned kind install (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
     judge_prereqs(name, job, steps, bad)
+    judge_refresher(name, steps, d, bad)
     cos = [s for s in steps if "actions/checkout" in str(s.get("uses", ""))]
     if len(cos) != (2 if weekly else 1) or any(steps.index(c) > di for c in cos):
         bad.append(f"{name}: expected exactly {2 if weekly else 1} actions/checkout step(s) before the driver (the personas read the docs they bring; without them the docs directory is empty)")
@@ -535,10 +544,8 @@ def run_resolver(script):
     return out
 
 def run_identity(step):
-    """EXECUTE the identity step's script in node against a fake core, a capturing console and a CAPTURED setInterval: the token is minted (awaited), the TOKEN ITSELF is
-    registered for masking, it is written to a mode-0600 file, that file is what ANTHROPIC_IDENTITY_TOKEN_FILE is exported as, and it is never logged; then the job's
-    REFRESHER is run once (the GitHub assertion lives about five minutes and a persona job runs for up to two hours, every model call being a new process): one timer, at
-    most five minutes, and its callback re-mints into the SAME file (new content, masked, mode still 0600, never logged)."""
+    """EXECUTE the identity step's script in node against a fake core and a capturing console: the token is minted (awaited), the TOKEN ITSELF is registered for masking, it is
+    written to RUNNER_TEMP/anthropic-identity-token with mode 0600, nothing is exported to later steps and no timer is started, and it is never logged."""
     import subprocess, shutil
     if not shutil.which("node"):
         return ["node is required to execute the identity step's script (the proof must not be skipped)"]
@@ -547,22 +554,17 @@ def run_identity(step):
         open(d + "/s.js", "w").write(body)
         open(d + "/run.js", "w").write("""
 const fs = require('fs'); const body = fs.readFileSync(process.argv[2], 'utf8');
-const calls = {exported: {}, masked: [], logs: [], timers: []};
-let n = 0;
-const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN-' + (++n) + ':' + aud), 5)), setSecret: (t) => calls.masked.push(t),
+const calls = {exported: {}, masked: [], logs: [], timers: 0};
+const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN-1:' + aud), 5)), setSecret: (t) => calls.masked.push(t),
                exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {}, info: (m) => calls.logs.push(String(m)), debug: (m) => calls.logs.push(String(m)),
                warning: (m) => calls.logs.push(String(m)) };
 const cons = { log: (...a) => calls.logs.push(a.join(' ')), info: (...a) => calls.logs.push(a.join(' ')), warn: (...a) => calls.logs.push(a.join(' ')), error: (...a) => calls.logs.push(a.join(' ')) };
-const fakeSetInterval = (fn, ms) => { calls.timers.push({fn, ms}); return { unref() {} }; };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return null; } };
-const mode = (f) => { try { return (fs.statSync(f).mode & 0o777).toString(8); } catch (e) { return null; } };
-new AsyncFunction('core', 'require', 'process', 'console', 'setInterval', body)(core, require, process, cons, fakeSetInterval).then(async () => {
-  const f = calls.exported.ANTHROPIC_IDENTITY_TOKEN_FILE;
-  const out = {file: f || null, content: read(f), mode: mode(f), masked: calls.masked.slice(), timers: calls.timers.map((t) => t.ms)};
-  if (calls.timers.length) { try { await calls.timers[0].fn(); } catch (e) { out.refreshError = String(e); } }
-  out.content2 = read(f); out.mode2 = mode(f); out.masked2 = calls.masked.slice(); out.logs = calls.logs;
-  fs.writeFileSync(process.argv[3], JSON.stringify(out));
+const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
+const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (e) { return null; } };
+const mode = (p) => { try { return (fs.statSync(p).mode & 0o777).toString(8); } catch (e) { return null; } };
+new AsyncFunction('core', 'require', 'process', 'console', 'setInterval', 'setTimeout', body)(core, require, process, cons, () => { calls.timers++; return {unref() {}}; }, () => { calls.timers++; return {unref() {}}; }).then(() => {
+  fs.writeFileSync(process.argv[3], JSON.stringify({content: read(f), mode: mode(f), masked: calls.masked, exported: calls.exported, timers: calls.timers, logs: calls.logs}));
 }).catch((e) => fs.writeFileSync(process.argv[3], JSON.stringify({error: String(e)})));
 """)
         env = dict(os.environ, RUNNER_TEMP=d)
@@ -572,23 +574,123 @@ new AsyncFunction('core', 'require', 'process', 'console', 'setInterval', body)(
         except Exception:
             return ["the identity step's script could not be executed"]
         tok = "FIXTURE-TOKEN-1:https://api.anthropic.com"
-        if res.get("error") or not res.get("file") or res.get("content") != tok or tok not in (res.get("masked") or []):
-            return [f"the identity step does not mint (await), mask THE TOKEN and write it to the file it exports: {res}"]
+        if res.get("error") or res.get("content") != tok or tok not in (res.get("masked") or []):
+            return [f"the identity step does not mint (await), mask THE TOKEN and write it to RUNNER_TEMP/anthropic-identity-token: {res}"]
         if any("FIXTURE-TOKEN" in l for l in res.get("logs", [])):
             return ["the identity step logs the token"]
         probs = []
         if res.get("mode") != "600":
             probs.append(f"the identity token file is created with mode {res.get('mode')}, not 0600 (it is a credential: the owner only)")
-        if len(res.get("timers") or []) != 1:
-            probs.append(f"the identity step does not start exactly one background refresher (setInterval calls: {res.get('timers')}): the job runs for up to two hours and the assertion expires in minutes")
-        elif not 30000 <= res["timers"][0] <= 300000:
-            probs.append(f"the identity refresher's interval is {res['timers'][0]} ms: it must re-mint at least every five minutes (and not busy-loop)")
+        if res.get("exported") or res.get("timers"):
+            probs.append(f"the identity step exports {sorted(res.get('exported') or {})} or starts a timer ({res.get('timers')}): the path reaches the driver step's env only, and a timer dies with the github-script step")
+    return probs
+
+def judge_refresher(name, steps, d, bad):
+    """the federated assertion lives about five minutes and a persona job runs up to two hours, every model call a new process. The refresher is its OWN step that starts a
+    DETACHED process (nohup, output redirected, disowned) which re-mints from the runner's OIDC endpoint into the 0600 token file until the file is removed (the always() cleanup
+    step) - after the identity step wrote the file, before the driver. The script body is EXECUTED (run_refresher), not read."""
+    refs = [(i, x) for i, x in enumerate(steps) if step_kind(x, "", name.startswith("weekly")) == "refresher"]
+    if len(refs) != 1:
+        bad.append(f"{name}: expected exactly one identity refresher step (a detached process that re-mints the token), found {len(refs)}"); return
+    i, x = refs[0]
+    ids = [k for k, y in enumerate(steps) if "actions/github-script" in str(y.get("uses", "")) and "getIDToken" in json.dumps(y)]
+    if not ids or i < ids[0]:
+        bad.append(f"{name}: the identity refresher runs BEFORE the identity step wrote the token file (it must come after the mint and before the driver)")
+    if i > steps.index(d):
+        bad.append(f"{name}: the identity refresher runs after the driver")
+    bad.extend(f"{name}: {p}" for p in run_refresher(str(x.get("run", ""))))
+    cl = [y for y in steps if step_kind(y, "", name.startswith("weekly")) == "cleanup"]
+    if len(cl) != 1 or steps[-1] is not cl[0] or norm(cl[0].get("if", "")) != "always()":
+        bad.append(f"{name}: the job must end with exactly one `if: always()` step that removes RUNNER_TEMP/anthropic-identity-token (the token file is deleted at the end)")
+
+_REFRESH_CACHE = {}
+
+def run_refresher(script):
+    if script not in _REFRESH_CACHE:         # most mutations leave the refresher untouched: execute each distinct body once
+        _REFRESH_CACHE[script] = _run_refresher(script)
+    return list(_REFRESH_CACHE[script])
+
+def _run_refresher(script):
+    """RUN the refresher step's body under bash with a FAKE token source (a local server answering the runner's OIDC request), a sub-second interval and a pre-seeded STALE token
+    file: the step returns promptly although a child is left behind (stdout is a pipe: a child that kept it open would block it), the child OUTLIVES its parent and replaces the stale
+    file, keeps replacing it (a tampered/stale file is overwritten again), the file stays mode 0600, a missing token file is refused, and removing the file ends the loop without
+    recreating it. The default interval is at most five minutes."""
+    import subprocess, threading, time, http.server, signal
+    probs = []
+    m = re.search(r"PERSONA_UAT_REFRESH_SECONDS:-([0-9]+)", script)
+    if not m or not 10 <= int(m.group(1)) <= 300:
+        probs.append("the identity refresher's default interval is not between 10 seconds and five minutes (an assertion expires after about five)")
+    state = {"n": 0, "auth": [], "inflight": 0}
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            state["auth"].append((self.headers.get("Authorization"), self.path))
+            if self.headers.get("Authorization") != "bearer REQ-TOKEN" or "audience=https://api.anthropic.com" not in self.path:
+                self.send_response(403); self.send_header("Content-Length", "0"); self.end_headers(); return
+            state["inflight"] += 1
+            time.sleep(0.6)            # a request in flight: the file can be removed while the refresher waits for its answer
+            state["n"] += 1
+            b = json.dumps({"value": "FIXTURE-REFRESH-%d" % state["n"]}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "anthropic-identity-token")
+        env = dict(os.environ, RUNNER_TEMP=d, ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:%d/token?api-version=2.0" % srv.server_address[1],
+                   ACTIONS_ID_TOKEN_REQUEST_TOKEN="REQ-TOKEN", PERSONA_UAT_REFRESH_SECONDS="0.3")
+        # a refusal: the file does not exist yet
+        r0 = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+        if r0.returncode == 0:
+            probs.append("the identity refresher starts although the token file does not exist yet (the step must fail: the mint comes first)")
+        with open(f, "w") as fh:
+            fh.write("STALE-0")
+        os.chmod(f, 0o600)
+        t0 = time.time()
+        p = subprocess.Popen(["bash", "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, text=True)
+        try:
+            p.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            probs.append("the identity refresher step does not return: the detached process keeps the step's output open (redirect it) or runs in the foreground")
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except OSError: pass
+            srv.shutdown(); return probs
+        if p.returncode != 0:
+            probs.append(f"the identity refresher step failed (exit {p.returncode}) with a token file present")
+        read = lambda: open(f).read() if os.path.exists(f) else None
+        def wait_for(pred, secs=12):
+            end = time.time() + secs
+            while time.time() < end:
+                v = read()
+                if pred(v): return v
+                time.sleep(0.2)
+            return read()
+        v1 = wait_for(lambda v: v and v.startswith("FIXTURE-REFRESH-"))
+        if not (v1 and v1.startswith("FIXTURE-REFRESH-")):
+            probs.append(f"the detached refresher did not replace the stale token file after its parent step exited (the process dies with its step, or writes elsewhere): {v1!r}")
         else:
-            tok2 = "FIXTURE-TOKEN-2:https://api.anthropic.com"
-            if res.get("refreshError") or res.get("content2") != tok2 or tok2 not in (res.get("masked2") or []):
-                probs.append(f"the refresher does not re-mint into the SAME file and mask THE NEW TOKEN: {res}")
-            if res.get("mode2") != "600":
-                probs.append(f"the refreshed identity token file has mode {res.get('mode2')}, not 0600")
+            v2 = wait_for(lambda v: v and v != v1)
+            if v2 == v1:
+                probs.append("the detached refresher re-minted only once: it must keep renewing the file until the job ends")
+            if oct(os.stat(f).st_mode & 0o777) != "0o600":
+                probs.append(f"the refreshed token file has mode {oct(os.stat(f).st_mode & 0o777)}, not 0600")
+            with open(f, "w") as fh:
+                fh.write("STALE-AGAIN")
+            v3 = wait_for(lambda v: v and v != "STALE-AGAIN")
+            if v3 == "STALE-AGAIN":
+                probs.append("a stale token file was not replaced by the refresher")
+            if not [a for a in state["auth"] if a[0] == "bearer REQ-TOKEN"]:
+                probs.append("the refresher never presented the runner's request token to the OIDC endpoint")
+        end = time.time() + 6
+        seen = state["inflight"]
+        while time.time() < end and state["inflight"] == seen:      # a fetch is IN FLIGHT: remove the file now (the always() cleanup), the refresher must not write it back
+            time.sleep(0.05)
+        os.remove(f)
+        time.sleep(1.8)
+        if os.path.exists(f):
+            probs.append("the refresher recreated the token file after it was removed (the always() cleanup): it must stop when the file is gone")
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except OSError: pass
+    srv.shutdown()
     return probs
 
 def judge_requirements(bad):
@@ -907,13 +1009,14 @@ xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.
 # --- a COMPLETE known-good synthetic release.yml and go-freshness.yml, run through the REAL entry point judge() -> judge_release/judge_weekly -> common() ----------
 H40 = "a" * 40
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
-         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\ncore.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n"
-         "const refresh = async () => {\n  try {\n    const t = await core.getIDToken('https://api.anthropic.com');\n    core.setSecret(t); fs.writeFileSync(f, t, { mode: 0o600 });\n"
-         "  } catch (e) { core.warning(`identity refresh failed: ${e}`); }\n};\nsetInterval(refresh, 4 * 60 * 1000).unref?.();\n")
+         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n")
+REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
+CLEANUP = 'rm -f "${RUNNER_TEMP}/anthropic-identity-token"'
 def synth_driver(weekly):
     pre = ""
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
-    env.update({c: "${{ secrets.%s }}" % c for c in CREDS}); 
+    env.update({c: "${{ secrets.%s }}" % c for c in CREDS})
+    env["ANTHROPIC_IDENTITY_TOKEN_FILE"] = "${{ runner.temp }}/anthropic-identity-token"
     img = '"${{ steps.resolve.outputs.image }}"' if weekly else '"ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
                                 f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"'}
@@ -927,8 +1030,9 @@ def synth_persona_job(weekly):
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
     steps = (resolver + co + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
              {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
-             {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, synth_driver(weekly),
-             {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}}])
+             {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, {"run": REFRESHER}, synth_driver(weekly),
+             {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}},
+             {"if": "${{ always() }}", "run": CLEANUP}])
     j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write", "packages": "read"}, "steps": steps}
     if weekly:
         j["if"] = "${{ github.event.schedule == '43 6 * * 1' }}"
@@ -1097,7 +1201,7 @@ mutate("rc image is a fixed digest", "takes the image from something other than 
 mutate("rc gains a skipped dependency (decide)", "needs are not exactly image and promotion", lambda j: j.update(needs=list(j["needs"]) + ["decide"]))
 mutate("rc upload may fail without failing the job", "without retaining its transcripts", lambda j: up(j).update({"continue-on-error": "true"}))
 mutate("rc driver step carries an extra credential", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(AWS_SECRET_ACCESS_KEY="x"))
-mutate("rc identity step writes one file and exports another", "for THAT file",
+mutate("rc identity step writes one file and the driver reads another", "which is the file the driver step reads",
        lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="const p='/a'; const q='/b'; fs.writeFileSync(p, token); core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', q)"))
 mutate("rc job has no checkout", "actions/checkout step(s) before the driver", lambda j: j.update(steps=[s for s in j["steps"] if "actions/checkout" not in str(s.get("uses", ""))]))
 mutate("rc job checks out after the driver", "actions/checkout step(s) before the driver",
@@ -1184,7 +1288,8 @@ mutate("weekly runs-on windows-latest", "not an ubuntu runner", lambda j: j.upda
 mutate("weekly matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}), "fresh")
 mutate("weekly kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))), "fresh")
 mutate("rc checkout of another repository", "checkout of another repository", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(repository="evil/cache"))
-mutate("rc driver step overrides the identity token file", "outside the contract", lambda j: drv(j).setdefault("env", {}).update(ANTHROPIC_IDENTITY_TOKEN_FILE="/missing"))
+mutate("rc driver step reads another identity token file", "is not exactly ${{ runner.temp }}/anthropic-identity-token", lambda j: drv(j).setdefault("env", {}).update(ANTHROPIC_IDENTITY_TOKEN_FILE="/missing"))
+mutate("rc driver step has no identity token file path", "is not exactly ${{ runner.temp }}/anthropic-identity-token", lambda j: drv(j)["env"].pop("ANTHROPIC_IDENTITY_TOKEN_FILE"))
 mutate("rc identity step never awaits the token", "does not mint (await)",
        lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"].replace("await core.getIDToken", "core.getIDToken")))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
 mutate("rc SDK install without hashes", "a run step before the driver other than",
@@ -1337,20 +1442,35 @@ if not (os.path.isfile(dsh) and os.access(dsh, os.X_OK)):
 result(not good, "the recipient certificate (bin/persona-uat-recipient.pem, a certificate and no key) and the local decryption script (bin/persona-uat-decrypt.sh) are committed" + ("" if not good else ": " + "; ".join(good)))
 
 # --- model ids are secrets (advisor 0233) ---------------------------------------------------------------------------------------------------------------
-# the IDENTITY REFRESHER (step 8 round 1, B1 of both reviewers): the federated assertion lives about five minutes and a persona job runs up to two hours, every model call a new
-# process. The identity step re-mints into the same file on a timer (the auditor's pattern), the file is created 0600, and the pip install passes --break-system-packages (PEP 668
-# on the hosted ubuntu runner). A mutant without any of these must fail for ITS reason in both jobs.
+# the IDENTITY REFRESHER (step 8 rounds 1 and 2, B1 of both reviewers): the federated assertion lives about five minutes and a persona job runs up to two hours, every model call a
+# new process. A timer inside actions/github-script dies with its step (round 2: both reviewers ran it), so the refresher is its OWN step starting a detached process that
+# outlives it, re-minting into the 0600 token file until the always() cleanup removes it; the pip install passes --break-system-packages (PEP 668 on the hosted ubuntu runner).
 def _idscript(j): return next(x for x in j["steps"] if "github-script" in str(x.get("uses", "")))["with"]
+def _refr(j): return next(x for x in j["steps"] if "nohup" in str(x.get("run", "")))
+def _sub(j, old, new): _refr(j).update(run=_refr(j)["run"].replace(old, new))
 for lab, w in (("rc", "rel"), ("weekly", "fresh")):
-    mutate(f"{lab} identity step has NO refresher (the token expires mid-run)", "does not start exactly one background refresher", lambda j: _idscript(j).update(script=re.sub(r"setInterval\(.*\n", "", _idscript(j)["script"])), w)
-    mutate(f"{lab} identity refresher every 10 minutes (longer than the assertion lives)", "must re-mint at least every five minutes", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("4 * 60 * 1000", "10 * 60 * 1000")), w)
-    mutate(f"{lab} identity refresher busy-loops (every 10 ms)", "must re-mint at least every five minutes", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("4 * 60 * 1000", "10")), w)
-    mutate(f"{lab} identity refresher writes another file", "does not re-mint into the SAME file", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("fs.writeFileSync(f, t,", "fs.writeFileSync(f + '.new', t,")), w)
-    mutate(f"{lab} identity refresher does not mask the new token", "mask THE NEW TOKEN", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("core.setSecret(t); ", "")), w)
-    mutate(f"{lab} identity refresher logs the new token", "logs the token", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("core.setSecret(t); ", "core.setSecret(t); core.info(t); ")), w)
-    mutate(f"{lab} identity token file created world-readable", "not 0600", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("{ mode: 0o600 }", "{ mode: 0o644 }")), w)
-    mutate(f"{lab} identity token file created with the default mode", "not 0600", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace(", { mode: 0o600 }", "")), w)
-    mutate(f"{lab} refreshed token file loses its mode", "refreshed identity token file has mode", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("fs.writeFileSync(f, t, { mode: 0o600 })", "fs.unlinkSync(f); fs.writeFileSync(f, t, { mode: 0o644 })")), w)
+    mutate(f"{lab} a setInterval timer inside github-script (the round-1 design: it dies with the step)", "starts a timer", lambda j: _idscript(j).update(script=_idscript(j)["script"] + "setInterval(async () => {}, 4 * 60 * 1000).unref?.();\n"), w)
+    mutate(f"{lab} the identity step exports the token path to every later step", "exports the token file's path", lambda j: _idscript(j).update(script=_idscript(j)["script"] + "core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n"), w)
+    mutate(f"{lab} no refresher step at all (the token expires mid-run)", "expected exactly one identity refresher step", lambda j: j.update(steps=[x for x in j["steps"] if x is not _refr(j)]), w)
+    mutate(f"{lab} a second refresher step", "expected exactly one identity refresher step", lambda j: j["steps"].insert(j["steps"].index(_refr(j)) + 1, copy.deepcopy(_refr(j))), w)
+    mutate(f"{lab} the refresher runs BEFORE the identity step wrote the file", "BEFORE the identity step wrote", lambda j: (lambda r: (j["steps"].remove(r), j["steps"].insert(0, r)))(_refr(j)), w)
+    mutate(f"{lab} the refresher is conditional", "conditional or non-fatal", lambda j: _refr(j).update({"if": "${{ always() }}"}), w)
+    mutate(f"{lab} the refresher is not detached from the step's output", "does not return", lambda j: _sub(j, " </dev/null >/dev/null 2>&1 &", " &"), w)
+    mutate(f"{lab} the refresher runs in the foreground", "does not return", lambda j: _sub(j, " </dev/null >/dev/null 2>&1 &\ndisown", " </dev/null >/dev/null 2>&1"), w)
+    mutate(f"{lab} the refresher process is killed with its step (a timer in a subshell that is waited for and exits)", "did not replace the stale token file", lambda j: _sub(j, "while [ -e \"$f\" ] && sleep \"$every\"; do", "while false; do"), w)
+    mutate(f"{lab} the refresher re-mints only once", "re-minted only once", lambda j: _sub(j, "done\n'", "break; done\n'"), w)
+    mutate(f"{lab} the refresher writes another file", "did not replace the stale token file", lambda j: _sub(j, '> "$f.new" ) && mv -f "$f.new" "$f"', '> "$f.new" ) && mv -f "$f.new" "$f.other"'), w)
+    mutate(f"{lab} the refreshed token file is world-readable", "not 0600", lambda j: _sub(j, "umask 077", "umask 022"), w)
+    mutate(f"{lab} the refresher keeps recreating a removed file", "recreated the token file", lambda j: _sub(j, '    [ -e "$f" ] || break\n    ( umask', '    ( umask'), w)
+    mutate(f"{lab} the refresher never stops when the file is gone", "recreated the token file", lambda j: (_sub(j, 'while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n', 'while sleep "$every"; do\n'), _sub(j, '    [ -e "$f" ] || break\n    ( umask', '    ( umask')), w)
+    mutate(f"{lab} the refresher interval defaults to 10 minutes", "default interval is not between", lambda j: _sub(j, "REFRESH_SECONDS:-60", "REFRESH_SECONDS:-600"), w)
+    mutate(f"{lab} the refresher starts although no token file exists", "starts although the token file does not exist", lambda j: _sub(j, '[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\n', ""), w)
+    mutate(f"{lab} the refresher asks the OIDC endpoint without the request token", "did not replace the stale token file", lambda j: _sub(j, 'Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}', 'Authorization: bearer x'), w)
+    mutate(f"{lab} the refresher asks for another audience", "did not replace the stale token file", lambda j: _sub(j, "audience=https://api.anthropic.com", "audience=https://example.invalid"), w)
+    mutate(f"{lab} no token cleanup step at the end", "must end with exactly one `if: always()` step that removes", lambda j: j.update(steps=j["steps"][:-1]), w)
+    mutate(f"{lab} the cleanup step is not always()", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update({"if": "${{ success() }}"}), w)
+    mutate(f"{lab} the cleanup step is not the last step", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"].append({"run": "true"}), w)
+    mutate(f"{lab} the cleanup step removes another file", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update(run='rm -f "${RUNNER_TEMP}/other"'), w)
     mutate(f"{lab} pip install without --break-system-packages (PEP 668 refuses it on the hosted runner)", "expected exactly one hash-pinned SDK install", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(run=next(x for x in j["steps"] if "pip install" in str(x.get("run", "")))["run"].replace(" --break-system-packages", "")), w)
 for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the default model id arrives as a VARIABLE (printed in the step header)", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="${{ vars.PERSONA_UAT_MODEL }}"), w)

@@ -2,8 +2,8 @@
 """One persona's agent loop (REQ-UAT-001-AC1, AC4, AC5).
 
 stdin : the driver's request JSON {persona, instructions, docs_dir, endpoint, image, model, token_budget, tools}
-stdout: {"findings": [{"kind": "blocking|friction", "text": str}], "tokens": N, "transcript": str, "commands": [str], "exits": [int]}
-        (`exits` holds the exit status of each executed command, in the order of `commands`)
+stdout: {"findings": [{"kind": "blocking|friction", "text": str}], "tokens": N, "transcript": str, "commands": [str], "actions": [{"tool", "argv", "exit"}]}
+        (`actions` records each executed action, in the order of `commands`: its TOOL, the argv handed to that tool's image and its exit status)
 exit  : non-zero with NOTHING on stdout when the persona could not run (a provider that fails or leaves the protocol, a
         docker that cannot start): the driver then counts that persona as blocking, never as a pass.
 
@@ -110,6 +110,7 @@ def call_provider(cmd, model, system, messages, timeout):
     raise Fail("the provider's action is outside the protocol")
 
 
+TRANSCRIPT_MAX_BYTES = 16 * 1024 * 1024      # the streamed transcript file never grows past this; the first actions are kept and one marker says the rest was not written
 RESERVE = 0.15                       # of the token budget: kept for the forced final finish call
 FORCED_FINISH = ("You have reached your token budget and cannot run any more commands. Reply now with a finish action: "
                  "{\"action\": \"finish\", \"findings\": [...]} reporting your findings so far (what you observed, quoting the failing step), and nothing else.")
@@ -188,6 +189,7 @@ def main():
     ap.add_argument("--provider-timeout", type=int, default=600)
     ap.add_argument("--max-steps", type=int, default=400)
     ap.add_argument("--transcript-file")
+    ap.add_argument("--transcript-max-bytes", type=int, default=TRANSCRIPT_MAX_BYTES)
     a = ap.parse_args()
     try:
         req = json.loads(sys.stdin.read())
@@ -212,14 +214,20 @@ def main():
         transcript, findings, ended = [], None, "finish"
         holder.append(transcript); holder.append(req["model"])
         used = steps = shells = 0
-        commands, exits = [], []
+        commands, actions = [], []
         stream = open_stream(a.transcript_file)
+
+        written = [0, False]
 
         def note(entry):
             """one transcript entry: kept in memory and, when asked, appended to the transcript file and made durable before anything else happens"""
             transcript.append(entry)
-            if stream is not None:
-                stream.write(scrub(entry, req["model"]) + "\n")
+            if stream is not None and not written[1]:
+                line = scrub(entry, req["model"]) + "\n"
+                if written[0] + len(line.encode("utf-8", "replace")) > a.transcript_max_bytes:
+                    line, written[1] = "[... the transcript file reached its cap (%d bytes): later actions are not written here ...]\n" % a.transcript_max_bytes, True
+                written[0] += len(line.encode("utf-8", "replace"))
+                stream.write(line)
                 stream.flush()
                 os.fsync(stream.fileno())
         while True:
@@ -263,7 +271,8 @@ def main():
             shells += 1
             commands.append(label)
             text, res, ran = run_shell(docker, tools[tool], req["docs_dir"], act, a.shell_timeout, a.label)
-            exits.append(res[0] if res else 124)        # a timed-out action has no status of its own: 124, like timeout(1)
+            actions.append({"tool": tool, "argv": ["sh", "-c", act["command"]] if "command" in act else list(act["args"]),
+                            "exit": res[0] if res else 124})        # a timed-out action has no status of its own: 124, like timeout(1)
             note("$ %s\n%s" % (label, text))
             messages.append({"role": "assistant", "content": json.dumps(act)})
             messages.append({"role": "user", "content": text})
@@ -271,7 +280,7 @@ def main():
         # a pass must be earned: the persona ran something, and a clean finish needs an answer from the endpoint
         if ended == "finish" and shells == 0:
             findings.append({"kind": "blocking", "text": "the persona finished without running a single shell action: nothing was exercised"})
-        out = {"findings": findings, "tokens": used, "transcript": scrub("\n".join(transcript) + "\n", req["model"]), "commands": [scrub(c, req["model"]) for c in commands], "exits": exits}
+        out = {"findings": findings, "tokens": used, "transcript": scrub("\n".join(transcript) + "\n", req["model"]), "commands": [scrub(c, req["model"]) for c in commands], "actions": [dict(x, argv=[scrub(t, req["model"]) for t in x["argv"]]) for x in actions]}
     except Fail as e:
         if holder:
             sys.stderr.write(scrub("\n".join(holder[0]), holder[1]) + "\n")

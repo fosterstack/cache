@@ -50,6 +50,8 @@ JENKINS_ENV = "JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
 URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
 METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
+SETTLE_QUIET = 3.0          # seconds of an unchanged request counter before a persona's window is closed
+SETTLE_MAX = 20.0           # the ceiling: a counter that never settles makes the persona blocking
 DEFAULT_PORT = 38080        # the image's host port; never 8080: the docs' `kubectl port-forward svc/fscache 8080:80` must work next to the driver (Jenkins and the runner take the next two)
 TOKEN_MARGIN = 900          # seconds the persona's kubeconfig token outlives --agent-timeout
 # the environment an agent and the docker client get: a shell's settings and the docker client's, never a job credential;
@@ -71,12 +73,12 @@ INSTRUCTIONS = {
         "using only what is written."),
     "maven-jenkins-ci": (
         "You are a Maven user whose builds run in CI on Jenkins and on a GitLab runner. Following the documentation, wire a Maven "
-        "build to this cache from a Jenkins job, using the Jenkins container you are given. A GitLab runner container is given too, but "
-        "there is no GitLab server in this environment and so no runner registration is possible: it exposes its metrics endpoint only. "
-        "Do not try to run a GitLab job; report what a customer could not do here as friction."),
+        "build to this cache from a Jenkins job, using the Jenkins container you are given; a GitLab runner container is given too (see the environment "
+        "limits: do not try to run a GitLab job, report what a customer could not do here as friction)."),
     "compliance-reviewer": (
-        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature, fetch and inspect its "
-        "SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is complete and verifiable."),
+        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool, naming the image under test by the "
+        "digest reference you are given), fetch and inspect its SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is "
+        "complete and verifiable."),
     "readme-evaluator": (
         "You are an evaluator who has only the README and ten minutes. Decide, from the README alone, what the product is, and try "
         "to get a working result within ten minutes. Do not open any other document."),
@@ -85,9 +87,15 @@ INSTRUCTIONS = {
         "version and a rollback to the previous one on the Kubernetes cluster you are given (its kubeconfig is in your working "
         "directory), and find and read the logs you need to diagnose a problem."),
 }
-ENV_LIMITS = ("These tools are not in the sandbox: gh, docker, jq (the shell has curl and sh; each other tool image holds only its own program). "
-              "A documented step that needs one of them cannot run here: report as friction, not as blocking. kubectl exec is an environment limit "
-              "(your Role does not allow it): report it as friction too. A step that can run in the sandbox is judged as written: if it fails, that is blocking. ")
+LIMITS = (
+    "each command runs in its own disposable container, so a foreground `kubectl port-forward` followed by commands 'in another terminal' cannot be held across actions",
+    "there is no pre-seeded Jenkins job or credentials and no GitLab server or runner registration (the GitLab runner container exposes its metrics endpoint only)",
+    "these tools are not in the sandbox: gh, docker, jq (and kubectl exec is not permitted)",
+    "the provenance step that needs GitHub's attestation store (`gh attestation verify`) cannot run in the sandbox",
+)
+ENV_LIMITS = ("Environment limits (report each as friction, not as blocking; they are limits of this test environment, not defects of the documentation): "
+              + "; ".join("(%s) %s" % (k, t) for k, t in zip("abcd", LIMITS))
+              + ". A step that can run in the sandbox is judged as written: if it fails, that is blocking. ")
 CLASSIFY = ENV_LIMITS + (
     "Classify everything you find. A finding is blocking when it is broken behavior or a documented step that fails as written "
     "(quote the step and what happened). A finding is friction when everything works but something is confusing, slow or easy to "
@@ -101,7 +109,7 @@ CRED_RES = [re.compile(x) for x in (
     # plain credentials: an Authorization header with a value; NAME=value / NAME: value for a secret-looking NAME (8+ characters);
     # password/secret/token followed by = or : and a value of 4+ characters
     r"(?i)authorization[\"']?\s*[:=]\s*[\"']?(basic|bearer|token)\s+[\"']?\S+",
-    r"(?i)[A-Za-z0-9_.-]*(secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*[\"']?[^\s\"']{8,}",
+    r"(?i)[A-Za-z0-9_.-]{0,64}(secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]{0,64}[\"']?\s*[=:]\s*[\"']?[^\s\"']{8,}",     # bounded: a megabyte of letters must not make the scan quadratic
     r"(?i)\b(password|passwd|pwd|secret|token)[\"']?\s*[=:]\s*[\"']?[^\s\"']{4,}")]
 
 
@@ -254,12 +262,16 @@ def validate_answer(text):
         a = json.loads(text)
     except ValueError:
         raise ValueError("the answer is not JSON")
-    if not isinstance(a, dict) or sorted(k for k in a if k not in ("commands", "exits")) != ["findings", "tokens", "transcript"]:
+    if not isinstance(a, dict) or sorted(k for k in a if k not in ("commands", "actions")) != ["findings", "tokens", "transcript"]:
         raise ValueError("the answer does not have exactly findings, tokens and transcript")
     if "commands" in a and not (isinstance(a["commands"], list) and all(isinstance(c, str) for c in a["commands"])):
         raise ValueError("commands is not a list of strings")
-    if "exits" in a and not (isinstance(a["exits"], list) and all(isinstance(c, int) and not isinstance(c, bool) for c in a["exits"]) and len(a["exits"]) == len(a.get("commands", []))):
-        raise ValueError("exits is not a list of integers matching commands")
+    if "actions" in a:
+        acts = a["actions"]
+        if not (isinstance(acts, list) and len(acts) == len(a.get("commands", [])) and all(
+                isinstance(x, dict) and sorted(x) == ["argv", "exit", "tool"] and isinstance(x["tool"], str) and isinstance(x["argv"], list)
+                and all(isinstance(t, str) for t in x["argv"]) and isinstance(x["exit"], int) and not isinstance(x["exit"], bool) for x in acts)):
+            raise ValueError("actions is not a list of {tool, argv, exit} matching commands")
     if isinstance(a["tokens"], bool) or not isinstance(a["tokens"], int) or a["tokens"] < 0:
         raise ValueError("tokens is not a non-negative integer")
     if not isinstance(a["transcript"], str):
@@ -274,16 +286,16 @@ def validate_answer(text):
     return a
 
 
-def settled(ep):
-    """the real server counts AFTER its response: wait until the total has been UNCHANGED across readings spanning 0.8s, giving up after 8s"""
+def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX):
+    """the real server counts AFTER its response: wait until the total has been UNCHANGED across readings spanning `quiet_for` seconds (a change restarts the interval),
+    giving up after `ceiling`. A request that finishes server-side later than that is not attributed to the window: the limit is stated in every report header."""
     v = scrape(ep)
     if v is None:
         return None
     t0 = quiet = time.time()
-    while time.time() - quiet < 0.8:
-        if time.time() - t0 >= 8:
+    while time.time() - quiet < quiet_for:
+        if time.time() - t0 >= ceiling:
             return None                 # never settles: not attributable
-        
         time.sleep(0.2)
         w = scrape(ep)
         if w is None:
@@ -340,11 +352,22 @@ def descendants(root):
     return out
 
 
+TRANSCRIPT_KEEP_HEAD = 200000        # characters kept from the start of a persisted transcript longer than head + tail
+TRANSCRIPT_KEEP_TAIL = 800000
+
+
 def streamed(tfile):
-    """what the agent had written to its transcript file (every completed action) before it ended, killed or not"""
+    """what the agent had written to its transcript file (every completed action) before it ended, killed or not: whole up to one million characters, else the first
+    200000 and the last 800000 with an explicit marker of how many were omitted (the file is read bounded, never whole, whatever its size)"""
     try:
-        with open(tfile, errors="replace") as fh:
-            return fh.read()[-400000:]
+        size = os.path.getsize(tfile)
+        with open(tfile, "rb") as fh:
+            if size <= TRANSCRIPT_KEEP_HEAD + TRANSCRIPT_KEEP_TAIL:
+                return fh.read().decode("utf-8", "replace")
+            head = fh.read(TRANSCRIPT_KEEP_HEAD)
+            fh.seek(size - TRANSCRIPT_KEEP_TAIL)
+            tail = fh.read(TRANSCRIPT_KEEP_TAIL)
+        return "%s\n[... %d characters omitted ...]\n%s" % (head.decode("utf-8", "replace"), size - TRANSCRIPT_KEEP_HEAD - TRANSCRIPT_KEEP_TAIL, tail.decode("utf-8", "replace"))
     except (OSError, TypeError):
         return ""
 
@@ -445,7 +468,8 @@ class Cluster:
             life = pl["exp"] - pl["iat"]
         except Exception:
             life = 0
-        if life < 3600 or life > 86400:
+        remaining = pl.get("exp", 0) - time.time() if life else 0
+        if life < duration or remaining < duration - 60 or life > 86400:
             raise RuntimeError("the issued token is shorter-lived than a persona window")
         name = "kind-" + KIND_NAME
         return json.dumps({"apiVersion": "v1", "kind": "Config", "clusters": [{"name": name, "cluster": {"server": self.server, "certificate-authority-data": self.ca}}],
@@ -488,8 +512,70 @@ def scrape(endpoint):
 
 
 HOST_RE = re.compile(r"^(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::[0-9]+)?(?:/.*)?$|^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]+)?(?:/.*)?$")
-VALUE_OPTS = {"curl": {"-o", "--output", "-u", "--user", "-H", "--header", "-d", "--data", "-X", "--request", "-A", "--user-agent", "-e", "--referer", "-T", "-F", "--cacert", "--max-time", "-m", "--retry"},
-              "wget": {"-O", "-o", "-P", "--output-document", "--user", "--password", "--header", "-t", "-T"}}
+# options that take a value, per program: short letters (a value may be attached in a cluster: -sSLxHOST) and long names (--opt VALUE or --opt=VALUE)
+SHORT_VALUE = {"curl": set("oUuHdXAeTFmxKEbcCDwyYzrtQ"), "wget": set("OoPtTeiBUaQwlARDIX")}
+LONG_VALUE = {"curl": {"output", "user", "header", "data", "request", "user-agent", "referer", "upload-file", "form", "cacert", "max-time", "retry", "proxy", "connect-to",
+                       "resolve", "config", "url", "proxy-user", "cookie", "cookie-jar", "cert", "key", "write-out", "output-dir", "limit-rate", "range", "data-raw",
+                       "data-binary", "data-urlencode", "json", "connect-timeout"},
+              "wget": {"output-document", "output-file", "directory-prefix", "user", "password", "header", "tries", "timeout", "execute", "input-file", "base", "user-agent",
+                       "post-data", "post-file", "body-data", "body-file"}}
+FILE_VALUE = {"curl": ({"K"}, {"config"}), "wget": ({"i"}, {"input-file"})}      # the value is a FILE whose content is not observed (its name is never a host)
+
+
+def _strip_host(v):
+    """HOST from HOST[:port][/path] or scheme://HOST..., or None"""
+    if "://" in v:
+        return urllib.parse.urlsplit(v).hostname
+    return _host_of(v) if HOST_RE.match(v) else None
+
+
+def _option_hosts(prog, name, value):
+    """hosts a value-taking option NAMES: a URL, a proxy, --connect-to HOST1:P1:HOST2:P2, --resolve HOST:PORT:ADDR, wget -e http_proxy=HOST, wget -B HOST"""
+    out = []
+    if prog == "curl" and name in ("url", "proxy", "x"):
+        out.append(_strip_host(value))
+    elif prog == "curl" and name == "connect-to":
+        f = value.split(":")
+        out += [_strip_host(f[0]) if f[0] else None, _strip_host(f[2]) if len(f) > 2 and f[2] else None]
+    elif prog == "curl" and name == "resolve":
+        f = value.lstrip("+").split(":")
+        out += [_strip_host(f[0]), f[2] if len(f) > 2 else None]
+    elif prog == "wget" and name in ("e", "execute"):
+        m = re.match(r"^(?:https?_proxy|ftp_proxy)\s*=\s*(.+)$", value, re.I)
+        out.append(_strip_host(m.group(1)) if m else None)
+    elif prog == "wget" and name in ("B", "base"):
+        out.append(_strip_host(value))
+    return [h.lower() for h in out if h]
+
+
+def _fetch_tokens(prog, toks):
+    """-> (hosts named by options, positional words) for a curl/wget command line"""
+    hosts, positional, i = [], [], 0
+    short_files, long_files = FILE_VALUE[prog]
+    while i < len(toks):
+        t = toks[i]
+        i += 1
+        if t.startswith("--") and len(t) > 2:
+            name, eq, val = t[2:].partition("=")
+            if name in LONG_VALUE[prog]:
+                if not eq:
+                    val = toks[i] if i < len(toks) else ""
+                    i += 1
+                if name not in long_files:
+                    hosts += _option_hosts(prog, name, val)
+        elif t.startswith("-") and len(t) > 1 and t != "--":
+            for k, ch in enumerate(t[1:], 1):               # a cluster: the first value-taking letter takes the rest of the cluster, or the next word
+                if ch in SHORT_VALUE[prog]:
+                    val = t[k + 1:]
+                    if not val:
+                        val = toks[i] if i < len(toks) else ""
+                        i += 1
+                    if ch not in short_files:
+                        hosts += _option_hosts(prog, ch, val)
+                    break
+        else:
+            positional.append(t)
+    return hosts, positional
 
 
 def _host_of(tok):
@@ -506,7 +592,7 @@ def url_hosts(text):
         if l.lstrip().startswith("#"):
             continue
         try:
-            l = " ".join(_shlex.split(l, comments=True))        # an inline `# comment` is not a contact either
+            l = " ".join(_shlex.quote(t) for t in _shlex.split(l, comments=True))        # an inline `# comment` is not a contact either (quoting kept: a quoted header is one word)
         except ValueError:
             pass
         lines_.append(l)
@@ -533,23 +619,16 @@ def url_hosts(text):
                 if "://" not in t and re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::[0-9]+)?/\S+$", t):
                     out.add(t.split("/")[0].lower())
             continue
-        skip = False
-        for i, t in enumerate(toks):
-            if skip:
-                skip = False
-                continue
-            if prog == "kubectl":
+        if prog == "kubectl":
+            for i, t in enumerate(toks):
                 v = t.split("=", 1)[1] if t.startswith("--server=") else (toks[i + 1] if t == "--server" and i + 1 < len(toks) else None)
                 if v and "://" not in v and HOST_RE.match(v):
                     out.add(_host_of(v).lower())
-                continue
-            if t.startswith(("--url=", "--proxy=")):         # option=value spellings name a host too
-                v = t.split("=", 1)[1]
-                if "://" not in v and HOST_RE.match(v):
-                    out.add(_host_of(v).lower())
-            elif t in VALUE_OPTS[prog]:
-                skip = True
-            elif not t.startswith("-") and "://" not in t and t != prog and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
+            continue
+        opt_hosts, positional = _fetch_tokens(prog, toks[toks.index(prog) + 1:])
+        out.update(opt_hosts)
+        for t in positional:
+            if "://" not in t and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
                 out.add(_host_of(t).lower())
     return out
 
@@ -560,26 +639,29 @@ def registry_of(ref):
 
 
 HOSTS_LABEL = "Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):"
-GITLAB_OMISSION = ("Omitted infrastructure: no GitLab server or runner registration exists in this environment; "
-                   "the GitLab runner container exposes its metrics endpoint only.")
-
-
-VERIFY_RE = re.compile(r"verify|attest|sbom|vex", re.I)
+ENV_LIMITS_LINE = "Environment limits of this run (reported as friction, never blocking): " + "; ".join("(%s) %s" % (k, t) for k, t in zip("abcd", LIMITS))
+COUNTER_LIMIT = ("Counter limit: a request that finishes server-side more than 3 seconds after its response is not attributed to the persona's window "
+                 "(no in-flight gauge exists to prove otherwise).")
 
 
 def verified_digest(answer, image):
-    """the compliance reviewer's proof: an executed verification action whose command names the RC's DIGEST and exited 0 (the answer's `exits` run parallel to its `commands`)"""
+    """the compliance reviewer's proof of exercising the RC image: a recorded ACTION whose tool is cosign, whose subcommand is `verify` (the one cosign verification
+    docs/verify-images.md documents for an image), that names the RC image by its DIGEST as an argument (an argument ending @sha256:<digest>, not a flag's value and not
+    text in a shell command), and that exited 0. Words in echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
-    cmds, exits = answer.get("commands", []), answer.get("exits")
-    if not digest.startswith("sha256:") or not isinstance(exits, list) or len(exits) != len(cmds):
+    if not digest.startswith("sha256:"):
         return False
-    return any(digest in c and e == 0 and VERIFY_RE.search(c) for c, e in zip(cmds, exits))
+    for act in answer.get("actions", []):
+        argv = act.get("argv", [])
+        if (act.get("tool") == "cosign" and act.get("exit") == 0 and argv and argv[0] == "verify"
+                and any(not t.startswith("-") and t.endswith("@" + digest) for t in argv[1:])):
+            return True
+    return False
 
 
 def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None):
     lines = ["VERDICT: %s" % verdict, "persona: %s" % persona, ""]
-    if persona == "maven-jenkins-ci":
-        lines += [GITLAB_OMISSION, ""]
+    lines += [ENV_LIMITS_LINE, COUNTER_LIMIT, ""]
     if hosts is not None:
         lines += ["%s %s" % (HOSTS_LABEL, ", ".join(hosts) if hosts else "none"), ""]
     if did_not_run:
@@ -610,6 +692,8 @@ def parse_args():
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--ready-timeout", type=int, default=120)
     ap.add_argument("--agent-timeout", type=int, default=3600)
+    ap.add_argument("--settle-quiet", type=float, default=SETTLE_QUIET, help="seconds of an unchanged counter before a window closes")
+    ap.add_argument("--settle-max", type=float, default=SETTLE_MAX, help="ceiling for that wait: a counter that never settles blocks the persona")
     ap.add_argument("--proc-net", default="/proc/net", help="where the kernel's tcp and tcp6 tables are read (a test passes a fixture)")
     ap.add_argument("--allow-listen", type=int, action="append", default=[], help="a loopback port that may listen besides the driver's own")
     try:
@@ -677,7 +761,7 @@ def main():
         doc_hosts = set()
         for data in (docs or {}).values():
             doc_hosts |= url_hosts(data.decode("utf-8", "replace"))
-        return doc_hosts | {"127.0.0.1", "localhost"} | {registry_of(v) for v in tools.values()}
+        return doc_hosts | {"127.0.0.1", "localhost", registry_of(a.image)} | {registry_of(v) for v in tools.values()}      # the image under test's own registry is not "outside"
 
     def labelled(hosts):
         src = {h for h in hosts if h.endswith(REPO_SRC)}
@@ -822,9 +906,15 @@ def main():
                 before = scrape(ep)
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, a.agent_timeout, tfile)
                 swept = sweep(docker, label)        # containers are the daemon's: whatever this persona's agent left is removed before the window closes
-                after = settled(ep)
+                after = settled(ep, a.settle_quiet, a.settle_max)
                 cleaned = cleanup(docker, label, sandbox, tools["shell"])
                 tools_gone = teardown_tools()       # the tool containers and the cluster go after the window is read, before the next persona's
+                if not [q for q in PERSONAS if q not in results and q != persona]:
+                    # the last persona: the image under test goes with the rest, and a container that cannot be removed fails the run like any other teardown
+                    if docker.remove(started):
+                        del started[:]
+                    else:
+                        tools_gone = False
                 ok = before is not None and after is not None and after - before > 0 and not (before == 0 and prev[0] > 0)
                 if after is not None:
                     prev[0] = after
