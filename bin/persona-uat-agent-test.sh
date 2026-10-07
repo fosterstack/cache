@@ -100,7 +100,7 @@ def done():
     if os.path.exists(os.path.join(REG, cid)):
         os.remove(os.path.join(REG, cid))
 if not (len(rest) == 3 and rest[:2] == ["sh", "-c"]):
-    # the images' real entrypoints: gradle (CMD ["gradle"], no ENTRYPOINT) and maven (ENTRYPOINT mvn-entrypoint.sh which exec's "$@", CMD ["mvn"]) take the
+    # MODEL of the images' entrypoints (the exact exit status and text of a real digest's failure cannot be checked offline; the program-first convention is what is pinned): gradle (CMD ["gradle"], no ENTRYPOINT) and maven (ENTRYPOINT mvn-entrypoint.sh which exec's "$@", CMD ["mvn"]) take the
     # PROGRAM as the first argument; cosign (ENTRYPOINT ["/ko-app/cosign"]) and kubectl (ENTRYPOINT ["/bin/kubectl"]) take the SUBCOMMAND (a leading
     # program name is an unknown command). Arguments replace CMD, so a first argument that is not the program cannot run.
     for k, v in {"/gradle@": "gradle", "/maven@": "mvn"}.items():
@@ -109,6 +109,15 @@ if not (len(rest) == 3 and rest[:2] == ["sh", "-c"]):
     for k, v in {"/cosign@": "cosign", "/kubectl@": "kubectl"}.items():
         if k in repo and rest and rest[0] == v:
             sys.stderr.write('Error: unknown command "%s" for "%s"\n' % (v, v)); done(); sys.exit(1)
+    if "--fake-write" in rest:          # a tool image creating a file in the shared sandbox (as whatever uid it runs as)
+        i = rest.index("--fake-write"); name, content = rest[i + 1], rest[i + 2]
+        os.makedirs(os.path.dirname(os.path.join(host, name)) or host, exist_ok=True)
+        open(os.path.join(host, name), "w").write(content + "\n"); done(); sys.exit(0)
+    if "--fake-read" in rest:           # ... and one reading a file another tool created
+        f = os.path.join(host, rest[rest.index("--fake-read") + 1])
+        if not os.path.exists(f):
+            sys.stderr.write("no such file\n"); done(); sys.exit(1)
+        sys.stdout.write(open(f).read()); done(); sys.exit(0)
     sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); done(); sys.exit(0)
 if "/cosign@" in repo or "/kubectl@" in repo:       # distroless images have no shell: a tool run through sh -c fails like the real image
     sys.stderr.write('docker: Error response from daemon: exec: "sh": executable file not found in $PATH\n'); done(); sys.exit(127)
@@ -571,13 +580,14 @@ CASE="the timeout is still reported to the model and the persona carries on afte
 check test "$rc" -eq 0 -a "$(calls shtimeout)" -eq 2
 check grep -qi 'timed out' "$work/shtimeout/out.json"
 # scrubbing: the request's model value and a credential-looking marker never reach the answer, the transcript or the failure output
-MARK='model=OWNER-MODEL-Q key=ghp_abcdefghij0123456789ABCDEF'
+MARK='model=OWNER-MODEL-Q key=ghp_abcdefghij0123456789ABCDEF pat=github_pat_11ABCDEFG0abcdefghijkl_xyz aws=AKIAABCDEFGHIJKLMNOP sk=sk-abcdefghijklmnopqrstuvwx hdr=Bearer-abcdefghijklmnop password=hunter2xyz jwt=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl'
 MODEL=OWNER-MODEL-Q agent scrubok '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo '"$MARK"'; echo $((6*7))-scrubmark"}},{"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
 CASE="scrubbing (success path): the model value and the credential marker that the persona's command and its output carried are in NEITHER the transcript nor the commands of the answer (the transcript still shows what ran: 42-scrubmark)"
 check python3 - "$work/scrubok/out.json" <<'PY'
 import json, sys
 raw = open(sys.argv[1]).read()
-assert "OWNER-MODEL-Q" not in raw and "ghp_abcdefghij0123456789ABCDEF" not in raw, raw
+for bad in ("OWNER-MODEL-Q", "ghp_abcdefghij0123456789ABCDEF", "github_pat_11ABCDEFG0abcdefghijkl_xyz", "AKIAABCDEFGHIJKLMNOP", "sk-abcdefghijklmnopqrstuvwx", "hunter2xyz", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0"):
+    assert bad not in raw, (bad, raw)
 a = json.loads(raw)
 assert "42-scrubmark" in a["transcript"] and a["commands"], a
 PY
@@ -586,10 +596,31 @@ CASE="scrubbing (failure path): after a provider failure that carries the model 
 check python3 - "$work/scrubfail" <<'PY'
 d = __import__("sys").argv[1]
 e = open(d + "/err.txt").read()
-assert "42-scrubmark" in e and "OWNER-MODEL-Q" not in e and "ghp_abcdefghij0123456789ABCDEF" not in e, e
+assert "42-scrubmark" in e, e
+for bad in ("OWNER-MODEL-Q", "ghp_abcdefghij0123456789ABCDEF", "github_pat_11ABCDEFG0abcdefghijkl_xyz", "AKIAABCDEFGHIJKLMNOP", "sk-abcdefghijklmnopqrstuvwx", "hunter2xyz", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0"):
+    assert bad not in e, (bad, e)
 assert open(d + "/out.json").read() == ""
 PY
 
+# --- ROUND 3: one sandbox shared by every tool (create with one image, read with another, same mount and label) ----------------------------------
+agent crosstool '[{"usage":{"tokens":1},"action":{"type":"shell","command":"echo curlfile > data.txt"}},
+                  {"usage":{"tokens":1},"action":{"type":"shell","tool":"cosign","args":["--fake-read","data.txt"]}},
+                  {"usage":{"tokens":1},"action":{"type":"shell","tool":"gradle","args":["gradle","--fake-write","out/build.txt","built"]}},
+                  {"usage":{"tokens":1},"action":{"type":"shell","command":"cat out/build.txt"}},
+                  {"usage":{"tokens":1},"action":{"type":"shell","tool":"maven","args":["mvn","--fake-read","out/build.txt"]}},
+                  {"usage":{"tokens":1},"action":{"type":"finish","findings":[]}}]'
+CASE="cross-tool sandbox: a file the curl image's shell created is read by the cosign image, a file the gradle image wrote is read by the shell and by the maven image: all five containers mounted the SAME sandbox (one -v) and carried the SAME label, and every output reached the model"
+check python3 - "$work/crosstool" <<'PY'
+import json, sys
+d = sys.argv[1]
+rows = [json.loads(l)["argv"] for l in open(d + "/fd.log")]
+assert len(rows) == 5, rows
+assert len({r[r.index("-v") + 1] for r in rows}) == 1 and len({r[r.index("--label") + 1] for r in rows}) == 1, rows
+calls = [json.loads(l) for l in open(d + "/fp.log")]
+m = json.dumps(calls[-1]["req"]["messages"])
+assert "curlfile" in m and m.count("built") >= 2 and "exit status: 0" in m, m
+assert "no such file" not in m
+PY
 # --- fail closed: a provider that fails or leaves the protocol fails the AGENT ---------------------------------
 for c in 'crash|[{"exit":9}]' 'not-json|[{"raw":"nope"}]' 'unknown-action|[{"usage":{"tokens":1},"action":{"type":"rm-rf","command":"x"}}]' \
          'no-usage|[{"action":{"type":"finish","findings":[]}}]' 'neg-usage|[{"usage":{"tokens":-5},"action":{"type":"finish","findings":[]}}]' \

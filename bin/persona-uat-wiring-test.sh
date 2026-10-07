@@ -121,47 +121,58 @@ def judge_installer(text, bad):
 import hashlib, http.server, subprocess, tempfile, threading, stat
 
 def exercise_installer(path):
-    """RUN the installer for kind against a local fixture server: good bytes install an executable `kind` into DEST (and the sha256 check ran, recorded by a
-    sha256sum on PATH); tampered bytes exit non-zero as a PIPELINE failure and install nothing. -> [problems]"""
+    """RUN the installer for kind against a local fixture server that serves ARCHITECTURE-SPECIFIC bytes at the kind project's real asset paths only
+    (/v<KIND_VER>/kind-linux-amd64 and /v<KIND_VER>/kind-linux-arm64; anything else is a 404): good bytes install an executable `kind` into DEST, the request was
+    for exactly the right asset, and the sha256 check ran (recorded by a sha256sum on PATH); tampered bytes exit non-zero as a PIPELINE failure and install
+    nothing. -> [problems]"""
     probs = []
     try:
         src = open(path).read()
     except OSError as e:
         return ["the installer cannot be read: %s" % e]
-    good = b"#!/bin/sh\necho kind v0.0.0\n"
-    tam = good + b"# tampered\n"
-    sha = hashlib.sha256(good).hexdigest()
-    work = tempfile.mkdtemp(prefix="inst-ex-")
-    state = {"body": good, "paths": []}
+    mv = re.search(r"(?m)^KIND_VER=([0-9]+\.[0-9]+\.[0-9]+)$", src)
+    ver = mv.group(1) if mv else "0.0.0"
+    good = {"x86_64": b"#!/bin/sh\necho kind v0.0.0 amd64\n", "aarch64": b"#!/bin/sh\necho kind v0.0.0 arm64\n"}
+    asset = {"x86_64": "/v%s/kind-linux-amd64" % ver, "aarch64": "/v%s/kind-linux-arm64" % ver}
+    state = {"tamper": False, "paths": []}
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
         def do_GET(self):
             state["paths"].append(self.path)
-            self.send_response(200); self.send_header("Content-Length", str(len(state["body"]))); self.end_headers(); self.wfile.write(state["body"])
+            arch = next((a for a, p in asset.items() if self.path == p), None)
+            if arch is None:
+                self.send_response(404); self.send_header("Content-Length", "0"); self.end_headers(); return
+            body = good[arch] + (b"# tampered\n" if state["tamper"] else b"")
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    work = tempfile.mkdtemp(prefix="inst-ex-")
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     copy = os.path.join(work, "install-scanner.sh")
-    txt = re.sub(r"(kind:(?:x86_64\|kind:amd64|aarch64\|kind:arm64)\) SUM=)[0-9a-f]{64}", lambda m: m.group(1) + sha, src)
+    txt = src
+    for a_, pat in (("x86_64", r"(kind:x86_64\|kind:amd64\) SUM=)[0-9a-f]{64}"), ("aarch64", r"(kind:aarch64\|kind:arm64\) SUM=)[0-9a-f]{64}")):
+        txt = re.sub(pat, lambda m, a_=a_: m.group(1) + hashlib.sha256(good[a_]).hexdigest(), txt)
     open(copy, "w").write(txt); os.chmod(copy, 0o755)
     rbin = os.path.join(work, "rbin"); os.makedirs(rbin)
     open(os.path.join(rbin, "sha256sum"), "w").write("#!/usr/bin/env python3\nimport hashlib, sys\nfor f in sys.argv[1:]:\n    h = hashlib.sha256(open(f, 'rb').read()).hexdigest()\n    open('%s/sha.log', 'a').write(h + '\\n')\n    print(h + '  ' + f)\n" % work)
     os.chmod(os.path.join(rbin, "sha256sum"), 0o755)
     for arch in ("x86_64", "aarch64"):
-        for label, body in (("good", good), ("tampered", tam)):
-            state["body"] = body
+        for label in ("good", "tampered"):
+            state["tamper"] = label == "tampered"; state["paths"] = []
             dest = os.path.join(work, "dest-%s-%s" % (arch, label)); os.makedirs(dest)
             open(os.path.join(work, "sha.log"), "w").close()
             env = dict(os.environ, PATH=rbin + ":" + os.environ["PATH"], KIND_BASE_URL="http://127.0.0.1:%d" % srv.server_address[1], INSTALL_SCANNER_ARCH=arch)
             r = subprocess.run(["bash", copy, "kind", dest], capture_output=True, text=True, env=env, timeout=60)
             hashed = open(os.path.join(work, "sha.log")).read().split()
             k = os.path.join(dest, "kind")
+            if state["paths"] != [asset[arch]]:
+                probs.append("%s: the installer requested %s, not exactly the architecture's asset %s" % (arch, state["paths"], asset[arch]))
             if label == "good":
                 if r.returncode != 0: probs.append("%s: good bytes did not install (rc %d: %s)" % (arch, r.returncode, r.stderr.strip()[:120]))
                 elif not (os.path.isfile(k) and os.access(k, os.X_OK)): probs.append("%s: good bytes left no executable kind in DEST" % arch)
                 else:
                     pr = subprocess.run([k], capture_output=True, text=True)
-                    if pr.returncode != 0 or "kind" not in pr.stdout: probs.append("%s: the installed kind does not run" % arch)
-                if sha not in hashed: probs.append("%s: the sha256 of the downloaded bytes was never computed (no verification ran)" % arch)
+                    if pr.returncode != 0 or ("amd64" if arch == "x86_64" else "arm64") not in pr.stdout: probs.append("%s: the installed kind is not this architecture's binary" % arch)
+                if hashlib.sha256(good[arch]).hexdigest() not in hashed: probs.append("%s: the sha256 of the downloaded bytes was never computed (no verification ran)" % arch)
             else:
                 if r.returncode == 0: probs.append("%s: TAMPERED bytes were accepted (exit 0)" % arch)
                 if "PIPELINE" not in r.stderr: probs.append("%s: a tampered download is not reported as a PIPELINE failure" % arch)
@@ -211,6 +222,58 @@ echo "installed ${TOOL}"
 """
 GOODINST = SYN_INST
 
+# --- prerequisites of the job (defined BEFORE common(), which calls them; the complete-workflow control below runs them through judge()) ----------------
+CRED_REF = re.compile(r"secrets\.|vars\.PERSONA_UAT|github\.token|ANTHROPIC_")
+STEP_ALLOW = {      # STRUCTURAL rule: a prerequisite step may carry only these keys (and, for checkout and the uploads, only these `with` options); anything else
+                    # (if, continue-on-error, working-directory, shell, env, timeout-minutes, sparse-checkout, filter, fetch-depth, lfs, ...) can change what it does
+    "checkout": ({"uses", "with", "name", "id"}, {"persist-credentials", "ref", "path"}),
+    "install": ({"run", "name", "id"}, None), "sdk": ({"run", "name", "id"}, None),
+    "resolver": ({"run", "env", "name", "id"}, None),
+    "identity": ({"uses", "with", "name", "id"}, {"script"}),
+    "upload": ({"uses", "with", "if", "continue-on-error", "name", "id"}, {"name", "path", "if-no-files-found", "retention-days"}),
+}
+
+def step_kind(x, pre, weekly):
+    u, r = str(x.get("uses", "")), str(x.get("run", "")).strip()
+    if "actions/checkout" in u: return "checkout"
+    if "actions/github-script" in u: return "identity"
+    if "upload-artifact" in u: return "upload"
+    if install_re(pre).match(r): return "install"
+    if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
+    if weekly and "gh release view" in r: return "resolver"
+    return None
+
+def judge_prereqs(name, job, steps, bad):
+    weekly = name.startswith("weekly")
+    pre = "harness/" if weekly else ""
+    ro = str(job.get("runs-on", ""))
+    if not re.fullmatch(r"ubuntu-[0-9]{2}\.[0-9]{2}(-arm)?|ubuntu-latest", ro):
+        bad.append(f"{name}: runs-on is {ro!r}, not an ubuntu runner (the host kubectl and the docker the personas use are the ubuntu image's)")
+    if job.get("strategy") is not None:
+        bad.append(f"{name}: the job has a strategy/matrix: the persona UAT would run more than once (or not at all)")
+    for i, x in enumerate(steps):
+        kind = step_kind(x, pre, weekly)
+        if kind is None:
+            continue
+        keys, withs = STEP_ALLOW[kind]
+        if set(x) - keys:
+            bad.append(f"{name}: the {kind} step {i} carries keys outside its allowlist {sorted(keys)}: {sorted(set(x) - keys)}")
+        if withs is not None and set(x.get("with") or {}) - withs:
+            bad.append(f"{name}: the {kind} step {i} carries options outside its allowlist {sorted(withs)} (sparse-checkout, filter, fetch-depth, ... could drop docs/): {sorted(set(x.get('with') or {}) - withs)}")
+        if kind in ("checkout", "sdk") and (x.get("if") is not None or not literal_false(x.get("continue-on-error"))):
+            bad.append(f"{name}: the {'checkout' if kind == 'checkout' else 'SDK install'} step is conditional or non-fatal: the persona UAT could run without it")
+        if kind != "upload" and kind != "resolver" and "env" in x:
+            bad.append(f"{name}: the {kind} step has an env")
+    # the checked-out tree must hold the public docs: the repository under test has them, and no checkout option may thin the tree
+    if not (os.path.isdir(os.path.join(root, "docs")) and os.path.isfile(os.path.join(root, "README.md"))):
+        bad.append(f"{name}: the repository has no docs/ and README.md for the personas to read")
+
+def judge_workflow_env(doc, label, bad):
+    """workflow-level `env` is inherited by every job and step: no credential, owner variable, model name or alias of one may be declared there"""
+    for k, v in (doc.get("env") or {}).items():
+        if k in CREDS or k in VARS or k.startswith(("ANTHROPIC_", "AWS_", "ACTIONS_")) or CRED_REF.search(str(v)) or MODEL.search(str(v)) or MODEL.search(str(k)):
+            bad.append(f"{label} declares {k} in a workflow-level env: it would be inherited by every step, not only the driver's")
+
 def common(name, job, bad):
     steps = job.get("steps", [])
     weekly = name.startswith("weekly")
@@ -248,16 +311,16 @@ def common(name, job, bad):
     except ValueError:
         argv = []
     opts = [t for t in argv if t.startswith("--")]
-    for flag in ("--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"):
+    for flag in ("--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"):
         if opts.count(flag) != 1:
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
-    if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--publish"}):
-        bad.append(f"{name}: the driver is given options outside the contract: {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--publish'})}")
+    if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"}):
+        bad.append(f"{name}: the driver is given options outside the contract (no --publish, no --gh: results stay private, no issue is opened): {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--recipient'})}")
     first = next((i for i, t in enumerate(argv) if t == pre + "bin/persona-uat.py"), None)       # the EXACT script token (`python3 <pre>bin/persona-uat.py`), never a suffix such as .py.bak
     if first is None or first != 1 or argv[0] != "python3":
         bad.append(f"{name}: the driver command is not exactly `python3 {pre}bin/persona-uat.py ...` (the tested driver must be the one that runs)")
     positional = [] if first is None else [t for i, t in enumerate(argv[first + 1:], first + 1)
-                                           if not t.startswith("--") and not (argv[i - 1].startswith("--") and argv[i - 1] != "--publish")]
+                                           if not t.startswith("--") and not argv[i - 1].startswith("--")]
     if positional:
         bad.append(f"{name}: the driver command has tokens that are no option or option value: {positional}")
     if d.get("working-directory") or (job.get("defaults", {}).get("run", {}) or {}).get("working-directory"):
@@ -268,6 +331,8 @@ def common(name, job, bad):
         bad.append(f"{name}: --tools is not {pre}bin/persona-uat-tools.json")
     if optval("--repo") != repo_dir:
         bad.append(f"{name}: --repo is not the docs checkout ({repo_dir})")
+    if optval("--recipient") != pre + "bin/persona-uat-recipient.pem":
+        bad.append(f"{name}: --recipient is not {pre}bin/persona-uat-recipient.pem (the committed certificate the artifacts are encrypted to)")
     if optval("--agent") != f"python3 {pre}bin/persona-uat-agent.py":
         bad.append(f"{name}: the driver is not given 'python3 {pre}bin/persona-uat-agent.py' as its agent")
     for k in list(job.get("env", {})):
@@ -278,15 +343,23 @@ def common(name, job, bad):
             for k in s.get("env", {}):
                 if k in CREDS or k in VARS:
                     bad.append(f"{name}: {k} is set on a step other than the driver")
+    for k, v in (job.get("env") or {}).items():
+        if CRED_REF.search(str(v)) or MODEL.search(str(v)):
+            bad.append(f"{name}: the job-level env {k} carries a credential reference or a model name ({v!r}): every step would inherit it")
+    for s in steps:
+        if s is not d:
+            for k, v in (s.get("env") or {}).items():
+                if re.search(r"secrets\.|vars\.PERSONA_UAT|ANTHROPIC_", str(v)) or MODEL.search(str(v)) or (CRED_REF.search(str(v)) and not (k == "GH_TOKEN" and expr_is(v, "github.token") and "gh release view" in str(s.get("run", "")))):
+                    bad.append(f"{name}: the env {k} of a step other than the driver carries a credential reference or a model name ({v!r})")
     env = d.get("env", {})
-    extra_env = sorted(set(env) - set(VARS) - set(CREDS) - {"GH_TOKEN"})
+    extra_env = sorted(set(env) - set(VARS) - set(CREDS))
     if extra_env:
         bad.append(f"{name}: the driver step carries environment outside the contract (no other credential, and no override of the identity token file the identity step exports): {extra_env}")
     for v in VARS:
         if not expr_is(env.get(v, ""), f"vars.{v}"):
             bad.append(f"{name}: {v} is not exactly vars.{v} on the driver step (the owner's variable)")
-    if not expr_is(env.get("GH_TOKEN", ""), "github.token"):
-        bad.append(f"{name}: GH_TOKEN is not exactly github.token on the driver step (its gh calls need it)")
+    if "GH_TOKEN" in env or "GITHUB_TOKEN" in env:
+        bad.append(f"{name}: the driver step carries a GitHub token: it makes no gh call and opens no issue (results stay private)")
     for c in CREDS:
         if not expr_is(env.get(c, ""), f"secrets.{c}"):
             bad.append(f"{name}: {c} is not exactly secrets.{c} on the driver step")
@@ -313,6 +386,10 @@ def common(name, job, bad):
         for k, v in (s.get("with") or {}).items():
             if k != "script" and CLOUD.search(str(v)):
                 bad.append(f"{name}: a step input names a cloud CLI ({k})")
+    for s_ in steps:
+        blob = json.dumps(s_)
+        if re.search(r"PRIVATE KEY|persona-uat\.key|-inkey|cms\s+-decrypt|PERSONA_UAT_(PRIVATE|KEY)|\.key\b", blob) or re.search(r"secrets\.(?!ANTHROPIC_(FEDERATION_RULE_ID|ORGANIZATION_ID|SERVICE_ACCOUNT_ID|WORKSPACE_ID)\b)", blob):
+            bad.append(f"{name}: a step writes or reads a private key or a secret that holds one (only the four ANTHROPIC_* identity secrets may reach the job; the decryption key never touches CI)")
     ALLOWED = ("actions/checkout", "actions/github-script", "actions/upload-artifact")
     for s in steps:
         u = str(s.get("uses", ""))
@@ -373,8 +450,11 @@ def common(name, job, bad):
             bad.append(f"{name}: the transcript upload must run always() (found {u.get('if')!r})")
         outdir = re.search(r"--out\s+(\S+)", run)
         path = str(u.get("with", {}).get("path", "")).strip()
-        if not outdir or outdir.group(1).strip("\"'").rstrip("/") != path.rstrip("/"):
-            bad.append(f"{name}: the upload path {path!r} is not the driver's --out directory")
+        if not outdir or path != outdir.group(1).strip("\"'").rstrip("/") + "/*.cms":
+            bad.append(f"{name}: the upload path {path!r} is not exactly <the driver's --out directory>/*.cms: only the encrypted artifacts may ever be uploaded, never a plaintext file")
+        un = str(u.get("with", {}).get("name", "persona-uat-encrypted"))
+        if "${{" in un or not re.fullmatch(r"persona-uat-[a-z0-9-]+", un):
+            bad.append(f"{name}: the artifact name {un!r} is not a fixed literal persona-uat-<words> (artifact names are public: they carry no result)")
         if str(u.get("with", {}).get("if-no-files-found", "")) != "error":
             bad.append(f"{name}: the upload must fail on missing files (if-no-files-found: error)")
     for s in steps:
@@ -464,6 +544,7 @@ def workflow_defaults(doc, label, bad):
 
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
+    judge_workflow_env(r, "release.yml", bad)
     push = (r.get("on", {}).get("push", {}) or {}) if isinstance(r.get("on"), dict) else {}
     tags = push.get("tags", [])
     if (tags if isinstance(tags, list) else [tags]) != ["v*"] or "tags-ignore" in push:
@@ -492,7 +573,7 @@ def judge_release(r, bad):
     if (env if isinstance(env, str) else (env or {}).get("name")) != "persona-uat":
         bad.append("release persona-uat does not run in the persona-uat environment")
     p = j.get("permissions", {})
-    want = {"contents": "read", "id-token": "write", "issues": "write", "packages": "read"}
+    want = {"contents": "read", "id-token": "write", "packages": "read"}
     if any(p.get(k) != v for k, v in want.items()) or set(p) - set(want):
         bad.append(f"release persona-uat permissions are not exactly {want} (found {p})")
     if d is not None:
@@ -507,6 +588,7 @@ def judge_release(r, bad):
 
 def judge_weekly(f, bad):
     workflow_defaults(f, "go-freshness.yml", bad)
+    judge_workflow_env(f, "go-freshness.yml", bad)
     j = f.get("jobs", {}).get("persona-uat")
     if not j:
         bad.append("go-freshness.yml has no persona-uat job"); return
@@ -523,7 +605,7 @@ def judge_weekly(f, bad):
     if (env_ if isinstance(env_, str) else (env_ or {}).get("name")) != "persona-uat":
         bad.append("weekly persona-uat does not run in the persona-uat environment")
     p = j.get("permissions", {})
-    want = {"contents": "read", "id-token": "write", "issues": "write", "packages": "read"}
+    want = {"contents": "read", "id-token": "write", "packages": "read"}
     if any(p.get(k) != v for k, v in want.items()) or set(p) - set(want):
         bad.append(f"weekly persona-uat permissions are not exactly {want} (found {p})")
     steps = j.get("steps", [])
@@ -738,46 +820,102 @@ xmutate("verify() compares nothing (always passes)", "TAMPERED bytes were accept
 xmutate("verify() only in a comment", "no verification ran", lambda t: t.replace('got=$(sha256sum "$1" | cut -d\' \' -f1)', "got=$SUM  # sha256sum"))
 xmutate("wrong destination", "left no executable kind in DEST", lambda t: t.replace('"${DEST}/kind" || pipeline_fail', '"${DEST}/kind-x" || pipeline_fail').replace('"${DEST}/kind" version', '"${DEST}/kind-x" version'))
 xmutate("not executable", "left no executable kind in DEST", lambda t: t.replace("install -m 0755", "install -m 0644").replace('    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"\n', ""))
+xmutate("architecture assets swapped", "did not install", lambda t: t.replace("A_KIND=kind-linux-amd64", "A_KIND=TMP").replace("A_KIND=kind-linux-arm64", "A_KIND=kind-linux-amd64").replace("A_KIND=TMP", "A_KIND=kind-linux-arm64"))
+xmutate("the release URL lacks the v prefix", "did not install", lambda t: t.replace("/v${KIND_VER}/", "/${KIND_VER}/"))
+xmutate("a wrong version in the URL", "did not install", lambda t: t.replace("/v${KIND_VER}/", "/v0.0.1/"))
+xmutate("one asset for both architectures", "did not install", lambda t: t.replace("A_KIND=kind-linux-arm64", "A_KIND=kind-linux-amd64"))
 xmutate("a mismatch is not a pipeline failure", "not reported as a PIPELINE failure", lambda t: t.replace("(PIPELINE failure - not a scan finding)", "(scan finding)"))
 xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.replace('pipeline_fail "${TOOL} checksum mismatch', 'echo "${TOOL} checksum mismatch'))
 
-# --- prerequisites of the job (round 2): a persona job that cannot run, or runs twice, must not be approved ---------------------------------
-def judge_prereqs(name, job, steps, bad):
-    ro = str(job.get("runs-on", ""))
-    if not re.fullmatch(r"ubuntu-[0-9]{2}\.[0-9]{2}(-arm)?|ubuntu-latest", ro):
-        bad.append(f"{name}: runs-on is {ro!r}, not an ubuntu runner (the host kubectl and the docker the personas use are the ubuntu image's)")
-    if job.get("strategy") is not None:
-        bad.append(f"{name}: the job has a strategy/matrix: the persona UAT would run more than once (or not at all)")
-    for x in steps:
-        u = str(x.get("uses", ""))
-        isboot = "pip install" in str(x.get("run", "")) and "persona-uat-requirements" in str(x.get("run", ""))
-        if "actions/checkout" in u or isboot:
-            if x.get("if") is not None or not literal_false(x.get("continue-on-error")):
-                bad.append(f"{name}: the {'checkout' if not isboot else 'SDK install'} step is conditional or non-fatal: the persona UAT could run without it")
+# --- a COMPLETE known-good synthetic release.yml and go-freshness.yml, run through the REAL entry point judge() -> judge_release/judge_weekly -> common() ----------
+H40 = "a" * 40
+IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
+         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token);\ncore.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n")
+def synth_driver(weekly):
+    pre = "harness/" if weekly else ""
+    env = {v: "${{ vars.%s }}" % v for v in VARS}
+    env.update({c: "${{ secrets.%s }}" % c for c in CREDS}); 
+    img = '"${{ steps.resolve.outputs.image }}"' if weekly else '"ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"'
+    return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
+                                f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"'}
+def synth_persona_job(weekly):
+    pre = "harness/" if weekly else ""
+    co = ([{"uses": "actions/checkout@" + H40, "with": {"path": "harness", "persist-credentials": "false"}},
+           {"uses": "actions/checkout@" + H40, "with": {"path": "release-docs", "ref": "${{ steps.resolve.outputs.tag }}", "persist-credentials": "false"}}] if weekly
+          else [{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}}])
+    resolver = [{"id": "resolve", "env": {"GH_REPO": "${{ github.repository }}", "REGISTRY_OWNER": "${{ github.repository_owner }}", "GH_TOKEN": "${{ github.token }}"},
+                 "run": 'tag=$(gh release view --json tagName -q .tagName)\nd=$(docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\')\n'
+                        'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
+    steps = (resolver + co + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
+             {"run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+             {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, synth_driver(weekly),
+             {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}}])
+    j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write", "packages": "read"}, "steps": steps}
+    if weekly:
+        j["if"] = "${{ github.event.schedule == '43 6 * * 1' }}"
+    else:
+        j["needs"] = ["image", "promotion"]
+        j["if"] = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}"
+    return j
+RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {"patch-failed": {"needs": ["persona-uat"]}, "persona-uat": synth_persona_job(False)}}
+FS = {"on": {"schedule": [{"cron": "43 6 * * 1"}]}, "jobs": {"persona-uat": synth_persona_job(True)}}
+SRC_OVER.update(CLEAN_SRC)
+bd = judge(RS, FS, TGOOD)
+SRC_OVER.clear()
+result(not bd, "a COMPLETE known-good synthetic release.yml and go-freshness.yml pass the real entry point judge() (judge_release, judge_weekly, common, judge_prereqs, judge_install, the tools and source judges): a NameError or an ordering defect fails here" + ("" if not bd else ": " + "; ".join(bd)))
 
+# the prerequisite judge on small jobs (named as the weekly or the rc job)
 def synth_job(weekly):
-    pre, st = synth_steps(weekly)
-    return {"runs-on": "ubuntu-24.04", "steps": st}
+    j = synth_persona_job(weekly)
+    return ("weekly synth" if weekly else "rc synth"), j
 for weekly in (False, True):
-    j = synth_job(weekly); bd = []
-    judge_prereqs("synth", j, j["steps"], bd)
-    result(not bd, f"the prerequisite judge accepts a plain ubuntu job ({'weekly' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
-    def pm(name, expect, fn):
-        j = synth_job(weekly); fn(j); bd = []
-        judge_prereqs("synth", j, j["steps"], bd)
+    nm, j = synth_job(weekly); bd = []
+    judge_prereqs(nm, j, j["steps"], bd)
+    result(not bd, f"the prerequisite judge accepts the known-good job ({'weekly' if weekly else 'rc'})" + ("" if not bd else ": " + "; ".join(bd)))
+    def pm(name, expect, fn, weekly=weekly):
+        nm, j = synth_job(weekly); fn(j); bd = []
+        judge_prereqs(nm, j, j["steps"], bd)
         result(any(expect in b for b in bd), f"caught: {name}{' (weekly)' if weekly else ''} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
-    pm("checkout with if: false", "checkout step is conditional", lambda j: j["steps"][0].update({"if": "false"}))
-    pm("checkout continue-on-error", "checkout step is conditional", lambda j: j["steps"][0].update({"continue-on-error": "true"}))
-    pm("SDK install continue-on-error: true", "SDK install step is conditional", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
-    pm("SDK install with if: false", "SDK install step is conditional", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"if": "false"}))
+    co0 = lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", "")))
+    boot = lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", "")))
+    pm("checkout with if: false", "checkout step is conditional", lambda j: co0(j).update({"if": "false"}))
+    pm("checkout continue-on-error", "checkout step is conditional", lambda j: co0(j).update({"continue-on-error": "true"}))
+    pm("SDK install continue-on-error: true", "SDK install step is conditional", lambda j: boot(j).update({"continue-on-error": "true"}))
+    pm("SDK install with if: false", "SDK install step is conditional", lambda j: boot(j).update({"if": "false"}))
     pm("runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
     pm("runs-on macos-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "macos-latest"}))
     pm("runs-on a self-hosted runner", "not an ubuntu runner", lambda j: j.update({"runs-on": "self-hosted"}))
     pm("a matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}))
     pm("a one-entry matrix", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1"]}}}))
+    pm("checkout with sparse-checkout (no docs/)", "options outside its allowlist", lambda j: co0(j)["with"].update({"sparse-checkout": "bin\nREADME.md", "sparse-checkout-cone-mode": "false"}))
+    pm("checkout with a cone-mode sparse checkout", "options outside its allowlist", lambda j: co0(j)["with"].update({"sparse-checkout": "bin", "sparse-checkout-cone-mode": "true"}))
+    pm("checkout with a partial-clone filter", "options outside its allowlist", lambda j: co0(j)["with"].update({"filter": "tree:0"}))
+    pm("checkout with fetch-depth 1", "options outside its allowlist", lambda j: co0(j)["with"].update({"fetch-depth": "1"}))
+    pm("checkout with lfs", "options outside its allowlist", lambda j: co0(j)["with"].update({"lfs": "true"}))
+    pm("checkout of another repository", "options outside its allowlist", lambda j: co0(j)["with"].update({"repository": "evil/cache"}))
+    pm("checkout with a working-directory", "carries keys outside its allowlist", lambda j: co0(j).update({"working-directory": "/tmp"}))
+    pm("SDK install with a working-directory", "carries keys outside its allowlist", lambda j: boot(j).update({"working-directory": "/tmp"}))
+    pm("SDK install with a custom shell", "carries keys outside its allowlist", lambda j: boot(j).update({"shell": "pwsh"}))
+    pm("SDK install with an env", "carries keys outside its allowlist", lambda j: boot(j).update({"env": {"PIP_INDEX_URL": "https://evil.example/simple"}}))
+    pm("kind install with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "install-scanner" in str(x.get("run", ""))).update({"working-directory": "/tmp"}))
+    pm("identity step with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
+    pm("identity step with another option", "options outside its allowlist", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update({"github-token": "${{ secrets.X }}"}))
+    pm("upload with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "upload-artifact" in str(x.get("uses", ""))).update({"working-directory": "/tmp"}))
 
+BASES = [("synthetic", RS, FS)]
+REAL_JOBS = bool(R.get("jobs", {}).get("persona-uat")) and bool(F.get("jobs", {}).get("persona-uat"))
+if REAL_JOBS:
+    BASES.append(("real", R, F))
+else:
+    result(False, "the real release.yml and go-freshness.yml have no persona-uat jobs yet (commit 2): every workflow mutation below ran against the synthetic known-good workflows only")
 def mutate(name, expect, fn, which="rel"):
-    r, f, t = copy.deepcopy(R), copy.deepcopy(F), copy.deepcopy(TGOOD if which == "tools" else T)
+    for label, BR, BF in BASES:
+        if which in ("tools", "src") and label != "synthetic":
+            continue
+        _mutate(f"[{label}] {name}", expect, fn, which, BR, BF)
+
+def _mutate(name, expect, fn, which, BR, BF):
+    r, f, t = copy.deepcopy(BR), copy.deepcopy(BF), copy.deepcopy(TGOOD if (which == "tools" or BR is RS) else T)
     srcs = copy.deepcopy(CLEAN_SRC)
     try:
         if which == "rel_top":
@@ -792,17 +930,21 @@ def mutate(name, expect, fn, which="rel"):
             r["defaults"] = {"run": {"shell": "pwsh"}}
         elif which == "rel_patchfailed":
             r["jobs"]["patch-failed"]["needs"] = [n for n in r["jobs"]["patch-failed"]["needs"] if n != "persona-uat"]
+        elif which == "rel_wf":
+            fn(r)
+        elif which == "fresh_wf":
+            fn(f)
         else:
             {"rel": lambda: fn(r["jobs"]["persona-uat"]), "fresh": lambda: fn(f["jobs"]["persona-uat"]), "tools": lambda: fn(t), "src": lambda: fn(srcs)}[which]()
-    except Exception as e:     # the real file lacks the thing being mutated: the real-file case above already failed
+    except Exception as e:     # the base lacks the thing being mutated
         result(False, f"mutation could not be applied ({name}): {type(e).__name__}: {e}"); return
     # round-trip through YAML text so the mutated document is valid YAML, not just a dict
     for doc in (r, f):
         yaml.safe_load(yaml.safe_dump(doc))
-    if (r, f, t, srcs) == (R, F, TGOOD if which == "tools" else T, CLEAN_SRC):
+    if (r, f, srcs) == (BR, BF, CLEAN_SRC) and (which != "tools" or t == TGOOD):
         result(False, f"mutation changed nothing ({name})"); return
     SRC_OVER.clear()
-    if which == "src":
+    if which == "src" or BR is RS:
         SRC_OVER.update(srcs)
     found = judge(r, f, t)
     SRC_OVER.clear()
@@ -856,7 +998,7 @@ mutate("rc budget variable dropped", "PERSONA_UAT_TOKEN_BUDGET is not exactly va
 mutate("rc compliance variable replaced by the default one", "PERSONA_UAT_COMPLIANCE_MODEL is not exactly vars.PERSONA_UAT_COMPLIANCE_MODEL",
        lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ vars.PERSONA_UAT_MODEL }}"))
 mutate("rc federation secret dropped", "ANTHROPIC_WORKSPACE_ID is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].pop("ANTHROPIC_WORKSPACE_ID"))
-mutate("rc upload path is not the driver's output", "is not the driver's --out directory", lambda j: up(j)["with"].update(path="/tmp/unrelated"))
+mutate("rc upload path is not the driver's output", "not exactly", lambda j: up(j)["with"].update(path="/tmp/unrelated"))
 mutate("rc upload skipped on failure", "must run always()", lambda j: up(j).update({"if": "${{ always() && false }}"}))
 mutate("rc upload tolerates no files", "if-no-files-found: error", lambda j: up(j)["with"].update({"if-no-files-found": "ignore"}))
 mutate("rc job provisions a cloud instance (plain form)", "names a cloud CLI",
@@ -889,7 +1031,7 @@ mutate("rc identity step prints the token", "logs the token",
        lambda j: _id_step(j)["with"].update(script=_id_step(j)["with"]["script"] + "\nconsole.log(" + _tokvar(_id_step(j)["with"]["script"]) + ")"))
 mutate("rc identity step masks a literal, not the token", "mask THE TOKEN",
        lambda j: _id_step(j)["with"].update(script=re.sub(r"core\.setSecret\(\s*\w+\s*\)", "core.setSecret('x')", _id_step(j)["with"]["script"])))
-mutate("rc driver's --publish is commented out", "is not run with --publish exactly once", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "# --publish")))
+mutate("rc driver's --recipient is commented out", "is not run with --recipient exactly once", lambda j: drv(j).update(run=drv(j)["run"].replace("--recipient", "# --recipient")))
 mutate("rc driver step gets a working-directory", "a working-directory on the driver step", lambda j: drv(j).update({"working-directory": "harness"}))
 mutate("rc job default working-directory", "a working-directory on the driver step", lambda j: j.update(defaults={"run": {"working-directory": "x"}}))
 mutate("release.yml gets a workflow-level working-directory", "workflow-level working-directory", lambda j: None, which="rel_defaults")
@@ -899,9 +1041,10 @@ mutate("weekly driver script is a .py.bak copy and gets a stray argument", "is n
 mutate("rc driver script is a .py.bak copy", "is not exactly `python3 bin/persona-uat.py", lambda j: drv(j).update(run=drv(j)["run"].replace("persona-uat.py", "persona-uat.py.bak", 1)))
 mutate("rc driver gets a stray positional token", "tokens that are no option or option value", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " extra"))
 mutate("rc job uses an action by tag", "is not pinned to a commit digest", lambda j: j["steps"].insert(0, {"uses": "actions/checkout@v4"}))
-mutate("rc driver step drops --publish", "--publish", lambda j: drv(j).update(run=drv(j)["run"].replace("--publish", "")))
+mutate("rc driver step gains --publish (an issue would be opened)", "outside the contract", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --publish"))
+mutate("rc driver step drops --recipient", "--recipient", lambda j: drv(j).update(run=re.sub(r"--recipient\s+\S+", "", drv(j)["run"])))
 mutate("rc job permissions gain contents: write", "permissions are not exactly", lambda j: j["permissions"].update(contents="write"))
-mutate("rc job loses issues: write (friction could not be filed)", "permissions are not exactly", lambda j: j["permissions"].pop("issues"))
+mutate("rc job gains issues: write (an issue could be opened)", "permissions are not exactly", lambda j: j["permissions"].update(issues="write"))
 mutate("rc job mints no model identity token", "mints the model identity token", lambda j: j.update(steps=[s for s in j["steps"] if "getIDToken" not in json.dumps(s)]))
 # weekly job
 mutate("weekly job runs on every cron", "does not run only on the Monday cron", lambda j: j.update({"if": "${{ github.event_name == 'schedule' }}"}), "fresh")
@@ -968,7 +1111,7 @@ mutate("rc driver is given a second --image (last wins)", "--image exactly once"
 mutate("rc driver --repo points elsewhere", "--repo is not the docs checkout", lambda j: drv(j).update(run=re.sub(r"--repo\s+\S+", "--repo /tmp/empty", drv(j)["run"])))
 mutate("rc owner variable is the literal text", "is not exactly vars.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="vars.PERSONA_UAT_MODEL"))
 mutate("rc secret is the literal text", "is not exactly secrets.ANTHROPIC_WORKSPACE_ID", lambda j: drv(j)["env"].update(ANTHROPIC_WORKSPACE_ID="secrets.ANTHROPIC_WORKSPACE_ID"))
-mutate("rc GH_TOKEN missing", "GH_TOKEN is not exactly github.token", lambda j: drv(j)["env"].pop("GH_TOKEN"))
+mutate("rc driver step carries GH_TOKEN (no gh call is made)", "carries a GitHub token", lambda j: drv(j)["env"].update(GH_TOKEN="${{ github.token }}"))
 mutate("rc identity step provisions cloud inside github-script", "runs a command or names a cloud CLI",
        lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="await exec.exec('aws', ['ec2','run-instances'])"))
 mutate("rc identity step is conditional", "identity step has an if", lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).update({"if": "false"}))
@@ -1005,6 +1148,73 @@ for variant, key, ref in (("cosign from ghcr", "cosign", "ghcr.io/sigstore/cosig
 mutate("source: a privileged docker run in the driver", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "-d", "--privileged"]\n'}), "src")
 mutate("source: a privileged flag in the agent", "starts a privileged container", lambda srcs: srcs.update({SRC[1]: 'argv = ["docker", "run", "--privileged", img]\n'}), "src")
 mutate("source: privileged=True", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: "d.start(ref, privileged=True)\n"}), "src")
+
+# --- round 3: environment at EVERY scope (workflow, job, step) and the checkout/SDK prerequisites -----------------------------------------------------
+VEND = "cla" + "ude-fixture"        # a model name, assembled so no file names one
+for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+    mutate(f"{lab}: workflow-level env holds the model API key", "workflow-level env", lambda d: d.update(env={"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}), w)
+    mutate(f"{lab}: workflow-level env holds a federation secret", "workflow-level env", lambda d: d.update(env={"ANTHROPIC_WORKSPACE_ID": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}), w)
+    mutate(f"{lab}: workflow-level env aliases a secret under another name", "workflow-level env", lambda d: d.update(env={"HARMLESS": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}), w)
+    mutate(f"{lab}: workflow-level env holds the owner's model variable", "workflow-level env", lambda d: d.update(env={"PERSONA_UAT_MODEL": "${{ vars.PERSONA_UAT_MODEL }}"}), w)
+    mutate(f"{lab}: workflow-level env writes a model name", "workflow-level env", lambda d: d.update(env={"MODEL": VEND}), w)
+    mutate(f"{lab}: workflow-level env holds a cloud credential", "workflow-level env", lambda d: d.update(env={"AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}"}), w)
+    mutate(f"{lab}: workflow-level env carries the job token under another name", "workflow-level env", lambda d: d.update(env={"X": "${{ github.token }}"}), w)
+mutate("go-freshness.yml gets a workflow-level default shell", "workflow-level default shell", lambda d: d.update(defaults={"run": {"shell": "pwsh"}}), "fresh_wf")
+mutate("rc job-level env aliases a secret", "job-level env", lambda j: j.setdefault("env", {}).update(HARMLESS="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
+mutate("rc job-level env writes a model name", "job-level env", lambda j: j.setdefault("env", {}).update(M=VEND))
+mutate("weekly job-level env aliases a secret", "job-level env", lambda j: j.setdefault("env", {}).update(HARMLESS="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"), "fresh")
+mutate("rc SDK install step aliases a secret in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(env={"X": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}))
+mutate("rc identity step aliases the owner's variable in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).update(env={"X": "${{ vars.PERSONA_UAT_MODEL }}"}))
+mutate("weekly upload step carries a model name in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "upload-artifact" in str(x.get("uses", ""))).update(env={"X": VEND}), "fresh")
+mutate("rc job default shell is not bash", "default shell is not plain bash", lambda j: j.update(defaults={"run": {"shell": "pwsh"}}))
+mutate("weekly job default working-directory", "a working-directory on the driver step", lambda j: j.update(defaults={"run": {"working-directory": "x"}}), "fresh")
+for lab, w in (("rc", "rel"), ("weekly", "fresh")):
+    co = lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", "")))
+    mutate(f"{lab} checkout with sparse-checkout that omits docs/", "options outside its allowlist", lambda j: co(j).setdefault("with", {}).update({"sparse-checkout": "bin\nREADME.md", "sparse-checkout-cone-mode": "false"}), w)
+    mutate(f"{lab} checkout with cone-mode sparse-checkout", "options outside its allowlist", lambda j: co(j).setdefault("with", {}).update({"sparse-checkout": "bin", "sparse-checkout-cone-mode": "true"}), w)
+    mutate(f"{lab} checkout with a filter", "options outside its allowlist", lambda j: co(j).setdefault("with", {}).update({"filter": "tree:0"}), w)
+    mutate(f"{lab} checkout with fetch-depth", "options outside its allowlist", lambda j: co(j).setdefault("with", {}).update({"fetch-depth": "1"}), w)
+    mutate(f"{lab} checkout with a working-directory", "carries keys outside its allowlist", lambda j: co(j).update({"working-directory": "/tmp"}), w)
+    mutate(f"{lab} SDK install with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"working-directory": "/tmp"}), w)
+    mutate(f"{lab} SDK install with a shell", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"shell": "pwsh"}), w)
+mutate("weekly docs checkout with sparse-checkout", "options outside its allowlist", lambda j: _docs_checkout(j).setdefault("with", {}).update({"sparse-checkout": "bin"}), "fresh")
+
+# --- round 4 (amendment 0215): results stay private: ONE encrypted artifact family, no plaintext upload, no private key in CI, no issue ------------------------
+for lab, w in (("rc", "rel"), ("weekly", "fresh")):
+    mutate(f"{lab} upload of the whole output directory (plaintext reports would go public)", "not exactly", lambda j: up(j)["with"].update(path="persona-uat-out"), w)
+    mutate(f"{lab} upload glob of everything in the output directory", "not exactly", lambda j: up(j)["with"].update(path="persona-uat-out/*"), w)
+    mutate(f"{lab} upload of the reports as markdown", "not exactly", lambda j: up(j)["with"].update(path="persona-uat-out/*.md"), w)
+    mutate(f"{lab} upload of cms AND transcripts (a multi-line path)", "not exactly", lambda j: up(j)["with"].update(path="persona-uat-out/*.cms\npersona-uat-out/*.txt"), w)
+    mutate(f"{lab} upload of a recursive glob", "not exactly", lambda j: up(j)["with"].update(path="persona-uat-out/**/*.cms"), w)
+    mutate(f"{lab} upload from another directory", "not exactly", lambda j: up(j)["with"].update(path="/tmp/*.cms"), w)
+    mutate(f"{lab} an artifact name built from a result", "artifact name", lambda j: up(j)["with"].update(name="persona-uat-${{ steps.driver.outcome }}"), w)
+    mutate(f"{lab} an artifact name that names a persona result", "artifact name", lambda j: up(j)["with"].update(name="Persona UAT blocking"), w)
+    mutate(f"{lab} a second upload step (plaintext)", "exactly one transcript upload", lambda j: j["steps"].append({"if": "${{ always() }}", "uses": "actions/upload-artifact@" + "b" * 40, "with": {"name": "persona-uat-plain", "path": "persona-uat-out", "if-no-files-found": "error"}}), w)
+    mutate(f"{lab} a step reads a secret holding the private key", "private key", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(env={"K": "${{ secrets.PERSONA_UAT_PRIVATE_KEY }}"}), w)
+    mutate(f"{lab} a step writes a private key file", "private key", lambda j: j["steps"].insert(0, {"run": 'echo "$K" > persona-uat.key'}), w)
+    mutate(f"{lab} a step decrypts in CI", "private key", lambda j: j["steps"].append({"run": "openssl cms -decrypt -inkey persona-uat.key -in persona-uat-out/a.cms"}), w)
+    mutate(f"{lab} a step names a private-key block", "private key", lambda j: j["steps"].insert(0, {"run": "printf '%s' '-----BEGIN ' 'PRIVATE KEY-----'; echo PRIVATE KEY"}), w)
+    mutate(f"{lab} the job reads any other secret", "private key", lambda j: drv(j).setdefault("env", {}).update(X="${{ secrets.OTHER_TOKEN }}"), w)
+    mutate(f"{lab} the driver step is given a plaintext --out of its own", "not exactly", lambda j: drv(j).update(run=re.sub(r"--out\s+\S+", "--out /tmp/plain", drv(j)["run"])), w)
+    mutate(f"{lab} --recipient points at another file", "--recipient is not", lambda j: drv(j).update(run=re.sub(r"--recipient\s+\S+", "--recipient /tmp/other.pem", drv(j)["run"])), w)
+    mutate(f"{lab} --recipient given twice", "--recipient exactly once", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --recipient /tmp/other.pem"), w)
+    mutate(f"{lab} the driver gains --gh", "outside the contract", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " --gh gh"), w)
+    mutate(f"{lab} a run step opens an issue after the driver", "after the driver other than the transcript upload", lambda j: j["steps"].append({"run": "gh issue create --title x --body y"}), w)
+mutate("rc job opens an issue in a step BEFORE the driver", "a run step before the driver other than", lambda j: j["steps"].insert(0, {"run": "gh issue create --title x --body y"}))
+
+# the committed recipient certificate and the local decryption script (real files; red until they are committed)
+good = []
+pem = os.path.join(root, "bin/persona-uat-recipient.pem")
+dsh = os.path.join(root, "bin/persona-uat-decrypt.sh")
+if not os.path.isfile(pem):
+    good.append("bin/persona-uat-recipient.pem is not committed")
+else:
+    t = open(pem).read()
+    if "PRIVATE" in t or "BEGIN CERTIFICATE" not in t:
+        good.append("bin/persona-uat-recipient.pem is not a plain certificate")
+if not (os.path.isfile(dsh) and os.access(dsh, os.X_OK)):
+    good.append("bin/persona-uat-decrypt.sh is not committed and executable")
+result(not good, "the recipient certificate (bin/persona-uat-recipient.pem, a certificate and no key) and the local decryption script (bin/persona-uat-decrypt.sh) are committed" + ("" if not good else ": " + "; ".join(good)))
 
 print(f"persona-uat wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)
