@@ -165,6 +165,33 @@ trun fail "fork PR from auditor/x with an edited suppression file is blocked" "$
 trun fail "fork PR from main with an edited suppression file is blocked" "$R" main "" "$PS"
 unset HEADREPO
 
+# judging a COMMIT instead of the checkout (the trusted review gate runs main's copy of this script over a
+# PR head it only has as git objects): ALLOWLIST_HEAD_REV=<full sha> replaces HEAD and the index. The
+# checkout (HEAD) is main here, and must not leak into the verdict.
+revrun() {  # revrun <expect> <desc> <rev> <paths...>   (cwd $R, checked out on main)
+  local expect="$1" desc="$2" rev="$3"; shift 3
+  local out rc
+  out="$(cd "$R" && printf '%s\n' "$@" | GITHUB_HEAD_REF=feature/x GITHUB_REF_NAME="" GITHUB_BASE_REF=main GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO=o/r ALLOWLIST_HEAD_REV="$rev" "$ABS_SCRIPT" 2>&1)"; rc=$?
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+mkrepo "$R"; ( cd "$R" && echo 'package q' > q.go && g add -A && g commit -qm same )
+SAME="$(cd "$R" && git rev-parse HEAD)"
+( cd "$R" && echo '{"a":6}' > $PS && echo x > osv-scanner.toml && g add -A && g commit -qm chg )
+CHG="$(cd "$R" && git rev-parse HEAD)"
+( cd "$R" && g checkout -q main )
+revrun pass "rev: untouched suppression files at the PR head pass (checkout is main)" "$SAME" "$PS" .snyk
+revrun fail "rev: edited suppression file at the PR head is blocked" "$CHG" "$PS"
+revrun fail "rev: new suppression file at the PR head is blocked" "$CHG" osv-scanner.toml
+revrun pass "rev: the other untouched file at that head still passes" "$CHG" .snyk
+revrun fail "rev: a rev that is not a full hex sha fails closed" "main" "$PS"
+revrun fail "rev: a hex sha that is not a commit fails closed" "0000000000000000000000000000000000000000" "$PS"
+revrun fail "rev: an option-like rev fails closed" "--help" "$PS"
+revrun fail "rev: private content is still blocked" "$SAME" ops/runbook.md
+
 # other branches keep today's behaviour
 mkrepo "$R"; ( cd "$R" && echo '{"a":3}' > $PS && g commit -qam edit )
 trun pass "auditor/x branch: edited suppression file allowed (unchanged behaviour)" "$R" auditor/x "" "$PS"

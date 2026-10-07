@@ -47,12 +47,26 @@ text = json.dumps(job)
 for h in hooks:
     if h in text:
         bad.append(f"the allowlist job mentions {h}")
-risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME"}
+import re
+risky = {"BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "SHELLOPTS", "BASHOPTS", "PS4", "IFS",
+         "PROMPT_COMMAND", "CDPATH", "GLOBIGNORE", "TMPDIR", "HOME", "XDG_CONFIG_HOME"}
+def is_risky(k):
+    return k in risky or re.match(r"(GIT_|GITHUB_|LD_|DYLD_|PYTHON|BASH_|RUNNER_)", k) is not None
+steps_all = job.get("steps", [])
+# the two steps whose env is judged exactly below are exempt from the name list (BASE, GITHUB_HEAD_REPO)
 for where, env in [("the workflow", d.get("env")), ("the allowlist job", job.get("env"))] + \
-        [(f"step {i}", st.get("env")) for i, st in enumerate(job.get("steps", []))]:
+        [(f"step {i}", st.get("env")) for i, st in enumerate(steps_all)]:
     if isinstance(env, dict):
-        for k in sorted(set(env) & risky):
+        for k in sorted(k for k in env if is_risky(k)):
+            if where == "step 2" and k == "GITHUB_HEAD_REPO":
+                continue
             bad.append(f"{where} sets env {k}")
+# nothing that reaches every step of the allowlist job from above
+for k in ("env", "defaults", "container", "services", "strategy"):
+    if k in job:
+        bad.append(f"the allowlist job sets `{k}`")
+if "env" in d:
+    bad.append("the workflow sets `env`")
 for st in job.get("steps", []):
     if str(st.get("uses", "")).startswith("actions/checkout@"):
         w = st.get("with") or {}
@@ -96,14 +110,22 @@ for name, want_env in (("fetch", {"BASE": "${{ github.base_ref }}"}),
     for k in plain:
         if k in st:
             bad.append(f"the allowlist {name} step has `{k}`")
-if len(idx["fetch"]) == 1 and len(idx["check"]) == 1 and not (0 < idx["fetch"][0] < idx["check"][0]):
-    bad.append("the allowlist steps are not in order: checkout, base-ref fetch, check")
+if idx["fetch"] != [1] or idx["check"] != [2]:
+    bad.append("the allowlist job's first three steps are not exactly: checkout, base-ref fetch, check (nothing before or between)")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
 }
+
+# judge mode, for the trusted review gate: judge the ci.yml of one commit of the current repo, read as a git
+# object (never checked out, never run), and nothing else
+if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
+  git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  judge "$work/head-ci.yml" && exit 0
+  exit 1
+fi
 
 case_() {  # case_ <name> <expect ok|bad> <python edit of the parsed copy, or empty>
   local f="$work/$1.yml"
@@ -169,6 +191,55 @@ case_ fetch-depth-reverted      bad "$steps[0].pop('with')"
 case_ fetch-depth-shallow       bad "$steps[0]['with'] = {'fetch-depth': '1'}"
 case_ allowlist-job-renamed     bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
 case_ allowlist-job-unnamed     bad "d['jobs']['allowlist'].pop('name')"
+
+case_ insert-update-index-step  bad "$steps.insert(2, {'run': 'git update-index --force-remove -- .snyk'})"
+case_ insert-update-ref-step    bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
+case_ insert-update-ref-first   bad "$steps.insert(1, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
+case_ insert-script-overwrite   bad "$steps.insert(2, {'run': 'echo true > bin/check-file-allowlist.sh'})"
+case_ insert-step-before-checkout bad "$steps.insert(0, {'run': 'true'})"
+case_ job-env-shellopts         bad "d['jobs']['allowlist']['env'] = {'SHELLOPTS': 'noexec'}"
+case_ wf-env-shellopts          bad "d['env'] = {'SHELLOPTS': 'noexec'}"
+case_ step-env-shellopts        bad "$steps[3]['env'] = {'SHELLOPTS': 'noexec'}"
+case_ job-env-head-ref          bad "d['jobs']['allowlist']['env'] = {'GITHUB_HEAD_REF': 'auditor/x'}"
+case_ wf-env-head-ref           bad "d['env'] = {'GITHUB_HEAD_REF': 'auditor/x'}"
+case_ step-env-head-ref         bad "$steps[2]['env']['GITHUB_HEAD_REF'] = 'auditor/x'"
+case_ job-env-repository        bad "d['jobs']['allowlist']['env'] = {'GITHUB_REPOSITORY': 'x/y'}"
+case_ wf-env-repository         bad "d['env'] = {'GITHUB_REPOSITORY': 'x/y'}"
+case_ step-env-repository       bad "$steps[2]['env']['GITHUB_REPOSITORY'] = 'x/y'"
+case_ job-env-index-file        bad "d['jobs']['allowlist']['env'] = {'GIT_INDEX_FILE': '/tmp/i'}"
+case_ wf-env-index-file         bad "d['env'] = {'GIT_INDEX_FILE': '/tmp/i'}"
+case_ step-env-index-file       bad "$steps[2]['env']['GIT_INDEX_FILE'] = '/tmp/i'"
+case_ fetch-env-git-dir         bad "$steps[1]['env']['GIT_DIR'] = '/tmp/g'"
+case_ job-container             bad "d['jobs']['allowlist']['container'] = 'debian:12'"
+case_ job-services              bad "d['jobs']['allowlist']['services'] = {'x': {'image': 'y'}}"
+case_ job-strategy              bad "d['jobs']['allowlist']['strategy'] = {'matrix': {'a': ['1']}}"
+case_ job-defaults-run          bad "d['jobs']['allowlist']['defaults'] = {'run': {'working-directory': 'bin'}}"
+case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'}"
+case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
+
+# judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
+# commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
+# does nothing else; exit 1 and the reasons when it fails
+gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
+  local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
+  cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
+  if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PY
+  fi
+  ( cd "$r" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
+  if out=$(cd "$r" && PIN_WIRING_JUDGE_GIT="$(cd "$r" && git rev-parse HEAD)" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS git:$1 → $got"
+  else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
+}
+gitcase the-real-ci-at-a-commit   ok  ""
+gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
+gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
+gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

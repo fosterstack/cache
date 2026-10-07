@@ -246,8 +246,18 @@ _base_name="${GITHUB_BASE_REF:-main}"
 _merge_base=""      # resolved lazily, once, only if a suppression path shows up
 _merge_base_tried=0
 _merge_base_err=""
+# ALLOWLIST_HEAD_REV=<full hex commit sha>: judge that commit instead of the checkout (HEAD and the index);
+# for a caller that only has the change as git objects. Set but not a resolvable commit => not allowed.
+_rev="${ALLOWLIST_HEAD_REV:-}"
+_head_rev=HEAD
 _resolve_merge_base() {
   _merge_base_tried=1
+  if [ -n "$_rev" ]; then
+    if ! [[ "$_rev" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || ! git rev-parse --verify --quiet "$_rev^{commit}" >/dev/null 2>&1; then
+      _merge_base_err="ALLOWLIST_HEAD_REV is not a commit here"; return 1
+    fi
+    _head_rev="$_rev"
+  fi
   if ! [[ "$_base_name" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || [[ "$_base_name" == *..* ]]; then
     _merge_base_err="base ref name '$_base_name' is not usable"; return 1
   fi
@@ -255,8 +265,8 @@ _resolve_merge_base() {
   if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1; then
     _merge_base_err="base ref origin/$_base_name does not exist here (shallow or partial fetch?)"; return 1
   fi
-  if ! _merge_base="$(git merge-base HEAD "$ref" 2>/dev/null)" || [ -z "$_merge_base" ]; then
-    _merge_base=""; _merge_base_err="no merge base between HEAD and origin/$_base_name (shallow clone?)"; return 1
+  if ! _merge_base="$(git merge-base "$_head_rev" "$ref" 2>/dev/null)" || [ -z "$_merge_base" ]; then
+    _merge_base=""; _merge_base_err="no merge base between $_head_rev and origin/$_base_name (shallow clone?)"; return 1
   fi
 }
 # 0 only when $1 is present at the merge base and the index holds identical content and mode.
@@ -264,8 +274,13 @@ _suppression_unchanged() {
   [ "$_merge_base_tried" -eq 1 ] || _resolve_merge_base || true
   [ -n "$_merge_base" ] || return 1
   git cat-file -e "$_merge_base:$1" 2>/dev/null || return 1
-  git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 1
-  git diff --cached --quiet "$_merge_base" -- "$1" 2>/dev/null
+  if [ -n "$_rev" ]; then
+    git cat-file -e "$_rev:$1" 2>/dev/null || return 1
+    git diff --quiet "$_merge_base" "$_rev" -- "$1" 2>/dev/null
+  else
+    git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 1
+    git diff --cached --quiet "$_merge_base" -- "$1" 2>/dev/null
+  fi
 }
 
 blocked=()
