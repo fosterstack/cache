@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-UAT-001-AC1, REQ-UAT-001-AC2, REQ-UAT-001-AC3, REQ-UAT-001-AC4, REQ-UAT-001-AC5
+# AC3's workflow-graph guard (no downstream job can open an issue) is NOT proven by these tests: three review rounds could not close it (advisor 0244, rule 4); the driver-level
+# proof (the driver opens no issue and never calls gh) remains. Only the simple structural check stays: release.yml's patch-failed does not list persona-uat in needs.
 # Where the persona UAT runs (owner ratified Oct 3 and Oct 4; point 9). The wiring is read from the PARSED workflows, never
 # from substrings: a persona-uat job in the release chain that runs only for v*-rc.* tags, after the image and promotion,
 # in the persona-uat environment, taking the image by the chain's digests, running the driver as a step that nothing can
@@ -584,119 +586,6 @@ def workflow_defaults(doc, label, bad):
     if str(run.get("shell", "bash")) != "bash":
         bad.append(f"{label} has a workflow-level default shell that is not plain bash")
 
-# every way a step can open, edit, close, lock or comment on an issue or pull request (text forms; a third-party issue ACTION or a reusable workflow is caught by the
-# dependent-job allowlist below, since it carries no such text)
-ISSUE_STEP = re.compile(r"gh\s+issue\s+\w+|gh\s+pr\s+(comment|review|edit|close|reopen|create|merge|ready)\b|issues\.(create|createComment|update|lock|addLabels|setLabels)|pulls\.(createReview|createReviewComment)"
-                        r"|gh\s+api\b[^\n]*(issues|comments|graphql|createIssue|addComment|reviews)|(curl|wget)\b[^\n]*(api\.github\.com|/issues|/comments|graphql)|/issues\b|createIssue|addComment|update-issue|create-issue")
-# the ONLY actions a job that depends on persona-uat may use (by commit digest); nothing else in its steps, and no job-level `uses:` (a reusable workflow hides its steps)
-DEPENDENT_ACTIONS = re.compile(r"^actions/(checkout|upload-artifact|download-artifact)@[0-9a-f]{40}$")
-GH_ISSUE_READONLY = {"list", "view", "status"}
-GH_PR_READONLY = {"list", "view", "status", "checks", "diff", "checkout"}
-GH_VALUE_OPTS = {"-R", "--repo", "--hostname"}
-WRAPPERS = {"env", "sudo", "command", "exec", "time", "nohup", "nice", "builtin"}
-def gh_commands(run):
-    """PARSE the gh commands in a run block (never a regex over `gh issue <word>`): continuations and line joins normalised, each line tokenized as a shell would (; & | ( ) split commands),
-    leading VAR=value words and wrappers skipped, and between `gh`, its group (issue, pr, api) and the subcommand every option skipped, those taking a value (-R, --repo,
-    --hostname) together with the value. Returns (violations, unresolved): violations are issue/PR-changing commands, unresolved are forms the parser cannot resolve (a variable or
-    substitution as the command, eval, `sh -c`, an unbalanced quote): a caller that must fail closed treats those as findings too."""
-    import shlex
-    viol, unres = [], []
-    text = str(run).replace("\\\r\n", " ").replace("\\\n", " ")
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        try:
-            lex = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-            lex.whitespace_split = True; lex.commenters = "#"
-            toks = list(lex)
-        except ValueError:
-            if re.search(r"\bgh\b|\$", line):
-                unres.append("unbalanced quoting: " + line.strip()[:50])
-            continue
-        segs, cur = [], []
-        for t in toks:
-            if t and all(c in ";&|()" for c in t):
-                segs.append(cur); cur = []
-            else:
-                cur.append(t)
-        segs.append(cur)
-        for seg in segs:
-            i = 0
-            while i < len(seg) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[i]) or seg[i] in WRAPPERS or (seg[i].startswith("-") and i > 0 and seg[i - 1] in WRAPPERS)):
-                i += 1
-            if i >= len(seg):
-                continue
-            cmd = seg[i]
-            base = cmd.rsplit("/", 1)[-1]
-            if any(ch in cmd for ch in "$`") :
-                unres.append("a variable or substitution as the command: " + cmd[:30]); continue
-            if base in ("eval", "source", ".", "xargs") or (base in ("bash", "sh", "zsh", "dash", "ksh") and "-c" in seg[i + 1:]):
-                if re.search(r"\bgh\b|\$|`", " ".join(seg)):
-                    unres.append("eval / sh -c / xargs: " + " ".join(seg)[:50])
-                continue
-            if base != "gh":
-                continue
-            j = i + 1
-            def skip_opts(j):
-                while j < len(seg) and seg[j].startswith("-"):
-                    o = seg[j]
-                    j += 1 if ("=" in o or o not in GH_VALUE_OPTS) else 2
-                return j
-            j = skip_opts(j)
-            if j >= len(seg):
-                continue
-            group = seg[j]
-            if "$" in group or "`" in group:
-                unres.append("gh with a variable group: " + group[:30]); continue
-            j = skip_opts(j + 1)
-            rest = seg[j:]
-            sub = rest[0] if rest else ""
-            if group == "issue" and (not sub or sub not in GH_ISSUE_READONLY):
-                viol.append("gh issue " + (sub or "?"))
-            elif group == "pr" and (not sub or sub not in GH_PR_READONLY):
-                viol.append("gh pr " + (sub or "?"))
-            elif group == "api" and re.search(r"issues|comments|graphql|createIssue|addComment|reviews", " ".join(seg[i + 1:]), re.I):
-                viol.append("gh api issues/comments/graphql")
-            elif group not in ("issue", "pr", "api") and re.search(r"\$", group):
-                unres.append("gh with a variable group")
-    return viol, unres
-
-# FAIL-CLOSED rule for a job that depends on persona-uat (advisor 0080: an open-ended class in a security control is refused, not parsed): its run text may not contain `gh` as ANY
-# standalone word, nor a shell indirection (eval, xargs, exec, `sh -c`, `bash -c`, $GH, command/env gh), nor api.github.com in any form (curl, wget, python, node), unless the WHOLE
-# run text of the step is exactly one command pinned in this allowlist (empty: no dependent job needs one today). It may not hold issues: write or pull-requests: write.
-DEPENDENT_RUN_ALLOWLIST = frozenset()
-GH_WORD = re.compile(r"(?<![\w$-])gh(?![\w-])|\$\{?\w*GH\w*\}?|(?<![\w-])(eval|xargs|exec)(?![\w-])|(?<![\w-])(ba|z|da|k)?sh\s+(-\w*\s+)*-\w*c\b|api\.github\.com|(?<![\w-])(GH_TOKEN|GITHUB_TOKEN)(?![\w-])", re.I)
-def dependent_run_refusals(run):
-    text = str(run).replace("\\\r\n", " ").replace("\\\n", " ")
-    if text.strip() in DEPENDENT_RUN_ALLOWLIST:
-        return []
-    return [m.group(0) for m in GH_WORD.finditer(text)][:3]
-TOKEN_REF = re.compile(r"secrets\s*(\.|\[)|github\s*\.\s*token|(?<![\w-])(GH_TOKEN|GITHUB_TOKEN)(?![\w-])", re.I)
-def token_refusals(j, r, eff):
-    out = []
-    if eff is None:
-        out.append("has no permissions block at the job or workflow level (the default token may write): an explicit read-only block is required")
-    elif isinstance(eff, str):
-        if eff.strip() not in ("read-all", "{}"):
-            out.append(f"has permissions {eff!r}: only read-all or explicit read scopes are allowed")
-    elif isinstance(eff, dict):
-        for k, v in eff.items():
-            if str(v).strip() not in ("read", "none"):
-                out.append(f"holds permission {k}: {v}: every scope must be read or none")
-    else:
-        out.append("has a permissions block that cannot be read")
-    surfaces = [("env", j.get("env")), ("secrets", j.get("secrets")), ("with", j.get("with")), ("workflow env", r.get("env"))]
-    for i_, st_ in enumerate(j.get("steps", []) or []):
-        surfaces += [(f"step {i_} env", st_.get("env")), (f"step {i_} with", st_.get("with"))]
-    for nm_, val in surfaces:
-        if val is not None and (TOKEN_REF.search(json.dumps(val)) or val == "inherit"):
-            out.append(f"reaches a token through its {nm_} ({json.dumps(val)[:60]}): a job after persona-uat may hold none")
-    return out
-def write_perms(perms):
-    if isinstance(perms, str):
-        return ["permissions: " + perms] if perms.strip() == "write-all" else []
-    return [f"{k}: write" for k, v in (perms or {}).items() if k in ("issues", "pull-requests") and str(v).strip() == "write"] if isinstance(perms, dict) else []
-
 def mode_value(run):
     """the value of the driver's --mode option, parsed (comments dropped, continuations joined); None unless exactly one"""
     import shlex
@@ -706,54 +595,6 @@ def mode_value(run):
         return None
     vals = [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == "--mode"] + [t.split("=", 1)[1] for t in argv if t.startswith("--mode=")]
     return vals[0] if len(vals) == 1 else None
-
-def judge_workflow_graph(r, label, bad):
-    """results stay private, for ANY outcome of persona-uat (success, friction-only, failure): no job that depends on persona-uat, directly or transitively through
-    needs, may open or touch a public issue whatever its `if` says (a `needs: [persona-uat]` job with no `if` runs after success and friction, with `failure()`/`!success()`
-    after a failure), and neither may a job that runs under always()/!cancelled() (it runs whatever persona-uat did); persona-uat's own steps never do"""
-    jobs = r.get("jobs", {}) or {}
-    def needs_of(n):
-        v = (jobs.get(n) or {}).get("needs", [])
-        return [v] if isinstance(v, str) else list(v or [])
-    def ancestors(n, seen=None):
-        seen = set() if seen is None else seen
-        for m in needs_of(n):
-            if m not in seen:
-                seen.add(m); ancestors(m, seen)
-        return seen
-    for n, j in jobs.items():
-        j = j or {}
-        cond = str(j.get("if", ""))
-        always = bool(re.search(r"always\(\)|!\s*cancelled\(\)", cond))
-        depends = "persona-uat" in ancestors(n)
-        if not (n == "persona-uat" or depends or always):
-            continue
-        if depends:
-            eff = j["permissions"] if "permissions" in j else r.get("permissions")      # a job without its own block inherits the workflow's
-            for w_ in write_perms(eff):
-                bad.append(f"{label}: job {n} depends on persona-uat and holds {w_}: a dependent job may not be able to write issues or pull requests at all")
-            # THE GUARANTEE (advisor 0243): judged on permissions and tokens, not on run text. A job that follows persona-uat has an explicit permissions block
-            # in which no scope is above read, and no token that could write an issue reaches it (no secrets.*, no github.token, no GH_TOKEN/GITHUB_TOKEN anywhere
-            # in its env, its steps' env/with, or the job's own with/secrets), so whatever it runs it cannot open or touch a public issue.
-            for t_ in token_refusals(j, r, eff):
-                bad.append(f"{label}: job {n} depends on persona-uat and {t_}")
-            for st_ in j.get("steps", []) or []:
-                for hit in dependent_run_refusals(st_.get("run", "")):
-                    bad.append(f"{label}: job {n} depends on persona-uat and its run text contains {hit!r} (gh, a shell indirection, api.github.com or a GitHub token): refused unless the whole step is on the pinned allowlist (empty)")
-        if depends and j.get("uses") is not None:
-            bad.append(f"{label}: job {n} depends on persona-uat and is a reusable-workflow call ({str(j.get('uses'))[:50]!r}): it could open an issue from steps nobody here can see")
-        for st in j.get("steps", []) or []:
-            if depends and st.get("uses") is not None and not DEPENDENT_ACTIONS.match(str(st.get("uses"))):
-                bad.append(f"{label}: job {n} depends on persona-uat and uses {str(st.get('uses'))[:60]!r}: a job that follows persona-uat may use only checkout, upload-artifact and download-artifact by digest (a third-party action could open an issue)")
-            gv, gu = gh_commands(st.get("run", ""))
-            for g_ in gv + (gu if depends else []):
-                bad.append(f"{label}: job {n} {'depends on persona-uat (directly or through needs)' if depends else 'runs whatever persona-uat did'} and its run text has a gh command that changes an issue or pull request, or one that cannot be resolved ({g_!r}): a persona result, whatever its outcome, must stay private")
-            blob = str(st.get("run", "")) + " " + json.dumps(st.get("with", {}) or {})
-            if ISSUE_STEP.search(blob):
-                bad.append(f"{label}: job {n} {'depends on persona-uat (directly or through needs)' if depends else 'runs whatever persona-uat did'} and opens or touches a public issue ({blob.strip()[:60]!r}): a persona result, whatever its outcome, must stay private")
-
-def judge_release_graph(r, bad):
-    judge_workflow_graph(r, "release.yml", bad)
 
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
@@ -766,7 +607,6 @@ def judge_release(r, bad):
     pfn = pf.get("needs", [])
     if "persona-uat" in ([pfn] if isinstance(pfn, str) else pfn):
         bad.append("release.yml's patch-failed lists persona-uat in needs: a failed persona run would then open a public issue (results stay private: it only fails the job)")
-    judge_release_graph(r, bad)
     j = r.get("jobs", {}).get("persona-uat")
     if not j:
         bad.append("release.yml has no persona-uat job"); return
@@ -801,7 +641,6 @@ def judge_release(r, bad):
             bad.append(f"release persona-uat does not run the driver with --mode rc exactly (parsed value {mode_value(run)!r})")
 
 def judge_weekly(f, bad):
-    judge_workflow_graph(f, "go-freshness.yml", bad)
     workflow_defaults(f, "go-freshness.yml", bad)
     judge_workflow_env(f, "go-freshness.yml", bad)
     j = f.get("jobs", {}).get("persona-uat")
@@ -1243,88 +1082,6 @@ mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK ins
 mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
        lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "pip install" in str(s.get("run", "")))))
 mutate("persona-uat is added to patch-failed.needs (a persona failure would open a public issue)", "lists persona-uat in needs", lambda d: d["jobs"]["patch-failed"].update(needs=["image", "promotion", "persona-uat"]), "rel_wf")
-for run_ in ("gh issue list --repo o/r", "gh --repo o/r issue view 3", "gh run download 1 -n x --dir d", "gh release list", "echo gh issue create is forbidden", "gh pr --repo o/r view 3",
-             "gh api repos/o/r/releases/latest", "sort -n x\ngit status"):
-    gv_, gu_ = gh_commands(run_)
-    result(not gv_ and not gu_ or run_.startswith("echo gh"), f"the gh parser leaves a harmless command alone: {run_!r}" + ("" if not gv_ and not gu_ or run_.startswith("echo gh") else f": {gv_} {gu_}"))
-for run_ in ("gh issue --repo o/r create", "gh --repo o/r issue create", "gh issue \\\n create", "gh \t issue \t create", "gh pr --repo o/r comment 3", "gh api graphql -f query=x"):
-    gv_, gu_ = gh_commands(run_)
-    result(bool(gv_), f"the gh parser finds the changing command: {run_!r}")
-for run_ in ("echo done", "python3 -m json.tool x.json", "ls -l\nsort -n x", "grep -c english notes.txt", "echo 'the word gh in a sentence is fine?'"):
-    refused_ = dependent_run_refusals(run_)
-    result(bool(refused_) == ("gh" in run_.split("'")[-2:-1] or "gh" in run_.split()), f"fail-closed refusals on {run_!r}: {refused_}")
-result(dependent_run_refusals("gh issue list") != [], "the allowlist is empty: even a read-only gh command in a dependent job is refused")
-result(not [m for m in write_perms({"contents": "read", "id-token": "write", "packages": "read"})], "contents/id-token/packages permissions are not issue/PR write permissions")
-for lab_, w_ in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
-    mutate(f"{lab_}: a successor of persona-uat opens an issue with NO `if` (after success and friction-only)", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
-    mutate(f"{lab_}: a successor opens an issue under `if: ${{{{ !success() }}}}` (after failure)", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ !success() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
-    mutate(f"{lab_}: a successor opens an issue under failure()", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
-    for nm_, run_ in (("gh issue --repo X create", "gh issue --repo fosterstack/cache create --title t --body b"), ("gh --repo X issue create", "gh --repo fosterstack/cache issue create --title t"),
-                      ("gh -R X issue -R Y close", "gh -R a/b issue -R c/d close 3"), ("a backslash-continued gh issue create", "gh issue \\\n  create \\\n  --title t"),
-                      ("gh   issue\t\tcreate with tabs", "gh  \t issue \t  create --title t"), ("gh issue after an assignment and a pipe", "GH_TOKEN=$T true | gh issue lock 3"),
-                      ("gh pr --repo X review", "gh pr --repo o/r review 3 --approve"), ("gh api with options before the endpoint", "gh api --method POST -H 'X: y' repos/o/r/issues -f title=t"),
-                      ("gh --hostname H issue transfer", "gh --hostname h.example issue transfer 3 o/r"), ("gh issue in a && list", "echo hi && gh issue --repo o/r delete 3 --yes"),
-                      ("gh issue pin", "gh issue pin 3"), ("gh issue with only a repo option and no subcommand", "gh issue --repo o/r")):
-        mutate(f"{lab_}: a direct successor runs {nm_}", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": run_}]}), w_)
-        mutate(f"{lab_}: a transitive successor runs {nm_}", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": run_}]}), w_)
-    for nm_, run_ in (("if true; then ...; fi", "if true; then gh --repo o/r issue create --title t; fi"), ("a brace group", "{ gh issue create --title t; }"), ("a negation", "! gh --repo o/r issue create --title t"),
-                      ("timeout", "timeout 5 gh --repo o/r issue create --title t"), ("&& and a brace group", "true && { gh -R o/r issue create; }"), ("while", "while true; do gh issue create --title t; break; done"),
-                      ("for", "for i in 1; do gh issue comment 3 -b x; done"), ("case", "case x in x) gh issue close 3;; esac"), ("tabs", "true;\tgh\t\tissue\tcreate"),
-                      ("a continuation", "true && \\\n  gh issue create --title t"), ("GH=gh; $GH", "GH=gh; $GH issue create --title t"), ("command gh", "command gh issue create --title t"),
-                      ("env gh", "env GH_X=1 gh issue create --title t"), ("exec gh", "exec gh issue create --title t"), ("bash -c", "bash -c 'gh issue create --title t'"),
-                      ("sh -c", "sh -c \"gh issue create --title t\""), ("xargs", "echo 3 | xargs gh issue close"), ("eval", "eval \"gh issue create\""),
-                      ("curl to api.github.com", "curl -X POST https://api.github.com/repos/o/r/issues -d '{}'"), ("python to api.github.com", "python3 -c \"import urllib.request as u; u.urlopen('https://api.github.com/x')\""),
-                      ("node to api.github.com", "node -e \"fetch('https://api.github.com/x')\""), ("a path-qualified gh in a brace group", "{ /usr/bin/gh -R o/r issue create; }"), ("a path-qualified gh in if/then", "if true; then /usr/bin/gh --repo o/r issue create --title t; fi"), ("a relative gh", "./gh issue create --title t"), ("gh found by which", "$(which gh) issue create --title t"), ("upper-case api host", "curl -X POST https://API.GITHUB.COM/repos/o/r/issues -d '{}'"), ("a GitHub token in a quiet command", "echo $GITHUB_TOKEN > /dev/null")):
-        mutate(f"{lab_}: a direct dependent job: {nm_} is refused (fail closed)", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": run_}]}), w_)
-        mutate(f"{lab_}: a transitive dependent job: {nm_} is refused (fail closed)", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": run_}]}), w_)
-    for nm_, perms_ in (("issues: write", {"issues": "write"}), ("pull-requests: write", {"pull-requests": "write", "contents": "read"}), ("write-all", "write-all")):
-        mutate(f"{lab_}: a dependent job with {nm_} and no gh at all is refused (permission closed)", "may not be able to write issues", lambda d, perms_=perms_: d["jobs"].update(report={"needs": ["persona-uat"], "permissions": perms_, "steps": [{"run": "echo done"}]}), w_)
-        mutate(f"{lab_}: a TRANSITIVE dependent job with {nm_} is refused", "may not be able to write issues", lambda d, perms_=perms_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "permissions": perms_, "steps": [{"run": "echo done"}]}), w_)
-    mutate(f"{lab_}: a dependent job INHERITS issues: write from the workflow", "may not be able to write issues", lambda d: (d.update(permissions={"issues": "write"}), d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": "echo done"}]})), w_)
-    for nm_, run_ in (("an indirect $GH", "GH=gh\n$GH issue create --title t"), ("eval", "eval \"gh issue create --title t\""), ("bash -c", "bash -c 'gh issue create --title t'"),
-                      ("a command substitution", "$(echo gh) issue create"), ("an unbalanced quote", "echo 'gh issue create"), ("xargs", "echo 3 | xargs gh issue close"), ("a variable group", "gh $GRP create")):
-        mutate(f"{lab_}: a dependent job has gh in a form the parser cannot resolve ({nm_})", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": run_}]}), w_)
-        mutate(f"{lab_}: a transitive dependent job has gh in a form the parser cannot resolve ({nm_})", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": run_}]}), w_)
-    # advisor 0243: the AC3 guarantee is judged on permissions and tokens, not on run text
-    RO = {"contents": "read"}
-    for nm_, job_, want_ in (
-        ("a secret token in the job env and an inherited-option gh under control flow (read-only permissions)", {"needs": ["persona-uat"], "permissions": RO, "env": {"GH_TOKEN": "${{ secrets.ISSUE_BOT_TOKEN }}"}, "steps": [{"run": "if true; then /usr/bin/gh --repo o/r issue create --title t --body b; fi"}]}, "reaches a token"),
-        ("github.token in a step env", {"needs": ["persona-uat"], "permissions": RO, "steps": [{"env": {"X": "${{ github.token }}"}, "run": "true"}]}, "reaches a token"),
-        ("a secret in a step with", {"needs": ["persona-uat"], "permissions": RO, "steps": [{"uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "with": {"name": "${{ secrets.S }}"}}]}, "reaches a token"),
-        ("secrets: inherit", {"needs": ["persona-uat"], "permissions": RO, "secrets": "inherit", "steps": [{"run": "true"}]}, "reaches a token"),
-        ("GITHUB_TOKEN named in the env", {"needs": ["persona-uat"], "permissions": RO, "env": {"GITHUB_TOKEN": "x"}, "steps": [{"run": "true"}]}, "reaches a token"),
-        ("no permissions block (the default token may write)", {"needs": ["persona-uat"], "steps": [{"run": "true"}]}, "no permissions block"),
-        ("contents: write", {"needs": ["persona-uat"], "permissions": {"contents": "write"}, "steps": [{"run": "true"}]}, "every scope must be read or none"),
-        ("id-token: write", {"needs": ["persona-uat"], "permissions": {"id-token": "write"}, "steps": [{"run": "true"}]}, "every scope must be read or none"),
-        ("a bare string permission", {"needs": ["persona-uat"], "permissions": "write-all", "steps": [{"run": "true"}]}, "permissions")):
-        mutate(f"{lab_}: a dependent job with {nm_} is refused (tokens and permissions)", want_, lambda d, job_=job_: d["jobs"].update(report=copy.deepcopy(job_)), w_)
-        mutate(f"{lab_}: a TRANSITIVE dependent job with {nm_} is refused (tokens and permissions)", want_, lambda d, job_=job_: d["jobs"].update(first={"needs": ["persona-uat"], "permissions": RO, "steps": [{"run": "true"}]}, second=dict(copy.deepcopy(job_), needs=["first"])), w_)
-    _bad = []
-    judge_workflow_graph({"jobs": {"persona-uat": {"steps": [{"run": "true"}]}, "report": {"needs": ["persona-uat"], "permissions": {"contents": "read"}, "steps": [{"run": "echo done"}]}}}, "control", _bad)
-    result(_bad == [], f"CONTROL: a dependent job with read-only permissions, no token and plain steps is accepted" + ("" if not _bad else f"; saw {_bad}"))
-    mutate(f"{lab_}: a successor opens an issue under success()", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ success() }}", "steps": [{"run": "gh issue edit 3 --body y"}]}), w_)
-    mutate(f"{lab_}: a TRANSITIVE successor (two hops, no `if`) opens an issue", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
-    mutate(f"{lab_}: a transitive successor under failure() opens an issue through the API", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"run": "true"}]}, second={"needs": ["first"], "if": "${{ failure() }}", "steps": [{"run": "gh api repos/o/r/issues -f title=x"}]}), w_)
-    for nm_, stp_ in (("a third-party issue action", {"uses": "dacbd/create-issue-action@" + "a" * 40, "with": {"title": "t", "body": "b"}}),
-                      ("an issue action pinned by tag", {"uses": "peter-evans/create-issue-from-file@v5"}),
-                      ("gh issue close", {"run": "gh issue close 3"}), ("gh issue lock", {"run": "gh issue lock 3"}), ("gh issue comment", {"run": "gh issue comment 3 -b x"}),
-                      ("gh pr comment", {"run": "gh pr comment 3 -b x"}), ("a GraphQL createIssue", {"run": "gh api graphql -f query='mutation { createIssue(input: {}) { clientMutationId } }'"}),
-                      ("a GraphQL addComment", {"run": "gh api graphql -f query=x"}), ("a curl to the issues API", {"run": "curl -X POST -H \"Authorization: Bearer $T\" https://api.github.com/repos/o/r/issues -d '{}'"}),
-                      ("github-script", {"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await github.rest.issues.create({})"}}),
-                      ("github-script with a quiet script", {"uses": "actions/github-script@" + "a" * 40, "with": {"script": "core.info('x')"}})):
-        mutate(f"{lab_}: a direct successor of persona-uat uses {nm_}", "depends on persona-uat", lambda d, stp_=stp_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [stp_]}), w_)
-        mutate(f"{lab_}: a TRANSITIVE successor uses {nm_}", "depends on persona-uat", lambda d, stp_=stp_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [stp_]}), w_)
-    mutate(f"{lab_}: a successor of persona-uat is a reusable-workflow call", "reusable-workflow call", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "uses": "./.github/workflows/notify.yml"}), w_)
-    mutate(f"{lab_}: a transitive successor is a reusable-workflow call in another repository", "reusable-workflow call", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "uses": "o/r/.github/workflows/x.yml@" + "a" * 40}), w_)
-    mutate(f"{lab_}: a successor uses a checkout pinned by tag only", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"uses": "actions/checkout@v4"}]}), w_)
-    mutate(f"{lab_}: an always() job opens an issue", "runs whatever persona-uat did", lambda d: d["jobs"].update(report={"if": "${{ always() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
-    mutate(f"{lab_}: persona-uat is added to the needs of an existing issue job", "depends on persona-uat", lambda d: d["jobs"].setdefault("patch-failed" if "patch-failed" in d["jobs"] else "check", {}).update(needs=["persona-uat"]), w_)
-mutate("a notify job needs persona-uat and opens an issue on failure()", "opens or touches a public issue", lambda d: d["jobs"].update(notify={"needs": ["persona-uat"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), "rel_wf")
-mutate("a job with always() after persona-uat opens an issue through github-script", "opens or touches a public issue", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"uses": "actions/github-script@" + "c" * 40, "with": {"script": "await github.rest.issues.create({owner: o, repo: r, title: 't'})"}}]}), "rel_wf")
-mutate("patch-failed becomes always() (it then runs when only persona-uat fails)", "opens or touches a public issue", lambda d: d["jobs"]["patch-failed"].update({"if": "${{ always() }}"}), "rel_wf")
-mutate("a job that survives cancellation (!cancelled()) comments on an issue", "opens or touches a public issue", lambda d: d["jobs"].update(note={"needs": ["persona-uat"], "if": "${{ !cancelled() }}", "steps": [{"run": "gh issue comment 5 --body x"}]}), "rel_wf")
-mutate("a job two hops after persona-uat opens an issue on failure()", "opens or touches a public issue", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "if": "${{ success() }}", "steps": [{"run": "true"}]}, second={"needs": ["first"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), "rel_wf")
-mutate("the persona job itself calls gh api issues", "opens or touches a public issue", lambda j: j["steps"].append({"run": "gh api repos/o/r/issues -f title=x"}))
 def _tokvar(script):
     m = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*await\s+core\.getIDToken", script)
     return m.group(1) if m else "token"
