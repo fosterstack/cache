@@ -198,6 +198,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
   - ac: REQ-EVICT-002-AC4
     evidence:
+      - { type: shell-test, ref: "bin/acceptance-maven-413-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
   - ac: REQ-AUTH-004-AC1
     evidence:
@@ -257,6 +258,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
+      - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }

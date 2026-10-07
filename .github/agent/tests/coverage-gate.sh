@@ -38,6 +38,11 @@ bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.log" 2>&1 \
   || { grep '^FAIL' "$W/pins.log" >&2; tail -1 "$W/pins.log" >&2
        echo "::error::action-pin cases failed under coverage" >&2; exit 1; }
 tail -1 "$W/pins.log"
+# the k8s harness's fenced exclusion (advisor 0084): its refusals are branches of the same checker
+bash .github/agent/tests/k8s-harness-fence-test.sh > "$W/fence.log" 2>&1 \
+  || { tail -25 "$W/fence.log" >&2
+       echo "::error::k8s fence cases failed under coverage" >&2; exit 1; }
+tail -1 "$W/fence.log"
 python3 -m coverage combine -q
 python3 -m coverage json -q -o "$W/coverage.json"
 python3 .github/agent/tests/coverage-check.py "$W/coverage.json" .github/agent/coverage-exclusions.txt \

@@ -191,7 +191,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
-          python3 -c 'from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile; print("sdk ready")'
+          # no inline interpreter code (handoff 0094): the import check is a heredoc, the pin checker's documented boundary
+          python3 - <<'PY'
+          from anthropic.lib.credentials import WorkloadIdentityCredentials, IdentityTokenFile  # noqa: F401
+          print("sdk ready")
+          PY
 
       # Row 76: a HOLD dispatches the fixer in the ops repository. Best effort: if the App is not
       # installed on ops this mint fails and the hold still stands (the issue is the record).

@@ -84,6 +84,145 @@ f="$a/release-after.json"
 docker scout cves --format gitlab --vex-author '^FosterStack LLC$' "registry://$PROBE_REPO:release" > "$f" 2> "$f.err"; rc=$?
 echo "- scan the release copy from the registry (our author): exit $rc — findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)" >> "$summ"
 
+# advisor 0214: the post-attachment index scanned by its EXACT new digest (attaching changes the index digest, so the attestation has
+# to be in the index BEFORE signing; the question is whether Scout applies a statement when it is given that digest, not a tag)
+for t in control release; do
+  nd=$(digest "$PROBE_REPO:$t"); f="$a/$t-after-exact-digest.json"; extra=(--vex-author "$AUTHOR_RE"); [ "$t" = release ] && extra=(--vex-author '^FosterStack LLC$')
+  if [ "$nd" = READ-FAILED ]; then echo "- scan $t by its exact post-attachment digest: inconclusive (the digest could not be read)" >> "$summ"; continue; fi
+  if [ "$nd" = "$(cat "$a/$t.before")" ]; then echo "- scan $t by its exact post-attachment digest: inconclusive (attaching did not change the index digest, so there is no post-attachment digest to scan)" >> "$summ"; continue; fi
+  docker scout cves --format gitlab "${extra[@]}" "registry://$PROBE_REPO@sha256:$nd" > "$f" 2> "$f.err"; rc=$?
+  if [ "$t" = control ]; then verdict=$(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" "${cve:-CVE-0000-0000}" "${purl:--}" 2>&1 | tail -1)
+  else verdict="findings before $(jq '.vulnerabilities|length' "$a/release-before.json" 2>/dev/null), after $(jq '.vulnerabilities|length' "$f" 2>/dev/null)"; fi
+  echo "- scan $t by its exact post-attachment digest \`sha256:$nd\` with --vex-author: exit $rc — $verdict" >> "$summ"
+done
+docker scout attestation list "registry://$PROBE_REPO:release" > "$a/release-attestation-list.txt" 2>&1
+echo "- release copy attestation list: \`$(head -c 300 "$a/release-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+
+# --- 1b. OUR statement, attached to a fixture that HAS the target (advisor 0202): the control above proved the attestation path
+# applies a statement of the documented shape; this proves it for OUR author and OUR product forms. The target is CVE-2023-4911 in
+# the fixture's glibc (the rescan self-check's own target). Each form gets its own scratch tag (an attestation cannot be removed);
+# scanned by tag with --vex-author for OUR published author. A fixture without the target records that and tries nothing.
+OUR_AUTHOR=$(jq -er .author "$here/../.vex/fosterstack-cache.openvex.json" 2>/dev/null || echo "")
+OUR_AUTHOR_RE=$(python3 bin/scout-root-cause.py author-re "$OUR_AUTHOR")
+g_purl=$(jq -r '[.vulnerabilities[]? | select(.cve == "CVE-2023-4911") | .location.dependency.package.name][0] // empty' "$a/control-before.json" 2>/dev/null)
+echo "- our statement on the fixture's CVE-2023-4911 (author \`${OUR_AUTHOR:-unreadable}\`, package \`${g_purl:-absent from the fixture report}\`):" >> "$summ"
+if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+  for form in "published:pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "probe-tag:pkg:docker/$PROBE_REPO@ours-probe-tag"; do
+    k=${form%%:*}; prod=${form#*:}; tag="ours-$k"
+    skopeo copy -q --all "docker://$FIXTURE" "docker://$PROBE_REPO:$tag" >> "$a/copy.log" 2>&1
+    before_d=$(digest "$PROBE_REPO:$tag")
+    python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "$prod" CVE-2023-4911 "$g_purl" "$a/$tag.vex.json"
+    docker scout attestation add --file "$a/$tag.vex.json" --predicate-type "$PRED" "$PROBE_REPO:$tag" > "$a/$tag-add.log" 2>&1
+    echo "  - $k (product \`$prod\`): attestation add exit $? — \`$(tail -1 "$a/$tag-add.log" | cut -c1-160)\`" >> "$summ"
+    f="$a/$tag-after.json"
+    docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:$tag" > "$f" 2> "$f.err"; rc=$?
+    echo "  - $k scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+    nd=$(digest "$PROBE_REPO:$tag"); f="$a/$tag-after-exact-digest.json"
+    if [ "$nd" = READ-FAILED ] || [ "$before_d" = READ-FAILED ]; then echo "  - $k by its exact post-attachment digest: inconclusive (a digest could not be read)" >> "$summ"
+    elif [ "$nd" = "$before_d" ]; then echo "  - $k by its exact post-attachment digest: inconclusive (attaching did not change the index digest)" >> "$summ"
+    else
+      docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:$nd" > "$f" 2> "$f.err"; rc=$?
+      echo "  - $k scanned by its exact post-attachment digest \`sha256:$nd\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+    fi
+  done
+fi
+
+# --- 1c. a MULTI-PLATFORM index with the target (advisor 0214, probe 2): the release is an index, and attaching to one did not change its
+# digest (Scout attached to a platform child). Debian 12.0's manifest list: its amd64 child IS the fixture above. A scratch copy gets our
+# statement (published product form); the index digest and children are recorded before and after, then the index is scanned by tag and by
+# exact digest and the amd64 child by digest, all with our author, and the attestations are listed. A fixture without the target tries nothing.
+MULTI=sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b
+CHILD=sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab
+echo -e "\n### 1c. multi-platform index (scratch tag \`multi\`, debian 12.0 manifest list \`$MULTI\`)\n" >> "$summ"
+if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+  skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$PROBE_REPO:multi" >> "$a/copy.log" 2>&1
+  mb=$(digest "$PROBE_REPO:multi"); children "$PROBE_REPO:multi" > "$a/multi.children.before"
+  python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" CVE-2023-4911 "$g_purl" "$a/multi.vex.json"
+  docker scout attestation add --file "$a/multi.vex.json" --predicate-type "$PRED" "$PROBE_REPO:multi" > "$a/multi-add.log" 2>&1
+  echo "- multi-platform index: attestation add exit $? — \`$(tail -1 "$a/multi-add.log" | cut -c1-160)\`" >> "$summ"
+  mn=$(digest "$PROBE_REPO:multi"); children "$PROBE_REPO:multi" > "$a/multi.children.after"
+  if [ "$mb" = READ-FAILED ] || [ "$mn" = READ-FAILED ]; then mstat="inconclusive (a read failed)"; elif [ "$mb" = "$mn" ]; then mstat=unchanged; else mstat=CHANGED; fi
+  echo "- multi-platform index digest before \`$mb\`, after \`$mn\` — $mstat" >> "$summ"
+  echo "  - children before: $(cat "$a/multi.children.before")" >> "$summ"
+  echo "  - children after: $(cat "$a/multi.children.after")" >> "$summ"
+  f="$a/multi-after-tag.json"
+  docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi" > "$f" 2> "$f.err"; rc=$?
+  echo "- multi-platform index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  if [ "$mn" != READ-FAILED ]; then
+    f="$a/multi-after-index-digest.json"
+    docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:${mn}" > "$f" 2> "$f.err"; rc=$?
+    echo "- multi-platform index scanned by its exact digest \`sha256:$mn\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  fi
+  f="$a/multi-after-child-digest.json"
+  docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@$CHILD" > "$f" 2> "$f.err"; rc=$?
+  echo "- multi-platform amd64 child scanned by its digest \`$CHILD\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+  docker scout attestation list "registry://$PROBE_REPO:multi" > "$a/multi-attestation-list.txt" 2>&1
+  echo "- multi-platform attestation list: \`$(head -c 400 "$a/multi-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+else
+  echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"
+fi
+
+# --- 1d. the attestation-manifest child BUILT into a multi-platform index (advisor 0221, probe 3) -----------------------------------
+# Scout's own attach to an index stores nothing it can read (1c). Scout DOES rewrite a single image into an index with an
+# attestation-manifest child (1/1b), so: attach to a scratch copy of the amd64 child, take that child's attestation-manifest descriptor
+# (annotations kept: vnd.docker.reference.type / .digest) and add it to a scratch copy of the original index with
+# `docker buildx imagetools create`. The built index is scanned by tag and by exact digest with our author; children and attestations
+# are recorded. A fixture without the target tries nothing.
+echo -e "\n### 1d. built index (scratch tag \`multi-built\`: the debian 12.0 manifest list plus an attestation-manifest child for amd64)\n" >> "$summ"
+if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+  skopeo copy -q "docker://docker.io/library/debian@$CHILD" "docker://$PROBE_REPO:child-a" >> "$a/copy.log" 2>&1
+  python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" CVE-2023-4911 "$g_purl" "$a/built.vex.json"
+  docker scout attestation add --file "$a/built.vex.json" --predicate-type "$PRED" "$PROBE_REPO:child-a" > "$a/built-add.log" 2>&1
+  echo "- child copy: attestation add exit $? — \`$(tail -1 "$a/built-add.log" | cut -c1-160)\`" >> "$summ"
+  child_ref="$PROBE_REPO:child-a"
+  skopeo inspect --raw "docker://$child_ref" 2>/dev/null \
+    | jq -c '[.manifests[]? | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")][0] // empty' > "$a/built-descriptor.json"
+  if [ -s "$a/built-descriptor.json" ]; then
+    echo "- the child's attestation-manifest descriptor: \`$(cut -c1-300 "$a/built-descriptor.json")\`" >> "$summ"
+    built_ref="$PROBE_REPO:multi-built"; built_idx="$PROBE_REPO@$MULTI"
+    att_dig=$(jq -r .digest "$a/built-descriptor.json"); att_ref="$PROBE_REPO@$att_dig"
+    # buildx treats a descriptor that carries a mediaType as complete and then wants a tag-based source (the ":latest: not found" of probes 3
+    # and 3b); without mediaType it resolves the manifest by its digest (the descriptor keeps its digest, size, platform and annotations)
+    jq -c 'del(.mediaType)' "$a/built-descriptor.json" > "$a/built-descriptor-nomt.json"
+    # two ways to add the child, tried in order; the first run showed the descriptor form (--file with a tag+digest source) failing with
+    # "<repo>:latest: not found" (and again with digest-only sources): (1) --file descriptor with the original index by digest only,
+    # (2) the original index and the attestation manifest as two sources by digest, the descriptor annotated with buildx's
+    # manifest-descriptor[unknown/unknown] annotations (the plain two-source form, tried in probe 3b, kept the child but dropped
+    # the annotations). The probe scans whichever variant really built the index.
+    for variant in file annot; do
+      skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$built_ref" >> "$a/copy.log" 2>&1
+      if [ "$variant" = file ]; then
+        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --file "$a/built-descriptor-nomt.json" "$built_idx"
+      else   # the plain two-source form added the child with NO annotations (probe 3b); buildx can annotate the descriptor by its platform (unknown/unknown)
+        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --annotation "manifest-descriptor[unknown/unknown]:vnd.docker.reference.type=attestation-manifest" --annotation "manifest-descriptor[unknown/unknown]:vnd.docker.reference.digest=$CHILD" "$built_idx" "$att_ref"
+      fi
+      crc=$?
+      echo "- variant $variant: imagetools create exit $crc — \`$(tail -1 "$a/built-create-$variant.log" | cut -c1-200)\`" >> "$summ"
+      bb=$(digest "$PROBE_REPO:multi-built"); children "$PROBE_REPO:multi-built" > "$a/built.children"
+      echo "  - built index digest \`$bb\` (the original was \`$MULTI\`); children: $(cat "$a/built.children")" >> "$summ"
+      # a scan is only interpreted for an index that really was built: create succeeded, the digest changed, and the attestation-manifest
+      # child is among its children (a failed create leaves the copied original at the tag, and scanning that would mislabel it)
+      if [ "$crc" -ne 0 ] || [ "$bb" = READ-FAILED ] || [ "$bb" = "${MULTI#sha256:}" ] || ! grep -q attestation-manifest "$a/built.children"; then
+        echo "  - variant $variant: inconclusive (the create failed, the index did not change, or it carries no attestation-manifest child), so it is not scanned" >> "$summ"
+        continue
+      fi
+      f="$a/built-after-tag.json"
+      docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi-built" > "$f" 2> "$f.err"; rc=$?
+      echo "  - variant $variant: built index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+      f="$a/built-after-digest.json"
+      docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:$bb" > "$f" 2> "$f.err"; rc=$?
+      echo "  - variant $variant: built index scanned by its exact digest \`sha256:$bb\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+      docker scout attestation list "registry://$PROBE_REPO:multi-built" > "$a/built-attestation-list.txt" 2>&1
+      echo "  - variant $variant: built index attestation list: \`$(head -c 400 "$a/built-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+      break
+    done
+  else
+    echo "- built index not attempted: Scout created no attestation-manifest child on the child copy" >> "$summ"
+  fi
+else
+  echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"
+fi
+
 # --- 2. the matrix: control, one field at a time, our forms; three Scout versions --------------------------------------
 echo -e "\n## 2. Matrix\n\n| case | Scout | image | location | file | --vex-author | subcomponent | product | result |\n|---|---|---|---|---|---|---|---|---|" >> "$summ"
 current=""

@@ -127,12 +127,12 @@ jobs:
         id: run
         run: |
           set -uo pipefail
-          gremlins="$(go env GOPATH)/bin/gremlins"
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # gremlins named literally (pin checker: advisor 0084)
           fail=0
           run_module() { # label, out.json, log, workdir, extra-args...
             local label="$1" out="$2" log="$3" wd="$4"; shift 4
             echo "== gremlins: ${label} =="
-            ( cd "$wd" && "$gremlins" unleash --output "$out" "$@" . ) 2>&1 | tee "$log"
+            ( cd "$wd" && gremlins unleash --output "$out" "$@" . ) 2>&1 | tee "$log"
             local rc="${PIPESTATUS[0]}"
             if [ "$rc" -ne 0 ]; then
               echo "::error::gremlins failed for ${label} (exit ${rc})" >&2; fail=1; return

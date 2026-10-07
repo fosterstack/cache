@@ -25,6 +25,8 @@
 .github/agent/bin/tests/test_lr27.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_panel_io.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_signed_commit.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/test_signed_commit_cli.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_parsers.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_review_gate.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/test_snykpolicy.py  unit test (test code — the Go gate does not measure _test.go either)

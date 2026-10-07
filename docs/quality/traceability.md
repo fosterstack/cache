@@ -297,7 +297,7 @@ A PUT whose entry is larger than the configured cache cap (FSCACHE_MAX_BYTES, wh
 | REQ-EVICT-002-AC1 | Given a server with a small configured cache cap holding existing entries; when a client PUTs an entry larger than the whole cap; then the response is 413 with header "X-FSCache-Reject: entry-exceeds-cache-cap", a GET of that key returns 404, and every previously stored entry is still present - nothing was evicted for an entry that could never fit | http-integration | yes | approved | 2 item(s) |
 | REQ-EVICT-002-AC2 | Given the same server; when a client PUTs a body exceeding FSCACHE_MAX_BODY_BYTES but not the cache cap; then the response is 413 WITHOUT the X-FSCache-Reject entry-exceeds-cache-cap header - the two rejections stay distinguishable | http-integration | yes | approved | 1 item(s) |
 | REQ-EVICT-002-AC3 | Given a real Gradle build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully, the oversized output is simply never cached, and other outputs still round-trip | acceptance-gradle | yes | approved | 1 item(s) |
-| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | 1 item(s) |
+| REQ-EVICT-002-AC4 | Given a real Maven build producing one cacheable output larger than the configured cap; when the build runs against the server twice; then both builds complete successfully with the oversized output uncached and other outputs still cached | acceptance-maven | yes | approved | 2 item(s) |
 
 ## Observability
 
@@ -562,13 +562,13 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 
-Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request.
+Every GitHub Action a workflow uses shall be pinned to a full commit digest with its version in a comment, and every container image the pipeline names or passes to an action shall be named by digest; a tag or branch reference shall fail the check that gates every pull request. The check enforces plain forms only (owner, Oct 3): a deliberately hidden form is out of its scope; reviewers judge intent, and an obfuscation-only finding is information, not a blocker.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 3 item(s) |
+| REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 4 item(s) |
 
 ### REQ-REL-006 — Frozen release baselines stay fixed
 

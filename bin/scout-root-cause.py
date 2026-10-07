@@ -11,6 +11,7 @@
 CLI (for bin/scout-root-cause.sh): doc, cases, pick, judge.
 """
 import json
+import re
 import sys
 from collections import Counter
 
@@ -93,6 +94,8 @@ def main(argv):
     elif cmd == "pick":                    # pick BEFORE.json -> "CVE PURL" or "none"
         p = pick(findings(argv[1]))
         print("%s %s" % p if p else "none")
+    elif cmd == "author-re":               # author-re AUTHOR -> the anchored regex Scout's --vex-author takes
+        print("^" + re.escape(argv[1]) + "$")
     elif cmd == "judge":                   # judge BEFORE AFTER CVE PURL
         print(judge(findings(argv[1]), findings(argv[2]), argv[3], argv[4]))
     else:
