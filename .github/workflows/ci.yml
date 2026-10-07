@@ -290,6 +290,8 @@ jobs:
 
       - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
         run: bash bin/release-patch-wiring-test.sh
+      - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
+        run: bash bin/acceptance-maven-413-test.sh
       - name: release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)
         run: bash .github/agent/tests/release-notes-signed-test.sh
       - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)

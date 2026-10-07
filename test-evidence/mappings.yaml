@@ -198,6 +198,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) capped scenario: real per-task cache keys via --info; oversized module-a key absent (HEAD 404), pre-error :core key present (HEAD 200), post-error task keys absent; warm restore set asserted; recovery build hits the remote cache; direct 413+X-FSCache-Reject probe as the mechanism check" }
   - ac: REQ-EVICT-002-AC4
     evidence:
+      - { type: shell-test, ref: "bin/acceptance-maven-413-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-maven) capped scenario (both extension versions): single shared oversized resource (identical app key across workspaces), app key rejected 413 in the INFO log, remote absence via extension cache dir + server HEAD 404, small library remote restore with sha256-identical bytes" }
   - ac: REQ-AUTH-004-AC1
     evidence:
