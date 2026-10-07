@@ -1885,7 +1885,7 @@ for _label, _fn in PRED_BAD.items():
 # ---- the embedded OpenVEX v0.2.0 allowlist: every property the schema defines, with its type; nothing else
 CTX = "https://openvex.dev/ns/v0.2.0"
 TS_OK = "2026-09-20T09:00:00Z"
-HASHES = ("md5", "sha1", "sha-256", "sha-384", "sha-512", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "blake2s-256", "blake2b-256", "blake2b-384", "blake2b-512")
+HASHES = ("md5", "sha1", "sha-256", "sha-384", "sha-512", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "blake2s-256", "blake2b-256", "blake2b-512")  # the 12 names of the published schema (blake2b-384 is not among them)
 
 
 def base_vex_obj():
@@ -1904,8 +1904,10 @@ PATHS = {
     "product.hashes": lambda o: o["statements"][0]["products"][0]["hashes"], "sub.hashes": lambda o: o["statements"][0]["products"][0]["subcomponents"][0]["hashes"],
 }
 S_WRONG, TS_WRONG, INT_WRONG = [7, None, ["x"], {"a": "b"}, True], ["yesterday", 5, None, "2026-09-20", "2026-09-20T09:00:00+0400"], [0, "1", 1.5, True, None, -1]
-IDENT_WRONG = [[], "x", None, {"purl": 7}, {"unknown": "x"}, {"purl": ""}]
-HASH_WRONG = [[], "x", None, {"sha-256": 7}, {"unknown": "x"}, {"md5": ""}]
+OBJ_WRONG = [[], "x", None, 7, True, [["a"]]]
+IDENT_WRONG = OBJ_WRONG + [{}, {"purl": 7}, {"unknown": "x"}, {"purl": ""}, {"purl": ["x"]}, {"purl": None}]
+HASH_WRONG = OBJ_WRONG + [{"sha-256": 7}, {"unknown": "x"}, {"md5": ""}, {"md5": ["x"]}, {"blake2b-384": "ab"}]
+LIST_WRONG = ["x", {"a": 1}, None, 7, True, [["nested"]], {}]
 SP = []
 
 
@@ -1921,6 +1923,20 @@ _add("doc", "timestamp", "2026-09-20T09:00:00.5-04:00", TS_WRONG)
 _add("doc", "last_updated", "2026-09-21T00:00:00Z", TS_WRONG)
 _add("doc", "version", 2, INT_WRONG)
 _add("doc", "tooling", "tool 1.0", S_WRONG)
+
+
+def _stmt():
+    return base_vex_obj()["statements"][0]
+
+
+def _stmt2():
+    o = _stmt()
+    o["vulnerability"]["name"] = "CVE-2000-0009"
+    return o
+
+
+_add("doc", "statements", [_stmt(), _stmt2()], LIST_WRONG + [[], [7], [None], [[_stmt()]], [_stmt(), _stmt()], [_stmt(), _stmt2(), _stmt()],
+                                                         [_stmt(), dict(reversed(list(_stmt().items())))]])
 for _k in ("@id", "supplier", "status_notes", "impact_statement", "action_statement"):
     _add("statement", _k, "text", S_WRONG)
 _add("statement", "version", 3, INT_WRONG)
@@ -1929,21 +1945,19 @@ _add("statement", "last_updated", TS_OK, TS_WRONG)
 _add("statement", "action_statement_timestamp", TS_OK, TS_WRONG)
 _add("statement", "status", "fixed", ["fine", "Fixed", 7, None, ""])
 _add("statement", "justification", "inline_mitigations_already_exist", ["made_up", 7, None, "", "Component_Not_Present"])
-_add("statement", "vulnerability", {"name": "CVE-2000-0002", "@id": "https://x/CVE-2000-0002"}, ["CVE-2000-0002", 7, None, [], {}])
-_add("statement", "products", [{"@id": "pkg:a"}], ["x", None, {}, [], [7], [{}]])
+_add("statement", "vulnerability", {"name": "CVE-2000-0002", "@id": "https://x/CVE-2000-0002"}, ["CVE-2000-0002", 7, None, [], {}, True, [["x"]], [{"name": "x"}]])
+_add("statement", "products", [{"@id": "pkg:a"}], LIST_WRONG + [[], [7], [{}], [None], [[{"@id": "a"}]], [{"@id": "p"}, {"@id": "p"}], [{"@id": "p", "identifiers": {"purl": "x"}}, {"identifiers": {"purl": "x"}, "@id": "p"}]])
 _add("vuln", "@id", "https://example.test/CVE-1", S_WRONG)
 _add("vuln", "name", "CVE-2000-0003", [7, None, "", ["x"]])
 _add("vuln", "description", "text", S_WRONG)
-_add("vuln", "aliases", ["GHSA-aaaa-bbbb-cccc", "GO-2024-0001"], [[7], [""], "x", {"a": 1}, [None], ["ok", 3]])
+_add("vuln", "aliases", ["GHSA-aaaa-bbbb-cccc", "GO-2024-0001"], LIST_WRONG + [[7], [""], [None], ["ok", 3], [["a"]], [{"a": 1}], ["A", "A"], ["GHSA-aaaa-bbbb-cccc", "x", "GHSA-aaaa-bbbb-cccc"]])
 _add("product", "@id", "pkg:other", [7, None, ""])
 _add("product", "identifiers", {"purl": "pkg:p", "cpe22": "cpe:/a:x", "cpe23": "cpe:2.3:a:x"}, IDENT_WRONG)
 _add("product", "hashes", {"sha-256": "ab", "md5": "cd"}, HASH_WRONG)
-_add("product", "supplier", "Supplier", S_WRONG)
-_add("product", "subcomponents", [{"@id": "pkg:s1"}, {"identifiers": {"purl": "pkg:s2"}}], ["x", None, {}, [7], [{"x": 1}], [{}]])
+_add("product", "subcomponents", [{"@id": "pkg:s1"}, {"identifiers": {"purl": "pkg:s2"}}], LIST_WRONG + [[7], [{"x": 1}], [{}], [None], [[{"@id": "a"}]], [{"@id": "s"}, {"@id": "s"}], [{"@id": "s", "identifiers": {"purl": "x"}}, {"identifiers": {"purl": "x"}, "@id": "s"}]])
 _add("sub", "@id", "pkg:other-sub", [7, None, ""])
 _add("sub", "identifiers", {"purl": "pkg:p"}, IDENT_WRONG)
 _add("sub", "hashes", {"sha-256": "ab"}, HASH_WRONG)
-_add("sub", "supplier", "Supplier", S_WRONG)
 for _lvl in ("product.identifiers", "sub.identifiers"):
     for _k in ("purl", "cpe22", "cpe23"):
         _add(_lvl, _k, "value", [7, None, "", ["x"]])
@@ -1951,6 +1965,11 @@ for _k in HASHES:
     _add("product.hashes", _k, "ab12", [7, None, "", ["x"]])
 for _k in ("md5", "sha-256", "blake2b-512"):
     _add("sub.hashes", _k, "ab12", [7, None, "", ["x"]])
+
+
+_EXTRA_OK = [("product.hashes = {} (the schema has no minimum)", ("product", "hashes", {})), ("statement.products = two different products", ("statement", "products", [{"@id": "p1"}, {"@id": "p2"}])),
+             ("vuln.aliases = [] (allowed)", ("vuln", "aliases", [])), ("vuln.aliases = A and a (distinct)", ("vuln", "aliases", ["A", "a"])),
+             ("product.subcomponents = [] (allowed)", ("product", "subcomponents", []))]
 
 
 def set_prop(o, path, key, val):
@@ -1962,11 +1981,16 @@ def schema_vex(path, key, val):
     return json.dumps(set_prop(base_vex_obj(), path, key, val)).encode()
 
 
-SCHEMA_REJECT = [("%s.%s = %r" % (pa, k, w), (pa, k, w)) for pa, k, v, ws in SP for w in ws[:2]]
-SCHEMA_REHASH = [("%s.%s = %r" % (pa, k, ws[0]), (pa, k, ws[0])) for pa, k, v, ws in SP]
-SCHEMA_OK = [("%s.%s" % (pa, k), (pa, k, v)) for pa, k, v, ws in SP]
-SCHEMA_UNKNOWN = [(pa, (pa, "x-unknown", "value")) for pa in PATHS] + [(pa + " (nested object)", (pa, "extension", {"a": 1})) for pa in PATHS]
-SCHEMA_REHASH_ALL = SCHEMA_REHASH + [("%s.x-unknown" % pa, (pa, "x-unknown", "value")) for pa in PATHS]
+SCHEMA_REJECT = [("%s.%s = %r" % (pa, k, w), (pa, k, w)) for pa, k, v, ws in SP for w in ws]  # every wrong value, no truncation
+SCHEMA_REHASH = [("%s.%s = %r" % (pa, k, w), (pa, k, w)) for pa, k, v, ws in SP for w in ([ws[0], ws[-1]] if len(ws) > 1 else ws)]
+SCHEMA_OK = [("%s.%s" % (pa, k), (pa, k, v)) for pa, k, v, ws in SP] + _EXTRA_OK
+# properties that the prose spec or other tools mention but the published JSON schema's closed objects lack
+NOT_IN_SCHEMA = [("product", "supplier", "Supplier"), ("sub", "supplier", "Supplier"), ("product.hashes", "blake2b-384", "ab12"), ("sub.hashes", "blake2b-384", "ab12"),
+                 ("sub", "subcomponents", [{"@id": "nested"}])]
+SCHEMA_UNKNOWN = ([(pa, (pa, "x-unknown", "value")) for pa in PATHS] + [(pa + " (nested object)", (pa, "extension", {"a": 1})) for pa in PATHS]
+                  + [("%s.%s (defined elsewhere, not here)" % (a, b), (a, b, c)) for a, b, c in NOT_IN_SCHEMA])
+SCHEMA_REHASH_ALL = (SCHEMA_REHASH + [("%s.x-unknown" % pa, (pa, "x-unknown", "value")) for pa in PATHS]
+                     + [("%s.%s (not in the schema)" % (a, b), (a, b, c)) for a, b, c in NOT_IN_SCHEMA])
 
 
 @case("AC2", "positive control: the base document used by the schema cases is valid, and so is a document carrying every allowlisted property at once")
@@ -2382,8 +2406,9 @@ class Reg:
                         return 200, hd, b
                     if self.readback == "empty":
                         return 200, hd, b""
-                    if self.rewrite == "samelen":
-                        i = b.find(b"sha256:") + 7
+                    if self.rewrite in ("samelen", "samelen-mid", "samelen-end"):
+                        occ = [i for i in range(len(b)) if b.startswith(b"sha256:", i)]
+                        i = {"samelen": occ[0], "samelen-mid": min(occ, key=lambda o: abs(o - len(b) // 2)), "samelen-end": occ[-1] + 56}[self.rewrite] + 7
                         nb = b[:i] + (b"0" if b[i:i + 1] != b"0" else b"1") + b[i + 1:]
                         hd["Docker-Content-Digest"] = ref
                         return 200, hd, nb
@@ -3166,14 +3191,15 @@ def _(arg):
 NONLOCAL_HOSTS = ["registry.example.test", "registry.example.test:5000", "localhost.example.test", "127.0.0.1.example.test", "localhost.example.test:5000", "10.255.255.1:5000", "[::2]:5000"]
 
 
-@param("AC4", "a non-local host is never spoken to over plain http, never resolved directly, and never sees credentials", [(h, h) for h in NONLOCAL_HOSTS])
-def _(h):
+@param("AC4", "a non-local host is never spoken to over plain http (with or without credentials), never resolved directly, and never sees credentials", [("%s %s" % (h, c_), (h, c_ == "with credentials")) for h in NONLOCAL_HOSTS for c_ in ("with credentials", "anonymous")])
+def _(arg):
+    h, with_creds = arg
     push_control()
     sink = Proxy()
     pd = make_dir(mk_fx(), vex_real())
     try:
         r = run(["push", "--registry", h, "--repository", "fosterstack/cache", "--dir", pd.path],
-                env=dict(sink.env(), FSCACHE_REGISTRY_USER=USER, FSCACHE_REGISTRY_TOKEN=SECRET), timeout=60, net="observe")
+                env=dict(sink.env(), **({"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET} if with_creds else {})), timeout=60, net="observe")
         ok(r.rc != 0, "the push to an unreachable non-local host succeeded")
         for x in sink.log:
             ok(x["method"] == "CONNECT", "a plain %s request for a non-local host went out: %s" % (x["method"], x["path"]))
@@ -3249,30 +3275,12 @@ def _():
 REDIRECT_KINDS = ["head_blob", "post", "put_blob", "head_man", "put_man", "get_man"]
 
 
-@param("AC4", "a redirect from the registry (on any request) is never followed, whether it leads to another host, another local origin or the same origin", [("%s -> %s" % (k, t), (k, t)) for k in REDIRECT_KINDS for t in ("evil", "local", "same")])
-def _(arg):
-    push_control()
-    kind, target = arg
-    other, sink = watchers()
-    to = {"evil": "http://registry.example.test/elsewhere", "local": "http://127.0.0.1:%d/v2/x/blobs/uploads/" % other.port, "same": "/v2/fosterstack/cache/blobs/elsewhere"}[target]
-    reg, pd = push_world(token=True, redirect_on={kind}, redirect_to=to)
-    try:
-        r = push(reg, pd, env=sink.env())
-        ok(r.rc != 0, "pushed although the registry redirected")
-        eq(other.log, [], "the redirect was followed to the other origin")
-        eq(sink.log, [], "the redirect was followed to a non-local host")
-        ok(not any(x["path"].endswith("/elsewhere") for x in reg.log), "the same-origin redirect was followed")
-        if kind != "get_man":
-            ok(pd.f_digest not in reg.mans, "F stored")
-        ok(pd.f_digest not in r.out, "claimed success")
-    finally:
-        other.close(); sink.close(); reg.close()
-
-
 REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+TARGETS = ("evil", "local", "same")
+GRID = [("%d on %s -> %s" % (st, k, tg), (st, k, tg)) for st in REDIRECT_STATUSES for k in REDIRECT_KINDS for tg in TARGETS]
 
 
-@param("AC4", "every 3xx status (301, 302, 303, 307, 308) from the registry is refused on every kind of request, whatever it points at: zero destination requests, no credential forwarded", [("%d on %s -> %s" % (st, k, ("evil", "local", "same")[i % 3]), (st, k, ("evil", "local", "same")[i % 3])) for st in REDIRECT_STATUSES for i, k in enumerate(REDIRECT_KINDS)])
+@param("AC4", "the FULL grid: every 3xx status (301, 302, 303, 307, 308) x every kind of registry request x every target (another host, another local origin, the same origin) is refused with zero destination requests and no credential forwarded", GRID)
 def _(arg):
     push_control()
     status, kind, target = arg
@@ -3286,6 +3294,7 @@ def _(arg):
         eq(sink.log, [], "the redirect was followed to a non-local host")
         ok(not any(x["path"].endswith("/elsewhere") for x in reg.log), "the same-origin redirect was followed")
         ok(pd.f_digest not in r.out, "claimed success")
+        ok("Traceback" not in r.err, "a traceback")
     finally:
         other.close(); sink.close(); reg.close()
 
@@ -3319,16 +3328,17 @@ def _(status):
         reg.close(); prox.close()
 
 
-@param("AC4", "https: every 3xx status from the registry towards plain http (an upload start redirected https -> http) is refused with no plain request", [(str(st), st) for st in REDIRECT_STATUSES])
-def _(status):
+@param("AC4", "https: every 3xx status x every kind of registry request, redirected towards plain http, is refused with no plain request and no connection to port 80", [("%d on %s" % (st, k), (st, k)) for st in REDIRECT_STATUSES for k in REDIRECT_KINDS])
+def _(arg):
+    status, kind = arg
     push_control()
-    reg, pd, prox = tls_world(token=True, redirect_on={"post"}, redirect_to="http://registry.example.test/upload", redirect_status=status)
+    reg, pd, prox = tls_world(token=True, redirect_on={kind}, redirect_to="http://registry.example.test/upload", redirect_status=status)
     try:
         r = tls_push(reg, pd, prox)
         ok(r.rc != 0, "pushed")
         eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
         ok("registry.example.test:80" not in [x["path"] for x in prox.log], "a connection to port 80 was attempted")
-        eq(f_puts(reg, pd), [], "F attempted")
+        ok(not any(x["path"] == "/upload" for x in reg.log), "the redirect was followed")
     finally:
         reg.close(); prox.close()
 
@@ -3538,6 +3548,21 @@ def _(arg):
         eq([x["path"] for x in prox.log if x["path"] != "%s:443" % arg[0]], [], "the tool connected to a host other than the registry")
         eq([x for x in reg.log if x["path"] == "/token"], [], "the token endpoint was contacted")
         eq([x for x in reg.log if x["auth"] and x["auth"].startswith("Basic")], [], "Basic credentials were sent")
+        eq(f_puts(reg, pd), [], "F attempted")
+    finally:
+        reg.close(); prox.close()
+
+
+@param("AC4", "anonymous (no credentials) pushes over https: a challenge naming an http realm, another host, another port or a lookalike is refused before any connection", [("http realm on the same host", ("registry.example.test", "http://registry.example.test/token")), ("another host", ("registry.example.test", "https://auth.example.test/token")), ("lookalike suffix", ("registry.example.test", "https://registry.example.test.attacker.test/token")), ("lookalike docker", ("registry-1.docker.io", "https://auth.docker.io.attacker.test/token")), ("another port", ("registry.example.test", "https://registry.example.test:8443/token"))])
+def _(arg):
+    push_control()
+    reg, pd, prox = tls_world(host=arg[0], token=True, realm=arg[1])
+    try:
+        r = tls_push(reg, pd, prox, creds=False)
+        ok(r.rc != 0, "pushed")
+        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x["path"] for x in prox.log if x["path"] != "%s:443" % arg[0]], [], "the tool connected to another host or port")
+        eq([x for x in reg.log if x["path"] == "/token"], [], "the token endpoint was contacted")
         eq(f_puts(reg, pd), [], "F attempted")
     finally:
         reg.close(); prox.close()
@@ -3829,13 +3854,13 @@ def _():
         reg.close()
 
 
-@case("AC4", "a read-back that differs by ONE flipped hex character (same length, header claiming the right digest) fails the push")
-def _():
+@param("AC4", "a read-back that differs by ONE flipped hex character (same length, header claiming the right digest) fails the push, wherever the flip is: near the start, in the middle, in the very last digest of F", [("near the start", "samelen"), ("in the middle", "samelen-mid"), ("the last hex character of the last digest", "samelen-end")])
+def _(mode):
     push_control()
-    reg, pd = push_world(rewrite="samelen", lie=True)
+    reg, pd = push_world(rewrite=mode, lie=True)
     try:
         r = push(reg, pd)
-        assert_failed_no_claim(reg, pd, r, "same-length rewrite")
+        assert_failed_no_claim(reg, pd, r, "same-length rewrite " + mode)
         ok(any(x["method"] == "GET" and x["path"].endswith("/manifests/" + pd.f_digest) for x in reg.log), "no read-back attempted")
     finally:
         reg.close()
