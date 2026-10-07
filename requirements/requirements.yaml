@@ -1518,6 +1518,43 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-REL-010
+    title: The final image index carries the release's VEX as attestation children
+    statement: >
+      The final image index that is built, tested, signed and promoted shall be the built index plus one attestation-manifest
+      child per platform carrying the release's OpenVEX statement, produced by a deterministic tool from the built index and
+      the VEX file bytes.
+    source: [bin/vex-index.py, .github/workflows/stage-image.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: the final index with VEX attestation children (advisor handoffs 0221, 0228 and 0230; scanner-panel rules, owner, Oct 3 2026, "VEX attached to the image for Docker Scout", read as before anything is signed)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-010-AC1
+        given: "a built index and a VEX file"
+        when: "the tool computes the final index twice"
+        then: "both outputs are byte-identical and depend only on those two inputs"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC2
+        given: "an index that is malformed, already final or lacks platforms, or a VEX that is not an OpenVEX document"
+        when: "the tool runs"
+        then: "it refuses and writes nothing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC3
+        given: "a computed final index"
+        when: "it is inspected"
+        then: "each platform has exactly one attestation child naming that platform's digest, and removing the attestation children leaves the built index's entries unchanged"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC4
+        given: "a registry"
+        when: "the tool pushes the final index"
+        then: "it writes only blobs and manifests by digest, never a tag, and fails closed when the stored manifest's digest differs or a child is missing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >

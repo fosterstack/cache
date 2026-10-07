@@ -323,6 +323,9 @@ jobs:
       - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
         run: bash bin/vex-forms-test.sh
 
+      - name: the final index with VEX attestation children — deterministic compute, verify and push (REQ-REL-010)
+        run: bash bin/vex-index-test.sh
+
       - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
         run: bash bin/scout-root-cause-test.sh
 
