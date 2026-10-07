@@ -11,7 +11,7 @@
 # differently fails.
 #
 # VEX_INDEX=/path/to/tool.py runs the same tests against another copy of the tool (default bin/vex-index.py).
-# Needs python3 (stdlib only). Exit status is non-zero when any case fails.
+# Needs python3 (standard library only) and, for the https cases, the openssl command. Exit status is non-zero when any case fails.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,7 +23,7 @@ trap 'rm -rf "$T"' EXIT
 
 cat >"$T/harness.py" <<'PYEOF'
 import ast, base64, hashlib, http.server, json, os, random, re, shutil, socket, subprocess, sys
-import atexit, gzip, select, socketserver, ssl, tempfile, threading, time, urllib.parse
+import atexit, gzip, io, select, tarfile, socketserver, ssl, tempfile, threading, time, urllib.parse
 
 ROOT = os.environ["ROOT"]
 TOOL = os.environ["VEX_INDEX"]
@@ -293,11 +293,22 @@ def norm_result(r):
 
 
 # ------------------------------------------------------------------ fixtures
+def mini_tar(seed):
+    """a minimal valid tar archive (one small executable file), byte-for-byte reproducible"""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        body = ("#!/fscache " + seed + "\n").encode()
+        ti = tarfile.TarInfo("fscache")
+        ti.size, ti.mtime, ti.mode, ti.uid, ti.gid, ti.uname, ti.gname = len(body), 0, 0o755, 0, 0, "", ""
+        t.addfile(ti, io.BytesIO(body))
+    return buf.getvalue()
+
+
 def mk_child(arch, variant=None, mt=OCI_MAN, os_="linux"):
     seed = "%s/%s/%s" % (os_, arch, variant)
     cfg = cj({"architecture": arch, "os": os_, "config": {"Entrypoint": ["/fscache"]},
-              "rootfs": {"type": "layers", "diff_ids": [dg(("layer-bytes:" + seed + ":" + "x" * 300).encode())]}})
-    raw_layer = ("layer-bytes:" + seed + ":" + "x" * 300).encode()
+              "rootfs": {"type": "layers", "diff_ids": [dg(mini_tar(seed))]}})
+    raw_layer = mini_tar(seed)
     layer = gzip.compress(raw_layer, mtime=0)
     man = {"schemaVersion": 2, "mediaType": mt,
            "config": {"mediaType": OCI_CFG if mt == OCI_MAN else "application/vnd.docker.container.image.v1+json",
@@ -326,8 +337,8 @@ def mk_fx(kind="oci", plats=(("amd64", None), ("arm64", None)), indent=2, no_mt=
     f.children = [mk_child(a, v, cmt) for a, v in plats]
     entries = [desc_of(c) for c in f.children]
     if extra_entry:
-        for e in entries:
-            e.update(json.loads(json.dumps(extra_entry)))
+        for e, ch in zip(entries, f.children):
+            e.update(json.loads(json.dumps(extra_entry(ch) if callable(extra_entry) else extra_entry)))
     f.junk = None
     if unknown:
         junk = json.dumps({"schemaVersion": 2, "mediaType": OCI_MAN, "config": {"mediaType": OCI_CFG, "digest": "sha256:" + "5" * 64, "size": 7}, "layers": []}).encode()
@@ -378,8 +389,9 @@ EXTRAS = dict(extra_top={"annotations": {"org.opencontainers.image.description":
 UNKNOWN_FIELDS = dict(
     extra_top={"artifactType": "application/vnd.example.index+json", "annotations": {"org.example.k": "v", "org.opencontainers.image.created": "2026-10-01T00:00:00Z"},
                "subject": {"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64, "size": 10}, "x-extension": {"a": [1, 2, {"b": None, "c": True}], "n": 9007199254740992, "neg": -9007199254740992}},
-    extra_entry={"artifactType": "application/vnd.example.image+json", "urls": ["https://example.test/blob"], "data": "e30=",
-                 "annotations": {"org.example.entry": "e"}, "x-ext": {"deep": [[1], [2]], "t": False}})
+    extra_entry=lambda ch: {"artifactType": "application/vnd.example.image+json", "urls": ["https://example.test/blob"],
+                            "data": base64.b64encode(ch["bytes"]).decode(),  # embedded data equals the referenced content, as OCI requires
+                            "annotations": {"org.example.entry": "e"}, "x-ext": {"deep": [[1], [2]], "t": False}})
 FIXTURES = {
     "oci-2-platform": lambda: mk_fx(),
     "oci-compact-no-indent": lambda: mk_fx(indent=None),
@@ -539,6 +551,47 @@ def hostile_long(s, variant):
     for n in GH_FILES:
         e[n] = os.path.join(s, "gh-%s-%d" % (n, variant))
     return e
+
+
+DECOMPOSED = "cafe\u0301 A\u030a \u00e9 \u2014 \U0001F680"  # decomposed e+acute and A+ring next to precomposed e-acute: normalising would change the bytes
+
+
+def vex_na():
+    o = base_vex_obj()
+    o["author"] = "Jos\u00e9 " + DECOMPOSED
+    o["statements"][0]["impact_statement"] = "na\u00efve " + DECOMPOSED
+    o["statements"][0]["status_notes"] = "\u65e5\u672c\u8a9e"
+    return json.dumps(o, ensure_ascii=False).encode("utf-8")
+
+
+@case("AC1", "strings are never Unicode-normalised: decomposed and precomposed forms in the index and the VEX are preserved byte for byte in F and in the statement")
+def _():
+    fx = mk_fx(extra_top={"annotations": {"org.example.k": DECOMPOSED}})
+    vb = vex_na()
+    r = do_compute(fx.bytes, vb)
+    check_matches_ref(fx.bytes, vb, r)
+    fb = rd(os.path.join(r.dir, "index.json"))
+    ok(DECOMPOSED.encode("utf-8") in fb, "F does not carry the decomposed string unchanged")
+    stmts = [rd(os.path.join(r.dir, "blobs", "sha256", n)) for n in os.listdir(os.path.join(r.dir, "blobs", "sha256"))]
+    ok(any(DECOMPOSED.encode("utf-8") in b for b in stmts), "the statement does not carry the decomposed string unchanged")
+
+
+NA_ENVS = [("LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 PYTHONIOENCODING=ascii", {"LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "PYTHONIOENCODING": "ascii"}),
+           ("LANG unset, LC_ALL=POSIX, PYTHONCOERCECLOCALE=0", {"LANG": None, "LC_ALL": "POSIX", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}),
+           ("PYTHONUTF8=1", {"PYTHONUTF8": "1"})]
+
+
+@param("AC1", "a non-ASCII VEX and index compute and verify identically under an ASCII-only locale and encoding (no UnicodeEncodeError, no locale-dependent output)", NA_ENVS)
+def _(env):
+    fx = mk_fx(**EXTRAS)
+    vb = vex_na()
+    base = do_compute(fx.bytes, vb)
+    ok(base.rc == 0, "baseline compute failed")
+    r = do_compute(fx.bytes, vb, env=env)
+    ok(r.rc == 0, "compute failed under %s: %s" % (list(env), r.err.strip()[:200]))
+    eq(tree(r.dir), tree(base.dir), "output tree")
+    v = verify(rd(os.path.join(r.dir, "index.json")), vb, base=fx.bytes, blobs=os.path.join(r.dir, "blobs"), env=env)
+    ok(v.rc == 0, "verify failed under the ASCII locale: " + v.err.strip()[:200])
 
 
 @param("AC1", "output is identical under a long hostile CI environment (every GITHUB_*, RUNNER_*, CI, SOURCE_DATE_EPOCH, USER, HOSTNAME, HOME, LOGNAME, TZ ... set to hostile values), and no GITHUB_OUTPUT/ENV/PATH/STEP_SUMMARY file is touched", [("values A", 1), ("values B", 2), ("values C", 3)])
@@ -780,6 +833,7 @@ D_BAD = {
     "not json": b"this is not json\n", "empty file": b"", "whitespace only": b"  \n",
     "json array": b"[]", "json string": b'"x"', "json null": b"null",
     "invalid utf-8": b'{"manifests":[{"digest":"\xff\xfe"}]}',
+    "a UTF-8 byte-order mark in front of a valid index": b"\xef\xbb\xbf" + mk_fx().bytes,
     "duplicate top-level key": raw_dup_index(),
     "NaN number": b'{"schemaVersion":2,"manifests":[{"digest":"sha256:%s","size":NaN,"platform":{"architecture":"amd64","os":"linux"}}]}' % H64.encode(),
     "deeply nested": b"[" * 100000 + b"]" * 100000,
@@ -893,6 +947,12 @@ def _():
     assert_refused(final_of(fx, vex_real()), vex_real(), "already final")
 
 
+def vex_with(f, base=None):
+    o = json.loads((base or VEX_MIN).decode("utf-8"))
+    f(o)
+    return json.dumps(o).encode("utf-8")
+
+
 V_BAD = {
     "empty file": b"", "whitespace only": b" \n", "not json": b"statements: []",
     "json array": b"[]", "json string": b'"x"', "json null": b"null", "json number": b"7",
@@ -902,18 +962,13 @@ V_BAD = {
     "statements is an object": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":{"a":1}}',
     "statements is a string": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":"none"}',
     "statements is null": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":null}',
-    "duplicate key": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":[],"statements":[{"a":1}]}',
-    "NaN": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":[{"x":NaN}]}',
-    "Infinity": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":[{"x":Infinity}]}',
-    "invalid utf-8": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":[{"x":"\xff"}]}',
+    "duplicate key": VEX_MIN.replace(b'"version":1,', b'"version":1,"version":1,'),
+    "NaN": vex_with(lambda o: o.update(version="@@NaN@@")),
+    "Infinity": vex_with(lambda o: o.update(version="@@Infinity@@")),
+    "invalid utf-8": VEX_MIN.replace("na\u00efve".encode("utf-8"), b"na\xffve"),
     "truncated": VEX_MIN[:-5],
+    "a UTF-8 byte-order mark in front of a valid VEX": b"\xef\xbb\xbf" + VEX_MIN,
 }
-
-
-def vex_with(f, base=None):
-    o = json.loads((base or VEX_MIN).decode("utf-8"))
-    f(o)
-    return json.dumps(o).encode("utf-8")
 
 
 V_BAD.update({
@@ -945,12 +1000,12 @@ V_BAD.update({
     "a statement has no status": vex_with(lambda o: o["statements"][0].pop("status")),
     "status is not an OpenVEX status": vex_with(lambda o: o["statements"][0].update(status="fine")),
     "status is a number": vex_with(lambda o: o["statements"][0].update(status=1)),
-    "number 1e999": vex_with(lambda o: o["statements"][0].update(x="@@1e999@@")),
-    "number -1e999": vex_with(lambda o: o["statements"][0].update(x="@@-1e999@@")),
-    "number -Infinity literal": vex_with(lambda o: o["statements"][0].update(x="@@-Infinity@@")),
+    "number 1e999": vex_with(lambda o: o.update(version="@@1e999@@")),
+    "number -1e999": vex_with(lambda o: o.update(version="@@-1e999@@")),
+    "number -Infinity literal": vex_with(lambda o: o.update(version="@@-Infinity@@")),
     "lone surrogate (high)": vex_with(lambda o: o["statements"][0].update(impact_statement="a##D800##b")),
     "lone surrogate (low)": vex_with(lambda o: o["statements"][0].update(impact_statement="a##DC00##b")),
-    "lone surrogate in a key": vex_with(lambda o: o["statements"][0].update({"##D800##": 1})),
+    # (a lone surrogate in a key cannot be isolated in a VEX: any key the schema does not define is refused anyway)
     "@context with a bogus suffix": vex_with(lambda o: o.update({"@context": "https://openvex.dev/ns/v0.2.0x"})),
     "@context without a version": vex_with(lambda o: o.update({"@context": "https://openvex.dev/ns"})),
     "@context of v0.1.0": vex_with(lambda o: o.update({"@context": "https://openvex.dev/ns/v0.1.0"})),
@@ -973,13 +1028,13 @@ V_BAD.update({
     "not_affected with empty justification and impact_statement": vex_with(lambda o: o["statements"][0].update(justification="", impact_statement="")),
     "affected without an action_statement": vex_with(lambda o: o["statements"][0].update(status="affected")),
     "affected with an empty action_statement": vex_with(lambda o: o["statements"][0].update(status="affected", action_statement="")),
-    "a float 1.0": vex_with(lambda o: o["statements"][0].update(x="@@1.0@@")),
-    "a float 1e2": vex_with(lambda o: o["statements"][0].update(x="@@1e2@@")),
-    "a float 3.5": vex_with(lambda o: o["statements"][0].update(x="@@3.5@@")),
-    "a float -0.0": vex_with(lambda o: o["statements"][0].update(x="@@-0.0@@")),
-    "an integer beyond 2**53": vex_with(lambda o: o["statements"][0].update(x=2 ** 53 + 1)),
-    "an integer below -2**53": vex_with(lambda o: o["statements"][0].update(x=-2 ** 53 - 1)),
-    "a huge integer": vex_with(lambda o: o["statements"][0].update(x=10 ** 40)),
+    "a float 1.0": vex_with(lambda o: o.update(version="@@1.0@@")),
+    "a float 1e2": vex_with(lambda o: o.update(version="@@1e2@@")),
+    "a float 3.5": vex_with(lambda o: o.update(version="@@3.5@@")),
+    "a float -0.0": vex_with(lambda o: o.update(version="@@-0.0@@")),
+    "an integer beyond 2**53": vex_with(lambda o: o.update(version=2 ** 53 + 1)),
+    "a statement version beyond 2**53": vex_with(lambda o: o["statements"][0].update(version=2 ** 53 + 1)),
+    "a huge integer": vex_with(lambda o: o.update(version=10 ** 40)),
     "justification is not in the schema's enum": vex_with(lambda o: o["statements"][0].update(justification="made_up")),
     "justification not in the enum, no impact_statement": vex_with(lambda o: (o["statements"][0].update(justification="made_up"), o["statements"][0].pop("impact_statement"))),
     "justification in the wrong case": vex_with(lambda o: o["statements"][0].update(justification="Component_Not_Present")),
@@ -1011,7 +1066,7 @@ V_BAD.update({
     "identifiers value is null": vex_with(lambda o: o["statements"][0]["products"][0].update(identifiers={"purl": None})),
     "a product with only an empty identifiers object": vex_with(lambda o: o["statements"][0].update(products=[{"identifiers": {}}])),
     "a subcomponent identifiers value is a number": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=[{"identifiers": {"purl": 3}}])),
-    "nested deeper than 32": vex_with(lambda o: o["statements"][0].update(x=nest(31))),
+    "nested deeper than 32 (and an unknown property)": vex_with(lambda o: o["statements"][0].update(x=nest(31))),
     "larger than 1 MiB": vex_with(lambda o: o["statements"][0].update(impact_statement="y" * (2 ** 20))),
 })
 for _k, _v in list(V_BAD.items()):
@@ -1066,7 +1121,7 @@ def _():
     o = json.loads(json.dumps(fx.obj)); o["manifests"][0]["size"] = 2 ** 31
     db = json.dumps(o).encode()
     check_matches_ref(db, VEX_MIN, do_compute(db, VEX_MIN))
-    vb = vex_with(lambda x: x["statements"][0].update(big=2 ** 53, small=-2 ** 53, zero=0))
+    vb = vex_with(lambda x: (x.update(version=2 ** 53), x["statements"][0].update(version=2 ** 53)))
     check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
     for st, extra in (("not_affected", {}), ("affected", {"action_statement": "upgrade"}), ("fixed", {}), ("under_investigation", {})):
         vb = vex_with(lambda x: (x["statements"][0].update(status=st, **extra), [x["statements"][0].pop(k) for k in ("justification", "impact_statement")] if st != "not_affected" else None))
@@ -1115,7 +1170,7 @@ def _():
     fx = mk_fx()
     cases = [
         lambda o: o["statements"][0].update(products=[{"identifiers": {"purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]),
-        lambda o: o["statements"][0].update(products=[{"@id": "a", "identifiers": {"purl": "pkg:x", "cpe23": "cpe:2.3:a:x"}, "subcomponents": [{"@id": "b"}, {"identifiers": {"purl": "pkg:y"}, "subcomponents": [{"@id": "c"}]}]}]),
+        lambda o: o["statements"][0].update(products=[{"@id": "a", "identifiers": {"purl": "pkg:x", "cpe23": "cpe:2.3:a:x"}, "subcomponents": [{"@id": "b"}, {"identifiers": {"purl": "pkg:y"}, "hashes": {"sha-256": "ab"}}]}]),
         lambda o: o.update(timestamp="2026-09-20T09:00:00Z"), lambda o: o.update(timestamp="2026-09-20T09:00:00.123456+05:30"),
         lambda o: o.update(timestamp="2026-09-20T09:00:00-23:59"), lambda o: o.update(timestamp="2026-09-20T09:00:00+23:59", last_updated="2026-09-21T00:00:00Z"),
         lambda o: o["statements"][0].update(timestamp="2026-09-07T12:00:00-04:00", last_updated="2026-09-08T12:00:00Z"),
@@ -1193,15 +1248,13 @@ def _():
             check_matches_ref(db, VEX_MIN, do_compute(db, VEX_MIN))
         else:
             assert_refused(db, VEX_MIN, "index over 1 MiB")
-    # depth: root object(1) > statements list(2) > statement object(3) > nested lists
-    for lv, good in ((29, True), (30, False)):
-        vb = vex_with(lambda o: o["statements"][0].update(x=nest(lv)))
-        o = json.loads(vb.decode("utf-8"))
-        fx = mk_fx()
+    # index depth (VEX depth cannot reach the limit: the schema allowlist bounds it at 8): root(1) > nested lists
+    for lv, good in ((31, True), (32, False)):
+        fx = mk_fx(extra_top={"x": nest(lv)})
         if good:
-            check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
+            check_matches_ref(fx.bytes, VEX_MIN, do_compute(fx.bytes, VEX_MIN))
         else:
-            assert_refused(fx.bytes, vb, "VEX nesting too deep")
+            assert_refused(fx.bytes, VEX_MIN, "index nesting too deep")
 
 
 def out_dir_case(setup):
@@ -1459,7 +1512,7 @@ def verify(f_bytes, vb, base=None, blobs=None, s=None, env=None, final_path=None
     watch = {s}
     if blobs is not None:
         watch |= {blobs, os.path.dirname(os.path.abspath(blobs))}
-    if base is not None and not isinstance(base, bytes) and os.path.dirname(os.path.abspath(base)):
+    if base is not None and not isinstance(base, bytes) and os.path.isfile(base):
         watch.add(os.path.dirname(os.path.abspath(base)))
     before = {w: tree(w) for w in watch if os.path.isdir(w)}
     r = run(args, env=env)
@@ -1780,7 +1833,7 @@ STRUCT = {
     "the statement has a trailing newline": ({"stmt_raw": lambda o: cj(o) + b"\n"}, None),
     "the statement uses ascii escapes (not canonical)": ({"stmt_raw": lambda o: json.dumps(o, sort_keys=True, separators=(",", ":")).encode()}, None),
     "the statement predicate is not an OpenVEX document": ({"stmt": lambda o, c: o.update(predicate={"statements": []})}, None),
-    "the statement predicate embeds the built index's digest (in every statement)": ({"stmt": lambda o, c: o["predicate"]["statements"][0].update(note=c["base"])}, None, None),
+    "the statement predicate embeds the built index's digest (in every statement)": ({"stmt": lambda o, c: o["predicate"]["statements"][0].update(status_notes=c["base"])}, None, None),
     "the layer descriptor mediaType differs": ({"layer": lambda o, c: o.update(mediaType="application/json")}, None),
     "the layer annotation is missing": ({"layer": lambda o, c: o.pop("annotations")}, None),
     "the layer annotation has an extra key": ({"layer": lambda o, c: o["annotations"].update(extra="x")}, None),
@@ -1824,10 +1877,149 @@ PRED_BAD = {
     "identifiers value 7": lambda p: p["statements"][1]["products"][0].update(identifiers={"purl": 7}),
     "a product without @id or identifiers": lambda p: p["statements"][0].update(products=[{"name": "x"}]),
     "@context bogus suffix": lambda p: p.update({"@context": "https://openvex.dev/ns/v0.2.0x"}),
-    "a float in the predicate": lambda p: p["statements"][0].update(x=1.5),
+    "a float in the predicate": lambda p: p["statements"][0].update(version=1.5),
 }
 for _label, _fn in PRED_BAD.items():
     STRUCT["rehashed predicate invalid in every statement: " + _label] = ({"stmt": (lambda f: lambda o, c: f(o["predicate"]))(_fn)}, None, None)
+
+# ---- the embedded OpenVEX v0.2.0 allowlist: every property the schema defines, with its type; nothing else
+CTX = "https://openvex.dev/ns/v0.2.0"
+TS_OK = "2026-09-20T09:00:00Z"
+HASHES = ("md5", "sha1", "sha-256", "sha-384", "sha-512", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "blake2s-256", "blake2b-256", "blake2b-384", "blake2b-512")
+
+
+def base_vex_obj():
+    return {"@context": CTX, "@id": "https://example.test/vex/1", "author": "Example Co", "timestamp": TS_OK, "version": 1,
+            "statements": [{"vulnerability": {"name": "CVE-2000-0001"},
+                            "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "identifiers": {"purl": "pkg:oci/cache"}, "hashes": {"sha-256": "ab"},
+                                          "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0", "identifiers": {"purl": "pkg:generic/busybox@1.37.0"}, "hashes": {"sha-256": "cd"}}]}],
+                            "status": "not_affected", "justification": "component_not_present", "impact_statement": "not present"}]}
+
+
+BASE_VEX = json.dumps(base_vex_obj()).encode()
+PATHS = {
+    "doc": lambda o: o, "statement": lambda o: o["statements"][0], "vuln": lambda o: o["statements"][0]["vulnerability"],
+    "product": lambda o: o["statements"][0]["products"][0], "sub": lambda o: o["statements"][0]["products"][0]["subcomponents"][0],
+    "product.identifiers": lambda o: o["statements"][0]["products"][0]["identifiers"], "sub.identifiers": lambda o: o["statements"][0]["products"][0]["subcomponents"][0]["identifiers"],
+    "product.hashes": lambda o: o["statements"][0]["products"][0]["hashes"], "sub.hashes": lambda o: o["statements"][0]["products"][0]["subcomponents"][0]["hashes"],
+}
+S_WRONG, TS_WRONG, INT_WRONG = [7, None, ["x"], {"a": "b"}, True], ["yesterday", 5, None, "2026-09-20", "2026-09-20T09:00:00+0400"], [0, "1", 1.5, True, None, -1]
+IDENT_WRONG = [[], "x", None, {"purl": 7}, {"unknown": "x"}, {"purl": ""}]
+HASH_WRONG = [[], "x", None, {"sha-256": 7}, {"unknown": "x"}, {"md5": ""}]
+SP = []
+
+
+def _add(path, key, valid, wrongs):
+    SP.append((path, key, valid, wrongs))
+
+
+_add("doc", "@context", CTX, [7, None, "https://openvex.dev/ns/v0.1.0"])
+_add("doc", "@id", "urn:uuid:1", [7, None])
+_add("doc", "author", "Author", [7, None])
+_add("doc", "role", "vendor", S_WRONG)
+_add("doc", "timestamp", "2026-09-20T09:00:00.5-04:00", TS_WRONG)
+_add("doc", "last_updated", "2026-09-21T00:00:00Z", TS_WRONG)
+_add("doc", "version", 2, INT_WRONG)
+_add("doc", "tooling", "tool 1.0", S_WRONG)
+for _k in ("@id", "supplier", "status_notes", "impact_statement", "action_statement"):
+    _add("statement", _k, "text", S_WRONG)
+_add("statement", "version", 3, INT_WRONG)
+_add("statement", "timestamp", TS_OK, TS_WRONG)
+_add("statement", "last_updated", TS_OK, TS_WRONG)
+_add("statement", "action_statement_timestamp", TS_OK, TS_WRONG)
+_add("statement", "status", "fixed", ["fine", "Fixed", 7, None, ""])
+_add("statement", "justification", "inline_mitigations_already_exist", ["made_up", 7, None, "", "Component_Not_Present"])
+_add("statement", "vulnerability", {"name": "CVE-2000-0002", "@id": "https://x/CVE-2000-0002"}, ["CVE-2000-0002", 7, None, [], {}])
+_add("statement", "products", [{"@id": "pkg:a"}], ["x", None, {}, [], [7], [{}]])
+_add("vuln", "@id", "https://example.test/CVE-1", S_WRONG)
+_add("vuln", "name", "CVE-2000-0003", [7, None, "", ["x"]])
+_add("vuln", "description", "text", S_WRONG)
+_add("vuln", "aliases", ["GHSA-aaaa-bbbb-cccc", "GO-2024-0001"], [[7], [""], "x", {"a": 1}, [None], ["ok", 3]])
+_add("product", "@id", "pkg:other", [7, None, ""])
+_add("product", "identifiers", {"purl": "pkg:p", "cpe22": "cpe:/a:x", "cpe23": "cpe:2.3:a:x"}, IDENT_WRONG)
+_add("product", "hashes", {"sha-256": "ab", "md5": "cd"}, HASH_WRONG)
+_add("product", "supplier", "Supplier", S_WRONG)
+_add("product", "subcomponents", [{"@id": "pkg:s1"}, {"identifiers": {"purl": "pkg:s2"}}], ["x", None, {}, [7], [{"x": 1}], [{}]])
+_add("sub", "@id", "pkg:other-sub", [7, None, ""])
+_add("sub", "identifiers", {"purl": "pkg:p"}, IDENT_WRONG)
+_add("sub", "hashes", {"sha-256": "ab"}, HASH_WRONG)
+_add("sub", "supplier", "Supplier", S_WRONG)
+for _lvl in ("product.identifiers", "sub.identifiers"):
+    for _k in ("purl", "cpe22", "cpe23"):
+        _add(_lvl, _k, "value", [7, None, "", ["x"]])
+for _k in HASHES:
+    _add("product.hashes", _k, "ab12", [7, None, "", ["x"]])
+for _k in ("md5", "sha-256", "blake2b-512"):
+    _add("sub.hashes", _k, "ab12", [7, None, "", ["x"]])
+
+
+def set_prop(o, path, key, val):
+    PATHS[path](o)[key] = val
+    return o
+
+
+def schema_vex(path, key, val):
+    return json.dumps(set_prop(base_vex_obj(), path, key, val)).encode()
+
+
+SCHEMA_REJECT = [("%s.%s = %r" % (pa, k, w), (pa, k, w)) for pa, k, v, ws in SP for w in ws[:2]]
+SCHEMA_REHASH = [("%s.%s = %r" % (pa, k, ws[0]), (pa, k, ws[0])) for pa, k, v, ws in SP]
+SCHEMA_OK = [("%s.%s" % (pa, k), (pa, k, v)) for pa, k, v, ws in SP]
+SCHEMA_UNKNOWN = [(pa, (pa, "x-unknown", "value")) for pa in PATHS] + [(pa + " (nested object)", (pa, "extension", {"a": 1})) for pa in PATHS]
+SCHEMA_REHASH_ALL = SCHEMA_REHASH + [("%s.x-unknown" % pa, (pa, "x-unknown", "value")) for pa in PATHS]
+
+
+@case("AC2", "positive control: the base document used by the schema cases is valid, and so is a document carrying every allowlisted property at once")
+def _():
+    fx = mk_fx()
+    check_matches_ref(fx.bytes, BASE_VEX, do_compute(fx.bytes, BASE_VEX))
+    o = base_vex_obj()
+    for pa, k, v, ws in SP:
+        if pa in ("doc", "statement", "vuln", "product", "sub") and k not in ("status", "justification", "statements", "products", "vulnerability", "subcomponents", "@context", "identifiers", "hashes"):
+            PATHS[pa](o)[k] = v
+    vb = json.dumps(o).encode()
+    check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
+
+
+@param("AC2", "every allowlisted OpenVEX v0.2.0 property accepts a valid value (positive control with it set)", SCHEMA_OK)
+def _(arg):
+    fx = mk_fx()
+    vb = schema_vex(*arg)
+    check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
+
+
+@param("AC2", "every allowlisted OpenVEX v0.2.0 property rejects a value of the wrong type (isolated; refused by compute, nothing written)", SCHEMA_REJECT)
+def _(arg):
+    assert_refused(mk_fx().bytes, schema_vex(*arg), "wrong type")
+
+
+@param("AC2", "a property the OpenVEX v0.2.0 schema does not define at that level (document, statement, vulnerability, product, subcomponent, identifiers, hashes) is refused", SCHEMA_UNKNOWN)
+def _(arg):
+    assert_refused(mk_fx().bytes, schema_vex(*arg), "unknown property")
+
+
+def schema_edit(arg):
+    pa, k, val = arg
+    return {"stmt": lambda o, c: set_prop(o["predicate"], pa, k, json.loads(json.dumps(val)))}
+
+
+@param("AC3", "verify --blobs rejects an attestation whose predicate has a wrong-typed OpenVEX property or an unknown one, with every digest refreshed", SCHEMA_REHASH_ALL)
+def _(arg):
+    verify_control()
+    fx = mk_fx()
+    path, fb = build_custom(fx, BASE_VEX, schema_edit(arg), None, only=None)
+    r = verify(fb, BASE_VEX, base=fx.bytes, blobs=os.path.join(path, "blobs"))
+    ok(r.rc != 0 and r.err.strip() != "" and "Traceback" not in r.err, "accepted an attestation with an invalid predicate")
+
+
+@case("AC3", "positive control: attestations built from the schema base document verify --blobs")
+def _():
+    verify_control()
+    fx = mk_fx()
+    path, fb = build_custom(fx, BASE_VEX, None, None)
+    r = verify(fb, BASE_VEX, base=fx.bytes, blobs=os.path.join(path, "blobs"))
+    ok(r.rc == 0, "rejected: " + r.err.strip()[:200])
+
 
 FINAL_RAW = {
     "index.json is indented": lambda f: json.dumps(f, indent=2, sort_keys=True).encode(),
@@ -1945,13 +2137,16 @@ class Reg:
     def __init__(self, repo="fosterstack/cache", token=False, basic=False, rewrite=False, lie=False, fail_after=None,
                  realm=None, redirect_on=(), redirect_to="http://registry.example.test/elsewhere", loc_base=None,
                  lenient=False, readback="ok", att_head_404=False, child_head_500=False, token_key="token",
-                 use_tls=False, public=None, alt_uploads=False, token_redirect_to=None, stall_on=(), hdr_case="exact",
+                 use_tls=False, public=None, alt_uploads=False, token_redirect_to=None, stall_on=(), hdr_case="exact", redirect_status=307, token_redirect_status=302, challenge_scope=None, bearer_rejected=False,
                  put_blob_status=None, head_blob_status=None, blob_gone_after_put=False, token_drip=False, cert="good"):
         self.repo, self.token_mode, self.basic_mode, self.rewrite, self.lie = repo, token, basic, rewrite, lie
         self.fail_after, self.realm, self.redirect_on, self.redirect_to, self.loc_base = fail_after, realm, set(redirect_on), redirect_to, loc_base
         self.lenient, self.readback, self.att_head_404, self.child_head_500, self.token_key = lenient, readback, att_head_404, child_head_500, token_key
         self.use_tls, self.alt_uploads, self.token_redirect_to, self.stall_on = use_tls, alt_uploads, token_redirect_to, set(stall_on)
         self.release = threading.Event()
+        self.redirect_status, self.token_redirect_status = redirect_status, token_redirect_status
+        self.challenge_scope, self.bearer_rejected = challenge_scope, bearer_rejected
+        self.bearer_pull = "issued-pull-only-3c9a51e0d7b2"
         self.hdr_case, self.put_blob_status, self.head_blob_status, self.blob_gone_after_put, self.token_drip = hdr_case, put_blob_status, head_blob_status, blob_gone_after_put, token_drip
         self.uploaded = set()
         self.blobs, self.mans, self.log, self.tag_writes, self.sessions = set(), {}, [], [], {}
@@ -1971,7 +2166,7 @@ class Reg:
                 n = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(n) if n else b""
                 u = urllib.parse.urlsplit(self.path)
-                ent = {"method": self.command, "path": u.path, "query": u.query, "auth": self.headers.get("Authorization"),
+                ent = {"headers": {k.lower(): v for k, v in self.headers.items()}, "method": self.command, "path": u.path, "query": u.query, "auth": self.headers.get("Authorization"),
                        "ctype": self.headers.get("Content-Type"), "accept": self.headers.get("Accept"), "host": self.headers.get("Host"),
                        "body": body, "status": None}
                 with reg.lock:
@@ -2025,7 +2220,7 @@ class Reg:
         self.srv.server_close()
 
     def stall(self):
-        self.release.wait(30)
+        self.release.wait()  # only teardown (close) ends a stall: nothing but the client's own deadline can end the request
         return 500, {}, b"{}"
 
     def seed(self, children):
@@ -2040,18 +2235,23 @@ class Reg:
             if "token" in self.stall_on:
                 return self.stall()
             if self.token_redirect_to:
-                return 302, {"Location": self.token_redirect_to}, b""
+                return self.token_redirect_status, {"Location": self.token_redirect_to}, b""
             if ent["auth"] == "Basic " + base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode():
                 hd = {"Content-Type": "application/json"}
                 if self.token_drip:
                     hd["_drip"] = True
-                return 200, hd, json.dumps({self.token_key: self.bearer, "expires_in": 300}).encode()
+                return 200, hd, json.dumps({self.token_key: (self.bearer if "push" in (q.get("scope") or [""])[0] else self.bearer_pull), "expires_in": 300}).encode()
             return 401, {}, b'{"errors":[{"code":"UNAUTHORIZED"}]}'
-        if self.token_mode and ent["auth"] != "Bearer " + self.bearer:
-            scheme = "https" if self.use_tls else "http"
-            chal = 'Bearer realm="%s",service="fake-registry",scope="repository:%s:pull,push"' % (
-                self.realm or "%s://%s/token" % (scheme, self.host), self.repo)
-            return 401, {"WWW-Authenticate": chal}, b'{"errors":[{"code":"UNAUTHORIZED"}]}'
+        if self.token_mode:
+            have = "push" if ent["auth"] == "Bearer " + self.bearer else ("pull" if ent["auth"] == "Bearer " + self.bearer_pull else None)
+            need_push = m in ("POST", "PUT", "PATCH", "DELETE")
+            if have is not None and self.bearer_rejected:
+                return 401, {"WWW-Authenticate": 'Basic realm="fake-registry"'}, b'{"errors":[{"code":"UNAUTHORIZED"}]}'
+            if have is None or (need_push and have == "pull"):
+                scheme = "https" if self.use_tls else "http"
+                chal = 'Bearer realm="%s",service="fake-registry",scope="repository:%s:%s"' % (
+                    self.realm or "%s://%s/token" % (scheme, self.host), self.repo, self.challenge_scope or ("pull,push" if need_push else "pull"))
+                return 401, {"WWW-Authenticate": chal}, b'{"errors":[{"code":"UNAUTHORIZED"}]}'
         if self.basic_mode and ent["auth"] != "Basic " + base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode():
             return 401, {"WWW-Authenticate": 'Basic realm="fake-registry"'}, b'{"errors":[{"code":"UNAUTHORIZED"}]}'
         if p in ("/v2/", "/v2"):
@@ -2080,7 +2280,7 @@ class Reg:
         if kind in self.stall_on:
             return self.stall()
         if kind in self.redirect_on:
-            return 307, {"Location": self.redirect_to}, b""
+            return self.redirect_status, {"Location": self.redirect_to}, b""
         if mutating and self.fail_after is not None and self.mutating_ok >= self.fail_after:
             return 500, {}, b'{"errors":[{"code":"UNKNOWN"}]}'
         st, hd, rb = self.route(m, rest, q, body, ent)
@@ -2182,6 +2382,11 @@ class Reg:
                         return 200, hd, b
                     if self.readback == "empty":
                         return 200, hd, b""
+                    if self.rewrite == "samelen":
+                        i = b.find(b"sha256:") + 7
+                        nb = b[:i] + (b"0" if b[i:i + 1] != b"0" else b"1") + b[i + 1:]
+                        hd["Docker-Content-Digest"] = ref
+                        return 200, hd, nb
                     if self.rewrite:
                         nb = json.dumps(json.loads(b), indent=1).encode()
                         hd["Docker-Content-Digest"] = ref if self.lie else dg(nb)
@@ -2327,6 +2532,7 @@ def secrets_in(text, reg):
     bad = [SECRET, b64, "%s:%s" % (USER, SECRET), b64.rstrip("=")]
     if reg is not None and getattr(reg, "bearer", None):
         bad.append(reg.bearer)
+        bad.append(reg.bearer_pull)
     return [x for x in bad if x and x in text]
 
 
@@ -2341,7 +2547,31 @@ def push(reg, pd, extra=(), env=None, creds=True, repo=None, registry=None, net=
     eq(tree(parent), before, "push must not create or change anything in or next to DIR (e.g. <DIR>.pushed, token files)")
     leaked = secrets_in(r.out + "\n" + r.err, reg)
     ok(not leaked, "a credential or token (possibly base64-encoded) was printed: %d item(s)" % len(leaked))
+    if reg is not None and hasattr(reg, "log") and not any(k in (env or {}) for k in ("FSCACHE_REGISTRY_USER", "FSCACHE_REGISTRY_TOKEN")) and creds:
+        assert_no_credential_leak(reg)
     return r
+
+
+def assert_no_credential_leak(reg):
+    """no request's URL, query, headers or body carries the secret, its base64 or a bearer token, except the one
+    Basic Authorization header at the token endpoint (and a Bearer Authorization header at the registry)"""
+    b64 = base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode()
+    secrets = [SECRET, b64, b64.rstrip("="), "%s:%s" % (USER, SECRET)]
+    tokens = [reg.bearer, reg.bearer_pull]
+    for x in reg.log:
+        hdrs = x["headers"]
+        auth = hdrs.get("authorization")
+        rest = (x["path"] + "?" + x["query"]).encode() + x["body"] + "".join("%s:%s;" % (k, v) for k, v in hdrs.items() if k != "authorization").encode()
+        for sec in secrets + tokens:
+            ok(sec.encode() not in rest, "a credential or token travelled in the URL, query, body or a header other than Authorization (%s %s)" % (x["method"], x["path"]))
+        if auth is None:
+            continue
+        if x["path"] == "/token":
+            eq(auth, "Basic " + b64, "the token endpoint's Authorization")
+        elif auth.startswith("Bearer "):
+            ok(auth[7:] in tokens, "an unknown bearer was sent")
+        else:
+            ok(reg.basic_mode and auth == "Basic " + b64, "Basic credentials sent to the registry (%s %s)" % (x["method"], x["path"]))
 
 
 def muts(reg):
@@ -2568,7 +2798,7 @@ def _():
             eq(t["auth"], want, "credentials at the token endpoint")
             q = urllib.parse.parse_qs(t["query"])
             eq(q.get("service"), ["fake-registry"], "token request service")
-            ok(any("repository:%s:" % reg.repo in s_ and "push" in s_ for s_ in q.get("scope", [])), "token request scope: %r" % q.get("scope"))
+            eq(q.get("scope"), ["repository:%s:pull,push" % reg.repo], "the token request's scope (the tool always asks for pull,push itself)")
         for x in reg.log:
             if x["path"] != "/token":
                 ok(x["auth"] is None or x["auth"] == "Bearer " + reg.bearer, "the registry received %r" % (x["auth"] and x["auth"][:12]))
@@ -2806,6 +3036,12 @@ def dir_tamper_cases():
     def extra_symlink(pd):
         os.symlink("/etc/hostname", os.path.join(pd.path, "link"))
 
+    def extra_hidden_root(pd):
+        wr(os.path.join(pd.path, ".hidden"), b"x")
+
+    def extra_hidden_blobs(pd):
+        wr(os.path.join(pd.path, "blobs", "sha256", ".DS_Store"), b"x")
+
     def extra_empty_file_named_like_blob(pd):
         wr(os.path.join(pd.path, "blobs", "sha256", "0" * 64), b"")
 
@@ -2817,7 +3053,7 @@ def dir_tamper_cases():
             ("a blob's content does not match its digest", blob_tampered), ("an attestation manifest does not match its digest", att_manifest_tampered),
             ("a blob is a symlink out of DIR", blob_symlink), ("index.json is not JSON", index_not_json),
             ("an extra file in DIR", extra_root), ("an unreferenced blob in blobs/sha256", extra_unreferenced_blob),
-            ("a blobs/sha512 directory", extra_other_algorithm), ("a directory inside blobs/sha256", extra_dir), ("a symlink in DIR", extra_symlink),
+            ("a blobs/sha512 directory", extra_other_algorithm), ("a directory inside blobs/sha256", extra_dir), ("a symlink in DIR", extra_symlink), ("a hidden dotfile in DIR", extra_hidden_root), ("a hidden dotfile in blobs/sha256", extra_hidden_blobs),
             ("an empty file named like a blob", extra_empty_file_named_like_blob)]
 
 
@@ -2909,14 +3145,15 @@ NONLOCAL_REFUSED_UNSEEN = ["http://registry.example.test", "http://registry.exam
                            "", "registry.example.test?x=1", "127.0.0.1:99999999"]
 
 
-@param("AC4", "a registry that is not a bare host is refused before any connection (not even a name lookup), and no credential leaves", [(h or "empty", h) for h in NONLOCAL_REFUSED_UNSEEN])
-def _(h):
+@param("AC4", "a registry that is not a bare host is refused before any connection (not even a name lookup), with and without credentials", [("%s %s" % (h or "empty", c_), (h, c_ == "with credentials")) for h in NONLOCAL_REFUSED_UNSEEN for c_ in ("with credentials", "without credentials")])
+def _(arg):
+    h, with_creds = arg
     push_control()
     sink = Proxy()
     pd = make_dir(mk_fx(), vex_real())
     try:
         r = run(["push", "--registry", h, "--repository", "fosterstack/cache", "--dir", pd.path],
-                env=dict(sink.env(), FSCACHE_REGISTRY_USER=USER, FSCACHE_REGISTRY_TOKEN=SECRET), net="observe")
+                env=dict(sink.env(), **({"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET} if with_creds else {})), net="observe")
         ok(r.rc != 0, "accepted registry %r" % h)
         eq(sink.log, [], "something was sent towards %r" % h)
         eq(r.net, [], "the tool touched the network for %r" % h)
@@ -3030,6 +3267,94 @@ def _(arg):
         ok(pd.f_digest not in r.out, "claimed success")
     finally:
         other.close(); sink.close(); reg.close()
+
+
+REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
+
+@param("AC4", "every 3xx status (301, 302, 303, 307, 308) from the registry is refused on every kind of request, whatever it points at: zero destination requests, no credential forwarded", [("%d on %s -> %s" % (st, k, ("evil", "local", "same")[i % 3]), (st, k, ("evil", "local", "same")[i % 3])) for st in REDIRECT_STATUSES for i, k in enumerate(REDIRECT_KINDS)])
+def _(arg):
+    push_control()
+    status, kind, target = arg
+    other, sink = watchers()
+    to = {"evil": "http://registry.example.test/elsewhere", "local": "http://127.0.0.1:%d/v2/x/blobs/uploads/" % other.port, "same": "/v2/fosterstack/cache/blobs/elsewhere"}[target]
+    reg, pd = push_world(token=True, redirect_on={kind}, redirect_to=to, redirect_status=status)
+    try:
+        r = push(reg, pd, env=sink.env())
+        ok(r.rc != 0, "pushed although the registry answered %d" % status)
+        eq(other.log, [], "the redirect was followed to the other origin")
+        eq(sink.log, [], "the redirect was followed to a non-local host")
+        ok(not any(x["path"].endswith("/elsewhere") for x in reg.log), "the same-origin redirect was followed")
+        ok(pd.f_digest not in r.out, "claimed success")
+    finally:
+        other.close(); sink.close(); reg.close()
+
+
+@param("AC4", "every 3xx status from the token endpoint is refused: zero destination requests and no credential forwarded (to another host, another local origin, the same origin)", [("%d -> %s" % (st, t_), (st, t_)) for st in REDIRECT_STATUSES for t_ in ("evil host", "other local origin", "same origin")])
+def _(arg):
+    push_control()
+    status, target = arg
+    other, sink = watchers()
+    to = {"evil host": "http://registry.example.test/token", "other local origin": "http://127.0.0.1:%d/token" % other.port, "same origin": "/token-elsewhere"}[target]
+    reg, pd = push_world(token=True, token_redirect_to=to, token_redirect_status=status)
+    try:
+        r = push(reg, pd, env=sink.env())
+        assert_untouched(other, sink, r, reg, pd, "token %d to %s" % (status, target))
+        ok(not any(x["path"] == "/token-elsewhere" for x in reg.log), "the same-origin token redirect was followed")
+    finally:
+        other.close(); sink.close(); reg.close()
+
+
+@param("AC4", "https: every 3xx status from the token endpoint towards plain http is refused (no connection to the destination, no credential)", [(str(st), st) for st in REDIRECT_STATUSES])
+def _(status):
+    push_control()
+    reg, pd, prox = tls_world(token=True, token_redirect_to="http://registry.example.test/token", token_redirect_status=status)
+    try:
+        r = tls_push(reg, pd, prox)
+        ok(r.rc != 0, "pushed")
+        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x for x in reg.log if x["path"] == "/token" and x["host"] != "registry.example.test"], [], "token request elsewhere")
+        eq(f_puts(reg, pd), [], "F attempted")
+    finally:
+        reg.close(); prox.close()
+
+
+@param("AC4", "https: every 3xx status from the registry towards plain http (an upload start redirected https -> http) is refused with no plain request", [(str(st), st) for st in REDIRECT_STATUSES])
+def _(status):
+    push_control()
+    reg, pd, prox = tls_world(token=True, redirect_on={"post"}, redirect_to="http://registry.example.test/upload", redirect_status=status)
+    try:
+        r = tls_push(reg, pd, prox)
+        ok(r.rc != 0, "pushed")
+        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        ok("registry.example.test:80" not in [x["path"] for x in prox.log], "a connection to port 80 was attempted")
+        eq(f_puts(reg, pd), [], "F attempted")
+    finally:
+        reg.close(); prox.close()
+
+
+@param("AC4", "the push validates attestations before any request: a wrong-typed or unknown OpenVEX property in a refreshed predicate is refused with zero requests", SCHEMA_REHASH_ALL)
+def _(arg):
+    push_control()
+    fx = mk_fx()
+    reg, pd = push_world(fx=fx, vb=BASE_VEX, pd=lambda fx_, vb: custom_pd(fx_, vb, schema_edit(arg), None, only=None))
+    try:
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "invalid predicate")
+        eq(reg.log, [], "a request was made although the predicate is not valid OpenVEX v0.2.0")
+        ok(r.err.strip() != "", "no reason on stderr")
+    finally:
+        reg.close()
+
+
+@case("AC4", "positive control: attestations built from the schema base document push cleanly")
+def _():
+    fx = mk_fx()
+    reg, pd = push_world(fx=fx, vb=BASE_VEX, pd=lambda fx_, vb: custom_pd(fx_, vb))
+    try:
+        assert_clean_push(reg, pd, push(reg, pd))
+    finally:
+        reg.close()
 
 
 # ---- https: a real TLS handshake through a tunnelling proxy that maps the test names to local registries
@@ -3416,7 +3741,7 @@ def _():
 def docker_world(token_cert):
     a, pd = push_world(use_tls=True, public="registry-1.docker.io", token=True, realm="https://auth.docker.io/token")
     b = Reg(use_tls=True, public="auth.docker.io", cert=token_cert)
-    b.bearer = a.bearer
+    b.bearer, b.bearer_pull = a.bearer, a.bearer_pull
     prox = Proxy({"registry-1.docker.io:443": a.port, "auth.docker.io:443": b.port})
     return a, b, pd, prox
 
@@ -3456,6 +3781,64 @@ def _():
         assert_clean_push(reg, pd, tls_push(reg, pd, prox))
     finally:
         reg.close(); prox.close()
+
+
+@case("AC4", "a symlinked DIR itself is refused before any request")
+def _():
+    push_control()
+    reg, pd = push_world()
+    link = pd.path + "-link"
+    os.symlink(pd.path, link)
+    real = pd.path
+    pd.path = link
+    try:
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "symlinked DIR")
+        eq(reg.log, [], "a request was made through a symlinked DIR")
+        ok(r.err.strip() != "", "no reason on stderr")
+    finally:
+        pd.path = real
+        reg.close()
+
+
+@param("AC4", "the tool always asks for the token scope repository:<repo>:pull,push itself, whatever the challenge says (a method-scoped registry issues pull-only tokens for a pull request and 401s a POST/PUT on one)", [("method-scoped challenges", "method"), ("a challenge that always names pull", "pull")])
+def _(chal):
+    push_control()
+    chal = None if chal == "method" else chal
+
+    def go(reg, pd):
+        r = push(reg, pd)
+        assert_clean_push(reg, pd, r)
+        scopes = [dict(urllib.parse.parse_qsl(x["query"])).get("scope") for x in reg.log if x["path"] == "/token"]
+        ok(scopes and all(s_ == "repository:%s:pull,push" % reg.repo for s_ in scopes), "token scopes asked: %r" % scopes)
+        ok(not any(x["auth"] == "Bearer " + reg.bearer_pull for x in reg.log), "a pull-only token was used")
+    with_world(go, token=True, challenge_scope=chal)
+
+
+@case("AC4", "after a bearer 401 the tool never falls back to Basic credentials against the registry (the registry rejects every bearer and offers a Basic challenge)")
+def _():
+    push_control()
+    reg, pd = push_world(token=True, bearer_rejected=True)
+    try:
+        r = push(reg, pd)
+        ok(r.rc != 0, "pushed")
+        eq([x for x in reg.log if x["path"] != "/token" and x["auth"] and x["auth"].startswith("Basic")], [], "Basic credentials were sent to the registry after a bearer 401")
+        eq(okmuts(reg), [], "something was written")
+        ok(pd.f_digest not in r.out, "claimed success")
+    finally:
+        reg.close()
+
+
+@case("AC4", "a read-back that differs by ONE flipped hex character (same length, header claiming the right digest) fails the push")
+def _():
+    push_control()
+    reg, pd = push_world(rewrite="samelen", lie=True)
+    try:
+        r = push(reg, pd)
+        assert_failed_no_claim(reg, pd, r, "same-length rewrite")
+        ok(any(x["method"] == "GET" and x["path"].endswith("/manifests/" + pd.f_digest) for x in reg.log), "no read-back attempted")
+    finally:
+        reg.close()
 
 
 def main():
