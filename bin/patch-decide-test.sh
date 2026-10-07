@@ -751,6 +751,98 @@ with contextlib.redirect_stdout(io.StringIO()):
                  "--next-notes", os.path.join(vaux, "none.md"), "--published", pub, "--out", nout])
 ntxt = open(nout).read() if rc == 0 else ""
 check("AC14 the notes command: each changed statement named and VEX-only said", rc == 0 and all(x in ntxt for x in ("CVE-2099-0001", "CVE-2099-0003", "CVE-2099-0004", "VEX-only")), (rc, ntxt))
+# --- step 6 round 1 (REQ-REL-009-AC14, AC15): what "a changed statement" is, when the notes say VEX-only, which auditor and .vex
+# files are neutral
+def stmt(cve, status="not_affected", products=("pkg:oci/cache",), **extra):
+    d = {"vulnerability": {"name": cve}, "products": [{"@id": x} for x in products], "status": status}
+    d.update(extra)
+    return d
+def vdoc2(stmts, **meta):
+    d = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.test/vex", "author": "A", "timestamp": "2026-01-01T00:00:00Z", "version": 1, "statements": list(stmts)}
+    d.update(meta)
+    return d
+def vex_section(text):
+    sec = text.split("### VEX", 1)[1]
+    return sec.split("\n\n", 1)[0] if "\n\n" in sec else sec
+def vnotes(old, new, fixes_=(), behavior=()):
+    return P.notes("v0.2.2", list(fixes_), P.vex_changes(old, new), behavior=list(behavior))
+BASE_S = stmt("CVE-2099-0100", justification="component_not_present", impact_statement="not shipped")
+for field, newval in (("justification", "vulnerable_code_not_present"), ("impact_statement", "different words"), ("action_statement", "upgrade"),
+                      ("status_notes", "re-checked"), ("timestamp", "2026-02-02T00:00:00Z")):
+    old = vdoc2([BASE_S]); chg = dict(BASE_S); chg[field] = newval
+    sec = vex_section(vnotes(old, vdoc2([chg])))
+    check("AC14 a changed %s alone is a changed statement: named with the field" % field, "CVE-2099-0100" in sec and field in sec and "no change" not in sec, sec)
+sec = vex_section(vnotes(vdoc2([BASE_S]), vdoc2([stmt("CVE-2099-0100", products=("pkg:oci/cache", "pkg:oci/cache-fips"), justification="component_not_present", impact_statement="not shipped")])))
+check("AC14 a changed product set is a changed statement", "CVE-2099-0100" in sec and "no change" not in sec, sec)
+sec = vex_section(vnotes(vdoc2([BASE_S]), vdoc2([BASE_S, stmt("CVE-2099-0101")])))
+check("AC14 an added statement is named", "CVE-2099-0101" in sec and "CVE-2099-0100" not in sec, sec)
+sec = vex_section(vnotes(vdoc2([BASE_S, stmt("CVE-2099-0101")]), vdoc2([BASE_S])))
+check("AC14 a removed statement is named", "CVE-2099-0101" in sec and "removed" in sec, sec)
+A1, B1 = stmt("CVE-2099-0200", products=("pkg:oci/cache",), justification="component_not_present"), stmt("CVE-2099-0200", products=("pkg:golang/example.org/m",), justification="component_not_present")
+B2 = dict(B1, justification="vulnerable_code_not_present")
+for order, (o, n) in {"same order": ([A1, B1], [A1, B2]), "new order reversed": ([A1, B1], [B2, A1]), "old order reversed": ([B1, A1], [A1, B2])}.items():
+    sec = vex_section(vnotes(vdoc2(o), vdoc2(n)))
+    check("AC14 two statements for one vulnerability, only the second changed (%s): reported" % order, "CVE-2099-0200" in sec and "justification" in sec and "no change" not in sec, sec)
+    check("AC14 ... and exactly one statement is reported (%s)" % order, sec.count("CVE-2099-0200") == 1, sec)
+for order, (o, n) in {"reordered": ([A1, B1], [B1, A1])}.items():
+    check("AC14 statements merely reordered are no statement change", P.vex_changes(vdoc2(o), vdoc2(n)) == [], P.vex_changes(vdoc2(o), vdoc2(n)))
+for meta, label in (({"version": 2}, "version"), ({"timestamp": "2026-03-03T00:00:00Z"}, "timestamp")):
+    sec = vex_section(vnotes(vdoc2([BASE_S]), vdoc2([BASE_S], **meta)))
+    check("AC14 a document %s change alone is a VEX change, noted as document metadata" % label, "document metadata" in sec and "no change" not in sec, sec)
+FX_ = [{"cve": "CVE-2099-0001", "package": "golang.org/x/sys", "old": "v0.46.0", "new": "v0.47.0", "severity": "high", "variants": ["production"]}]
+CH_ = [{"cve": "CVE-2099-0005", "status": "not_affected", "change": "added"}]
+BEH_ = ["a change no supported client can see (advisor 0130)"]
+check("AC14 VEX changes alone: VEX-only", "VEX-only" in P.notes("v0.2.2", [], CH_), "")
+check("AC14 VEX changes with a package fix: not VEX-only", "VEX-only" not in P.notes("v0.2.2", FX_, CH_), "")
+check("AC14 VEX changes with behavior entries and no fixes: not VEX-only", "VEX-only" not in P.notes("v0.2.2", [], CH_, behavior=BEH_), P.notes("v0.2.2", [], CH_, behavior=BEH_))
+check("AC14 no VEX change and no fix: not VEX-only", "VEX-only" not in P.notes("v0.2.2", [], []), "")
+# the command: VEX alone, VEX + behavior entries, a reordering-only VEX change, an identical VEX
+def notes_cli(old_doc, new_doc, nn=None, old_raw=None, new_raw=None):
+    po, pn = os.path.join(vaux, "o.vex"), os.path.join(vaux, "n.vex")
+    open(po, "w").write(old_raw if old_raw is not None else json.dumps(old_doc))
+    open(pn, "w").write(new_raw if new_raw is not None else json.dumps(new_doc))
+    nnp = os.path.join(vaux, "nn.md")
+    if nn is None:
+        nnp = os.path.join(vaux, "no-such-notes.md")
+    else:
+        open(nnp, "w").write(nn)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc_ = P.main(["notes", "--version", "v0.2.2", "--variant-grype", "=" + scan, "--gomod", gomod, "--vex-old", po, "--vex-new", pn,
+                      "--next-notes", nnp, "--published", pub, "--out", nout])
+    return open(nout).read() if rc_ == 0 else "RC=%d" % rc_
+t1 = notes_cli(vdoc2([BASE_S]), vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")]))
+check("AC14 CLI: a statement changed in justification only: named, VEX-only", "CVE-2099-0100" in t1 and "justification" in t1 and "VEX-only" in t1, t1)
+t2 = notes_cli(vdoc2([BASE_S]), vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")]), nn="- a change no supported client can see (advisor 0130)\n")
+check("AC14 CLI: the same VEX change beside a behavior entry: not VEX-only, the entry listed", "VEX-only" not in t2 and "advisor 0130" in t2 and "CVE-2099-0100" in t2, t2)
+t3 = notes_cli(vdoc2([A1, B1]), vdoc2([B1, A1]))
+check("AC14 CLI: a VEX file that only reorders its statements still ships: VEX-only (no statement change)", "VEX-only (no statement change)" in t3, t3)
+t3b = notes_cli(None, None, old_raw=json.dumps(vdoc2([A1, B1])), new_raw=json.dumps(vdoc2([A1, B1]), indent=1))
+check("AC14 CLI: a VEX file that only changes its bytes (formatting) still ships: VEX-only (no statement change)", "VEX-only (no statement change)" in t3b, t3b)
+t4 = notes_cli(vdoc2([A1]), vdoc2([A1]), old_raw=json.dumps(vdoc2([A1])), new_raw=json.dumps(vdoc2([A1])))
+check("AC14 CLI: an identical VEX file is no VEX change and not VEX-only", "VEX-only" not in t4 and "RC=" not in t4, t4)
+t5 = notes_cli(vdoc2([BASE_S]), vdoc2([BASE_S], version=2))
+check("AC14 CLI: a document version change alone: document metadata, VEX-only", "document metadata" in t5 and "VEX-only" in t5, t5)
+# AC15: the neutral auditor set is exactly three names; the neutral .vex file is only its README
+for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json", ".vex/README.md"):
+    check("AC15 %s is neutral" % f, P.classify(c("n", [f]))[0] == "neutral", P.classify(c("n", [f])))
+for f, want in ((".auditor/accepted-items.json", "fix"), (".auditor/gate.json", "fix"), (".auditor/notes.md", "fix"), (".auditor/proposals/sub/x.json", "fix"),
+                (".auditor/proposals/README.md", "fix"), (".vex/fosterstack-cache.openvex.json", "fix"), (".vex/other.json", "fix"), (".vex/sub/README.md", "fix"),
+                (".auditor/proposals/hook.sh", "dirty"), (".auditor/run.sh", "dirty"), (".auditor/proposals/p_test.go", "dirty"), (".auditor/proposals/test_p.py", "dirty"),
+                (".auditor/panel-state.sh", "dirty")):
+    check("AC15 %s keeps its classification: %s" % (f, want), P.classify(c("n", [f]))[0] == want, P.classify(c("n", [f])))
+for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".vex/README.md"):
+    for mode in ("100755", "120000"):
+        got = P.classify(dict(c("n", [f], diffs={f: "+x\n"}), modes={f: mode}))
+        check("AC15 %s with mode %s is dirty" % (f, mode), got[0] == "dirty", got)
+    got = P.classify(c("n", [f], diffs={f: "+#!/bin/sh\n+echo x\n"}))
+    check("AC15 %s carrying a script is dirty" % f, got[0] == "dirty", got)
+check("AC15 a range of README-only .vex changes ships no bytes", not P.ships_bytes([c("r", [".vex/README.md"])]))
+D = P.decide("schedule", [c("r", [".vex/README.md"])], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a .vex README edit alone cuts no patch", not D["cut"] and not D["not_clean"], D)
+D = P.decide("schedule", [c("r", [".vex/README.md"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a .vex README edit beside the VEX file does not block that patch", D["cut"], D)
+D = P.decide("schedule", [c("a", [".auditor/proposals/hook.sh"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a script under .auditor/proposals beside a VEX change blocks the patch (named)", not D["cut"] and D["not_clean"] and ".auditor/proposals/hook.sh" in D["not_clean"][0], D)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

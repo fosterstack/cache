@@ -541,9 +541,6 @@ mappings:
   - ac: REQ-REL-010-AC5
     evidence:
       - { type: shell-test, ref: "bin/stage-image-final-index-test.sh" }
-  - ac: REQ-REL-010-AC6
-    evidence:
-      - { type: manual, ref: "scratch probe in bin/scout-root-cause.sh (a later step, advisor 0221): the final index of a scratch copy of a release image is pushed to a throwaway repository and Docker Scout's output for it is recorded; no CI test" }
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }

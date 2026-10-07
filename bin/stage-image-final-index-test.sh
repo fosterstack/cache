@@ -499,6 +499,12 @@ def _():
             n += 1
             eq(j["with"]["mode"], "pr", "scan.yml %s mode" % jn)
     ok(n == 2, "scan.yml's two assemblies changed (%d)" % n)
+    m = 0
+    for jn, j in wf("main-candidate-rescan.yml")["jobs"].items():
+        if (j.get("uses") or "").endswith("stage-image.yml"):
+            m += 1
+            eq(j["with"]["mode"], "pr", "main-candidate-rescan.yml %s mode" % jn)
+    ok(m == 1, "main-candidate-rescan.yml's assembly changed (%d)" % m)
 
 
 @case("4", "stage-image's PR mode still builds local type=oci archives, uploads them as before, never logs in or runs the tool")
@@ -594,9 +600,9 @@ def jb(o):
     return (json.dumps(o, indent=2) + "\n").encode()
 
 
-def mk_variant(v, tag=""):
+def mk_variant(v, tag="", bad=False):
     kids = []
-    for arch in ("amd64", "arm64"):
+    for arch in (() if bad else ("amd64", "arm64")):
         m = jb({"schemaVersion": 2, "mediaType": OCI_MAN, "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + "0" * 64, "size": 2},
                 "layers": [], "annotations": {"fixture": "%s/%s/%s" % (v, arch, tag)}})
         kids.append({"bytes": m, "digest": sha(m), "arch": arch})
@@ -749,7 +755,30 @@ print("stub docker: unsupported call %%r" %% (a,), file=sys.stderr); sys.exit(99
 
 PY_SHIM = '''#!/bin/sh
 echo "python3 $*" >> "$CALLS"
-exec "%s" "$@"
+rc=0
+"%s" "$@" || rc=$?
+if [ "$rc" = 0 ] && [ "${2:-}" = compute ] && [ -n "${TAMPER_COMPUTE_N:-}" ]; then
+  n=$(grep -c '^python3 bin/vex-index.py compute' "$CALLS" || true)
+  if [ "$n" = "$TAMPER_COMPUTE_N" ]; then
+    out=""; prev=""
+    for x in "$@"; do if [ "$prev" = --out-dir ]; then out=$x; fi; prev=$x; done
+    printf ' ' >> "$out/index.json"
+  fi
+fi
+exit $rc
+'''
+
+GH_STUB = '''#!%(py)s
+import os, sys
+a = sys.argv[1:]
+with open(os.environ["CALLS"], "a") as f:
+    f.write("gh " + " ".join(a) + "\\n")
+if a[:2] == ["attestation", "verify"]:
+    att = os.environ.get("GH_ATTESTED")
+    if att is not None and a[2].startswith("oci://") and a[2].split("@")[-1] not in att.split(","):
+        print("stub gh: no attestation for " + a[2], file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+print("stub gh: unsupported call %%r" %% (a,), file=sys.stderr); sys.exit(99)
 '''
 
 
@@ -807,8 +836,25 @@ def make_box(reg, variants_fx, vex_bytes=None, with_registry=True):
         f.write(DOCKER_STUB % {"py": sys.executable})
     with open(os.path.join(b.bin, "python3"), "w") as f:
         f.write(PY_SHIM % sys.executable)
-    for n in ("docker", "python3"):
+    with open(os.path.join(b.bin, "gh"), "w") as f:
+        f.write(GH_STUB % {"py": sys.executable})
+    for n in ("docker", "python3", "gh"):
         os.chmod(os.path.join(b.bin, n), 0o755)
+    # the verified build archives the stages unpack (the signed-predicate check is the gh stub's)
+    dist = os.path.join(b.repo, "dist")
+    os.makedirs(dist)
+    sums = []
+    for stem, binary in (("fscache", "fscache"), ("fscache-fips", "fscache-fips")):
+        for arch in ("amd64", "arm64"):
+            name = "%s_1.0.0_linux_%s.tar.gz" % (stem, arch)
+            with tarfile.open(os.path.join(dist, name), "w:gz") as t:
+                body = ("binary %s %s\n" % (arch, binary)).encode()
+                ti = tarfile.TarInfo(binary)
+                ti.size = len(body)
+                t.addfile(ti, io.BytesIO(body))
+            sums.append("%s  %s" % (hashlib.sha256(open(os.path.join(dist, name), "rb").read()).hexdigest(), name))
+    b.checksums = "\n".join(sums)
+    b.extra_env = {}
     b.reg, b.with_registry = reg, with_registry
     return b
 
@@ -818,37 +864,70 @@ def rewrite(script, b):
     return s.replace("ghcr.io", "127.0.0.1:%d" % b.reg.port)
 
 
-def run_steps(b, steps, mode, extra_ctx=None, start_after_uses=None):
-    """execute the run: steps of a job in order (those whose condition holds in this mode), after the last step that
-    `uses` start_after_uses (a uses: step is recorded, never run; the attest ones are listed in .attest). returns an object with the step results"""
+STEP_KEYS = {"name", "id", "if", "uses", "with", "run", "env", "working-directory", "shell", "continue-on-error"}
+MODELLED_ACTIONS = ("actions/checkout@", "actions/download-artifact@", "docker/setup-buildx-action@", "actions/upload-artifact@")
+
+
+def reject_unmodelled_settings(workflow_name, job_name):
+    """the harness runs the job's steps itself: a setting it does not model is refused loudly, never ignored"""
+    d = wf(workflow_name)
+    job = d["jobs"][job_name]
+    for where, o in (("workflow", d), ("job", job)):
+        for k in ("defaults", "container", "services", "strategy", "timeout-minutes"):
+            ok(k not in o, "%s %s of %s uses %r, which this test does not model" % (where, job_name, workflow_name, k))
+    for st in job.get("steps") or []:
+        extra = set(st) - STEP_KEYS
+        ok(not extra, "step %r uses the setting(s) %s, which this test does not model" % (st.get("name"), sorted(extra)))
+
+
+def run_steps(b, steps, mode, extra_ctx=None):
+    """execute a job's steps in order, honouring each step's if, working-directory, shell (bash only) and continue-on-error.
+    A uses: step is never run: the attest ones are recorded with their inputs read AT THAT MOMENT (res.snaps), other
+    actions must be ones this test knows are inert here. returns an object with the step results"""
     ctx = {"github.repository_owner": OWNER, "github.repository": OWNER + "/cache", "github.actor": "ci-actor", "github.token": TOKEN,
-           "secrets.GITHUB_TOKEN": TOKEN, "github.sha": b.sha, "inputs.mode": mode, "github.workspace": b.repo}
+           "secrets.GITHUB_TOKEN": TOKEN, "github.sha": b.sha, "inputs.mode": mode, "github.workspace": b.repo,
+           "inputs.dist-artifact": "dist", "inputs.expected-checksums": b.checksums}
     ctx.update(extra_ctx or {})
     res = Box()
-    res.outputs, res.results, res.attest, res.log, res.failed = {}, [], [], "", None
-    start = 0
-    if start_after_uses:
-        ix = [i for i, s in enumerate(steps) if (s.get("uses") or "").startswith(start_after_uses)]
-        ok(ix, "no step uses %s" % start_after_uses)
-        start = ix[-1] + 1
+    res.outputs, res.results, res.attest, res.snaps, res.uploads, res.ignored, res.log, res.failed = {}, [], [], [], [], [], "", None
     for i, s in enumerate(steps):
-        if i < start or not eligible(s, mode):
+        extra = set(s) - STEP_KEYS
+        ok(not extra, "step %r uses the setting(s) %s, which this test does not model" % (s.get("name"), sorted(extra)))
+        if not eligible(s, mode):
             continue
         if s.get("uses"):
             if is_attest(s):
                 res.attest.append(s)
+                w = s.get("with") or {}
+                snap = {"uses": s["uses"]}
+                for key in ("subject-checksums", "predicate-path"):
+                    if key in w:
+                        path = rewrite(expand(w[key], ctx), b)
+                        snap[key] = open(path).read() if os.path.isfile(path) else None
+                res.snaps.append(snap)
+            else:
+                ok(s["uses"].startswith(MODELLED_ACTIONS), "step uses %s, which this test does not model" % s["uses"])
+                if s["uses"].startswith("actions/upload-artifact@"):
+                    res.uploads.append(s)
             continue
         if "run" not in s:
             continue
+        shell = s.get("shell")
+        ok(shell in (None, "bash"), "step %r sets shell %r, which this test does not model" % (s.get("name"), shell))
+        cwd = b.repo
+        if s.get("working-directory"):
+            cwd = os.path.normpath(os.path.join(b.repo, rewrite(expand(s["working-directory"], ctx), b)))
+            ok(os.path.isdir(cwd), "step %r: working-directory %r does not exist" % (s.get("name"), s["working-directory"]))
         out_file = os.path.join(b.dir, "out-%d" % i)
         open(out_file, "w").close()
         env = dict(os.environ)
         for k in list(env):
-            if k.startswith(("FSCACHE_", "GITHUB_", "NO_REGISTRY")) or k.lower() in ("http_proxy", "https_proxy", "all_proxy"):
+            if k.startswith(("FSCACHE_", "GITHUB_", "NO_REGISTRY", "GH_", "TAMPER_")) or k.lower() in ("http_proxy", "https_proxy", "all_proxy"):
                 del env[k]
         env.update({"PATH": b.bin + os.pathsep + env["PATH"], "CALLS": b.calls, "FX": b.fx, "REG_PORT": str(b.reg.port),
                     "GITHUB_OUTPUT": out_file, "GITHUB_SHA": b.sha, "GITHUB_REPOSITORY": OWNER + "/cache", "GITHUB_WORKSPACE": b.repo,
                     "GITHUB_ACTOR": "ci-actor", "PYTHONDONTWRITEBYTECODE": "1", "HOME": b.dir})
+        env.update(getattr(b, "extra_env", {}))
         if not b.with_registry:
             env["NO_REGISTRY"] = "1"
         for k, v in (s.get("env") or {}).items():
@@ -856,7 +935,7 @@ def run_steps(b, steps, mode, extra_ctx=None, start_after_uses=None):
         script = os.path.join(b.dir, "step-%d.sh" % i)
         with open(script, "w") as f:
             f.write(rewrite(expand(s["run"], ctx), b))
-        p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", script], cwd=b.repo, env=env, capture_output=True, text=True, timeout=240)
+        p = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", script], cwd=cwd, env=env, capture_output=True, text=True, timeout=240)
         res.log += p.stdout + p.stderr
         res.results.append((s.get("name"), p.returncode))
         outs = {}
@@ -868,6 +947,9 @@ def run_steps(b, steps, mode, extra_ctx=None, start_after_uses=None):
         if s.get("id"):
             res.outputs[s["id"]] = outs
         if p.returncode != 0:
+            if norm(expand(s.get("continue-on-error", ""), ctx)) == "true":
+                res.ignored.append(s.get("name"))      # GitHub goes on to the next step
+                continue
             res.failed = (s.get("name"), p.returncode, p.stdout + p.stderr)
             return res
     return res
@@ -902,40 +984,35 @@ def fixtures(tag=""):
     return {v: mk_variant(v, tag) for v in VARIANTS}
 
 
-def attest_files(b, res, key):
-    out = []
-    for s in res.attest:
-        p = (s.get("with") or {}).get(key)
-        if p is None and key == "predicate-path" and s["uses"].startswith("actions/attest-build-provenance@"):
-            continue   # the provenance action builds its own predicate over the same subjects
-        ok(p, "attest step %r has no %s" % (s.get("uses"), key))
-        out.append(rewrite(expand(p, {"github.repository_owner": OWNER, "inputs.mode": "release"}), b))
-    return out
+def snap_of(res, prefix):
+    m = [x for x in res.snaps if x["uses"].startswith(prefix)]
+    eq(len(m), 1, "attest steps %s reached" % prefix)
+    return m[0]
 
 
-def read_json(path):
-    ok(os.path.isfile(path), "the attest input %s was never written" % os.path.basename(path))
-    with open(path) as f:
-        return json.load(f)
+def snap_lines(snap):
+    ok(snap.get("subject-checksums") is not None, "the subject file did not exist when %s was reached" % snap["uses"])
+    return [l for l in snap["subject-checksums"].split("\n") if l.strip()]
 
 
-def read_lines(path):
-    ok(os.path.isfile(path), "the attest input %s was never written" % os.path.basename(path))
-    with open(path) as f:
-        return [l for l in f.read().split("\n") if l.strip()]
+def snap_pred(snap):
+    ok(snap.get("predicate-path") is not None, "the predicate file did not exist when %s was reached" % snap["uses"])
+    return json.loads(snap["predicate-path"])
 
 
 # ---------------------------------------------------------------- release-mode assemble, executed
 _CACHE = {}
 
 
-def assemble_run(mode="release", reg=None, fx=None, fail_after=None):
+def assemble_run(mode="release", reg=None, fx=None, fail_after=None, extra_env=None):
     reg = reg or Reg(fail_after=fail_after)
     fx = fx or fixtures()
     for var in fx.values():
         reg.seed(var)
     b = make_box(reg, fx)
-    res = run_steps(b, assemble(), mode, start_after_uses="docker/setup-buildx-action")
+    b.extra_env.update(extra_env or {})
+    reject_unmodelled_settings("stage-image.yml", "assemble")
+    res = run_steps(b, assemble(), mode)
     res.box, res.fx, res.reg = b, fx, reg
     res.job = wf("stage-image.yml")["jobs"]["assemble"]
     return res
@@ -999,7 +1076,7 @@ def _():
 def _():
     r = released()
     need_ok(r)
-    pred = read_json(attest_files(r.box, r, "predicate-path")[0])
+    pred = snap_pred(snap_of(r, "actions/attest@"))
     eq(pred["index_digests"], want_final(r), "predicate index_digests")
     got = {e["variant"]: sorted(x["digest"] for x in e["platforms"]) for e in pred["platform_manifests"]}
     eq(got, {v: sorted(k["digest"] for k in r.fx[v]["kids"]) for v in VARIANTS}, "predicate platform manifests (children without the attestation entries)")
@@ -1012,8 +1089,9 @@ def _():
     r = released()
     need_ok(r)
     want = want_final(r)
-    for path in attest_files(r.box, r, "subject-checksums"):
-        eq(sorted(read_lines(path)), sorted("%s  cache-candidates-%s" % (hexof(want[v]), v) for v in VARIANTS), "subjects in %s" % os.path.basename(path))
+    ok(len(r.snaps) == 2, "expected the image-build and the provenance attest steps, reached %d" % len(r.snaps))
+    for sn in r.snaps:
+        eq(sorted(snap_lines(sn)), sorted("%s  cache-candidates-%s" % (hexof(want[v]), v) for v in VARIANTS), "subjects when %s was reached" % sn["uses"])
 
 
 @case("1", "e2e: D appears in no attest input, no step output and no job output (it is only ever read)")
@@ -1022,11 +1100,12 @@ def _():
     need_ok(r)
     ds = [r.fx[v]["digest"] for v in VARIANTS]
     texts = []
-    for key in ("predicate-path", "subject-checksums"):
-        for path in attest_files(r.box, r, key):
-            ok(os.path.isfile(path), "the attest input %s was never written" % os.path.basename(path))
-            with open(path) as f:
-                texts.append((path, f.read()))
+    ok(len(r.snaps) == 2, "expected two attest steps, reached %d" % len(r.snaps))
+    for sn in r.snaps:
+        for key in ("predicate-path", "subject-checksums"):
+            if key in sn:
+                ok(sn[key] is not None, "the %s of %s did not exist when it was reached" % (key, sn["uses"]))
+                texts.append((sn["uses"] + " " + key, sn[key]))
     texts += [("output of " + sid, json.dumps(o)) for sid, o in r.outputs.items()]
     texts.append(("job output", job_output(r.job, "digests", r)))
     for name, t in texts:
@@ -1081,7 +1160,8 @@ def _():
 def _():
     reg, fx = Reg(), fixtures()
     b = make_box(reg, fx)
-    res = run_steps(b, assemble(), "pr", start_after_uses="docker/setup-buildx-action")
+    reject_unmodelled_settings("stage-image.yml", "assemble")
+    res = run_steps(b, assemble(), "pr")
     need_ok(res)
     got = json.loads(job_output(wf("stage-image.yml")["jobs"]["assemble"], "digests", res))
     eq(got, {v: fx[v]["digest"] for v in VARIANTS}, "PR-mode digests are D (no final index in PR mode)")
@@ -1137,11 +1217,14 @@ def _():
 
 
 # ================================================================ clause 2, executed: the reproducibility steps
-def repro_run(digests, rebuilt, vex_bytes=None):
+def repro_run(digests, rebuilt, vex_bytes=None, gh_attested=None):
     """run stage-reproducibility's steps after the buildx setup against a rebuild that yields `rebuilt`; no registry"""
     reg = Reg()
     b = make_box(reg, rebuilt, vex_bytes=vex_bytes, with_registry=False)
-    res = run_steps(b, repro_steps(), "release", extra_ctx={"inputs.digests": json.dumps(digests, separators=(",", ":"))}, start_after_uses="docker/setup-buildx-action")
+    if gh_attested is not None:
+        b.extra_env["GH_ATTESTED"] = ",".join(gh_attested)
+    reject_unmodelled_settings("stage-reproducibility.yml", "reproduce")
+    res = run_steps(b, repro_steps(), "release", extra_ctx={"inputs.digests": json.dumps(digests, separators=(",", ":"))})
     res.box, res.reg = b, reg
     return res
 
@@ -1169,9 +1252,9 @@ def _():
     ok(any(c.startswith("python3 bin/vex-index.py compute") for c in cs), "the final index was not recomputed")
     for c in cs:
         ok("imagetools" not in c and not c.startswith("python3 bin/vex-index.py push"), "an online call during the reproducibility rebuild: %s" % c)
-    lines = sorted(read_lines(attest_files(r.box, r, "subject-checksums")[0]))
+    lines = sorted(snap_lines(snap_of(r, "actions/attest@")))
     eq(lines, sorted("%s  cache-candidates-%s" % (hexof(F[v]), v) for v in VARIANTS), "reproducibility subjects")
-    pred = read_json(attest_files(r.box, r, "predicate-path")[0])
+    pred = snap_pred(snap_of(r, "actions/attest@"))
     eq(pred["index_digests"], F, "reproducibility predicate index_digests")
     for t in (json.dumps(pred), json.dumps(lines)):
         for v in VARIANTS:
@@ -1226,6 +1309,507 @@ def _():
     tampered = {v: dict(fx[v], index=fx[v]["index"].replace(b"linux", b"linuy")) for v in VARIANTS}
     r = repro_run(F, tampered)
     ok(r.failed is not None, "a tampered archive index passed")
+
+
+
+# ================================================================ review round 1: operands, failure semantics, snapshots
+# Golden digest operands of every consumer and signing boundary downstream of the image stage, extracted from the workflows
+# as they were before this change (the final-index change may not touch them). Every logical line of a run: block, every
+# env/with/output value and every reusable-workflow call input that mentions a digest, an image reference or a command that
+# can name one (crane, cosign, imagetools, docker pull/run/inspect, skopeo, ...). A changed operand, a new line that names
+# one and a removed line all differ from the golden, wherever in the stage they are and however the command is spelt.
+OPERAND_TOKEN = re.compile(r"(?i)digest|crane|cosign|imagetools|docker\s+(pull|inspect|image|run|tag|push|save|load)|repodigests|skopeo|oras|regctl|cache-candidates|sha256:|containerimage|image[-_]?ref")
+OPERAND_FILES = ["release.yml", "acceptance.yml", "scan.yml", "stage-verify.yml", "stage-acceptance-artifacts.yml", "stage-acceptance-egress.yml",
+                 "stage-acceptance-k8s.yml", "stage-acceptance-predicate.yml", "stage-authorize.yml", "stage-promote.yml", "main-candidate-rescan.yml"]
+GOLDEN_OPERANDS = json.loads(r'''{
+"acceptance.yml": [
+"acceptance-gradle.run: docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 \"${IMAGE_REF}\"",
+"acceptance-gradle.run: docker run -d --name fscache-capped -e FSCACHE_MAX_BYTES=49152 -p 127.0.0.1:18096:8080 \"${IMAGE_REF}\"",
+"acceptance-gradle.step.env.IMAGE_REF: ${{ inputs.image-ref }}",
+"acceptance-gradle.step.env.IMAGE_REF: ${{ inputs.image-ref }}",
+"acceptance-maven.run: docker run -d --name fscache-mvn-acc -p 127.0.0.1:18098:8080 -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \"${IMAGE_REF}\"",
+"acceptance-maven.run: docker run -d --name fscache-mvn-capped -e FSCACHE_MAX_BYTES=262144 -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret -p 127.0.0.1:18099:8080 \"${IMAGE_REF}\"",
+"acceptance-maven.run: echo \"lib sha256: a=${lib_a} b=${lib_b}\"",
+"acceptance-maven.step.env.IMAGE_REF: ${{ inputs.image-ref }}",
+"acceptance-maven.step.env.IMAGE_REF: ${{ inputs.image-ref }}"
+],
+"main-candidate-rescan.yml": [
+"assemble.uses: ./.github/workflows/stage-image.yml",
+"build.uses: ./.github/workflows/stage-build.yml",
+"manifests.run: TARGET_SHAPE='all(.[]; (.release | test(\"^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$\")) and (.variant | test(\"^[a-z0-9][a-z0-9-]{0,31}$\")) and (.digest | test(\"^sha256:[0-9a-f]{64}$\")) and (.scanner | test(\"^[a-z0-9][a-z0-9-]{0,31}$\")))'",
+"manifests.run: jq -e \"$TARGET_SHAPE\" <<<\"$targets\" > /dev/null || { echo \"::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix\" >&2; exit 1; }",
+"manifests.run: {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: \"legacy-inventory\"}' .github/policy/legacy-releases.json >> /tmp/targets.jsonl",
+"manifests.run: {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: \"release-manifest\"}' \"/tmp/m-${tag}.json\" >> /tmp/targets.jsonl",
+"panel-google.run: gcloud artifacts docker images list-vulnerabilities \"$(jq -r '.response.scan' \"${d}/scan.json\")\" --format=json > \"${d}/vulns.json\" || rm -f \"${d}/packages.json\"",
+"panel-google.run: if gcloud artifacts docker images scan \"${ref}\" --additional-package-types=GO --format=json --log-http > \"${d}/scan.json\" 2> \"${d}/http.log\"; then",
+"panel-google.run: skopeo copy --override-arch amd64 --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
+"panel-google.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
+"panel-grype.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
+"panel-grype.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
+"panel-inspector.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
+"panel-inspector.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
+"panel-scout.run: docker image rm ghcr.io/fosterstack/cache:selfcheck >/dev/null",
+"panel-scout.run: python3 bin/scout-selfcheck.py probe-doc3 \"$RUNNER_TEMP/probe/before-r.json\" \"$RUNNER_TEMP/probe/sbom-r.json\" \"$author\" docker.io/library/debian sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab \"$RUNNER_TEMP/probe/forms3r.json\"",
+"panel-scout.run: reg=registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
+"panel-scout.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
+"panel-scout.run: skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab docker-daemon:ghcr.io/fosterstack/cache:selfcheck",
+"panel-scout.run: skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab docker-daemon:ghcr.io/fosterstack/cache:selfcheck",
+"panel-scout.run: sudo apt-get install -y -qq skopeo",
+"panel-scout.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
+"rescan.env.TARGET_DIGEST: ${{ matrix.target.digest }}",
+"rescan.run: if ! docker buildx imagetools inspect --raw \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then",
+"rescan.run: python3 bin/rescan-statement.py statement --scanner \"$TARGET_SCANNER\" --children /tmp/children-scanned.jsonl --meta /tmp/scanner-meta --vex .vex/fosterstack-cache.openvex.json --scope-file /tmp/scan-scope.json --release \"$TARGET_RELEASE\" --variant \"$TARGET_VARIANT\" --digest \"$TARGET_DIGEST\" --image-ref \"ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}\" --scanned-at \"$(date -u +%Y-%m-%dT%H:%M:%S+00:00)\" --raw-out /tmp/findings-raw.json --out /tmp/rescan-statement.json --github-output \"$GITHUB_OUTPUT\"",
+"rescan.run: ref=\"ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}\"",
+"rescan.step.with.script: const t = ${{ toJSON(matrix.target) }}; const short = t.digest.replace('sha256:', '').slice(0, 12); const title = `Daily rescan: findings in ${t.release} ${t.variant} @${short} (${t.scanner})`; const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`; const body = `The daily rescan found new findings.\\n\\n- release: \\`${t.release}\\`\\n- variant: \\`${t.variant}\\`\\n- digest: \\`${t.digest}\\`\\n- scanner: \\`${t.scanner}\\`\\n- statement artifact: \\`rescan-${t.release}-${t.variant}-${t.scanner}\\` on ${runUrl}\\n\\nThese bytes have not changed since release \u2014 this is a newly-disclosed CVE against previously-shipped code, the case the 24-48h response SLA targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation.`; const { data: existing } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan', }); const match = existing.find(i => i.title === title); if (match) { await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body }); } else { // issues.create fails (422) when a label does not exist, and a lost tracking issue is a lost finding: make sure both // labels exist first. An existing label is left as it is (a 422 here is fine); any other failure shows up in the create below. // The values are policy.LABELS', and a test pins them equal. for (const [name, description, color] of [['daily-rescan', \"The daily rescan's tracking issue\", '0E8A16'], ['security', 'Security finding', 'D93F0B']]) { try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ } } await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] }); }",
+"scanner-reports.run: : > /tmp/reports/candidate-digests.json",
+"scanner-reports.run: command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true",
+"scanner-reports.run: d = subprocess.run([\"skopeo\", \"inspect\", \"--format\", \"{{.Digest}}\", \"docker-daemon:%s\" % ref],",
+"scanner-reports.run: json.dump(digs, open(\"/tmp/reports/candidate-digests.json\", \"w\"), indent=1)",
+"scanner-reports.run: print(\"recorded digests:\", digs)",
+"scanner-reports.run: subprocess.run([\"skopeo\", \"copy\", \"oci-archive:%s\" % oci, \"docker-daemon:%s\" % ref], check=False)",
+"scout-root-cause.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo"
+],
+"release.yml": [
+"acceptance-artifacts.uses: ./.github/workflows/stage-acceptance-artifacts.yml",
+"acceptance-artifacts.with.digests: ${{ needs.image.outputs.digests }}",
+"acceptance-egress.uses: ./.github/workflows/stage-acceptance-egress.yml",
+"acceptance-egress.with.digests: ${{ needs.image.outputs.digests }}",
+"acceptance-k8s.uses: ./.github/workflows/stage-acceptance-k8s.yml",
+"acceptance-k8s.with.digests: ${{ needs.image.outputs.digests }}",
+"acceptance-predicate.uses: ./.github/workflows/stage-acceptance-predicate.yml",
+"acceptance-predicate.with.digests: ${{ needs.image.outputs.digests }}",
+"acceptance.uses: ./.github/workflows/acceptance.yml",
+"acceptance.with.image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}",
+"admission.uses: ./.github/workflows/stage-admission.yml",
+"authorization.uses: ./.github/workflows/stage-authorize.yml",
+"authorization.with.digests: ${{ needs.image.outputs.digests }}",
+"build.uses: ./.github/workflows/stage-build.yml",
+"decide.run: if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n \"$bases\" ]; then",
+"image.uses: ./.github/workflows/stage-image.yml",
+"promotion.uses: ./.github/workflows/stage-promote.yml",
+"promotion.with.digests: ${{ needs.image.outputs.digests }}",
+"reproducibility.uses: ./.github/workflows/stage-reproducibility.yml",
+"reproducibility.with.digests: ${{ needs.image.outputs.digests }}",
+"scans.uses: ./.github/workflows/stage-verify.yml",
+"scans.with.digests: ${{ needs.image.outputs.digests }}"
+],
+"scan.yml": [
+"artifact-acceptance.uses: ./.github/workflows/stage-acceptance-artifacts.yml",
+"assemble-b.uses: ./.github/workflows/stage-image.yml",
+"assemble.uses: ./.github/workflows/stage-image.yml",
+"build.uses: ./.github/workflows/stage-build.yml",
+"reproducibility.run: a='${{ needs.assemble.outputs.digests }}'",
+"reproducibility.run: b='${{ needs.assemble-b.outputs.digests }}'",
+"reproducibility.run: echo \"::error::assembly A produced no digest for ${v}\" >&2; exit 1",
+"scanner.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\"",
+"scanner.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo"
+],
+"stage-acceptance-artifacts.yml": [
+"artifacts.run: [ -n \"$d\" ] && [ \"$d\" != \"null\" ] || { echo \"::error::candidates mode with no digest for ${v}\" >&2; exit 1; }",
+"artifacts.run: childd=$(docker buildx imagetools inspect --raw \"${repo}@${d}\" | jq -r '.manifests[] | select(.platform.os==\"linux\" and .platform.architecture==\"arm64\") | .digest')",
+"artifacts.run: cpid=$(docker inspect -f '{{.State.Pid}}' fa-prod)",
+"artifacts.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"artifacts.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"artifacts.run: docker pull -q \"${repo}@${childd}\"",
+"artifacts.run: docker pull -q \"${repo}@${d}\"",
+"artifacts.run: docker run --pull=never -d --name fa-debugrun -p 127.0.0.1:19012:8080 localhost/fa-debug",
+"artifacts.run: docker run --pull=never -d --name fa-fipsrun -p 127.0.0.1:19011:8080 -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw localhost/fa-fips",
+"artifacts.run: docker run --pull=never -d --name fa-prod -p 127.0.0.1:19010:8080 localhost/fa-production",
+"artifacts.run: docker run -d --name \"fa-arm64-$v\" --platform linux/arm64 $authargs -p \"127.0.0.1:${port}:8080\" \"${repo}@${childd}\"",
+"artifacts.run: docker tag \"${repo}@${d}\" \"localhost/fa-${v}\"",
+"artifacts.run: if docker run --pull=never --rm --entrypoint /bin/sh localhost/fa-debug -c true 2>/dev/null; then",
+"artifacts.run: if docker run --pull=never --rm --entrypoint /busybox/sh localhost/fa-fips -c true 2>/dev/null; then",
+"artifacts.run: if docker run --pull=never --rm --entrypoint /busybox/sh localhost/fa-production -c true 2>/dev/null; then",
+"artifacts.run: out=$(docker run --pull=never --rm --entrypoint /busybox/sh localhost/fa-debug -c 'echo shell-ok')",
+"artifacts.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"artifacts.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"artifacts.step.with.image: tonistiigi/binfmt:latest@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+],
+"stage-acceptance-egress.yml": [
+"egress.run: ALPINE=alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
+"egress.run: DISTROLESS=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab",
+"egress.run: NETSHOOT=nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b",
+"egress.run: OWN_IP6=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' \"fscache-net-${label}\")",
+"egress.run: OWN_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"fscache-net-${label}\")",
+"egress.run: d=$(jq -r '.production' <<<\"${DIGESTS}\")",
+"egress.run: docker pull -q \"ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}\"",
+"egress.run: docker run --rm --net \"container:fscache-net-ctldenied\" --cap-add SYS_PTRACE \"$NETSHOOT\" sh -c 'command -v strace >/dev/null 2>&1 || { echo \"MISSING-STRACE\" >&2; exit 3; }; strace -f -e trace=connect nc -w 2 203.0.113.7 80' > /tmp/ctldenied.strace 2>&1 || true",
+"egress.run: docker run --rm -v \"$TRACE_BIN\":/out -e V=\"$STRACE_VER\" -e SUM=\"$STRACE_SHA256\" \"$ALPINE\" sh -euc '",
+"egress.run: docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r /caps/ctldenied.pcap -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0 && ip.dst == 203.0.113.7' -T fields -e frame.number 2>/dev/null > /tmp/ctldenied.leak || true",
+"egress.run: docker run -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace \"$REF\" -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
+"egress.run: docker run -d --name \"fscache-net-${label}\" --network \"$net\" \"$NETSHOOT\" sleep infinity >/dev/null",
+"egress.run: docker run -d --name \"fscache-tap-${label}\" --net \"container:fscache-net-${label}\" -v /tmp:/caps \"$NETSHOOT\" tcpdump -i any -n -U -w \"/caps/${label}.pcap\" >/dev/null",
+"egress.run: echo \"REF=ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}\" >> \"$GITHUB_ENV\"",
+"egress.run: if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace \"$DISTROLESS\" -V > /tmp/strace.ver 2>&1; then",
+"egress.run: if ! docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0' -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e tcp.dstport -E separator='|' 2>/dev/null | sed 's/^/TCP|/' > \"/tmp/${label}.synraw\"; then",
+"egress.run: if ! docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -Y 'udp && !(udp.port == 53)' -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e udp.dstport -E separator='|' 2>/dev/null | sed 's/^/UDP|/' > \"/tmp/${label}.udpraw\"; then",
+"egress.run: if ! docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -Y 'udp.port == 53 || tcp.port == 53' -T fields -e frame.number > \"/tmp/${label}.dnsraw\" 2>/dev/null; then",
+"egress.run: if ! total=$(docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -T fields -e frame.number 2>/dev/null | wc -l); then",
+"egress.step.env.DIGESTS: ${{ inputs.digests }}"
+],
+"stage-acceptance-k8s.yml": [
+"k8s.env.CLIENT_IMAGE: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
+"k8s.run: d=$(jq -r '.production' <<<\"${DIGESTS}\")",
+"k8s.run: docker pull -q \"$CLIENT_IMAGE\"",
+"k8s.run: docker pull -q \"$ref\"",
+"k8s.run: docker tag \"$CLIENT_IMAGE\" \"$CLIENT_LOCAL\"",
+"k8s.run: docker tag \"$ref\" fscache-candidate:accept",
+"k8s.run: ref=\"ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}\"",
+"k8s.step.env.DIGESTS: ${{ inputs.digests }}"
+],
+"stage-acceptance-predicate.yml": [
+"predicate.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"predicate.run: echo \"${d#sha256:} cache-candidates-${v}\"",
+"predicate.run: jq -n --arg sha \"${GITHUB_SHA}\" --argjson digests '${{ inputs.digests }}' --slurpfile results /tmp/ac-results.json '{sha: $sha, index_digests: $digests, ac_results: $results[0]}' > /tmp/acceptance-predicate.json"
+],
+"stage-authorize.yml": [
+"authorize.run: [ -n \"$d\" ] && [ \"$d\" != \"null\" ] || { echo \"::error::no digest for ${v}\" >&2; exit 1; }",
+"authorize.run: agot=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$acc\")",
+"authorize.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"authorize.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"authorize.run: echo \"${d#sha256:} cache-candidates-${v}\"",
+"authorize.run: got=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$ib\")",
+"authorize.run: jq -s -n --arg tag \"${GITHUB_REF_NAME}\" --arg sha \"${GITHUB_SHA}\" --argjson digests '${{ inputs.digests }}' --slurpfile statements /tmp/verified-statements.jsonl '{",
+"authorize.run: out=$(gh attestation verify \"$1\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type \"$2\" --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/$3\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json) || { echo \"::error::graph verification failed: $4 ($2 by $3 on $1) - certificate source/signer must bind ${GITHUB_SHA} @ ${GITHUB_REF}\" >&2; exit 1; }",
+"authorize.run: out=$(gh attestation verify /tmp/admission/admission.json --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/source-admission/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json)",
+"authorize.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"authorize.run: rgot=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$repro\")",
+"authorize.run: sgot=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$sc\")",
+"authorize.run: statement: (\"digests approved for \" + $tag),",
+"authorize.run: tag: $tag, sha: $sha, index_digests: $digests,",
+"authorize.run: | .digest.gitCommit // empty ]"
+],
+"stage-promote.yml": [
+"promote.run: GOTOOLCHAIN=local go install github.com/google/go-containerregistry/cmd/crane@v0.22.1",
+"promote.run: [ \"$auth_digest\" = \"$d\" ] || { echo \"::error::authorization ${v} digest ${auth_digest} != promoting ${d}\" >&2; exit 1; }",
+"promote.run: [ \"$got\" = \"$d\" ] || { echo \"::error::post-copy digest mismatch at ${dst}:${check}: ${got} != ${d}\" >&2; exit 1; }",
+"promote.run: auth_digest=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' \"/tmp/auth-${v}.json\")",
+"promote.run: cosign attest --yes --predicate /tmp/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 \"${ghcr}@${d}\"",
+"promote.run: cosign attest --yes --predicate /tmp/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 \"${hub}@${d}\" || echo \"::warning::could not attach the manifest referrer on ${hub}@${d} \u2014 GHCR referrer is authoritative\"",
+"promote.run: cosign sign --yes \"${ghcr}@${d}\"",
+"promote.run: cosign sign --yes \"${hub}@${d}\"",
+"promote.run: cosign sign-blob --yes dist/checksums.txt --bundle /tmp/checksums.txt.bundle",
+"promote.run: cosign verify \"${reg}@${d}\" \"${idflags[@]}\" >/dev/null || { echo \"::error::anonymous cosign verify failed for ${reg}@${d}\" >&2; exit 1; }",
+"promote.run: cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle \"${idflags[@]}\" || { echo \"::error::anonymous checksums-bundle verification failed\" >&2; exit 1; }",
+"promote.run: crane copy \"${src}@${d}\" \"${dst}:${t}\"",
+"promote.run: crane tag \"${dst}:${t}\" \"${f}\"",
+"promote.run: d0=$(jq -r '.production' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<\"${DIGESTS}\")",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"promote.run: echo \"${d#sha256:} cache-${v}\"",
+"promote.run: echo \"${v} -> ${dst}:${t} (+${f}) at ${d} \u2014 digest equality asserted\"",
+"promote.run: echo \"::error::cosign verify accepted a WRONG repository identity\" >&2; exit 1",
+"promote.run: echo \"::error::cosign verify accepted a same-repo WRONG workflow identity (stage-image.yml) - the signer pin is too loose\" >&2; exit 1",
+"promote.run: echo \"::error::cosign verify accepted stage-promote.yml at a branch ref - the release-ref pin is too loose\" >&2; exit 1",
+"promote.run: echo \"See release-manifest.json for the full evidence bundle: image digests (GHCR canonical, Docker Hub mirror \u2014 identical digests), archive checksums, requirements baseline, per-AC acceptance results, and the Rekor log index of every verified statement in the release chain.\" >> /tmp/notes.md",
+"promote.run: echo \"anonymous cosign image + checksums verification passed; negative controls rejected\"",
+"promote.run: echo \"anonymous pulls resolve the promoted digests for every versioned and floating tag at both registries\"",
+"promote.run: echo \"authorization verified for ${v} (tag, source, digest bound)\"",
+"promote.run: gh attestation verify \"oci://${ghcr}@${d}\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/release-authorization/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" >/dev/null",
+"promote.run: gh attestation verify \"oci://${repo}@${d}\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/release-authorization/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json > \"/tmp/auth-${v}.json\"",
+"promote.run: gh attestation verify \"oci://ghcr.io/${{ github.repository_owner }}/cache-candidates@$(jq -r '.production' <<<'${{ inputs.digests }}')\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/acceptance/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-acceptance-predicate.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json | jq '.[0].verificationResult.statement.predicate.ac_results' > /tmp/ac-results.json",
+"promote.run: got=$(crane digest \"${dst}:${check}\")",
+"promote.run: got=$(crane digest \"${reg}:${t}\")",
+"promote.run: if cosign verify \"${ghcr}@${d0}\" --certificate-identity-regexp \"^https://github\\.com/${GITHUB_REPOSITORY}/\\.github/workflows/stage-image\\.yml@\" --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then",
+"promote.run: if cosign verify \"${ghcr}@${d0}\" --certificate-identity-regexp \"^https://github\\.com/${GITHUB_REPOSITORY}/\\.github/workflows/stage-promote\\.yml@refs/heads/\" --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then",
+"promote.run: if cosign verify \"${ghcr}@${d0}\" --certificate-identity-regexp '^https://github\\.com/attacker/' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then",
+"promote.run: if cosign verify-blob /tmp/checksums.corrupt --bundle /tmp/checksums.txt.bundle \"${idflags[@]}\" >/dev/null 2>&1; then",
+"promote.run: images: ($digests | to_entries | map({variant: .key, digest: .value,",
+"promote.run: jq -R -s '[split(\"\\n\")[] | select(length > 0) | split(\" \") | {sha256: .[0], name: .[1]}]' /tmp/expected-checksums.txt > /tmp/archives.json",
+"promote.run: jq -n --arg tag \"${GITHUB_REF_NAME}\" --arg sha \"${GITHUB_SHA}\" --argjson digests '${{ inputs.digests }}' '{",
+"promote.run: jq -n --arg version \"$ver\" --arg sha \"${GITHUB_SHA}\" --arg generated \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" --arg run \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}\" --arg workflow \"${GITHUB_WORKFLOW_REF}\" --arg ghcr \"$ghcr\" --arg hub \"$hub\" --arg repofull \"${GITHUB_REPOSITORY}\" --arg ref \"${GITHUB_REF}\" --arg baseline \"requirements/releases/${base}.yaml\" --arg baseline_sha \"$(sha256sum \"requirements/releases/${base}.yaml\" | cut -d' ' -f1)\" --arg evidence_sha \"$(sha256sum test-evidence/mappings.yaml | cut -d' ' -f1)\" --arg vex_openvex_sha \"$(sha256sum /tmp/vex/fosterstack-cache.openvex.json | cut -d' ' -f1)\" --arg vex_inspector_sha \"$(sha256sum \"/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json\" | cut -d' ' -f1)\" --arg vex_csaf_sha \"$(sha256sum \"/tmp/vex/fosterstack-cache-${ver}.csaf.json\" | cut -d' ' -f1)\" --argjson digests '${{ inputs.digests }}' --slurpfile archives /tmp/archives.json --slurpfile acs /tmp/ac-results.json --slurpfile statements /tmp/verified.json '{",
+"promote.run: kids=$(crane manifest \"${src}@${d}\" | jq -c '[.manifests[] | select(.platform.os == \"linux\") | {key: (\"linux/\" + .platform.architecture), value: .digest}] | from_entries')",
+"promote.run: note: \"Publication-phase ACs (REQ-REL-001-AC1, REQ-REL-002-AC1) are recorded in a SEPARATE signed publication attestation (predicate_type below) over these same image digests, tag, and commit, produced after the anonymous customer-verification and every-tag anonymous-pull checks pass. This manifest is assembled and signed BEFORE those checks, so its ac_results shows them deferred; the durable pass record is the publication attestation. This manifest is not mutated after signing.\",",
+"promote.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"promote.run: requirements_baseline: {path: $baseline, sha256: $baseline_sha},",
+"promote.run: src=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"promote.run: src=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"promote.run: tag: $tag, sha: $sha, index_digests: $digests,",
+"promote.run: test_evidence: {path: \"test-evidence/mappings.yaml\", sha256: $evidence_sha},",
+"promote.run: verify: (\"gh attestation verify oci://<image>@<digest> --repo \" + $repofull + \" --predicate-type https://fosterstack.com/attestations/publication/v1 --signer-workflow \" + $repofull + \"/.github/workflows/stage-promote.yml --source-digest \" + $sha + \" --source-ref \" + $ref)",
+"promote.run: vex: [{file: \"fosterstack-cache.openvex.json\", form: \"openvex\", sha256: $vex_openvex_sha},",
+"promote.run: {ac: \"REQ-REL-001-AC1\", result: \"pass\", evidence: \"anonymous cosign image verification + checksums-bundle verify-blob, wrong-signer and corrupt-bundle negatives rejected\"},",
+"promote.run: {ac: \"REQ-REL-002-AC1\", result: \"pass\", evidence: \"anonymous crane digest of every versioned and floating tag at ghcr.io and docker.io resolves the promoted digest\"}",
+"promote.run: {file: (\"fosterstack-cache-\" + $version + \".csaf.json\"), form: \"csaf-2.0-vex\", sha256: $vex_csaf_sha}],",
+"promote.run: {file: (\"fosterstack-cache-\" + $version + \".inspector-filters.json\"), form: \"inspector-suppression-rules\", sha256: $vex_inspector_sha},",
+"promote.step.env.COSIGN_EXPERIMENTAL: 0",
+"promote.step.env.DIGESTS: ${{ inputs.digests }}"
+],
+"stage-verify.yml": [
+"scan.run: [ -n \"$d\" ] && [ \"$d\" != \"null\" ] || { echo \"::error::no digest for ${v}\" >&2; exit 1; }",
+"scan.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"scan.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"scan.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
+"scan.run: docker buildx imagetools inspect --raw \"${repo}@${d}\" | jq -r --arg v \"$v\" --arg repo \"$repo\" '.manifests[] | select(.platform.os != \"unknown\") | \"\\($v)\\t\\(.platform.os)/\\(.platform.architecture)\\t\\($repo)@\\(.digest)\"' >> /tmp/scan-targets.txt",
+"scan.run: echo \"${d#sha256:} cache-candidates-${v}\"",
+"scan.run: jq -n --arg scanner '${{ matrix.scanner }}' --arg version \"$ver\" --arg db \"$db\" --arg sha \"${GITHUB_SHA}\" --arg vex \"$(sha256sum .vex/fosterstack-cache.openvex.json | cut -d' ' -f1)\" --argjson digests '${{ inputs.digests }}' --rawfile scanned /tmp/scanned-subjects.txt '{",
+"scan.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"scan.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
+"scan.run: sha: $sha, index_digests: $digests,",
+"scan.run: vex_document_sha256: $vex,",
+"scan.run: while IFS=$'\\t' read -r _ _ ref; do docker pull -q \"$ref\" >/dev/null; done < /tmp/scan-targets.txt"
+]
+}''')
+
+
+def operand_lines(name):
+    d = wf(name)
+    out = []
+
+    def add(k, v):
+        if isinstance(v, str) and (OPERAND_TOKEN.search(v) or OPERAND_TOKEN.search(k)):
+            out.append("%s: %s" % (k, re.sub(r"\s+", " ", v).strip()))
+    for k, v in (((d.get("on") or {}).get("workflow_call") or {}).get("outputs") or {}).items():
+        add("workflow_call.outputs.%s" % k, v.get("value", ""))
+    for jn, j in (d.get("jobs") or {}).items():
+        for k, v in (j.get("outputs") or {}).items():
+            add("%s.outputs.%s" % (jn, k), v)
+        for k, v in (j.get("with") or {}).items():
+            add("%s.with.%s" % (jn, k), v)
+        for k, v in (j.get("env") or {}).items():
+            add("%s.env.%s" % (jn, k), v)
+        if j.get("uses"):
+            out.append("%s.uses: %s" % (jn, j["uses"]))
+        for st in j.get("steps") or []:
+            for k, v in (st.get("with") or {}).items():
+                add("%s.step.with.%s" % (jn, k), v)
+            for k, v in (st.get("env") or {}).items():
+                add("%s.step.env.%s" % (jn, k), v)
+            for l in joined(st.get("run") or "").split("\n"):
+                l = re.sub(r"\s+", " ", l).strip()
+                if l and not l.startswith("#") and OPERAND_TOKEN.search(l):
+                    out.append("%s.run: %s" % (jn, l))
+    return sorted(out)
+
+
+@case("3", "operands: every downstream consumer and signing boundary takes exactly the digest operands it took before (golden, per workflow)")
+def _():
+    for name in OPERAND_FILES:
+        got, want = operand_lines(name), GOLDEN_OPERANDS[name]
+        if got != want:
+            extra = [x for x in got if x not in want]
+            gone = [x for x in want if x not in got]
+            raise Fail("%s: digest operands differ from the golden; added/changed %s; removed %s" % (name, [x[:140] for x in extra[:3]], [x[:140] for x in gone[:3]]))
+
+
+@case("3", "operands: stage-image's workflow_call output digests is exactly the assemble job's output, and release.yml reads only it")
+def _():
+    d = wf("stage-image.yml")
+    eq(norm(d["on"]["workflow_call"]["outputs"]["digests"]["value"]), "jobs.assemble.outputs.digests", "stage-image workflow_call outputs.digests.value")
+    eq(list(d["on"]["workflow_call"]["outputs"]), ["digests"], "stage-image workflow_call outputs")
+    r = wf("release.yml")["jobs"]
+    for jn, j in r.items():
+        for k, v in (j.get("with") or {}).items():
+            if "needs.image" in v:
+                ok(norm(v) in ("needs.image.outputs.digests", "ghcr.io/${{github.repository_owner}}/cache-candidates@${{fromJSON(needs.image.outputs.digests).production}}".replace("${{", "").replace("}}", "")), "release.yml %s.%s reads %r" % (jn, k, v))
+
+
+@case("3", "operands: no workflow outside the traversal calls the stage workflows, reads the image job's outputs or consumes inputs.digests")
+def _():
+    for name in sorted(os.listdir(WF)):
+        if name in OPERAND_FILES or name in ("stage-image.yml", "stage-reproducibility.yml", "stage-build.yml", "stage-admission.yml") or not name.endswith(".yml"):
+            continue
+        d = wf(name)
+        for jn, j in (d.get("jobs") or {}).items():
+            ok(not re.search(r"stage-(image|reproducibility)\.yml", j.get("uses") or ""), "%s job %s calls an image-stage workflow outside the checked set" % (name, jn))
+            ok("needs.image" not in json.dumps(j) and "inputs.digests" not in json.dumps(j), "%s job %s reads the image stage's digests outside the checked set" % (name, jn))
+
+
+@case("3", "operands: every reusable-workflow call input of release.yml, acceptance.yml and scan.yml is in the golden (the digests, image-ref and artifact inputs)")
+def _():
+    for name in ("release.yml", "acceptance.yml", "scan.yml"):
+        calls_ = [jn for jn, j in wf(name)["jobs"].items() if j.get("uses")]
+        for jn in calls_:
+            ok(any(l.startswith("%s.uses:" % jn) for l in GOLDEN_OPERANDS[name]), "%s: call %s is not in the golden operands" % (name, jn))
+
+
+# ---------------------------------------------------------------- reproducibility: nothing may weaken it
+@case("2", "reproducibility steps carry no continue-on-error, if, working-directory, shell or timeout; the job only the keys it has today")
+def _():
+    d = wf("stage-reproducibility.yml")
+    job = d["jobs"]["reproduce"]
+    eq(sorted(job), ["name", "permissions", "runs-on", "steps"], "reproduce job keys")
+    eq(sorted(d), sorted(["name", "on", "permissions", "jobs"]), "workflow keys")
+    for st in job["steps"]:
+        extra = set(st) - {"name", "id", "uses", "with", "run", "env"}
+        ok(not extra, "step %r carries %s" % (st.get("name"), sorted(extra)))
+        r = run_of(st)
+        ok(not re.search(r"\|\|\s*(true|:|exit\s+0|echo)|set\s+\+e|;\s*true\b|\bcontinue\b", r), "step %r swallows a failure" % st.get("name"))
+    ok(vex_steps(job["steps"]), "the changed steps are missing")
+
+
+@case("2", "reproducibility still verifies the image-build attestation of every pushed digest (gh attestation verify on inputs.digests)")
+def _():
+    st = repro_steps()
+    ver = [s for s in st if "gh attestation verify" in run_of(s) and "image-build/v1" in run_of(s)]
+    eq(len(ver), 1, "steps verifying the image-build attestation")
+    r = run_of(ver[0])
+    ok("inputs.digests" in r and "oci://" in r and "https://fosterstack.com/attestations/image-build/v1" in r and "stage-image.yml" in r and "--repo" in r, "the verification no longer checks inputs.digests against stage-image's signature")
+    ok(vex_steps(st), "the changed steps are missing")
+
+
+@case("2", "e2e: the image-build attestation is verified for the pushed F of every variant, before anything is rebuilt")
+def _():
+    fx, F = repro_inputs()
+    r = repro_run(F, fx)
+    need_ok(r)
+    cs = calls(r.box)
+    for v in VARIANTS:
+        hit = [i for i, c in enumerate(cs) if c.startswith("gh attestation verify oci://") and c.split()[3].endswith("cache-candidates@" + F[v]) and "image-build/v1" in c and "stage-image.yml" in c]
+        ok(hit, "%s: the image-build attestation of F was never verified" % v)
+        build = [i for i, c in enumerate(cs) if c.startswith("docker buildx build")]
+        ok(hit[0] < min(build), "%s: verified after the rebuild started" % v)
+
+
+@case("2", "e2e: a variant whose F carries no image-build attestation stops the reproducibility stage")
+def _():
+    fx, F = repro_inputs()
+    repro_control(fx, F)
+    for bad in VARIANTS:
+        r = repro_run(F, fx, gh_attested=[F[v] for v in VARIANTS if v != bad])
+        ok(r.failed is not None, "a missing attestation for %s did not stop the stage" % bad)
+        ok(not r.attest, "the stage reached its attest step with an unattested %s" % bad)
+
+
+@case("2", "e2e: a missing, empty or null pushed digest for any variant fails the stage")
+def _():
+    fx, F = repro_inputs()
+    repro_control(fx, F)
+    for v in VARIANTS:
+        for how in ("missing", "empty", "null"):
+            d = dict(F)
+            if how == "missing":
+                del d[v]
+            else:
+                d[v] = "" if how == "empty" else None
+            r = repro_run(d, fx)
+            ok(r.failed is not None, "%s pushed digest for %s did not fail the stage" % (how, v))
+            ok(not r.attest, "the stage reached its attest step with a %s digest for %s" % (how, v))
+
+
+# ---------------------------------------------------------------- attest inputs, read when the attest step is reached
+@case("1", "e2e: each attest step's inputs are F at the moment it is reached (the image-build predicate, the provenance and the reproducibility ones)")
+def _():
+    r = released()
+    need_ok(r)
+    ok(len(r.snaps) == 2 and r.snaps[0]["uses"].startswith("actions/attest@") and r.snaps[1]["uses"].startswith("actions/attest-build-provenance@"), "the two attest steps were not reached in order: %s" % [x["uses"][:30] for x in r.snaps])
+    want = want_final(r)
+    for sn in r.snaps:
+        eq(sorted(snap_lines(sn)), sorted("%s  cache-candidates-%s" % (hexof(want[v]), v) for v in VARIANTS), "subjects of %s when reached" % sn["uses"][:30])
+    eq(snap_pred(r.snaps[0])["index_digests"], want, "the image-build predicate when reached")
+
+
+@case("H", "harness: an attest step's input files are read when the step is reached, not afterwards")
+def _():
+    reg, fx = Reg(), fixtures()
+    b = make_box(reg, fx)
+    steps = [{"name": "a", "run": "echo first > /tmp/subj.txt"},
+             {"name": "s", "uses": "actions/attest@" + "0" * 40, "with": {"subject-checksums": "/tmp/subj.txt"}},
+             {"name": "b", "run": "echo second > /tmp/subj.txt"}]
+    r = run_steps(b, steps, "release")
+    need_ok(r)
+    eq(r.snaps[0]["subject-checksums"], "first\n", "the snapshot")
+    with open(os.path.join(b.t, "subj.txt")) as f:
+        eq(f.read(), "second\n", "the file at the end")
+
+
+@case("H", "harness: continue-on-error, working-directory and if are honoured; shell, defaults and unknown settings are refused loudly")
+def _():
+    reg, fx = Reg(), fixtures()
+    b = make_box(reg, fx)
+    steps = [{"name": "fails", "run": "exit 3", "continue-on-error": "true"},
+             {"name": "after", "run": "pwd > /tmp/where.txt", "working-directory": "bin"},
+             {"name": "skipped", "if": "inputs.mode == 'pr'", "run": "exit 9"}]
+    r = run_steps(b, steps, "release")
+    need_ok(r)
+    eq(r.ignored, ["fails"], "ignored failures")
+    with open(os.path.join(b.t, "where.txt")) as f:
+        ok(f.read().strip().endswith("/repo/bin"), "working-directory not honoured")
+    r2 = run_steps(make_box(reg, fx), [{"name": "x", "run": "exit 3"}, {"name": "y", "run": "true"}], "release")
+    ok(r2.failed is not None and len(r2.results) == 1, "a failing step did not stop the job")
+    for bad in ({"name": "x", "run": "true", "shell": "sh"}, {"name": "x", "run": "true", "timeout-minutes": "1"}, {"name": "x", "run": "true", "bogus": "1"}):
+        try:
+            run_steps(make_box(reg, fx), [bad], "release")
+        except Fail:
+            continue
+        raise Fail("the harness ran a step with an unmodelled setting: %s" % bad)
+
+
+# ---------------------------------------------------------------- the final-index step: failure semantics, late failures, login target
+@case("1", "the final-index commands are bare commands: no &&, ||, ;, & or negation around vex-index, set -euo pipefail present")
+def _():
+    st, ix = final_index_steps()
+    for i in ix:
+        ok(re.search(r"set\s+-[a-z]*e[a-z]*u?[a-z]*\b", run_of(st[i])) and "pipefail" in run_of(st[i]), "step %r lacks set -euo pipefail" % st[i].get("name"))
+        for sub, o, line in vex_calls(run_of(st[i])):
+            unquoted = re.sub(r"'[^']*'|\"[^\"]*\"", "", line)
+            ok(not re.search(r"&&|\|\||;|(?<![&|])&(?!&)|\bif\b|\bwhile\b|\buntil\b", unquoted) and not re.match(r"\s*!", unquoted),
+               "a vex-index command is chained or conditional (a failure can be skipped): %r" % line)
+
+
+def no_digests_output(res):
+    for sid, o in res.outputs.items():
+        ok("digests" not in o, "step %r recorded a digests output although the stage failed" % sid)
+
+
+@case("1", "e2e: a final-index computation that refuses the LAST variant fails the stage and records nothing")
+def _():
+    fx = fixtures()
+    fx["fips"] = mk_variant("fips", bad=True)
+    r = assemble_run(fx=fx)
+    ok(r.failed is not None, "the stage passed although compute refused the fips index")
+    ok(not r.attest, "an attest step was reached")
+    no_digests_output(r)
+
+
+@case("1", "e2e: a final index that fails verification for the LAST variant fails the stage and records nothing")
+def _():
+    r = assemble_run(extra_env={"TAMPER_COMPUTE_N": "3"})
+    ok(r.failed is not None, "the stage passed although the third computed index was corrupted")
+    ok(not r.attest, "an attest step was reached")
+    no_digests_output(r)
+
+
+@case("1", "e2e: a push that fails on its very last write fails the stage and records nothing")
+def _():
+    base = released()
+    need_ok(base)
+    w = base.reg.writes_ok
+    ok(w >= 6, "expected writes for three variants, saw %d" % w)
+    r = assemble_run(fail_after=w - 1)
+    ok(r.failed is not None, "the stage passed although the registry refused the final write")
+    ok(not r.attest, "an attest step was reached")
+    no_digests_output(r)
+
+
+@case("1", "e2e: the registry login is to ghcr.io and nothing else, and no artifact is uploaded in release mode")
+def _():
+    r = released()
+    need_ok(r)
+    host = "127.0.0.1:%d" % r.reg.port
+    logins = [c for c in calls(r.box) if c.startswith("docker login")]
+    ok(logins, "no registry login happened")
+    for c in logins:
+        eq(c.split()[2], host, "the login target of: " + c)
+    eq(r.uploads, [], "uploaded artifacts in release mode")
+
+
+@case("2", "e2e: the reproducibility stage's login is to ghcr.io too, and every step it declares ran")
+def _():
+    fx, F = repro_inputs()
+    r = repro_run(F, fx)
+    need_ok(r)
+    host = "127.0.0.1:%d" % r.reg.port
+    for c in [c for c in calls(r.box) if c.startswith("docker login")]:
+        eq(c.split()[2], host, "the login target of: " + c)
+    eq(len(r.results), len([s for s in repro_steps() if "run" in s]), "run steps executed")
 
 
 def main():
