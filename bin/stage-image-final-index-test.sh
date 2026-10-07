@@ -924,6 +924,8 @@ def run_steps(b, steps, mode, extra_ctx=None):
             continue
         if s.get("uses"):
             if is_attest(s):
+                extra_keys = set(s) - {"name", "id", "uses", "with", "if"}
+                ok(not extra_keys, "attest step %s carries %s, which this test does not model (env, continue-on-error, working-directory ...)" % (s["uses"].split("@")[0], sorted(extra_keys)))
                 res.attest.append(s)
                 w = s.get("with") or {}
                 bad_in = set(w) - ({"subject-checksums", "predicate-type", "predicate-path"} if s["uses"].startswith("actions/attest@") else {"subject-checksums"})
@@ -935,6 +937,8 @@ def run_steps(b, steps, mode, extra_ctx=None):
                         snap[key] = open(path).read() if os.path.isfile(path) else None
                 res.snaps.append(snap)
             else:
+                extra_keys = set(s) - {"name", "id", "uses", "with", "if"}
+                ok(not extra_keys, "action step %s carries %s, which this test does not model (env, continue-on-error, working-directory ...)" % (s["uses"].split("@")[0], sorted(extra_keys)))
                 ok(s["uses"].startswith(MODELLED_ACTIONS), "step uses %s, which this test does not model" % s["uses"])
                 allowed = ALLOWED_WITH[s["uses"].split("@")[0]]
                 extra_in = set(s.get("with") or {}) - allowed
@@ -1365,29 +1369,29 @@ GOLDEN = json.loads(r'''{
 "jobs.acceptance-gradle.runs-on": "a89f3a1c7e4302eb",
 "jobs.acceptance-gradle.steps.count": 25,
 "jobs.acceptance-gradle.steps[0]": "3ef4af68ef144f12",
-"jobs.acceptance-gradle.steps[10]": "3614c4fe094b451b",
-"jobs.acceptance-gradle.steps[11]": "094e9554209e0db5",
+"jobs.acceptance-gradle.steps[10]": "e78c2a144bd58ed4",
+"jobs.acceptance-gradle.steps[11]": "c0c463d791fa3aca",
 "jobs.acceptance-gradle.steps[12]": "212c3998b2a79a9a",
-"jobs.acceptance-gradle.steps[13]": "fbdccd81b85b43ff",
-"jobs.acceptance-gradle.steps[14]": "163a68e293d8a48f",
-"jobs.acceptance-gradle.steps[15]": "087a33195a99f8f9",
-"jobs.acceptance-gradle.steps[16]": "1af6b9b111880d69",
-"jobs.acceptance-gradle.steps[17]": "50827b5ac6dbe452",
-"jobs.acceptance-gradle.steps[18]": "3ca18eed61c6f9e0",
-"jobs.acceptance-gradle.steps[19]": "d4358467364b8425",
+"jobs.acceptance-gradle.steps[13]": "48ae9a345be254f4",
+"jobs.acceptance-gradle.steps[14]": "8adc4256bc7f1e08",
+"jobs.acceptance-gradle.steps[15]": "155d2750dd37e317",
+"jobs.acceptance-gradle.steps[16]": "4b821034fdc93ae5",
+"jobs.acceptance-gradle.steps[17]": "2cef84de5c954f22",
+"jobs.acceptance-gradle.steps[18]": "21ed15dde0898b45",
+"jobs.acceptance-gradle.steps[19]": "e21585e48cf7152a",
 "jobs.acceptance-gradle.steps[1]": "c70238c510acbaa9",
-"jobs.acceptance-gradle.steps[20]": "877cd6f38bc7eb94",
-"jobs.acceptance-gradle.steps[21]": "6e7211c3a3cfc002",
+"jobs.acceptance-gradle.steps[20]": "b29f6d70715ddeec",
+"jobs.acceptance-gradle.steps[21]": "328fb2b3696e8b16",
 "jobs.acceptance-gradle.steps[22]": "82e936d9aadece1e",
 "jobs.acceptance-gradle.steps[23]": "5108c20b252a4ac8",
 "jobs.acceptance-gradle.steps[24]": "63df53aea9e05567",
 "jobs.acceptance-gradle.steps[2]": "d2476c6c32ee1429",
 "jobs.acceptance-gradle.steps[3]": "1a8439b8a778b22d",
-"jobs.acceptance-gradle.steps[4]": "c3f6b1c6dd05fe7c",
-"jobs.acceptance-gradle.steps[5]": "76353e3179ad982c",
-"jobs.acceptance-gradle.steps[6]": "67ea749c806b4169",
-"jobs.acceptance-gradle.steps[7]": "d9cc2c7d883c81ac",
-"jobs.acceptance-gradle.steps[8]": "d42fe1c84ec7b20d",
+"jobs.acceptance-gradle.steps[4]": "114a5263333bffb2",
+"jobs.acceptance-gradle.steps[5]": "dd01211c16bad959",
+"jobs.acceptance-gradle.steps[6]": "2436050c02c61ad2",
+"jobs.acceptance-gradle.steps[7]": "4ef66110a14273f4",
+"jobs.acceptance-gradle.steps[8]": "00d472782667d826",
 "jobs.acceptance-gradle.steps[9]": "48d098b6e42c7d27",
 "jobs.acceptance-maven.env": "d7bfa22e06d22809",
 "jobs.acceptance-maven.name": "36f8ef6d53438101",
@@ -1397,23 +1401,23 @@ GOLDEN = json.loads(r'''{
 "jobs.acceptance-maven.steps.count": 21,
 "jobs.acceptance-maven.steps[0]": "3ef4af68ef144f12",
 "jobs.acceptance-maven.steps[10]": "276325b844adec19",
-"jobs.acceptance-maven.steps[11]": "89ca8fcf5dbfb20a",
+"jobs.acceptance-maven.steps[11]": "976c4c7fae8abf88",
 "jobs.acceptance-maven.steps[12]": "7cd8b7f28db6d35c",
 "jobs.acceptance-maven.steps[13]": "294078d9c13e9cf9",
-"jobs.acceptance-maven.steps[14]": "a259dae98dec1197",
-"jobs.acceptance-maven.steps[15]": "ed30f97a9ba95b68",
-"jobs.acceptance-maven.steps[16]": "5a51a9d0f5a7d556",
-"jobs.acceptance-maven.steps[17]": "f014b9874bbd6a87",
+"jobs.acceptance-maven.steps[14]": "902e86617fdde09d",
+"jobs.acceptance-maven.steps[15]": "0f1ea2040dbeba5b",
+"jobs.acceptance-maven.steps[16]": "fc31265e8e67f661",
+"jobs.acceptance-maven.steps[17]": "a1d1ccb334946391",
 "jobs.acceptance-maven.steps[18]": "44bfdf0b6005e2d3",
 "jobs.acceptance-maven.steps[19]": "1856f4d199fbf52b",
 "jobs.acceptance-maven.steps[1]": "c70238c510acbaa9",
 "jobs.acceptance-maven.steps[20]": "1a98893a09b3adf5",
 "jobs.acceptance-maven.steps[2]": "1612dfc67c3ce955",
-"jobs.acceptance-maven.steps[3]": "1611370468166a1b",
-"jobs.acceptance-maven.steps[4]": "44b5bdd4014c8baf",
-"jobs.acceptance-maven.steps[5]": "a2f420a7b8cfbde1",
-"jobs.acceptance-maven.steps[6]": "1ca8df4269a9dc7b",
-"jobs.acceptance-maven.steps[7]": "902ec3973bf2ce3f",
+"jobs.acceptance-maven.steps[3]": "a335c54279e1ac31",
+"jobs.acceptance-maven.steps[4]": "b70a55afd9b772db",
+"jobs.acceptance-maven.steps[5]": "7c52ec3a56b23735",
+"jobs.acceptance-maven.steps[6]": "b04c145520e5b5be",
+"jobs.acceptance-maven.steps[7]": "ebbc27a8854cbaa2",
 "jobs.acceptance-maven.steps[8]": "62a6659c452fd4c8",
 "jobs.acceptance-maven.steps[9]": "3214858ca5f22326",
 "jobs.acceptance-maven.strategy": "8a9e42e1b368bb26",
@@ -1436,7 +1440,7 @@ GOLDEN = json.loads(r'''{
 "jobs.manifests.runs-on": "a89f3a1c7e4302eb",
 "jobs.manifests.steps.count": 2,
 "jobs.manifests.steps[0]": "8957e1c08310d968",
-"jobs.manifests.steps[1]": "985c85e2f7851eec",
+"jobs.manifests.steps[1]": "828556b2732eb5cb",
 "jobs.panel-google.environment": "7649b444a37e5ea5",
 "jobs.panel-google.name": "d1e4ec7902cc017c",
 "jobs.panel-google.needs": "7f4f0bf77f49c743",
@@ -1447,7 +1451,7 @@ GOLDEN = json.loads(r'''{
 "jobs.panel-google.steps[1]": "0f32fe39075f8c34",
 "jobs.panel-google.steps[2]": "3302c7616ee3c6f3",
 "jobs.panel-google.steps[3]": "538df9844fecac28",
-"jobs.panel-google.steps[4]": "37fd2f5c383cf7e7",
+"jobs.panel-google.steps[4]": "f2ae0ed24a172c7b",
 "jobs.panel-google.steps[5]": "a6772f043bca00b0",
 "jobs.panel-grype.name": "265d1350e1bd696d",
 "jobs.panel-grype.needs": "7f4f0bf77f49c743",
@@ -1457,7 +1461,7 @@ GOLDEN = json.loads(r'''{
 "jobs.panel-grype.steps[0]": "8957e1c08310d968",
 "jobs.panel-grype.steps[1]": "0f32fe39075f8c34",
 "jobs.panel-grype.steps[2]": "b5df81c7da967fc8",
-"jobs.panel-grype.steps[3]": "62666c9c4cdbad27",
+"jobs.panel-grype.steps[3]": "7d0e1d00a54f2b89",
 "jobs.panel-grype.steps[4]": "62b740e6ec42cb56",
 "jobs.panel-inspector.env": "2674324ee0e35ee3",
 "jobs.panel-inspector.name": "6bf5f254676b7fc6",
@@ -1469,7 +1473,7 @@ GOLDEN = json.loads(r'''{
 "jobs.panel-inspector.steps[1]": "0f32fe39075f8c34",
 "jobs.panel-inspector.steps[2]": "41b30b4b2810341f",
 "jobs.panel-inspector.steps[3]": "3f3a7adb472a1081",
-"jobs.panel-inspector.steps[4]": "f2baee09f7d2450b",
+"jobs.panel-inspector.steps[4]": "57d332bf8c61b10b",
 "jobs.panel-inspector.steps[5]": "c980ae1f4b9037cc",
 "jobs.panel-scout.environment": "7649b444a37e5ea5",
 "jobs.panel-scout.name": "b46cb3154bf24bbc",
@@ -1481,9 +1485,9 @@ GOLDEN = json.loads(r'''{
 "jobs.panel-scout.steps[1]": "0f32fe39075f8c34",
 "jobs.panel-scout.steps[2]": "f1306bd40de9dd12",
 "jobs.panel-scout.steps[3]": "96becc0fa388cb3b",
-"jobs.panel-scout.steps[4]": "2429e8a319db709e",
-"jobs.panel-scout.steps[5]": "90fdc8c650d19508",
-"jobs.panel-scout.steps[6]": "487d99e43b00e430",
+"jobs.panel-scout.steps[4]": "2fc5fa300ec7b3bd",
+"jobs.panel-scout.steps[5]": "1accd41beed8e922",
+"jobs.panel-scout.steps[6]": "dd243adb6916e449",
 "jobs.panel-scout.steps[7]": "4e49ba4920668dfd",
 "jobs.panel.if": "98a106d9c58360f1",
 "jobs.panel.name": "2a40c5f398fa68ad",
@@ -1494,7 +1498,7 @@ GOLDEN = json.loads(r'''{
 "jobs.panel.steps[0]": "8957e1c08310d968",
 "jobs.panel.steps[1]": "b1134ef9ccb437ac",
 "jobs.panel.steps[2]": "e35a6419125d4fff",
-"jobs.panel.steps[3]": "73db4d92d7cb6d20",
+"jobs.panel.steps[3]": "1f86c15a42a25b46",
 "jobs.panel.steps[4]": "be61f8bd87662be7",
 "jobs.panel.steps[5]": "f9e849a2c1c3034a",
 "jobs.rescan.env": "2dc65141eca35963",
@@ -1507,13 +1511,13 @@ GOLDEN = json.loads(r'''{
 "jobs.rescan.steps[0]": "8957e1c08310d968",
 "jobs.rescan.steps[10]": "9fd724db29c92c2b",
 "jobs.rescan.steps[11]": "cec06aac54eed85e",
-"jobs.rescan.steps[1]": "d609c3b40a723124",
-"jobs.rescan.steps[2]": "886a9788af28b148",
-"jobs.rescan.steps[3]": "07bb8b0fe1ad9c44",
-"jobs.rescan.steps[4]": "10412d0f8e1aeb31",
-"jobs.rescan.steps[5]": "e373256576be2fc3",
-"jobs.rescan.steps[6]": "cd1057760f2e9cca",
-"jobs.rescan.steps[7]": "94119dc5bcae858f",
+"jobs.rescan.steps[1]": "fdffd1c22a1a958a",
+"jobs.rescan.steps[2]": "0183acc90a84bddb",
+"jobs.rescan.steps[3]": "6064336e53ee2ff2",
+"jobs.rescan.steps[4]": "d8c0476d56a957fd",
+"jobs.rescan.steps[5]": "766d7db250961eb0",
+"jobs.rescan.steps[6]": "29aa7ab17822991d",
+"jobs.rescan.steps[7]": "cc9a7510dda14c6b",
 "jobs.rescan.steps[8]": "03429d20415fdb5e",
 "jobs.rescan.steps[9]": "fa0dd7edbcca43aa",
 "jobs.rescan.strategy": "1d0c1e003cf5b573",
@@ -1525,7 +1529,7 @@ GOLDEN = json.loads(r'''{
 "jobs.scanner-reports.steps[0]": "3ef4af68ef144f12",
 "jobs.scanner-reports.steps[1]": "0f32fe39075f8c34",
 "jobs.scanner-reports.steps[2]": "effcafb706c80b6d",
-"jobs.scanner-reports.steps[3]": "5d79aa7d6978f70e",
+"jobs.scanner-reports.steps[3]": "25b54123bf265826",
 "jobs.scanner-reports.steps[4]": "005446768edb73f3",
 "jobs.scout-root-cause.environment": "7649b444a37e5ea5",
 "jobs.scout-root-cause.if": "ad899c23175d269d",
@@ -1534,7 +1538,7 @@ GOLDEN = json.loads(r'''{
 "jobs.scout-root-cause.steps.count": 6,
 "jobs.scout-root-cause.steps[0]": "8957e1c08310d968",
 "jobs.scout-root-cause.steps[1]": "6dd648dfe0bbe447",
-"jobs.scout-root-cause.steps[2]": "b1cf6840369446ba",
+"jobs.scout-root-cause.steps[2]": "9a30331e600ade98",
 "jobs.scout-root-cause.steps[3]": "6fa3381d7476e810",
 "jobs.scout-root-cause.steps[4]": "6c94475b7a30282d",
 "jobs.scout-root-cause.steps[5]": "9b38e435afed093c",
@@ -1586,13 +1590,13 @@ GOLDEN = json.loads(r'''{
 "jobs.decide.steps[10]": "549db2db1d1cdb44",
 "jobs.decide.steps[11]": "3cafecd8014332ed",
 "jobs.decide.steps[1]": "d4dba7735cf5575a",
-"jobs.decide.steps[2]": "ad4b469f047263da",
-"jobs.decide.steps[3]": "cdbf1fc0231a0857",
-"jobs.decide.steps[4]": "3b0b5132ec379661",
+"jobs.decide.steps[2]": "938d3d290e7f6a85",
+"jobs.decide.steps[3]": "ea79d042f4a85827",
+"jobs.decide.steps[4]": "b0263ac63886b1ea",
 "jobs.decide.steps[5]": "b05756de5bf1883c",
-"jobs.decide.steps[6]": "edad9d5d8522b05f",
-"jobs.decide.steps[7]": "755264d42b3df77d",
-"jobs.decide.steps[8]": "a52163122165a228",
+"jobs.decide.steps[6]": "73772ec86e4cf421",
+"jobs.decide.steps[7]": "624f336348a621d5",
+"jobs.decide.steps[8]": "8a10b501cbd1e149",
 "jobs.decide.steps[9]": "9e8d226ef867f3cc",
 "jobs.image.needs": "e99adbe058517220",
 "jobs.image.steps.count": 0,
@@ -1603,7 +1607,7 @@ GOLDEN = json.loads(r'''{
 "jobs.patch-failed.permissions": "0686420875052835",
 "jobs.patch-failed.runs-on": "a89f3a1c7e4302eb",
 "jobs.patch-failed.steps.count": 1,
-"jobs.patch-failed.steps[0]": "a18eea554dd13958",
+"jobs.patch-failed.steps[0]": "8623a6dbcda05fe3",
 "jobs.patch-notes.environment": "7649b444a37e5ea5",
 "jobs.patch-notes.if": "3a0ac5a04a0f6ea7",
 "jobs.patch-notes.needs": "a63a25a2e30fb6b0",
@@ -1612,7 +1616,7 @@ GOLDEN = json.loads(r'''{
 "jobs.patch-notes.steps.count": 3,
 "jobs.patch-notes.steps[0]": "59132c244ea7912d",
 "jobs.patch-notes.steps[1]": "0de3c4c2d9cd6964",
-"jobs.patch-notes.steps[2]": "5cdfc1b55ef23071",
+"jobs.patch-notes.steps[2]": "6d5ca5e824105e10",
 "jobs.promotion.needs": "edb5532eeccc2adb",
 "jobs.promotion.secrets": "d95aec779901c62f",
 "jobs.promotion.steps.count": 0,
@@ -1655,7 +1659,7 @@ GOLDEN = json.loads(r'''{
 "jobs.reproducibility.needs": "6908d8b28fc4232f",
 "jobs.reproducibility.runs-on": "a89f3a1c7e4302eb",
 "jobs.reproducibility.steps.count": 1,
-"jobs.reproducibility.steps[0]": "bea4fb17b1e60124",
+"jobs.reproducibility.steps[0]": "8963b9ab5b62e210",
 "jobs.scan.if": "3e7f2749e07c18b0",
 "jobs.scan.name": "dfa11b56dbf9f8b9",
 "jobs.scan.needs": "68ed86cd694e4db9",
@@ -1673,10 +1677,10 @@ GOLDEN = json.loads(r'''{
 "jobs.scanner.steps[2]": "fc76684a18e22bae",
 "jobs.scanner.steps[3]": "8a77a82691c0cfe5",
 "jobs.scanner.steps[4]": "5329637f72722ca4",
-"jobs.scanner.steps[5]": "e5231dd405a24d41",
-"jobs.scanner.steps[6]": "1e00f670bcb2fdfe",
+"jobs.scanner.steps[5]": "72012c732f18c848",
+"jobs.scanner.steps[6]": "f655355f83312ebb",
 "jobs.scanner.steps[7]": "d5a1e28dfdca6c93",
-"jobs.scanner.steps[8]": "1541be82ccce3270",
+"jobs.scanner.steps[8]": "fb158f1018c0d9f9",
 "jobs.scanner.steps[9]": "fc3c321ff1ce05dc",
 "jobs.scanner.strategy": "2c049e5b9ca29b43",
 "jobs.scanners.name": "d1d26c67d18bd05d",
@@ -1696,16 +1700,16 @@ GOLDEN = json.loads(r'''{
 "jobs.artifacts.runs-on": "a89f3a1c7e4302eb",
 "jobs.artifacts.steps.count": 12,
 "jobs.artifacts.steps[0]": "3ef4af68ef144f12",
-"jobs.artifacts.steps[10]": "9637d3669e4f68c0",
-"jobs.artifacts.steps[11]": "f6410d4414c23ae4",
+"jobs.artifacts.steps[10]": "f07e2a7e11d66969",
+"jobs.artifacts.steps[11]": "71f10e57f481bf7a",
 "jobs.artifacts.steps[1]": "57f1cabf57203fb4",
 "jobs.artifacts.steps[2]": "a44d81947f6b8f80",
-"jobs.artifacts.steps[3]": "ecab8fbc1b639469",
-"jobs.artifacts.steps[4]": "e30abc31e064335b",
-"jobs.artifacts.steps[5]": "a794550f69805671",
-"jobs.artifacts.steps[6]": "1c8ee0e3d8d52388",
-"jobs.artifacts.steps[7]": "29358ced7a6f1e29",
-"jobs.artifacts.steps[8]": "0fa66a19d6213eb5",
+"jobs.artifacts.steps[3]": "882bff328618b63d",
+"jobs.artifacts.steps[4]": "64277f9ba50a1e7e",
+"jobs.artifacts.steps[5]": "d412cedffbb05d36",
+"jobs.artifacts.steps[6]": "e73624abe1419b69",
+"jobs.artifacts.steps[7]": "a83a985c00ea4137",
+"jobs.artifacts.steps[8]": "44724edc4a672289",
 "jobs.artifacts.steps[9]": "48ee6f2d41370b3c",
 "top.name": "0616fc9e325d6dff",
 "top.on": "c52eb6cc51b16dc1",
@@ -1719,7 +1723,7 @@ GOLDEN = json.loads(r'''{
 "jobs.egress.steps.count": 5,
 "jobs.egress.steps[0]": "3ef4af68ef144f12",
 "jobs.egress.steps[1]": "e24d34535a4cf1e8",
-"jobs.egress.steps[2]": "6084bebf287add70",
+"jobs.egress.steps[2]": "2a58c6f7e716310b",
 "jobs.egress.steps[3]": "0766e743a10104ff",
 "jobs.egress.steps[4]": "6091c60bd80aafa1",
 "top.name": "2abf953f2edb26ea",
@@ -1734,17 +1738,17 @@ GOLDEN = json.loads(r'''{
 "jobs.k8s.runs-on": "a89f3a1c7e4302eb",
 "jobs.k8s.steps.count": 12,
 "jobs.k8s.steps[0]": "3ef4af68ef144f12",
-"jobs.k8s.steps[10]": "9bcc697eed299c6d",
+"jobs.k8s.steps[10]": "1eeb21638c84fbed",
 "jobs.k8s.steps[11]": "b09439deb0a7257b",
 "jobs.k8s.steps[1]": "b6b067d5a265d705",
 "jobs.k8s.steps[2]": "68076c4610b5da09",
-"jobs.k8s.steps[3]": "70743d508bba054f",
-"jobs.k8s.steps[4]": "c1ca53d68e4c3eea",
-"jobs.k8s.steps[5]": "1a120d514c08102b",
+"jobs.k8s.steps[3]": "5334904bc2886833",
+"jobs.k8s.steps[4]": "dc834c4778e40ae3",
+"jobs.k8s.steps[5]": "a3f35d6855a11e3c",
 "jobs.k8s.steps[6]": "cc3f4858d18bba3a",
-"jobs.k8s.steps[7]": "d310681d14b1b981",
-"jobs.k8s.steps[8]": "b68a07c69d3b35ef",
-"jobs.k8s.steps[9]": "54f9e7344c6f954d",
+"jobs.k8s.steps[7]": "efcdec5780826c77",
+"jobs.k8s.steps[8]": "a6462b33a700166a",
+"jobs.k8s.steps[9]": "6c68ebaca89883a3",
 "top.name": "a3b9c45d305de91f",
 "top.on": "2b910c6cd256ccde",
 "top.permissions": "d8d6aceb1abc4199"
@@ -1755,8 +1759,8 @@ GOLDEN = json.loads(r'''{
 "jobs.predicate.runs-on": "a89f3a1c7e4302eb",
 "jobs.predicate.steps.count": 4,
 "jobs.predicate.steps[0]": "3ef4af68ef144f12",
-"jobs.predicate.steps[1]": "366e785c7e9a6d2d",
-"jobs.predicate.steps[2]": "253a4f10b3d3ad8c",
+"jobs.predicate.steps[1]": "cdc6b0c45a75e959",
+"jobs.predicate.steps[2]": "598902ca94608470",
 "jobs.predicate.steps[3]": "c6aae01330555b5d",
 "top.name": "700ae035d9e2bb42",
 "top.on": "5a6a6fb0a519399f",
@@ -1768,18 +1772,18 @@ GOLDEN = json.loads(r'''{
 "jobs.admit.permissions": "0c9caca5f30ec892",
 "jobs.admit.runs-on": "a89f3a1c7e4302eb",
 "jobs.admit.steps.count": 12,
-"jobs.admit.steps[0]": "d292ab413501d660",
+"jobs.admit.steps[0]": "2f7cc3711be262f3",
 "jobs.admit.steps[10]": "4e9990b4a75aa083",
 "jobs.admit.steps[11]": "57218db4a5f17666",
 "jobs.admit.steps[1]": "60a60c83e9bff43f",
-"jobs.admit.steps[2]": "16d7bcf6b46cf429",
-"jobs.admit.steps[3]": "1fca1bdbf21a4536",
-"jobs.admit.steps[4]": "4f3d642dcba12d44",
-"jobs.admit.steps[5]": "9226348f0bf17821",
-"jobs.admit.steps[6]": "d186d874d52652a5",
+"jobs.admit.steps[2]": "78b43ecda8718778",
+"jobs.admit.steps[3]": "d247e958614708aa",
+"jobs.admit.steps[4]": "107cc03e459e92c4",
+"jobs.admit.steps[5]": "0ee5a1c6d65d6974",
+"jobs.admit.steps[6]": "2141d05068ca20a1",
 "jobs.admit.steps[7]": "f46c4bbdbd908b44",
-"jobs.admit.steps[8]": "ca3b02ea0431f572",
-"jobs.admit.steps[9]": "28d49e1c553cfce3",
+"jobs.admit.steps[8]": "e0ec4fb795c6466c",
+"jobs.admit.steps[9]": "122704c73fdb70fe",
 "top.name": "5390a18a2739b7ef",
 "top.on": "07531aef4834d817",
 "top.permissions": "d8d6aceb1abc4199"
@@ -1793,9 +1797,9 @@ GOLDEN = json.loads(r'''{
 "jobs.authorize.steps[1]": "cc0f804abf38bf35",
 "jobs.authorize.steps[2]": "0d813cf063d8303c",
 "jobs.authorize.steps[3]": "57f1cabf57203fb4",
-"jobs.authorize.steps[4]": "63615e5bf73c9b54",
-"jobs.authorize.steps[5]": "bb69d37c6afd25d2",
-"jobs.authorize.steps[6]": "905cd7666102fcbf",
+"jobs.authorize.steps[4]": "a71fdbe3b32653c3",
+"jobs.authorize.steps[5]": "fa5973332af81260",
+"jobs.authorize.steps[6]": "6fa33093702b7b86",
 "jobs.authorize.steps[7]": "09d65d16a3fdcfe2",
 "top.name": "cea41a53c00ebfa6",
 "top.on": "d12871460d43fce6",
@@ -1809,19 +1813,19 @@ GOLDEN = json.loads(r'''{
 "jobs.build.steps.count": 15,
 "jobs.build.steps[0]": "1c1d5bf429b27922",
 "jobs.build.steps[10]": "3fefd27521f4973c",
-"jobs.build.steps[11]": "0a2c4c8d9b9bbe90",
+"jobs.build.steps[11]": "663b52c5f8f0414f",
 "jobs.build.steps[12]": "b6a114fe2746adea",
 "jobs.build.steps[13]": "0f150936233012ed",
 "jobs.build.steps[14]": "0bf2acb4e5ca56da",
 "jobs.build.steps[1]": "0e69d46560bd89d4",
 "jobs.build.steps[2]": "fec793d07f7d1b53",
-"jobs.build.steps[3]": "cdcb4b6289ffc116",
+"jobs.build.steps[3]": "9705f51701e3374b",
 "jobs.build.steps[4]": "3ed22b5d5858d04d",
 "jobs.build.steps[5]": "e4ecd157ce7b0fe9",
 "jobs.build.steps[6]": "a6ef0d48fc1b5a0d",
 "jobs.build.steps[7]": "ee4dae14f34be291",
 "jobs.build.steps[8]": "c2d664bc8c2b46ca",
-"jobs.build.steps[9]": "4e9f9344da340ebe",
+"jobs.build.steps[9]": "94963c84a62259f5",
 "top.name": "2b6fe62b1d5c299c",
 "top.on": "ab08dc6f50d5a414",
 "top.permissions": "d8d6aceb1abc4199"
@@ -1833,27 +1837,27 @@ GOLDEN = json.loads(r'''{
 "jobs.promote.runs-on": "a89f3a1c7e4302eb",
 "jobs.promote.steps.count": 22,
 "jobs.promote.steps[0]": "3ef4af68ef144f12",
-"jobs.promote.steps[10]": "2bf3afdf2da759ed",
-"jobs.promote.steps[11]": "dc6236c80a3f0689",
-"jobs.promote.steps[12]": "93a16819d531b6a8",
-"jobs.promote.steps[13]": "f0900e4ffdaa0a73",
-"jobs.promote.steps[14]": "ccb44bb3ba9cc7f2",
-"jobs.promote.steps[15]": "fac9490a7cb9b1bc",
-"jobs.promote.steps[16]": "1e4a3ea031628054",
-"jobs.promote.steps[17]": "35703128bb876093",
-"jobs.promote.steps[18]": "7aef989eb40f143f",
-"jobs.promote.steps[19]": "ca6b9e4c554ba256",
+"jobs.promote.steps[10]": "37ea06783c650ee6",
+"jobs.promote.steps[11]": "4837f5b2be65a43a",
+"jobs.promote.steps[12]": "d78909d9ebff9b75",
+"jobs.promote.steps[13]": "1029d3aba45f7ff1",
+"jobs.promote.steps[14]": "a322cb6f42341877",
+"jobs.promote.steps[15]": "86cdc078ac73d4a5",
+"jobs.promote.steps[16]": "61ecad3cb7fee2e3",
+"jobs.promote.steps[17]": "55079dfbedfa616a",
+"jobs.promote.steps[18]": "360ba67337f841cf",
+"jobs.promote.steps[19]": "abe8a924f53b9f33",
 "jobs.promote.steps[1]": "d6479879773e5b1c",
 "jobs.promote.steps[20]": "65c8d8bb21d287d2",
 "jobs.promote.steps[21]": "8956bf01e2eea365",
-"jobs.promote.steps[2]": "0232af291ba9f7f5",
+"jobs.promote.steps[2]": "f70bfa034db22bf9",
 "jobs.promote.steps[3]": "57f1cabf57203fb4",
 "jobs.promote.steps[4]": "d68ee85b757afd48",
 "jobs.promote.steps[5]": "3ed22b5d5858d04d",
 "jobs.promote.steps[6]": "d5c32347fc17c3a0",
 "jobs.promote.steps[7]": "551ed8755e63be20",
 "jobs.promote.steps[8]": "c46b1ebe2fb53c77",
-"jobs.promote.steps[9]": "60c3dbf00df8f31a",
+"jobs.promote.steps[9]": "2c1cc0dcc283dc0e",
 "top.name": "e24c0972b5fa826f",
 "top.on": "5392e22b77352f82",
 "top.permissions": "d8d6aceb1abc4199"
@@ -1865,17 +1869,17 @@ GOLDEN = json.loads(r'''{
 "jobs.scan.runs-on": "a89f3a1c7e4302eb",
 "jobs.scan.steps.count": 12,
 "jobs.scan.steps[0]": "3ef4af68ef144f12",
-"jobs.scan.steps[10]": "1a9575ee3bca4948",
+"jobs.scan.steps[10]": "49cd409c02cd74a7",
 "jobs.scan.steps[11]": "71a52a55fec1d9d5",
 "jobs.scan.steps[1]": "cc0f804abf38bf35",
-"jobs.scan.steps[2]": "836b790867ae1acd",
-"jobs.scan.steps[3]": "97f0e819166d9a87",
+"jobs.scan.steps[2]": "ea51d466a3867780",
+"jobs.scan.steps[3]": "b185465198d7b614",
 "jobs.scan.steps[4]": "2f27b22bf7eaaa02",
 "jobs.scan.steps[5]": "db2c738bad035a7a",
 "jobs.scan.steps[6]": "16b0a6464fd7e084",
-"jobs.scan.steps[7]": "50350b2e378cfc05",
+"jobs.scan.steps[7]": "cd3649669620f72d",
 "jobs.scan.steps[8]": "4081ed8a3ee43119",
-"jobs.scan.steps[9]": "576fb65c881a30be",
+"jobs.scan.steps[9]": "1ebdcf5b5c1a0ea6",
 "jobs.scan.strategy": "2c049e5b9ca29b43",
 "jobs.scanners.name": "d1d26c67d18bd05d",
 "jobs.scanners.outputs": "90d7299c6d63a2ad",
@@ -1914,73 +1918,78 @@ GOLDEN = json.loads(r'''{
 },
 "uses": {
 "stage-image.yml": [
-[
-"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-null
-],
-[
-"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
 {
+"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+},
+{
+"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+"with": {
 "name": "${{ inputs.dist-artifact }}",
 "path": "dist/"
 }
-],
-[
-"docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+},
 {
+"uses": "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+"with": {
 "driver-opts": "image=moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
 }
-],
-[
-"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+},
 {
+"if": "inputs.mode == 'pr' && inputs.upload-oci",
+"name": "upload the OCI archives (pr scan check consumes the exact candidate bytes)",
+"uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+"with": {
 "if-no-files-found": "error",
 "name": "oci-candidate",
 "path": "/tmp/*.oci",
 "retention-days": "1"
 }
-],
-[
-"actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+},
 {
+"if": "inputs.mode == 'release'",
+"name": "sign the image-build predicate (subjects = the emitted index digests)",
+"uses": "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+"with": {
 "predicate-path": "/tmp/image-build-predicate.json",
 "predicate-type": "https://fosterstack.com/attestations/image-build/v1",
 "subject-checksums": "/tmp/image-subjects.txt"
 }
-],
-[
-"actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+},
 {
+"if": "inputs.mode == 'release'",
+"name": "attest build provenance for the images",
+"uses": "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+"with": {
 "subject-checksums": "/tmp/image-subjects.txt"
 }
-]
+}
 ],
 "stage-reproducibility.yml": [
-[
-"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-null
-],
-[
-"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
 {
+"uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+},
+{
+"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+"with": {
 "name": "${{ inputs.dist-artifact }}",
 "path": "dist/"
 }
-],
-[
-"docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+},
 {
+"uses": "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+"with": {
 "driver-opts": "image=moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
 }
-],
-[
-"actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+},
 {
+"name": "sign the reproducibility predicate",
+"uses": "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+"with": {
 "predicate-path": "/tmp/repro-predicate.json",
 "predicate-type": "https://fosterstack.com/attestations/reproducibility/v1",
 "subject-checksums": "/tmp/repro-subjects.txt"
 }
-]
+}
 ]
 }
 }''')
@@ -1993,7 +2002,9 @@ def nz(o, key=None):
         return [nz(x) for x in o]
     if isinstance(o, str):
         if key == "run":
-            return [re.sub(r"\s+", " ", l).strip() for l in joined(o).split("\n") if l.strip() and not l.strip().startswith("#")]
+            # byte for byte: a comment line is not exempt (a ${{ }} in it is expanded before the shell reads the script);
+            # only trailing whitespace and blank lines do not count
+            return [l.rstrip() for l in o.split("\n") if l.strip()]
         return re.sub(r"\s+", " ", o).strip()
     return o
 
@@ -2038,7 +2049,7 @@ def outer_paths(name):
 
 
 def uses_pins(name):
-    return [[st["uses"], nz(st.get("with"))] for j in wf(name)["jobs"].values() for st in (j.get("steps") or []) if st.get("uses")]
+    return [nz(st) for j in wf(name)["jobs"].values() for st in (j.get("steps") or []) if st.get("uses")]
 
 
 @case("3", "frozen: every downstream workflow is exactly what it was before this change (parsed structure: env at every level, ids, order, scripts)")
@@ -2071,7 +2082,7 @@ def _():
     ok(vex_steps(assemble()) and vex_steps(repro_steps()), "the changed steps are missing")
 
 
-@case("2", "pins: stage-image and stage-reproducibility use every action exactly as before (checkout takes no inputs: the release commit, this repository)")
+@case("2", "pins: stage-image and stage-reproducibility use every action exactly as before (the complete step: id, name, with, env, if, ...; checkout takes no inputs)")
 def _():
     for name in USES_FILES:
         eq(uses_pins(name), GOLDEN["uses"][name], "%s action references and inputs" % name)
