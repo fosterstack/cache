@@ -213,14 +213,29 @@ SUPPRESSION_PATTERNS=(
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves
 # to a non-auditor branch, i.e. suppression paths stay blocked by default.
-_branch="${GITHUB_HEAD_REF:-}"
-[ -n "$_branch" ] || _branch="${GITHUB_REF_NAME:-}"
-[ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-_suppression_free=0
-case "$_branch" in
-  auditor/*|main) ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}") ;;
-  *) _suppression_free=1 ;;
-esac
+# GITHUB_HEAD_REF is only the head branch NAME, and a fork can name its branch anything, so:
+#   pull_request event (GITHUB_HEAD_REF set): the auditor lane only if the branch is auditor/* AND the
+#     head repository is this repository (GITHUB_HEAD_REPO == GITHUB_REPOSITORY; either missing =>
+#     not the same repo, fail closed). A PR head named `main` is never special.
+#   otherwise (push, or the pre-commit hook): auditor/* or main by the pushed ref / local branch.
+_suppression_free=1
+if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+  case "$GITHUB_HEAD_REF" in
+    auditor/*)
+      if [ -n "${GITHUB_REPOSITORY:-}" ] && [ "${GITHUB_HEAD_REPO:-}" = "$GITHUB_REPOSITORY" ]; then
+        _suppression_free=0
+      fi ;;
+  esac
+else
+  _branch="${GITHUB_REF_NAME:-}"
+  [ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  case "$_branch" in
+    auditor/*|main) _suppression_free=0 ;;
+  esac
+fi
+if [ "$_suppression_free" -eq 0 ]; then
+  ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")
+fi
 
 # Any other branch (feature PRs, bots, the pre-commit hook on a local branch) may CONTAIN a
 # suppression file but may not ADD or CHANGE one: a suppression path passes only if it exists at the

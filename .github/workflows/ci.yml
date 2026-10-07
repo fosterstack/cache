@@ -212,9 +212,14 @@ jobs:
 
       - name: make sure the base branch ref exists (pull requests)
         if: github.event_name == 'pull_request'
-        run: git fetch --no-tags origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+        env:
+          BASE: ${{ github.base_ref }}
+        run: git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
 
       - name: check every tracked file against the allowlist
+        env:
+          # head repo vs this repo decides whether an auditor/* head is the real lane (a fork can name a branch anything)
+          GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: git ls-files | ./bin/check-file-allowlist.sh
 
       - name: allowlist branch-scoping regressions (auditor suppression lane)

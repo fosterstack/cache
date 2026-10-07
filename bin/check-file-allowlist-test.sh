@@ -15,7 +15,7 @@ gf() { echo "FAIL: $1 — $2"; fail=$((fail+1)); }
 run() {
   local expect="$1"; local ref="$2"; local desc="$3"; shift 3
   local out rc
-  out="$(printf '%s\n' "$@" | GITHUB_HEAD_REF="$ref" GITHUB_REF_NAME="" "$SCRIPT" 2>&1)"; rc=$?
+  out="$(printf '%s\n' "$@" | GITHUB_HEAD_REF="$ref" GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO="${HEADREPO-o/r}" "$SCRIPT" 2>&1)"; rc=$?
   if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
     echo "ok:   $desc"; pass=$((pass+1))
   else
@@ -38,6 +38,22 @@ SUPP=(".snyk" "osv-scanner.toml" ".auditor/accepted-items.json"
       # REQ-AUD-16: the generated knowledge doc (AC3) and merge-gated proposals (AC4) the auditor
       # carries in its own suppression PR.
       ".auditor/knowledge.md" ".auditor/proposals/adjudicator-proposals.json")
+
+# GITHUB_HEAD_REF is only a branch NAME: auditor/* on a pull_request is the auditor lane only when the
+# head repository IS this repository (GITHUB_HEAD_REPO == GITHUB_REPOSITORY). `main` is special only on
+# a push event, never as a PR head. A fork can name its branch anything.
+HEADREPO=fork/r
+run fail "auditor/zzz" "FORK PR from auditor/zzz: suppression outputs blocked" "${SUPP[@]}"
+run fail "main"        "FORK PR from main: suppression outputs blocked"        "${SUPP[@]}"
+HEADREPO=
+run fail "auditor/zzz" "PR with the head repo empty: fails closed"             "${SUPP[@]}"
+HEADREPO=o/r
+run fail "main"        "same-repo PR from a branch named main: not special (only a push to main is)" "${SUPP[@]}"
+unset HEADREPO
+run pass "auditor/zzz" "same-repo PR from auditor/zzz: allowed as today" "${SUPP[@]}"
+( printf '%s\n' .snyk | GITHUB_HEAD_REF=auditor/zzz GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r "$SCRIPT" >/dev/null 2>&1 ) \
+  && { echo "FAIL: head-repo variable unset on a PR event must fail closed"; fail=$((fail+1)); } \
+  || { echo "ok:   head-repo variable unset on a PR event fails closed"; pass=$((pass+1)); }
 
 # The auditor lane may introduce/change its suppression outputs.
 run pass "auditor/2026-09-24-abc123"      "auditor/ PR head: suppression outputs allowed"      "${SUPP[@]}"
@@ -74,7 +90,7 @@ mkrepo() {
 trun() {
   local expect="$1" desc="$2" dir="$3" head="$4" base="$5"; shift 5
   local out rc
-  out="$(cd "$dir" && printf '%s\n' "$@" | GITHUB_HEAD_REF="$head" GITHUB_REF_NAME="" GITHUB_BASE_REF="$base" "$ABS_SCRIPT" 2>&1)"; rc=$?
+  out="$(cd "$dir" && printf '%s\n' "$@" | GITHUB_HEAD_REF="$head" GITHUB_REF_NAME="" GITHUB_BASE_REF="$base" GITHUB_REPOSITORY=o/r GITHUB_HEAD_REPO="${HEADREPO-o/r}" "$ABS_SCRIPT" 2>&1)"; rc=$?
   if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
     echo "ok:   $desc"; pass=$((pass+1))
   else
@@ -143,6 +159,12 @@ trun fail "feature: copy of a suppression file to another suppression path is bl
 mkrepo "$R"; ( cd "$R" && cp .snyk osv-scanner.toml && g add -A && g commit -qm cp )
 trun fail "feature: .snyk content copied to osv-scanner.toml is blocked" "$R" feature/x "" .snyk osv-scanner.toml
 
+mkrepo "$R"; ( cd "$R" && echo '{"a":5}' > $PS && g commit -qam edit )
+HEADREPO=fork/r
+trun fail "fork PR from auditor/x with an edited suppression file is blocked" "$R" auditor/x "" "$PS"
+trun fail "fork PR from main with an edited suppression file is blocked" "$R" main "" "$PS"
+unset HEADREPO
+
 # other branches keep today's behaviour
 mkrepo "$R"; ( cd "$R" && echo '{"a":3}' > $PS && g commit -qam edit )
 trun pass "auditor/x branch: edited suppression file allowed (unchanged behaviour)" "$R" auditor/x "" "$PS"
@@ -153,9 +175,9 @@ trun fail "feature: non-suppression unlisted file still blocked" "$R" feature/x 
 trun fail "feature: edited suppression plus unlisted file reports failure" "$R" feature/x "" "$PS" secrets.txt
 # pre-commit usage: no env at all, local branch name, staged change compared with the merge base
 mkrepo "$R"
-( cd "$R" && printf '%s\n' "$PS" .snyk | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF "$ABS_SCRIPT" >/dev/null 2>&1 ) \
+( cd "$R" && printf '%s\n' "$PS" .snyk | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
   && gp "pre-commit usage (no env, local feature branch): untouched suppression files pass" || gf "pre-commit untouched" "rc!=0"
-( cd "$R" && echo '{"a":4}' > $PS && g add $PS && printf '%s\n' "$PS" | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF "$ABS_SCRIPT" >/dev/null 2>&1 ) \
+( cd "$R" && echo '{"a":4}' > $PS && g add $PS && printf '%s\n' "$PS" | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF -u GITHUB_REPOSITORY -u GITHUB_HEAD_REPO "$ABS_SCRIPT" >/dev/null 2>&1 ) \
   && gf "pre-commit staged edit" "should have been blocked" || gp "pre-commit usage: staged edit of a suppression file is blocked"
 
 # The reserved-branch guard: only the delivery App may push the auditor/* lane (the allowlist
