@@ -242,9 +242,10 @@ if grep -qF "skopeo copy -q docker://docker.io/library/debian@$CHILD_FIX docker:
   echo "ok: the amd64 child is copied to its own scratch tag and our statement attached to it"; pass=$((pass+1))
 else echo "FAIL: the child copy or its attachment is missing"; fail=$((fail+1)); fi
 if grep -qF 'docker buildx imagetools create --tag ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
-   && grep -qF -- "--file $e4/out/attest/built-descriptor.json ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b" "$LOG4" \
+   && grep -qF -- "--file $e4/out/attest/built-descriptor-nomt.json ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b" "$LOG4" \
    && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor.json" \
-   && grep -qF 'vnd.docker.reference.digest' "$e4/out/attest/built-descriptor.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor.json"; then
+   && grep -qF 'vnd.docker.reference.digest' "$e4/out/attest/built-descriptor.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor.json" \
+   && ! grep -qF mediaType "$e4/out/attest/built-descriptor-nomt.json" && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor-nomt.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor-nomt.json"; then
   echo "ok: the attestation-manifest descriptor (annotations kept) is added to a copy of the original index"; pass=$((pass+1))
 else echo "FAIL: the built index step or the descriptor is wrong"; fail=$((fail+1)); fi
 if grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
@@ -262,14 +263,14 @@ if grep -q 'inconclusive (the create failed' "$e4/out5/summary.md" && ! grep -qF
    && ! grep -q 'attestation list registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG5"; then
   echo "ok: a failed create is inconclusive and the unchanged copy is never scanned as the built index"; pass=$((pass+1))
 else echo "FAIL: a failed create was scanned or not reported inconclusive"; fail=$((fail+1)); fi
-# the real run (probe 3) showed `--file` with a tag+digest source fail ("<repo>:latest: not found"): the probe then falls back to the plain
-# two-source form (the original index and the attestation manifest, both by digest) and scans whichever variant really built the index
+# the real run (probe 3) showed `--file` with a tag+digest source fail ("<repo>:latest: not found"): the probe then falls back to the
+# two-source form with the descriptor annotations given as buildx annotations (a plain two-source form drops them: probe 3b) and scans whichever variant really built the index
 LOG6="$e4/docker6.log"
 FAIL_FILE=1 SCOUT_DIR="$e4" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$LOG6" HOME="$e4/home" \
   PATH="$e4:$PATH" bash "$here/scout-root-cause.sh" "$e4/out6" > "$e4/run6.log" 2>&1 || true
-if grep -qF 'docker buildx imagetools create --tag ghcr.io/fosterstack/cache-scout-probe:multi-built ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b ghcr.io/fosterstack/cache-scout-probe@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$LOG6" \
-   && grep -qF 'registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG6" && grep -q 'variant sources' "$e4/out6/summary.md"; then
-  echo "ok: when the --file form fails the two-source form is tried and its built index is scanned"; pass=$((pass+1))
-else echo "FAIL: the fallback form was not tried or not scanned"; fail=$((fail+1)); fi
+if grep -qF 'docker buildx imagetools create --tag ghcr.io/fosterstack/cache-scout-probe:multi-built --annotation manifest-descriptor[unknown/unknown]:vnd.docker.reference.type=attestation-manifest --annotation manifest-descriptor[unknown/unknown]:vnd.docker.reference.digest=sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b ghcr.io/fosterstack/cache-scout-probe@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$LOG6" \
+   && grep -qF 'registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG6" && grep -q 'variant annot' "$e4/out6/summary.md"; then
+  echo "ok: when the --file form fails the annotated two-source form is tried and its built index is scanned"; pass=$((pass+1))
+else echo "FAIL: the annotated fallback form was not tried or not scanned"; fail=$((fail+1)); fi
 rm -rf "$e2e" "$e4"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]

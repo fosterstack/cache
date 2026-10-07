@@ -181,15 +181,20 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
     echo "- the child's attestation-manifest descriptor: \`$(cut -c1-300 "$a/built-descriptor.json")\`" >> "$summ"
     built_ref="$PROBE_REPO:multi-built"; built_idx="$PROBE_REPO@$MULTI"
     att_dig=$(jq -r .digest "$a/built-descriptor.json"); att_ref="$PROBE_REPO@$att_dig"
+    # buildx treats a descriptor that carries a mediaType as complete and then wants a tag-based source (the ":latest: not found" of probes 3
+    # and 3b); without mediaType it resolves the manifest by its digest (the descriptor keeps its digest, size, platform and annotations)
+    jq -c 'del(.mediaType)' "$a/built-descriptor.json" > "$a/built-descriptor-nomt.json"
     # two ways to add the child, tried in order; the first run showed the descriptor form (--file with a tag+digest source) failing with
-    # "<repo>:latest: not found": (1) --file descriptor with the original index by digest only, (2) the original index and the
-    # attestation manifest as two sources by digest. The probe scans whichever variant really built the index.
-    for variant in file sources; do
+    # "<repo>:latest: not found" (and again with digest-only sources): (1) --file descriptor with the original index by digest only,
+    # (2) the original index and the attestation manifest as two sources by digest, the descriptor annotated with buildx's
+    # manifest-descriptor[unknown/unknown] annotations (the plain two-source form, tried in probe 3b, kept the child but dropped
+    # the annotations). The probe scans whichever variant really built the index.
+    for variant in file annot; do
       skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$built_ref" >> "$a/copy.log" 2>&1
       if [ "$variant" = file ]; then
-        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --file "$a/built-descriptor.json" "$built_idx"
-      else
-        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" "$built_idx" "$att_ref"
+        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --file "$a/built-descriptor-nomt.json" "$built_idx"
+      else   # the plain two-source form added the child with NO annotations (probe 3b); buildx can annotate the descriptor by its platform (unknown/unknown)
+        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --annotation "manifest-descriptor[unknown/unknown]:vnd.docker.reference.type=attestation-manifest" --annotation "manifest-descriptor[unknown/unknown]:vnd.docker.reference.digest=$CHILD" "$built_idx" "$att_ref"
       fi
       crc=$?
       echo "- variant $variant: imagetools create exit $crc — \`$(tail -1 "$a/built-create-$variant.log" | cut -c1-200)\`" >> "$summ"
