@@ -520,6 +520,18 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-010-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+  - ac: REQ-REL-010-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+  - ac: REQ-REL-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+  - ac: REQ-REL-010-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }

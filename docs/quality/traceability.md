@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 72 |
-| Acceptance criteria | 167 |
+| Active requirements | 73 |
+| Acceptance criteria | 171 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 151 |
+| ACs with mapped evidence | 155 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 29 |
+| Confidence: implementation-only | 30 |
 
 ## Cache protocol
 
@@ -680,6 +680,19 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
+
+### REQ-REL-010 — The final image index carries the release's VEX as attestation children
+
+The final image index that is built, tested, signed and promoted shall be the built index plus one attestation-manifest child per platform carrying the release's OpenVEX statement, produced by a deterministic tool from the built index and the VEX file bytes.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vex-index.py; .github/workflows/stage-image.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-010-AC1 | Given a built index and a VEX file; when the tool computes the final index twice; then both outputs are byte-identical and depend only on those two inputs | unit |  | approved | 1 item(s) |
+| REQ-REL-010-AC2 | Given an index that is malformed, already final or lacks platforms, or a VEX that is not an OpenVEX document; when the tool runs; then it refuses and writes nothing | unit |  | approved | 1 item(s) |
+| REQ-REL-010-AC3 | Given a computed final index; when it is inspected; then each platform has exactly one attestation child naming that platform's digest, and removing the attestation children leaves the built index's entries unchanged | unit |  | approved | 1 item(s) |
+| REQ-REL-010-AC4 | Given a registry; when the tool pushes the final index; then it writes only blobs and manifests by digest, never a tag, and fails closed when the stored manifest's digest differs or a child is missing | unit |  | approved | 1 item(s) |
 
 ## SCAN
 
