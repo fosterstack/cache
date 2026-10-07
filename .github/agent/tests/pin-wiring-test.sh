@@ -3,6 +3,8 @@
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
 # The real ci.yml must pass; each mutated copy must be caught.
+# Known limit (by design): later steps of the CI allowlist job can edit the pin checker or this test on disk;
+# the trusted gate (.github/workflows/agent-review-gate.yml) re-runs main's copies of all of them over the PR head.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -20,6 +22,23 @@ for _t in yaml.scan(_text, Loader=yaml.BaseLoader):
         print("the workflow uses a YAML anchor or alias"); sys.exit(1)
     if _n > 200000:
         print("the workflow is implausibly large"); sys.exit(1)
+# a duplicate mapping key silently keeps the LAST value in the parsed structure: refuse it anywhere in the file
+_dups = []
+def _walk(n, path):
+    if isinstance(n, yaml.MappingNode):
+        seen = set()
+        for k, v in n.value:
+            kk = k.value if isinstance(k, yaml.ScalarNode) else None
+            if kk in seen:
+                _dups.append(path + "/" + str(kk))
+            seen.add(kk)
+            _walk(v, path + "/" + str(kk))
+    elif isinstance(n, yaml.SequenceNode):
+        for i, v in enumerate(n.value):
+            _walk(v, path + "/" + str(i))
+_walk(yaml.compose(_text, Loader=yaml.BaseLoader), "")
+if _dups:
+    print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
 for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
@@ -101,9 +120,17 @@ FETCH_RUN = """if [ -n "${BASE}" ]; then
   git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
 fi"""
 CHECK_RUN = "git ls-files | ./bin/check-file-allowlist.sh"
-def norm(r):  # drop comment lines; the command text itself must match exactly
-    return "\n".join(l for l in (r or "").strip().splitlines() if not l.lstrip().startswith("#"))
+def norm(r):  # drop comment lines; the command text itself must match exactly. A comment line is one whose first
+    # character after ONLY spaces and tabs is `#` (bash's rule; Python's str.strip/lstrip/splitlines also
+    # treat U+00A0, U+3000, U+2028 ... as whitespace or line ends, which bash does not)
+    return "\n".join(l for l in (r or "").strip(" \t\n").split("\n") if not l.lstrip(" \t").startswith("#"))
+def odd_chars(r):  # anything but printable ASCII, tab and newline in a protected run string
+    return sorted({hex(ord(c)) for c in (r or "") if not (c in "\t\n" or " " <= c <= "~")})
 steps_ = job.get("steps", [])
+for i, st in enumerate(steps_):
+    if i in (1, 2) or "check-file-allowlist.sh" in (st.get("run") or "") or "git fetch" in (st.get("run") or ""):
+        if odd_chars(st.get("run")):
+            bad.append(f"a protected allowlist step's run text has non-ASCII or control characters {odd_chars(st.get('run'))}")
 for st in steps_:
     if norm(st.get("run")) in (FETCH_RUN, CHECK_RUN) or "check-file-allowlist.sh" in (st.get("run") or "") or "git fetch" in (st.get("run") or ""):
         if "${{" in (st.get("run") or ""):   # raw text, comment lines included: an expression is rendered before bash sees it
@@ -277,6 +304,35 @@ case_ expression-in-comment      bad "$ck['run'] = '# \${{ fromJSON(\\'\"\\\\nex
 case_ expression-in-fetch        bad "$fe['run'] = '# \${{ github.sha }}\\n' + $fe['run']"
 case_ anchor-alias-in-ci         bad "sh = {'k': 'v'}; d['jobs']['test']['x-shared'] = sh; d['jobs']['lint']['x-shared'] = sh"
 case_ anchor-bomb                bad "a = ['x']; b = [a, a, a, a, a, a, a, a, a]; c = [b, b, b, b, b, b, b, b, b]; e = [c, c, c, c, c, c, c, c, c]; d['jobs']['test']['bomb'] = [e, e, e, e, e, e, e, e, e]"
+
+for u in 00a0 3000 2028 2029; do
+  case_ "unicode-space-comment-$u" bad "$ck['run'] = '\\u$u# x\\n' + $ck['run']"
+  case_ "unicode-space-in-fetch-$u" bad "$fe['run'] = '\\u$u# x\\n' + $fe['run']"
+done
+case_ cr-in-check            bad "$ck['run'] = $ck['run'] + '\\r'"
+case_ vt-in-check            bad "$ck['run'] = '\\x0b# x\\n' + $ck['run']"
+case_ ff-in-check            bad "$ck['run'] = '\\x0c# x\\n' + $ck['run']"
+case_ ctrl-in-fetch          bad "$fe['run'] = $fe['run'] + '\\x01'"
+case_ nbsp-inside-command    bad "$ck['run'] = $ck['run'].replace(' | ', '\\u00a0|\\u00a0')"
+case_ tab-comment-still-ok-shape bad "$ck['run'] = '\\t# note\\n' + $ck['run'] + ' || true'"
+# duplicate keys can only be written as text, so these edit the YAML text of a copy
+textcase() {  # textcase <name> <expect> <python expression editing the text variable t>
+  local f="$work/t-$1.yml"; cp "$here/.github/workflows/ci.yml" "$f"
+  python3 - "$f" "$3" <<'PY'
+import sys
+p, edit = sys.argv[1], sys.argv[2]
+t = open(p).read()
+exec(edit)
+open(p, "w").write(t)
+PY
+  if out=$(judge "$f"); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS $1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL $1 → $got, want $2 ($out)"; fi
+}
+textcase duplicate-run-in-check-step   bad "t = t.replace('        run: git ls-files | ./bin/check-file-allowlist.sh', '        run: git ls-files | ./bin/check-file-allowlist.sh\\n        run: true', 1)"
+textcase duplicate-name-allowlist-job  bad "t = t.replace('  allowlist:\\n    name: allowlist', '  allowlist:\\n    name: allowlist\\n    name: allowlist', 1)"
+textcase duplicate-top-level-key       bad "t = t.replace('\\njobs:\\n', '\\npermissions:\\n  contents: read\\njobs:\\n', 1)"
+textcase the-text-edit-itself-is-neutral ok "t = t"
 
 # the trusted gate's judge and sweep jobs are time-bounded (a hung judge must fail, not hang the required check)
 gate_timeouts() {

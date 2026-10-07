@@ -96,7 +96,7 @@ jobs:
           python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
           # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
           # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
-          git ls-tree -r --name-only "$HEAD_SHA" | ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
+          git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
           mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
           PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
@@ -199,7 +199,7 @@ jobs:
             conclusion=failure
             if base="$(git merge-base HEAD "$sha")" && python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$sha" \
                && GH_TOKEN="$LIST_TOKEN" python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
-               && git ls-tree -r --name-only "$sha" | GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
+               && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
                && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh; then
               conclusion=success   # the review record, every action reference a digest (row 78), main's allowlist guard and pin-wiring judge

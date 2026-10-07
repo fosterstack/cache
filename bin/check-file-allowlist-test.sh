@@ -209,6 +209,36 @@ PICK="$(cd "$R" && git merge-base HEAD origin/main)"
 trun fail "criss-cross: file equal to one merge base but not the other is blocked" "$R" feature/x "" "$PS"
 trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .snyk
 
+# NUL-delimited input (ALLOWLIST_NUL=1, for `git ls-tree -z`): a path containing a newline is ONE path, not two
+# allowed ones; without the variable the line-oriented behaviour is unchanged
+nul() {  # nul <expect> <desc> <env NUL value or empty> <printf format> <args...>
+  local expect="$1" desc="$2" nulv="$3" fmt="$4"; shift 4
+  local out rc
+  out="$(printf "$fmt" "$@" | GITHUB_HEAD_REF=feature/x GITHUB_REF_NAME="" GITHUB_REPOSITORY=o/r ALLOWLIST_NUL="$nulv" "$SCRIPT" 2>&1)"; rc=$?
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+nul pass "nul: ordinary NUL-delimited list passes" 1 'internal/a.go\0README.md\0'
+nul pass "nul: last record without a terminator passes" 1 'internal/a.go\0README.md'
+nul fail "nul: one path with an embedded newline is one (blocked) path" 1 'internal/a.go\nREADME.md\0'
+nul pass "no ALLOWLIST_NUL: the same bytes split on newlines as before" "" 'internal/a.go\nREADME.md\n'
+nul fail "nul: a disallowed path in the list is blocked" 1 'internal/a.go\0ops/runbook.md\0'
+
+# git pathspecs are literal (GIT_LITERAL_PATHSPECS=1): the script's own git calls never glob a path
+mkdir -p "$TMPROOT/shim"
+cat > "$TMPROOT/shim/git" <<EOS
+#!/bin/sh
+echo "\${GIT_LITERAL_PATHSPECS:-unset}" >> "$TMPROOT/literal.log"
+exec $(command -v git) "\$@"
+EOS
+chmod +x "$TMPROOT/shim/git"
+mkrepo "$R"; : > "$TMPROOT/literal.log"
+( cd "$R" && printf '%s\n' "$PS" | PATH="$TMPROOT/shim:$PATH" GITHUB_HEAD_REF=feature/x GITHUB_REPOSITORY=o/r "$ABS_SCRIPT" >/dev/null 2>&1 )
+if [ -s "$TMPROOT/literal.log" ] && ! grep -qv '^1$' "$TMPROOT/literal.log"; then gp "every git call runs with GIT_LITERAL_PATHSPECS=1"; else gf "literal pathspecs" "log: $(sort -u "$TMPROOT/literal.log" | tr '\n' ' ')"; fi
+
 # other branches keep today's behaviour
 mkrepo "$R"; ( cd "$R" && echo '{"a":3}' > $PS && g commit -qam edit )
 trun pass "auditor/x branch: edited suppression file allowed (unchanged behaviour)" "$R" auditor/x "" "$PS"

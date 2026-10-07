@@ -292,8 +292,15 @@ _suppression_unchanged() {
   return 0
 }
 
+# the script's own git pathspecs are literal paths, never globs or magic
+export GIT_LITERAL_PATHSPECS=1
+
+# ALLOWLIST_NUL=1: the list on stdin is NUL-delimited (git ls-tree -z), so a path with a newline is one path
+_delim=$'\n'
+[ "${ALLOWLIST_NUL:-}" = 1 ] && _delim=''
+
 blocked=()
-while IFS= read -r path; do
+while IFS= read -r -d "$_delim" path || [ -n "$path" ]; do
   [ -z "$path" ] && continue
   ok=0
   for pattern in "${ALLOW_PATTERNS[@]}"; do
