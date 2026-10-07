@@ -375,6 +375,11 @@ def reindent_json(b, indent=4, reverse=False):
 EXTRAS = dict(extra_top={"annotations": {"org.opencontainers.image.description": "Café — résumé \U0001F680"}},
               extra_entry={"annotations": {"com.example.note": "käse"}})
 
+UNKNOWN_FIELDS = dict(
+    extra_top={"artifactType": "application/vnd.example.index+json", "annotations": {"org.example.k": "v", "org.opencontainers.image.created": "2026-10-01T00:00:00Z"},
+               "subject": {"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64, "size": 10}, "x-extension": {"a": [1, 2, {"b": None, "c": True}], "n": 9007199254740992, "neg": -9007199254740992}},
+    extra_entry={"artifactType": "application/vnd.example.image+json", "urls": ["https://example.test/blob"], "data": "e30=",
+                 "annotations": {"org.example.entry": "e"}, "x-ext": {"deep": [[1], [2]], "t": False}})
 FIXTURES = {
     "oci-2-platform": lambda: mk_fx(),
     "oci-compact-no-indent": lambda: mk_fx(indent=None),
@@ -383,6 +388,7 @@ FIXTURES = {
     "unknown-unknown-entry": lambda: mk_fx(unknown=True),
     "single-platform": lambda: mk_fx(plats=(("amd64", None),)),
     "extra-fields-and-non-ascii": lambda: mk_fx(**EXTRAS),
+    "unknown-fields-on-entries-and-index": lambda: mk_fx(**UNKNOWN_FIELDS),
 }
 
 
@@ -749,6 +755,13 @@ def assert_refused(db, vb, label=""):
         eq(sorted(os.listdir(s)), sorted(["in"] + (["out"] if pre else [])), "files created next to the out-dir by a refusal (e.g. <out>.tmp)")
 
 
+def nest(levels):
+    x = 1
+    for _ in range(levels):
+        x = [x]
+    return x
+
+
 def bad_index(f):
     fx = mk_fx(unknown=True)
     o = json.loads(json.dumps(fx.obj))
@@ -850,6 +863,14 @@ D_BAD = {
     "size Infinity literal": bad_index(lambda o: o["manifests"][0].update(size="@@Infinity@@")),
     "lone surrogate in an annotation": bad_index(lambda o: o["manifests"][0].update(annotations={"k": "##D800##"})),
     "lone surrogate in a key": bad_index(lambda o: o.update({"##DC00##": 1})),
+    "a float in an unknown top-level field": bad_index(lambda o: o.update(x="@@1.5@@")),
+    "a float 1.0 in an unknown top-level field": bad_index(lambda o: o.update(x="@@1.0@@")),
+    "a float in an unknown entry field": bad_index(lambda o: o["manifests"][0].update(x="@@1e2@@")),
+    "a float -0.0 in an entry annotation": bad_index(lambda o: o["manifests"][0].update(annotations={"k": "@@-0.0@@"})),
+    "NaN in an unknown entry field": bad_index(lambda o: o["manifests"][0].update(x="@@NaN@@")),
+    "Infinity in an unknown top-level field": bad_index(lambda o: o.update(x="@@Infinity@@")),
+    "an integer beyond 2**53 in an unknown field": bad_index(lambda o: o["manifests"][0].update(x=2 ** 53 + 1)),
+    "metadata nested deeper than 32 inside an otherwise valid index": bad_index(lambda o: o.update(x=nest(32))),
 }
 for _k, _v in list(D_BAD.items()):
     if b'"@@' in _v:
@@ -887,13 +908,6 @@ V_BAD = {
     "invalid utf-8": b'{"@context":"https://openvex.dev/ns/v0.2.0","statements":[{"x":"\xff"}]}',
     "truncated": VEX_MIN[:-5],
 }
-
-
-def nest(levels):
-    x = 1
-    for _ in range(levels):
-        x = [x]
-    return x
 
 
 def vex_with(f, base=None):
@@ -966,6 +980,37 @@ V_BAD.update({
     "an integer beyond 2**53": vex_with(lambda o: o["statements"][0].update(x=2 ** 53 + 1)),
     "an integer below -2**53": vex_with(lambda o: o["statements"][0].update(x=-2 ** 53 - 1)),
     "a huge integer": vex_with(lambda o: o["statements"][0].update(x=10 ** 40)),
+    "justification is not in the schema's enum": vex_with(lambda o: o["statements"][0].update(justification="made_up")),
+    "justification not in the enum, no impact_statement": vex_with(lambda o: (o["statements"][0].update(justification="made_up"), o["statements"][0].pop("impact_statement"))),
+    "justification in the wrong case": vex_with(lambda o: o["statements"][0].update(justification="Component_Not_Present")),
+    "justification is a number": vex_with(lambda o: o["statements"][0].update(justification=3)),
+    "status in the wrong case (Not_Affected)": vex_with(lambda o: o["statements"][0].update(status="Not_Affected")),
+    "status in upper case": vex_with(lambda o: o["statements"][0].update(status="NOT_AFFECTED")),
+    "timestamp offset without a colon (+0400)": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+0400")),
+    "timestamp offset +99:99": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+99:99")),
+    "timestamp offset +24:00": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+24:00")),
+    "timestamp offset +12:60": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+12:60")),
+    "timestamp offset is only an hour (+04)": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+04")),
+    "timestamp in lower-case z": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00z")),
+    "document last_updated is yesterday": vex_with(lambda o: o.update(last_updated="yesterday")),
+    "statement timestamp is yesterday": vex_with(lambda o: o["statements"][0].update(timestamp="yesterday")),
+    "statement timestamp offset +99:99": vex_with(lambda o: o["statements"][0].update(timestamp="2026-09-20T09:00:00+99:99")),
+    "statement timestamp is a date only": vex_with(lambda o: o["statements"][0].update(timestamp="2026-09-20")),
+    "statement timestamp is a number": vex_with(lambda o: o["statements"][0].update(timestamp=5)),
+    "statement last_updated is invalid": vex_with(lambda o: o["statements"][0].update(last_updated="2026-13-01T00:00:00Z")),
+    "subcomponents is not a list": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents={"@id": "x"})),
+    "a subcomponent is a number": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=[7])),
+    "a subcomponent is a string": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=["pkg:generic/busybox@1.37.0"])),
+    "a subcomponent without @id or identifiers": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=[{"name": "busybox"}])),
+    "a subcomponent with an empty @id": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=[{"@id": ""}])),
+    "a subcomponent whose own subcomponents are bad": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=[{"@id": "a", "subcomponents": [7]}])),
+    "identifiers value is a number": vex_with(lambda o: o["statements"][0]["products"][0].update(identifiers={"purl": 7})),
+    "identifiers value is empty": vex_with(lambda o: o["statements"][0]["products"][0].update(identifiers={"purl": ""})),
+    "identifiers is a list": vex_with(lambda o: o["statements"][0]["products"][0].update(identifiers=["pkg:oci/cache"])),
+    "identifiers is a string": vex_with(lambda o: o["statements"][0]["products"][0].update(identifiers="pkg:oci/cache")),
+    "identifiers value is null": vex_with(lambda o: o["statements"][0]["products"][0].update(identifiers={"purl": None})),
+    "a product with only an empty identifiers object": vex_with(lambda o: o["statements"][0].update(products=[{"identifiers": {}}])),
+    "a subcomponent identifiers value is a number": vex_with(lambda o: o["statements"][0]["products"][0].update(subcomponents=[{"identifiers": {"purl": 3}}])),
     "nested deeper than 32": vex_with(lambda o: o["statements"][0].update(x=nest(31))),
     "larger than 1 MiB": vex_with(lambda o: o["statements"][0].update(impact_statement="y" * (2 ** 20))),
 })
@@ -1030,6 +1075,54 @@ def _():
     check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
     vb = vex_with(lambda x: x["statements"][0].pop("justification"))
     check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
+
+
+def fx_with_len(target, mode):
+    def mk(n):
+        return mk_fx(extra_top={"annotations": {"k": "a" * n}}, indent=None)
+    if mode == "D":
+        return mk(target - len(mk(0).bytes))
+    return mk(target - len(ref_compute(mk(0).bytes, VEX_MIN)[0]))
+
+
+@case("AC2", "compute, verify and the final index agree at the D limit with RETAINED content: a valid annotation making D exactly 1 MiB computes, its F (larger than 1 MiB) verifies; D + 1 byte is refused")
+def _():
+    control_ok()
+    fx = fx_with_len(2 ** 20, "D")
+    eq(len(fx.bytes), 2 ** 20, "fixture size")
+    r = do_compute(fx.bytes, VEX_MIN)
+    check_matches_ref(fx.bytes, VEX_MIN, r)
+    ok(len(rd(os.path.join(r.dir, "index.json"))) > 2 ** 20, "fixture: F should exceed 1 MiB")
+    v = verify(rd(os.path.join(r.dir, "index.json")), VEX_MIN, base=fx.bytes, blobs=os.path.join(r.dir, "blobs"))
+    ok(v.rc == 0, "verify refused a final index computed from a valid D at the limit: " + v.err.strip()[:200])
+    over = fx_with_len(2 ** 20 + 1, "D")
+    eq(len(over.bytes), 2 ** 20 + 1, "fixture size")
+    assert_refused(over.bytes, VEX_MIN, "D over 1 MiB (retained content)")
+
+
+@param("AC3", "the final index limit is 2 MiB of raw bytes: exactly 2 MiB verifies, 2 MiB + 1 is refused", [("exactly 2 MiB", True), ("2 MiB + 1", False)])
+def _(good):
+    verify_control()
+    fx = fx_with_len(2 ** 21 + (0 if good else 1), "F")
+    path, fb = build_custom(fx, VEX_MIN)
+    eq(len(fb), 2 ** 21 + (0 if good else 1), "fixture size")
+    r = verify(fb, VEX_MIN, blobs=os.path.join(path, "blobs"))
+    ok((r.rc == 0) == good, "verify %s a final index of %d bytes: %s" % ("refused" if good else "accepted", len(fb), r.err.strip()[:150]))
+
+
+@case("AC2", "valid OpenVEX forms are accepted: a product identified only by identifiers, subcomponents, every justification, timestamps with Z and valid offsets and fractions, statement timestamps")
+def _():
+    fx = mk_fx()
+    cases = [
+        lambda o: o["statements"][0].update(products=[{"identifiers": {"purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]),
+        lambda o: o["statements"][0].update(products=[{"@id": "a", "identifiers": {"purl": "pkg:x", "cpe23": "cpe:2.3:a:x"}, "subcomponents": [{"@id": "b"}, {"identifiers": {"purl": "pkg:y"}, "subcomponents": [{"@id": "c"}]}]}]),
+        lambda o: o.update(timestamp="2026-09-20T09:00:00Z"), lambda o: o.update(timestamp="2026-09-20T09:00:00.123456+05:30"),
+        lambda o: o.update(timestamp="2026-09-20T09:00:00-23:59"), lambda o: o.update(timestamp="2026-09-20T09:00:00+23:59", last_updated="2026-09-21T00:00:00Z"),
+        lambda o: o["statements"][0].update(timestamp="2026-09-07T12:00:00-04:00", last_updated="2026-09-08T12:00:00Z"),
+    ] + [(lambda j: (lambda o: o["statements"][0].update(justification=j)))(j) for j in ("component_not_present", "vulnerable_code_not_present", "vulnerable_code_not_in_execute_path", "vulnerable_code_cannot_be_controlled_by_adversary", "inline_mitigations_already_exist")]
+    for f in cases:
+        vb = vex_with(f)
+        check_matches_ref(fx.bytes, vb, do_compute(fx.bytes, vb))
 
 
 @case("AC2", "positive control: the repository's real VEX file (.vex/fosterstack-cache.openvex.json) passes the strict OpenVEX validation and contains no float")
@@ -1237,6 +1330,23 @@ def _(mk):
         ok("vnd.docker.reference.type" not in (e.get("annotations") or {}), "an original entry gained attestation annotations")
 
 
+@case("AC3", "unknown fields on the index and its entries (artifactType, urls, data, annotations, subject, nested extension data, integers at 2**53) are preserved in F exactly and verify --base accepts the result")
+def _():
+    fx = FIXTURES["unknown-fields-on-entries-and-index"]()
+    r = do_compute(fx.bytes, vex_real())
+    check_matches_ref(fx.bytes, vex_real(), r)
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    d = json.loads(fx.bytes.decode("utf-8"))
+    for k in ("artifactType", "annotations", "subject", "x-extension"):
+        eq(f[k], d[k], "top-level " + k)
+    for a, b in zip(f["manifests"][:2], d["manifests"]):
+        eq(a, b, "an original entry with its unknown fields")
+        for k in ("artifactType", "urls", "data", "annotations", "x-ext"):
+            ok(k in a, "dropped field " + k)
+    v = verify(rd(os.path.join(r.dir, "index.json")), vex_real(), base=fx.bytes, blobs=os.path.join(r.dir, "blobs"))
+    ok(v.rc == 0, "verify rejected: " + v.err.strip()[:200])
+
+
 @case("AC3", "removing the attestation children from F gives back the built index's entries, field for field")
 def _():
     fx = mk_fx(unknown=True, **EXTRAS)
@@ -1346,9 +1456,15 @@ def verify(f_bytes, vb, base=None, blobs=None, s=None, env=None, final_path=None
         args += ["--base", wr(os.path.join(s, "base.json"), base) if isinstance(base, bytes) else base]
     if blobs is not None:
         args += ["--blobs", blobs]
-    before = tree(s)
+    watch = {s}
+    if blobs is not None:
+        watch |= {blobs, os.path.dirname(os.path.abspath(blobs))}
+    if base is not None and not isinstance(base, bytes) and os.path.dirname(os.path.abspath(base)):
+        watch.add(os.path.dirname(os.path.abspath(base)))
+    before = {w: tree(w) for w in watch if os.path.isdir(w)}
     r = run(args, env=env)
-    eq(tree(s), before, "verify must not write anything")
+    for w, t in before.items():
+        eq(tree(w), t, "verify must not write anything (checked: the inputs' directory, the --blobs tree and its parent, the --base file's directory)")
     return r
 
 
@@ -1698,6 +1814,21 @@ VERIFY_ONLY = {
 # the first platform's statement differs from the second's: push (which has no VEX file) must see it too
 STRUCT["the first platform's statement carries another valid OpenVEX document than the second's"] = ({"stmt": lambda o, c: o["predicate"].update(version=o["predicate"]["version"] + 1)}, None)
 
+PRED_BAD = {
+    "justification not in the enum": lambda p: p["statements"][0].update(justification="made_up"),
+    "status Not_Affected": lambda p: p["statements"][0].update(status="Not_Affected"),
+    "document timestamp +0400": lambda p: p.update(timestamp="2026-09-20T09:00:00+0400"),
+    "document timestamp +99:99": lambda p: p.update(timestamp="2026-09-20T09:00:00+99:99"),
+    "statement timestamp yesterday": lambda p: p["statements"][0].update(timestamp="yesterday"),
+    "subcomponents [7]": lambda p: p["statements"][1]["products"][0].update(subcomponents=[7]),
+    "identifiers value 7": lambda p: p["statements"][1]["products"][0].update(identifiers={"purl": 7}),
+    "a product without @id or identifiers": lambda p: p["statements"][0].update(products=[{"name": "x"}]),
+    "@context bogus suffix": lambda p: p.update({"@context": "https://openvex.dev/ns/v0.2.0x"}),
+    "a float in the predicate": lambda p: p["statements"][0].update(x=1.5),
+}
+for _label, _fn in PRED_BAD.items():
+    STRUCT["rehashed predicate invalid in every statement: " + _label] = ({"stmt": (lambda f: lambda o, c: f(o["predicate"]))(_fn)}, None, None)
+
 FINAL_RAW = {
     "index.json is indented": lambda f: json.dumps(f, indent=2, sort_keys=True).encode(),
     "index.json has a trailing newline": lambda f: cj(f) + b"\n",
@@ -1758,21 +1889,33 @@ TLS_NAMES = ["registry.example.test", "auth.example.test", "registry-1.docker.io
 
 
 def tls():
+    """(CA bundle that the tool is told to trust, the good server context)"""
     if "m" not in _TLS:
         d = os.path.join(TMP, "tls")
         os.makedirs(d)
-        cnf = os.path.join(d, "o.cnf")
-        with open(cnf, "w") as f:
-            f.write("[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=registry.example.test\n[v3]\nsubjectAltName=" +
-                    ",".join("DNS:" + n for n in TLS_NAMES) + "\n")
-        p = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-keyout", os.path.join(d, "k.pem"),
-                            "-out", os.path.join(d, "c.pem"), "-config", cnf], capture_output=True)
-        if p.returncode != 0:
-            raise Fail("cannot generate the test certificate with openssl: " + p.stderr.decode()[-200:])
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(os.path.join(d, "c.pem"), os.path.join(d, "k.pem"))
-        _TLS["m"] = (os.path.join(d, "c.pem"), ctx)
+        ctxs = {}
+        for name, sans in (("good", TLS_NAMES), ("wrong", ["wrong.example.test"]), ("untrusted", TLS_NAMES)):
+            cnf = os.path.join(d, name + ".cnf")
+            with open(cnf, "w") as f:
+                f.write("[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=%s\n[v3]\nsubjectAltName=%s\n" % (sans[0], ",".join("DNS:" + n for n in sans)))
+            p = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-keyout", os.path.join(d, name + ".key"),
+                                "-out", os.path.join(d, name + ".pem"), "-config", cnf], capture_output=True)
+            if p.returncode != 0:
+                raise Fail("cannot generate the test certificate with openssl: " + p.stderr.decode()[-200:])
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(os.path.join(d, name + ".pem"), os.path.join(d, name + ".key"))
+            ctxs[name] = ctx
+        bundle = os.path.join(d, "bundle.pem")
+        with open(bundle, "wb") as f:  # the tool trusts "good" and "wrong" (a valid certificate for the wrong host); never "untrusted"
+            f.write(rd(os.path.join(d, "good.pem")) + rd(os.path.join(d, "wrong.pem")))
+        _TLS["m"] = (bundle, ctxs["good"])
+        _TLS["ctx"] = ctxs
     return _TLS["m"]
+
+
+def tls_ctx(name):
+    tls()
+    return _TLS["ctx"][name]
 
 
 # ------------------------------------------------------------------ fake registry
@@ -1802,12 +1945,15 @@ class Reg:
     def __init__(self, repo="fosterstack/cache", token=False, basic=False, rewrite=False, lie=False, fail_after=None,
                  realm=None, redirect_on=(), redirect_to="http://registry.example.test/elsewhere", loc_base=None,
                  lenient=False, readback="ok", att_head_404=False, child_head_500=False, token_key="token",
-                 use_tls=False, public=None, alt_uploads=False, token_redirect_to=None, stall_on=()):
+                 use_tls=False, public=None, alt_uploads=False, token_redirect_to=None, stall_on=(), hdr_case="exact",
+                 put_blob_status=None, head_blob_status=None, blob_gone_after_put=False, token_drip=False, cert="good"):
         self.repo, self.token_mode, self.basic_mode, self.rewrite, self.lie = repo, token, basic, rewrite, lie
         self.fail_after, self.realm, self.redirect_on, self.redirect_to, self.loc_base = fail_after, realm, set(redirect_on), redirect_to, loc_base
         self.lenient, self.readback, self.att_head_404, self.child_head_500, self.token_key = lenient, readback, att_head_404, child_head_500, token_key
         self.use_tls, self.alt_uploads, self.token_redirect_to, self.stall_on = use_tls, alt_uploads, token_redirect_to, set(stall_on)
         self.release = threading.Event()
+        self.hdr_case, self.put_blob_status, self.head_blob_status, self.blob_gone_after_put, self.token_drip = hdr_case, put_blob_status, head_blob_status, blob_gone_after_put, token_drip
+        self.uploaded = set()
         self.blobs, self.mans, self.log, self.tag_writes, self.sessions = set(), {}, [], [], {}
         self.children, self.att_set = set(), set()
         self.mutating_ok, self.counter = 0, 0
@@ -1834,13 +1980,26 @@ class Reg:
                     reg.log.append(ent)
                 hd = dict(hd)
                 trunc = hd.pop("_truncate", False)
+                drip = hd.pop("_drip", False)
+                fn = {"exact": lambda k: k, "lower": str.lower, "upper": str.upper, "title": lambda k: "-".join(w.capitalize() for w in k.split("-"))}[reg.hdr_case]
+                hd = {(fn(k) if k != "Content-Length" else k): v for k, v in hd.items()}
                 self.send_response(st)
                 hd["Content-Length"] = str(len(rb))
                 for k, v in hd.items():
                     self.send_header(k, v)
                 self.end_headers()
                 if self.command != "HEAD":
-                    if trunc:
+                    if drip:
+                        self.close_connection = True
+                        try:
+                            for i in range(len(rb)):
+                                if reg.release.wait(1.0):
+                                    break
+                                self.wfile.write(rb[i:i + 1])
+                                self.wfile.flush()
+                        except OSError:
+                            pass
+                    elif trunc:
                         self.wfile.write(rb[:len(rb) // 2])
                         self.wfile.flush()
                         self.close_connection = True
@@ -1853,7 +2012,7 @@ class Reg:
 
             do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = handle_any
 
-        ctx = tls()[1] if use_tls else None
+        ctx = tls_ctx(cert) if use_tls else None
         self.srv = Srv(("127.0.0.1", 0), H, ctx)
         self.port = self.srv.server_address[1]
         self.public = public
@@ -1883,7 +2042,10 @@ class Reg:
             if self.token_redirect_to:
                 return 302, {"Location": self.token_redirect_to}, b""
             if ent["auth"] == "Basic " + base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode():
-                return 200, {"Content-Type": "application/json"}, json.dumps({self.token_key: self.bearer, "expires_in": 300}).encode()
+                hd = {"Content-Type": "application/json"}
+                if self.token_drip:
+                    hd["_drip"] = True
+                return 200, hd, json.dumps({self.token_key: self.bearer, "expires_in": 300}).encode()
             return 401, {}, b'{"errors":[{"code":"UNAUTHORIZED"}]}'
         if self.token_mode and ent["auth"] != "Bearer " + self.bearer:
             scheme = "https" if self.use_tls else "http"
@@ -1930,6 +2092,8 @@ class Reg:
         err = lambda c, code: (c, {}, json.dumps({"errors": [{"code": code}]}).encode())
         if sid not in self.sessions or (q.get("_state") or [""])[0] != self.sessions[sid]:
             return err(404, "BLOB_UPLOAD_UNKNOWN")
+        if self.put_blob_status:
+            return err(self.put_blob_status, "DENIED")
         if ent["ctype"] != "application/octet-stream":
             return err(415, "BLOB_UPLOAD_INVALID")
         d = (q.get("digest") or [""])[0]
@@ -1937,6 +2101,7 @@ class Reg:
             return err(400, "DIGEST_INVALID")
         del self.sessions[sid]
         self.blobs.add(d)
+        self.uploaded.add(d)
         return 201, {"Docker-Content-Digest": d}, b""
 
     def route(self, m, rest, q, body, ent):
@@ -1957,6 +2122,10 @@ class Reg:
             return self.upload_put(rest[len("blobs/uploads/"):], q, body, ent)
         if rest.startswith("blobs/") and m in ("HEAD", "GET"):
             d = rest[6:]
+            if self.head_blob_status:
+                return err(self.head_blob_status, "DENIED")
+            if self.blob_gone_after_put and d in self.uploaded:
+                return err(404, "BLOB_UNKNOWN")
             if d in self.blobs:
                 return 200, {"Docker-Content-Digest": d}, b""
             return err(404, "BLOB_UNKNOWN")
@@ -2004,6 +2173,9 @@ class Reg:
                         return err(500, "UNKNOWN")
                     if self.readback == "truncate":
                         hd["_truncate"] = True
+                        return 200, hd, b
+                    if self.readback == "drip":
+                        hd["_drip"] = True
                         return 200, hd, b
                     if self.readback == "wrongct":
                         hd["Content-Type"] = "text/plain"
@@ -2240,8 +2412,12 @@ def assert_clean_push(reg, pd, r, skip_blobs=()):
         put_i = [i for i, x in enumerate(reg.log) if x["method"] == "PUT" and x["path"].endswith("/manifests/" + a)][0]
         ok(any(x["method"] in ("HEAD", "GET") and x["path"].endswith("/manifests/" + a) and x["status"] == 200 for x in reg.log[put_i + 1:idx_f]),
            "attestation manifest %s was not re-checked (HEAD) after its PUT and before F" % a)
-    last_blob = max([i for i, x in enumerate(reg.log) if "/blobs/uploads/" in x["path"]] or [-1])
     first_man = min(i for i, x in enumerate(reg.log) if x["method"] == "PUT" and "/manifests/" in x["path"])
+    for bd in got_blobs:
+        put_i = [i for i, x in enumerate(reg.log) if x["method"] == "PUT" and dict(urllib.parse.parse_qsl(x["query"])).get("digest") == bd][0]
+        ok(any(x["method"] == "HEAD" and x["path"].endswith("/blobs/" + bd) and x["status"] == 200 for x in reg.log[put_i + 1:first_man]),
+           "blob %s was not re-checked (HEAD 200) after its upload and before any manifest was pushed" % bd)
+    last_blob = max([i for i, x in enumerate(reg.log) if "/blobs/uploads/" in x["path"]] or [-1])
     ok(last_blob < first_man or not puts_blob, "a manifest was pushed before all blobs were")
     ok(any(x["method"] == "GET" and x["path"].endswith("/manifests/" + pd.f_digest) and x["status"] == 200 for x in reg.log[idx_f + 1:]), "no successful read-back of F by digest after the write")
     eq(reg.mans[pd.f_digest][0], pd.fb, "stored F")
@@ -2787,7 +2963,7 @@ def assert_untouched(other, sink, r, reg, pd, why):
     ok("Traceback" not in r.err, "a traceback instead of a plain reason")
 
 
-REALMS = ["http://registry.example.test/token", "http://127.0.0.1@registry.example.test/token", "http://127.0.0.1.example.test/token",
+REALMS = ["http://127.0.0.1:@@PORT@@/token", "http://registry.example.test/token", "http://127.0.0.1@registry.example.test/token", "http://127.0.0.1.example.test/token",
           "http://localhost.example.test/token", "https://registry.example.test/token", "ftp://127.0.0.1/token", "//registry.example.test/token",
           "http://localhost:@@PORT@@/token", "http://127.0.0.1:@@PORT@@@registry.example.test/token", "https://auth.docker.io/token"]
 
@@ -3018,7 +3194,8 @@ def _():
         reg.close(); prox.close()
 
 
-LOOKALIKES = [("registry.example.test", "https://registry.example.test.attacker.test/token"), ("registry.example.test", "https://evil-registry.example.test/token"),
+LOOKALIKES = [("registry.example.test", "https://registry.example.test:8443/token"), ("registry-1.docker.io", "https://auth.docker.io:8443/token"),
+              ("registry.example.test", "https://registry.example.test.attacker.test/token"), ("registry.example.test", "https://evil-registry.example.test/token"),
               ("registry.example.test", "https://registry.example.test./token"), ("registry.example.test", "https://registry.example.test@attacker.test/token"),
               ("registry.example.test", "https://registry.example.test:443@attacker.test/token"), ("registry.example.test", "https://attacker.test/registry.example.test"),
               ("registry.example.test", "https://registry.example.testx/token"), ("registry-1.docker.io", "https://auth.docker.io.attacker.test/token"),
@@ -3092,6 +3269,193 @@ def _():
         ok(time.time() - t0 < 15, "gave up too slowly")
     finally:
         ls.close()
+
+
+# ------------------------------------------------------------------ round 3 additions
+HDR_CASES = ["lower", "upper", "title"]
+
+
+@param("AC4", "HTTP header names are case-insensitive: Bearer and Basic challenges, upload Location, Content-Type and Docker-Content-Digest in lower, upper and title case all work", [("%s / %s" % (m_, c_), (m_, c_)) for m_ in ("bearer", "basic", "none") for c_ in HDR_CASES])
+def _(arg):
+    mode, case_ = arg
+
+    def go(reg, pd):
+        assert_clean_push(reg, pd, push(reg, pd))
+    with_world(go, token=(mode == "bearer"), basic=(mode == "basic"), hdr_case=case_)
+
+
+@param("AC4", "a blob PUT that is refused (400, 403, 404, 500) stops the push before any manifest is written", [("%s on a %s registry" % (c_, a_), (c_, l_)) for c_ in (400, 403, 404, 500) for a_, l_ in LENIENCY])
+def _(arg):
+    push_control()
+    code, len_ = arg
+
+    def go(reg, pd):
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "blob PUT %d" % code)
+        eq([x for x in reg.log if x["method"] == "PUT" and "/manifests/" in x["path"]], [], "a manifest was pushed after a failed blob upload")
+    with_world(go, put_blob_status=code, lenient=len_)
+
+
+@param("AC4", "a blob HEAD that answers 500, 403 or 401 is never taken to mean 'exists': nothing is pushed on top of it", [("%s on a %s registry" % (c_, a_), (c_, l_)) for c_ in (500, 403, 401) for a_, l_ in LENIENCY])
+def _(arg):
+    push_control()
+    code, len_ = arg
+
+    def go(reg, pd):
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "blob HEAD %d" % code)
+        eq([x for x in reg.log if x["method"] == "PUT" and "/manifests/" in x["path"]], [], "a manifest was pushed")
+    with_world(go, head_blob_status=code, lenient=len_)
+
+
+@param("AC4", "a blob that is not there when re-checked after its upload (HEAD 404 after PUT) stops the push before any manifest PUT", LENIENCY)
+def _(len_):
+    push_control()
+
+    def go(reg, pd):
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "blob gone after upload")
+        eq([x for x in reg.log if x["method"] == "PUT" and "/manifests/" in x["path"]], [], "a manifest was pushed although a blob could not be confirmed")
+        ok(any(x["method"] == "HEAD" and "/blobs/sha256:" in x["path"] and x["status"] == 404 for x in reg.log), "fixture: no blob HEAD 404")
+    with_world(go, blob_gone_after_put=True, lenient=len_)
+
+
+@param("AC4", "a response that trickles one byte per second is cut off by the TOTAL per-request deadline (FSCACHE_REGISTRY_TIMEOUT=2), not just a per-read timeout", [("read-back body", {"readback": "drip"}), ("token response", {"token": True, "token_drip": True})])
+def _(kw):
+    push_control()
+    reg, pd = push_world(**kw)
+    try:
+        t0 = time.time()
+        r = push(reg, pd, env={"FSCACHE_REGISTRY_TIMEOUT": "2"}, timeout=40)
+        took = time.time() - t0
+        ok(r.rc != 0, "the push succeeded from a trickling registry")
+        ok(took < 15, "the tool waited %.1f s for a trickling response (deadline 2 s)" % took)
+        ok(pd.f_digest not in r.out, "claimed success")
+        ok("Traceback" not in r.err, "a traceback")
+    finally:
+        reg.close()
+
+
+def documented_timeout():
+    r = run(["push", "--help"], net="off")
+    ok(r.rc == 0, "push --help failed")
+    text = " ".join(r.out.split())
+    m = re.search(r"FSCACHE_REGISTRY_TIMEOUT.{0,200}?default[: ]+(\d+)", text)
+    ok(m is not None, "push --help does not document FSCACHE_REGISTRY_TIMEOUT with a default in seconds")
+    n = int(m.group(1))
+    ok(1 <= n <= 60, "the documented default timeout is %d s (must be between 1 and 60)" % n)
+    return n
+
+
+@case("AC4", "push --help documents FSCACHE_REGISTRY_TIMEOUT and its default, a number of seconds no greater than 60")
+def _():
+    documented_timeout()
+
+
+@case("AC4", "the documented default timeout is really applied: with no FSCACHE_REGISTRY_TIMEOUT a stalled registry makes the push fail within the documented time")
+def _():
+    push_control()
+    n = documented_timeout()
+    reg, pd = push_world(stall_on={"post"})
+    try:
+        t0 = time.time()
+        r = push(reg, pd, timeout=n + 40)
+        took = time.time() - t0
+        ok(r.rc != 0, "the push succeeded")
+        ok(took < n + 15, "gave up after %.1f s (documented default %d s)" % (took, n))
+        ok(pd.f_digest not in r.out, "claimed success")
+    finally:
+        reg.close()
+
+
+@case("AC4", "compute -> push consistency at the D limit with retained content: a D of exactly 1 MiB computes and its F (above 1 MiB) pushes cleanly")
+def _():
+    fx = fx_with_len(2 ** 20, "D")
+    c = do_compute(fx.bytes, VEX_MIN)
+    check_matches_ref(fx.bytes, VEX_MIN, c)
+    reg = Reg()
+    reg.seed(fx.children)
+    pd = make_dir(fx, VEX_MIN)
+    pd.path = c.dir
+    reg.att_set = set(pd.att_digests)
+    try:
+        assert_clean_push(reg, pd, push(reg, pd))
+    finally:
+        reg.close()
+
+
+@param("AC4", "the final index limit for push is 2 MiB of raw bytes: exactly 2 MiB is pushed, 2 MiB + 1 is refused before any request", [("exactly 2 MiB", True), ("2 MiB + 1", False)])
+def _(good):
+    push_control()
+    fx = fx_with_len(2 ** 21 + (0 if good else 1), "F")
+    reg, pd = push_world(fx=fx, vb=VEX_MIN, pd=lambda fx_, vb: custom_pd(fx_, vb))
+    try:
+        eq(len(pd.fb), 2 ** 21 + (0 if good else 1), "fixture size")
+        r = push(reg, pd)
+        if good:
+            assert_clean_push(reg, pd, r)
+        else:
+            assert_no_f_attempt(reg, pd, r, "F over 2 MiB")
+            eq(reg.log, [], "a request was made")
+    finally:
+        reg.close()
+
+
+@case("AC4", "https: a trusted certificate for the WRONG host (hostname verification) is refused: the registry sees no request")
+def _():
+    push_control()
+    reg, pd, prox = tls_world(token=True, cert="wrong")
+    try:
+        r = tls_push(reg, pd, prox)
+        ok(r.rc != 0, "pushed over a certificate for another host")
+        eq(reg.log, [], "a request was served over a connection whose certificate names another host")
+    finally:
+        reg.close(); prox.close()
+
+
+def docker_world(token_cert):
+    a, pd = push_world(use_tls=True, public="registry-1.docker.io", token=True, realm="https://auth.docker.io/token")
+    b = Reg(use_tls=True, public="auth.docker.io", cert=token_cert)
+    b.bearer = a.bearer
+    prox = Proxy({"registry-1.docker.io:443": a.port, "auth.docker.io:443": b.port})
+    return a, b, pd, prox
+
+
+@case("AC4", "positive control: the Docker Hub pair with a separate, trusted, correctly named token server pushes cleanly (a distinct authentication origin over TLS)")
+def _():
+    a, b, pd, prox = docker_world("good")
+    try:
+        r = push(a, pd, env=prox.env(trust=True), net="observe")
+        assert_clean_push(a, pd, r)
+        want = "Basic " + base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode()
+        ok(b.log and all(x["path"] == "/token" and x["auth"] == want for x in b.log), "the token server saw something other than the token request")
+        eq([x for x in a.log if x["auth"] and x["auth"].startswith("Basic")], [], "Basic credentials reached the registry")
+    finally:
+        a.close(); b.close(); prox.close()
+
+
+@param("AC4", "the token endpoint behind a trusted registry presents a certificate for the wrong host, or an untrusted one: no authenticated request reaches it and nothing is pushed", [("trusted certificate for the wrong host", "wrong"), ("untrusted certificate", "untrusted")])
+def _(cert):
+    push_control()
+    a, b, pd, prox = docker_world(cert)
+    try:
+        r = push(a, pd, env=prox.env(trust=True), net="observe")
+        ok(r.rc != 0, "pushed using a token endpoint with a bad certificate")
+        eq(b.log, [], "a request (with credentials) was served to the token endpoint")
+        eq([x for x in a.log if x["auth"] and x["auth"].startswith("Basic")], [], "Basic credentials reached the registry")
+        eq(f_puts(a, pd), [], "F attempted")
+        eq(okmuts(a), [], "something was written")
+    finally:
+        a.close(); b.close(); prox.close()
+
+
+@case("AC4", "https: an explicit default port in the realm (https://registry.example.test:443/token) is the same origin and works")
+def _():
+    reg, pd, prox = tls_world(token=True, realm="https://registry.example.test:443/token")
+    try:
+        assert_clean_push(reg, pd, tls_push(reg, pd, prox))
+    finally:
+        reg.close(); prox.close()
 
 
 def main():
