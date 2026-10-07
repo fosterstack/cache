@@ -724,6 +724,15 @@ if a[:2] == ["buildx", "build"]:
         if x == "-f": var = a[i + 1].split(".", 1)[1]
         if x == "--metadata-file": meta = a[i + 1]
         if x == "--output": out = a[i + 1]
+    def need(cond, msg):
+        if not cond:
+            print("stub docker: " + msg, file=sys.stderr); sys.exit(1)
+    need("--platform" in a and a[a.index("--platform") + 1] == "linux/amd64,linux/arm64", "build is not for linux/amd64,linux/arm64")
+    need("--provenance=false" in a and "--sbom=false" in a, "provenance/sbom exporters are not off")
+    need("rewrite-timestamp=true" in out, "the output does not rewrite timestamps")
+    need(os.environ.get("SOURCE_DATE_EPOCH", "").isdigit(), "SOURCE_DATE_EPOCH is not the commit time")
+    if "type=image" in out:
+        need("push-by-digest=true" in out and "push=true" in out and "name=127.0.0.1:%%s/fosterowner/cache-candidates" %% os.environ["REG_PORT"] in out.split(",") or "name=127.0.0.1:%%s/fosterowner/cache-candidates" %% os.environ["REG_PORT"] in out, "release output is not push-by-digest to the candidates package: " + out)
     d = open(os.path.join(fx, var + ".digest")).read().strip()
     raw = open(os.path.join(fx, var + ".index"), "rb").read()
     if "type=oci" in out:
@@ -744,6 +753,8 @@ if a[:3] == ["buildx", "imagetools", "inspect"] and "--raw" in a:
     if os.environ.get("NO_REGISTRY"):
         print("stub: the registry is offline", file=sys.stderr); sys.exit(97)
     repo, _, dg = ref.partition("@")
+    if repo.split("/", 1)[0] != "127.0.0.1:" + os.environ["REG_PORT"]:
+        print("stub: inspect of a registry other than ghcr.io: " + repo, file=sys.stderr); sys.exit(1)
     path = repo.split("/", 1)[1]
     try:
         r = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%%s/v2/%%s/manifests/%%s" %% (os.environ["REG_PORT"], path, dg), headers={"Accept": "application/vnd.oci.image.index.v1+json"}))
@@ -774,6 +785,15 @@ a = sys.argv[1:]
 with open(os.environ["CALLS"], "a") as f:
     f.write("gh " + " ".join(a) + "\\n")
 if a[:2] == ["attestation", "verify"]:
+    def opt(n):
+        return a[a.index(n) + 1] if n in a[:-1] else None
+    oci = a[2].startswith("oci://")
+    want = {"--repo": os.environ["GH_EXPECT_REPO"],
+            "--predicate-type": "https://fosterstack.com/attestations/" + ("image-build" if oci else "build") + "/v1",
+            "--signer-workflow": os.environ["GH_EXPECT_REPO"] + "/.github/workflows/" + ("stage-image.yml" if oci else "stage-build.yml")}
+    for k, v in want.items():
+        if opt(k) != v:
+            print("stub gh: %%s is %%r, expected %%r" %% (k, opt(k), v), file=sys.stderr); sys.exit(1)
     att = os.environ.get("GH_ATTESTED")
     if att is not None and a[2].startswith("oci://") and a[2].split("@")[-1] not in att.split(","):
         print("stub gh: no attestation for " + a[2], file=sys.stderr); sys.exit(1)
@@ -865,6 +885,8 @@ def rewrite(script, b):
 
 
 STEP_KEYS = {"name", "id", "if", "uses", "with", "run", "env", "working-directory", "shell", "continue-on-error"}
+ALLOWED_WITH = {"actions/checkout": set(), "actions/download-artifact": {"name", "path"}, "docker/setup-buildx-action": {"driver-opts"},
+                "actions/upload-artifact": {"name", "path", "if-no-files-found", "retention-days"}}
 MODELLED_ACTIONS = ("actions/checkout@", "actions/download-artifact@", "docker/setup-buildx-action@", "actions/upload-artifact@")
 
 
@@ -899,6 +921,8 @@ def run_steps(b, steps, mode, extra_ctx=None):
             if is_attest(s):
                 res.attest.append(s)
                 w = s.get("with") or {}
+                bad_in = set(w) - ({"subject-checksums", "predicate-type", "predicate-path"} if s["uses"].startswith("actions/attest@") else {"subject-checksums"})
+                ok(not bad_in, "attest step %s is given the input(s) %s, which this test does not model" % (s["uses"].split("@")[0], sorted(bad_in)))
                 snap = {"uses": s["uses"]}
                 for key in ("subject-checksums", "predicate-path"):
                     if key in w:
@@ -907,6 +931,9 @@ def run_steps(b, steps, mode, extra_ctx=None):
                 res.snaps.append(snap)
             else:
                 ok(s["uses"].startswith(MODELLED_ACTIONS), "step uses %s, which this test does not model" % s["uses"])
+                allowed = ALLOWED_WITH[s["uses"].split("@")[0]]
+                extra_in = set(s.get("with") or {}) - allowed
+                ok(not extra_in, "step %s is given the input(s) %s, which this test does not model (the harness runs this repository's commit)" % (s["uses"].split("@")[0], sorted(extra_in)))
                 if s["uses"].startswith("actions/upload-artifact@"):
                     res.uploads.append(s)
             continue
@@ -926,7 +953,7 @@ def run_steps(b, steps, mode, extra_ctx=None):
                 del env[k]
         env.update({"PATH": b.bin + os.pathsep + env["PATH"], "CALLS": b.calls, "FX": b.fx, "REG_PORT": str(b.reg.port),
                     "GITHUB_OUTPUT": out_file, "GITHUB_SHA": b.sha, "GITHUB_REPOSITORY": OWNER + "/cache", "GITHUB_WORKSPACE": b.repo,
-                    "GITHUB_ACTOR": "ci-actor", "PYTHONDONTWRITEBYTECODE": "1", "HOME": b.dir})
+                    "GITHUB_ACTOR": "ci-actor", "PYTHONDONTWRITEBYTECODE": "1", "HOME": b.dir, "GH_EXPECT_REPO": OWNER + "/cache"})
         env.update(getattr(b, "extra_env", {}))
         if not b.with_registry:
             env["NO_REGISTRY"] = "1"
@@ -1313,290 +1340,700 @@ def _():
 
 
 # ================================================================ review round 1: operands, failure semantics, snapshots
-# Golden digest operands of every consumer and signing boundary downstream of the image stage, extracted from the workflows
-# as they were before this change (the final-index change may not touch them). Every logical line of a run: block, every
-# env/with/output value and every reusable-workflow call input that mentions a digest, an image reference or a command that
-# can name one (crane, cosign, imagetools, docker pull/run/inspect, skopeo, ...). A changed operand, a new line that names
-# one and a removed line all differ from the golden, wherever in the stage they are and however the command is spelt.
-OPERAND_TOKEN = re.compile(r"(?i)digest|crane|cosign|imagetools|docker\s+(pull|inspect|image|run|tag|push|save|load)|repodigests|skopeo|oras|regctl|cache-candidates|sha256:|containerimage|image[-_]?ref")
-OPERAND_FILES = ["release.yml", "acceptance.yml", "scan.yml", "stage-verify.yml", "stage-acceptance-artifacts.yml", "stage-acceptance-egress.yml",
-                 "stage-acceptance-k8s.yml", "stage-acceptance-predicate.yml", "stage-authorize.yml", "stage-promote.yml", "main-candidate-rescan.yml"]
-GOLDEN_OPERANDS = json.loads(r'''{
-"acceptance.yml": [
-"acceptance-gradle.run: docker run -d --name fscache-acc -p 127.0.0.1:18095:8080 \"${IMAGE_REF}\"",
-"acceptance-gradle.run: docker run -d --name fscache-capped -e FSCACHE_MAX_BYTES=49152 -p 127.0.0.1:18096:8080 \"${IMAGE_REF}\"",
-"acceptance-gradle.step.env.IMAGE_REF: ${{ inputs.image-ref }}",
-"acceptance-gradle.step.env.IMAGE_REF: ${{ inputs.image-ref }}",
-"acceptance-maven.run: docker run -d --name fscache-mvn-acc -p 127.0.0.1:18098:8080 -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret \"${IMAGE_REF}\"",
-"acceptance-maven.run: docker run -d --name fscache-mvn-capped -e FSCACHE_MAX_BYTES=262144 -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret -p 127.0.0.1:18099:8080 \"${IMAGE_REF}\"",
-"acceptance-maven.run: echo \"lib sha256: a=${lib_a} b=${lib_b}\"",
-"acceptance-maven.step.env.IMAGE_REF: ${{ inputs.image-ref }}",
-"acceptance-maven.step.env.IMAGE_REF: ${{ inputs.image-ref }}"
+# The downstream chain is frozen: every workflow after (and around) the image stage must be exactly what it was before this
+# change, comparing the PARSED structure so comments and whitespace do not count. Per file: every top-level key (name, on,
+# permissions, env, ...), every job key (needs, with, env, permissions, outputs, if, ...) and every step (id, name, uses,
+# with, env, if, shell, ..., and its run text as ordered, comment-free, whitespace-collapsed lines) is hashed on its own,
+# so a differing path is named. Nothing here selects by keyword: a workflow-level env, an inserted line, a reordered step or
+# a changed `needs:` all differ. Regenerate deliberately with AC5_DUMP_GOLDEN=1 (prints the JSON for the tree in AC5_ROOT).
+FROZEN_FILES = ["release.yml", "acceptance.yml", "scan.yml", "main-candidate-rescan.yml", "stage-build.yml", "stage-admission.yml", "stage-verify.yml",
+                "stage-acceptance-artifacts.yml", "stage-acceptance-egress.yml", "stage-acceptance-k8s.yml", "stage-acceptance-predicate.yml",
+                "stage-authorize.yml", "stage-promote.yml"]
+OPERAND_FILES = FROZEN_FILES
+USES_FILES = ["stage-image.yml", "stage-reproducibility.yml"]
+GOLDEN = json.loads(r'''{
+"frozen": {
+"acceptance.yml": {
+"jobs.acceptance-gradle.name": "23a3dc9bff291b16",
+"jobs.acceptance-gradle.outputs": "8b1e58a66c03ac2a",
+"jobs.acceptance-gradle.permissions": "18654c780b72f615",
+"jobs.acceptance-gradle.runs-on": "a89f3a1c7e4302eb",
+"jobs.acceptance-gradle.steps.count": 25,
+"jobs.acceptance-gradle.steps[0]": "3ef4af68ef144f12",
+"jobs.acceptance-gradle.steps[10]": "3614c4fe094b451b",
+"jobs.acceptance-gradle.steps[11]": "094e9554209e0db5",
+"jobs.acceptance-gradle.steps[12]": "212c3998b2a79a9a",
+"jobs.acceptance-gradle.steps[13]": "fbdccd81b85b43ff",
+"jobs.acceptance-gradle.steps[14]": "163a68e293d8a48f",
+"jobs.acceptance-gradle.steps[15]": "087a33195a99f8f9",
+"jobs.acceptance-gradle.steps[16]": "1af6b9b111880d69",
+"jobs.acceptance-gradle.steps[17]": "50827b5ac6dbe452",
+"jobs.acceptance-gradle.steps[18]": "3ca18eed61c6f9e0",
+"jobs.acceptance-gradle.steps[19]": "d4358467364b8425",
+"jobs.acceptance-gradle.steps[1]": "c70238c510acbaa9",
+"jobs.acceptance-gradle.steps[20]": "877cd6f38bc7eb94",
+"jobs.acceptance-gradle.steps[21]": "6e7211c3a3cfc002",
+"jobs.acceptance-gradle.steps[22]": "82e936d9aadece1e",
+"jobs.acceptance-gradle.steps[23]": "5108c20b252a4ac8",
+"jobs.acceptance-gradle.steps[24]": "63df53aea9e05567",
+"jobs.acceptance-gradle.steps[2]": "d2476c6c32ee1429",
+"jobs.acceptance-gradle.steps[3]": "1a8439b8a778b22d",
+"jobs.acceptance-gradle.steps[4]": "c3f6b1c6dd05fe7c",
+"jobs.acceptance-gradle.steps[5]": "76353e3179ad982c",
+"jobs.acceptance-gradle.steps[6]": "67ea749c806b4169",
+"jobs.acceptance-gradle.steps[7]": "d9cc2c7d883c81ac",
+"jobs.acceptance-gradle.steps[8]": "d42fe1c84ec7b20d",
+"jobs.acceptance-gradle.steps[9]": "48d098b6e42c7d27",
+"jobs.acceptance-maven.env": "d7bfa22e06d22809",
+"jobs.acceptance-maven.name": "36f8ef6d53438101",
+"jobs.acceptance-maven.outputs": "8b1e58a66c03ac2a",
+"jobs.acceptance-maven.permissions": "18654c780b72f615",
+"jobs.acceptance-maven.runs-on": "a89f3a1c7e4302eb",
+"jobs.acceptance-maven.steps.count": 21,
+"jobs.acceptance-maven.steps[0]": "3ef4af68ef144f12",
+"jobs.acceptance-maven.steps[10]": "276325b844adec19",
+"jobs.acceptance-maven.steps[11]": "89ca8fcf5dbfb20a",
+"jobs.acceptance-maven.steps[12]": "7cd8b7f28db6d35c",
+"jobs.acceptance-maven.steps[13]": "294078d9c13e9cf9",
+"jobs.acceptance-maven.steps[14]": "a259dae98dec1197",
+"jobs.acceptance-maven.steps[15]": "ed30f97a9ba95b68",
+"jobs.acceptance-maven.steps[16]": "5a51a9d0f5a7d556",
+"jobs.acceptance-maven.steps[17]": "f014b9874bbd6a87",
+"jobs.acceptance-maven.steps[18]": "44bfdf0b6005e2d3",
+"jobs.acceptance-maven.steps[19]": "1856f4d199fbf52b",
+"jobs.acceptance-maven.steps[1]": "c70238c510acbaa9",
+"jobs.acceptance-maven.steps[20]": "1a98893a09b3adf5",
+"jobs.acceptance-maven.steps[2]": "1612dfc67c3ce955",
+"jobs.acceptance-maven.steps[3]": "1611370468166a1b",
+"jobs.acceptance-maven.steps[4]": "44b5bdd4014c8baf",
+"jobs.acceptance-maven.steps[5]": "a2f420a7b8cfbde1",
+"jobs.acceptance-maven.steps[6]": "1ca8df4269a9dc7b",
+"jobs.acceptance-maven.steps[7]": "902ec3973bf2ce3f",
+"jobs.acceptance-maven.steps[8]": "62a6659c452fd4c8",
+"jobs.acceptance-maven.steps[9]": "3214858ca5f22326",
+"jobs.acceptance-maven.strategy": "8a9e42e1b368bb26",
+"top.name": "c580c13796ee26eb",
+"top.on": "c9393c97066efb94",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"main-candidate-rescan.yml": {
+"jobs.assemble.needs": "e99adbe058517220",
+"jobs.assemble.permissions": "44d3feb81dacebd3",
+"jobs.assemble.steps.count": 0,
+"jobs.assemble.uses": "91e9f8c5c2b736cf",
+"jobs.assemble.with": "51efba0b020dd8b2",
+"jobs.build.permissions": "a58f4623360a36d1",
+"jobs.build.steps.count": 0,
+"jobs.build.uses": "612d49c728b7f0f8",
+"jobs.build.with": "59e1274e29ef1d5b",
+"jobs.manifests.name": "a29233c1d979ae45",
+"jobs.manifests.outputs": "15a5d7c4573bbe83",
+"jobs.manifests.runs-on": "a89f3a1c7e4302eb",
+"jobs.manifests.steps.count": 2,
+"jobs.manifests.steps[0]": "8957e1c08310d968",
+"jobs.manifests.steps[1]": "985c85e2f7851eec",
+"jobs.panel-google.environment": "7649b444a37e5ea5",
+"jobs.panel-google.name": "d1e4ec7902cc017c",
+"jobs.panel-google.needs": "7f4f0bf77f49c743",
+"jobs.panel-google.permissions": "d57abeeb8232850a",
+"jobs.panel-google.runs-on": "a89f3a1c7e4302eb",
+"jobs.panel-google.steps.count": 6,
+"jobs.panel-google.steps[0]": "8957e1c08310d968",
+"jobs.panel-google.steps[1]": "0f32fe39075f8c34",
+"jobs.panel-google.steps[2]": "3302c7616ee3c6f3",
+"jobs.panel-google.steps[3]": "538df9844fecac28",
+"jobs.panel-google.steps[4]": "37fd2f5c383cf7e7",
+"jobs.panel-google.steps[5]": "a6772f043bca00b0",
+"jobs.panel-grype.name": "265d1350e1bd696d",
+"jobs.panel-grype.needs": "7f4f0bf77f49c743",
+"jobs.panel-grype.permissions": "d8d6aceb1abc4199",
+"jobs.panel-grype.runs-on": "a89f3a1c7e4302eb",
+"jobs.panel-grype.steps.count": 5,
+"jobs.panel-grype.steps[0]": "8957e1c08310d968",
+"jobs.panel-grype.steps[1]": "0f32fe39075f8c34",
+"jobs.panel-grype.steps[2]": "b5df81c7da967fc8",
+"jobs.panel-grype.steps[3]": "62666c9c4cdbad27",
+"jobs.panel-grype.steps[4]": "62b740e6ec42cb56",
+"jobs.panel-inspector.env": "2674324ee0e35ee3",
+"jobs.panel-inspector.name": "6bf5f254676b7fc6",
+"jobs.panel-inspector.needs": "7f4f0bf77f49c743",
+"jobs.panel-inspector.permissions": "d57abeeb8232850a",
+"jobs.panel-inspector.runs-on": "a89f3a1c7e4302eb",
+"jobs.panel-inspector.steps.count": 6,
+"jobs.panel-inspector.steps[0]": "8957e1c08310d968",
+"jobs.panel-inspector.steps[1]": "0f32fe39075f8c34",
+"jobs.panel-inspector.steps[2]": "41b30b4b2810341f",
+"jobs.panel-inspector.steps[3]": "3f3a7adb472a1081",
+"jobs.panel-inspector.steps[4]": "f2baee09f7d2450b",
+"jobs.panel-inspector.steps[5]": "c980ae1f4b9037cc",
+"jobs.panel-scout.environment": "7649b444a37e5ea5",
+"jobs.panel-scout.name": "b46cb3154bf24bbc",
+"jobs.panel-scout.needs": "7f4f0bf77f49c743",
+"jobs.panel-scout.permissions": "d8d6aceb1abc4199",
+"jobs.panel-scout.runs-on": "a89f3a1c7e4302eb",
+"jobs.panel-scout.steps.count": 8,
+"jobs.panel-scout.steps[0]": "8957e1c08310d968",
+"jobs.panel-scout.steps[1]": "0f32fe39075f8c34",
+"jobs.panel-scout.steps[2]": "f1306bd40de9dd12",
+"jobs.panel-scout.steps[3]": "96becc0fa388cb3b",
+"jobs.panel-scout.steps[4]": "2429e8a319db709e",
+"jobs.panel-scout.steps[5]": "90fdc8c650d19508",
+"jobs.panel-scout.steps[6]": "487d99e43b00e430",
+"jobs.panel-scout.steps[7]": "4e49ba4920668dfd",
+"jobs.panel.if": "98a106d9c58360f1",
+"jobs.panel.name": "2a40c5f398fa68ad",
+"jobs.panel.needs": "525b9f81d4755d44",
+"jobs.panel.permissions": "0686420875052835",
+"jobs.panel.runs-on": "a89f3a1c7e4302eb",
+"jobs.panel.steps.count": 6,
+"jobs.panel.steps[0]": "8957e1c08310d968",
+"jobs.panel.steps[1]": "b1134ef9ccb437ac",
+"jobs.panel.steps[2]": "e35a6419125d4fff",
+"jobs.panel.steps[3]": "73db4d92d7cb6d20",
+"jobs.panel.steps[4]": "be61f8bd87662be7",
+"jobs.panel.steps[5]": "f9e849a2c1c3034a",
+"jobs.rescan.env": "2dc65141eca35963",
+"jobs.rescan.if": "b0cd8dac63cbbdd0",
+"jobs.rescan.name": "d9cf1a8aa9d84a79",
+"jobs.rescan.needs": "bb01830be8645f79",
+"jobs.rescan.permissions": "af5cc6f35813e232",
+"jobs.rescan.runs-on": "a89f3a1c7e4302eb",
+"jobs.rescan.steps.count": 12,
+"jobs.rescan.steps[0]": "8957e1c08310d968",
+"jobs.rescan.steps[10]": "9fd724db29c92c2b",
+"jobs.rescan.steps[11]": "cec06aac54eed85e",
+"jobs.rescan.steps[1]": "d609c3b40a723124",
+"jobs.rescan.steps[2]": "886a9788af28b148",
+"jobs.rescan.steps[3]": "07bb8b0fe1ad9c44",
+"jobs.rescan.steps[4]": "10412d0f8e1aeb31",
+"jobs.rescan.steps[5]": "e373256576be2fc3",
+"jobs.rescan.steps[6]": "cd1057760f2e9cca",
+"jobs.rescan.steps[7]": "94119dc5bcae858f",
+"jobs.rescan.steps[8]": "03429d20415fdb5e",
+"jobs.rescan.steps[9]": "fa0dd7edbcca43aa",
+"jobs.rescan.strategy": "1d0c1e003cf5b573",
+"jobs.scanner-reports.name": "96be70aa1bf1ee5e",
+"jobs.scanner-reports.needs": "7f4f0bf77f49c743",
+"jobs.scanner-reports.permissions": "d8d6aceb1abc4199",
+"jobs.scanner-reports.runs-on": "a89f3a1c7e4302eb",
+"jobs.scanner-reports.steps.count": 5,
+"jobs.scanner-reports.steps[0]": "3ef4af68ef144f12",
+"jobs.scanner-reports.steps[1]": "0f32fe39075f8c34",
+"jobs.scanner-reports.steps[2]": "effcafb706c80b6d",
+"jobs.scanner-reports.steps[3]": "5d79aa7d6978f70e",
+"jobs.scanner-reports.steps[4]": "005446768edb73f3",
+"jobs.scout-root-cause.environment": "7649b444a37e5ea5",
+"jobs.scout-root-cause.if": "ad899c23175d269d",
+"jobs.scout-root-cause.permissions": "005c397eb9ccf2cc",
+"jobs.scout-root-cause.runs-on": "a89f3a1c7e4302eb",
+"jobs.scout-root-cause.steps.count": 6,
+"jobs.scout-root-cause.steps[0]": "8957e1c08310d968",
+"jobs.scout-root-cause.steps[1]": "6dd648dfe0bbe447",
+"jobs.scout-root-cause.steps[2]": "b1cf6840369446ba",
+"jobs.scout-root-cause.steps[3]": "6fa3381d7476e810",
+"jobs.scout-root-cause.steps[4]": "6c94475b7a30282d",
+"jobs.scout-root-cause.steps[5]": "9b38e435afed093c",
+"top.name": "38fb41b896e2a732",
+"top.on": "15f364a1ddc3bc40",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"release.yml": {
+"jobs.acceptance-artifacts.needs": "1361140fdb53b92f",
+"jobs.acceptance-artifacts.steps.count": 0,
+"jobs.acceptance-artifacts.uses": "5e7ec7f9bae4ecec",
+"jobs.acceptance-artifacts.with": "d5d9e13051f0690d",
+"jobs.acceptance-egress.needs": "2501eac43efb839a",
+"jobs.acceptance-egress.steps.count": 0,
+"jobs.acceptance-egress.uses": "758d25b9a062517a",
+"jobs.acceptance-egress.with": "2193a3390d9d8b13",
+"jobs.acceptance-k8s.needs": "2501eac43efb839a",
+"jobs.acceptance-k8s.steps.count": 0,
+"jobs.acceptance-k8s.uses": "c93006cb1590e279",
+"jobs.acceptance-k8s.with": "2193a3390d9d8b13",
+"jobs.acceptance-predicate.needs": "acb7ff19f0da1e18",
+"jobs.acceptance-predicate.steps.count": 0,
+"jobs.acceptance-predicate.uses": "e46020ec58177ed9",
+"jobs.acceptance-predicate.with": "10236a20911962d6",
+"jobs.acceptance.needs": "2501eac43efb839a",
+"jobs.acceptance.steps.count": 0,
+"jobs.acceptance.uses": "1afeb4fbb0a126e2",
+"jobs.acceptance.with": "46bcedddd4c460d8",
+"jobs.admission.if": "46e2c472c1004009",
+"jobs.admission.steps.count": 0,
+"jobs.admission.uses": "e51f437c9f1288f5",
+"jobs.authorization.needs": "17264518e74142d8",
+"jobs.authorization.permissions": "8e5c77369a33e598",
+"jobs.authorization.steps.count": 0,
+"jobs.authorization.uses": "021eb2d6709c7174",
+"jobs.authorization.with": "940793587f830830",
+"jobs.build.needs": "5f37bb96609f12de",
+"jobs.build.steps.count": 0,
+"jobs.build.uses": "612d49c728b7f0f8",
+"jobs.build.with": "308f822e38ca2f15",
+"jobs.decide.concurrency": "7fc08e23cf0769fd",
+"jobs.decide.environment": "7649b444a37e5ea5",
+"jobs.decide.if": "603459310599b3b7",
+"jobs.decide.outputs": "9c9943d569f1d57e",
+"jobs.decide.permissions": "a932f4e82ff3f335",
+"jobs.decide.runs-on": "a89f3a1c7e4302eb",
+"jobs.decide.steps.count": 12,
+"jobs.decide.steps[0]": "405acc47f6d0fdb0",
+"jobs.decide.steps[10]": "549db2db1d1cdb44",
+"jobs.decide.steps[11]": "3cafecd8014332ed",
+"jobs.decide.steps[1]": "d4dba7735cf5575a",
+"jobs.decide.steps[2]": "ad4b469f047263da",
+"jobs.decide.steps[3]": "cdbf1fc0231a0857",
+"jobs.decide.steps[4]": "3b0b5132ec379661",
+"jobs.decide.steps[5]": "b05756de5bf1883c",
+"jobs.decide.steps[6]": "edad9d5d8522b05f",
+"jobs.decide.steps[7]": "755264d42b3df77d",
+"jobs.decide.steps[8]": "a52163122165a228",
+"jobs.decide.steps[9]": "9e8d226ef867f3cc",
+"jobs.image.needs": "e99adbe058517220",
+"jobs.image.steps.count": 0,
+"jobs.image.uses": "91e9f8c5c2b736cf",
+"jobs.image.with": "c8f85ee377f4fe90",
+"jobs.patch-failed.if": "bdb1dc1e59c352b9",
+"jobs.patch-failed.needs": "e7853d113646fe91",
+"jobs.patch-failed.permissions": "0686420875052835",
+"jobs.patch-failed.runs-on": "a89f3a1c7e4302eb",
+"jobs.patch-failed.steps.count": 1,
+"jobs.patch-failed.steps[0]": "a18eea554dd13958",
+"jobs.patch-notes.environment": "7649b444a37e5ea5",
+"jobs.patch-notes.if": "3a0ac5a04a0f6ea7",
+"jobs.patch-notes.needs": "a63a25a2e30fb6b0",
+"jobs.patch-notes.permissions": "d8d6aceb1abc4199",
+"jobs.patch-notes.runs-on": "a89f3a1c7e4302eb",
+"jobs.patch-notes.steps.count": 3,
+"jobs.patch-notes.steps[0]": "59132c244ea7912d",
+"jobs.patch-notes.steps[1]": "0de3c4c2d9cd6964",
+"jobs.patch-notes.steps[2]": "5cdfc1b55ef23071",
+"jobs.promotion.needs": "edb5532eeccc2adb",
+"jobs.promotion.secrets": "d95aec779901c62f",
+"jobs.promotion.steps.count": 0,
+"jobs.promotion.uses": "5c9686e5c5cd9146",
+"jobs.promotion.with": "a0647ff48307496b",
+"jobs.reproducibility.needs": "88545b52a8a2c580",
+"jobs.reproducibility.steps.count": 0,
+"jobs.reproducibility.uses": "c73e5f049aeae937",
+"jobs.reproducibility.with": "b839b9d24c6e9bdd",
+"jobs.scans.needs": "1361140fdb53b92f",
+"jobs.scans.secrets": "d95aec779901c62f",
+"jobs.scans.steps.count": 0,
+"jobs.scans.uses": "1074bf1f116b9091",
+"jobs.scans.with": "b839b9d24c6e9bdd",
+"top.name": "3c449ba17a333bf2",
+"top.on": "20b8867dfc7f2d40",
+"top.permissions": "c3736a8a5205afc6"
+},
+"scan.yml": {
+"jobs.artifact-acceptance.needs": "e99adbe058517220",
+"jobs.artifact-acceptance.permissions": "18654c780b72f615",
+"jobs.artifact-acceptance.steps.count": 0,
+"jobs.artifact-acceptance.uses": "5e7ec7f9bae4ecec",
+"jobs.artifact-acceptance.with": "1ee90f8fe516b2a1",
+"jobs.assemble-b.needs": "e99adbe058517220",
+"jobs.assemble-b.permissions": "44d3feb81dacebd3",
+"jobs.assemble-b.steps.count": 0,
+"jobs.assemble-b.uses": "91e9f8c5c2b736cf",
+"jobs.assemble-b.with": "fda673c810c68fc3",
+"jobs.assemble.needs": "e99adbe058517220",
+"jobs.assemble.permissions": "44d3feb81dacebd3",
+"jobs.assemble.steps.count": 0,
+"jobs.assemble.uses": "91e9f8c5c2b736cf",
+"jobs.assemble.with": "51efba0b020dd8b2",
+"jobs.build.permissions": "44d3feb81dacebd3",
+"jobs.build.steps.count": 0,
+"jobs.build.uses": "612d49c728b7f0f8",
+"jobs.build.with": "59e1274e29ef1d5b",
+"jobs.reproducibility.name": "449cc089476fcc90",
+"jobs.reproducibility.needs": "6908d8b28fc4232f",
+"jobs.reproducibility.runs-on": "a89f3a1c7e4302eb",
+"jobs.reproducibility.steps.count": 1,
+"jobs.reproducibility.steps[0]": "bea4fb17b1e60124",
+"jobs.scan.if": "3e7f2749e07c18b0",
+"jobs.scan.name": "dfa11b56dbf9f8b9",
+"jobs.scan.needs": "68ed86cd694e4db9",
+"jobs.scan.runs-on": "a89f3a1c7e4302eb",
+"jobs.scan.steps.count": 1,
+"jobs.scan.steps[0]": "4040805d5cbd33af",
+"jobs.scanner.env": "2674324ee0e35ee3",
+"jobs.scanner.name": "7b3cf0fe0620cac4",
+"jobs.scanner.needs": "8c6d724718083163",
+"jobs.scanner.permissions": "d57abeeb8232850a",
+"jobs.scanner.runs-on": "a89f3a1c7e4302eb",
+"jobs.scanner.steps.count": 10,
+"jobs.scanner.steps[0]": "3ef4af68ef144f12",
+"jobs.scanner.steps[1]": "0f32fe39075f8c34",
+"jobs.scanner.steps[2]": "fc76684a18e22bae",
+"jobs.scanner.steps[3]": "8a77a82691c0cfe5",
+"jobs.scanner.steps[4]": "5329637f72722ca4",
+"jobs.scanner.steps[5]": "e5231dd405a24d41",
+"jobs.scanner.steps[6]": "1e00f670bcb2fdfe",
+"jobs.scanner.steps[7]": "d5a1e28dfdca6c93",
+"jobs.scanner.steps[8]": "1541be82ccce3270",
+"jobs.scanner.steps[9]": "fc3c321ff1ce05dc",
+"jobs.scanner.strategy": "2c049e5b9ca29b43",
+"jobs.scanners.name": "d1d26c67d18bd05d",
+"jobs.scanners.outputs": "90d7299c6d63a2ad",
+"jobs.scanners.runs-on": "a89f3a1c7e4302eb",
+"jobs.scanners.steps.count": 2,
+"jobs.scanners.steps[0]": "3ef4af68ef144f12",
+"jobs.scanners.steps[1]": "2037c706a503c3fc",
+"top.name": "dfa11b56dbf9f8b9",
+"top.on": "6663e3ac06317422",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-acceptance-artifacts.yml": {
+"jobs.artifacts.name": "6f1976ed2d6afc32",
+"jobs.artifacts.outputs": "8b1e58a66c03ac2a",
+"jobs.artifacts.permissions": "18654c780b72f615",
+"jobs.artifacts.runs-on": "a89f3a1c7e4302eb",
+"jobs.artifacts.steps.count": 12,
+"jobs.artifacts.steps[0]": "3ef4af68ef144f12",
+"jobs.artifacts.steps[10]": "9637d3669e4f68c0",
+"jobs.artifacts.steps[11]": "f6410d4414c23ae4",
+"jobs.artifacts.steps[1]": "57f1cabf57203fb4",
+"jobs.artifacts.steps[2]": "a44d81947f6b8f80",
+"jobs.artifacts.steps[3]": "ecab8fbc1b639469",
+"jobs.artifacts.steps[4]": "e30abc31e064335b",
+"jobs.artifacts.steps[5]": "a794550f69805671",
+"jobs.artifacts.steps[6]": "1c8ee0e3d8d52388",
+"jobs.artifacts.steps[7]": "29358ced7a6f1e29",
+"jobs.artifacts.steps[8]": "0fa66a19d6213eb5",
+"jobs.artifacts.steps[9]": "48ee6f2d41370b3c",
+"top.name": "0616fc9e325d6dff",
+"top.on": "c52eb6cc51b16dc1",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-acceptance-egress.yml": {
+"jobs.egress.name": "76e36b2a4330d95c",
+"jobs.egress.outputs": "8b1e58a66c03ac2a",
+"jobs.egress.permissions": "18654c780b72f615",
+"jobs.egress.runs-on": "a89f3a1c7e4302eb",
+"jobs.egress.steps.count": 5,
+"jobs.egress.steps[0]": "3ef4af68ef144f12",
+"jobs.egress.steps[1]": "e24d34535a4cf1e8",
+"jobs.egress.steps[2]": "6084bebf287add70",
+"jobs.egress.steps[3]": "0766e743a10104ff",
+"jobs.egress.steps[4]": "6091c60bd80aafa1",
+"top.name": "2abf953f2edb26ea",
+"top.on": "07f4896caa755b58",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-acceptance-k8s.yml": {
+"jobs.k8s.env": "b8babae2b57311f9",
+"jobs.k8s.name": "be0364ec9dbbcac3",
+"jobs.k8s.outputs": "8b1e58a66c03ac2a",
+"jobs.k8s.permissions": "18654c780b72f615",
+"jobs.k8s.runs-on": "a89f3a1c7e4302eb",
+"jobs.k8s.steps.count": 12,
+"jobs.k8s.steps[0]": "3ef4af68ef144f12",
+"jobs.k8s.steps[10]": "9bcc697eed299c6d",
+"jobs.k8s.steps[11]": "b09439deb0a7257b",
+"jobs.k8s.steps[1]": "b6b067d5a265d705",
+"jobs.k8s.steps[2]": "68076c4610b5da09",
+"jobs.k8s.steps[3]": "70743d508bba054f",
+"jobs.k8s.steps[4]": "c1ca53d68e4c3eea",
+"jobs.k8s.steps[5]": "1a120d514c08102b",
+"jobs.k8s.steps[6]": "cc3f4858d18bba3a",
+"jobs.k8s.steps[7]": "d310681d14b1b981",
+"jobs.k8s.steps[8]": "b68a07c69d3b35ef",
+"jobs.k8s.steps[9]": "54f9e7344c6f954d",
+"top.name": "a3b9c45d305de91f",
+"top.on": "2b910c6cd256ccde",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-acceptance-predicate.yml": {
+"jobs.predicate.name": "97de9e168a3a6647",
+"jobs.predicate.permissions": "a58f4623360a36d1",
+"jobs.predicate.runs-on": "a89f3a1c7e4302eb",
+"jobs.predicate.steps.count": 4,
+"jobs.predicate.steps[0]": "3ef4af68ef144f12",
+"jobs.predicate.steps[1]": "366e785c7e9a6d2d",
+"jobs.predicate.steps[2]": "253a4f10b3d3ad8c",
+"jobs.predicate.steps[3]": "c6aae01330555b5d",
+"top.name": "700ae035d9e2bb42",
+"top.on": "5a6a6fb0a519399f",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-admission.yml": {
+"jobs.admit.name": "e37ea08f87ebbce8",
+"jobs.admit.outputs": "dc2fecb5804741af",
+"jobs.admit.permissions": "0c9caca5f30ec892",
+"jobs.admit.runs-on": "a89f3a1c7e4302eb",
+"jobs.admit.steps.count": 12,
+"jobs.admit.steps[0]": "d292ab413501d660",
+"jobs.admit.steps[10]": "4e9990b4a75aa083",
+"jobs.admit.steps[11]": "57218db4a5f17666",
+"jobs.admit.steps[1]": "60a60c83e9bff43f",
+"jobs.admit.steps[2]": "16d7bcf6b46cf429",
+"jobs.admit.steps[3]": "1fca1bdbf21a4536",
+"jobs.admit.steps[4]": "4f3d642dcba12d44",
+"jobs.admit.steps[5]": "9226348f0bf17821",
+"jobs.admit.steps[6]": "d186d874d52652a5",
+"jobs.admit.steps[7]": "f46c4bbdbd908b44",
+"jobs.admit.steps[8]": "ca3b02ea0431f572",
+"jobs.admit.steps[9]": "28d49e1c553cfce3",
+"top.name": "5390a18a2739b7ef",
+"top.on": "07531aef4834d817",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-authorize.yml": {
+"jobs.authorize.name": "79c59cc844b66519",
+"jobs.authorize.permissions": "8e5c77369a33e598",
+"jobs.authorize.runs-on": "a89f3a1c7e4302eb",
+"jobs.authorize.steps.count": 8,
+"jobs.authorize.steps[0]": "3ef4af68ef144f12",
+"jobs.authorize.steps[1]": "cc0f804abf38bf35",
+"jobs.authorize.steps[2]": "0d813cf063d8303c",
+"jobs.authorize.steps[3]": "57f1cabf57203fb4",
+"jobs.authorize.steps[4]": "63615e5bf73c9b54",
+"jobs.authorize.steps[5]": "bb69d37c6afd25d2",
+"jobs.authorize.steps[6]": "905cd7666102fcbf",
+"jobs.authorize.steps[7]": "09d65d16a3fdcfe2",
+"top.name": "cea41a53c00ebfa6",
+"top.on": "d12871460d43fce6",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-build.yml": {
+"jobs.build.name": "e99adbe058517220",
+"jobs.build.outputs": "d7231708e5647d78",
+"jobs.build.permissions": "a58f4623360a36d1",
+"jobs.build.runs-on": "a89f3a1c7e4302eb",
+"jobs.build.steps.count": 15,
+"jobs.build.steps[0]": "1c1d5bf429b27922",
+"jobs.build.steps[10]": "3fefd27521f4973c",
+"jobs.build.steps[11]": "0a2c4c8d9b9bbe90",
+"jobs.build.steps[12]": "b6a114fe2746adea",
+"jobs.build.steps[13]": "0f150936233012ed",
+"jobs.build.steps[14]": "0bf2acb4e5ca56da",
+"jobs.build.steps[1]": "0e69d46560bd89d4",
+"jobs.build.steps[2]": "fec793d07f7d1b53",
+"jobs.build.steps[3]": "cdcb4b6289ffc116",
+"jobs.build.steps[4]": "3ed22b5d5858d04d",
+"jobs.build.steps[5]": "e4ecd157ce7b0fe9",
+"jobs.build.steps[6]": "a6ef0d48fc1b5a0d",
+"jobs.build.steps[7]": "ee4dae14f34be291",
+"jobs.build.steps[8]": "c2d664bc8c2b46ca",
+"jobs.build.steps[9]": "4e9f9344da340ebe",
+"top.name": "2b6fe62b1d5c299c",
+"top.on": "ab08dc6f50d5a414",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-promote.yml": {
+"jobs.promote.environment": "847dbd914599c4e1",
+"jobs.promote.name": "a024ceafdf8c85ad",
+"jobs.promote.permissions": "ed59b26f6e3e67da",
+"jobs.promote.runs-on": "a89f3a1c7e4302eb",
+"jobs.promote.steps.count": 22,
+"jobs.promote.steps[0]": "3ef4af68ef144f12",
+"jobs.promote.steps[10]": "2bf3afdf2da759ed",
+"jobs.promote.steps[11]": "dc6236c80a3f0689",
+"jobs.promote.steps[12]": "93a16819d531b6a8",
+"jobs.promote.steps[13]": "f0900e4ffdaa0a73",
+"jobs.promote.steps[14]": "ccb44bb3ba9cc7f2",
+"jobs.promote.steps[15]": "fac9490a7cb9b1bc",
+"jobs.promote.steps[16]": "1e4a3ea031628054",
+"jobs.promote.steps[17]": "35703128bb876093",
+"jobs.promote.steps[18]": "7aef989eb40f143f",
+"jobs.promote.steps[19]": "ca6b9e4c554ba256",
+"jobs.promote.steps[1]": "d6479879773e5b1c",
+"jobs.promote.steps[20]": "65c8d8bb21d287d2",
+"jobs.promote.steps[21]": "8956bf01e2eea365",
+"jobs.promote.steps[2]": "0232af291ba9f7f5",
+"jobs.promote.steps[3]": "57f1cabf57203fb4",
+"jobs.promote.steps[4]": "d68ee85b757afd48",
+"jobs.promote.steps[5]": "3ed22b5d5858d04d",
+"jobs.promote.steps[6]": "d5c32347fc17c3a0",
+"jobs.promote.steps[7]": "551ed8755e63be20",
+"jobs.promote.steps[8]": "c46b1ebe2fb53c77",
+"jobs.promote.steps[9]": "60c3dbf00df8f31a",
+"top.name": "e24c0972b5fa826f",
+"top.on": "5392e22b77352f82",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-verify.yml": {
+"jobs.scan.name": "7b3cf0fe0620cac4",
+"jobs.scan.needs": "11f30e0adce9adf1",
+"jobs.scan.permissions": "da98527d1c6a9e9a",
+"jobs.scan.runs-on": "a89f3a1c7e4302eb",
+"jobs.scan.steps.count": 12,
+"jobs.scan.steps[0]": "3ef4af68ef144f12",
+"jobs.scan.steps[10]": "1a9575ee3bca4948",
+"jobs.scan.steps[11]": "71a52a55fec1d9d5",
+"jobs.scan.steps[1]": "cc0f804abf38bf35",
+"jobs.scan.steps[2]": "836b790867ae1acd",
+"jobs.scan.steps[3]": "97f0e819166d9a87",
+"jobs.scan.steps[4]": "2f27b22bf7eaaa02",
+"jobs.scan.steps[5]": "db2c738bad035a7a",
+"jobs.scan.steps[6]": "16b0a6464fd7e084",
+"jobs.scan.steps[7]": "50350b2e378cfc05",
+"jobs.scan.steps[8]": "4081ed8a3ee43119",
+"jobs.scan.steps[9]": "576fb65c881a30be",
+"jobs.scan.strategy": "2c049e5b9ca29b43",
+"jobs.scanners.name": "d1d26c67d18bd05d",
+"jobs.scanners.outputs": "90d7299c6d63a2ad",
+"jobs.scanners.runs-on": "a89f3a1c7e4302eb",
+"jobs.scanners.steps.count": 2,
+"jobs.scanners.steps[0]": "3ef4af68ef144f12",
+"jobs.scanners.steps[1]": "7eb9a4751712b199",
+"top.name": "445403c915078570",
+"top.on": "e17ac4129c9453bb",
+"top.permissions": "d8d6aceb1abc4199"
+}
+},
+"uses": {
+"stage-image.yml": [
+[
+"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+null
 ],
-"main-candidate-rescan.yml": [
-"assemble.uses: ./.github/workflows/stage-image.yml",
-"build.uses: ./.github/workflows/stage-build.yml",
-"manifests.run: TARGET_SHAPE='all(.[]; (.release | test(\"^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$\")) and (.variant | test(\"^[a-z0-9][a-z0-9-]{0,31}$\")) and (.digest | test(\"^sha256:[0-9a-f]{64}$\")) and (.scanner | test(\"^[a-z0-9][a-z0-9-]{0,31}$\")))'",
-"manifests.run: jq -e \"$TARGET_SHAPE\" <<<\"$targets\" > /dev/null || { echo \"::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix\" >&2; exit 1; }",
-"manifests.run: {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: \"legacy-inventory\"}' .github/policy/legacy-releases.json >> /tmp/targets.jsonl",
-"manifests.run: {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: \"release-manifest\"}' \"/tmp/m-${tag}.json\" >> /tmp/targets.jsonl",
-"panel-google.run: gcloud artifacts docker images list-vulnerabilities \"$(jq -r '.response.scan' \"${d}/scan.json\")\" --format=json > \"${d}/vulns.json\" || rm -f \"${d}/packages.json\"",
-"panel-google.run: if gcloud artifacts docker images scan \"${ref}\" --additional-package-types=GO --format=json --log-http > \"${d}/scan.json\" 2> \"${d}/http.log\"; then",
-"panel-google.run: skopeo copy --override-arch amd64 --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
-"panel-google.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
-"panel-grype.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
-"panel-grype.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
-"panel-inspector.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
-"panel-inspector.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
-"panel-scout.run: docker image rm ghcr.io/fosterstack/cache:selfcheck >/dev/null",
-"panel-scout.run: python3 bin/scout-selfcheck.py probe-doc3 \"$RUNNER_TEMP/probe/before-r.json\" \"$RUNNER_TEMP/probe/sbom-r.json\" \"$author\" docker.io/library/debian sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab \"$RUNNER_TEMP/probe/forms3r.json\"",
-"panel-scout.run: reg=registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
-"panel-scout.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\" || continue",
-"panel-scout.run: skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab docker-daemon:ghcr.io/fosterstack/cache:selfcheck",
-"panel-scout.run: skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab docker-daemon:ghcr.io/fosterstack/cache:selfcheck",
-"panel-scout.run: sudo apt-get install -y -qq skopeo",
-"panel-scout.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo",
-"rescan.env.TARGET_DIGEST: ${{ matrix.target.digest }}",
-"rescan.run: if ! docker buildx imagetools inspect --raw \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then",
-"rescan.run: python3 bin/rescan-statement.py statement --scanner \"$TARGET_SCANNER\" --children /tmp/children-scanned.jsonl --meta /tmp/scanner-meta --vex .vex/fosterstack-cache.openvex.json --scope-file /tmp/scan-scope.json --release \"$TARGET_RELEASE\" --variant \"$TARGET_VARIANT\" --digest \"$TARGET_DIGEST\" --image-ref \"ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}\" --scanned-at \"$(date -u +%Y-%m-%dT%H:%M:%S+00:00)\" --raw-out /tmp/findings-raw.json --out /tmp/rescan-statement.json --github-output \"$GITHUB_OUTPUT\"",
-"rescan.run: ref=\"ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}\"",
-"rescan.step.with.script: const t = ${{ toJSON(matrix.target) }}; const short = t.digest.replace('sha256:', '').slice(0, 12); const title = `Daily rescan: findings in ${t.release} ${t.variant} @${short} (${t.scanner})`; const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`; const body = `The daily rescan found new findings.\\n\\n- release: \\`${t.release}\\`\\n- variant: \\`${t.variant}\\`\\n- digest: \\`${t.digest}\\`\\n- scanner: \\`${t.scanner}\\`\\n- statement artifact: \\`rescan-${t.release}-${t.variant}-${t.scanner}\\` on ${runUrl}\\n\\nThese bytes have not changed since release \u2014 this is a newly-disclosed CVE against previously-shipped code, the case the 24-48h response SLA targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation.`; const { data: existing } = await github.rest.issues.listForRepo({ owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan', }); const match = existing.find(i => i.title === title); if (match) { await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body }); } else { // issues.create fails (422) when a label does not exist, and a lost tracking issue is a lost finding: make sure both // labels exist first. An existing label is left as it is (a 422 here is fine); any other failure shows up in the create below. // The values are policy.LABELS', and a test pins them equal. for (const [name, description, color] of [['daily-rescan', \"The daily rescan's tracking issue\", '0E8A16'], ['security', 'Security finding', 'D93F0B']]) { try { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, description, color }); } catch (e) { /* exists, or the create below reports it */ } } await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: ['daily-rescan', 'security'] }); }",
-"scanner-reports.run: : > /tmp/reports/candidate-digests.json",
-"scanner-reports.run: command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true",
-"scanner-reports.run: d = subprocess.run([\"skopeo\", \"inspect\", \"--format\", \"{{.Digest}}\", \"docker-daemon:%s\" % ref],",
-"scanner-reports.run: json.dump(digs, open(\"/tmp/reports/candidate-digests.json\", \"w\"), indent=1)",
-"scanner-reports.run: print(\"recorded digests:\", digs)",
-"scanner-reports.run: subprocess.run([\"skopeo\", \"copy\", \"oci-archive:%s\" % oci, \"docker-daemon:%s\" % ref], check=False)",
-"scout-root-cause.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo"
+[
+"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+{
+"name": "${{ inputs.dist-artifact }}",
+"path": "dist/"
+}
 ],
-"release.yml": [
-"acceptance-artifacts.uses: ./.github/workflows/stage-acceptance-artifacts.yml",
-"acceptance-artifacts.with.digests: ${{ needs.image.outputs.digests }}",
-"acceptance-egress.uses: ./.github/workflows/stage-acceptance-egress.yml",
-"acceptance-egress.with.digests: ${{ needs.image.outputs.digests }}",
-"acceptance-k8s.uses: ./.github/workflows/stage-acceptance-k8s.yml",
-"acceptance-k8s.with.digests: ${{ needs.image.outputs.digests }}",
-"acceptance-predicate.uses: ./.github/workflows/stage-acceptance-predicate.yml",
-"acceptance-predicate.with.digests: ${{ needs.image.outputs.digests }}",
-"acceptance.uses: ./.github/workflows/acceptance.yml",
-"acceptance.with.image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}",
-"admission.uses: ./.github/workflows/stage-admission.yml",
-"authorization.uses: ./.github/workflows/stage-authorize.yml",
-"authorization.with.digests: ${{ needs.image.outputs.digests }}",
-"build.uses: ./.github/workflows/stage-build.yml",
-"decide.run: if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n \"$bases\" ]; then",
-"image.uses: ./.github/workflows/stage-image.yml",
-"promotion.uses: ./.github/workflows/stage-promote.yml",
-"promotion.with.digests: ${{ needs.image.outputs.digests }}",
-"reproducibility.uses: ./.github/workflows/stage-reproducibility.yml",
-"reproducibility.with.digests: ${{ needs.image.outputs.digests }}",
-"scans.uses: ./.github/workflows/stage-verify.yml",
-"scans.with.digests: ${{ needs.image.outputs.digests }}"
+[
+"docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+{
+"driver-opts": "image=moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
+}
 ],
-"scan.yml": [
-"artifact-acceptance.uses: ./.github/workflows/stage-acceptance-artifacts.yml",
-"assemble-b.uses: ./.github/workflows/stage-image.yml",
-"assemble.uses: ./.github/workflows/stage-image.yml",
-"build.uses: ./.github/workflows/stage-build.yml",
-"reproducibility.run: a='${{ needs.assemble.outputs.digests }}'",
-"reproducibility.run: b='${{ needs.assemble-b.outputs.digests }}'",
-"reproducibility.run: echo \"::error::assembly A produced no digest for ${v}\" >&2; exit 1",
-"scanner.run: skopeo copy --override-arch \"${arch}\" --override-os linux \"oci-archive:/tmp/oci/${v}.oci\" \"docker-daemon:${ref}\"",
-"scanner.run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo"
+[
+"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+{
+"if-no-files-found": "error",
+"name": "oci-candidate",
+"path": "/tmp/*.oci",
+"retention-days": "1"
+}
 ],
-"stage-acceptance-artifacts.yml": [
-"artifacts.run: [ -n \"$d\" ] && [ \"$d\" != \"null\" ] || { echo \"::error::candidates mode with no digest for ${v}\" >&2; exit 1; }",
-"artifacts.run: childd=$(docker buildx imagetools inspect --raw \"${repo}@${d}\" | jq -r '.manifests[] | select(.platform.os==\"linux\" and .platform.architecture==\"arm64\") | .digest')",
-"artifacts.run: cpid=$(docker inspect -f '{{.State.Pid}}' fa-prod)",
-"artifacts.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"artifacts.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"artifacts.run: docker pull -q \"${repo}@${childd}\"",
-"artifacts.run: docker pull -q \"${repo}@${d}\"",
-"artifacts.run: docker run --pull=never -d --name fa-debugrun -p 127.0.0.1:19012:8080 localhost/fa-debug",
-"artifacts.run: docker run --pull=never -d --name fa-fipsrun -p 127.0.0.1:19011:8080 -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw localhost/fa-fips",
-"artifacts.run: docker run --pull=never -d --name fa-prod -p 127.0.0.1:19010:8080 localhost/fa-production",
-"artifacts.run: docker run -d --name \"fa-arm64-$v\" --platform linux/arm64 $authargs -p \"127.0.0.1:${port}:8080\" \"${repo}@${childd}\"",
-"artifacts.run: docker tag \"${repo}@${d}\" \"localhost/fa-${v}\"",
-"artifacts.run: if docker run --pull=never --rm --entrypoint /bin/sh localhost/fa-debug -c true 2>/dev/null; then",
-"artifacts.run: if docker run --pull=never --rm --entrypoint /busybox/sh localhost/fa-fips -c true 2>/dev/null; then",
-"artifacts.run: if docker run --pull=never --rm --entrypoint /busybox/sh localhost/fa-production -c true 2>/dev/null; then",
-"artifacts.run: out=$(docker run --pull=never --rm --entrypoint /busybox/sh localhost/fa-debug -c 'echo shell-ok')",
-"artifacts.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"artifacts.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"artifacts.step.with.image: tonistiigi/binfmt:latest@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+[
+"actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+{
+"predicate-path": "/tmp/image-build-predicate.json",
+"predicate-type": "https://fosterstack.com/attestations/image-build/v1",
+"subject-checksums": "/tmp/image-subjects.txt"
+}
 ],
-"stage-acceptance-egress.yml": [
-"egress.run: ALPINE=alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
-"egress.run: DISTROLESS=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab",
-"egress.run: NETSHOOT=nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b",
-"egress.run: OWN_IP6=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' \"fscache-net-${label}\")",
-"egress.run: OWN_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \"fscache-net-${label}\")",
-"egress.run: d=$(jq -r '.production' <<<\"${DIGESTS}\")",
-"egress.run: docker pull -q \"ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}\"",
-"egress.run: docker run --rm --net \"container:fscache-net-ctldenied\" --cap-add SYS_PTRACE \"$NETSHOOT\" sh -c 'command -v strace >/dev/null 2>&1 || { echo \"MISSING-STRACE\" >&2; exit 3; }; strace -f -e trace=connect nc -w 2 203.0.113.7 80' > /tmp/ctldenied.strace 2>&1 || true",
-"egress.run: docker run --rm -v \"$TRACE_BIN\":/out -e V=\"$STRACE_VER\" -e SUM=\"$STRACE_SHA256\" \"$ALPINE\" sh -euc '",
-"egress.run: docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r /caps/ctldenied.pcap -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0 && ip.dst == 203.0.113.7' -T fields -e frame.number 2>/dev/null > /tmp/ctldenied.leak || true",
-"egress.run: docker run -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace \"$REF\" -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
-"egress.run: docker run -d --name \"fscache-net-${label}\" --network \"$net\" \"$NETSHOOT\" sleep infinity >/dev/null",
-"egress.run: docker run -d --name \"fscache-tap-${label}\" --net \"container:fscache-net-${label}\" -v /tmp:/caps \"$NETSHOOT\" tcpdump -i any -n -U -w \"/caps/${label}.pcap\" >/dev/null",
-"egress.run: echo \"REF=ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}\" >> \"$GITHUB_ENV\"",
-"egress.run: if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace \"$DISTROLESS\" -V > /tmp/strace.ver 2>&1; then",
-"egress.run: if ! docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0' -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e tcp.dstport -E separator='|' 2>/dev/null | sed 's/^/TCP|/' > \"/tmp/${label}.synraw\"; then",
-"egress.run: if ! docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -Y 'udp && !(udp.port == 53)' -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e udp.dstport -E separator='|' 2>/dev/null | sed 's/^/UDP|/' > \"/tmp/${label}.udpraw\"; then",
-"egress.run: if ! docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -Y 'udp.port == 53 || tcp.port == 53' -T fields -e frame.number > \"/tmp/${label}.dnsraw\" 2>/dev/null; then",
-"egress.run: if ! total=$(docker run --rm -v /tmp:/caps \"$NETSHOOT\" tshark -r \"/caps/${base}\" -T fields -e frame.number 2>/dev/null | wc -l); then",
-"egress.step.env.DIGESTS: ${{ inputs.digests }}"
-],
-"stage-acceptance-k8s.yml": [
-"k8s.env.CLIENT_IMAGE: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
-"k8s.run: d=$(jq -r '.production' <<<\"${DIGESTS}\")",
-"k8s.run: docker pull -q \"$CLIENT_IMAGE\"",
-"k8s.run: docker pull -q \"$ref\"",
-"k8s.run: docker tag \"$CLIENT_IMAGE\" \"$CLIENT_LOCAL\"",
-"k8s.run: docker tag \"$ref\" fscache-candidate:accept",
-"k8s.run: ref=\"ghcr.io/${{ github.repository_owner }}/cache-candidates@${d}\"",
-"k8s.step.env.DIGESTS: ${{ inputs.digests }}"
-],
-"stage-acceptance-predicate.yml": [
-"predicate.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"predicate.run: echo \"${d#sha256:} cache-candidates-${v}\"",
-"predicate.run: jq -n --arg sha \"${GITHUB_SHA}\" --argjson digests '${{ inputs.digests }}' --slurpfile results /tmp/ac-results.json '{sha: $sha, index_digests: $digests, ac_results: $results[0]}' > /tmp/acceptance-predicate.json"
-],
-"stage-authorize.yml": [
-"authorize.run: [ -n \"$d\" ] && [ \"$d\" != \"null\" ] || { echo \"::error::no digest for ${v}\" >&2; exit 1; }",
-"authorize.run: agot=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$acc\")",
-"authorize.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"authorize.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"authorize.run: echo \"${d#sha256:} cache-candidates-${v}\"",
-"authorize.run: got=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$ib\")",
-"authorize.run: jq -s -n --arg tag \"${GITHUB_REF_NAME}\" --arg sha \"${GITHUB_SHA}\" --argjson digests '${{ inputs.digests }}' --slurpfile statements /tmp/verified-statements.jsonl '{",
-"authorize.run: out=$(gh attestation verify \"$1\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type \"$2\" --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/$3\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json) || { echo \"::error::graph verification failed: $4 ($2 by $3 on $1) - certificate source/signer must bind ${GITHUB_SHA} @ ${GITHUB_REF}\" >&2; exit 1; }",
-"authorize.run: out=$(gh attestation verify /tmp/admission/admission.json --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/source-admission/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json)",
-"authorize.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"authorize.run: rgot=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$repro\")",
-"authorize.run: sgot=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' <<<\"$sc\")",
-"authorize.run: statement: (\"digests approved for \" + $tag),",
-"authorize.run: tag: $tag, sha: $sha, index_digests: $digests,",
-"authorize.run: | .digest.gitCommit // empty ]"
-],
-"stage-promote.yml": [
-"promote.run: GOTOOLCHAIN=local go install github.com/google/go-containerregistry/cmd/crane@v0.22.1",
-"promote.run: [ \"$auth_digest\" = \"$d\" ] || { echo \"::error::authorization ${v} digest ${auth_digest} != promoting ${d}\" >&2; exit 1; }",
-"promote.run: [ \"$got\" = \"$d\" ] || { echo \"::error::post-copy digest mismatch at ${dst}:${check}: ${got} != ${d}\" >&2; exit 1; }",
-"promote.run: auth_digest=$(jq -r --arg v \"$v\" '.[0].verificationResult.statement.predicate.index_digests[$v] // empty' \"/tmp/auth-${v}.json\")",
-"promote.run: cosign attest --yes --predicate /tmp/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 \"${ghcr}@${d}\"",
-"promote.run: cosign attest --yes --predicate /tmp/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 \"${hub}@${d}\" || echo \"::warning::could not attach the manifest referrer on ${hub}@${d} \u2014 GHCR referrer is authoritative\"",
-"promote.run: cosign sign --yes \"${ghcr}@${d}\"",
-"promote.run: cosign sign --yes \"${hub}@${d}\"",
-"promote.run: cosign sign-blob --yes dist/checksums.txt --bundle /tmp/checksums.txt.bundle",
-"promote.run: cosign verify \"${reg}@${d}\" \"${idflags[@]}\" >/dev/null || { echo \"::error::anonymous cosign verify failed for ${reg}@${d}\" >&2; exit 1; }",
-"promote.run: cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle \"${idflags[@]}\" || { echo \"::error::anonymous checksums-bundle verification failed\" >&2; exit 1; }",
-"promote.run: crane copy \"${src}@${d}\" \"${dst}:${t}\"",
-"promote.run: crane tag \"${dst}:${t}\" \"${f}\"",
-"promote.run: d0=$(jq -r '.production' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<\"${DIGESTS}\")",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"promote.run: echo \"${d#sha256:} cache-${v}\"",
-"promote.run: echo \"${v} -> ${dst}:${t} (+${f}) at ${d} \u2014 digest equality asserted\"",
-"promote.run: echo \"::error::cosign verify accepted a WRONG repository identity\" >&2; exit 1",
-"promote.run: echo \"::error::cosign verify accepted a same-repo WRONG workflow identity (stage-image.yml) - the signer pin is too loose\" >&2; exit 1",
-"promote.run: echo \"::error::cosign verify accepted stage-promote.yml at a branch ref - the release-ref pin is too loose\" >&2; exit 1",
-"promote.run: echo \"See release-manifest.json for the full evidence bundle: image digests (GHCR canonical, Docker Hub mirror \u2014 identical digests), archive checksums, requirements baseline, per-AC acceptance results, and the Rekor log index of every verified statement in the release chain.\" >> /tmp/notes.md",
-"promote.run: echo \"anonymous cosign image + checksums verification passed; negative controls rejected\"",
-"promote.run: echo \"anonymous pulls resolve the promoted digests for every versioned and floating tag at both registries\"",
-"promote.run: echo \"authorization verified for ${v} (tag, source, digest bound)\"",
-"promote.run: gh attestation verify \"oci://${ghcr}@${d}\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/release-authorization/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" >/dev/null",
-"promote.run: gh attestation verify \"oci://${repo}@${d}\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/release-authorization/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-authorize.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json > \"/tmp/auth-${v}.json\"",
-"promote.run: gh attestation verify \"oci://ghcr.io/${{ github.repository_owner }}/cache-candidates@$(jq -r '.production' <<<'${{ inputs.digests }}')\" --repo \"${GITHUB_REPOSITORY}\" --predicate-type https://fosterstack.com/attestations/acceptance/v1 --signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/stage-acceptance-predicate.yml\" --source-digest \"${GITHUB_SHA}\" --source-ref \"${GITHUB_REF}\" --format json | jq '.[0].verificationResult.statement.predicate.ac_results' > /tmp/ac-results.json",
-"promote.run: got=$(crane digest \"${dst}:${check}\")",
-"promote.run: got=$(crane digest \"${reg}:${t}\")",
-"promote.run: if cosign verify \"${ghcr}@${d0}\" --certificate-identity-regexp \"^https://github\\.com/${GITHUB_REPOSITORY}/\\.github/workflows/stage-image\\.yml@\" --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then",
-"promote.run: if cosign verify \"${ghcr}@${d0}\" --certificate-identity-regexp \"^https://github\\.com/${GITHUB_REPOSITORY}/\\.github/workflows/stage-promote\\.yml@refs/heads/\" --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then",
-"promote.run: if cosign verify \"${ghcr}@${d0}\" --certificate-identity-regexp '^https://github\\.com/attacker/' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' >/dev/null 2>&1; then",
-"promote.run: if cosign verify-blob /tmp/checksums.corrupt --bundle /tmp/checksums.txt.bundle \"${idflags[@]}\" >/dev/null 2>&1; then",
-"promote.run: images: ($digests | to_entries | map({variant: .key, digest: .value,",
-"promote.run: jq -R -s '[split(\"\\n\")[] | select(length > 0) | split(\" \") | {sha256: .[0], name: .[1]}]' /tmp/expected-checksums.txt > /tmp/archives.json",
-"promote.run: jq -n --arg tag \"${GITHUB_REF_NAME}\" --arg sha \"${GITHUB_SHA}\" --argjson digests '${{ inputs.digests }}' '{",
-"promote.run: jq -n --arg version \"$ver\" --arg sha \"${GITHUB_SHA}\" --arg generated \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" --arg run \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}\" --arg workflow \"${GITHUB_WORKFLOW_REF}\" --arg ghcr \"$ghcr\" --arg hub \"$hub\" --arg repofull \"${GITHUB_REPOSITORY}\" --arg ref \"${GITHUB_REF}\" --arg baseline \"requirements/releases/${base}.yaml\" --arg baseline_sha \"$(sha256sum \"requirements/releases/${base}.yaml\" | cut -d' ' -f1)\" --arg evidence_sha \"$(sha256sum test-evidence/mappings.yaml | cut -d' ' -f1)\" --arg vex_openvex_sha \"$(sha256sum /tmp/vex/fosterstack-cache.openvex.json | cut -d' ' -f1)\" --arg vex_inspector_sha \"$(sha256sum \"/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json\" | cut -d' ' -f1)\" --arg vex_csaf_sha \"$(sha256sum \"/tmp/vex/fosterstack-cache-${ver}.csaf.json\" | cut -d' ' -f1)\" --argjson digests '${{ inputs.digests }}' --slurpfile archives /tmp/archives.json --slurpfile acs /tmp/ac-results.json --slurpfile statements /tmp/verified.json '{",
-"promote.run: kids=$(crane manifest \"${src}@${d}\" | jq -c '[.manifests[] | select(.platform.os == \"linux\") | {key: (\"linux/\" + .platform.architecture), value: .digest}] | from_entries')",
-"promote.run: note: \"Publication-phase ACs (REQ-REL-001-AC1, REQ-REL-002-AC1) are recorded in a SEPARATE signed publication attestation (predicate_type below) over these same image digests, tag, and commit, produced after the anonymous customer-verification and every-tag anonymous-pull checks pass. This manifest is assembled and signed BEFORE those checks, so its ac_results shows them deferred; the durable pass record is the publication attestation. This manifest is not mutated after signing.\",",
-"promote.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"promote.run: requirements_baseline: {path: $baseline, sha256: $baseline_sha},",
-"promote.run: src=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"promote.run: src=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"promote.run: tag: $tag, sha: $sha, index_digests: $digests,",
-"promote.run: test_evidence: {path: \"test-evidence/mappings.yaml\", sha256: $evidence_sha},",
-"promote.run: verify: (\"gh attestation verify oci://<image>@<digest> --repo \" + $repofull + \" --predicate-type https://fosterstack.com/attestations/publication/v1 --signer-workflow \" + $repofull + \"/.github/workflows/stage-promote.yml --source-digest \" + $sha + \" --source-ref \" + $ref)",
-"promote.run: vex: [{file: \"fosterstack-cache.openvex.json\", form: \"openvex\", sha256: $vex_openvex_sha},",
-"promote.run: {ac: \"REQ-REL-001-AC1\", result: \"pass\", evidence: \"anonymous cosign image verification + checksums-bundle verify-blob, wrong-signer and corrupt-bundle negatives rejected\"},",
-"promote.run: {ac: \"REQ-REL-002-AC1\", result: \"pass\", evidence: \"anonymous crane digest of every versioned and floating tag at ghcr.io and docker.io resolves the promoted digest\"}",
-"promote.run: {file: (\"fosterstack-cache-\" + $version + \".csaf.json\"), form: \"csaf-2.0-vex\", sha256: $vex_csaf_sha}],",
-"promote.run: {file: (\"fosterstack-cache-\" + $version + \".inspector-filters.json\"), form: \"inspector-suppression-rules\", sha256: $vex_inspector_sha},",
-"promote.step.env.COSIGN_EXPERIMENTAL: 0",
-"promote.step.env.DIGESTS: ${{ inputs.digests }}"
-],
-"stage-verify.yml": [
-"scan.run: [ -n \"$d\" ] && [ \"$d\" != \"null\" ] || { echo \"::error::no digest for ${v}\" >&2; exit 1; }",
-"scan.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"scan.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"scan.run: d=$(jq -r --arg v \"$v\" '.[$v]' <<<'${{ inputs.digests }}')",
-"scan.run: docker buildx imagetools inspect --raw \"${repo}@${d}\" | jq -r --arg v \"$v\" --arg repo \"$repo\" '.manifests[] | select(.platform.os != \"unknown\") | \"\\($v)\\t\\(.platform.os)/\\(.platform.architecture)\\t\\($repo)@\\(.digest)\"' >> /tmp/scan-targets.txt",
-"scan.run: echo \"${d#sha256:} cache-candidates-${v}\"",
-"scan.run: jq -n --arg scanner '${{ matrix.scanner }}' --arg version \"$ver\" --arg db \"$db\" --arg sha \"${GITHUB_SHA}\" --arg vex \"$(sha256sum .vex/fosterstack-cache.openvex.json | cut -d' ' -f1)\" --argjson digests '${{ inputs.digests }}' --rawfile scanned /tmp/scanned-subjects.txt '{",
-"scan.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"scan.run: repo=\"ghcr.io/${{ github.repository_owner }}/cache-candidates\"",
-"scan.run: sha: $sha, index_digests: $digests,",
-"scan.run: vex_document_sha256: $vex,",
-"scan.run: while IFS=$'\\t' read -r _ _ ref; do docker pull -q \"$ref\" >/dev/null; done < /tmp/scan-targets.txt"
+[
+"actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
+{
+"subject-checksums": "/tmp/image-subjects.txt"
+}
 ]
-}''')
+],
+"stage-reproducibility.yml": [
+[
+"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+null
+],
+[
+"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+{
+"name": "${{ inputs.dist-artifact }}",
+"path": "dist/"
+}
+],
+[
+"docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+{
+"driver-opts": "image=moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"
+}
+],
+[
+"actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+{
+"predicate-path": "/tmp/repro-predicate.json",
+"predicate-type": "https://fosterstack.com/attestations/reproducibility/v1",
+"subject-checksums": "/tmp/repro-subjects.txt"
+}
+]
+]
+}
+}
+''')
 
 
-def operand_lines(name):
+def nz(o, key=None):
+    if isinstance(o, dict):
+        return {k: nz(v, k) for k, v in sorted(o.items())}
+    if isinstance(o, list):
+        return [nz(x) for x in o]
+    if isinstance(o, str):
+        if key == "run":
+            return [re.sub(r"\s+", " ", l).strip() for l in joined(o).split("\n") if l.strip() and not l.strip().startswith("#")]
+        return re.sub(r"\s+", " ", o).strip()
+    return o
+
+
+def h(o):
+    return hashlib.sha256(json.dumps(nz(o), sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+
+
+def frozen_paths(name):
     d = wf(name)
-    out = []
-
-    def add(k, v):
-        if isinstance(v, str) and (OPERAND_TOKEN.search(v) or OPERAND_TOKEN.search(k)):
-            out.append("%s: %s" % (k, re.sub(r"\s+", " ", v).strip()))
-    for k, v in (((d.get("on") or {}).get("workflow_call") or {}).get("outputs") or {}).items():
-        add("workflow_call.outputs.%s" % k, v.get("value", ""))
+    out = {}
+    for k, v in d.items():
+        if k != "jobs":
+            out["top.%s" % k] = h(v)
     for jn, j in (d.get("jobs") or {}).items():
-        for k, v in (j.get("outputs") or {}).items():
-            add("%s.outputs.%s" % (jn, k), v)
-        for k, v in (j.get("with") or {}).items():
-            add("%s.with.%s" % (jn, k), v)
-        for k, v in (j.get("env") or {}).items():
-            add("%s.env.%s" % (jn, k), v)
-        if j.get("uses"):
-            out.append("%s.uses: %s" % (jn, j["uses"]))
-        for st in j.get("steps") or []:
-            for k, v in (st.get("with") or {}).items():
-                add("%s.step.with.%s" % (jn, k), v)
-            for k, v in (st.get("env") or {}).items():
-                add("%s.step.env.%s" % (jn, k), v)
-            for l in joined(st.get("run") or "").split("\n"):
-                l = re.sub(r"\s+", " ", l).strip()
-                if l and not l.startswith("#") and OPERAND_TOKEN.search(l):
-                    out.append("%s.run: %s" % (jn, l))
-    return sorted(out)
+        for k, v in j.items():
+            if k != "steps":
+                out["jobs.%s.%s" % (jn, k)] = h(v)
+        steps = j.get("steps") or []
+        out["jobs.%s.steps.count" % jn] = len(steps)
+        for i, st in enumerate(steps):
+            out["jobs.%s.steps[%d]" % (jn, i)] = h(st)
+    return out
 
 
-@case("3", "operands: every downstream consumer and signing boundary takes exactly the digest operands it took before (golden, per workflow)")
+def uses_pins(name):
+    return [[st["uses"], nz(st.get("with"))] for j in wf(name)["jobs"].values() for st in (j.get("steps") or []) if st.get("uses")]
+
+
+@case("3", "frozen: every downstream workflow is exactly what it was before this change (parsed structure: env at every level, ids, order, scripts)")
 def _():
-    for name in OPERAND_FILES:
-        got, want = operand_lines(name), GOLDEN_OPERANDS[name]
+    for name in FROZEN_FILES:
+        got, want = frozen_paths(name), GOLDEN["frozen"][name]
         if got != want:
-            extra = [x for x in got if x not in want]
-            gone = [x for x in want if x not in got]
-            raise Fail("%s: digest operands differ from the golden; added/changed %s; removed %s" % (name, [x[:140] for x in extra[:3]], [x[:140] for x in gone[:3]]))
+            diff = sorted(k for k in set(got) | set(want) if got.get(k) != want.get(k))
+            raise Fail("%s differs from the frozen golden at %s" % (name, diff[:6]))
+
+
+@case("3", "frozen: no workflow outside the frozen set and the two image stages changed behaviour towards the release chain")
+def _():
+    known = set(FROZEN_FILES) | set(USES_FILES)
+    for name in sorted(os.listdir(WF)):
+        if name in known or not name.endswith(".yml"):
+            continue
+        d = wf(name)
+        for jn, j in (d.get("jobs") or {}).items():
+            ok(not re.search(r"stage-[a-z-]+\.yml", j.get("uses") or ""), "%s job %s calls a stage workflow outside the frozen set" % (name, jn))
+            ok("needs.image" not in json.dumps(j) and "inputs.digests" not in json.dumps(j), "%s job %s reads the image stage's digests" % (name, jn))
+
+
+@case("2", "pins: stage-image and stage-reproducibility use every action exactly as before (checkout takes no inputs: the release commit, this repository)")
+def _():
+    for name in USES_FILES:
+        eq(uses_pins(name), GOLDEN["uses"][name], "%s action references and inputs" % name)
+        for j in wf(name)["jobs"].values():
+            for st in j["steps"]:
+                if (st.get("uses") or "").startswith("actions/checkout@"):
+                    ok("with" not in st, "checkout in %s takes inputs: %s" % (name, st.get("with")))
+
+
+@case("2", "the attestation verifications name this repository and the signing workflow of the stage that made the statement")
+def _():
+    for name, job in (("stage-reproducibility.yml", "reproduce"), ("stage-image.yml", "assemble")):
+        text = "\n".join(joined(run_of(s)) for s in steps_of(name, job) if "gh attestation verify" in run_of(s))
+        ok(text.count("--repo \"${GITHUB_REPOSITORY}\"") == text.count("gh attestation verify") >= 1, "%s: a verification does not name --repo \"${GITHUB_REPOSITORY}\"" % name)
+        for m in re.finditer(r"--signer-workflow\s+(\S+)", text):
+            ok(m.group(1) in ('"${GITHUB_REPOSITORY}/.github/workflows/stage-image.yml"', '"${GITHUB_REPOSITORY}/.github/workflows/stage-build.yml"'), "%s: signer %s" % (name, m.group(1)))
+        ok(text.count("--signer-workflow") == text.count("gh attestation verify"), "%s: a verification without a signer workflow" % name)
 
 
 @case("3", "operands: stage-image's workflow_call output digests is exactly the assemble job's output, and release.yml reads only it")
@@ -1622,12 +2059,13 @@ def _():
             ok("needs.image" not in json.dumps(j) and "inputs.digests" not in json.dumps(j), "%s job %s reads the image stage's digests outside the checked set" % (name, jn))
 
 
-@case("3", "operands: every reusable-workflow call input of release.yml, acceptance.yml and scan.yml is in the golden (the digests, image-ref and artifact inputs)")
+@case("3", "frozen: every reusable-workflow call of release.yml, acceptance.yml and scan.yml is among the frozen jobs")
 def _():
-    for name in ("release.yml", "acceptance.yml", "scan.yml"):
-        calls_ = [jn for jn, j in wf(name)["jobs"].items() if j.get("uses")]
-        for jn in calls_:
-            ok(any(l.startswith("%s.uses:" % jn) for l in GOLDEN_OPERANDS[name]), "%s: call %s is not in the golden operands" % (name, jn))
+    for name in ("release.yml", "acceptance.yml", "scan.yml", "main-candidate-rescan.yml"):
+        for jn, j in wf(name)["jobs"].items():
+            if j.get("uses"):
+                for k in ("uses", "with", "needs"):
+                    ok(k not in j or "jobs.%s.%s" % (jn, k) in GOLDEN["frozen"][name], "%s: call %s.%s is not frozen" % (name, jn, k))
 
 
 # ---------------------------------------------------------------- reproducibility: nothing may weaken it
@@ -1813,6 +2251,9 @@ def _():
 
 
 def main():
+    if os.environ.get("AC5_DUMP_GOLDEN"):
+        print(json.dumps({"frozen": {n: frozen_paths(n) for n in FROZEN_FILES}, "uses": {n: uses_pins(n) for n in USES_FILES}}, indent=0, sort_keys=True))
+        sys.exit(0)
     only = os.environ.get("AC5_ONLY")
     passed = failed = 0
     by = {}

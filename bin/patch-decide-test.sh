@@ -843,6 +843,62 @@ D = P.decide("schedule", [c("r", [".vex/README.md"]), VEXC], ["v0.2.1"], cut_tod
 check("AC15 a .vex README edit beside the VEX file does not block that patch", D["cut"], D)
 D = P.decide("schedule", [c("a", [".auditor/proposals/hook.sh"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
 check("AC15 a script under .auditor/proposals beside a VEX change blocks the patch (named)", not D["cut"] and D["not_clean"] and ".auditor/proposals/hook.sh" in D["not_clean"][0], D)
+# --- step 6 round 2 (REQ-REL-009-AC14): statements sharing a vulnerability are told apart by their product set; the
+# bytes-only note never appears beside a behavior entry or a fix
+PA, PB, PC = "pkg:oci/cache", "pkg:golang/example.org/m", "pkg:deb/debian/libx"
+SA = stmt("CVE-2099-0300", products=(PA,), justification="component_not_present")
+SB = stmt("CVE-2099-0300", products=(PB,), justification="component_not_present")
+def lines_for(text, cve="CVE-2099-0300"):
+    return [l for l in vex_section(text).split("\n") if cve in l]
+SA2, SB2 = dict(SA, justification="vulnerable_code_not_present"), dict(SB, justification="vulnerable_code_not_present")
+for label, (o, n), want_in, want_out in (
+        ("the first statement changes", ([SA, SB], [SA2, SB]), [PA], [PB]),
+        ("the second statement changes", ([SA, SB], [SA, SB2]), [PB], [PA]),
+        ("the second changes and the order flips", ([SA, SB], [SB2, SA]), [PB], [PA])):
+    ls = lines_for(vnotes(vdoc2(o), vdoc2(n)))
+    check("AC14 %s: one line, naming that statement's products only" % label,
+          len(ls) == 1 and all(x in ls[0] for x in want_in) and not any(x in ls[0] for x in want_out), ls)
+ls = lines_for(vnotes(vdoc2([SA, SB]), vdoc2([SA2, SB2])))
+check("AC14 both statements change: two lines, one per product set",
+      len(ls) == 2 and sum(PA in l for l in ls) == 1 and sum(PB in l for l in ls) == 1 and all("justification" in l for l in ls), ls)
+SC = stmt("CVE-2099-0300", products=(PC,), justification="component_not_present")
+ls = lines_for(vnotes(vdoc2([SA, SB]), vdoc2([SA, SB, SC])))
+check("AC14 a third statement for the vulnerability is added: its product named", len(ls) == 1 and PC in ls[0] and "added" in ls[0] and PA not in ls[0], ls)
+ls = lines_for(vnotes(vdoc2([SA, SB, SC]), vdoc2([SA, SC])))
+check("AC14 one of two statements removed: its product named", len(ls) == 1 and PB in ls[0] and "removed" in ls[0] and PA not in ls[0], ls)
+SM1 = stmt("CVE-2099-0400", products=(PA, PB), justification="component_not_present")
+SM2 = stmt("CVE-2099-0400", products=(PB, PA), justification="component_not_present")
+check("AC14 a product list in another order is no change", P.vex_changes(vdoc2([SM1]), vdoc2([SM2])) == [], P.vex_changes(vdoc2([SM1]), vdoc2([SM2])))
+check("AC14 two statements whose product lists are reordered are no change", P.vex_changes(vdoc2([SM1, SA]), vdoc2([SA, SM2])) == [], "")
+SM3 = stmt("CVE-2099-0400", products=(PA, PC), justification="component_not_present")
+ls = lines_for(vnotes(vdoc2([SM1]), vdoc2([SM3])), "CVE-2099-0400")
+check("AC14 a changed product list names the members added and removed", len(ls) == 1 and "+" + PC in ls[0] and "-" + PB in ls[0] and PA not in ls[0].split("products", 1)[-1], ls)
+# bytes-only changes beside behavior entries and fixes (the command)
+BEH_TXT = "- a change no supported client can see (advisor 0130)\n"
+def notes_cli2(old_raw, new_raw, nn=None, fixes_scan=False):
+    po, pn = os.path.join(vaux, "o2.vex"), os.path.join(vaux, "n2.vex")
+    open(po, "w").write(old_raw); open(pn, "w").write(new_raw)
+    nnp = os.path.join(vaux, "nn2.md") if nn is not None else os.path.join(vaux, "no-such2.md")
+    if nn is not None: open(nnp, "w").write(nn)
+    sc = scan
+    if fixes_scan:
+        sc = os.path.join(vaux, "scanfix.json")
+        json.dump({"matches": [{"vulnerability": {"id": "CVE-2099-1", "severity": "High", "fix": {"versions": ["v0.33.0"]}},
+                                "artifact": {"name": "golang.org/x/net", "version": "v0.30.0", "type": "go-module"}}]}, open(sc, "w"))
+        open(os.path.join(vaux, "go2.mod"), "w").write("module x\n\nrequire golang.org/x/net v0.33.0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc_ = P.main(["notes", "--version", "v0.2.2", "--variant-grype", "=" + sc, "--gomod", os.path.join(vaux, "go2.mod") if fixes_scan else gomod,
+                      "--vex-old", po, "--vex-new", pn, "--next-notes", nnp, "--published", pub, "--out", nout])
+    return open(nout).read() if rc_ == 0 else "RC=%d" % rc_
+V1 = vdoc2([SA, SB])
+for label, (o, n) in (("formatting only", (json.dumps(V1), json.dumps(V1, indent=1))), ("statements reordered", (json.dumps(V1), json.dumps(vdoc2([SB, SA])))),
+                      ("a product list reordered", (json.dumps(vdoc2([SM1])), json.dumps(vdoc2([SM2]))))):
+    t = notes_cli2(o, n, nn=BEH_TXT)
+    check("AC14 CLI: %s beside a behavior entry: the entry, no VEX-only" % label, "advisor 0130" in t and "VEX-only" not in t and "RC=" not in t, t)
+    t = notes_cli2(o, n, fixes_scan=True)
+    check("AC14 CLI: %s beside a package fix: the fix, no VEX-only" % label, "CVE-2099-1" in t and "VEX-only" not in t and "RC=" not in t, t)
+    t = notes_cli2(o, n)
+    check("AC14 CLI: %s alone: VEX-only (no statement change)" % label, "VEX-only (no statement change)" in t, t)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
