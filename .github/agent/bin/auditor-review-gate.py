@@ -4,7 +4,8 @@ stop rule before merge — enforced as a check, not a habit.
 
 A pull request whose change touches .github/agent/ must carry a REVIEW RECORD at
 .github/agent/reviews/<tree>.json, where <tree> is the sha256 of the exact .github/agent/
-content under review (every tracked path, mode and blob id; the review records themselves —
+content under review (every tracked path, mode and blob id, plus the allowlist guard's own files
+listed in GUARDED; the review records themselves —
 reviews/<64-hex>.json — excluded, and nothing else). The
 content is what is bound: any later change to the auditor — a fix commit, or a rebase that
 brings in other auditor changes — changes <tree>, the old record no longer matches, and the
@@ -28,6 +29,11 @@ import hashlib, json, os, re, subprocess, sys
 
 AGENT = ".github/agent/"
 REVIEWS = AGENT + "reviews/"
+# The allowlist guard's own files live outside .github/agent/ but are review-gated like it: the
+# guard decides what a public-repo PR may contain, so changing it needs the same independent review.
+# (ci.yml is NOT listed: its allowlist job is judged by this gate's workflow from main's copies.)
+GUARDED = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh",
+           ".github/workflows/agent-review-gate.yml")
 VENDORS = {"codex": "openai", "sonnet": "anthropic"}
 SCHEMA = "auditor-review-record/v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -51,7 +57,7 @@ def _is_record(path):
 
 def tree_hash(head):
     # -z: NUL-delimited, unquoted paths (a quoted non-ASCII name cannot slip past _is_record)
-    lines = [ln for ln in _git("ls-tree", "-r", "-z", "--full-tree", head, "--", AGENT).split("\0")
+    lines = [ln for ln in _git("ls-tree", "-r", "-z", "--full-tree", head, "--", AGENT, *GUARDED).split("\0")
              if ln and not _is_record(ln.split("\t", 1)[-1])]
     return hashlib.sha256(("\n".join(lines) + "\n").encode()).hexdigest()
 
@@ -59,7 +65,7 @@ def tree_hash(head):
 def auditor_changes(base, head):
     # --no-renames: a rename out of .github/agent/ must show its OLD path too, never only the new.
     return [p for p in _git("diff", "--no-renames", "--name-only", "-z", base, head, "--").split("\0")
-            if p.startswith(AGENT) and not _is_record(p)]
+            if (p.startswith(AGENT) or p in GUARDED) and not _is_record(p)]
 
 
 def record_problems(rec, tree):
