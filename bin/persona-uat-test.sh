@@ -1559,6 +1559,7 @@ name = c["argv"][c["argv"].index("--name") + 1]
 dels = [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"] and name in r["argv"]]
 assert len(dels) == 1 and not os.path.exists(c["kc"])
 PY
+  CASE="kind ($name): the public log is ONLY the pass/fail lines (a malformed agent answer or a crash prints nothing of the captured output)"; check publiclog "$name"
 done
 KIND_FAIL=1 run kindfail '{}' rc
 CASE="kind fails: the on-call persona did not run (blocking, no agent for it, no kubectl at all), the other four are unaffected and the run fails (fail closed)"
@@ -1692,6 +1693,8 @@ failclosed() { # <case> <persona> <plan-for-persona-json>
   CASE="fail closed ($1): that persona's report says blocking and that it did not run"
   check grep -q 'VERDICT: blocking' "$(out "fc-$1")/$2.report.md"
   check grep -qi 'did not run' "$(out "fc-$1")/$2.report.md"
+  # a malformed or failing agent answer must not leak into the public log: no captured stdout or stderr, only the pass/fail lines
+  CASE="fail closed ($1): the public log is ONLY the pass/fail lines (the agent's captured output, malformed or not, is never printed)"; check publiclog "fc-$1"
 }
 failclosed crash        compliance-reviewer '{"crash":true}'
 failclosed garbage      readme-evaluator    '{"raw_out":"not json at all"}'
