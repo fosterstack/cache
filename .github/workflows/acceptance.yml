@@ -656,8 +656,9 @@ jobs:
 
           # Proof 2 (real key rejected): the extension UPLOADS the oversized
           # app artifact and the server answers 413 - it does not pre-skip.
-          # Tie the 413 to the real app key, not to any incidental entry.
-          grep -Eq 'status code: 413|Request Entity Too Large' /tmp/mvn-capped-a.log \
+          # Tie the 413 to the real app key, not to any incidental entry. The resolver words it differently by runner image (older:
+          # "status code: 413 ... Request Entity Too Large", newer: "HTTP Status: 413"); bin/acceptance-maven-413-test.sh pins both.
+          grep -Eq 'status code: 413|HTTP Status: 413|Request Entity Too Large' /tmp/mvn-capped-a.log \
             || { echo "::error::build a logged no 413 - the oversized app upload was not rejected by the server" >&2; exit 1; }
           grep -Fq "app/${app_key}/app.jar" /tmp/mvn-capped-a.log \
             || { echo "::error::build a never attempted the app/${app_key}/app.jar remote save" >&2; exit 1; }
