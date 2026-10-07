@@ -584,7 +584,21 @@ def workflow_defaults(doc, label, bad):
     if str(run.get("shell", "bash")) != "bash":
         bad.append(f"{label} has a workflow-level default shell that is not plain bash")
 
-ISSUE_STEP = re.compile(r"gh\s+issue\s+(create|comment|edit|reopen)|issues\.(create|createComment|update)|gh\s+api\b[^\n]*issues|/issues\b")
+# every way a step can open, edit, close, lock or comment on an issue or pull request (text forms; a third-party issue ACTION or a reusable workflow is caught by the
+# dependent-job allowlist below, since it carries no such text)
+ISSUE_STEP = re.compile(r"gh\s+issue\s+\w+|gh\s+pr\s+(comment|review|edit|close|reopen|create|merge|ready)\b|issues\.(create|createComment|update|lock|addLabels|setLabels)|pulls\.(createReview|createReviewComment)"
+                        r"|gh\s+api\b[^\n]*(issues|comments|graphql|createIssue|addComment|reviews)|(curl|wget)\b[^\n]*(api\.github\.com|/issues|/comments|graphql)|/issues\b|createIssue|addComment|update-issue|create-issue")
+# the ONLY actions a job that depends on persona-uat may use (by commit digest); nothing else in its steps, and no job-level `uses:` (a reusable workflow hides its steps)
+DEPENDENT_ACTIONS = re.compile(r"^actions/(checkout|upload-artifact|download-artifact)@[0-9a-f]{40}$")
+def mode_value(run):
+    """the value of the driver's --mode option, parsed (comments dropped, continuations joined); None unless exactly one"""
+    import shlex
+    try:
+        argv = shlex.split(str(run).replace("\\\n", " "), comments=True)
+    except ValueError:
+        return None
+    vals = [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == "--mode"] + [t.split("=", 1)[1] for t in argv if t.startswith("--mode=")]
+    return vals[0] if len(vals) == 1 else None
 
 def judge_workflow_graph(r, label, bad):
     """results stay private, for ANY outcome of persona-uat (success, friction-only, failure): no job that depends on persona-uat, directly or transitively through
@@ -607,7 +621,11 @@ def judge_workflow_graph(r, label, bad):
         depends = "persona-uat" in ancestors(n)
         if not (n == "persona-uat" or depends or always):
             continue
+        if depends and j.get("uses") is not None:
+            bad.append(f"{label}: job {n} depends on persona-uat and is a reusable-workflow call ({str(j.get('uses'))[:50]!r}): it could open an issue from steps nobody here can see")
         for st in j.get("steps", []) or []:
+            if depends and st.get("uses") is not None and not DEPENDENT_ACTIONS.match(str(st.get("uses"))):
+                bad.append(f"{label}: job {n} depends on persona-uat and uses {str(st.get('uses'))[:60]!r}: a job that follows persona-uat may use only checkout, upload-artifact and download-artifact by digest (a third-party action could open an issue)")
             blob = str(st.get("run", "")) + " " + json.dumps(st.get("with", {}) or {})
             if ISSUE_STEP.search(blob):
                 bad.append(f"{label}: job {n} {'depends on persona-uat (directly or through needs)' if depends else 'runs whatever persona-uat did'} and opens or touches a public issue ({blob.strip()[:60]!r}): a persona result, whatever its outcome, must stay private")
@@ -657,8 +675,8 @@ def judge_release(r, bad):
         arg = run.replace("\\\n", " ").split("--image", 1)[-1].split(" --", 1)[0]
         if not re.search(r"\$\{\{\s*fromJSON\(\s*needs\.image\.outputs\.digests\s*\)\.production\s*\}\}", arg) or "@" not in arg:
             bad.append("release persona-uat takes the image from something other than the chain's digests (fromJSON(needs.image.outputs.digests).production)")
-        if "--mode rc" not in run:
-            bad.append("release persona-uat does not run the driver with --mode rc")
+        if mode_value(run) != "rc":
+            bad.append(f"release persona-uat does not run the driver with --mode rc exactly (parsed value {mode_value(run)!r})")
 
 def judge_weekly(f, bad):
     judge_workflow_graph(f, "go-freshness.yml", bad)
@@ -721,8 +739,8 @@ def judge_weekly(f, bad):
             arg = run.split("--image", 1)[-1].split(" --", 1)[0].strip()
             if not r.get("id") or not re.fullmatch(r"\$\{\{\s*steps\." + re.escape(str(r.get("id"))) + r"\.outputs\.image\s*\}\}", arg.strip().strip("\"'")):
                 bad.append("weekly persona-uat does not hand the resolved latest-release image digest to --image")
-    if d is not None and "--mode weekly" not in str(d.get("run", "")):
-        bad.append("weekly persona-uat does not run the driver with --mode weekly")
+    if d is not None and mode_value(d.get("run", "")) != "weekly":
+        bad.append(f"weekly persona-uat does not run the driver with --mode weekly exactly (parsed value {mode_value(d.get('run', ''))!r})")
 
 TOOL_KEYS = ["cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell"]
 # each key's official image repository, as docker normalises it (docker.io/ and library/ stripped); an exact match, never a suffix match
@@ -1110,6 +1128,18 @@ for lab_, w_ in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
     mutate(f"{lab_}: a successor opens an issue under success()", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ success() }}", "steps": [{"run": "gh issue edit 3 --body y"}]}), w_)
     mutate(f"{lab_}: a TRANSITIVE successor (two hops, no `if`) opens an issue", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
     mutate(f"{lab_}: a transitive successor under failure() opens an issue through the API", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"run": "true"}]}, second={"needs": ["first"], "if": "${{ failure() }}", "steps": [{"run": "gh api repos/o/r/issues -f title=x"}]}), w_)
+    for nm_, stp_ in (("a third-party issue action", {"uses": "dacbd/create-issue-action@" + "a" * 40, "with": {"title": "t", "body": "b"}}),
+                      ("an issue action pinned by tag", {"uses": "peter-evans/create-issue-from-file@v5"}),
+                      ("gh issue close", {"run": "gh issue close 3"}), ("gh issue lock", {"run": "gh issue lock 3"}), ("gh issue comment", {"run": "gh issue comment 3 -b x"}),
+                      ("gh pr comment", {"run": "gh pr comment 3 -b x"}), ("a GraphQL createIssue", {"run": "gh api graphql -f query='mutation { createIssue(input: {}) { clientMutationId } }'"}),
+                      ("a GraphQL addComment", {"run": "gh api graphql -f query=x"}), ("a curl to the issues API", {"run": "curl -X POST -H \"Authorization: Bearer $T\" https://api.github.com/repos/o/r/issues -d '{}'"}),
+                      ("github-script", {"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await github.rest.issues.create({})"}}),
+                      ("github-script with a quiet script", {"uses": "actions/github-script@" + "a" * 40, "with": {"script": "core.info('x')"}})):
+        mutate(f"{lab_}: a direct successor of persona-uat uses {nm_}", "depends on persona-uat", lambda d, stp_=stp_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [stp_]}), w_)
+        mutate(f"{lab_}: a TRANSITIVE successor uses {nm_}", "depends on persona-uat", lambda d, stp_=stp_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [stp_]}), w_)
+    mutate(f"{lab_}: a successor of persona-uat is a reusable-workflow call", "reusable-workflow call", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "uses": "./.github/workflows/notify.yml"}), w_)
+    mutate(f"{lab_}: a transitive successor is a reusable-workflow call in another repository", "reusable-workflow call", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "uses": "o/r/.github/workflows/x.yml@" + "a" * 40}), w_)
+    mutate(f"{lab_}: a successor uses a checkout pinned by tag only", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"uses": "actions/checkout@v4"}]}), w_)
     mutate(f"{lab_}: an always() job opens an issue", "runs whatever persona-uat did", lambda d: d["jobs"].update(report={"if": "${{ always() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
     mutate(f"{lab_}: persona-uat is added to the needs of an existing issue job", "depends on persona-uat", lambda d: d["jobs"].setdefault("patch-failed" if "patch-failed" in d["jobs"] else "check", {}).update(needs=["persona-uat"]), w_)
 mutate("a notify job needs persona-uat and opens an issue on failure()", "opens or touches a public issue", lambda d: d["jobs"].update(notify={"needs": ["persona-uat"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), "rel_wf")
@@ -1213,6 +1243,9 @@ mutate("rc identity step is conditional", "identity step has an if", lambda j: n
 mutate("rc identity step exports a path it never writes", "does not write the token to a file",
        lambda j: next(s for s in j["steps"] if "github-script" in str(s.get("uses", ""))).setdefault("with", {}).update(script="core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', '/nonexistent')"))
 mutate("release.yml loses its v* tag trigger", "push tags are not exactly", lambda j: None, "rel_top")
+mutate("rc driver mode is a prefix, --mode rcoops", "--mode rc exactly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode rc", "--mode rcoops")))
+mutate("rc driver mode in the = form with a suffix", "--mode rc exactly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode rc", "--mode=rc2")))
+mutate("weekly driver mode is a prefix, --mode weekly2", "--mode weekly exactly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode weekly2")), "fresh")
 mutate("weekly driver runs in rc mode", "--mode weekly", lambda j: drv(j).update(run=drv(j)["run"].replace("--mode weekly", "--mode rc")), "fresh")
 mutate("weekly driver step is non-fatal", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"), "fresh")
 # tools file

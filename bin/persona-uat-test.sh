@@ -83,6 +83,10 @@
 #       (a timed-out agent's leftovers are terminated). The fixture counts a request BEFORE it flushes the response (deterministic; the real
 #       server counts just after the handler returns, a race the tests cannot model: a very late request may miss the after-scrape). The stub
 #       agent makes plan["requests"] counted requests (default 1; plan["methods"] varies the verb) and plan["uncounted"] uncounted ones.
+#   RATIFIED RULE (advisor 0207, kept on purpose): a persona that reports ONLY friction and made zero counted requests stays pass (case proof2): friction is information, never
+#       a blocker. The endpoint-proof rule blocks only a persona that reports NO findings and made no counted request.
+#   LIMITATION (stated, AC5): the hosts line lists hosts NAMED in a persona's commands; a tool's own contacts (Maven or Gradle dependency resolution, cosign's Rekor/TUF, redirects)
+#       are not observed, so "any host its commands contact" means the hosts the commands name.
 #   Model identities are job SECRETS (masked by GitHub in every log, step headers included): the wiring test pins where they may appear; the log cases here pin that the driver never prints them.
 #   (6) round 3 additions to the contract: the BEFORE-scrape continuity rule: a before-scrape that fails, or holds no positive total after an earlier
 #       persona's scrape had one (a restarted server, a broken exporter), makes the persona blocking, even with a fine after-scrape (the first persona
@@ -261,7 +265,7 @@ cat >"$work/docker.tmpl" <<'SH'
 #!/usr/bin/env bash
 DOCKER_LOG="__LOG__"
 echo "$*" >>"$DOCKER_LOG"
-if [ -n "${DOCKER_FAIL_MATCH:-}" ] && [[ "$*" == *"$DOCKER_FAIL_MATCH"* ]]; then echo "docker: simulated failure" >&2; exit 125; fi
+if [ -n "${DOCKER_FAIL_MATCH:-}" ] && [[ "$*" == *"$DOCKER_FAIL_MATCH"* ]]; then echo "Unable to find image '$DOCKER_FAIL_MATCH' locally" >&2; echo "docker: Error response from daemon: pull access denied for sha256 digest" >&2; echo "docker: simulated failure" >&2; exit 125; fi
 if [ -n "${DOCKER_NOISE:-}" ] && { [ "$1" = rm ] || { [ "$1" = run ] && [ "$2" = -d ]; }; }; then
   # requests the DRIVER's own container handling causes on the endpoint, BETWEEN personas' windows (never part of a persona's)
   python3 -c "
@@ -297,6 +301,9 @@ if [ "$1" = rm ] || [ "$1" = stop ] || [ "$1" = kill ]; then
   for t in "$@"; do if [ -n "$t" ] && [ -e "${CONTAINERS:?}/${t:?}" ]; then kill -9 "$(sed -n 2p "${CONTAINERS:?}/${t:?}")" 2>/dev/null; rm -f "${CONTAINERS:?}/${t:?}"; fi; done
 fi
 if [ "$1" = rm ]; then kill $(cat "$CASEDIR/../runner.pid" 2>/dev/null) 2>/dev/null; rm -f "${CASEDIR:?}/../runner.pid"; fi
+# what the real client prints: the ids of what it removed or stopped (stdout), and the host-network warning for a published port (stderr)
+if [ "$1" = rm ] || [ "$1" = stop ] || [ "$1" = kill ]; then for t in "$@"; do case "$t" in -*) ;; ?*) echo "$t"; echo "container-id-noise-${t}" >&2;; esac; done; fi
+if [ "$1" = run ]; then echo "WARNING: Published ports are discarded when using host network mode" >&2; fi
 if [ "$1" = run ] && [ "$2" = --rm ]; then
   CASEDIR="$CASEDIR" python3 - "$CONTAINERS" "$@" <<'PYX'
 import json, os, subprocess, sys, time
@@ -311,7 +318,7 @@ if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
     # (read-only directories, mode-000 files). It understands rm -rf (alone or in a sh -c list joined by ; or &&) and `find /work -mindepth 1 -delete`; anything
     # else is a command the image cannot run (exit 127). The state left behind is logged, so a case can require that NOTHING remained.
     import fnmatch, shlex, shutil
-    def expand(arg, glob):
+    def expand(arg, gp):
         """DIRECT argv words are literal (no glob, tilde or variable expansion, no quote removal): only a word an explicit `sh -c` leaves UNQUOTED may glob"""
         if not (arg == "/work" or arg.startswith("/work/")):
             return []                                            # outside the mount: nothing of the sandbox
@@ -320,8 +327,9 @@ if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
             raise SystemExit(1)                                  # rm: cannot remove '/work': Device or resource busy
         parent, pat = os.path.split(rel)
         base = os.path.join(host, parent)
-        if not glob:
+        if gp is None:
             return [os.path.join(base, pat)]                    # a literal name (which may even contain a *): nothing matches a file that is not there
+        parent, pat = os.path.split(gp[len("/work"):].strip("/"))     # the pattern of the last component, per-character quoting preserved
         if not os.path.isdir(base):
             return []
         return [os.path.join(base, n) for n in sorted(os.listdir(base)) if fnmatch.fnmatchcase(n, pat) and (pat.startswith(".") or not n.startswith("."))]
@@ -340,14 +348,17 @@ if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
     def lex(script):
         """a minimal POSIX-sh lexer for what an `sh -c` cleanup may contain: ' and " quoting (a quoted glob is LITERAL), backslash escapes, ; && and newline as list separators,
         unquoted * ? [ as globs. Variables, command substitution, tilde, pipes, redirects and groups cannot be modelled: the fake refuses them (exit 127)"""
-        cmds, cur, word, started, glob, quote, i = [], [], "", False, False, None, 0
+        cmds, cur, word, gpat, started, glob, quote, i = [], [], "", "", False, False, None, 0
         def unsupported(why):
             sys.stderr.write("sh: unsupported in this fake (%s)\n" % why); raise SystemExit(127)
         def end_word():
-            nonlocal word, started, glob
+            nonlocal word, gpat, started, glob
             if started:
-                cur.append((word, glob))
-            word, started, glob = "", False, False
+                cur.append((word, gpat if glob else None))       # the glob PATTERN keeps per-character quoting: a quoted * is matched literally
+            word, gpat, started, glob = "", "", False, False
+        def lit(ch):
+            nonlocal word, gpat
+            word += ch; gpat += ("[%s]" % ch) if ch in "*?[" else ch
         def end_cmd():
             nonlocal cur
             end_word()
@@ -358,17 +369,17 @@ if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
             c = script[i]
             if quote == "'":
                 if c == "'": quote = None
-                else: word += c
+                else: lit(c)
             elif quote == '"':
                 if c == '"': quote = None
                 elif c in "$`\\": unsupported("expansion inside double quotes")
-                else: word += c
+                else: lit(c)
             elif c == "'": quote, started = "'", True
             elif c == '"': quote, started = '"', True
             elif c == "\\":
                 i += 1
                 if i >= len(script): unsupported("trailing backslash")
-                word += script[i]; started = True
+                lit(script[i]); started = True
             elif c in "$`" or (c == "~" and not started): unsupported("variable, command or tilde expansion")
             elif c in "|<>(){}": unsupported("pipe, redirect or group")
             elif c in " \t": end_word()
@@ -377,7 +388,7 @@ if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
                 if script[i + 1:i + 2] != "&": unsupported("background job")
                 end_cmd(); i += 1
             else:
-                word += c; started = True
+                word += c; gpat += c; started = True
                 if c in "*?[": glob = True
             i += 1
         if quote: unsupported("unterminated quote")
@@ -402,7 +413,7 @@ if a[a.index("--user") + 1:][:1] == ["0:0"] if "--user" in a else False:
         for words in lex(rest[2]):
             run_simple(words)
     else:
-        run_simple([(x, False) for x in rest])      # DIRECT argv: literal words
+        run_simple([(x, None) for x in rest])      # DIRECT argv: literal words
     remaining = sorted(os.path.relpath(os.path.join(r, n), host) for r, ds, fs in os.walk(host) for n in ds + fs)
     open(os.path.join(os.environ["CASEDIR"], "cleanup.log"), "a").write(json.dumps({"sandbox": host, "tail": rest, "before": before, "remaining": remaining}) + "\n")
     sys.exit(0)
@@ -450,6 +461,21 @@ if kc and a[:2] == ["create", "cluster"]:
     row["existed_mode"] = oct(os.stat(kc).st_mode & 0o7777) if os.path.exists(kc) else None
     row["dir_mode"] = oct(os.stat(os.path.dirname(os.path.abspath(kc))).st_mode & 0o7777)
 open(D + "/host.log", "a").write(json.dumps(row) + "\n")
+DIGEST = "sha256:" + "ab12" * 16
+def noise(what):
+    """what the real kind prints (progress lines naming the node image digest and the cluster, on stdout and on stderr): none of it may reach the job log"""
+    if what == "create":
+        t = ('Creating cluster "%s" ...\n \u2713 Ensuring node image (kindest/node:v1.31.0@%s) \U0001f5bc\n \u2713 Preparing nodes \U0001f4e6\n \u2713 Writing configuration \U0001f4dc\n'
+             ' \u2713 Starting control-plane \U0001f579\ufe0f\n \u2713 Installing CNI \U0001f50c\nSet kubectl context to "kind-%s"\nYou can now use your cluster with: kubectl cluster-info --context kind-%s\n' % (name, DIGEST, name, name))
+    elif what == "delete":
+        t = 'Deleting cluster "%s" ...\nDeleted nodes: ["%s-control-plane"]\n' % (name, name)
+    else:
+        t = 'ERROR: failed to create cluster: failed to pull image "kindest/node:v1.31.0@%s": exit status 1\nDeleting cluster "%s" ...\n' % (DIGEST, name)
+    sys.stdout.write(t); sys.stderr.write(t); sys.stdout.flush(); sys.stderr.flush()
+if a[:2] == ["create", "cluster"]:
+    noise("create" if not cfg.get("kind_fail") else "fail")
+elif a[:2] == ["delete", "cluster"]:
+    noise("delete")
 if cfg.get("kind_hang") and a[:2] == ["create", "cluster"]:
     time.sleep(20)
 if cfg.get("kind_fail"):
@@ -462,6 +488,9 @@ if a[:2] == ["create", "cluster"]:
         fh.write("apiVersion: v1\nkind: Config\nclusters:\n- name: kind-%s\n  cluster:\n    server: https://127.0.0.1:%d\n    certificate-authority-data: CA-DATA-MARKER-PUBLIC\n"
                  "users:\n- name: kind-%s\n  user:\n    client-certificate-data: ADMIN-CERT-MARKER-1\n    client-key-data: ADMIN-KEY-MARKER-1\n"
                  "contexts:\n- name: kind-%s\n  context:\n    cluster: kind-%s\n    user: kind-%s\ncurrent-context: kind-%s\n" % (name, port, name, name, name, name, name))
+    ready_at = time.time() + float(cfg.get("node_ready_delay") or 0)       # `kind create cluster --wait 0s` returns while the node is still NotReady
+    open(D + "/node_ready_at", "w").write(repr(ready_at))
+    open(D + "/host.log", "a").write(json.dumps({"tool": "kind-ready", "node_ready_at": ready_at}) + "\n")
     open(D + "/alive", "w").write("1")        # the cluster exists until `kind delete cluster`: the fake kubectl answers the persona's calls only while it does
     if pn:      # the API server of a real kind cluster LISTENS on the loopback: show it in the kernel table the driver's guard reads
         raw = "%08X" % struct.unpack("<I", socket.inet_aton("127.0.0.1"))[0]
@@ -471,6 +500,8 @@ elif a[:2] == ["delete", "cluster"] and cfg.get("kind_delete_fail"):
 elif a[:2] == ["delete", "cluster"]:
     if os.path.exists(D + "/alive"):
         os.remove(D + "/alive")
+    if os.path.exists(D + "/node_ready_at"):
+        os.remove(D + "/node_ready_at")
     if pn:
         keep = [l for l in open(pn + "/tcp") if not l.rstrip().endswith(" 9999 1 0")]
         open(pn + "/tcp", "w").writelines(keep)
@@ -648,7 +679,30 @@ if verb == "create":
     open(D + "/host.log", "a").write(json.dumps({"tool": "issued", "token": tok, "t": time.time()}) + "\n")
     print(tok)
 else:
-    print("ok")
+    ready_at = float(open(D + "/node_ready_at").read()) if os.path.exists(D + "/node_ready_at") else 0.0
+    nodeargs = any(x in ("node", "nodes") or x.startswith(("node/", "nodes/")) for x in a)
+    if verb == "wait" and nodeargs:
+        joined = " ".join(a)
+        tmo = re.search(r"--timeout[= ](\d+)([sm]?)", joined)
+        limit = int(tmo.group(1)) * (60 if tmo and tmo.group(2) == "m" else 1) if tmo else 30
+        row["node_wait"] = limit
+        if not re.search(r"--for[= ]condition=Ready\b", joined):
+            finish(1, "error: this fake waits only for condition=Ready on nodes")
+        left = ready_at - time.time()
+        if left > 0:
+            if left > limit:
+                time.sleep(limit); finish(1, "error: timed out waiting for the condition on nodes/kind-control-plane")
+            time.sleep(left)
+        row["node_ready"] = True
+        print("node/kind-control-plane condition met")
+    elif verb == "get" and nodeargs:
+        ready = time.time() >= ready_at
+        row["node_ready"] = ready
+        print("NAME                 STATUS   ROLES           AGE   VERSION\nkind-control-plane   %s   control-plane   6s    v1.31.0" % ("Ready   " if ready else "NotReady"))
+    elif verb == "apply":
+        print("namespace/persona created\nserviceaccount/persona created\nrole.rbac.authorization.k8s.io/persona created\nrolebinding.rbac.authorization.k8s.io/persona created")
+    else:
+        print("ok")
 if verb != "apply":
     row["manifests"] = []
 finish(0)
@@ -681,9 +735,9 @@ os.execv(REAL, [REAL] + sys.argv[1:])
 os.chmod(d + "/hostbin/openssl", 0o755); open(d + "/openssl.log", "w").close()
 PYO
   sed "s#__DIR__#$d#" "$work/kind.tmpl" >"$d/hostbin/kind"; sed "s#__DIR__#$d#" "$work/kubectl.tmpl" >"$d/hostbin/kubectl"; chmod +x "$d/hostbin/kind" "$d/hostbin/kubectl"
-  python3 - "$d/host.cfg" "${KIND_FAIL:-}" "${KUBECTL_FAIL_MATCH:-}" "${KIND_PORT:-18090}" "${KIND_PROCNET:-}" "${KIND_DELETE_FAIL:-}" "${KIND_HANG:-}" "${KIND_TOKEN_LIFETIME:-}" "${KIND_API_AUD:-}" <<'PYC'
+  python3 - "$d/host.cfg" "${KIND_FAIL:-}" "${KUBECTL_FAIL_MATCH:-}" "${KIND_PORT:-18090}" "${KIND_PROCNET:-}" "${KIND_DELETE_FAIL:-}" "${KIND_HANG:-}" "${KIND_TOKEN_LIFETIME:-}" "${KIND_API_AUD:-}" "${KIND_NODE_READY:-}" <<'PYC'
 import json, sys
-json.dump({"kind_fail": sys.argv[2], "kubectl_fail_match": sys.argv[3], "kind_port": int(sys.argv[4]), "procnet": sys.argv[5], "kind_delete_fail": sys.argv[6], "kind_hang": sys.argv[7], "token_lifetime": sys.argv[8], "api_aud": sys.argv[9]}, open(sys.argv[1], "w"))
+json.dump({"kind_fail": sys.argv[2], "kubectl_fail_match": sys.argv[3], "kind_port": int(sys.argv[4]), "procnet": sys.argv[5], "kind_delete_fail": sys.argv[6], "kind_hang": sys.argv[7], "token_lifetime": sys.argv[8], "api_aud": sys.argv[9], "node_ready_delay": sys.argv[10]}, open(sys.argv[1], "w"))
 PYC
 }
 # The driver makes NO gh call and opens NO issue (results stay private): a recording `gh` is first on every run's PATH (hostbin) and any call is a failure.
@@ -862,7 +916,35 @@ class H(BaseHTTPRequestHandler):
 ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 PY
 python3 "$work/srvfix.py" 18080 "$work" >/dev/null 2>&1 & SRV1=$!
-python3 -m http.server 18081 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 & SRV2=$!
+cat >"$work/jenfix.py" <<'PY'
+# Jenkins (18081): a static server that, once armed (/__arm?s=N), answers 503 to every request for N seconds from the first one after arming (real Jenkins answers 503 while starting, 30-90s), then 200
+import json, os, sys, time, urllib.parse
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+port, root = int(sys.argv[1]), sys.argv[2]
+S = {"arm": 0.0, "until": 0.0}
+class H(SimpleHTTPRequestHandler):
+    def __init__(self, *a, **k):
+        super().__init__(*a, directory=root, **k)
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        if u.path == "/__arm":
+            S["arm"] = float(urllib.parse.parse_qs(u.query)["s"][0]); S["until"] = 0.0
+            self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok"); return
+        now = time.time()
+        if S["arm"] > 0:
+            S["until"] = now + S["arm"]; S["arm"] = 0.0
+        starting = now < S["until"]
+        open(root + "/jen.log", "a").write(json.dumps({"t": now, "path": u.path, "code": 503 if starting else 200}) + "\n")
+        if starting:
+            b = b"Please wait while Jenkins is getting ready to work ..."
+            self.send_response(503); self.send_header("Content-Length", str(len(b))); self.send_header("Retry-After", "5"); self.end_headers(); self.wfile.write(b); return
+        super().do_GET()
+    do_HEAD = do_GET
+ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+PY
+python3 "$work/jenfix.py" 18081 "$work" >/dev/null 2>&1 & SRV2=$!
 trap 'kill $SRV1 $SRV2 $(cat "$work/runner.pid" 2>/dev/null) 2>/dev/null; rm -rf "$work"' EXIT
 srvctl() { python3 -c "import sys,urllib.request,urllib.parse;u='http://127.0.0.1:18080/'+sys.argv[1]+('?'+urllib.parse.urlencode({sys.argv[2]:sys.argv[3]}) if len(sys.argv)>2 else '');urllib.request.urlopen(u,timeout=5).read()" "$@"; }
 echo ours-18080 >"$work/ours-18080.txt"; echo ours-18081 >"$work/ours-18081.txt"; true
@@ -1766,19 +1848,117 @@ r = subprocess.run(["openssl", "cms", "-encrypt", "-aes-256-cbc", "-outform", "D
 open(w + "/for-other.cms", "wb").write(r.stdout)
 assert dec(w + "/for-other.cms", w + "/test.key") is None and dec(w + "/for-other.cms", w + "/other.key") == b"secret report"
 PY
-CASE="the driver encrypts with openssl cms -encrypt (aes-256-cbc or aes256) to the --recipient certificate in a PIPELINE: exactly one such call per persona, the report and transcript on stdin (no -in, no plaintext file name in any argument), the certificate file as the recipient"
-check python3 - "$work/clean" "$work/test.pem" <<'PY'
-import json, sys
-d, pem = sys.argv[1], sys.argv[2]
-calls = [json.loads(l) for l in open(d + "/openssl.log")]
-enc = [c for c in calls if c[:2] == ["cms", "-encrypt"]]
-assert len(enc) == 5, calls
-for c in enc:
-    assert "-aes-256-cbc" in c or "-aes256" in c, c
-    assert "-binary" in c, ("without -binary openssl cms turns every LF into CRLF: the payload would not be what was written", c)
-    assert pem in c, ("the recipient certificate is not an argument", c)
-    assert "-in" not in c and not [x for x in c if x.endswith((".md", ".txt", ".payload", ".report", ".transcript"))], ("plaintext handed over as a file", c)
-    assert not [x for x in c if x.startswith("-passin") or x.startswith("-pass")], c
+# cmsjudge.py: WHO can read an artifact is a property of the produced CMS, not of the argv alone: exactly ONE recipient info, a key-transport (ktri) one for exactly the
+# recipient certificate (issuer and serial), content encryption AES-256, and no password, symmetric-key (kekri), key-agreement or other recipient; and the argv carries no
+# option that adds one (-secretkey, -secretkeyid, -pwri_password, -keyid, -originator, a second -recip, -passin/-pass, -stream)
+cat >"$work/cmsjudge.py" <<'CJ'
+import re, subprocess
+
+ALLOWED = {"cms", "-encrypt", "-aes-256-cbc", "-aes256", "-binary", "-outform", "DER", "-out", "-recip"}
+def judge_argv(argv, cert):
+    errs = []
+    if argv[:2] != ["cms", "-encrypt"]:
+        errs.append("not `openssl cms -encrypt`")
+    if not ("-aes-256-cbc" in argv or "-aes256" in argv):
+        errs.append("not AES-256")
+    if "-binary" not in argv:
+        errs.append("no -binary")
+    if argv.count("-recip") != 1:
+        errs.append("-recip must appear exactly once (found %d)" % argv.count("-recip"))
+    elif argv[argv.index("-recip") + 1] != cert:
+        errs.append("the recipient is not the certificate")
+    i, skip = 2, False
+    for k, t in enumerate(argv[2:], 2):
+        if skip:
+            skip = False; continue
+        if t in ("-recip", "-out", "-outform"):
+            skip = True; continue
+        if t not in ALLOWED:
+            errs.append("an option outside the allowlist that could add or alter a recipient: %s" % t)
+    if "-in" in argv:
+        errs.append("plaintext handed over as a file (-in)")
+    return errs
+
+def cert_ident(cert):
+    out = subprocess.run(["openssl", "x509", "-noout", "-serial", "-issuer", "-in", cert], capture_output=True, text=True).stdout
+    serial = re.search(r"serial=([0-9A-Fa-f]+)", out).group(1).upper().lstrip("0")
+    issuer = re.search(r"issuer=\s*(.*)", out).group(1).strip()
+    return serial, issuer
+
+def judge_cms(path, cert):
+    r = subprocess.run(["openssl", "cms", "-cmsout", "-print", "-inform", "DER", "-in", path], capture_output=True, text=True)
+    if r.returncode != 0:
+        return ["not a parseable DER CMS: " + r.stderr.strip()[:80]]
+    t = r.stdout
+    errs = []
+    if "pkcs7-envelopedData" not in t:
+        errs.append("not enveloped data")
+    ri = t.split("recipientInfos:", 1)[1] if "recipientInfos:" in t else ""
+    ri = ri.split("encryptedContentInfo:", 1)[0]
+    kinds = re.findall(r"^ {6}d\.(\w+):", ri, re.M)
+    if kinds != ["ktri"]:
+        errs.append("recipient infos must be exactly one ktri, found %s" % kinds)
+    serial, issuer = cert_ident(cert)
+    m = re.findall(r"serialNumber:\s*0x([0-9A-Fa-f]+)", ri)
+    if [x.upper().lstrip("0") for x in m] != [serial]:
+        errs.append("the recipient's serial is not the certificate's")
+    iss = re.findall(r"issuer:\s*(.*)", ri)
+    if len(iss) != 1 or iss[0].strip().replace(" ", "") != issuer.replace(" ", ""):
+        errs.append("the recipient's issuer is not the certificate's")
+    enc = t.split("encryptedContentInfo:", 1)[1] if "encryptedContentInfo:" in t else ""
+    if not re.search(r"contentEncryptionAlgorithm:\s*\n\s*algorithm:\s*aes-256-cbc", enc):
+        errs.append("content encryption is not AES-256-CBC")
+    if "originatorInfo: <ABSENT>" not in t:
+        errs.append("an originator is present")
+    return errs
+CJ
+CASE="who can read an artifact is proven on the PRODUCED CMS and the argv: every artifact (the five of a clean run; the default-recipient run is judged the same way below) has exactly ONE recipient info, a key-transport one for the recipient certificate (issuer and serial), content encryption AES-256-CBC, no password, symmetric-key, key-agreement or originator entry; the driver's openssl call is exactly one -encrypt per persona with AES-256, -binary, one -recip (the certificate), no -in, and no option that adds a recipient (-secretkey, -secretkeyid, -pwri_password, -keyid, -originator, -passin, -stream)"
+check python3 - "$work" "$work/clean" <<'PY'
+import glob, json, sys
+w = sys.argv[1]; sys.path.insert(0, w); import cmsjudge
+pem = w + "/test.pem"
+for d, cert in ((sys.argv[2], pem),):
+    calls = [json.loads(l) for l in open(d + "/openssl.log")]
+    enc = [c for c in calls if c[:2] == ["cms", "-encrypt"]]
+    assert len(enc) == 5, (d, calls)
+    for c in enc:
+        e = cmsjudge.judge_argv(c, cert if d == sys.argv[2] else c[c.index("-recip") + 1])
+        assert not e, (c, e)
+        assert not [x for x in c if x.endswith((".md", ".txt", ".payload", ".report", ".transcript"))], ("plaintext handed over as a file", c)
+    files = glob.glob(d + "/out/*.cms")
+    assert len(files) == 5, (d, files)
+    for f in files:
+        e = cmsjudge.judge_cms(f, pem)
+        assert not e, (f, e)
+PY
+CASE="the CMS judge itself (self-test): it accepts a good artifact and REJECTS each way of adding a reader: an extra -secretkey recipient (readable without any private key), a password recipient, a second certificate, AES-128, another certificate, a repeated -recip, -keyid, -originator, -passin, -stream, plain data, garbage"
+check python3 - "$work" <<'PY'
+import subprocess, sys
+w = sys.argv[1]; sys.path.insert(0, w); import cmsjudge
+pem, other = w + "/test.pem", w + "/other.pem"
+def enc(*extra, cert=pem, cipher="-aes-256-cbc"):
+    r = subprocess.run(["openssl", "cms", "-encrypt", cipher, "-binary", "-outform", "DER", "-recip", cert] + list(extra), input=b"x", capture_output=True)
+    assert r.returncode == 0, r.stderr
+    open(w + "/cj.cms", "wb").write(r.stdout)
+    return cmsjudge.judge_cms(w + "/cj.cms", pem)
+assert enc() == [], enc()
+KEY = "000102030405060708090a0b0c0d0e0f000102030405060708090a0b0c0d0e0f"
+for name, extra, kw in (("secretkey recipient", ["-secretkey", KEY, "-secretkeyid", "01"], {}), ("password recipient", ["-pwri_password", "pw"], {}),
+                        ("second certificate", ["-recip", other], {}), ("aes-128", [], {"cipher": "-aes-128-cbc"}), ("another certificate only", [], {"cert": other})):
+    assert enc(*extra, **kw), ("the CMS judge accepted: " + name)
+good = ["cms", "-encrypt", "-aes-256-cbc", "-binary", "-outform", "DER", "-recip", pem]
+assert cmsjudge.judge_argv(good, pem) == []
+assert cmsjudge.judge_argv(good + ["-out", "x.cms"], pem) == []
+for name, argv in (("-secretkey", good + ["-secretkey", KEY]), ("-secretkeyid", good + ["-secretkeyid", "01"]), ("-pwri_password", good + ["-pwri_password", "p"]),
+                   ("second -recip", good + ["-recip", other]), ("-keyid", good + ["-keyid"]), ("-originator", good + ["-originator", other]), ("-passin", good + ["-passin", "pass:x"]),
+                   ("-stream", good + ["-stream"]), ("-in", good + ["-in", "f.txt"]), ("no -binary", [a for a in good if a != "-binary"]), ("aes-128", ["-aes-128-cbc" if a == "-aes-256-cbc" else a for a in good]),
+                   ("wrong certificate", good[:-1] + [other])):
+    assert cmsjudge.judge_argv(argv, pem), ("the argv judge accepted: " + name)
+open(w + "/cj.cms", "wb").write(b"not cms")
+assert cmsjudge.judge_cms(w + "/cj.cms", pem)
+r = subprocess.run(["openssl", "smime", "-sign", "-signer", pem, "-inkey", w + "/test.key", "-outform", "DER", "-binary"], input=b"x", capture_output=True)
+open(w + "/cj.cms", "wb").write(r.stdout)
+assert cmsjudge.judge_cms(w + "/cj.cms", pem), "signed (not enveloped) data accepted"
 PY
 CASE_ENC="encryption failure leaves NOTHING uploadable: after ANY failed encryption (an empty or partial destination, on the first call, on the third, on all) --out holds NO file at all (the failed destination removed, and no earlier persona's good .cms kept: the always() upload must find nothing), no file in it is plaintext, the run fails (exit 1) with only pass/fail lines, and nothing readable is left in the private TMPDIR"
 for mode in 1 partial first 3; do
@@ -1836,7 +2016,8 @@ openssl cms -encrypt -aes-256-cbc -binary -outform DER -recip "$work/other.pem" 
 echo "unrelated notes" >"$work/dsh/run/other-artifact/notes.txt"
 git -C "$work/dsh/clone" init -q 2>/dev/null || true
 git -C "$work/dsh/clone" remote add origin https://github.com/own/cache.git 2>/dev/null || true      # a clone whose origin is the RIGHT repository
-mkdir -p "$work/dsh/clone-noremote" "$work/dsh/clone-wrong"
+mkdir -p "$work/dsh/clone-noremote" "$work/dsh/clone-wrong" "$work/dsh/clone-real"
+git -C "$work/dsh/clone-real" init -q 2>/dev/null || true; git -C "$work/dsh/clone-real" remote add origin git@github.com:fosterstack/cache.git 2>/dev/null || true
 git -C "$work/dsh/clone-noremote" init -q 2>/dev/null || true                                       # a clone with NO remote
 git -C "$work/dsh/clone-wrong" init -q 2>/dev/null || true; git -C "$work/dsh/clone-wrong" remote add origin https://github.com/evil/other.git 2>/dev/null || true
 cat >"$work/dsh/bin/gh" <<'SH'
@@ -1867,6 +2048,8 @@ fi
 case "$repo" in */*) ;; *) echo "expected the [HOST/]OWNER/REPO format" >&2; exit 1;; esac
 # the run and its artifacts belong to ONE repository (FAKE_REPO): any other owner/name does not have them
 [ "$repo" = "$FAKE_REPO" ] || { echo "HTTP 404: Not Found (https://api.github.com/repos/$repo/actions/runs/$id/artifacts)" >&2; exit 1; }
+# ... and the artifacts to ONE run of it (FAKE_RUN_ID): another run id has none
+[ "$id" = "$FAKE_RUN_ID" ] || { echo "HTTP 404: Not Found (https://api.github.com/repos/$repo/actions/runs/$id)" >&2; exit 1; }
 mkdir -p "$dir"
 if [ "$n" -eq 0 ]; then
   for a in "$FAKE_RUN"/*; do mkdir -p "$dir/$(basename "$a")"; cp "$a"/* "$dir/$(basename "$a")/"; done
@@ -1883,9 +2066,9 @@ dsh_run() { # <run id> [key path or NOKEY] ; env FAKE_GH_FAIL, FAKE_RUN, DSH_CWD
   rm -rf "${work:?}/dsh/tmp"; mkdir -p "$work/dsh/tmp"; : >"$work/dsh/gh.log"; drc=0
   local cwd="${DSH_CWD:-$work/dsh/clone}"
   if [ "${2:-}" = NOKEY ]; then
-    (cd "$cwd" && env "${reppart[@]}" FAKE_REPO=own/cache HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_RUN="${FAKE_RUN:-$work/dsh/run}" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1") >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
+    (cd "$cwd" && env "${reppart[@]}" FAKE_REPO="${DSH_FAKE_REPO:-own/cache}" FAKE_RUN_ID="${DSH_FAKE_RUN:-4242}" HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_RUN="${FAKE_RUN:-$work/dsh/run}" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1") >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
   else
-    (cd "$cwd" && env "${reppart[@]}" FAKE_REPO=own/cache HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_RUN="${FAKE_RUN:-$work/dsh/run}" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1" ${2:+"$2"}) >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
+    (cd "$cwd" && env "${reppart[@]}" FAKE_REPO="${DSH_FAKE_REPO:-own/cache}" FAKE_RUN_ID="${DSH_FAKE_RUN:-4242}" HOME="$work/dsh/home" PATH="$work/dsh/bin:$PATH" FAKE_GH_LOG="$work/dsh/gh.log" FAKE_RUN="${FAKE_RUN:-$work/dsh/run}" TMPDIR="$work/dsh/tmp" bash "$dsh" "$1" ${2:+"$2"}) >"$work/dsh/o" 2>"$work/dsh/e" || drc=$?
   fi
 }
 mkdir -p "$work/dsh/home" "$work/dsh/tmp"
@@ -1996,7 +2179,22 @@ DSH_CWD="$work/dsh/clone-wrong" dsh_run 4242 "$work/test.key"
 CASE="persona-uat-decrypt.sh in a clone whose origin is ANOTHER repository still reaches the right one: the explicit -R from GITHUB_REPOSITORY wins over the clone's remote"
 check test "$drc" -eq 0
 DSH_REPO=NONE DSH_CWD="$work/dsh/nogit" dsh_run 4242 "$work/test.key"
-CASE="persona-uat-decrypt.sh outside a clone with no GITHUB_REPOSITORY: its own default repository is not the fixture's, so gh finds nothing: the script fails cleanly (non-zero, no plaintext), it never succeeds on a guess"
+CASE="persona-uat-decrypt.sh outside a clone with no GITHUB_REPOSITORY, against a run of ANOTHER repository (the fixture belongs to own/cache): gh finds nothing, the script fails cleanly (non-zero, no plaintext)"
+check test "$drc" -ne 0 -a -z "$(ls "$work"/dsh/tmp/* 2>/dev/null | head -1)"
+DSH_FAKE_REPO=fosterstack/cache DSH_REPO=NONE DSH_CWD="$work/dsh/nogit" dsh_run 4242 "$work/test.key"
+CASE="persona-uat-decrypt.sh run LOCALLY outside a clone with GITHUB_REPOSITORY unset works against this repository's own run (the repository is fosterstack/cache): the script has a working default"
+check test "$drc" -eq 0
+check test "$(ls "$work"/dsh/tmp | head -1)" != ""
+DSH_FAKE_REPO=fosterstack/cache DSH_REPO=NONE DSH_CWD="$work/dsh/clone-real" dsh_run 4242 "$work/test.key"
+CASE="persona-uat-decrypt.sh run locally inside a clone of fosterstack/cache with GITHUB_REPOSITORY unset works (default or the clone's own remote)"
+check test "$drc" -eq 0
+DSH_FAKE_RUN=9137 dsh_run 9137 "$work/test.key"
+CASE="persona-uat-decrypt.sh with a DIFFERENT run id (9137, the fixture's only run): the id on the command line is the id gh is given, so it succeeds; the id is never a constant"
+check test "$drc" -eq 0
+check grep -q -- '9137' "$work/dsh/gh.log"
+check none_match '4242' "$work/dsh/gh.log"
+DSH_FAKE_RUN=9137 dsh_run 4242 "$work/test.key"
+CASE="persona-uat-decrypt.sh with a run id the repository does not have (4242 while only 9137 exists): gh finds no such run, the script fails cleanly (non-zero, no plaintext)"
 check test "$drc" -ne 0 -a -z "$(ls "$work"/dsh/tmp/* 2>/dev/null | head -1)"
 CASE="persona-uat-decrypt.sh is a plain bash script of the repository (executable), reads NO environment variable for the key (only HOME for the default path and TMPDIR for the directory), never echoes or cats the key, and writes no plaintext outside its mktemp directory (static)"
 check python3 - "$dsh" <<'PY'
@@ -2466,6 +2664,19 @@ CASE="without --recipient the driver encrypts to bin/persona-uat-recipient.pem N
 check test "$rc" -eq 0
 decout defrec-case
 check test "$(ls "$work/defrec-case/plain"/*.report.md | wc -l | tr -d ' ')" -eq 5
+CASE="the default-recipient run's artifacts pass the same CMS judgement: one key-transport recipient for the certificate the driver found next to itself, AES-256-CBC, an argv without any recipient-adding option"
+check python3 - "$work" "$work/defrec-case" <<'PY'
+import glob, json, sys
+w, d = sys.argv[1:3]; sys.path.insert(0, w); import cmsjudge
+enc = [c for c in (json.loads(l) for l in open(d + "/openssl.log")) if c[:2] == ["cms", "-encrypt"]]
+assert len(enc) == 5
+for c in enc:
+    e = cmsjudge.judge_argv(c, c[c.index("-recip") + 1]); assert not e, (c, e)
+    assert c[c.index("-recip") + 1].endswith("/defrec/bin/persona-uat-recipient.pem"), c
+for f in glob.glob(d + "/out/*.cms"):
+    e = cmsjudge.judge_cms(f, w + "/test.pem"); assert not e, (f, e)
+assert len(glob.glob(d + "/out/*.cms")) == 5
+PY
 
 # --- FIX B: the sandbox is readable by the container's uid, never writable by others ---------------------------------
 old_umask=$(umask); umask 077
@@ -2726,6 +2937,14 @@ for i, r in enumerate(tim):
         between = [e for e in scr if r["t1"] < e["t"] < nxt]
         assert between and (i + 1 == len(tim) or len(between) >= 2), ("no settled after-scrape between the personas", r["persona"], len(between))
         a = between[-2] if i + 1 < len(tim) else between[-1]
+        # the QUIET INTERVAL, from the recorded scrape instants: the readings the driver settled on (everything between the window and the next persona's before-scrape)
+        # must end in a run of equal totals that spans at least 0.8 s (a change restarts it: the run is counted back from the LAST scrape over the trailing equal readings)
+        seq = between[:-1] if i + 1 < len(tim) else between
+        assert len(seq) >= 2, ("the driver settled on fewer than two readings", r["persona"], len(seq))
+        k = len(seq) - 1
+        while k > 0 and seq[k - 1]["total"] == seq[-1]["total"]:
+            k -= 1
+        assert seq[-1]["t"] - seq[k]["t"] >= 0.75, ("the final equal readings span %.2fs after the last observed change: not the stated 0.8s quiet interval" % (seq[-1]["t"] - seq[k]["t"]), r["persona"])
     else:
         after = [e for e in scr if e["t"] > r["t1"]]
         assert after, ("a persona window without a scrape after it", r["persona"])
@@ -3112,6 +3331,59 @@ assert pl["aud"] == ["https://kubernetes.default.svc"], pl
 assert "--audience" not in " ".join(r["argv"]), r["argv"]
 assert [json.loads(l) for l in open(d + "/timing.log") if '"on-call-engineer"' in l][0]["kube_rc"] == 0
 PY
+# `kind create cluster --wait 0s` returns while the node is still NotReady: the driver waits (kubectl wait --for=condition=Ready, or get nodes until Ready) BEFORE the
+# on-call persona starts; the wait is bounded
+KIND_NODE_READY=3 run kindnotready '{}' rc
+CASE="the node is NotReady for 3 seconds after kind returns: the driver waits for it (kubectl wait --for=condition=Ready on the nodes with a bounded --timeout, or get nodes until Ready) with the ADMIN credential, and the on-call persona starts only after the node was Ready; the run passes"
+check test "$rc" -eq 0
+check python3 - "$work/kindnotready" <<'PY'
+import json, sys
+d = sys.argv[1]
+rows = [json.loads(l) for l in open(d + "/host.log")]
+ready_at = [r for r in rows if r.get("tool") == "kind-ready"][0]["node_ready_at"]
+t0 = [json.loads(l) for l in open(d + "/timing.log") if '"on-call-engineer"' in l][0]["t0"]
+assert t0 >= ready_at - 0.05, ("the on-call persona started %.2fs BEFORE the node was Ready" % (ready_at - t0))
+seen = [r for r in rows if r.get("tool") == "kubectl" and r.get("node_ready") is True and r["verb"] in ("get", "wait") and not r["persona_call"]]
+assert seen, "the driver never observed the node Ready (no kubectl wait / get nodes with the admin kubeconfig)"
+assert seen[0]["t"] < t0, "the readiness was observed only after the persona started"
+for r in rows:
+    if r.get("tool") == "kubectl" and r.get("node_wait") is not None:
+        assert 0 < r["node_wait"] <= 900, ("an unbounded or absurd wait", r["argv"])
+PY
+srvctl __reset
+python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18081/__arm?s=3',timeout=5).read()"
+: >"$work/jen.log"
+run jenslow '{}' rc
+python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18081/__arm?s=0',timeout=5).read()"
+CASE="Jenkins answers 503 for 3 seconds while it starts: only a success status is ready (a 503 is not), so the Maven persona starts after the first 200 and the run passes; the driver was seen retrying"
+check test "$rc" -eq 0
+check python3 - "$work/jenslow" "$work/jen.log" <<'PY'
+import json, sys
+d = sys.argv[1]
+rows = [json.loads(l) for l in open(sys.argv[2])]
+rows = [r for r in rows if r["path"] != "/__arm"]
+n503 = [r for r in rows if r["code"] == 503]
+ok = [r for r in rows if r["code"] == 200]
+assert n503 and ok, ("the driver never saw both phases", len(n503), len(ok))
+t0 = [json.loads(l) for l in open(d + "/timing.log") if '"maven-jenkins-ci"' in l][0]["t0"]
+assert t0 >= ok[0]["t"] - 0.05 and ok[0]["t"] > n503[-1]["t"], ("the Maven persona started while Jenkins still answered 503", t0, ok[0]["t"])
+assert len(n503) >= 2, ("one 503 and the driver stopped asking? it must poll", len(n503))
+PY
+python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18081/__arm?s=60',timeout=5).read()"
+: >"$work/jen.log"
+READY_TIMEOUT=3 RUN_TIMEOUT=90 run jenstuck '{}' rc
+python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18081/__arm?s=0',timeout=5).read()"
+CASE="Jenkins answers 503 for ever: the wait is bounded (--ready-timeout), the Maven persona did not run (blocking, no agent for it), the other four are unaffected, the run fails"
+check python3 - "$work/jenstuck" "$(out jenstuck)" "$rc" <<'PY'
+import json, sys
+d, o, rc = sys.argv[1], sys.argv[2], int(sys.argv[3])
+assert "maven-jenkins-ci" not in [json.loads(l)["persona"] for l in open(d + "/log")]
+rep = open(o + "/maven-jenkins-ci.report.md").read()
+assert rep.splitlines()[0] == "VERDICT: blocking" and "did not run" in rep.lower(), rep
+for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
+    assert open(o + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: pass", p
+assert rc == 1, rc
+PY
 KIND_API_AUD=https://kubernetes.default.svc.cluster.local run kindaud '{}' rc
 CASE="the API audience varies by cluster (kubeadm: https://kubernetes.default.svc.cluster.local): the driver creates the token WITHOUT --audience and keeps whatever the server issued, so the persona's own call at the end of its window is answered whichever audience this API server uses"
 check test "$rc" -eq 0
@@ -3158,8 +3430,10 @@ check python3 - "$fkd" "$SHL" <<'PY'
 import json, os, shutil, subprocess, sys, tempfile
 fkd, img = sys.argv[1], sys.argv[2]
 BASE = {"a.txt", "dir", "dir/inner.txt", ".h", ".h/x", "..w", "..w/q", ".dot"}
-def trial(tail):
+def trial(tail, extra=()):
     sb = tempfile.mkdtemp(prefix="fkd-")
+    for e in extra:
+        open(os.path.join(sb, e), "w").write("x")
     for rel in BASE:
         if rel in ("dir", ".h", "..w"):
             os.makedirs(os.path.join(sb, rel), exist_ok=True)
@@ -3179,6 +3453,15 @@ for q in ("rm -rf '/work/*'", 'rm -rf "/work/*"', "rm -rf /work/\\*", "rm -rf '/
 rc, left = trial(["sh", "-c", "rm -rf /work/* /work/.[!.]* /work/..?*"]);   assert rc == 0 and left == set(), left
 rc, left = trial(["sh", "-c", "rm -rf /work/*; rm -rf /work/.[!.]* && rm -rf /work/..?*"]); assert rc == 0 and left == set(), left
 rc, left = trial(["find", "/work", "-mindepth", "1", "-delete"]);     assert rc == 0 and left == set(), left
+# per-character quoting: "/work/*"* is a LITERAL star followed by a glob (names starting with *), "/work/"* is a glob over everything, a*, 'a'* the names starting with a
+X = ("*lit", "plain")
+rc, left = trial(["sh", "-c", 'rm -rf "/work/*"*'], X);          assert rc == 0 and left == BASE | {"plain"}, ("mixed quoting: only a name starting with a literal * may match", left)
+rc, left = trial(["sh", "-c", 'rm -rf /work/"*"'], X);           assert rc == 0 and left == BASE | {"plain", "*lit"}, ("a fully quoted star names the file '*'; there is none", left)
+rc, left = trial(["sh", "-c", 'rm -rf "/work/"*'], X);           assert rc == 0 and left == {".h", ".h/x", "..w", "..w/q", ".dot"}, ("a quoted prefix does not quote the glob", left)
+rc, left = trial(["sh", "-c", "rm -rf /work/a*"], X);            assert rc == 0 and left == (BASE | {"plain", "*lit"}) - {"a.txt"}, left
+rc, left = trial(["sh", "-c", "rm -rf /work/'a'*"], X);          assert rc == 0 and left == (BASE | {"plain", "*lit"}) - {"a.txt"}, left
+rc, left = trial(["sh", "-c", "rm -rf /work/a'*'"], X);          assert rc == 0 and left == BASE | {"plain", "*lit"}, ("a quoted star after a literal prefix is literal", left)
+rc, left = trial(["sh", "-c", "rm -rf /work/\\**"], X);          assert rc == 0 and left == BASE | {"plain"}, ("an escaped star then a glob", left)
 for bad in ("rm -rf $HOME/x", "rm -rf `echo /work/a.txt`", "rm -rf ~/x", 'rm -rf "$X"'):
     rc, left = trial(["sh", "-c", bad]);                              assert rc != 0 and left == BASE, ("unsupported shell syntax must be refused", bad, rc)
 PY
@@ -3270,6 +3553,7 @@ for p, v in want.items():
     assert open(sys.argv[1] + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: " + v, p
 PY
 check python3 "$work/windows.py" "$work/delayed3" 5 settle double
+check python3 "$work/windows.py" "$work/clean" 5 settle
 srvctl __reset
 python3 - <<'PYD'
 import urllib.request
@@ -3292,6 +3576,49 @@ for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer",
     assert open(o + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: pass", p
 assert rc == 1, rc
 PY
+CASE="the windows checker enforces the quiet interval (self-test on recorded scrape instants): correctly attributed logs whose final equal readings are 0.01s apart after the last change FAIL (a fixed delay then rapid equality), a run of equal readings spanning 0.8s passes, and a change in the middle restarts the interval (equal readings that span 0.8s only because they straddle a change FAIL)"
+check python3 - "$work" <<'PY'
+import json, os, subprocess, sys
+w = sys.argv[1]
+def case(name, after, reqs=1):
+    d = w + "/qi-" + name; os.makedirs(d, exist_ok=True)
+    json.dump({"persona": "p", "t0": 10.0, "t1": 11.0, "requests": reqs, "uncounted": 0}, open(d + "/timing.log", "w")); open(d + "/timing.log", "a").write("\n")
+    rows = [{"t": 9.0, "path": "/metrics", "method": "GET", "counted": False, "persona": None, "total": 0},
+            ] + [{"t": 10.4 + 0.1 * n, "path": "/", "method": "GET", "counted": True, "persona": "p", "total": n + 1} for n in range(reqs)]
+    rows += [{"t": t, "path": "/metrics", "method": "GET", "counted": False, "persona": None, "total": v} for t, v in after]
+    open(d + "/srv.log", "w").write("\n".join(json.dumps(r) for r in rows) + "\n")
+    return subprocess.run(["python3", w + "/windows.py", d, "1", "settle"], capture_output=True, text=True).returncode == 0
+assert case("good", [(11.1, 1), (11.4, 1), (11.7, 1), (11.95, 1)]), "a 0.85s run of equal readings was refused"
+assert not case("rapid", [(11.0 + 1.4, 1), (12.41, 1)]), "two equal readings 0.01s apart were accepted"
+assert not case("short", [(11.1, 1), (11.3, 1), (11.5, 1)]), "a 0.4s run was accepted"
+assert case("late-good", [(11.1, 1), (11.5, 1), (11.9, 2), (12.3, 2), (12.75, 2)], 2), "a change followed by a 0.85s run was refused"
+assert not case("straddle", [(11.1, 1), (11.5, 1), (11.9, 2), (11.95, 2)], 2), "equal readings that only span 0.8s by straddling a change were accepted"
+PY
+# repository SOURCE reaching forms other than archive/raw/blob/tree: git clone of the repository (with or without .git), codeload.github.com, the API's tarball/zipball
+python3 - >"$work/hostsplan5.json" <<'PY'
+import json
+print(json.dumps({
+ "gradle-platform-engineer": {"commands": ["git clone https://github.com/example/cache.git", "git clone --depth 1 https://github.com/example/cache.git /tmp/x"]},
+ "maven-jenkins-ci": {"commands": ["git clone https://github.com/example/cache"]},
+ "compliance-reviewer": {"commands": ["curl -L https://codeload.github.com/example/cache/tar.gz/refs/heads/main -o s.tgz"]},
+ "readme-evaluator": {"commands": ["curl -L https://api.github.com/repos/example/cache/tarball/main -o s.tgz", "curl -L https://api.github.com/repos/example/cache/zipball -o s.zip"]},
+ "on-call-engineer": {"commands": ["curl https://api.github.com/repos/example/cache/releases/latest", "git clone https://evil.example/x.git", "curl https://github.com/example/cache"]}}))
+PY
+run hosts5 "$(cat "$work/hostsplan5.json")" rc
+CASE="hosts (repository source forms): git clone of https://github.com/<o>/<r>(.git), codeload.github.com and api.github.com .../tarball|zipball are listed as '<host> (repository source)' in the encrypted report (never public); the API's releases endpoint and another host's clone are plain hosts; a plain github.com page (the docs host) is not listed"
+check python3 - "$work" <<'PY'
+import subprocess, sys
+w = sys.argv[1]
+def line(p):
+    t = open("%s/hosts5/plain/%s.report.md" % (w, p)).read().splitlines()
+    v = [l for l in t if l.startswith("Hosts contacted outside the docs:")][0].split(":", 1)[1].strip()
+    return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
+want = {"gradle-platform-engineer": "github.com (repository source)", "maven-jenkins-ci": "github.com (repository source)", "compliance-reviewer": "codeload.github.com (repository source)",
+        "readme-evaluator": "api.github.com (repository source)", "on-call-engineer": "api.github.com,evil.example"}
+for p, v in want.items():
+    assert line(p) == v, (p, line(p), v)
+PY
+check publiclog hosts5
 # the auth layer wraps the metrics middleware: a 401 is never counted
 run proofauth '{"readme-evaluator":{"requests":0,"unauth":3}}' rc
 CASE="a persona whose only traffic was answered 401 (withAuth wraps withMetrics, so it is never counted) made no counted request: blocking, the others pass"
@@ -3300,6 +3627,15 @@ check test "$(head -1 "$(out proofauth)/readme-evaluator.report.md")" = "VERDICT
 # --- PRIVACY, outcomes that exist only late in this file
 CASE="the public log is ONLY pass/fail lines in every outcome: clean, blocking, crash, a provider error carrying secrets, a dead image, missing docs: no finding, doc name, host, model name or transcript text, and the transcripts/reports exist only inside the encrypted artifacts"
 for c in clean blocking fc-crash hosts leak imgdead; do publiclog "$c" >/dev/null 2>&1 && ok "$CASE ($c)" || bad "$CASE ($c)"; done
+# the fake kind, docker and kubectl print what the real ones print (progress lines naming the node image digest and the cluster, container ids, "created" lines, warnings) on
+# stdout AND stderr, on success and on failure: a driver that lets any of it through fails every one of these
+CASE="the public log is ONLY pass/fail lines when the tools are noisy (kind progress with the image digest, docker container ids and warnings, kubectl output) and fail: kind fails, kubectl apply fails, kubectl token fails, kind delete fails, kind and delete both fail, kind hangs, a tool container dies, the Jenkins image dies, the loopback guard refuses (three variants), an agent hangs, a stray listener, a container that is not running, an orphaned agent, a sandbox with foreign files, a slow node, a slow Jenkins, a stuck Jenkins"
+for c in kindfail kubectlapplyfail kubectltokenfail kinddelfail kindbothfail kindhang runnerdead jendead guardbad guardbad6 guardmissing hang kindstray notrunning orphan sbxleft kindnotready jenslow jenstuck kindshort kindhuge kindaud; do
+  [ -d "$work/$c" ] || { bad "$CASE ($c: the case did not run)"; continue; }
+  publiclog "$c" >/dev/null 2>&1 && ok "$CASE ($c)" || bad "$CASE ($c)"
+done
+CASE="none of the tools' progress text reaches ANY public surface (log, step summary, artifact names) in the noisy runs: no node image, digest, cluster name, container id, warning text"
+check none_match 'kindest|Ensuring node image|control-plane|ab12ab12|Published ports|container-id-noise|created|condition met|NotReady|Deleting cluster' "$work/kindfail/stdout" "$work/kindfail/stderr" "$work/kindhang/stdout" "$work/kindhang/stderr" "$work/kinddelfail/stdout" "$work/kinddelfail/stderr" "$work/kindbothfail/stdout" "$work/kindbothfail/stderr" "$work/kubectlapplyfail/stdout" "$work/kubectlapplyfail/stderr" "$work/clean/stdout" "$work/clean/stderr" "$work/clean/summary.md" "$work/jendead/stderr" "$work/imgdead/stderr" "$work/runnerdead/stderr"
 CASE="the driver runs with a PRIVATE TMPDIR and leaves no readable report or transcript anywhere it could write (no plaintext copy outside --out: a temp file, a sandbox leftover, a staging file, the working directory), in EVERY run's TMPDIR and in the driver's working directory; the sandboxes are made under that TMPDIR; --out holds only the encrypted files"
 check python3 - "$work" <<'PY'
 import glob, json, os, sys
