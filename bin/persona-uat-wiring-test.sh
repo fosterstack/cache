@@ -293,9 +293,13 @@ def judge_script_artifact(text, upload_name, name, bad):
     """the local decrypt script downloads the persona artifact by an EXACT name (a single -n); the upload must publish under that very name (when the script is not
     committed yet the synthetic default stands in for it, and the real-file case below stays red)"""
     t = SYN_DECRYPT if text is None else text
-    names = re.findall(r"(?:-n|--name)[ =]+[\"']?([A-Za-z0-9._-]+)", t)
+    code = "\n".join(l for l in t.replace("\\\n", " ").splitlines() if not l.lstrip().startswith("#"))      # no comments; continuations joined
+    cmds = [l for l in code.splitlines() if re.search(r"\bgh\s+run\s+download\b", l)]
+    if len(cmds) != 1:
+        bad.append(f"{name}: the decrypt script must run `gh run download` exactly once (found {len(cmds)})"); return
+    names = re.findall(r"(?:^|\s)(?:-n|--name)[ =]+[\"']?([A-Za-z0-9._-]+)", cmds[0])       # the -n of THAT command only
     if len(names) != 1:
-        bad.append(f"{name}: the decrypt script must download the persona artifact with exactly ONE -n/--name (found {names}): without -n gh downloads every artifact, nested")
+        bad.append(f"{name}: the decrypt script must download the persona artifact with exactly ONE -n/--name on its `gh run download` command (found {names}): without -n gh downloads every artifact, nested")
     elif names[0] != upload_name:
         bad.append(f"{name}: the upload publishes the artifact as {upload_name!r} but the decrypt script downloads {names[0]!r}: the run could never be decrypted")
 
@@ -582,10 +586,10 @@ def workflow_defaults(doc, label, bad):
 
 ISSUE_STEP = re.compile(r"gh\s+issue\s+(create|comment|edit|reopen)|issues\.(create|createComment|update)|gh\s+api\b[^\n]*issues|/issues\b")
 
-def judge_release_graph(r, bad):
-    """the RELEASE GRAPH with ONLY persona-uat failing (every other job succeeds): a job runs if its `if` has always()/!cancelled(), or failure() with persona-uat among its
-    transitive needs, or no status function and persona-uat is NOT an ancestor; no job AFFECTED by that failure (an ancestor-failure runner, or always()) may open or touch
-    a public issue, and persona-uat's own steps never do"""
+def judge_workflow_graph(r, label, bad):
+    """results stay private, for ANY outcome of persona-uat (success, friction-only, failure): no job that depends on persona-uat, directly or transitively through
+    needs, may open or touch a public issue whatever its `if` says (a `needs: [persona-uat]` job with no `if` runs after success and friction, with `failure()`/`!success()`
+    after a failure), and neither may a job that runs under always()/!cancelled() (it runs whatever persona-uat did); persona-uat's own steps never do"""
     jobs = r.get("jobs", {}) or {}
     def needs_of(n):
         v = (jobs.get(n) or {}).get("needs", [])
@@ -600,15 +604,16 @@ def judge_release_graph(r, bad):
         j = j or {}
         cond = str(j.get("if", ""))
         always = bool(re.search(r"always\(\)|!\s*cancelled\(\)", cond))
-        failure = "failure()" in cond
-        anc = ancestors(n)
-        affected = n == "persona-uat" or always or (failure and "persona-uat" in anc)
-        if not affected:
+        depends = "persona-uat" in ancestors(n)
+        if not (n == "persona-uat" or depends or always):
             continue
         for st in j.get("steps", []) or []:
             blob = str(st.get("run", "")) + " " + json.dumps(st.get("with", {}) or {})
             if ISSUE_STEP.search(blob):
-                bad.append(f"release.yml: job {n} runs when only persona-uat fails and opens or touches a public issue ({blob.strip()[:60]!r}): a persona result must stay private")
+                bad.append(f"{label}: job {n} {'depends on persona-uat (directly or through needs)' if depends else 'runs whatever persona-uat did'} and opens or touches a public issue ({blob.strip()[:60]!r}): a persona result, whatever its outcome, must stay private")
+
+def judge_release_graph(r, bad):
+    judge_workflow_graph(r, "release.yml", bad)
 
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
@@ -656,6 +661,7 @@ def judge_release(r, bad):
             bad.append("release persona-uat does not run the driver with --mode rc")
 
 def judge_weekly(f, bad):
+    judge_workflow_graph(f, "go-freshness.yml", bad)
     workflow_defaults(f, "go-freshness.yml", bad)
     judge_workflow_env(f, "go-freshness.yml", bad)
     j = f.get("jobs", {}).get("persona-uat")
@@ -930,7 +936,9 @@ RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
     "image": {"steps": [{"run": "true"}]}, "promotion": {"needs": ["image"], "steps": [{"run": "true"}]},
     "patch-failed": {"needs": ["image", "promotion"], "if": "${{ failure() }}", "steps": [{"run": 'gh issue create --title "auditor: release failed" --body "$RUN_URL"'}]},
     "persona-uat": synth_persona_job(False)}}
-FS = {"on": {"schedule": [{"cron": "43 6 * * 1"}]}, "jobs": {"persona-uat": synth_persona_job(True)}}
+FS = {"on": {"schedule": [{"cron": "43 6 * * 1"}]}, "jobs": {
+    "check": {"if": "${{ github.event.schedule != '43 6 * * 1' }}", "steps": [{"run": 'gh issue create --title "go freshness" --body x'}]},
+    "persona-uat": synth_persona_job(True)}}
 SRC_OVER.update(CLEAN_SRC)
 bd = judge(RS, FS, TGOOD)
 SRC_OVER.clear()
@@ -1095,6 +1103,15 @@ mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK ins
 mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
        lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "pip install" in str(s.get("run", "")))))
 mutate("persona-uat is added to patch-failed.needs (a persona failure would open a public issue)", "lists persona-uat in needs", lambda d: d["jobs"]["patch-failed"].update(needs=["image", "promotion", "persona-uat"]), "rel_wf")
+for lab_, w_ in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+    mutate(f"{lab_}: a successor of persona-uat opens an issue with NO `if` (after success and friction-only)", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
+    mutate(f"{lab_}: a successor opens an issue under `if: ${{{{ !success() }}}}` (after failure)", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ !success() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
+    mutate(f"{lab_}: a successor opens an issue under failure()", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
+    mutate(f"{lab_}: a successor opens an issue under success()", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ success() }}", "steps": [{"run": "gh issue edit 3 --body y"}]}), w_)
+    mutate(f"{lab_}: a TRANSITIVE successor (two hops, no `if`) opens an issue", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
+    mutate(f"{lab_}: a transitive successor under failure() opens an issue through the API", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"run": "true"}]}, second={"needs": ["first"], "if": "${{ failure() }}", "steps": [{"run": "gh api repos/o/r/issues -f title=x"}]}), w_)
+    mutate(f"{lab_}: an always() job opens an issue", "runs whatever persona-uat did", lambda d: d["jobs"].update(report={"if": "${{ always() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
+    mutate(f"{lab_}: persona-uat is added to the needs of an existing issue job", "depends on persona-uat", lambda d: d["jobs"].setdefault("patch-failed" if "patch-failed" in d["jobs"] else "check", {}).update(needs=["persona-uat"]), w_)
 mutate("a notify job needs persona-uat and opens an issue on failure()", "opens or touches a public issue", lambda d: d["jobs"].update(notify={"needs": ["persona-uat"], "if": "${{ failure() }}", "steps": [{"run": "gh issue create --title x --body y"}]}), "rel_wf")
 mutate("a job with always() after persona-uat opens an issue through github-script", "opens or touches a public issue", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"uses": "actions/github-script@" + "c" * 40, "with": {"script": "await github.rest.issues.create({owner: o, repo: r, title: 't'})"}}]}), "rel_wf")
 mutate("patch-failed becomes always() (it then runs when only persona-uat fails)", "opens or touches a public issue", lambda d: d["jobs"]["patch-failed"].update({"if": "${{ always() }}"}), "rel_wf")
@@ -1249,6 +1266,17 @@ for lab_, txt_ in (("without any -n (downloads every artifact, nested)", 'gh run
     bd_ = []
     judge_script_artifact(txt_, "persona-uat-encrypted", "synth", bd_)
     result(bool(bd_), f"caught: a decrypt script {lab_}" + ("" if bd_ else "; saw nothing"))
+for lab_, txt_ in (("with a stray -n elsewhere in the script and none on the download", 'sort -n x\ngh run download "$run" --dir "$art"\n'),
+                   ("whose only mention of the right name is a comment", '# gh run download "$run" -n persona-uat-encrypted\ngh run download "$run" --dir "$art"\n'),
+                   ("with the right name only in an unrelated command", 'echo -n persona-uat-encrypted\ngh run download "$run" --dir "$art"\n'),
+                   ("that downloads twice", 'gh run download "$run" -n persona-uat-encrypted --dir a\ngh run download "$run" -n persona-uat-encrypted --dir b\n'),
+                   ("that never downloads", 'echo nothing\n')):
+    bd_ = []
+    judge_script_artifact(txt_, "persona-uat-encrypted", "synth", bd_)
+    result(bool(bd_), f"caught: a decrypt script {lab_}" + ("" if bd_ else "; saw nothing"))
+bd_ = []
+judge_script_artifact('# fetch\nsort -n x\ngh run download "$run" \\\n  -R "$repo" -n persona-uat-encrypted --dir "$art"\n', "persona-uat-encrypted", "synth", bd_)
+result(not bd_, "a decrypt script with a continued download line, a comment and an unrelated -n elsewhere passes the tie when the download's own -n is right" + ("" if not bd_ else ": " + "; ".join(bd_)))
 bd_ = []
 judge_script_artifact('gh run download "$run" -n persona-uat-encrypted --dir "$art"\n', "persona-uat-encrypted", "synth", bd_)
 result(not bd_, "a decrypt script that downloads exactly the upload's name passes the tie" + ("" if not bd_ else ": " + "; ".join(bd_)))
