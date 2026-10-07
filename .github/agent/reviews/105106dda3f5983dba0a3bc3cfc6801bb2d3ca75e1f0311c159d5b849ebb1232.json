@@ -1,0 +1,95 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "105106dda3f5983dba0a3bc3cfc6801bb2d3ca75e1f0311c159d5b849ebb1232",
+ "change": "Suppression-file allowlist: only the base-copy script judges a suppression (fork-safe), the CI guard job and its wiring are sealed by a trusted pin-wiring judge, the trusted review gate runs base copies on the PR head and sweeps open PRs -- PR #211",
+ "reviewed_commit": "d356cc6090daad2ff3bc80310307c46e1dfd4a23",
+ "closed_commit": "d356cc6090daad2ff3bc80310307c46e1dfd4a23",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "phase 1 round 1",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "806fe46f0de0fdd723e129a041e7da6543cbeeed4a6bb44603ca1f75bc8401aa"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "48f005d2071967344c6a8b3d32d9a3723bd126bff38a72a2270eceb9b0d576c0"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "phase 1 round 2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "597ac19b2f12353184cad4f4dec716d67f0b7278b00997abcdc6316810b60100"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "6a1f998efb66daa015008f3c20585ddfacf1856d419b70e73cab488c3f7a128e"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "phase 2 round 1 (Sonnet green, Codex holds)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "bf131f925723d2013a273f05f909029b88f729224d4177d236fcce5d5b567fc6"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "36ce7e2537f98b58979c258c59257aa30ca0034d9219a26fdf3ec2571060cd07"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "phase 2 round 2 (Sonnet only: the Codex run produced no result, input filter, not counted)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 1,
+     "evidence_sha256": "3191775ee0e431537c18abad06984281d3c487ccb83e05fbfd6713cc652fb47b"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "phase 2 round 2 rerun (both green)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "7d230fc58109c945a371320ac4d803a31066012ddcb1a146f9599fde83dd1097"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "be89fbecb67e249b1f4b08fb23840bfb8c9b41c2f46db76329e0870138f711e3"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "later steps of the CI allowlist job can edit on-disk checkers: the trusted gate re-runs main's copies (documented boundary)",
+  "step keys of the CI guard job are a blocklist (merge-key/case-variant keys unverified against GitHub) and a second job named allowlist is not rejected: both covered by the trusted gate (Sonnet r5 residuals)",
+  "verdict freshness is not bound to base or policy version; large scalars have no byte limit; static pinning has the documented runtime exclusions (Codex r5 residuals)",
+  "allowlist-pattern changes cannot pass pre-merge (known limit, documented)"
+ ],
+ "row78": "adversarial pass in every round: 27 workflow files, 147 pinned actions, zero findings from check-action-pins.py (both modes); GATE_WORKFLOW_SHA256 updated for the changed gate workflow; no mutable reference introduced (both reviewers)"
+}

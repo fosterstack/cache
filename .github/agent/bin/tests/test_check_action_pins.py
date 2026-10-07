@@ -147,7 +147,8 @@ class Main(unittest.TestCase):
     def test_verify_tags_through_main(self):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n",
-                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": ""})   # the gate's committed programs
+                  ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
+                  "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": ""})   # the gate's committed programs
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
                  {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}}
         with open(GATE) as fh:  # the gate's own pins answer truthfully too
