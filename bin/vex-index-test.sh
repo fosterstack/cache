@@ -133,11 +133,18 @@ if _log:
             if _mode == "block":
                 return 111
         return _connect_ex(self, addr)
-    def gai(host, *a, **k):
-        _rec("resolve", host)
+    import json as _json
+    _hostmap = _json.loads(os.environ.get("VEXIDX_HOSTMAP") or "{}")
+    def gai(host, port=None, *a, **k):
+        _rec("resolve", "%s %s" % (host, port))
         if _mode == "block":
             raise OSError("name resolution blocked by the test")
-        return _gai(host, *a, **k)
+        if _mode == "observe" and host not in ("127.0.0.1", "localhost", "::1", None):
+            key = "%s:%s" % (host, port)
+            if key in _hostmap:  # a test name served by a local server: no proxy, no DNS
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", _hostmap[key]))]
+            raise socket.gaierror(-2, "no such host (test)")
+        return _gai(host, port, *a, **k)
     def ghbn(host):
         _rec("resolve", host)
         if _mode == "block":
@@ -174,7 +181,52 @@ for _n in ("curl", "wget", "nc", "ncat", "ssh", "scp", "sftp", "git", "telnet", 
     os.chmod(os.path.join(STUBS, _n), 0o755)
 
 
-def run(args, env=None, cwd=None, replace_env=False, timeout=90, net=None):
+MEMORY_LIMIT_KB = 1 << 20  # 1 GiB resident: the tool normally needs a few tens of MB; more means an unbounded read
+
+
+class Done:
+    pass
+
+
+def run_watched(cmd, env, cwd, timeout):
+    """subprocess.run with a memory watchdog: a tool that reads without a bound is killed and the case fails"""
+    proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    state = {"memory": False}
+
+    def resident_kb():
+        try:  # Linux
+            with open("/proc/%d/statm" % proc.pid) as f:
+                return int(f.read().split()[1]) * (os.sysconf("SC_PAGE_SIZE") // 1024)
+        except (OSError, ValueError, IndexError):
+            pass
+        try:  # macOS and the BSDs
+            return int(subprocess.run(["ps", "-o", "rss=", "-p", str(proc.pid)], capture_output=True).stdout.strip() or 0)
+        except Exception:
+            return 0
+
+    def watch():
+        while proc.poll() is None:
+            rss = resident_kb()
+            if rss > MEMORY_LIMIT_KB:
+                state["memory"] = True
+                proc.kill()
+                return
+            time.sleep(0.2)
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise Fail("the tool did not finish within %ds" % timeout)
+    if state["memory"]:
+        raise Fail("the tool used more than 1 GiB of memory (an unbounded read)")
+    d = Done()
+    d.returncode, d.stdout, d.stderr = proc.returncode, out, err
+    return d
+
+
+def run(args, env=None, cwd=None, replace_env=False, timeout=90, net=None, sink=None):
     """net: None = block for compute/verify (any attempt fails the case), "observe" = record only, "off" = no guard"""
     if not os.path.isfile(TOOL):
         raise Fail("the tool %s does not exist" % TOOL)
@@ -190,7 +242,7 @@ def run(args, env=None, cwd=None, replace_env=False, timeout=90, net=None):
             e.pop(k, None)
         else:
             e[k] = v
-    mode = net or ("block" if args and args[0] in ("compute", "verify") else "off")
+    mode = net or ("block" if args and args[0] in ("compute", "verify") else ("observe" if sink is not None else "off"))
     netlog = None
     auto_cwd = cwd is None
     if auto_cwd:
@@ -203,12 +255,11 @@ def run(args, env=None, cwd=None, replace_env=False, timeout=90, net=None):
         os.close(fd)
         e["PYTHONPATH"] = NETGUARD + (os.pathsep + e["PYTHONPATH"] if e.get("PYTHONPATH") else "")
         e["VEXIDX_NETLOG"], e["VEXIDX_NETMODE"] = netlog, mode
-    try:
-        p = subprocess.run([sys.executable, TOOL] + list(args), env=e, cwd=cwd, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise Fail("the tool did not finish within %ds" % timeout)
+    p = run_watched([sys.executable, TOOL] + list(args), e, cwd, timeout)
     r = R(p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace"))
     r.net = open(netlog).read().splitlines() if netlog else []
+    if sink is not None:
+        sink.feed(r.net)
     stray = (os.listdir(cwd) if auto_cwd else []) + os.listdir(tdir)
     if stray:
         raise Fail("the tool left files in its working directory or TMPDIR: %s" % stray[:5])
@@ -217,7 +268,9 @@ def run(args, env=None, cwd=None, replace_env=False, timeout=90, net=None):
     return r
 
 
-def tree(d):
+def tree(d, full=False):
+    """every entry under d: file contents (a size for anything above 1 MiB, a type for anything that is not a regular file)"""
+    import stat as _stat
     out = {}
     for base, dirs, files in os.walk(d):
         for n in dirs:
@@ -228,7 +281,16 @@ def tree(d):
                 out[os.path.relpath(p, d) + "/"] = b""
         for n in files:
             p = os.path.join(base, n)
-            out[os.path.relpath(p, d)] = rd(p) if not os.path.islink(p) else os.readlink(p).encode()
+            rel = os.path.relpath(p, d)
+            st = os.lstat(p)
+            if _stat.S_ISLNK(st.st_mode):
+                out[rel] = os.readlink(p).encode()
+            elif not _stat.S_ISREG(st.st_mode):
+                out[rel] = ("special file %o" % _stat.S_IFMT(st.st_mode)).encode()
+            elif st.st_size > 1 << 20 and not full:
+                out[rel] = ("big file %d" % st.st_size).encode()
+            else:
+                out[rel] = rd(p)
     return out
 
 
@@ -427,7 +489,7 @@ def check_matches_ref(db, vb, r):
     ok(r.rc == 0, "compute failed rc=%d: %s" % (r.rc, r.err.strip()[:300]))
     exp, result, fb = expected_tree(db, vb)
     eq(r.out, dg(fb) + "\n", "stdout must be exactly the final digest and a newline")
-    got = tree(r.dir)
+    got = tree(r.dir, full=True)
     rj = got.pop("result.json", None)
     ok(rj is not None, "result.json missing")
     for k in list(got):
@@ -804,7 +866,8 @@ def assert_refused(db, vb, label=""):
             eq(os.listdir(out), [], "the pre-existing empty out-dir must stay empty")
         else:
             ok(not os.path.lexists(out), "the out-dir was created although the tool refused")
-        eq(tree(os.path.join(s, "in")), {"index.json": db, "vex.json": vb}, "inputs")
+        eq(tree(os.path.join(s, "in")), {"index.json": db if len(db) <= 1 << 20 else ("big file %d" % len(db)).encode(),
+                                           "vex.json": vb if len(vb) <= 1 << 20 else ("big file %d" % len(vb)).encode()}, "inputs")
         eq(sorted(os.listdir(s)), sorted(["in"] + (["out"] if pre else [])), "files created next to the out-dir by a refusal (e.g. <out>.tmp)")
 
 
@@ -1520,10 +1583,28 @@ def _():
 
 
 # ---- verify
-def verify(f_bytes, vb, base=None, blobs=None, s=None, env=None, final_path=None):
+def auto_blobs(f_bytes, vb):
+    """a blobs directory holding what the final index's own base and the VEX bytes imply (verify now always needs --blobs)"""
+    s = sb()
+    bd = os.path.join(s, "blobs")
+    os.makedirs(os.path.join(bd, "sha256"))
+    try:
+        f = json.loads(f_bytes.decode("utf-8"))
+        d = dict(f)
+        d["manifests"] = [e for e in f["manifests"] if not (isinstance(e, dict) and (e.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest")]
+        for h, b in ref_compute(json.dumps(d).encode("utf-8"), vb)[1].items():
+            wr(os.path.join(bd, "sha256", h), b)
+    except Exception:
+        pass
+    return bd
+
+
+def verify(f_bytes, vb, base=None, blobs="auto", s=None, env=None, final_path=None):
     s = s or sb()
     fp = wr(os.path.join(s, "final.json"), f_bytes)
     vp = wr(os.path.join(s, "vex.json"), vb)
+    if blobs == "auto":
+        blobs = auto_blobs(f_bytes, vb)
     args = ["verify", "--final", fp, "--vex", vp]
     if base is not None:
         args += ["--base", wr(os.path.join(s, "base.json"), base) if isinstance(base, bytes) else base]
@@ -2112,7 +2193,7 @@ def _(spec):
     ok(r.err.strip() != "" and "Traceback" not in r.err, "no plain reason: " + r.err.strip()[-200:])
 
 
-@param("AC3", "verify rejects final-index bytes that are not exactly the canonical serialisation even when result.json and every digest were refreshed (with and without --blobs)", sorted(("%s (%s)" % (k, "with --blobs" if w else "alone"), (k, w)) for k in FINAL_RAW for w in (True, False)))
+@param("AC3", "verify rejects final-index bytes that are not exactly the canonical serialisation even when result.json and every digest were refreshed", sorted((k, (k, True)) for k in FINAL_RAW))
 def _(arg):
     verify_control()
     k, with_blobs = arg
@@ -2196,7 +2277,8 @@ class Reg:
                  realm=None, redirect_on=(), redirect_to="http://registry.example.test/elsewhere", loc_base=None,
                  lenient=False, readback="ok", att_head_404=False, child_head_500=False, token_key="token",
                  use_tls=False, public=None, alt_uploads=False, token_redirect_to=None, stall_on=(), hdr_case="exact", redirect_status=307, token_redirect_status=302, challenge_scope=None, bearer_rejected=False,
-                 put_blob_status=None, head_blob_status=None, blob_gone_after_put=False, token_drip=False, cert="good"):
+                 put_blob_status=None, head_blob_status=None, blob_gone_after_put=False, token_drip=False, cert="good",
+                 loc_path=None, sid_fmt="plain", endless_on=()):
         self.repo, self.token_mode, self.basic_mode, self.rewrite, self.lie = repo, token, basic, rewrite, lie
         self.fail_after, self.realm, self.redirect_on, self.redirect_to, self.loc_base = fail_after, realm, set(redirect_on), redirect_to, loc_base
         self.lenient, self.readback, self.att_head_404, self.child_head_500, self.token_key = lenient, readback, att_head_404, child_head_500, token_key
@@ -2207,6 +2289,7 @@ class Reg:
         self.bearer_pull = "issued-pull-only-3c9a51e0d7b2"
         self.hdr_case, self.put_blob_status, self.head_blob_status, self.blob_gone_after_put, self.token_drip = hdr_case, put_blob_status, head_blob_status, blob_gone_after_put, token_drip
         self.uploaded = set()
+        self.loc_path, self.sid_fmt, self.endless_on = loc_path, sid_fmt, set(endless_on)
         self.blobs, self.mans, self.log, self.tag_writes, self.sessions = set(), {}, [], [], {}
         self.children, self.att_set = set(), set()
         self.mutating_ok, self.counter = 0, 0
@@ -2234,15 +2317,26 @@ class Reg:
                 hd = dict(hd)
                 trunc = hd.pop("_truncate", False)
                 drip = hd.pop("_drip", False)
+                endless = hd.pop("_endless", False)
                 fn = {"exact": lambda k: k, "lower": str.lower, "upper": str.upper, "title": lambda k: "-".join(w.capitalize() for w in k.split("-"))}[reg.hdr_case]
                 hd = {(fn(k) if k != "Content-Length" else k): v for k, v in hd.items()}
                 hd = {k: (v.encode("utf-8").decode("latin-1") if k.lower() == "www-authenticate" else v) for k, v in hd.items()}  # a challenge carries its UTF-8 bytes as written
                 self.send_response(st)
-                hd["Content-Length"] = str(len(rb))
+                if not endless:
+                    hd["Content-Length"] = str(len(rb))
+                else:
+                    self.close_connection = True
                 for k, v in hd.items():
                     self.send_header(k, v)
                 self.end_headers()
-                if self.command != "HEAD":
+                if self.command != "HEAD" and endless:
+                    try:
+                        while not reg.release.is_set():
+                            self.wfile.write(b"x" * 65536)
+                            self.wfile.flush()
+                    except OSError:
+                        pass
+                elif self.command != "HEAD":
                     if drip:
                         self.close_connection = True
                         try:
@@ -2293,6 +2387,8 @@ class Reg:
         if p == "/token":
             if "token" in self.stall_on:
                 return self.stall()
+            if "token" in self.endless_on:
+                return 200, {"_endless": True, "Content-Type": "application/json"}, b""
             if self.token_redirect_to:
                 return self.token_redirect_status, {"Location": self.token_redirect_to}, b""
             if ent["auth"] == "Basic " + base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode():
@@ -2338,6 +2434,8 @@ class Reg:
             kind = {"HEAD": "head_man", "PUT": "put_man", "GET": "get_man"}.get(m)
         if kind in self.stall_on:
             return self.stall()
+        if kind in self.endless_on:
+            return 500, {"_endless": True}, b""
         if kind in self.redirect_on:
             return self.redirect_status, {"Location": self.redirect_to}, b""
         if mutating and self.fail_after is not None and self.mutating_ok >= self.fail_after:
@@ -2368,10 +2466,14 @@ class Reg:
         if rest == "blobs/uploads/" and m == "POST":
             self.counter += 1
             sid, state = "sess%d" % self.counter, "state-%d-%s" % (self.counter, hashlib.sha256(str(self.counter).encode()).hexdigest()[:12])
+            if self.sid_fmt == "uuid":
+                sid, state = "3f2c9e1a-77b0-4a3e-9a51-0c1f6a8d%04d" % self.counter, "abc_DEF-123.~x%d==" % self.counter
             self.sessions[sid] = state
             loc = "/v2/%s/blobs/uploads/%s?_state=%s" % (self.repo, sid, state)
             if self.alt_uploads:
                 loc = "/upload-service/%s?_state=%s" % (sid, state)
+            if self.loc_path is not None:
+                loc = self.loc_path
             if self.loc_base:
                 loc = self.loc_base + loc
             return 202, {"Location": loc}, b""
@@ -2442,6 +2544,9 @@ class Reg:
                     if self.readback == "ct-ws-ok":
                         hd["Content-Type"] = " " + hd["Content-Type"] + " ; charset=utf-8 "
                         return 200, hd, b
+                    if self.readback == "endless":
+                        hd["_endless"] = True
+                        return 200, hd, b""
                     if self.readback == "wrongct":
                         hd["Content-Type"] = "text/plain"
                         return 200, hd, b
@@ -2474,86 +2579,36 @@ class Reg:
         return err(404, "UNSUPPORTED")
 
 
+class EnvDict(dict):
+    sink = None
+
+
 class Proxy:
-    """a stand-in HTTP proxy. Without routes it answers 502 to everything and records it. With routes
-    {"host:port": local backend port} a CONNECT to a routed name is tunnelled to the local backend (so https
-    names can be served by this file's TLS registries); anything else is a 502."""
+    """names for the https cases and a record of every non-local name the tool looks up. There is no proxy: the
+    tool is run with a host map (injected by the harness into the tool's process, never read by the tool) that
+    points the test names at this file's local TLS registries, and every other non-local name fails to resolve.
+    Each lookup is recorded as a "CONNECT host:port" entry, so a request towards any other host or towards port 80
+    shows up in .log."""
 
     def __init__(self, routes=None):
         self.log, self.routes = [], dict(routes or {})
-        proxy = self
 
-        class H(socketserver.BaseRequestHandler):
-            def handle(self):
-                conn = self.request
-                data = b""
-                while b"\r\n\r\n" not in data:
-                    c = conn.recv(65536)
-                    if not c:
-                        return
-                    data += c
-                head, _, rest = data.partition(b"\r\n\r\n")
-                lines = head.decode("latin1").split("\r\n")
-                method, target = lines[0].split(" ")[:2]
-                hdrs = {}
-                for l in lines[1:]:
-                    if ":" in l:
-                        k, v = l.split(":", 1)
-                        hdrs[k.strip().lower()] = v.strip()
-                ent = {"method": method, "path": target, "auth": hdrs.get("authorization"), "host": hdrs.get("host")}
-                proxy.log.append(ent)
-                if method == "CONNECT" and target in proxy.routes:
-                    up = socket.create_connection(("127.0.0.1", proxy.routes[target]))
-                    conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                    if rest:
-                        up.sendall(rest)
-                    socks = [conn, up]
-                    try:
-                        while True:
-                            r, _, _ = select.select(socks, [], [], 30)
-                            if not r:
-                                break
-                            done = False
-                            for s_ in r:
-                                chunk = s_.recv(65536)
-                                if not chunk:
-                                    done = True
-                                    break
-                                (up if s_ is conn else conn).sendall(chunk)
-                            if done:
-                                break
-                    finally:
-                        up.close()
-                    return
-                n = int(hdrs.get("content-length") or 0)
-                while len(rest) < n:
-                    c = conn.recv(65536)
-                    if not c:
-                        break
-                    rest += c
-                conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-
-        class S(socketserver.ThreadingTCPServer):
-            daemon_threads = True
-            allow_reuse_address = True
-
-            def handle_error(self, request, client_address):
-                pass
-
-        self.srv = S(("127.0.0.1", 0), H)
-        self.port = self.srv.server_address[1]
-        self.url = "http://127.0.0.1:%d" % self.port
-        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+    def feed(self, lines):
+        for line in lines:
+            kind, _, rest = line.partition(" ")
+            if kind == "resolve":
+                host, _, port = rest.rpartition(" ")
+                if host not in ("127.0.0.1", "localhost", "::1", "None"):
+                    self.log.append({"method": "CONNECT", "path": "%s:%s" % (host, port), "auth": None, "host": host})
 
     def close(self):
-        self.srv.shutdown()
-        self.srv.server_close()
+        pass
 
     def env(self, trust=False):
-        e = {"http_proxy": self.url, "https_proxy": self.url, "HTTP_PROXY": self.url, "HTTPS_PROXY": self.url,
-             "no_proxy": "127.0.0.1,localhost", "NO_PROXY": "127.0.0.1,localhost"}
+        e = EnvDict(VEXIDX_HOSTMAP=json.dumps(self.routes))
         if trust:
             e["SSL_CERT_FILE"] = tls()[0]
+        e.sink = self
         return e
 
 
@@ -2573,6 +2628,8 @@ def make_dir(fx, vb, s=None):
     for h, b in blobs.items():
         wr(os.path.join(pd.path, "blobs", "sha256", h), b)
     wr(os.path.join(pd.path, "result.json"), cj(result) + b"\n")
+    pd.vex_path = wr(os.path.join(s, "vex.json"), vb)
+    pd.base_path = wr(os.path.join(s, "base.json"), fx.bytes)
     return finish_pd(pd, fx, fb, blobs, result)
 
 
@@ -2595,6 +2652,8 @@ def custom_pd(fx, vb, edits=None, fedit=None, extra=None, fraw=None, only=0):
     path, fb = build_custom(fx, vb, edits, fedit, extra=extra, fraw=fraw, only=only)
     pd = PD()
     pd.path = path
+    pd.vex_path = wr(os.path.join(os.path.dirname(path), "vex.json"), vb)
+    pd.base_path = wr(os.path.join(os.path.dirname(path), "base.json"), fx.bytes)
     _, blobs, result = ref_compute(fx.bytes, vb)
     result = json.loads(rd(os.path.join(path, "result.json")))
     blobs = {n: rd(os.path.join(path, "blobs", "sha256", n)) for n in os.listdir(os.path.join(path, "blobs", "sha256"))}
@@ -2615,14 +2674,16 @@ def secrets_in(text, reg):
     return [x for x in bad if x and x in text]
 
 
-def push(reg, pd, extra=(), env=None, creds=True, repo=None, registry=None, net=None, timeout=90):
+def push(reg, pd, extra=(), env=None, creds=True, repo=None, registry=None, net=None, timeout=90, vex=None, base=None):
+    sink = getattr(env, "sink", None)
     e = {}
     if creds:
         e = {"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET}
     e.update(env or {})
     parent = os.path.dirname(pd.path)
     before = tree(parent)
-    r = run(["push", "--registry", registry or reg.host, "--repository", repo or (reg.repo if reg else "fosterstack/cache"), "--dir", pd.path] + list(extra), env=e, net=net, timeout=timeout)
+    r = run(["push", "--registry", registry or reg.host, "--repository", repo or (reg.repo if reg else "fosterstack/cache"), "--dir", pd.path,
+             "--vex", vex or pd.vex_path, "--base", base or pd.base_path] + list(extra), env=e, net=net, timeout=timeout, sink=sink)
     eq(tree(parent), before, "push must not create or change anything in or next to DIR (e.g. <DIR>.pushed, token files)")
     leaked = secrets_in(r.out + "\n" + r.err, reg)
     ok(not leaked, "a credential or token (possibly base64-encoded) was printed: %d item(s)" % len(leaked))
@@ -2999,7 +3060,7 @@ def _():
     s_.bind(("127.0.0.1", 0))  # bound but never listening: connections are refused, and the port cannot be reused meanwhile
     try:
         pd = make_dir(mk_fx(), vex_real())
-        r = run(["push", "--registry", "127.0.0.1:%d" % s_.getsockname()[1], "--repository", "fosterstack/cache", "--dir", pd.path],
+        r = run(["push", "--registry", "127.0.0.1:%d" % s_.getsockname()[1], "--repository", "fosterstack/cache", "--dir", pd.path, "--vex", pd.vex_path, "--base", pd.base_path],
                 env={"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET})
         ok(r.rc != 0 and pd.f_digest not in r.out, "claimed a push to nothing")
         ok("Traceback" not in r.err, "a traceback")
@@ -3034,11 +3095,10 @@ def _(kw):
 
 @case("AC4", "the push never writes a tag, whatever the options (a tag write would be visible to the registry)")
 def _():
-    for extra in ([], ["--base-digest", None]):
+    for extra in ([],):
         reg, pd = push_world()
         try:
-            ex = [pd.result["base_digest"] if x is None else x for x in extra]
-            r = push(reg, pd, extra=ex)
+            r = push(reg, pd, extra=extra)
             ok(r.rc == 0, "push failed")
             eq(reg.tag_writes, [], "tags written")
             for x in reg.log:
@@ -3174,27 +3234,13 @@ def _():
         reg.close()
 
 
-@case("AC4", "--base-digest that does not match result.json's base_digest is refused before anything is sent; a matching one is accepted")
-def _():
-    push_control()
-    reg, pd = push_world()
-    try:
-        r = push(reg, pd, extra=["--base-digest", "sha256:" + "12" * 32])
-        assert_no_f_attempt(reg, pd, r, "wrong base digest")
-        eq(reg.log, [], "a request was made")
-        r = push(reg, pd, extra=["--base-digest", pd.result["base_digest"]])
-        assert_clean_push(reg, pd, r)
-    finally:
-        reg.close()
-
-
 @param("AC4", "an invalid repository name is refused before any request", [(n, n) for n in ("../evil", "a//b", "A/B", "a b", "a?x=1", "a/../../v2", "", "-a", "a/%2e%2e/b", "a#b", "a\nb",
                                                                          "fosterstack/cach\u0435", "foster\uff53tack/cache", "fosterstack/cache\u0661", "fosterstack/caf\u00e9", "fosterstack/ca\u212a", "\u017fhared/cache", "fosterstack/cache\u2060")])
 def _(name):
     push_control()
     reg, pd = push_world()
     try:
-        r = run(["push", "--registry", reg.host, "--repository", name, "--dir", pd.path],
+        r = run(["push", "--registry", reg.host, "--repository", name, "--dir", pd.path, "--vex", pd.vex_path, "--base", pd.base_path],
                 env={"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET})
         ok(r.rc != 0, "accepted repository %r" % name)
         eq(reg.log, [], "a request was made for an invalid repository name")
@@ -3210,16 +3256,6 @@ def _():
 
 
 # ---- where the tool may connect and what it may send there
-def only_via_proxy(r, proxy):
-    for line in r.net:
-        kind, _, target = line.partition(" ")
-        ok(kind != "exec", "the tool ran an external network program: " + line)
-        if kind == "resolve":
-            ok(target in ("127.0.0.1", "'127.0.0.1'"), "the tool resolved a name itself instead of going through the proxy: " + line)
-        else:
-            ok(("127.0.0.1', %d" % proxy.port) in target, "the tool connected somewhere other than the proxy: " + line)
-
-
 NONLOCAL_REFUSED_UNSEEN = ["registry.\u0435xample.test", "regist\u0433y.example.test", "registry.example.test:\uff15\uff10\uff10\uff10", "127.0.0.1:\u0668\u0660\u0668\u0660",
                            "l\u043ecalhost", "\uff11\uff12\uff17.0.0.1", "127.0.0.\u0661", "doc\u212aer.io", "registry-1.docker.io\u2060", "registry.example.test\u3002", "registry\uff0eexample.test",
                            "http://registry.example.test", "http://registry.example.test:5000", "http://127.0.0.1", "https://registry.example.test",
@@ -3234,8 +3270,8 @@ def _(arg):
     sink = Proxy()
     pd = make_dir(mk_fx(), vex_real())
     try:
-        r = run(["push", "--registry", h, "--repository", "fosterstack/cache", "--dir", pd.path],
-                env=dict(sink.env(), **({"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET} if with_creds else {})), net="observe")
+        r = run(["push", "--registry", h, "--repository", "fosterstack/cache", "--dir", pd.path, "--vex", pd.vex_path, "--base", pd.base_path],
+                env=dict(sink.env(), **({"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET} if with_creds else {})), net="observe", sink=sink)
         ok(r.rc != 0, "accepted registry %r" % h)
         eq(sink.log, [], "something was sent towards %r" % h)
         eq(r.net, [], "the tool touched the network for %r" % h)
@@ -3255,13 +3291,14 @@ def _(arg):
     sink = Proxy()
     pd = make_dir(mk_fx(), vex_real())
     try:
-        r = run(["push", "--registry", h, "--repository", "fosterstack/cache", "--dir", pd.path],
-                env=dict(sink.env(), **({"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET} if with_creds else {})), timeout=60, net="observe")
+        r = run(["push", "--registry", h, "--repository", "fosterstack/cache", "--dir", pd.path, "--vex", pd.vex_path, "--base", pd.base_path],
+                env=dict(sink.env(), **({"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET} if with_creds else {})), timeout=60, net="observe", sink=sink)
         ok(r.rc != 0, "the push to an unreachable non-local host succeeded")
+        want = re.match(r"^\[?([^\]]*?)\]?(:[0-9]+)?$", h).group(1)
         for x in sink.log:
-            ok(x["method"] == "CONNECT", "a plain %s request for a non-local host went out: %s" % (x["method"], x["path"]))
-            ok(x["auth"] is None, "credentials were sent")
-        only_via_proxy(r, sink)
+            ok(x["host"] == want, "the tool looked up %s although the registry is %s" % (x["host"], want))
+            ok(not x["path"].endswith(":80"), "a plain http connection (port 80) was attempted: %s" % x["path"])
+        ok(not any(line.startswith("exec") for line in r.net), "the tool ran an external network program")
         ok(not secrets_in(r.out + r.err, None), "a credential was printed")
         ok(pd.f_digest not in r.out, "claimed success")
     finally:
@@ -3322,13 +3359,6 @@ def _(loc):
         other.close(); sink.close(); reg.close()
 
 
-@case("AC4", "an upload Location on the same origin under a really different path prefix (/upload-service/..., not /v2/<repo>/blobs/uploads/) is followed as issued")
-def _():
-    def go(reg, pd):
-        assert_clean_push(reg, pd, push(reg, pd))
-    with_world(go, token=True, alt_uploads=True)
-
-
 REDIRECT_KINDS = ["head_blob", "post", "put_blob", "head_man", "put_man", "get_man"]
 
 
@@ -3378,7 +3408,7 @@ def _(status):
     try:
         r = tls_push(reg, pd, prox)
         ok(r.rc != 0, "pushed")
-        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x["path"] for x in prox.log if x["path"].endswith(":80")], [], "a connection to port 80 (plain http) was attempted")
         eq([x for x in reg.log if x["path"] == "/token" and x["host"] != "registry.example.test"], [], "token request elsewhere")
         eq(f_puts(reg, pd), [], "F attempted")
     finally:
@@ -3393,7 +3423,7 @@ def _(arg):
     try:
         r = tls_push(reg, pd, prox)
         ok(r.rc != 0, "pushed")
-        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x["path"] for x in prox.log if x["path"].endswith(":80")], [], "a connection to port 80 (plain http) was attempted")
         ok("registry.example.test:80" not in [x["path"] for x in prox.log], "a connection to port 80 was attempted")
         ok(not any(x["path"] == "/upload" for x in reg.log), "the redirect was followed")
     finally:
@@ -3443,8 +3473,7 @@ def _():
     try:
         r = tls_push(reg, pd, prox)
         assert_clean_push(reg, pd, r)
-        ok(all(x["method"] == "CONNECT" for x in prox.log), "something other than a tunnel went through the proxy")
-        only_via_proxy(r, prox)
+        eq([x["path"] for x in prox.log], ["registry.example.test:443"] * len(prox.log), "the tool looked up a host other than the registry")
         want = "Basic " + base64.b64encode(("%s:%s" % (USER, SECRET)).encode()).decode()
         for x in reg.log:
             ok((x["path"] == "/token" and x["auth"] == want) or (x["path"] != "/token" and x["auth"] in (None, "Bearer " + reg.bearer)), "wrong Authorization for " + x["path"])
@@ -3577,7 +3606,7 @@ def _():
     try:
         r = tls_push(reg, pd, prox)
         ok(r.rc != 0, "pushed using an http realm")
-        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x["path"] for x in prox.log if x["path"].endswith(":80")], [], "a connection to port 80 (plain http) was attempted")
         ok("registry.example.test:80" not in [x["path"] for x in prox.log], "a connection to port 80 was attempted")
         eq([x for x in reg.log if x["path"] == "/token"], [], "the token endpoint was contacted")
         eq([x for x in reg.log if x["auth"] and x["auth"].startswith("Basic")], [], "Basic credentials were sent")
@@ -3619,7 +3648,7 @@ def _(arg):
     try:
         r = tls_push(reg, pd, prox, creds=False)
         ok(r.rc != 0, "pushed")
-        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x["path"] for x in prox.log if x["path"].endswith(":80")], [], "a connection to port 80 (plain http) was attempted")
         eq([x["path"] for x in prox.log if x["path"] != "%s:443" % arg[0]], [], "the tool connected to another host or port")
         eq([x for x in reg.log if x["path"] == "/token"], [], "the token endpoint was contacted")
         eq(f_puts(reg, pd), [], "F attempted")
@@ -3635,7 +3664,7 @@ def _():
     try:
         r = tls_push(reg, pd, prox)
         ok(r.rc != 0, "followed a downgraded Location")
-        eq([x for x in prox.log if x["method"] != "CONNECT"], [], "a plain http request went out")
+        eq([x["path"] for x in prox.log if x["path"].endswith(":80")], [], "a connection to port 80 (plain http) was attempted")
         eq([x for x in reg.log if x["method"] == "PUT" and ("/blobs/uploads/" in x["path"] or x["path"].startswith("/upload-service/"))], [], "a blob was PUT")
         eq(f_puts(reg, pd), [], "F attempted")
     finally:
@@ -3672,7 +3701,7 @@ def _():
     try:
         pd = make_dir(mk_fx(), vex_real())
         t0 = time.time()
-        r = run(["push", "--registry", "127.0.0.1:%d" % ls.getsockname()[1], "--repository", "fosterstack/cache", "--dir", pd.path],
+        r = run(["push", "--registry", "127.0.0.1:%d" % ls.getsockname()[1], "--repository", "fosterstack/cache", "--dir", pd.path, "--vex", pd.vex_path, "--base", pd.base_path],
                 env={"FSCACHE_REGISTRY_USER": USER, "FSCACHE_REGISTRY_TOKEN": SECRET, "FSCACHE_REGISTRY_TIMEOUT": "2"}, timeout=20)
         ok(r.rc != 0 and pd.f_digest not in r.out, "claimed success")
         ok(time.time() - t0 < 15, "gave up too slowly")
@@ -3789,23 +3818,6 @@ def _():
     reg.att_set = set(pd.att_digests)
     try:
         assert_clean_push(reg, pd, push(reg, pd))
-    finally:
-        reg.close()
-
-
-@param("AC4", "the final index limit for push is 2 MiB of raw bytes: exactly 2 MiB is pushed, 2 MiB + 1 is refused before any request", [("exactly 2 MiB", True), ("2 MiB + 1", False)])
-def _(good):
-    push_control()
-    fx = fx_with_len(2 ** 21 + (0 if good else 1), "F")
-    reg, pd = push_world(fx=fx, vb=VEX_MIN, pd=lambda fx_, vb: custom_pd(fx_, vb))
-    try:
-        eq(len(pd.fb), 2 ** 21 + (0 if good else 1), "fixture size")
-        r = push(reg, pd)
-        if good:
-            assert_clean_push(reg, pd, r)
-        else:
-            assert_no_f_attempt(reg, pd, r, "F over 2 MiB")
-            eq(reg.log, [], "a request was made")
     finally:
         reg.close()
 
@@ -3942,6 +3954,710 @@ def _():
     def go(reg, pd):
         assert_clean_push(reg, pd, push(reg, pd))
     with_world(go, readback="ct-ws-ok")
+
+
+# ------------------------------------------------------------------ step 8 round 1 [r8]
+R8 = ""
+
+
+def sparse(path, size):
+    with open(path, "wb") as f:
+        f.truncate(size)
+    return path
+
+
+# ---- (1) known OCI fields are type-validated; unknown extensions are still preserved
+def entry_with(f):
+    fx = mk_fx()
+    o = json.loads(json.dumps(fx.obj))
+    f(o)
+    return json.dumps(o).encode()
+
+
+def top_with(f):
+    return entry_with(f)
+
+
+def good_data(o, i=0):
+    return base64.b64encode(json.dumps({"schemaVersion": 2}).encode()).decode()
+
+
+OCI_BAD = {
+    "index annotations is a list": lambda o: o.update(annotations=[]),
+    "index annotations is null": lambda o: o.update(annotations=None),
+    "index annotations is a string": lambda o: o.update(annotations="x"),
+    "index annotations has a number value": lambda o: o.update(annotations={"audit": 123}),
+    "index annotations has a null value": lambda o: o.update(annotations={"audit": None}),
+    "index annotations has a list value": lambda o: o.update(annotations={"audit": ["x"]}),
+    "index annotations has a boolean value": lambda o: o.update(annotations={"audit": True}),
+    "index artifactType is a number": lambda o: o.update(artifactType=7),
+    "index artifactType is null": lambda o: o.update(artifactType=None),
+    "index artifactType is empty": lambda o: o.update(artifactType=""),
+    "index artifactType is a list": lambda o: o.update(artifactType=["x"]),
+    "index subject is a string": lambda o: o.update(subject="x"),
+    "index subject is null": lambda o: o.update(subject=None),
+    "index subject is a list": lambda o: o.update(subject=[]),
+    "index subject is empty": lambda o: o.update(subject={}),
+    "index subject without a size": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64}),
+    "index subject with a bad digest": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 63, "size": 5}),
+    "index subject with an upper-case digest": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "A" * 64, "size": 5}),
+    "index subject with a numeric mediaType": lambda o: o.update(subject={"mediaType": 7, "digest": "sha256:" + "9" * 64, "size": 5}),
+    "index subject with a string size": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64, "size": "5"}),
+    "index subject with a boolean size": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64, "size": True}),
+    "index subject with bad annotations": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64, "size": 5, "annotations": {"a": 1}}),
+    "index subject with a bad artifactType": lambda o: o.update(subject={"mediaType": OCI_MAN, "digest": "sha256:" + "9" * 64, "size": 5, "artifactType": 3}),
+    "entry annotations has a number value": lambda o: o["manifests"][0].update(annotations={"audit": 123}),
+    "entry annotations has a null value": lambda o: o["manifests"][0].update(annotations={"audit": None}),
+    "entry annotations has a list value": lambda o: o["manifests"][0].update(annotations={"audit": ["x"]}),
+    "entry annotations is a list": lambda o: o["manifests"][0].update(annotations=[]),
+    "entry annotations is null": lambda o: o["manifests"][0].update(annotations=None),
+    "entry artifactType is a number": lambda o: o["manifests"][0].update(artifactType=7),
+    "entry artifactType is null": lambda o: o["manifests"][0].update(artifactType=None),
+    "entry artifactType is empty": lambda o: o["manifests"][0].update(artifactType=""),
+    "entry urls is a string": lambda o: o["manifests"][0].update(urls="https://example.test/x"),
+    "entry urls has a number": lambda o: o["manifests"][0].update(urls=[7]),
+    "entry urls has a null": lambda o: o["manifests"][0].update(urls=[None]),
+    "entry urls is null": lambda o: o["manifests"][0].update(urls=None),
+    "entry urls is an object": lambda o: o["manifests"][0].update(urls={"a": "b"}),
+    "entry data is a number": lambda o: o["manifests"][0].update(data=7),
+    "entry data is null": lambda o: o["manifests"][0].update(data=None),
+    "entry data is not base64": lambda o: o["manifests"][0].update(data="!!!not base64!!!"),
+    "entry data is base64 without padding": lambda o: o["manifests"][0].update(data="e30"),
+    "entry data is valid base64 of other content (size and digest differ)": lambda o: o["manifests"][0].update(data="e30="),
+    "entry data is a list": lambda o: o["manifests"][0].update(data=["e30="]),
+    "entry data has a newline inside": lambda o: o["manifests"][0].update(data="e30=\n"),
+    "platform variant is null": lambda o: o["manifests"][0]["platform"].update(variant=None),
+    "platform variant is a number": lambda o: o["manifests"][0]["platform"].update(variant=8),
+    "platform variant is a list": lambda o: o["manifests"][0]["platform"].update(variant=["v8"]),
+    "platform os.version is a number": lambda o: o["manifests"][0]["platform"].update({"os.version": 10}),
+    "platform os.version is null": lambda o: o["manifests"][0]["platform"].update({"os.version": None}),
+    "platform os.features is a string": lambda o: o["manifests"][0]["platform"].update({"os.features": "win32k"}),
+    "platform os.features has a number": lambda o: o["manifests"][0]["platform"].update({"os.features": [7]}),
+    "platform os.features is null": lambda o: o["manifests"][0]["platform"].update({"os.features": None}),
+    "platform features is a string": lambda o: o["manifests"][0]["platform"].update(features="sse"),
+    "platform features has a number": lambda o: o["manifests"][0]["platform"].update(features=[1]),
+    "platform features is null": lambda o: o["manifests"][0]["platform"].update(features=None),
+    "platform architecture is null": lambda o: o["manifests"][0]["platform"].update(architecture=None),
+    "platform os is a number": lambda o: o["manifests"][0]["platform"].update(os=3),
+}
+
+
+@param("AC2", "a known OCI field of the wrong type is refused and nothing is written (isolated: index and entry annotations, artifactType, urls, data, subject, platform fields)" + R8, sorted(OCI_BAD.items()))
+def _(f):
+    assert_refused(entry_with(f), vex_real(), "a malformed known OCI field")
+
+
+@case("AC2", "unknown extension fields are still preserved byte for byte next to valid known optional fields (annotations, artifactType, urls, data, subject, variant, os.version, os.features, features)" + R8)
+def _():
+    fx = mk_fx(**UNKNOWN_FIELDS)
+    o = json.loads(fx.bytes.decode("utf-8"))
+    p = o["manifests"][0]["platform"]
+    p.update({"variant": "v8", "os.version": "10.0.20348", "os.features": ["win32k"], "features": ["sse4"], "x-extension": {"a": 1}})
+    db = json.dumps(o).encode()
+    r = do_compute(db, vex_real())
+    check_matches_ref(db, vex_real(), r)
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    eq(f["manifests"][0]["platform"], p, "the platform with its known and unknown keys")
+
+
+# ---- (2) verify always validates fully
+@case("AC3", "verify without --blobs is refused: there is no weaker mode" + R8)
+def _():
+    verify_control()
+    fx = mk_fx()
+    s = sb()
+    fp = wr(os.path.join(s, "final.json"), final_of(fx, VEX_MIN))
+    vp = wr(os.path.join(s, "vex.json"), VEX_MIN)
+    r = run(["verify", "--final", fp, "--vex", vp])
+    ok(r.rc != 0 and "blobs" in r.err.lower(), "verify accepted a run without --blobs: " + r.err.strip()[:200])
+    r = run(["verify", "--final", fp, "--vex", vp, "--base", wr(os.path.join(s, "b.json"), fx.bytes)])
+    ok(r.rc != 0, "verify accepted --base alone")
+
+
+@case("AC3", "verify with a different valid VEX and the original blobs is refused, also with no --base (the full validation always runs)" + R8)
+def _():
+    verify_control()
+    fx = mk_fx()
+    other = vex_with(lambda o: o.update(version=2))
+    bd = blob_dir_from(fx, VEX_MIN)
+    r = verify(final_of(fx, VEX_MIN), other, blobs=bd)
+    ok(r.rc != 0 and r.err.strip() != "", "accepted a different VEX")
+
+
+# ---- (3) push re-runs the full verification (--vex, --base) and checks result.json against the recomputation
+OTHER_VEX = vex_with(lambda o: o.update(version=7), base=None)
+
+
+def forged(f):
+    def go(pd):
+        p = os.path.join(pd.path, "result.json")
+        o = json.loads(rd(p))
+        f(o)
+        wr(p, cj(o) + b"\n")
+    return go
+
+
+FORGED = {
+    "vex_sha256 is another valid digest": lambda o: o.update(vex_sha256="ab" * 32),
+    "vex_sha256 carries a sha256: prefix": lambda o: o.update(vex_sha256="sha256:" + o["vex_sha256"]),
+    "vex_sha256 is missing": lambda o: o.pop("vex_sha256"),
+    "base_digest is another valid digest": lambda o: o.update(base_digest="sha256:" + "cd" * 32),
+    "base_digest is missing": lambda o: o.pop("base_digest"),
+    "platforms is empty": lambda o: o.update(platforms={}),
+    "platforms names another attestation digest": lambda o: o["platforms"][sorted(o["platforms"])[0]].update(attestation_digest="sha256:" + "ee" * 32),
+    "platforms names another platform digest": lambda o: o["platforms"][sorted(o["platforms"])[0]].update(platform_digest="sha256:" + "ee" * 32),
+    "platforms swaps the two platforms' entries": lambda o: o.update(platforms=dict(zip(sorted(o["platforms"]), reversed([o["platforms"][k] for k in sorted(o["platforms"])])))),
+    "platforms has an extra platform": lambda o: o["platforms"].update({"linux/s390x": {"platform_digest": "sha256:" + "11" * 32, "attestation_digest": "sha256:" + "22" * 32}}),
+    "result.json has an extra key": lambda o: o.update(note="x"),
+    "final_digest is another digest": lambda o: o.update(final_digest="sha256:" + "00" * 32),
+}
+
+
+@param("AC4", "a forged result.json (vex_sha256, base_digest or platforms differing from what is recomputed from --base and --vex) is refused before any request" + R8, sorted(FORGED.items()))
+def _(f):
+    push_control()
+    reg, pd = push_world()
+    forged(f)(pd)
+    try:
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "forged result.json")
+        eq(reg.log, [], "a request was made although result.json is forged")
+        ok(r.err.strip() != "", "no reason on stderr")
+    finally:
+        reg.close()
+
+
+@param("AC4", "a DIR whose predicates were replaced by another valid VEX, with blobs, F and result.json all refreshed consistently, is refused when --vex names the release's VEX" + R8, [("every platform", "all"), ("only the first platform", "first")])
+def _(which):
+    push_control()
+    fx = mk_fx()
+    if which == "all":
+        reg, pd = push_world(fx=fx, vb=OTHER_VEX)
+        pd.vex_path = wr(os.path.join(os.path.dirname(pd.path), "release-vex.json"), vex_real())
+    else:
+        reg, pd = push_world(fx=fx, vb=vex_real(), pd=lambda fx_, vb: custom_pd(fx_, vb, {"stmt": lambda o, c: o.update(predicate=json.loads(OTHER_VEX))}, None, only=0))
+    try:
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "replaced predicates")
+        eq(reg.log, [], "a request was made although the DIR carries another VEX than --vex")
+    finally:
+        reg.close()
+
+
+@case("AC4", "push with a different valid VEX file than the DIR was computed from, or a different --base index, is refused before any request" + R8)
+def _():
+    push_control()
+    reg, pd = push_world()
+    try:
+        r = push(reg, pd, vex=wr(os.path.join(os.path.dirname(pd.path), "other-vex.json"), OTHER_VEX))
+        assert_no_f_attempt(reg, pd, r, "another --vex")
+        other_base = mk_fx(plats=(("amd64", None), ("arm64", "v9")))
+        r = push(reg, pd, base=wr(os.path.join(os.path.dirname(pd.path), "other-base.json"), other_base.bytes))
+        assert_no_f_attempt(reg, pd, r, "another --base")
+        eq(reg.log, [], "a request was made")
+    finally:
+        reg.close()
+
+
+@param("AC4", "an extra child in the final index (unknown/unknown, or a whole third platform with its attestation), consistent with result.json, is refused because the original entries differ from --base" + R8, [("an unknown/unknown entry", "unknown"), ("a third platform with its own attestation", "platform")])
+def _(kind):
+    push_control()
+    fx = mk_fx()
+    extra = mk_child("s390x")
+
+    def fedit(f):
+        n = len(fx.obj["manifests"])
+        if kind == "unknown":
+            f["manifests"].insert(n, {"mediaType": OCI_MAN, "digest": "sha256:" + "ab" * 32, "size": 400, "platform": {"architecture": "unknown", "os": "unknown"}})
+        else:
+            f["manifests"].insert(n, desc_of(extra))
+    reg, pd = push_world(fx=fx, pd=lambda fx_, vb: custom_pd(fx_, vb, None, fedit))
+    try:
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "an extra child")
+        eq(reg.log, [], "a request was made although F has a child that --base lacks")
+    finally:
+        reg.close()
+
+
+@case("AC4", "push without --vex or --base, or with the removed --base-digest, is refused as a usage error and sends nothing" + R8)
+def _():
+    push_control()
+    reg, pd = push_world()
+    try:
+        base = ["push", "--registry", reg.host, "--repository", reg.repo, "--dir", pd.path]
+        for extra in ([], ["--vex", pd.vex_path], ["--base", pd.base_path], ["--vex", pd.vex_path, "--base", pd.base_path, "--base-digest", pd.result["base_digest"]]):
+            r = run(base + extra)
+            ok(r.rc != 0 and r.err.strip() != "", "accepted %r" % extra)
+        eq(reg.log, [], "a request was made")
+    finally:
+        reg.close()
+
+
+@param("AC4", "push --base or --vex that cannot be read as the right kind of document (missing, not JSON, oversized) is refused before any request" + R8, [("missing --base", "nobase"), ("--base is not JSON", "badbase"), ("--vex is not OpenVEX", "badvex"), ("--vex missing", "novex")])
+def _(kind):
+    push_control()
+    reg, pd = push_world()
+    s = os.path.dirname(pd.path)
+    try:
+        kw = {"nobase": dict(base=os.path.join(s, "nope.json")), "badbase": dict(base=wr(os.path.join(s, "b.json"), b"nope")),
+              "badvex": dict(vex=wr(os.path.join(s, "v.json"), b"{}")), "novex": dict(vex=os.path.join(s, "nope.json"))}[kind]
+        r = push(reg, pd, **kw)
+        assert_no_f_attempt(reg, pd, r, kind)
+        eq(reg.log, [], "a request was made")
+    finally:
+        reg.close()
+
+
+# ---- (4) --base comparison is type-sensitive
+def typed_fx():
+    return mk_fx(extra_top={"x-n": 1, "x-z": 0, "x-nested": {"a": [1, {"b": 0}]}}, extra_entry={"x-audit": 1, "x-flag": 0})
+
+
+TYPED = {
+    "top-level 1 becomes true": lambda f: f.update({"x-n": True}),
+    "top-level 0 becomes false": lambda f: f.update({"x-z": False}),
+    "nested [1, {b: 0}] becomes [true, {b: false}]": lambda f: f.update({"x-nested": {"a": [True, {"b": False}]}}),
+    "an original entry's 1 becomes true": lambda f: f["manifests"][0].update({"x-audit": True}),
+    "an original entry's 0 becomes false": lambda f: f["manifests"][1].update({"x-flag": False}),
+    "an original entry's 1 becomes the string 1": lambda f: f["manifests"][0].update({"x-audit": "1"}),
+}
+
+
+@param("AC3", "verify --base compares types: a retained field changed from 1 to true (or 0 to false, nested too) is refused" + R8, sorted(TYPED.items()))
+def _(f):
+    verify_control()
+    fx = typed_fx()
+    good = json.loads(final_of(fx, vex_real()))
+    path, fb = build_custom(fx, vex_real(), None, f)
+    r = verify(fb, vex_real(), base=fx.bytes, blobs=os.path.join(path, "blobs"))
+    ok(r.rc != 0 and r.err.strip() != "", "accepted a retained field with another type")
+    path0, fb0 = build_custom(fx, vex_real(), None, None)
+    ok(verify(fb0, vex_real(), base=fx.bytes, blobs=os.path.join(path0, "blobs")).rc == 0, "positive control failed")
+
+
+@param("AC4", "push compares the original entries with --base by type too" + R8, sorted(TYPED.items()))
+def _(f):
+    push_control()
+    fx = typed_fx()
+    reg, pd = push_world(fx=fx, pd=lambda fx_, vb: custom_pd(fx_, vb, None, f))
+    try:
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "type-substituted retained field")
+        eq(reg.log, [], "a request was made")
+    finally:
+        reg.close()
+
+
+# ---- (5) the upload Location is exactly /v2/<repository>/blobs/uploads/<session>
+SESS = "sess1"
+BAD_LOCS = {
+    "a manifests path (a tag write)": "/v2/fosterstack/cache/manifests/latest?_state=state-1-x",
+    "a manifests path by digest": "/v2/fosterstack/cache/manifests/sha256:" + "ab" * 32,
+    "another repository": "/v2/other/repo/blobs/uploads/sess1?_state=state-1-x",
+    "a sub-repository": "/v2/fosterstack/cache/sub/blobs/uploads/sess1?_state=state-1-x",
+    "a repository prefix only": "/v2/fosterstack/blobs/uploads/sess1?_state=state-1-x",
+    "dot-dot back to manifests": "/v2/fosterstack/cache/blobs/uploads/../../manifests/latest",
+    "encoded dot-dot": "/v2/fosterstack/cache/blobs/uploads/%2e%2e/%2e%2e/manifests/latest",
+    "an encoded slash": "/v2/fosterstack/cache/blobs/uploads/sess1%2Fmanifests",
+    "a percent-encoded session": "/v2/fosterstack/cache/blobs/uploads/s%65ss1?_state=state-1-x",
+    "a double slash": "/v2/fosterstack/cache//blobs/uploads/sess1?_state=state-1-x",
+    "a double slash at the start": "//v2/fosterstack/cache/blobs/uploads/sess1",
+    "an upper-case V2": "/V2/fosterstack/cache/blobs/uploads/sess1?_state=state-1-x",
+    "an upper-case repository": "/v2/FosterStack/cache/blobs/uploads/sess1?_state=state-1-x",
+    "an upper-case uploads": "/v2/fosterstack/cache/blobs/Uploads/sess1?_state=state-1-x",
+    "a trailing slash": "/v2/fosterstack/cache/blobs/uploads/sess1/?_state=state-1-x",
+    "no session": "/v2/fosterstack/cache/blobs/uploads/?_state=state-1-x",
+    "a dot session": "/v2/fosterstack/cache/blobs/uploads/.",
+    "a dot-dot session": "/v2/fosterstack/cache/blobs/uploads/..",
+    "an extra path segment": "/v2/fosterstack/cache/blobs/uploads/sess1/extra?_state=state-1-x",
+    "the blob path itself": "/v2/fosterstack/cache/blobs/sha256:" + "ab" * 32,
+    "a path parameter": "/v2/fosterstack/cache/blobs/uploads/sess1;x=1?_state=state-1-x",
+    "a backslash": "/v2/fosterstack/cache/blobs/uploads\\sess1?_state=state-1-x",
+    "a fragment": "/v2/fosterstack/cache/blobs/uploads/sess1?_state=state-1-x#x",
+    "a digest query that the registry did not issue": "/v2/fosterstack/cache/blobs/uploads/sess1?_state=state-1-x&digest=sha256:" + "ab" * 32,
+    "another query parameter": "/v2/fosterstack/cache/blobs/uploads/sess1?foo=bar",
+    "a query without the state parameter name": "/v2/fosterstack/cache/blobs/uploads/sess1?state=state-1-x",
+    "an encoded query": "/v2/fosterstack/cache/blobs/uploads/sess1?_state=%2e%2e",
+    "a repeated state": "/v2/fosterstack/cache/blobs/uploads/sess1?_state=a&_state=b",
+    "a bare question mark": "/v2/fosterstack/cache/blobs/uploads/sess1?",
+    "a non-ASCII session": "/v2/fosterstack/cache/blobs/uploads/s\u0435ss1?_state=state-1-x",
+    "the upload-service prefix": "/upload-service/sess1?_state=state-1-x",
+    "a host with a trailing dot": "HOSTDOT",
+}
+
+
+@param("AC4", "an upload Location other than exactly /v2/<repository>/blobs/uploads/<session> on the registry's own origin is refused before any further request, and no tag is ever written" + R8, sorted(BAD_LOCS.items()))
+def _(loc):
+    push_control()
+    reg, pd = push_world(token=True)
+    reg.loc_path = "http://127.0.0.1.:%d/v2/fosterstack/cache/blobs/uploads/sess1?_state=state-1-x" % reg.port if loc == "HOSTDOT" else loc
+    try:
+        r = push(reg, pd)
+        ok(r.rc != 0, "pushed through a Location that is not an upload session URL")
+        eq(reg.tag_writes, [], "a tag was written")
+        eq([x for x in reg.log if x["method"] == "PUT"], [], "something was PUT after the first upload start")
+        eq(len([x for x in reg.log if x["method"] == "POST"]), 1, "requests continued after a bad Location")
+        eq(reg.log[-1]["method"], "POST", "the last request before the refusal was not the upload start")
+        eq(f_puts(reg, pd), [], "F attempted")
+        ok("Traceback" not in r.err and r.err.strip() != "", "no plain reason")
+    finally:
+        reg.close()
+
+
+@param("AC4", "upload sessions in the shapes real registries issue are followed: uuid-like sessions, base64url state with padding, absolute same-origin Locations, no state at all" + R8, [("uuid session and base64url state", dict(sid_fmt="uuid")), ("absolute same-origin Location", dict(sid_fmt="uuid", loc_abs=True))])
+def _(kw):
+    loc_abs = kw.pop("loc_abs", False)
+
+    def go(reg, pd):
+        if loc_abs:
+            reg.loc_base = "http://%s" % reg.host
+        assert_clean_push(reg, pd, push(reg, pd))
+    with_world(go, **kw)
+
+
+# ---- (6) path spellings, symlinks, regular files only
+@case("AC2", "compute refuses an out-dir that is a symlink however it is spelled: link, link/ and link/. (the target stays empty)" + R8)
+def _():
+    control_ok()
+    fx = mk_fx()
+    for spelling in ("%s", "%s/", "%s/.", "%s//", "%s/./", "%s/././"):
+        s = sb()
+        target = os.path.join(s, "target")
+        os.mkdir(target)
+        link = os.path.join(s, "link")
+        os.symlink(target, link)
+        i = wr(os.path.join(s, "i.json"), fx.bytes)
+        v = wr(os.path.join(s, "v.json"), VEX_MIN)
+        r = run(["compute", "--index", i, "--vex", v, "--out-dir", spelling % link])
+        ok(r.rc != 0 and r.err.strip() != "", "accepted the out-dir %r" % (spelling % "link"))
+        eq(os.listdir(target), [], "something was written through the symlink spelled %r" % (spelling % "link"))
+
+
+@case("AC2", "compute accepts a real out-dir with a trailing slash or dot, creating it when it does not exist" + R8)
+def _():
+    fx = mk_fx()
+    base = do_compute(fx.bytes, VEX_MIN)
+    for spelling in ("%s/", "%s/."):
+        s = sb()
+        i = wr(os.path.join(s, "i.json"), fx.bytes)
+        v = wr(os.path.join(s, "v.json"), VEX_MIN)
+        out = os.path.join(s, "out")
+        r = run(["compute", "--index", i, "--vex", v, "--out-dir", spelling % out])
+        ok(r.rc == 0, "refused %r: %s" % (spelling % "out", r.err.strip()[:150]))
+        eq(tree(out), tree(base.dir), "the output")
+
+
+def swap_spellings(path):
+    return [path + "/", path + "/.", path + "//"]
+
+
+@case("AC4", "push and verify refuse a DIR or --blobs directory that is a symlink however it is spelled (link, link/, link/.)" + R8)
+def _():
+    push_control()
+    reg, pd = push_world()
+    try:
+        link = pd.path + "-link"
+        os.symlink(pd.path, link)
+        for spelling in [link] + swap_spellings(link):
+            real = pd.path
+            pd.path = spelling
+            r = push(reg, pd)
+            pd.path = real
+            ok(r.rc != 0 and r.err.strip() != "", "push accepted the DIR spelled %r" % spelling[-8:])
+        eq(reg.log, [], "a request was made")
+        blink = os.path.join(os.path.dirname(pd.path), "blobs-link")
+        os.symlink(os.path.join(pd.path, "blobs"), blink)
+        for spelling in [blink] + swap_spellings(blink):
+            r = run(["verify", "--final", os.path.join(pd.path, "index.json"), "--vex", pd.vex_path, "--base", pd.base_path, "--blobs", spelling])
+            ok(r.rc != 0 and r.err.strip() != "", "verify accepted the --blobs directory spelled %r" % spelling[-8:])
+    finally:
+        reg.close()
+
+
+@case("AC4", "a push with DIR spelled with a trailing slash or dot (a real directory) works" + R8)
+def _():
+    def go(reg, pd):
+        real = pd.path
+        pd.path = real + "/"
+        assert_clean_push(reg, pd, push(reg, pd))
+        pd.path = real
+    with_world(go)
+
+
+@param("AC2", "an input file that is a symlink, a FIFO, a device or a directory is refused before it is read (compute --index/--vex, verify --final/--vex/--base)" + R8, [(k, k) for k in ("symlink", "fifo", "dev-zero", "directory")])
+def _(kind):
+    control_ok()
+    fx = mk_fx()
+    s = sb()
+    good_i = wr(os.path.join(s, "i.json"), fx.bytes)
+    good_v = wr(os.path.join(s, "v.json"), VEX_MIN)
+
+    def bad(name):
+        p = os.path.join(s, name)
+        if kind == "symlink":
+            os.symlink(good_i, p)
+        elif kind == "fifo":
+            os.mkfifo(p)
+        elif kind == "dev-zero":
+            if not os.path.exists("/dev/zero"):
+                raise Fail("no /dev/zero on this system")
+            p = "/dev/zero"
+        else:
+            os.mkdir(p)
+        return p
+    for which in ("index", "vex"):
+        args = {"index": good_i, "vex": good_v}
+        args[which] = bad("bad-" + which)
+        r = run(["compute", "--index", args["index"], "--vex", args["vex"], "--out-dir", os.path.join(s, "o-" + which)], timeout=30)
+        ok(r.rc != 0 and r.err.strip() != "", "compute accepted a %s as --%s" % (kind, which))
+        ok(not os.path.lexists(os.path.join(s, "o-" + which)), "something was written")
+    pd = make_dir(fx, VEX_MIN)
+    for which in ("final", "vex", "base"):
+        args = {"final": os.path.join(pd.path, "index.json"), "vex": pd.vex_path, "base": pd.base_path}
+        args[which] = bad("bad-v-" + which)
+        r = run(["verify", "--final", args["final"], "--vex", args["vex"], "--base", args["base"], "--blobs", os.path.join(pd.path, "blobs")], timeout=30)
+        ok(r.rc != 0 and r.err.strip() != "", "verify accepted a %s as --%s" % (kind, which))
+
+
+# ---- (7) the directory inventory is exact, and enumeration errors are refusals
+def verify_pd(pd, **over):
+    a = {"final": os.path.join(pd.path, "index.json"), "vex": pd.vex_path, "base": pd.base_path, "blobs": os.path.join(pd.path, "blobs")}
+    a.update(over)
+    return run(["verify", "--final", a["final"], "--vex", a["vex"], "--base", a["base"], "--blobs", a["blobs"]], timeout=60)
+
+
+def blob_extras():
+    def add(rel, data=b"x"):
+        def f(pd):
+            wr(os.path.join(pd.path, "blobs", rel), data)
+        return f
+
+    def mkdirs(rel):
+        def f(pd):
+            os.makedirs(os.path.join(pd.path, "blobs", rel))
+        return f
+
+    def fifo(pd):
+        os.mkfifo(os.path.join(pd.path, "blobs", "sha256", "f" * 64))
+
+    def symlink(pd):
+        os.symlink("/etc/hostname", os.path.join(pd.path, "blobs", "sha256", "e" * 64))
+    return [("an unreferenced blob", add("sha256/" + "d" * 64)), ("a hidden file in sha256", add("sha256/.hidden")), ("a hidden file next to sha256", add(".hidden")),
+            ("a file next to sha256", add("stray.txt")), ("a sub-directory in sha256", mkdirs("sha256/nested")), ("another algorithm directory", mkdirs("sha512")),
+            ("a file named like a blob but with upper-case hex", add("sha256/" + "D" * 64)), ("a FIFO in sha256", fifo), ("a symlink in sha256", symlink),
+            ("an empty file named like a blob", add("sha256/" + "0" * 64, b""))]
+
+
+@param("AC3", "verify walks the blobs directory exactly: an extra, unreferenced, hidden, special or nested entry is refused" + R8, [(k, f) for k, f in blob_extras()])
+def _(f):
+    verify_control()
+    pd = make_dir(mk_fx(), vex_real())
+    ok(verify_pd(pd).rc == 0, "positive control failed")
+    f(pd)
+    r = verify_pd(pd)
+    ok(r.rc != 0 and r.err.strip() != "" and "Traceback" not in r.err, "verify accepted a blobs directory with an unexpected entry")
+
+
+def unreadable(rel_from_dir, mode):
+    def go(pd):
+        os.chmod(os.path.join(pd.path, rel_from_dir) if rel_from_dir else pd.path, mode)
+    return go
+
+
+PERM = [("DIR is execute-only (cannot be listed)", "", 0o111), ("blobs is execute-only", "blobs", 0o111), ("blobs/sha256 is execute-only", "blobs/sha256", 0o111),
+        ("blobs/sha256 has no permissions", "blobs/sha256", 0o000), ("blobs has no permissions", "blobs", 0o000), ("blobs/sha256 is write-and-execute only", "blobs/sha256", 0o311)]
+
+
+@param("AC3", "an enumeration error (a directory that cannot be listed) is a refusal for verify, never a silent skip" + R8, [(k, (rel, mode)) for k, rel, mode in PERM if rel])
+def _(arg):
+    ok(os.geteuid() != 0, "the permission cases need a non-root user")
+    verify_control()
+    rel, mode = arg
+    pd = make_dir(mk_fx(), vex_real())
+    target = os.path.join(pd.path, rel)
+    try:
+        os.chmod(target, mode)
+        r = verify_pd(pd)
+        ok(r.rc != 0 and r.err.strip() != "" and "Traceback" not in r.err, "verify accepted a directory that cannot be listed")
+    finally:
+        os.chmod(target, 0o755)
+
+
+@param("AC4", "an enumeration error in DIR, blobs or blobs/sha256 is a refusal for push, sent before any request" + R8, [(k, (rel, mode)) for k, rel, mode in PERM])
+def _(arg):
+    ok(os.geteuid() != 0, "the permission cases need a non-root user")
+    push_control()
+    rel, mode = arg
+    reg, pd = push_world()
+    target = os.path.join(pd.path, rel) if rel else pd.path
+    try:
+        os.chmod(target, mode)
+        r = push(reg, pd)
+        assert_no_f_attempt(reg, pd, r, "unlistable directory")
+        eq(reg.log, [], "a request was made although a directory cannot be listed")
+    finally:
+        os.chmod(target, 0o755)
+
+
+# ---- (8) bounded reads
+@param("AC2", "a FIFO, /dev/zero or a huge sparse file in place of an input is refused before it is read (bounded, prompt)" + R8, [(k, k) for k in ("fifo", "dev-zero", "sparse 4 GiB")])
+def _(kind):
+    control_ok()
+    fx = mk_fx()
+    s = sb()
+    for which in ("index", "vex"):
+        files = {"index": wr(os.path.join(s, "i.json"), fx.bytes), "vex": wr(os.path.join(s, "v.json"), VEX_MIN)}
+        p = os.path.join(s, "big-" + which)
+        if kind == "fifo":
+            os.mkfifo(p)
+        elif kind == "dev-zero":
+            ok(os.path.exists("/dev/zero"), "no /dev/zero")
+            p = "/dev/zero"
+        else:
+            sparse(p, 4 << 30)
+        files[which] = p
+        t0 = time.time()
+        r = run(["compute", "--index", files["index"], "--vex", files["vex"], "--out-dir", os.path.join(s, "o-" + which)], timeout=30)
+        ok(r.rc != 0 and r.err.strip() != "" and "Traceback" not in r.err, "compute accepted %s as --%s" % (kind, which))
+        ok(time.time() - t0 < 20, "the refusal took too long (an unbounded read?)")
+
+
+def one_big(pd, what, kind):
+    """replace one local file of a valid DIR by a FIFO or a huge sparse file"""
+    blobs = os.path.join(pd.path, "blobs", "sha256")
+    target = {"index.json": os.path.join(pd.path, "index.json"), "result.json": os.path.join(pd.path, "result.json"),
+              "statement": os.path.join(blobs, hx(json.loads(pd.blobs[hx(sorted(pd.att_digests)[0])])["layers"][0]["digest"])), "manifest": os.path.join(blobs, hx(sorted(pd.att_digests)[0])),
+              "config": os.path.join(blobs, hx(json.loads(pd.blobs[hx(sorted(pd.att_digests)[0])])["config"]["digest"]))}[what]
+    os.unlink(target)
+    if kind == "fifo":
+        os.mkfifo(target)
+    else:
+        sparse(target, 8 << 30)
+
+
+BIG = [("%s as %s" % (k, w), (w, k)) for w in ("index.json", "result.json", "statement", "manifest", "config") for k in ("fifo", "sparse 8 GiB")]
+BIG_VERIFY = [x for x in BIG if x[1][0] != "result.json"]  # verify does not read result.json
+
+
+@param("AC3", "verify never reads past its bounds: a FIFO or a huge sparse file in place of the index, a blob or a manifest is refused promptly" + R8, BIG_VERIFY)
+def _(arg):
+    verify_control()
+    what, kind = arg
+    pd = make_dir(mk_fx(), vex_real())
+    one_big(pd, what, kind)
+    t0 = time.time()
+    r = verify_pd(pd)
+    ok(r.rc != 0 and r.err.strip() != "" and "Traceback" not in r.err, "verify accepted %s as %s" % (kind, what))
+    ok(time.time() - t0 < 20, "the refusal took too long (an unbounded read?)")
+
+
+@param("AC4", "push never reads past its bounds and never blocks on special files in DIR (index, result, blobs, manifests): refused promptly before any request" + R8, BIG)
+def _(arg):
+    push_control()
+    what, kind = arg
+    reg, pd = push_world()
+    one_big(pd, what, kind)
+    try:
+        t0 = time.time()
+        r = push(reg, pd, timeout=40)
+        assert_no_f_attempt(reg, pd, r, "%s as %s" % (kind, what))
+        eq(reg.log, [], "a request was made")
+        ok(time.time() - t0 < 25, "the refusal took too long (an unbounded read?)")
+    finally:
+        reg.close()
+
+
+@param("AC4", "a registry streaming an endless body (success body of the read-back, an error body, a token response) is cut off at a bound, long before the (here 60 s) deadline" + R8, [("read-back body", dict(readback="endless")), ("error body of a blob HEAD", dict(endless_on={"head_blob"})), ("error body of an upload start", dict(endless_on={"post"})), ("token response", dict(token=True, endless_on={"token"}))])
+def _(kw):
+    push_control()
+    reg, pd = push_world(**kw)
+    try:
+        t0 = time.time()
+        r = push(reg, pd, env={"FSCACHE_REGISTRY_TIMEOUT": "60"}, timeout=40)
+        took = time.time() - t0
+        ok(r.rc != 0, "the push succeeded from an endless body")
+        ok(took < 20, "the tool read an endless body for %.1f s instead of stopping at a bound" % took)
+        ok(pd.f_digest not in r.out, "claimed success")
+        ok("Traceback" not in r.err, "a traceback")
+    finally:
+        reg.close()
+
+
+# ---- the tool never reads proxy variables
+class Recorder:
+    def __init__(self):
+        self.log = []
+        rec = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def any(self):
+                rec.log.append((self.command, self.path))
+                self.send_response(502)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            do_GET = do_HEAD = do_POST = do_PUT = do_CONNECT = any
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+@case("AC4", "the tool ignores every proxy variable (http_proxy, https_proxy, all_proxy, in both cases): a push to a local registry goes straight to it" + R8)
+def _():
+    rec = Recorder()
+    env = {k: rec.url for k in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")}
+    env["no_proxy"] = env["NO_PROXY"] = ""
+
+    def go(reg, pd):
+        r = push(reg, pd, env=env)
+        assert_clean_push(reg, pd, r)
+    try:
+        with_world(go)
+        eq(rec.log, [], "a request went through the proxy named in the environment")
+    finally:
+        rec.close()
+
+
+
+@param("AC3", "a descriptor that declares an attestation manifest of 2 GiB is refused before any of it is read (verify)" + R8, [("manifest", "manifest")])
+def _(kind):
+    verify_control()
+    fx = mk_fx()
+    path, fb = build_custom(fx, vex_real(), {"desc": lambda o, c: o.update(size=2 ** 31)}, None, only=0)
+    f = json.loads(fb)
+    att = [e for e in f["manifests"] if (e.get("annotations") or {}).get("vnd.docker.reference.type")][0]
+    target = os.path.join(path, "blobs", "sha256", hx(att["digest"]))
+    os.unlink(target)
+    sparse(target, 2 ** 31)
+    t0 = time.time()
+    r = verify(fb, vex_real(), base=fx.bytes, blobs=os.path.join(path, "blobs"))
+    ok(r.rc != 0 and r.err.strip() != "" and "Traceback" not in r.err, "verify accepted a declared 2 GiB manifest")
+    ok(time.time() - t0 < 20, "the refusal took too long (it read the file?)")
+
+
+@case("AC4", "push refuses a descriptor that declares an attestation manifest of 2 GiB before reading any of it and before any request" + R8)
+def _():
+    push_control()
+    fx = mk_fx()
+    reg, pd = push_world(fx=fx, pd=lambda fx_, vb: custom_pd(fx_, vb, {"desc": lambda o, c: o.update(size=2 ** 31)}, None, only=0))
+    try:
+        f = json.loads(pd.fb)
+        att = [e for e in f["manifests"] if (e.get("annotations") or {}).get("vnd.docker.reference.type")][0]
+        target = os.path.join(pd.path, "blobs", "sha256", hx(att["digest"]))
+        os.unlink(target)
+        sparse(target, 2 ** 31)
+        r = push(reg, pd, timeout=40)
+        assert_no_f_attempt(reg, pd, r, "declared 2 GiB manifest")
+        eq(reg.log, [], "a request was made")
+    finally:
+        reg.close()
 
 
 def main():

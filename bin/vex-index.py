@@ -6,23 +6,28 @@ release's OpenVEX document as an in-toto statement whose subject is that platfor
 of the bytes of D and of the VEX file: nothing signed or promoted ever names D.
 
   compute --index D.json --vex VEX.json --out-dir DIR
-  verify  --final F.json --vex VEX.json [--base D.json] [--blobs DIR/blobs]
-  push    --registry HOST[:PORT] --repository NAME --dir DIR [--base-digest sha256:...]
+  verify  --final F.json --vex VEX.json --blobs DIR/blobs [--base D.json]
+  push    --registry HOST[:PORT] --repository NAME --dir DIR --vex VEX.json --base D.json
+
+verify always performs the full validation. push re-runs exactly that validation over DIR, and checks result.json
+against a recomputation from --base and --vex, before it sends anything.
 
 Standard library only. compute and verify never touch the network. push talks the distribution API and reads
-FSCACHE_REGISTRY_USER, FSCACHE_REGISTRY_TOKEN and FSCACHE_REGISTRY_TIMEOUT from the environment; nothing else in the
-environment (CI variables, locale, time zone, clock) influences any output.
+FSCACHE_REGISTRY_USER, FSCACHE_REGISTRY_TOKEN and FSCACHE_REGISTRY_TIMEOUT from the environment (proxy variables are
+ignored); nothing else in the environment (CI variables, locale, time zone, clock) influences any output.
 
 Exit status: 0 success, 2 the input or the registry was refused (a plain reason on stderr), 1 an unexpected error.
 """
 import argparse
 import base64
+import binascii
 import datetime
 import hashlib
 import json
 import math
 import os
 import re
+import stat
 import sys
 import threading
 import urllib.error
@@ -46,6 +51,11 @@ MAX_DEPTH = 32
 MAX_PLATFORMS = 64
 MAX_INT = 2 ** 53
 DEFAULT_TIMEOUT = 30           # seconds, for each registry request (documented in `push --help`)
+MAX_RESULT_BYTES = 64 << 10    # result.json
+MAX_STATEMENT_BYTES = 2 << 20  # an attestation statement (it embeds the VEX)
+MAX_SMALL_BLOB_BYTES = 64 << 10  # an attestation manifest or config
+MAX_BODY_BYTES = 64 << 10      # a registry response body (token, upload start, ...)
+MAX_MANIFEST_BODY_BYTES = 4 << 20  # the read-back of the final index
 
 # every digest, port and name below is ASCII only: [0-9] and explicit classes, never \d or \w
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -290,8 +300,16 @@ def check_vex(data):
 
 
 # ---------------------------------------------------------------- the index
-def check_descriptor(entry, position):
-    where = "manifests[%d]" % position
+def is_string_map(value):
+    return isinstance(value, dict) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items())
+
+
+def is_string_list(value):
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def check_descriptor_fields(entry, where):
+    """the OCI descriptor fields this tool knows are type-checked (unknown extension fields are kept untouched)"""
     if not isinstance(entry, dict):
         raise Refuse("%s is not an object" % where)
     if not isinstance(entry.get("digest"), str) or not DIGEST.fullmatch(entry["digest"]):
@@ -299,10 +317,28 @@ def check_descriptor(entry, position):
     size = entry.get("size")
     if not is_int(size) or not 1 <= size <= 2 ** 31:
         raise Refuse("%s: the size is not an integer between 1 and 2**31" % where)
-    if entry.get("mediaType") not in (OCI_MANIFEST, DOCKER_MANIFEST):
+    if not non_empty(entry.get("mediaType")):
+        raise Refuse("%s: the mediaType is not a non-empty string" % where)
+    if "annotations" in entry and not is_string_map(entry["annotations"]):
+        raise Refuse("%s: annotations must be an object of strings" % where)
+    if "artifactType" in entry and not non_empty(entry["artifactType"]):
+        raise Refuse("%s: artifactType must be a non-empty string" % where)
+    if "urls" in entry and not (is_string_list(entry["urls"]) and all(entry["urls"])):
+        raise Refuse("%s: urls must be a list of non-empty strings" % where)
+    if "data" in entry:
+        try:
+            content = base64.b64decode(entry["data"], validate=True) if isinstance(entry["data"], str) else None
+        except (binascii.Error, ValueError):
+            content = None
+        if content is None or len(content) != size or digest_of(content) != entry["digest"]:
+            raise Refuse("%s: data must be base64 of exactly the content the descriptor names" % where)
+
+
+def check_descriptor(entry, position):
+    where = "manifests[%d]" % position
+    check_descriptor_fields(entry, where)
+    if entry["mediaType"] not in (OCI_MANIFEST, DOCKER_MANIFEST):
         raise Refuse("%s: the mediaType is not an image manifest" % where)
-    if entry.get("annotations") is not None and not isinstance(entry["annotations"], dict):
-        raise Refuse("%s: annotations is not an object" % where)
 
 
 def is_attestation(entry):
@@ -315,8 +351,13 @@ def platform_key(entry, position):
     if not isinstance(platform, dict):
         raise Refuse("manifests[%d]: no platform" % position)
     os_name, arch, variant = platform.get("os"), platform.get("architecture"), platform.get("variant")
-    if not non_empty(os_name) or not non_empty(arch) or (variant is not None and not isinstance(variant, str)):
+    if not non_empty(os_name) or not non_empty(arch) or ("variant" in platform and not isinstance(variant, str)):
         raise Refuse("manifests[%d]: the platform is unreadable" % position)
+    if "os.version" in platform and not isinstance(platform["os.version"], str):
+        raise Refuse("manifests[%d]: platform os.version must be a string" % position)
+    for key in ("os.features", "features"):
+        if key in platform and not is_string_list(platform[key]):
+            raise Refuse("manifests[%d]: platform %s must be a list of strings" % (position, key))
     return os_name, arch, variant
 
 
@@ -329,6 +370,12 @@ def load_index(data, final):
         raise Refuse("index: schemaVersion must be 2")
     if index.get("mediaType") != OCI_INDEX:
         raise Refuse("index: mediaType must be %s" % OCI_INDEX)
+    if "annotations" in index and not is_string_map(index["annotations"]):
+        raise Refuse("index: annotations must be an object of strings")
+    if "artifactType" in index and not non_empty(index["artifactType"]):
+        raise Refuse("index: artifactType must be a non-empty string")
+    if "subject" in index:
+        check_descriptor_fields(index["subject"], "index subject")
     platforms, names, digests = [], set(), set()
     for position, entry in enumerate(index["manifests"]):
         check_descriptor(entry, position)
@@ -393,52 +440,197 @@ def compute(index_bytes, vex_bytes):
     return final_bytes, blobs, result
 
 
-def blob_path(blobs_dir, digest):
-    """where a digest lives in a blobs directory; the digest is checked first so that it can never be a path"""
-    if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
-        raise Refuse("a blob digest is not sha256:<64 lowercase hex>")
-    return os.path.join(blobs_dir, "sha256", hex_of(digest))
+# ---------------------------------------------------------------- files and directories
+# Every directory is opened once (no symlink on its last component) and everything inside it is reached through that
+# descriptor, so a path cannot be swapped for a symlink between being checked and being used. Files are opened without
+# following symlinks and without blocking, must be regular files, and are read at most limit + 1 bytes.
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
-def read_file(path):
+def clean_path(path):
+    """drop trailing separators and '/.' so that link/ and link/. cannot hide a symlink named link"""
+    while True:
+        if len(path) > 1 and path.endswith("/"):
+            path = path.rstrip("/") or "/"
+        elif path.endswith("/."):
+            path = path[:-2] or "/"
+        else:
+            return path
+
+
+def open_directory(path, dir_fd=None):
     try:
-        with open(path, "rb") as handle:
-            return handle.read()
+        return os.open(clean_path(path) if dir_fd is None else path, DIR_FLAGS, dir_fd=dir_fd)
     except OSError as err:
-        raise Refuse("cannot read %s (%s)" % (path, err.strerror))
+        raise Refuse("%s is not a readable directory (a symlink is refused): %s" % (path, err.strerror))
 
 
-def write_file(path, data):
-    with open(path, "xb") as handle:
+def open_parent(path):
+    """the directory that holds path (its own symlinks, if any, are followed) and the name of path inside it"""
+    parent, name = os.path.split(clean_path(path))
+    try:
+        return os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC), name
+    except OSError as err:
+        raise Refuse("cannot open the directory of %s: %s" % (path, err.strerror))
+
+
+def read_regular(dir_fd, name, limit, what):
+    """the bytes of a regular file inside an open directory, refusing anything else and anything above limit"""
+    if name in ("", ".", ".."):
+        raise Refuse("%s is not a file name" % what)
+    try:
+        fd = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
+    except OSError as err:
+        raise Refuse("cannot open %s: %s" % (what, err.strerror))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refuse("%s is not a regular file" % what)
+        chunks, total = [], 0
+        while True:
+            try:
+                chunk = os.read(fd, min(1 << 20, limit + 1 - total))
+            except OSError as err:
+                raise Refuse("cannot read %s: %s" % (what, err.strerror))
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise Refuse("%s is larger than %d bytes" % (what, limit))
+    finally:
+        os.close(fd)
+
+
+def read_path(path, limit):
+    parent_fd, name = open_parent(path)
+    try:
+        return read_regular(parent_fd, name, limit, path)
+    finally:
+        os.close(parent_fd)
+
+
+def list_directory(dir_fd, what):
+    """{name: file type bits} of every entry (hidden ones too), or a refusal when the directory cannot be listed"""
+    try:
+        return {name: stat.S_IFMT(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode) for name in os.listdir(dir_fd)}
+    except OSError as err:
+        raise Refuse("cannot list %s: %s" % (what, err.strerror))
+
+
+def create_file(dir_fd, name, data):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666, dir_fd=dir_fd)
+    with os.fdopen(fd, "wb") as handle:
         handle.write(data)
 
 
+# ---------------------------------------------------------------- compute
+def compute(index_bytes, vex_bytes):
+    vex = check_vex(vex_bytes)
+    index, platforms = load_index(index_bytes, final=False)
+    if hex_of(digest_of(index_bytes)).encode() in canonical(vex):
+        raise Refuse("the VEX mentions the built index's digest")
+    descriptors, blobs, summary = [], {}, {}
+    for name, entry in platforms:
+        descriptor, parts = build_attestation(entry["digest"], vex)
+        descriptors.append(descriptor)
+        blobs.update(parts)
+        summary[name] = {"platform_digest": entry["digest"], "attestation_digest": descriptor["digest"]}
+    final = dict(index)
+    final["manifests"] = list(index["manifests"]) + descriptors
+    final_bytes = canonical(final)
+    result = {"base_digest": digest_of(index_bytes), "final_digest": digest_of(final_bytes), "platforms": summary,
+              "vex_sha256": hashlib.sha256(vex_bytes).hexdigest()}
+    return final_bytes, blobs, result
+
+
+def open_output(path):
+    """the empty out-dir, opened without following a symlink; created when it does not exist"""
+    path = clean_path(path)
+    parent_fd, name = open_parent(path)
+    try:
+        if name in ("", ".", ".."):
+            return open_directory(path)
+        try:
+            fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
+        except FileNotFoundError:
+            os.mkdir(name, 0o777, dir_fd=parent_fd)
+            fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
+        except OSError as err:
+            raise Refuse("the out-dir is not a directory (a symlink is refused): %s" % err.strerror)
+        return fd
+    finally:
+        os.close(parent_fd)
+
+
 def command_compute(args):
-    final_bytes, blobs, result = compute(read_file(args.index), read_file(args.vex))
-    out = args.out_dir
-    if os.path.islink(out):
-        raise Refuse("the out-dir is a symlink")
-    if os.path.exists(out):
-        if not os.path.isdir(out):
-            raise Refuse("the out-dir is not a directory")
-        if os.listdir(out):
+    final_bytes, blobs, result = compute(read_path(args.index, MAX_INDEX_BYTES), read_path(args.vex, MAX_INDEX_BYTES))
+    out_fd = open_output(args.out_dir)
+    try:
+        if list_directory(out_fd, "the out-dir"):
             raise Refuse("the out-dir is not empty")
-    else:
-        os.mkdir(out)
-    os.makedirs(os.path.join(out, "blobs", "sha256"))
-    for digest, data in blobs.items():
-        write_file(os.path.join(out, "blobs", "sha256", hex_of(digest)), data)
-    write_file(os.path.join(out, "index.json"), final_bytes)
-    write_file(os.path.join(out, "result.json"), canonical(result) + b"\n")
+        os.mkdir("blobs", 0o777, dir_fd=out_fd)
+        blobs_fd = open_directory("blobs", out_fd)
+        try:
+            os.mkdir("sha256", 0o777, dir_fd=blobs_fd)
+            sha_fd = open_directory("sha256", blobs_fd)
+            try:
+                for digest, data in blobs.items():
+                    create_file(sha_fd, hex_of(digest), data)
+            finally:
+                os.close(sha_fd)
+        finally:
+            os.close(blobs_fd)
+        create_file(out_fd, "index.json", final_bytes)
+        create_file(out_fd, "result.json", canonical(result) + b"\n")
+    finally:
+        os.close(out_fd)
     print(result["final_digest"])
 
 
 # ---------------------------------------------------------------- the structure of a final index and its blobs
-def check_final(final_bytes, read_blob, vex, forbidden):
-    """Validate a final index completely. read_blob(digest, size) returns verified bytes, or is None to check the
-    index alone. vex is the VEX document to compare the statements with (None: only require them to be equal to each
-    other and valid). forbidden: digests that must not appear inside any attestation blob. Returns the parsed final
-    index, the attestation descriptors and the set of blob digests an attestation needs."""
+BLOB_CAPS = {"manifest": MAX_SMALL_BLOB_BYTES, "config": MAX_SMALL_BLOB_BYTES, "statement": MAX_STATEMENT_BYTES}
+
+
+class Blobs:
+    """a blobs directory (holding sha256/<hex>) opened once; every blob is read bounded and checked against its digest"""
+
+    def __init__(self, path, dir_fd=None):
+        self.root_fd = open_directory(path, dir_fd)
+        try:
+            self.sha_fd = open_directory("sha256", self.root_fd)
+        except Refuse:
+            os.close(self.root_fd)
+            raise
+
+    def close(self):
+        os.close(self.sha_fd)
+        os.close(self.root_fd)
+
+    def read(self, digest, size, kind):
+        if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+            raise Refuse("a blob digest is not sha256:<64 lowercase hex>")
+        if not is_int(size) or not 0 < size <= BLOB_CAPS[kind]:
+            raise Refuse("an attestation %s of %r bytes is outside the allowed size" % (kind, size))
+        data = read_regular(self.sha_fd, hex_of(digest), size, "blob " + digest)
+        if digest_of(data) != digest or len(data) != size:
+            raise Refuse("a blob does not match its digest or size: %s" % digest)
+        return data
+
+    def check_inventory(self, needed):
+        """exactly the blobs the attestations need: nothing else, nothing hidden, nothing nested"""
+        if list_directory(self.root_fd, "the blobs directory") != {"sha256": stat.S_IFDIR}:
+            raise Refuse("the blobs directory must hold only sha256/")
+        found = list_directory(self.sha_fd, "blobs/sha256")
+        wanted = {hex_of(digest): stat.S_IFREG for digest in needed}
+        if found != wanted:
+            raise Refuse("blobs/sha256 does not hold exactly the blobs the attestations need")
+
+
+def check_final(final_bytes, blobs, vex, forbidden):
+    """Validate a final index completely: its shape and order, every attestation rebuilt from its predicate and
+    compared byte for byte, the predicates equal to vex and to each other, and no digest of D or F inside a blob.
+    Returns the parsed final index, its attestation descriptors and the digests of the blobs they need."""
     final, platforms = load_index(final_bytes, final=True)
     if final_bytes != canonical(final):
         raise Refuse("the final index bytes are not the canonical serialisation")
@@ -453,7 +645,7 @@ def check_final(final_bytes, read_blob, vex, forbidden):
         annotations = entry["annotations"]
         if set(annotations) != {"vnd.docker.reference.digest", "vnd.docker.reference.type"}:
             raise Refuse("attestation annotations are not exactly the two keys")
-        if annotations["vnd.docker.reference.type"] != ATTESTATION or not isinstance(annotations["vnd.docker.reference.digest"], str):
+        if annotations["vnd.docker.reference.type"] != ATTESTATION:
             raise Refuse("attestation annotations are wrong")
         if (set(entry) != {"mediaType", "digest", "size", "annotations", "platform"} or entry["mediaType"] != OCI_MANIFEST
                 or entry["platform"] != {"architecture": "unknown", "os": "unknown"}):
@@ -466,30 +658,25 @@ def check_final(final_bytes, read_blob, vex, forbidden):
         references.append(reference)
     if references != platform_digests:
         raise Refuse("the platforms and their attestations do not match, in this order")
-    needed, first_predicate = set(), None
-    if read_blob is None:
-        return final, attestations, needed
+    needed = set()
     for entry in attestations:
         reference = entry["annotations"]["vnd.docker.reference.digest"]
-        manifest_bytes = read_blob(entry["digest"], entry["size"])
-        manifest = load_json(manifest_bytes, "attestation manifest", limits=False)
+        manifest = load_json(blobs.read(entry["digest"], entry["size"], "manifest"), "attestation manifest", limits=False)
         try:
             layer = manifest["layers"][0]
-            statement = load_json(read_blob(layer["digest"], layer["size"]), "statement", limits=False)
+            statement = load_json(blobs.read(layer["digest"], layer["size"], "statement"), "statement", limits=False)
             predicate = statement["predicate"]
         except (KeyError, IndexError, TypeError):
             raise Refuse("an attestation manifest or its statement is malformed")
         check_vex(canonical(predicate))
-        if vex is not None and predicate != vex:
+        if canonical(predicate) != canonical(vex):
             raise Refuse("a statement's predicate is not the VEX file")
-        if first_predicate is not None and predicate != first_predicate:
-            raise Refuse("the attestations carry different predicates")
-        first_predicate = predicate
         expected, parts = build_attestation(reference, predicate)
         if expected != entry:
             raise Refuse("the attestation for %s does not have the canonical shape" % reference)
         for digest, data in parts.items():
-            if read_blob(digest, len(data)) != data:
+            kind = "manifest" if digest == entry["digest"] else ("statement" if digest == layer["digest"] else "config")
+            if blobs.read(digest, len(data), kind) != data:
                 raise Refuse("a blob is not canonical: %s" % digest)
             for other in forbidden:
                 if hex_of(other).encode() in data:
@@ -498,33 +685,32 @@ def check_final(final_bytes, read_blob, vex, forbidden):
     return final, attestations, needed
 
 
-def command_verify(args):
-    if args.base and DIGEST.fullmatch(args.base):
-        raise Refuse("--base takes the built index file; a digest cannot be checked offline")
-    final_bytes = read_file(args.final)
-    vex = check_vex(read_file(args.vex))
+def verify_all(final_bytes, blobs, vex_bytes, base_bytes):
+    """the one validation that verify and push both run; returns what push needs to send"""
+    vex = check_vex(vex_bytes)
     forbidden = [digest_of(final_bytes)]
-    base_bytes = None
-    if args.base:
-        base_bytes = read_file(args.base)
+    if base_bytes is not None:
         forbidden.append(digest_of(base_bytes))
-    reader = None
-    if args.blobs:
-        def reader(digest, size):
-            path = blob_path(args.blobs, digest)
-            if os.path.islink(path) or not os.path.isfile(path):
-                raise Refuse("blob missing: %s" % digest)
-            data = read_file(path)
-            if digest_of(data) != digest or len(data) != size:
-                raise Refuse("blob does not match its digest or size: %s" % digest)
-            return data
-    final, _, _ = check_final(final_bytes, reader, vex, forbidden)
+    final, attestations, needed = check_final(final_bytes, blobs, vex, forbidden)
+    blobs.check_inventory(needed)
     if base_bytes is not None:
         base, _ = load_index(base_bytes, final=False)
         stripped = dict(final)
         stripped["manifests"] = [entry for entry in final["manifests"] if not is_attestation(entry)]
-        if stripped != base:
+        if canonical(stripped) != canonical(base):  # canonical forms: 1 and true, or 0 and false, are different
             raise Refuse("the final index minus its attestations differs from the built index")
+    return final, attestations
+
+
+def command_verify(args):
+    final_bytes = read_path(args.final, MAX_FINAL_BYTES)
+    vex_bytes = read_path(args.vex, MAX_INDEX_BYTES)
+    base_bytes = read_path(args.base, MAX_INDEX_BYTES) if args.base else None
+    blobs = Blobs(args.blobs)
+    try:
+        verify_all(final_bytes, blobs, vex_bytes, base_bytes)
+    finally:
+        blobs.close()
     print("ok")
 
 
@@ -555,7 +741,8 @@ class Registry:
         self.secret = os.environ.get("FSCACHE_REGISTRY_TOKEN")
         self.bearer = None
         self.basic = False
-        self.opener = urllib.request.build_opener(NoRedirect)
+        # no proxy handler at all: proxy variables in the environment are never consulted
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
         parts = self.host.rsplit(":", 1)
         self.name = parts[0] if len(parts) == 2 and parts[1].isascii() and parts[1].isdigit() else self.host
         self.port = int(parts[1]) if self.name != self.host else (80 if self.scheme == "http" else 443)
@@ -568,13 +755,13 @@ class Registry:
         if parts.scheme != self.scheme or parts.netloc.lower() != self.host:
             raise Refuse("a URL leaves the registry's origin")
 
-    def send(self, method, url, body=None, headers=None):
+    def send(self, method, url, body=None, headers=None, max_body=MAX_BODY_BYTES):
         """one request under the total deadline: (status, lower-cased headers, body)"""
         outcome = {}
 
         def work():
             try:
-                outcome["result"] = self.send_once(method, url, body, headers)
+                outcome["result"] = self.send_once(method, url, body, headers, max_body)
             except BaseException as err:  # handed to the caller below
                 outcome["error"] = err
         thread = threading.Thread(target=work, daemon=True)
@@ -586,7 +773,7 @@ class Registry:
             raise outcome["error"]
         return outcome["result"]
 
-    def send_once(self, method, url, body, headers):
+    def send_once(self, method, url, body, headers, max_body):
         headers = dict(headers or {})
         if self.bearer:
             headers["Authorization"] = "Bearer " + self.bearer
@@ -595,11 +782,15 @@ class Registry:
         request = urllib.request.Request(url, data=body, method=method, headers=headers)
         try:
             response = self.opener.open(request, timeout=self.timeout)
-            return response.status, lowered(response.headers), response.read()
+            data = read_body(response, max_body)
+            if data is None:
+                raise Refuse("a response body is larger than %d bytes" % max_body)
+            return response.status, lowered(response.headers), data
         except urllib.error.HTTPError as err:
             if 300 <= err.code < 400:
                 raise Refuse("the registry answered %d: redirects are never followed" % err.code)
-            return err.code, lowered(err.headers), err.read()
+            read_body(err, MAX_BODY_BYTES)  # an error body is only a hint: read a little of it, drop the rest
+            return err.code, lowered(err.headers), b""
 
     def realm_allowed(self, realm):
         """the token realm names the registry's own host and port over the registry's scheme (https, or http for
@@ -641,19 +832,44 @@ class Registry:
             raise Refuse("the token endpoint returned no token")
         self.bearer = bearer
 
-    def request(self, method, path, body=None, headers=None):
+    def request(self, method, path, body=None, headers=None, max_body=MAX_BODY_BYTES):
         url = path if path.startswith("http") else "%s://%s%s" % (self.scheme, self.host, path)
         self.own(url)
-        status, response, data = self.send(method, url, body, headers)
+        status, response, data = self.send(method, url, body, headers, max_body)
         if status == 401 and not self.bearer and not self.basic:
             challenge = response.get("www-authenticate", "")
             if challenge.lower().startswith("bearer"):
                 self.token(challenge)
-                status, response, data = self.send(method, url, body, headers)
+                status, response, data = self.send(method, url, body, headers, max_body)
             elif challenge.lower().startswith("basic") and self.user and self.secret:
                 self.basic = True
-                status, response, data = self.send(method, url, body, headers)
+                status, response, data = self.send(method, url, body, headers, max_body)
         return status, response, data
+
+    def upload_url(self, location):
+        """the registry's own answer to starting an upload, accepted only in its one expected shape:
+        /v2/<repository>/blobs/uploads/<session>[?_state=<opaque>] on this very origin (absolute or relative),
+        so a registry can never aim an authenticated PUT at a manifest, a tag or another repository"""
+        candidate = self.scheme + "://" + self.host + location if location.startswith("/") else location
+        expected = re.compile(re.escape("%s://%s/v2/%s/blobs/uploads/" % (self.scheme, self.host, self.repository))
+                              + r"([A-Za-z0-9_.~=-]+)(\?_state=[A-Za-z0-9_.~=-]+)?")
+        match = expected.fullmatch(candidate)
+        if not match or match.group(1).strip(".") == "":
+            raise Refuse("the registry's upload location is not an upload session of this repository")
+        return candidate
+
+
+def read_body(response, limit):
+    """the body in chunks, or None when it is longer than limit (the rest is never read)"""
+    chunks, total = [], 0
+    while True:
+        chunk = response.read(min(65536, limit + 1 - total))
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            return None
 
 
 def lowered(headers):
@@ -661,34 +877,6 @@ def lowered(headers):
 
 
 # ---------------------------------------------------------------- push
-def load_dir(directory):
-    if os.path.islink(directory) or not os.path.isdir(directory):
-        raise Refuse("DIR is not a directory")
-    index_bytes = read_file(os.path.join(directory, "index.json"))
-    result = load_json(read_file(os.path.join(directory, "result.json")), "result.json", limits=False)
-    if not isinstance(result, dict) or digest_of(index_bytes) != result.get("final_digest"):
-        raise Refuse("index.json does not match the final_digest in result.json")
-    if not isinstance(result.get("base_digest"), str) or not DIGEST.fullmatch(result["base_digest"]):
-        raise Refuse("result.json: base_digest is not a digest")
-    return index_bytes, result
-
-
-def check_dir_contents(directory, needed):
-    """DIR holds exactly index.json, result.json and the blobs the attestations need: nothing else"""
-    allowed = {"index.json", "result.json"} | {"blobs/sha256/" + hex_of(digest) for digest in needed}
-    for base, directories, files in os.walk(directory):
-        for name in directories:
-            path = os.path.join(base, name)
-            relative = os.path.relpath(path, directory)
-            if os.path.islink(path) or relative not in ("blobs", "blobs/sha256"):
-                raise Refuse("an unexpected entry in DIR: %s" % relative)
-        for name in files:
-            path = os.path.join(base, name)
-            relative = os.path.relpath(path, directory)
-            if os.path.islink(path) or relative not in allowed:
-                raise Refuse("an unexpected file in DIR: %s" % relative)
-
-
 def request_timeout():
     text = os.environ.get("FSCACHE_REGISTRY_TIMEOUT", str(DEFAULT_TIMEOUT))
     try:
@@ -700,33 +888,45 @@ def request_timeout():
     return seconds
 
 
+def load_for_push(args):
+    """everything push will send, decided before the first request: DIR must hold exactly index.json, result.json and
+    blobs/; the full verification runs over it with --vex and --base; result.json must say what compute(--base, --vex)
+    says; returns the final index bytes, its parsed form, the manifests and the blobs to upload"""
+    dir_fd = open_directory(args.dir)
+    try:
+        if list_directory(dir_fd, "DIR") != {"index.json": stat.S_IFREG, "result.json": stat.S_IFREG, "blobs": stat.S_IFDIR}:
+            raise Refuse("DIR must hold exactly index.json, result.json and blobs/")
+        index_bytes = read_regular(dir_fd, "index.json", MAX_FINAL_BYTES, "index.json")
+        result_bytes = read_regular(dir_fd, "result.json", MAX_RESULT_BYTES, "result.json")
+        vex_bytes = read_path(args.vex, MAX_INDEX_BYTES)
+        base_bytes = read_path(args.base, MAX_INDEX_BYTES)
+        blobs = Blobs("blobs", dir_fd)
+        try:
+            final, attestations = verify_all(index_bytes, blobs, vex_bytes, base_bytes)
+            expected_final, _, expected_result = compute(base_bytes, vex_bytes)
+            result = load_json(result_bytes, "result.json", limits=False)
+            if index_bytes != expected_final or canonical(result) != canonical(expected_result):
+                raise Refuse("index.json or result.json is not what compute produces from --base and --vex")
+            manifests, uploads = [], []
+            for entry in attestations:
+                manifest_bytes = blobs.read(entry["digest"], entry["size"], "manifest")
+                manifests.append((entry["digest"], manifest_bytes))
+                manifest = json.loads(manifest_bytes)
+                for part, kind in ((manifest["config"], "config"), (manifest["layers"][0], "statement")):
+                    if part["digest"] not in [digest for digest, _ in uploads]:
+                        uploads.append((part["digest"], blobs.read(part["digest"], part["size"], kind)))
+        finally:
+            blobs.close()
+    finally:
+        os.close(dir_fd)
+    return index_bytes, final, manifests, uploads
+
+
 def command_push(args):
     if not REPOSITORY.fullmatch(args.repository):
         raise Refuse("the repository name is not a valid distribution name")
     timeout = request_timeout()
-    # everything about DIR is decided before the first request
-    index_bytes, result = load_dir(args.dir)
-    if args.base_digest and args.base_digest != result["base_digest"]:
-        raise Refuse("--base-digest does not match result.json")
-
-    def reader(digest, size):
-        path = blob_path(os.path.join(args.dir, "blobs"), digest)
-        if os.path.islink(path) or not os.path.isfile(path):
-            raise Refuse("a blob is missing locally: %s" % digest)
-        data = read_file(path)
-        if digest_of(data) != digest or (size is not None and len(data) != size):
-            raise Refuse("a local blob does not match its digest or size: %s" % digest)
-        return data
-    final, attestations, needed = check_final(index_bytes, reader, None, [digest_of(index_bytes), result["base_digest"]])
-    check_dir_contents(args.dir, needed)
-    manifests, blobs = [], []
-    for entry in attestations:
-        manifest_bytes = reader(entry["digest"], None)
-        manifests.append((entry["digest"], manifest_bytes))
-        manifest = json.loads(manifest_bytes)
-        for part in [manifest["config"]] + manifest["layers"]:
-            if part["digest"] not in [digest for digest, _ in blobs]:
-                blobs.append((part["digest"], reader(part["digest"], None)))
+    index_bytes, final, manifests, blobs = load_for_push(args)
     children = [entry["digest"] for entry in final["manifests"]]
     final_digest = digest_of(index_bytes)
 
@@ -743,8 +943,7 @@ def command_push(args):
         status, response, _ = registry.request("POST", "/v2/%s/blobs/uploads/" % name)
         if status != 202 or "location" not in response:
             raise Refuse("starting an upload failed (%d)" % status)
-        location = urllib.parse.urljoin("%s://%s/v2/%s/blobs/uploads/" % (registry.scheme, registry.host, name), response["location"])
-        registry.own(location)
+        location = registry.upload_url(response["location"])
         location += ("&" if "?" in location else "?") + "digest=" + digest
         status, _, _ = registry.request("PUT", location, data, {"Content-Type": "application/octet-stream"})
         if status not in (200, 201):
@@ -766,7 +965,7 @@ def command_push(args):
         if status != 200:
             raise Refuse("a child manifest is not in the repository: %s (%d)" % (digest, status))
     put_manifest(final_digest, index_bytes, OCI_INDEX)
-    status, response, data = registry.request("GET", "/v2/%s/manifests/%s" % (name, final_digest), None, manifest_headers)
+    status, response, data = registry.request("GET", "/v2/%s/manifests/%s" % (name, final_digest), None, manifest_headers, MAX_MANIFEST_BODY_BYTES)
     media_type = response.get("content-type", "").split(";")[0].strip(" \t")
     if status != 200 or data != index_bytes or media_type != OCI_INDEX:
         raise Refuse("the read-back of the final index differs from what was pushed")
@@ -784,16 +983,17 @@ def build_parser():
     verify_parser = commands.add_parser("verify", help="check a final index (and, with --blobs, its attestations)")
     verify_parser.add_argument("--final", required=True)
     verify_parser.add_argument("--vex", required=True)
+    verify_parser.add_argument("--blobs", required=True, help="the blobs directory written by compute (holds sha256/<hex>)")
     verify_parser.add_argument("--base", help="the built index file")
-    verify_parser.add_argument("--blobs", help="the blobs directory written by compute (holds sha256/<hex>)")
     push_parser = commands.add_parser(
         "push", help="push a computed DIR to a registry, by digest only",
         epilog="Environment: FSCACHE_REGISTRY_USER and FSCACHE_REGISTRY_TOKEN are the registry credentials. "
                "FSCACHE_REGISTRY_TIMEOUT is the total deadline in seconds for each request (default %d)." % DEFAULT_TIMEOUT)
     push_parser.add_argument("--registry", required=True, help="a bare host[:port]; http only for localhost")
     push_parser.add_argument("--repository", required=True)
-    push_parser.add_argument("--dir", required=True)
-    push_parser.add_argument("--base-digest")
+    push_parser.add_argument("--dir", required=True, help="the directory written by compute")
+    push_parser.add_argument("--vex", required=True, help="the release's VEX file the DIR was computed from")
+    push_parser.add_argument("--base", required=True, help="the built index file the DIR was computed from")
     return parser
 
 
