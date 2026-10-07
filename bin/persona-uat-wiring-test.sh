@@ -665,12 +665,33 @@ def gh_commands(run):
 # standalone word, nor a shell indirection (eval, xargs, exec, `sh -c`, `bash -c`, $GH, command/env gh), nor api.github.com in any form (curl, wget, python, node), unless the WHOLE
 # run text of the step is exactly one command pinned in this allowlist (empty: no dependent job needs one today). It may not hold issues: write or pull-requests: write.
 DEPENDENT_RUN_ALLOWLIST = frozenset()
-GH_WORD = re.compile(r"(?<![\w./$-])gh(?![\w-])|\$\{?\w*GH\w*\}?|(?<![\w-])(eval|xargs|exec)(?![\w-])|(?<![\w-])(ba|z|da|k)?sh\s+(-\w*\s+)*-\w*c\b|api\.github\.com|(?<![\w-])(GH_TOKEN|GITHUB_TOKEN)(?![\w-])")
+GH_WORD = re.compile(r"(?<![\w$-])gh(?![\w-])|\$\{?\w*GH\w*\}?|(?<![\w-])(eval|xargs|exec)(?![\w-])|(?<![\w-])(ba|z|da|k)?sh\s+(-\w*\s+)*-\w*c\b|api\.github\.com|(?<![\w-])(GH_TOKEN|GITHUB_TOKEN)(?![\w-])", re.I)
 def dependent_run_refusals(run):
     text = str(run).replace("\\\r\n", " ").replace("\\\n", " ")
     if text.strip() in DEPENDENT_RUN_ALLOWLIST:
         return []
     return [m.group(0) for m in GH_WORD.finditer(text)][:3]
+TOKEN_REF = re.compile(r"secrets\s*(\.|\[)|github\s*\.\s*token|(?<![\w-])(GH_TOKEN|GITHUB_TOKEN)(?![\w-])", re.I)
+def token_refusals(j, r, eff):
+    out = []
+    if eff is None:
+        out.append("has no permissions block at the job or workflow level (the default token may write): an explicit read-only block is required")
+    elif isinstance(eff, str):
+        if eff.strip() not in ("read-all", "{}"):
+            out.append(f"has permissions {eff!r}: only read-all or explicit read scopes are allowed")
+    elif isinstance(eff, dict):
+        for k, v in eff.items():
+            if str(v).strip() not in ("read", "none"):
+                out.append(f"holds permission {k}: {v}: every scope must be read or none")
+    else:
+        out.append("has a permissions block that cannot be read")
+    surfaces = [("env", j.get("env")), ("secrets", j.get("secrets")), ("with", j.get("with")), ("workflow env", r.get("env"))]
+    for i_, st_ in enumerate(j.get("steps", []) or []):
+        surfaces += [(f"step {i_} env", st_.get("env")), (f"step {i_} with", st_.get("with"))]
+    for nm_, val in surfaces:
+        if val is not None and (TOKEN_REF.search(json.dumps(val)) or val == "inherit"):
+            out.append(f"reaches a token through its {nm_} ({json.dumps(val)[:60]}): a job after persona-uat may hold none")
+    return out
 def write_perms(perms):
     if isinstance(perms, str):
         return ["permissions: " + perms] if perms.strip() == "write-all" else []
@@ -711,6 +732,11 @@ def judge_workflow_graph(r, label, bad):
             eff = j["permissions"] if "permissions" in j else r.get("permissions")      # a job without its own block inherits the workflow's
             for w_ in write_perms(eff):
                 bad.append(f"{label}: job {n} depends on persona-uat and holds {w_}: a dependent job may not be able to write issues or pull requests at all")
+            # THE GUARANTEE (advisor 0243): judged on permissions and tokens, not on run text. A job that follows persona-uat has an explicit permissions block
+            # in which no scope is above read, and no token that could write an issue reaches it (no secrets.*, no github.token, no GH_TOKEN/GITHUB_TOKEN anywhere
+            # in its env, its steps' env/with, or the job's own with/secrets), so whatever it runs it cannot open or touch a public issue.
+            for t_ in token_refusals(j, r, eff):
+                bad.append(f"{label}: job {n} depends on persona-uat and {t_}")
             for st_ in j.get("steps", []) or []:
                 for hit in dependent_run_refusals(st_.get("run", "")):
                     bad.append(f"{label}: job {n} depends on persona-uat and its run text contains {hit!r} (gh, a shell indirection, api.github.com or a GitHub token): refused unless the whole step is on the pinned allowlist (empty)")
@@ -1248,7 +1274,7 @@ for lab_, w_ in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
                       ("env gh", "env GH_X=1 gh issue create --title t"), ("exec gh", "exec gh issue create --title t"), ("bash -c", "bash -c 'gh issue create --title t'"),
                       ("sh -c", "sh -c \"gh issue create --title t\""), ("xargs", "echo 3 | xargs gh issue close"), ("eval", "eval \"gh issue create\""),
                       ("curl to api.github.com", "curl -X POST https://api.github.com/repos/o/r/issues -d '{}'"), ("python to api.github.com", "python3 -c \"import urllib.request as u; u.urlopen('https://api.github.com/x')\""),
-                      ("node to api.github.com", "node -e \"fetch('https://api.github.com/x')\""), ("a GitHub token in a quiet command", "echo $GITHUB_TOKEN > /dev/null")):
+                      ("node to api.github.com", "node -e \"fetch('https://api.github.com/x')\""), ("a path-qualified gh in a brace group", "{ /usr/bin/gh -R o/r issue create; }"), ("a path-qualified gh in if/then", "if true; then /usr/bin/gh --repo o/r issue create --title t; fi"), ("a relative gh", "./gh issue create --title t"), ("gh found by which", "$(which gh) issue create --title t"), ("upper-case api host", "curl -X POST https://API.GITHUB.COM/repos/o/r/issues -d '{}'"), ("a GitHub token in a quiet command", "echo $GITHUB_TOKEN > /dev/null")):
         mutate(f"{lab_}: a direct dependent job: {nm_} is refused (fail closed)", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": run_}]}), w_)
         mutate(f"{lab_}: a transitive dependent job: {nm_} is refused (fail closed)", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": run_}]}), w_)
     for nm_, perms_ in (("issues: write", {"issues": "write"}), ("pull-requests: write", {"pull-requests": "write", "contents": "read"}), ("write-all", "write-all")):
@@ -1259,6 +1285,23 @@ for lab_, w_ in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
                       ("a command substitution", "$(echo gh) issue create"), ("an unbalanced quote", "echo 'gh issue create"), ("xargs", "echo 3 | xargs gh issue close"), ("a variable group", "gh $GRP create")):
         mutate(f"{lab_}: a dependent job has gh in a form the parser cannot resolve ({nm_})", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(report={"needs": ["persona-uat"], "steps": [{"run": run_}]}), w_)
         mutate(f"{lab_}: a transitive dependent job has gh in a form the parser cannot resolve ({nm_})", "depends on persona-uat", lambda d, run_=run_: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": run_}]}), w_)
+    # advisor 0243: the AC3 guarantee is judged on permissions and tokens, not on run text
+    RO = {"contents": "read"}
+    for nm_, job_, want_ in (
+        ("a secret token in the job env and an inherited-option gh under control flow (read-only permissions)", {"needs": ["persona-uat"], "permissions": RO, "env": {"GH_TOKEN": "${{ secrets.ISSUE_BOT_TOKEN }}"}, "steps": [{"run": "if true; then /usr/bin/gh --repo o/r issue create --title t --body b; fi"}]}, "reaches a token"),
+        ("github.token in a step env", {"needs": ["persona-uat"], "permissions": RO, "steps": [{"env": {"X": "${{ github.token }}"}, "run": "true"}]}, "reaches a token"),
+        ("a secret in a step with", {"needs": ["persona-uat"], "permissions": RO, "steps": [{"uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "with": {"name": "${{ secrets.S }}"}}]}, "reaches a token"),
+        ("secrets: inherit", {"needs": ["persona-uat"], "permissions": RO, "secrets": "inherit", "steps": [{"run": "true"}]}, "reaches a token"),
+        ("GITHUB_TOKEN named in the env", {"needs": ["persona-uat"], "permissions": RO, "env": {"GITHUB_TOKEN": "x"}, "steps": [{"run": "true"}]}, "reaches a token"),
+        ("no permissions block (the default token may write)", {"needs": ["persona-uat"], "steps": [{"run": "true"}]}, "no permissions block"),
+        ("contents: write", {"needs": ["persona-uat"], "permissions": {"contents": "write"}, "steps": [{"run": "true"}]}, "every scope must be read or none"),
+        ("id-token: write", {"needs": ["persona-uat"], "permissions": {"id-token": "write"}, "steps": [{"run": "true"}]}, "every scope must be read or none"),
+        ("a bare string permission", {"needs": ["persona-uat"], "permissions": "write-all", "steps": [{"run": "true"}]}, "permissions")):
+        mutate(f"{lab_}: a dependent job with {nm_} is refused (tokens and permissions)", want_, lambda d, job_=job_: d["jobs"].update(report=copy.deepcopy(job_)), w_)
+        mutate(f"{lab_}: a TRANSITIVE dependent job with {nm_} is refused (tokens and permissions)", want_, lambda d, job_=job_: d["jobs"].update(first={"needs": ["persona-uat"], "permissions": RO, "steps": [{"run": "true"}]}, second=dict(copy.deepcopy(job_), needs=["first"])), w_)
+    _bad = []
+    judge_workflow_graph({"jobs": {"persona-uat": {"steps": [{"run": "true"}]}, "report": {"needs": ["persona-uat"], "permissions": {"contents": "read"}, "steps": [{"run": "echo done"}]}}}, "control", _bad)
+    result(_bad == [], f"CONTROL: a dependent job with read-only permissions, no token and plain steps is accepted" + ("" if not _bad else f"; saw {_bad}"))
     mutate(f"{lab_}: a successor opens an issue under success()", "depends on persona-uat", lambda d: d["jobs"].update(report={"needs": ["persona-uat"], "if": "${{ success() }}", "steps": [{"run": "gh issue edit 3 --body y"}]}), w_)
     mutate(f"{lab_}: a TRANSITIVE successor (two hops, no `if`) opens an issue", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "steps": [{"run": "true"}]}, second={"needs": ["first"], "steps": [{"run": "gh issue create --title x --body y"}]}), w_)
     mutate(f"{lab_}: a transitive successor under failure() opens an issue through the API", "depends on persona-uat", lambda d: d["jobs"].update(first={"needs": ["persona-uat"], "if": "${{ always() }}", "steps": [{"run": "true"}]}, second={"needs": ["first"], "if": "${{ failure() }}", "steps": [{"run": "gh api repos/o/r/issues -f title=x"}]}), w_)
