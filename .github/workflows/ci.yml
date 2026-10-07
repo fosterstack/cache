@@ -206,6 +206,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # full history: the check compares suppression files with the merge base against the base branch
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists (pull requests)
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
       - name: check every tracked file against the allowlist
         run: git ls-files | ./bin/check-file-allowlist.sh

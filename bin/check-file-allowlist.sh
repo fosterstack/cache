@@ -216,9 +216,42 @@ SUPPRESSION_PATTERNS=(
 _branch="${GITHUB_HEAD_REF:-}"
 [ -n "$_branch" ] || _branch="${GITHUB_REF_NAME:-}"
 [ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+_suppression_free=0
 case "$_branch" in
   auditor/*|main) ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}") ;;
+  *) _suppression_free=1 ;;
 esac
+
+# Any other branch (feature PRs, bots, the pre-commit hook on a local branch) may CONTAIN a
+# suppression file but may not ADD or CHANGE one: a suppression path passes only if it exists at the
+# merge base with the base branch and is identical there (content and mode, via the index, which is
+# what a commit would record and what CI's checkout equals). Base = $GITHUB_BASE_REF, else main.
+# Anything that cannot be resolved (missing ref, shallow clone, no merge base) is NOT allowed.
+_base_name="${GITHUB_BASE_REF:-main}"
+_merge_base=""      # resolved lazily, once, only if a suppression path shows up
+_merge_base_tried=0
+_merge_base_err=""
+_resolve_merge_base() {
+  _merge_base_tried=1
+  if ! [[ "$_base_name" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || [[ "$_base_name" == *..* ]]; then
+    _merge_base_err="base ref name '$_base_name' is not usable"; return 1
+  fi
+  local ref="refs/remotes/origin/$_base_name"
+  if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1; then
+    _merge_base_err="base ref origin/$_base_name does not exist here (shallow or partial fetch?)"; return 1
+  fi
+  if ! _merge_base="$(git merge-base HEAD "$ref" 2>/dev/null)" || [ -z "$_merge_base" ]; then
+    _merge_base=""; _merge_base_err="no merge base between HEAD and origin/$_base_name (shallow clone?)"; return 1
+  fi
+}
+# 0 only when $1 is present at the merge base and the index holds identical content and mode.
+_suppression_unchanged() {
+  [ "$_merge_base_tried" -eq 1 ] || _resolve_merge_base || true
+  [ -n "$_merge_base" ] || return 1
+  git cat-file -e "$_merge_base:$1" 2>/dev/null || return 1
+  git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 1
+  git diff --cached --quiet "$_merge_base" -- "$1" 2>/dev/null
+}
 
 blocked=()
 while IFS= read -r path; do
@@ -230,6 +263,14 @@ while IFS= read -r path; do
       break
     fi
   done
+  if [ "$ok" -eq 0 ] && [ "$_suppression_free" -eq 1 ]; then
+    for pattern in "${SUPPRESSION_PATTERNS[@]}"; do
+      if [[ "$path" =~ $pattern ]] && _suppression_unchanged "$path"; then
+        ok=1
+        break
+      fi
+    done
+  fi
   if [ "$ok" -eq 0 ]; then
     blocked+=("$path")
   fi
@@ -240,6 +281,11 @@ if [ "${#blocked[@]}" -gt 0 ]; then
   for f in "${blocked[@]}"; do
     echo "  $f" >&2
   done
+  if [ -n "$_merge_base_err" ]; then
+    echo "" >&2
+    echo "suppression paths on this branch are allowed only if unchanged since the merge base;" >&2
+    echo "could not establish that: $_merge_base_err (failing closed)." >&2
+  fi
   echo "" >&2
   echo "fosterstack/cache is a PUBLIC repo. If a file genuinely belongs here," >&2
   echo "add a pattern to ALLOW_PATTERNS in bin/check-file-allowlist.sh." >&2

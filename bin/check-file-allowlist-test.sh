@@ -9,6 +9,8 @@ cd "$(dirname "$0")/.."
 SCRIPT=./bin/check-file-allowlist.sh
 
 pass=0; fail=0
+gp() { echo "ok:   $1"; pass=$((pass+1)); }
+gf() { echo "FAIL: $1 — $2"; fail=$((fail+1)); }
 # run <expect pass|fail> <branch-env> <description> <paths...>
 run() {
   local expect="$1"; local ref="$2"; local desc="$3"; shift 3
@@ -52,11 +54,113 @@ run fail "auditor/2026-09-24-abc123" "auditor/ lane does NOT allow arbitrary roo
 # Ordinary product files still pass regardless of branch.
 run pass "feature/x" "product Go source still allowed off the auditor lane" "internal/cache/store.go"
 
+# --- Unchanged-suppression rule (non-auditor, non-main branches) -------------------------------
+# CI checks the WHOLE tree, so a suppression file already on main is in the tree of every PR. The rule
+# is "a feature PR cannot ADD or CHANGE a suppression", not "cannot contain one": on any other branch
+# a suppression path passes only if it exists at the merge base with the base branch and is identical
+# there (content and mode). Base = $GITHUB_BASE_REF, else origin/main. Unresolvable => fail closed.
+ABS_SCRIPT="$(pwd)/bin/check-file-allowlist.sh"
+TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
+g() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+# mkrepo <dir>: a repo whose origin/main holds .auditor/panel-state.json and .snyk, on branch feature/x
+mkrepo() {
+  local d="$1"
+  rm -rf "$d"; mkdir -p "$d/.auditor"; ( cd "$d" && g init -q -b main . \
+    && echo '{"a":1}' > .auditor/panel-state.json && echo 'ignore: {}' > .snyk && echo 'package x' > internal.go \
+    && g add -A && g commit -q -m base \
+    && g update-ref refs/remotes/origin/main HEAD && g checkout -q -b feature/x )
+}
+# trun <expect> <desc> <dir> <head-ref> <base-ref-or-empty> <paths...> : run the script inside <dir>
+trun() {
+  local expect="$1" desc="$2" dir="$3" head="$4" base="$5"; shift 5
+  local out rc
+  out="$(cd "$dir" && printf '%s\n' "$@" | GITHUB_HEAD_REF="$head" GITHUB_REF_NAME="" GITHUB_BASE_REF="$base" "$ABS_SCRIPT" 2>&1)"; rc=$?
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+PS=.auditor/panel-state.json
+R="$TMPROOT/r"
+
+mkrepo "$R"
+trun pass "feature: suppression files untouched since the merge base are allowed" "$R" feature/x "" "$PS" .snyk
+# an unrelated commit on the feature branch does not disturb them
+( cd "$R" && mkdir -p internal && echo 'package y' > internal/other.go && g add -A && g commit -q -m other )
+trun pass "feature: unrelated commit, suppression files still untouched" "$R" feature/x "" "$PS" .snyk internal/other.go
+
+( cd "$R" && echo '{"a":2}' > $PS && g commit -qam edit )
+trun fail "feature: edited suppression file is blocked" "$R" feature/x "" "$PS"
+trun pass "feature: the other, untouched suppression file is still allowed" "$R" feature/x "" .snyk
+
+mkrepo "$R"; ( cd "$R" && echo 'x' > osv-scanner.toml && g add -A && g commit -q -m add )
+trun fail "feature: newly added suppression file (not on main) is blocked" "$R" feature/x "" osv-scanner.toml
+
+mkrepo "$R"; ( cd "$R" && g rm -q .snyk && g commit -qm del && echo 'ignore: {}' > .snyk && g add .snyk && g commit -qm readd )
+trun pass "feature: deleted then re-added with identical content is allowed" "$R" feature/x "" .snyk
+mkrepo "$R"; ( cd "$R" && g rm -q .snyk && g commit -qm del && echo 'ignore: {evil: 1}' > .snyk && g add .snyk && g commit -qm readd )
+trun fail "feature: deleted then re-added with different content is blocked" "$R" feature/x "" .snyk
+
+mkrepo "$R"; ( cd "$R" && chmod +x .snyk && g add .snyk && g commit -qm mode )
+trun fail "feature: mode change only is blocked" "$R" feature/x "" .snyk
+
+mkrepo "$R"; ( cd "$R" && g update-ref -d refs/remotes/origin/main )
+trun fail "feature: base ref missing fails closed" "$R" feature/x "" "$PS"
+trun pass "feature: base ref missing, non-suppression files unaffected" "$R" feature/x "" internal/x.go
+mkrepo "$R"
+trun fail "feature: GITHUB_BASE_REF naming a ref that does not exist fails closed" "$R" feature/x "nope" "$PS"
+trun fail "feature: GITHUB_BASE_REF with option-like value fails closed" "$R" feature/x "--help" "$PS"
+# GITHUB_BASE_REF honoured: origin/rel differs from origin/main
+( cd "$R" && g checkout -q -b rel && echo '{"a":9}' > $PS && g commit -qam rel && g update-ref refs/remotes/origin/rel HEAD && g checkout -q feature/x )
+trun pass "feature: base ref defaults to origin/main (unchanged vs main)" "$R" feature/x "" "$PS"
+( cd "$R" && g checkout -q -b feat2 refs/remotes/origin/rel )
+trun pass "feature: GITHUB_BASE_REF=rel honoured (unchanged vs rel)" "$R" feat2 rel "$PS"
+trun fail "feature: with default base, the same file differs from origin/main" "$R" feat2 "" "$PS"
+( cd "$R" && g checkout -q feature/x )
+
+# unrelated history: no merge base => fail closed
+mkrepo "$R"; ( cd "$R" && g checkout -q --orphan lone && g rm -rqf . && mkdir -p .auditor && echo '{"a":1}' > $PS && g add -A && g commit -qm lone )
+trun fail "feature: no merge base with the base ref fails closed" "$R" lone "" "$PS"
+
+# a shallow clone cannot resolve the merge base => fail closed
+mkrepo "$R"; ( cd "$R" && mkdir -p internal && echo 'package z' > internal/z.go && g add -A && g commit -qm z )
+SH="$TMPROOT/sh"; rm -rf "$SH"; g clone -q --depth 1 "file://$R" "$SH" 2>/dev/null
+BASESHA="$(cd "$R" && git rev-parse HEAD~1)"
+( cd "$SH" && g fetch -q --depth 1 origin "$BASESHA":refs/remotes/origin/main )
+trun fail "feature: shallow clone without a resolvable merge base fails closed" "$SH" feature/x "" "$PS"
+
+# move / copy of a suppression file to another suppression-pattern path: the new path is not at the
+# merge base, so it is a change (judged on the PR's own changes, not on the tree). The old path of a
+# move is deleted and is simply not listed, so it is not an error.
+mkrepo "$R"; ( cd "$R" && mkdir -p .auditor/proposals && echo '{"p":1}' > .auditor/proposals/a.json && g add -A && g commit -qm a && g update-ref refs/remotes/origin/main HEAD )
+( cd "$R" && g mv .auditor/proposals/a.json .auditor/proposals/b.json && g commit -qm mv )
+trun fail "feature: move of a suppression file to another suppression path is blocked" "$R" feature/x "" .auditor/proposals/b.json
+trun pass "feature: the deleted old path of a move is not listed and not an error" "$R" feature/x "" "$PS" .snyk
+mkrepo "$R"; ( cd "$R" && mkdir -p .auditor/proposals && echo '{"p":1}' > .auditor/proposals/a.json && g add -A && g commit -qm a && g update-ref refs/remotes/origin/main HEAD \
+  && cp .auditor/proposals/a.json .auditor/proposals/b.json && g add -A && g commit -qm cp )
+trun fail "feature: copy of a suppression file to another suppression path is blocked" "$R" feature/x "" .auditor/proposals/a.json .auditor/proposals/b.json
+mkrepo "$R"; ( cd "$R" && cp .snyk osv-scanner.toml && g add -A && g commit -qm cp )
+trun fail "feature: .snyk content copied to osv-scanner.toml is blocked" "$R" feature/x "" .snyk osv-scanner.toml
+
+# other branches keep today's behaviour
+mkrepo "$R"; ( cd "$R" && echo '{"a":3}' > $PS && g commit -qam edit )
+trun pass "auditor/x branch: edited suppression file allowed (unchanged behaviour)" "$R" auditor/x "" "$PS"
+trun fail "main as PR head is not the feature rule: private content still blocked" "$R" auditor/x "" ops/runbook.md
+( cd "$R" && out="$(printf '%s\n' "$PS" | GITHUB_HEAD_REF="" GITHUB_REF_NAME=main "$ABS_SCRIPT" 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] ) && gp "push to main: edited suppression file allowed (unchanged behaviour)" || gf "push to main allowed" "rc!=0"
+trun fail "feature: non-suppression unlisted file still blocked" "$R" feature/x "" ops/runbook.md
+trun fail "feature: edited suppression plus unlisted file reports failure" "$R" feature/x "" "$PS" secrets.txt
+# pre-commit usage: no env at all, local branch name, staged change compared with the merge base
+mkrepo "$R"
+( cd "$R" && printf '%s\n' "$PS" .snyk | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF "$ABS_SCRIPT" >/dev/null 2>&1 ) \
+  && gp "pre-commit usage (no env, local feature branch): untouched suppression files pass" || gf "pre-commit untouched" "rc!=0"
+( cd "$R" && echo '{"a":4}' > $PS && g add $PS && printf '%s\n' "$PS" | env -u GITHUB_HEAD_REF -u GITHUB_REF_NAME -u GITHUB_BASE_REF "$ABS_SCRIPT" >/dev/null 2>&1 ) \
+  && gf "pre-commit staged edit" "should have been blocked" || gp "pre-commit usage: staged edit of a suppression file is blocked"
+
 # The reserved-branch guard: only the delivery App may push the auditor/* lane (the allowlist
 # relaxes suppression paths there), so a dev branch can never use it to slip a suppression past.
 GUARD=.github/workflows/reserved-branch-guard.yml
-gp() { echo "ok:   $1"; pass=$((pass+1)); }
-gf() { echo "FAIL: $1 — $2"; fail=$((fail+1)); }
 if [ -f "$GUARD" ]; then
   gp "reserved-branch guard workflow present"
   if grep -qE "auditor/\*\*" "$GUARD" && grep -qE "^\s*push:" "$GUARD"; then
