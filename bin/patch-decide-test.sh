@@ -915,6 +915,20 @@ t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA2])))
 check("AC14 CLI: one of the swapped identical-key statements changed: named once, VEX-only", t.count("CVE-2099-0500") == 1 and "VEX-only" in t and "no statement change" not in t, t)
 t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA])), nn=BEH_TXT)
 check("AC14 CLI: identical-key statements swapped beside a behavior entry: no VEX-only", "advisor 0130" in t and "VEX-only" not in t, t)
+# --- step 6 round 5 (REQ-REL-009-AC14): removing an optional field of a surviving statement is a changed statement
+RF = stmt("CVE-2099-0600", justification="component_not_present", impact_statement="not shipped", action_statement="none", status_notes="n", timestamp="2026-01-01T00:00:00Z")
+for fld in ("impact_statement", "action_statement", "status_notes", "timestamp", "justification"):
+    gone = {k: v for k, v in RF.items() if k != fld}
+    chg = P.vex_changes(vdoc2([RF]), vdoc2([gone]))
+    check("AC14 removing %s from a surviving statement is a change that names the field" % fld, len(chg) == 1 and fld in chg[0]["change"] and "CVE-2099-0600" in chg[0]["cve"], chg)
+    chg = P.vex_changes(vdoc2([gone]), vdoc2([RF]))
+    check("AC14 adding %s to a surviving statement is a change that names the field" % fld, len(chg) == 1 and fld in chg[0]["change"], chg)
+gone = {k: v for k, v in RF.items() if k != "impact_statement"}
+t = notes_cli2(json.dumps(vdoc2([RF])), json.dumps(vdoc2([gone])))
+check("AC14 CLI: an optional field removed: the statement is named, VEX-only, not 'no statement change'",
+      "CVE-2099-0600" in t and "impact_statement" in t and "VEX-only" in t and "no statement change" not in t, t)
+t = notes_cli2(json.dumps(vdoc2([RF])), json.dumps(vdoc2([gone])), nn=BEH_TXT)
+check("AC14 CLI: an optional field removed beside a behavior entry: the statement named, no VEX-only", "CVE-2099-0600" in t and "VEX-only" not in t and "advisor 0130" in t, t)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
