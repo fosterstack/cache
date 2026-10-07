@@ -863,6 +863,13 @@ D_BAD = {
     "digest path traversal": bad_index(lambda o: o["manifests"][0].update(digest="sha256:../../../../../../../../../tmp/evil/xxxxxxxxxxxxxxx")),
     "digest path traversal 64 chars": bad_index(lambda o: o["manifests"][0].update(digest="sha256:" + "../" * 21 + "x")),
     "digest with slash": bad_index(lambda o: o["manifests"][0].update(digest="sha256:" + "ab/" + H64[3:])),
+    "digest of Arabic-Indic digits": bad_index(lambda o: o["manifests"][0].update(digest="sha256:" + "\u0660" * 64)),
+    "digest of full-width hex": bad_index(lambda o: o["manifests"][0].update(digest="sha256:" + "\uff41" * 64)),
+    "digest mixing one full-width digit": bad_index(lambda o: o["manifests"][0].update(digest="sha256:" + "\uff11" + H64[1:])),
+    "digest whose algorithm uses a long s": bad_index(lambda o: o["manifests"][0].update(digest="\u017fha256:" + H64)),
+    "digest whose algorithm uses a Cyrillic a": bad_index(lambda o: o["manifests"][0].update(digest="sh\u0430256:" + H64)),
+    "size is a string of full-width digits": bad_index(lambda o: o["manifests"][0].update(size="\uff11\uff12\uff13\uff14")),
+    "size is a string of Arabic-Indic digits": bad_index(lambda o: o["manifests"][0].update(size="\u0661\u0662\u0663")),
     "digest with NUL": bad_index(lambda o: o["manifests"][0].update(digest="sha256:" + H64[:-1] + "\u0000")),
     "size huge": bad_index(lambda o: o["manifests"][0].update(size=10 ** 30)),
     "size 2**63": bad_index(lambda o: o["manifests"][0].update(size=2 ** 63)),
@@ -985,6 +992,7 @@ V_BAD.update({
     "version missing": vex_with(lambda o: o.pop("version")),
     "version 0": vex_with(lambda o: o.update(version=0)),
     "version is a string": vex_with(lambda o: o.update(version="1")),
+    "version is a string of full-width digits": vex_with(lambda o: o.update(version="\uff11")),
     "version is true": vex_with(lambda o: o.update(version=True)),
     "version is 1.5": vex_with(lambda o: o.update(version=1.5)),
     "statements is empty": vex_with(lambda o: o.update(statements=[])),
@@ -1016,6 +1024,14 @@ V_BAD.update({
     "timestamp has no zone": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00")),
     "timestamp is not a calendar date": vex_with(lambda o: o.update(timestamp="2026-13-45T00:00:00Z")),
     "timestamp is empty": vex_with(lambda o: o.update(timestamp="")),
+    "timestamp is not a calendar date (Feb 30)": vex_with(lambda o: o.update(timestamp="2026-02-30T00:00:00Z")),
+    "timestamp with hour 24": vex_with(lambda o: o.update(timestamp="2026-09-20T24:00:00Z")),
+    "timestamp with minute 60": vex_with(lambda o: o.update(timestamp="2026-09-20T09:60:00Z")),
+    "timestamp with second 61": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:61Z")),
+    "timestamp with a dot and no fraction digits": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00.Z")),
+    "timestamp with a trailing newline": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00Z\n")),
+    "timestamp with a trailing zero-width space": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00Z\u200b")),
+    "timestamp with full-width year digits": vex_with(lambda o: o.update(timestamp="\uff12\uff10\uff12\uff16-09-20T09:00:00Z")),
     "vulnerability is a plain string (v0.2.0 needs an object)": vex_with(lambda o: o["statements"][0].update(vulnerability="CVE-2000-0001")),
     "vulnerability name is empty": vex_with(lambda o: o["statements"][0].update(vulnerability={"name": ""})),
     "products is empty": vex_with(lambda o: o["statements"][0].update(products=[])),
@@ -1046,7 +1062,6 @@ V_BAD.update({
     "timestamp offset +24:00": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+24:00")),
     "timestamp offset +12:60": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+12:60")),
     "timestamp offset is only an hour (+04)": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00+04")),
-    "timestamp in lower-case z": vex_with(lambda o: o.update(timestamp="2026-09-20T09:00:00z")),
     "document last_updated is yesterday": vex_with(lambda o: o.update(last_updated="yesterday")),
     "statement timestamp is yesterday": vex_with(lambda o: o["statements"][0].update(timestamp="yesterday")),
     "statement timestamp offset +99:99": vex_with(lambda o: o["statements"][0].update(timestamp="2026-09-20T09:00:00+99:99")),
@@ -1172,6 +1187,11 @@ def _():
         lambda o: o["statements"][0].update(products=[{"identifiers": {"purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}]),
         lambda o: o["statements"][0].update(products=[{"@id": "a", "identifiers": {"purl": "pkg:x", "cpe23": "cpe:2.3:a:x"}, "subcomponents": [{"@id": "b"}, {"identifiers": {"purl": "pkg:y"}, "hashes": {"sha-256": "ab"}}]}]),
         lambda o: o.update(timestamp="2026-09-20T09:00:00Z"), lambda o: o.update(timestamp="2026-09-20T09:00:00.123456+05:30"),
+        lambda o: o.update(timestamp="2016-12-31T23:59:60Z"),                    # a leap second
+        lambda o: o.update(timestamp="2016-12-31T23:59:60.5-23:59"),
+        lambda o: o.update(timestamp="2026-09-20t09:00:00z"),                    # lower-case t and z are allowed by RFC 3339
+        lambda o: o.update(timestamp="2026-09-20t09:00:00.1+05:30"),
+        lambda o: o["statements"][0].update(timestamp="2016-12-31T23:59:60Z", last_updated="2026-09-20t09:00:00z", action_statement_timestamp="2026-09-20T09:00:00.000000001Z"),
         lambda o: o.update(timestamp="2026-09-20T09:00:00-23:59"), lambda o: o.update(timestamp="2026-09-20T09:00:00+23:59", last_updated="2026-09-21T00:00:00Z"),
         lambda o: o["statements"][0].update(timestamp="2026-09-07T12:00:00-04:00", last_updated="2026-09-08T12:00:00Z"),
     ] + [(lambda j: (lambda o: o["statements"][0].update(justification=j)))(j) for j in ("component_not_present", "vulnerable_code_not_present", "vulnerable_code_not_in_execute_path", "vulnerable_code_cannot_be_controlled_by_adversary", "inline_mitigations_already_exist")]
@@ -1903,7 +1923,13 @@ PATHS = {
     "product.identifiers": lambda o: o["statements"][0]["products"][0]["identifiers"], "sub.identifiers": lambda o: o["statements"][0]["products"][0]["subcomponents"][0]["identifiers"],
     "product.hashes": lambda o: o["statements"][0]["products"][0]["hashes"], "sub.hashes": lambda o: o["statements"][0]["products"][0]["subcomponents"][0]["hashes"],
 }
-S_WRONG, TS_WRONG, INT_WRONG = [7, None, ["x"], {"a": "b"}, True], ["yesterday", 5, None, "2026-09-20", "2026-09-20T09:00:00+0400"], [0, "1", 1.5, True, None, -1]
+UNICODE_TS = ["\uff12\uff10\uff12\uff16-09-20T09:00:00Z",            # full-width year digits
+              "2026-\u0660\u0669-20T09:00:00Z",                       # Arabic-Indic month digits
+              "2026-09-20T09:00:00+\uff10\uff14:\uff10\uff10",        # full-width offset digits
+              "2026-09-20T09:00:00.\u0665Z",                           # Arabic-Indic fraction digit
+              "2026-09-20T\u0660\u0669:00:00Z",                       # Arabic-Indic hour
+              "2026-09-20T09:00:\u0966\u0966Z"]                       # Devanagari seconds
+S_WRONG, TS_WRONG, INT_WRONG = [7, None, ["x"], {"a": "b"}, True], ["yesterday", 5, None, "2026-09-20", "2026-09-20T09:00:00+0400", "2026-02-30T00:00:00Z", "2026-09-20T24:00:00Z", "2026-09-20T09:00:00Z\n"] + UNICODE_TS, [0, "1", 1.5, True, None, -1]
 OBJ_WRONG = [[], "x", None, 7, True, [["a"]]]
 IDENT_WRONG = OBJ_WRONG + [{}, {"purl": 7}, {"unknown": "x"}, {"purl": ""}, {"purl": ["x"]}, {"purl": None}]
 HASH_WRONG = OBJ_WRONG + [{"sha-256": 7}, {"unknown": "x"}, {"md5": ""}, {"md5": ["x"]}, {"blake2b-384": "ab"}]
@@ -1967,7 +1993,15 @@ for _k in ("md5", "sha-256", "blake2b-512"):
     _add("sub.hashes", _k, "ab12", [7, None, "", ["x"]])
 
 
-_EXTRA_OK = [("product.hashes = {} (the schema has no minimum)", ("product", "hashes", {})), ("statement.products = two different products", ("statement", "products", [{"@id": "p1"}, {"@id": "p2"}])),
+def _stmt_other_products():
+    o = _stmt()
+    o["products"] = [{"@id": "pkg:oci/other"}]
+    return o
+
+
+_EXTRA_OK = [("doc.statements = two statements differing only in products (not duplicates)", ("doc", "statements", [_stmt(), _stmt_other_products()])),
+             ("doc.statements = two statements differing only in status_notes", ("doc", "statements", [_stmt(), dict(_stmt(), status_notes="n")])),
+("product.hashes = {} (the schema has no minimum)", ("product", "hashes", {})), ("statement.products = two different products", ("statement", "products", [{"@id": "p1"}, {"@id": "p2"}])),
              ("vuln.aliases = [] (allowed)", ("vuln", "aliases", [])), ("vuln.aliases = A and a (distinct)", ("vuln", "aliases", ["A", "a"])),
              ("product.subcomponents = [] (allowed)", ("product", "subcomponents", []))]
 
@@ -2202,6 +2236,7 @@ class Reg:
                 drip = hd.pop("_drip", False)
                 fn = {"exact": lambda k: k, "lower": str.lower, "upper": str.upper, "title": lambda k: "-".join(w.capitalize() for w in k.split("-"))}[reg.hdr_case]
                 hd = {(fn(k) if k != "Content-Length" else k): v for k, v in hd.items()}
+                hd = {k: (v.encode("utf-8").decode("latin-1") if k.lower() == "www-authenticate" else v) for k, v in hd.items()}  # a challenge carries its UTF-8 bytes as written
                 self.send_response(st)
                 hd["Content-Length"] = str(len(rb))
                 for k, v in hd.items():
@@ -2401,11 +2436,30 @@ class Reg:
                     if self.readback == "drip":
                         hd["_drip"] = True
                         return 200, hd, b
+                    if self.readback == "ct-nbsp":
+                        hd["Content-Type"] = hd["Content-Type"] + "\xa0"
+                        return 200, hd, b
+                    if self.readback == "ct-ws-ok":
+                        hd["Content-Type"] = " " + hd["Content-Type"] + " ; charset=utf-8 "
+                        return 200, hd, b
                     if self.readback == "wrongct":
                         hd["Content-Type"] = "text/plain"
                         return 200, hd, b
                     if self.readback == "empty":
                         return 200, hd, b""
+                    if self.rewrite in ("trail-nl", "trail-space", "case-swap", "last-byte"):
+                        if self.rewrite == "trail-nl":
+                            nb = b + b"\n"
+                        elif self.rewrite == "trail-space":
+                            nb = b + b" "
+                        elif self.rewrite == "last-byte":
+                            nb = b[:-1] + (b"]" if b[-1:] != b"]" else b"}")
+                        else:
+                            hexpos = [i for i in range(len(b)) if b[i:i + 1] in b"abcdef" and b[max(0, i - 8):i].count(b"sha256:") == 0 and b[i - 1:i] in b"0123456789abcdef"]
+                            i = [j for j in range(b.rfind(b"sha256:") + 7, len(b)) if b[j:j + 1] in b"abcdef"][0]
+                            nb = b[:i] + b[i:i + 1].upper() + b[i + 1:]
+                        hd["Docker-Content-Digest"] = ref
+                        return 200, hd, nb
                     if self.rewrite in ("samelen", "samelen-mid", "samelen-end"):
                         occ = [i for i in range(len(b)) if b.startswith(b"sha256:", i)]
                         i = {"samelen": occ[0], "samelen-mid": min(occ, key=lambda o: abs(o - len(b) // 2)), "samelen-end": occ[-1] + 56}[self.rewrite] + 7
@@ -2862,7 +2916,7 @@ def _(arg):
     with_world(go, rewrite=True, lenient=arg[0], lie=arg[1])
 
 
-@param("AC4", "a read-back that fails after F was written (GET 404, 500, a truncated body, an empty body, a wrong Content-Type) makes the push fail with no digest reported", [(m_, m_) for m_ in ("404", "500", "truncate", "empty", "wrongct")])
+@param("AC4", "a read-back that fails after F was written (GET 404, 500, a truncated body, an empty body, a wrong Content-Type) makes the push fail with no digest reported", [(m_, m_) for m_ in ("404", "500", "truncate", "empty", "wrongct", "ct-nbsp")])
 def _(mode):
     push_control()
 
@@ -3134,7 +3188,8 @@ def _():
         reg.close()
 
 
-@param("AC4", "an invalid repository name is refused before any request", [(n, n) for n in ("../evil", "a//b", "A/B", "a b", "a?x=1", "a/../../v2", "", "-a", "a/%2e%2e/b", "a#b", "a\nb")])
+@param("AC4", "an invalid repository name is refused before any request", [(n, n) for n in ("../evil", "a//b", "A/B", "a b", "a?x=1", "a/../../v2", "", "-a", "a/%2e%2e/b", "a#b", "a\nb",
+                                                                         "fosterstack/cach\u0435", "foster\uff53tack/cache", "fosterstack/cache\u0661", "fosterstack/caf\u00e9", "fosterstack/ca\u212a", "\u017fhared/cache", "fosterstack/cache\u2060")])
 def _(name):
     push_control()
     reg, pd = push_world()
@@ -3165,7 +3220,9 @@ def only_via_proxy(r, proxy):
             ok(("127.0.0.1', %d" % proxy.port) in target, "the tool connected somewhere other than the proxy: " + line)
 
 
-NONLOCAL_REFUSED_UNSEEN = ["http://registry.example.test", "http://registry.example.test:5000", "http://127.0.0.1", "https://registry.example.test",
+NONLOCAL_REFUSED_UNSEEN = ["registry.\u0435xample.test", "regist\u0433y.example.test", "registry.example.test:\uff15\uff10\uff10\uff10", "127.0.0.1:\u0668\u0660\u0668\u0660",
+                           "l\u043ecalhost", "\uff11\uff12\uff17.0.0.1", "127.0.0.\u0661", "doc\u212aer.io", "registry-1.docker.io\u2060", "registry.example.test\u3002", "registry\uff0eexample.test",
+                           "http://registry.example.test", "http://registry.example.test:5000", "http://127.0.0.1", "https://registry.example.test",
                            "127.0.0.1@registry.example.test", "localhost@registry.example.test:80", "user:pw@registry.example.test", "registry.example.test/path",
                            "", "registry.example.test?x=1", "127.0.0.1:99999999"]
 
@@ -3529,7 +3586,9 @@ def _():
         reg.close(); prox.close()
 
 
-LOOKALIKES = [("registry.example.test", "https://registry.example.test:8443/token"), ("registry-1.docker.io", "https://auth.docker.io:8443/token"),
+LOOKALIKES = [("registry-1.docker.io", "https://auth.doc\u212aer.io/token"), ("registry-1.docker.io", "https://auth.docker.io\u3002/token"), ("registry-1.docker.io", "https://\uff41uth.docker.io/token"),
+              ("registry.example.test", "https://registry.\u0435xample.test/token"), ("registry.example.test", "https://registry.example.test:\uff14\uff14\uff13/token"),
+              ("registry.example.test", "https://registry.example.test:8443/token"), ("registry-1.docker.io", "https://auth.docker.io:8443/token"),
               ("registry.example.test", "https://registry.example.test.attacker.test/token"), ("registry.example.test", "https://evil-registry.example.test/token"),
               ("registry.example.test", "https://registry.example.test./token"), ("registry.example.test", "https://registry.example.test@attacker.test/token"),
               ("registry.example.test", "https://registry.example.test:443@attacker.test/token"), ("registry.example.test", "https://attacker.test/registry.example.test"),
@@ -3854,6 +3913,18 @@ def _():
         reg.close()
 
 
+@param("AC4", "a read-back that is the correct body plus a trailing newline or space, differs only in the case of a hex letter, or differs only in the final byte (header always claiming the right digest) fails the push: the FULL bytes are compared", [("plus a trailing newline", "trail-nl"), ("plus a trailing space", "trail-space"), ("a hex letter in upper case", "case-swap"), ("only the final byte differs", "last-byte")])
+def _(mode):
+    push_control()
+    reg, pd = push_world(rewrite=mode, lie=True)
+    try:
+        r = push(reg, pd)
+        assert_failed_no_claim(reg, pd, r, "full-bytes read-back " + mode)
+        ok(any(x["method"] == "GET" and x["path"].endswith("/manifests/" + pd.f_digest) for x in reg.log), "no read-back attempted")
+    finally:
+        reg.close()
+
+
 @param("AC4", "a read-back that differs by ONE flipped hex character (same length, header claiming the right digest) fails the push, wherever the flip is: near the start, in the middle, in the very last digest of F", [("near the start", "samelen"), ("in the middle", "samelen-mid"), ("the last hex character of the last digest", "samelen-end")])
 def _(mode):
     push_control()
@@ -3864,6 +3935,13 @@ def _(mode):
         ok(any(x["method"] == "GET" and x["path"].endswith("/manifests/" + pd.f_digest) for x in reg.log), "no read-back attempted")
     finally:
         reg.close()
+
+
+@case("AC4", "HTTP whitespace around a Content-Type is only space and tab: spaces and a parameter are accepted on the read-back")
+def _():
+    def go(reg, pd):
+        assert_clean_push(reg, pd, push(reg, pd))
+    with_world(go, readback="ct-ws-ok")
 
 
 def main():
