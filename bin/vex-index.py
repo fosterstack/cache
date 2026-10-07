@@ -420,25 +420,6 @@ def build_attestation(platform_digest, vex):
     return descriptor, {digest_of(config): config, digest_of(statement): statement, digest_of(manifest): manifest}
 
 
-# ---------------------------------------------------------------- compute
-def compute(index_bytes, vex_bytes):
-    vex = check_vex(vex_bytes)
-    index, platforms = load_index(index_bytes, final=False)
-    if hex_of(digest_of(index_bytes)).encode() in canonical(vex):
-        raise Refuse("the VEX mentions the built index's digest")
-    descriptors, blobs, summary = [], {}, {}
-    for name, entry in platforms:
-        descriptor, parts = build_attestation(entry["digest"], vex)
-        descriptors.append(descriptor)
-        blobs.update(parts)
-        summary[name] = {"platform_digest": entry["digest"], "attestation_digest": descriptor["digest"]}
-    final = dict(index)
-    final["manifests"] = list(index["manifests"]) + descriptors
-    final_bytes = canonical(final)
-    result = {"base_digest": digest_of(index_bytes), "final_digest": digest_of(final_bytes), "platforms": summary,
-              "vex_sha256": hashlib.sha256(vex_bytes).hexdigest()}
-    return final_bytes, blobs, result
-
 
 # ---------------------------------------------------------------- files and directories
 # Every directory is opened once (no symlink on its last component) and everything inside it is reached through that
