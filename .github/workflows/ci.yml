@@ -210,11 +210,16 @@ jobs:
           # full history: the check compares suppression files with the merge base against the base branch
           fetch-depth: 0
 
-      - name: make sure the base branch ref exists (pull requests)
-        if: github.event_name == 'pull_request'
+      - name: make sure the base branch ref exists
         env:
           BASE: ${{ github.base_ref }}
-        run: git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+        run: |
+          # empty on a push (nothing to compare against); on a pull request refuse an odd base name before the fetch
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
 
       - name: check every tracked file against the allowlist
         env:

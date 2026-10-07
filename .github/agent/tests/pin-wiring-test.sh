@@ -59,6 +59,45 @@ for st in job.get("steps", []):
         for k in ("ref", "repository", "path"):
             if k in w:
                 bad.append(f"the checkout selects another tree ({k})")
+# the whole-tree allowlist guard (bin/check-file-allowlist.sh) cannot be disabled by the PR that changes
+# this workflow: the job is named `allowlist` (the required-check context), the checkout is full-depth and
+# first, then exactly the base-ref step and exactly the check step, in that order, nothing redirecting them
+if job.get("name") != "allowlist":
+    bad.append("the allowlist job is not named `allowlist` (the required-check context)")
+FETCH_RUN = """if [ -n "${BASE}" ]; then
+  [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+  [[ "${BASE}" != *..* ]] || exit 1
+  git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+fi"""
+CHECK_RUN = "git ls-files | ./bin/check-file-allowlist.sh"
+def norm(r):  # drop comment lines; the command text itself must match exactly
+    return "\n".join(l for l in (r or "").strip().splitlines() if not l.lstrip().startswith("#"))
+steps_ = job.get("steps", [])
+plain = ("if", "continue-on-error", "shell", "working-directory", "timeout-minutes")
+idx = {"fetch": [i for i, st in enumerate(steps_) if norm(st.get("run")) == FETCH_RUN],
+       "check": [i for i, st in enumerate(steps_) if norm(st.get("run")) == CHECK_RUN]}
+co = [i for i, st in enumerate(steps_) if str(st.get("uses", "")).startswith("actions/checkout@")]
+if not co or co[0] != 0:
+    bad.append("the allowlist job does not start with the checkout")
+else:
+    if steps_[0].get("with") != {"fetch-depth": "0"}:
+        bad.append("the allowlist checkout is not exactly `fetch-depth: 0`")
+    for k in plain + ("env",):
+        if k in steps_[0]:
+            bad.append(f"the allowlist checkout has `{k}`")
+for name, want_env in (("fetch", {"BASE": "${{ github.base_ref }}"}),
+                       ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}"})):
+    if len(idx[name]) != 1:
+        bad.append(f"the allowlist job does not have exactly one {name} step with the exact command")
+        continue
+    st = steps_[idx[name][0]]
+    if st.get("env") != want_env:
+        bad.append(f"the allowlist {name} step env is not exactly {want_env}")
+    for k in plain:
+        if k in st:
+            bad.append(f"the allowlist {name} step has `{k}`")
+if len(idx["fetch"]) == 1 and len(idx["check"]) == 1 and not (0 < idx["fetch"][0] < idx["check"][0]):
+    bad.append("the allowlist steps are not in order: checkout, base-ref fetch, check")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
 print("; ".join(bad) or "ok")
@@ -107,6 +146,29 @@ case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
+
+ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
+fe='[s for s in '"$steps"' if "git fetch" in (s.get("run") or "")][0]'
+case_ allowlist-check-removed   bad "$steps[:] = [s for s in $steps if not (s.get('run') or '').strip().endswith('check-file-allowlist.sh')]"
+case_ allowlist-run-true        bad "$ck['run'] = 'true'"
+case_ allowlist-or-true         bad "$ck['run'] = 'git ls-files | ./bin/check-file-allowlist.sh || true'"
+case_ allowlist-if-false        bad "$ck['if'] = 'false'"
+case_ allowlist-continue        bad "$ck['continue-on-error'] = 'true'"
+case_ allowlist-shell-override  bad "$ck['shell'] = \"bash -c 'true' {0}\""
+case_ allowlist-workdir         bad "$ck['working-directory'] = 'bin'"
+case_ allowlist-env-removed     bad "$ck.pop('env')"
+case_ allowlist-env-changed     bad "$ck['env'] = {'GITHUB_HEAD_REPO': ''}"
+case_ fetch-removed             bad "$steps[:] = [s for s in $steps if 'git fetch' not in (s.get('run') or '')]"
+case_ fetch-or-true             bad "$fe['run'] = $fe['run'].rstrip() + ' || true'"
+case_ fetch-if-false            bad "$fe['if'] = 'false'"
+case_ fetch-continue            bad "$fe['continue-on-error'] = 'true'"
+case_ fetch-env-removed         bad "$fe.pop('env')"
+case_ fetch-inline-expression   bad "$fe.pop('env'); $fe['run'] = 'git fetch --no-tags origin +refs/heads/\${{ github.base_ref }}:refs/remotes/origin/\${{ github.base_ref }}'"
+case_ fetch-after-check         bad "$steps.append($steps.pop(1))"
+case_ fetch-depth-reverted      bad "$steps[0].pop('with')"
+case_ fetch-depth-shallow       bad "$steps[0]['with'] = {'fetch-depth': '1'}"
+case_ allowlist-job-renamed     bad "d['jobs']['allowlist']['name'] = 'file allowlist'"
+case_ allowlist-job-unnamed     bad "d['jobs']['allowlist'].pop('name')"
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
