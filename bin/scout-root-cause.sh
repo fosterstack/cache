@@ -179,32 +179,38 @@ if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
     | jq -c '[.manifests[]? | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")][0] // empty' > "$a/built-descriptor.json"
   if [ -s "$a/built-descriptor.json" ]; then
     echo "- the child's attestation-manifest descriptor: \`$(cut -c1-300 "$a/built-descriptor.json")\`" >> "$summ"
-    skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$PROBE_REPO:multi-built" >> "$a/copy.log" 2>&1
-    built_ref="$PROBE_REPO:multi-built"; built_src="$built_ref@$MULTI"
-    > "$a/built-create.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --file "$a/built-descriptor.json" "$built_src"
-    crc=$?
-    echo "- imagetools create (the original index plus the descriptor): exit $crc — \`$(tail -1 "$a/built-create.log" | cut -c1-200)\`" >> "$summ"
-    bb=$(digest "$PROBE_REPO:multi-built"); children "$PROBE_REPO:multi-built" > "$a/built.children"
-    echo "- built index digest \`$bb\` (the original was \`$MULTI\`); children: $(cat "$a/built.children")" >> "$summ"
-    # a scan is only interpreted for an index that really was built: create succeeded, the digest changed, and the attestation-manifest
-    # child is among its children (a failed create leaves the copied original at the tag, and scanning that would mislabel it)
-    if [ "$crc" -ne 0 ] || [ "$bb" = READ-FAILED ] || [ "$bb" = "sha256:${MULTI#sha256:}" ] || [ "$bb" = "${MULTI#sha256:}" ] \
-       || ! grep -q attestation-manifest "$a/built.children"; then
-      echo "- built index: inconclusive (the create failed, the index did not change, or it carries no attestation-manifest child), so it is not scanned" >> "$summ"
-      bb=READ-FAILED; skip_built=1
-    fi
-    [ -n "${skip_built:-}" ] || {
-    f="$a/built-after-tag.json"
-    docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi-built" > "$f" 2> "$f.err"; rc=$?
-    echo "- built index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
-    if [ "$bb" != READ-FAILED ]; then
+    built_ref="$PROBE_REPO:multi-built"; built_idx="$PROBE_REPO@$MULTI"
+    att_dig=$(jq -r .digest "$a/built-descriptor.json"); att_ref="$PROBE_REPO@$att_dig"
+    # two ways to add the child, tried in order; the first run showed the descriptor form (--file with a tag+digest source) failing with
+    # "<repo>:latest: not found": (1) --file descriptor with the original index by digest only, (2) the original index and the
+    # attestation manifest as two sources by digest. The probe scans whichever variant really built the index.
+    for variant in file sources; do
+      skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$built_ref" >> "$a/copy.log" 2>&1
+      if [ "$variant" = file ]; then
+        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" --file "$a/built-descriptor.json" "$built_idx"
+      else
+        > "$a/built-create-$variant.log" 2>&1 docker buildx imagetools create --tag "$built_ref" "$built_idx" "$att_ref"
+      fi
+      crc=$?
+      echo "- variant $variant: imagetools create exit $crc — \`$(tail -1 "$a/built-create-$variant.log" | cut -c1-200)\`" >> "$summ"
+      bb=$(digest "$PROBE_REPO:multi-built"); children "$PROBE_REPO:multi-built" > "$a/built.children"
+      echo "  - built index digest \`$bb\` (the original was \`$MULTI\`); children: $(cat "$a/built.children")" >> "$summ"
+      # a scan is only interpreted for an index that really was built: create succeeded, the digest changed, and the attestation-manifest
+      # child is among its children (a failed create leaves the copied original at the tag, and scanning that would mislabel it)
+      if [ "$crc" -ne 0 ] || [ "$bb" = READ-FAILED ] || [ "$bb" = "${MULTI#sha256:}" ] || ! grep -q attestation-manifest "$a/built.children"; then
+        echo "  - variant $variant: inconclusive (the create failed, the index did not change, or it carries no attestation-manifest child), so it is not scanned" >> "$summ"
+        continue
+      fi
+      f="$a/built-after-tag.json"
+      docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO:multi-built" > "$f" 2> "$f.err"; rc=$?
+      echo "  - variant $variant: built index scanned by tag with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
       f="$a/built-after-digest.json"
       docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@sha256:$bb" > "$f" 2> "$f.err"; rc=$?
-      echo "- built index scanned by its exact digest \`sha256:$bb\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
-    fi
-    docker scout attestation list "registry://$PROBE_REPO:multi-built" > "$a/built-attestation-list.txt" 2>&1
-    echo "- built index attestation list: \`$(head -c 400 "$a/built-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
-    }
+      echo "  - variant $variant: built index scanned by its exact digest \`sha256:$bb\` with --vex-author: exit $rc — $(python3 bin/scout-root-cause.py judge "$a/control-before.json" "$f" CVE-2023-4911 "$g_purl" 2>&1 | tail -1)" >> "$summ"
+      docker scout attestation list "registry://$PROBE_REPO:multi-built" > "$a/built-attestation-list.txt" 2>&1
+      echo "  - variant $variant: built index attestation list: \`$(head -c 400 "$a/built-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+      break
+    done
   else
     echo "- built index not attempted: Scout created no attestation-manifest child on the child copy" >> "$summ"
   fi
