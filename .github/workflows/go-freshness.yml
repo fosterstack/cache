@@ -244,7 +244,7 @@ jobs:
             f="$1"; every="$2"
             while [ -e "$f" ] && sleep "$every"; do
               [ -e "$f" ] || break
-              tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue
+              tok=$(curl -sSf --max-time 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue
               [ -n "$tok" ] && [ "$tok" != "null" ] || continue
               [ -e "$f" ] || break
               ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"

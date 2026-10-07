@@ -346,6 +346,17 @@ jobs:
       - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
         run: bash bin/go-bump-open-pr-test.sh
 
+      # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
+      # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
+      - name: persona UAT — agent and provider suite
+        run: bash bin/persona-uat-agent-test.sh
+
+      - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
+        run: bash bin/persona-uat-wiring-test.sh
+
+      - name: persona UAT — driver suite
+        run: bash bin/persona-uat-test.sh
+
       # VEX tripwire (punch list #4b). A dependency we answered with a VEX
       # statement is answered on the facts as they were: golang-jwt is not
       # in the build at all, which is why CVE-2024-51744 does not apply to

@@ -26,7 +26,34 @@
 #   (4) the agent no longer decides whether the endpoint was contacted: that is the driver's metrics proof; no `reached` finding here.
 #   persona-uat-provider.py: the real provider, over the Anthropic Python SDK (faked here on PYTHONPATH).
 set -euo pipefail
-root=$(cd "$(dirname "$0")/.." && pwd)
+# FIXTURE PORTS are chosen per run (free ones, the endpoint's three consecutive: base, base+1, base+2) so this suite and the others can run side by side: the script rewrites its own
+# port literals into a private copy and runs that
+if [ -z "${PERSONA_TEST_PORTS:-}" ]; then
+  export PERSONA_TEST_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+  ports=$(python3 - <<'PYP'
+import random, socket
+def free(p):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p)); return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+while True:
+    b = random.randrange(20000, 29000)
+    rest = random.sample(range(29100, 31000), 3)
+    if all(free(x) for x in (b, b + 1, b + 2, *rest)):
+        print(b, *rest); break
+PYP
+)
+  set -- $ports
+  me=$(mktemp "${TMPDIR:-/tmp}/persona-test-XXXXXX")
+  perl -pe "s/\\b18080\\b/$1/g; s/\\b18081\\b/$(($1+1))/g; s/\\b18082\\b/$(($1+2))/g; s/\\b18090\\b/$2/g; s/\\b18099\\b/$3/g; s/\\b18123\\b/$4/g; s/PERSONA_TEST_PORTS:-/PERSONA_TEST_PORTS:-/" "$0" >"$me"
+  rc=0; PERSONA_TEST_PORTS=1 bash "$me" "$@" || rc=$?
+  rm -f "$me"; exit $rc
+fi
+root=${PERSONA_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 agent="$root/bin/persona-uat-agent.py"
 provider="$root/bin/persona-uat-provider.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -259,6 +286,21 @@ PROOFCASES=(
  'px-verifyblob|{"type":"shell","tool":"cosign","args":["verify-blob","'"$RC"'"]}|NOPROOF'
  'px-tagonly|{"type":"shell","tool":"cosign","args":["verify","ghcr.io/example/cache:1.0"]}|NOPROOF'
  'px-kubectlverify|{"type":"shell","tool":"kubectl","args":["verify","'"$RC"'"]}|NOPROOF'
+ 'px-help|{"type":"shell","tool":"cosign","args":["verify","--help","'"$RC"'"]}|NOPROOF'
+ 'px-h|{"type":"shell","tool":"cosign","args":["verify","-h","'"$RC"'"]}|NOPROOF'
+ 'px-version2|{"type":"shell","tool":"cosign","args":["verify","--version","'"$RC"'"]}|NOPROOF'
+ 'px-helpafter|{"type":"shell","tool":"cosign","args":["verify","'"$RC"'","--help"]}|NOPROOF'
+ 'px-helpfirst|{"type":"shell","tool":"cosign","args":["--help","verify","'"$RC"'"]}|NOPROOF'
+ 'px-flagvalue-sep|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity","'"$RC"'","ghcr.io/example/cache:1.0"]}|NOPROOF'
+ 'px-flagvalue-other|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity=x","'"$OTHER"'"]}|NOPROOF'
+ 'px-twopositionals|{"type":"shell","tool":"cosign","args":["verify","'"$OTHER"'","'"$RC"'"]}|NOPROOF'
+ 'px-unknownflag|{"type":"shell","tool":"cosign","args":["verify","--mystery","'"$RC"'"]}|NOPROOF'
+ 'px-att-notype|{"type":"shell","tool":"cosign","args":["verify-attestation","'"$RC"'"]}|NOPROOF'
+ 'px-att-type|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance","'"$RC"'"]}|PROOF'
+ 'px-att-typeeq|{"type":"shell","tool":"cosign","args":["verify-attestation","--type=spdxjson","'"$RC"'"]}|PROOF'
+ 'px-att-help|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance","-h","'"$RC"'"]}|NOPROOF'
+ 'px-bool|{"type":"shell","tool":"cosign","args":["verify","--offline","'"$RC"'"]}|PROOF'
+ 'px-goodsep|{"type":"shell","tool":"cosign","args":["verify","--certificate-oidc-issuer","https://token.actions.githubusercontent.com","'"$RC"'"]}|PROOF'
  'px-good|{"type":"shell","tool":"cosign","args":["verify","--certificate-oidc-issuer=https://token.actions.githubusercontent.com","'"$RC"'"]}|PROOF'
  'px-goodother|{"type":"shell","tool":"cosign","args":["verify","registry.example/other/repo@sha256:'"$(printf 'c%.0s' $(seq 64))"'"]}|PROOF'
 )

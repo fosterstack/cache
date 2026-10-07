@@ -22,6 +22,7 @@ Exit status: 0 clean (friction is information, never a failure), 1 a blocking pe
 encryption, 2 a refused configuration (nothing was started), 3 the public docs are missing.
 """
 import argparse
+import itertools
 import json
 import os
 import re
@@ -50,6 +51,9 @@ JENKINS_ENV = "JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
 URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
 METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
+JOB_BUDGET = 6600           # seconds: the 120-minute job minus setup and the cleanup steps; the agent timeouts are cut from what is left of it
+MIN_PERSONA_SECONDS = 300   # a persona that cannot be given this long is blocking (cannot prove), never run
+TRANSCRIPT_CAP = 16 * 1024 * 1024    # the agent's own cap; the encrypted transcript holds the persisted history whole up to it
 SETTLE_QUIET = 3.0          # seconds of an unchanged request counter before a persona's window is closed
 SETTLE_MAX = 20.0           # the ceiling: a counter that never settles makes the persona blocking
 DEFAULT_PORT = 38080        # the image's host port; never 8080: the docs' `kubectl port-forward svc/fscache 8080:80` must work next to the driver (Jenkins and the runner take the next two)
@@ -131,6 +135,12 @@ def clean_env(extra_prefix=None):
 def docker_env():
     """the docker CLIENT's environment: a shell's settings plus its own allowlisted DOCKER_* settings (host, config, context, tls); no job credential"""
     return clean_env()
+
+
+class TranscriptFile:
+    """a transcript kept in the agent's streamed file: `prefix` text first, then the file (read bounded, never whole into memory)"""
+    def __init__(self, prefix, path):
+        self.prefix, self.path = prefix, path
 
 
 class Docker:
@@ -286,23 +296,45 @@ def validate_answer(text):
     return a
 
 
-def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX):
-    """the real server counts AFTER its response: wait until the total has been UNCHANGED across readings spanning `quiet_for` seconds (a change restarts the interval),
-    giving up after `ceiling`. A request that finishes server-side later than that is not attributed to the window: the limit is stated in every report header."""
+UNSETTLED = object()        # the window could not be closed: a connection stayed open or the counter kept changing for the whole ceiling
+
+
+def established_to(proc_net, port):
+    """how many ESTABLISHED sockets (state 01) have `port` as their local or remote port, from the kernel's tcp and tcp6 tables; None when neither can be read.
+    A request still being served holds its connection open until the response is written, which is before the server counts it."""
+    n, read = 0, 0
+    for name in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(proc_net, name)) as fh:
+                lines = fh.read().splitlines()[1:]
+        except OSError:
+            continue
+        read += 1
+        for ln in lines:
+            f = ln.split()
+            if len(f) >= 4 and f[3] == "01" and (f[1].rpartition(":")[2] == "%04X" % port or f[2].rpartition(":")[2] == "%04X" % port):
+                n += 1
+    return n if read else None
+
+
+def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX, idle=lambda: True):
+    """close a persona's window: the real server counts AFTER its handler returns, so the total must have been UNCHANGED for `quiet_for` seconds (a change restarts the interval)
+    with no connection to the endpoint left (`idle()`), within `ceiling`. -> the total, None when /metrics cannot be read, UNSETTLED when the ceiling was hit."""
     v = scrape(ep)
     if v is None:
         return None
     t0 = quiet = time.time()
-    while time.time() - quiet < quiet_for:
+    while True:
+        if time.time() - quiet >= quiet_for and idle():
+            return v
         if time.time() - t0 >= ceiling:
-            return None                 # never settles: not attributable
+            return UNSETTLED
         time.sleep(0.2)
         w = scrape(ep)
         if w is None:
             return None
-        if w != v:
+        if w != v or not idle():
             v, quiet = w, time.time()
-    return v
 
 
 def cleanup(docker, label, sandbox, image):
@@ -356,47 +388,101 @@ TRANSCRIPT_KEEP_HEAD = 200000        # characters kept from the start of a persi
 TRANSCRIPT_KEEP_TAIL = 800000
 
 
-def streamed(tfile):
-    """what the agent had written to its transcript file (every completed action) before it ended, killed or not: whole up to one million characters, else the first
-    200000 and the last 800000 with an explicit marker of how many were omitted (the file is read bounded, never whole, whatever its size)"""
+TRANSCRIPT_KEEP_HEAD = 200000        # above the cap only: the first 200000 and the last 800000 characters, with a marker
+TRANSCRIPT_KEEP_TAIL = 800000
+
+
+def file_chunks(path, secrets):
+    """the persisted transcript as scrubbed text pieces: WHOLE up to TRANSCRIPT_CAP (streamed in pieces cut at line ends), else the first and last parts with an explicit
+    marker of how many characters were omitted"""
     try:
-        size = os.path.getsize(tfile)
-        with open(tfile, "rb") as fh:
-            if size <= TRANSCRIPT_KEEP_HEAD + TRANSCRIPT_KEEP_TAIL:
-                return fh.read().decode("utf-8", "replace")
+        size = os.path.getsize(path)
+        fh = open(path, "rb")
+    except (OSError, TypeError):
+        return
+    with fh:
+        if size > TRANSCRIPT_CAP:
             head = fh.read(TRANSCRIPT_KEEP_HEAD)
             fh.seek(size - TRANSCRIPT_KEEP_TAIL)
             tail = fh.read(TRANSCRIPT_KEEP_TAIL)
-        return "%s\n[... %d characters omitted ...]\n%s" % (head.decode("utf-8", "replace"), size - TRANSCRIPT_KEEP_HEAD - TRANSCRIPT_KEEP_TAIL, tail.decode("utf-8", "replace"))
-    except (OSError, TypeError):
-        return ""
+            yield scrub(head.decode("utf-8", "replace"), secrets)
+            yield "\n[... %d characters omitted ...]\n" % (size - TRANSCRIPT_KEEP_HEAD - TRANSCRIPT_KEEP_TAIL)
+            yield scrub(tail.decode("utf-8", "replace"), secrets)
+            return
+        carry = b""
+        while True:
+            blob = fh.read(262144)
+            if not blob:
+                break
+            blob = carry + blob
+            cut = blob.rfind(b"\n") + 1
+            if cut == 0 and len(blob) < 1048576:        # no line end yet: keep reading (a single enormous line is cut after a megabyte)
+                carry = blob
+                continue
+            cut = cut or len(blob)
+            carry = blob[cut:]
+            yield scrub(blob[:cut].decode("utf-8", "replace"), secrets)
+        if carry:
+            yield scrub(carry.decode("utf-8", "replace"), secrets)
+
+
+def transcript_chunks(transcript, secrets):
+    if isinstance(transcript, TranscriptFile):
+        yield scrub(transcript.prefix, secrets)
+        yield from file_chunks(transcript.path, secrets)
+    else:
+        for i in range(0, len(transcript), 262144):
+            yield scrub(transcript[i:i + 262144], secrets)
+
+
+def transcript_commands(transcript):
+    """the `$ command` lines of a transcript (a string, or an agent's streamed file read up to the cap), for the hosts of a persona that did not run"""
+    if isinstance(transcript, TranscriptFile):
+        lines = transcript.prefix.splitlines()
+        try:
+            with open(transcript.path, errors="replace") as fh:
+                for ln in fh:
+                    lines.append(ln.rstrip("\n")[:20000])
+                    if len(lines) > 400000:
+                        break
+        except (OSError, TypeError):
+            pass
+    else:
+        lines = transcript.splitlines()
+    return [ln[2:] for ln in lines if ln.startswith("$ ")]
+
+
+def kill_group(p):
+    """everything the agent left in its own session goes with it (work started in other sessions is found from its descendants first)"""
+    for pid in descendants(p.pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None):
-    """-> (answer or None, transcript text, failure reason or None). The agent's stderr is kept for the transcript FILE only; the actions it completed before a
-    timeout or a failure come from its streamed transcript file."""
+    """-> (answer or None, transcript (text or a TranscriptFile), failure reason or None). The agent's stderr is kept for the encrypted transcript only; the actions it completed
+    before a timeout or a failure come from its streamed transcript file. Whatever the agent left running is killed on EVERY exit: its window must end with nothing of it alive."""
     p = subprocess.Popen(agent_cmd + agent_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=sandbox,
                          env=clean_env(MODEL_ENV_PREFIX), text=True, errors="replace", start_new_session=True)
     try:
         out, err = p.communicate(json.dumps(request), timeout=timeout)
     except subprocess.TimeoutExpired:
-        for pid in descendants(p.pid):          # work the agent started in other sessions survives a killpg: find it first
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        kill_group(p)
         out, err = p.communicate()
-        return None, "agent timed out after %ss\n%s\n%s" % (timeout, streamed(tfile), (err or "")[-200000:]), "timed out after %ss" % timeout
+        return None, TranscriptFile("agent timed out after %ss\n%s\n" % (timeout, (err or "")[-200000:]), tfile), "timed out after %ss" % timeout
+    kill_group(p)
     if p.returncode != 0:
-        return None, "agent failed (exit %d)\n%s\n%s" % (p.returncode, streamed(tfile), err[-200000:]), "the agent failed (exit %d)" % p.returncode
+        return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile), "the agent failed (exit %d)" % p.returncode
     try:
         return validate_answer(out), None, None
     except ValueError as e:
-        return None, "the agent's answer was refused: %s\n%s\n%s" % (e, streamed(tfile), err[-200000:]), "the agent's answer is outside the contract (%s)" % e
+        return None, TranscriptFile("the agent's answer was refused: %s\n%s\n" % (e, err[-200000:]), tfile), "the agent's answer is outside the contract (%s)" % e
 
 
 def absolutize(tokens):
@@ -516,23 +602,24 @@ HOST_RE = re.compile(r"^(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::[0-9]+)?(?:/.*)?$|^(
 SHORT_VALUE = {"curl": set("oUuHdXAeTFmxKEbcCDwyYzrtQ"), "wget": set("OoPtTeiBUaQwlARDIX")}
 LONG_VALUE = {"curl": {"output", "user", "header", "data", "request", "user-agent", "referer", "upload-file", "form", "cacert", "max-time", "retry", "proxy", "connect-to",
                        "resolve", "config", "url", "proxy-user", "cookie", "cookie-jar", "cert", "key", "write-out", "output-dir", "limit-rate", "range", "data-raw",
-                       "data-binary", "data-urlencode", "json", "connect-timeout"},
+                       "data-binary", "data-urlencode", "json", "connect-timeout", "preproxy", "socks4", "socks4a", "socks5", "socks5-hostname", "proxy1.0", "doh-url",
+                       "proxy-header", "proxy-cacert", "proxy-cert", "proxy-key", "proxy-pass", "proxy-service-name", "proxy-tlsuser", "proxy-tlspassword", "proxy-ciphers"},
               "wget": {"output-document", "output-file", "directory-prefix", "user", "password", "header", "tries", "timeout", "execute", "input-file", "base", "user-agent",
                        "post-data", "post-file", "body-data", "body-file"}}
 FILE_VALUE = {"curl": ({"K"}, {"config"}), "wget": ({"i"}, {"input-file"})}      # the value is a FILE whose content is not observed (its name is never a host)
 
 
 def _strip_host(v):
-    """HOST from HOST[:port][/path] or scheme://HOST..., or None"""
+    """HOST from [user@]HOST[:port][/path] or scheme://HOST..., or None. A value the URL parser refuses raises ValueError: the caller marks that command unparsed."""
     if "://" in v:
         return urllib.parse.urlsplit(v).hostname
-    return _host_of(v) if HOST_RE.match(v) else None
+    return _host_of(v, strict=True) if HOST_RE.match(v) else None
 
 
 def _option_hosts(prog, name, value):
     """hosts a value-taking option NAMES: a URL, a proxy, --connect-to HOST1:P1:HOST2:P2, --resolve HOST:PORT:ADDR, wget -e http_proxy=HOST, wget -B HOST"""
     out = []
-    if prog == "curl" and name in ("url", "proxy", "x"):
+    if prog == "curl" and name in ("url", "proxy", "x", "preproxy", "socks4", "socks4a", "socks5", "socks5-hostname", "proxy1.0", "doh-url"):
         out.append(_strip_host(value))
     elif prog == "curl" and name == "connect-to":
         f = value.split(":")
@@ -578,27 +665,184 @@ def _fetch_tokens(prog, toks):
     return hosts, positional
 
 
-def _host_of(tok):
+def _host_of(tok, strict=False):
     try:
         return urllib.parse.urlsplit("//" + tok).hostname
+    except ValueError:
+        if strict:
+            raise
+        return None
+
+
+PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "no_proxy_unused")
+WRAPPERS = {"env", "sudo", "time", "command", "nohup", "nice", "exec", "stdbuf", "timeout", "setsid", "ionice", "builtin", "doas", "export"}
+WRAPPER_VALUE_OPTS = {"sudo": set("ugCDhpRTt"), "env": {"u", "C", "S"}, "nice": {"n"}, "timeout": {"k", "s"}, "stdbuf": set("ioe"), "ionice": set("cnp"), "doas": {"u", "C"}}
+NET_NAME = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9-]*[A-Za-z]$|^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^localhost$")
+
+
+def _name(v):
+    """a hostname/IP from [user@]HOST[:port][/path] or [v6], or None (not a name)"""
+    v = v.rsplit("@", 1)[-1]
+    if v.startswith("["):
+        v = v.split("]", 1)[0] + "]" if "]" in v else v
+        return v.lower() if re.fullmatch(r"\[[0-9A-Fa-f:.]+\]", v) else None
+    v = re.split(r"[:/]", v, 1)[0]
+    return v.lower() if NET_NAME.match(v) else None
+
+
+def _positionals(toks, value_opts):
+    out, i = [], 0
+    while i < len(toks):
+        t = toks[i]
+        i += 1
+        if t == "--":
+            out += toks[i:]
+            break
+        if t.startswith("--"):
+            if "=" not in t and t[2:] in value_opts:
+                i += 1
+        elif t.startswith("-") and len(t) > 1:
+            if t[1:] in value_opts or (len(t) == 2 and t[1] in value_opts):
+                i += 1
+        else:
+            out.append(t)
+    return out
+
+
+def _segment_hosts(toks):
+    """hosts named by ONE simple command (the words between ; && || | & and parentheses): leading NAME=value words (proxy variables name hosts), wrappers (env, sudo, time,
+    command, nohup, timeout N ...), the program by BASENAME, then its own rules (curl/wget/kubectl/cosign, nc, ssh/scp, ping, dig, telnet, openssl s_client, git clone)"""
+    out, i = set(), 0
+    def assign(tok):
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", tok)
+        if not m:
+            return False
+        if m.group(1).lower() in PROXY_VARS and m.group(2):
+            h = _strip_host(m.group(2))
+            if h:
+                out.add(h.lower())
+        return True
+    while i < len(toks):
+        t = toks[i]
+        base = t.rsplit("/", 1)[-1]
+        if assign(t):
+            i += 1
+        elif base in WRAPPERS:
+            i += 1
+            vals = WRAPPER_VALUE_OPTS.get(base, set())
+            while i < len(toks) and (toks[i].startswith("-") or assign(toks[i]) or (base == "timeout" and re.match(r"^[0-9.]+[smhd]?$", toks[i]))):
+                if toks[i].startswith("-") and toks[i].lstrip("-")[:1] in vals and len(toks[i].lstrip("-")) == 1:
+                    i += 1
+                i += 1
+        else:
+            break
+    if i >= len(toks):
+        return out
+    prog, rest = toks[i].rsplit("/", 1)[-1], toks[i + 1:]
+    if prog in ("curl", "wget"):
+        opt_hosts, positional = _fetch_tokens(prog, rest)
+        out.update(opt_hosts)
+        for t in positional:
+            if "://" not in t and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
+                out.add(_host_of(t, strict=True).lower())
+    elif prog == "kubectl":
+        for k, t in enumerate(rest):
+            v = t.split("=", 1)[1] if t.startswith("--server=") else (rest[k + 1] if t == "--server" and k + 1 < len(rest) else None)
+            if v and "://" not in v and HOST_RE.match(v):
+                out.add(_host_of(v, strict=True).lower())
+    elif prog == "cosign":
+        for t in rest:
+            if "://" not in t and re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::[0-9]+)?/\S+$", t):
+                out.add(t.split("/")[0].lower())
+    elif prog in ("nc", "ncat", "netcat"):
+        for k, t in enumerate(rest):
+            if t in ("-x", "-X") and k + 1 < len(rest):
+                n = _name(rest[k + 1])
+                if n:
+                    out.add(n)
+        for t in _positionals(rest, {"w", "p", "s", "i", "q", "T", "X", "x", "I", "O", "P", "m"}):
+            n = _name(t)
+            if n:
+                out.add(n); break
+    elif prog in ("ssh", "sftp", "rsync"):
+        opts = {"p", "i", "l", "o", "F", "L", "R", "D", "b", "c", "e", "m", "O", "S", "W", "w", "B", "E", "Q", "J", "I"}
+        for k, t in enumerate(rest):
+            if t == "-J" and k + 1 < len(rest):
+                for hop in rest[k + 1].split(","):
+                    n = _name(hop)
+                    if n:
+                        out.add(n)
+        for t in _positionals(rest, opts):
+            n = _name(t.split(":", 1)[0] if prog == "rsync" else t)
+            if n:
+                out.add(n); break
+    elif prog == "scp":
+        for t in _positionals(rest, {"P", "i", "l", "o", "F", "S", "c", "J", "D"}):
+            if ":" in t and not t.startswith("/") and "://" not in t:
+                n = _name(t.rsplit(":", 1)[0])
+                if n:
+                    out.add(n)
+    elif prog in ("ping", "ping6", "traceroute", "telnet", "nslookup", "host", "whois", "mtr", "tracepath"):
+        n = None
+        for t in _positionals(rest, {"c", "i", "W", "w", "s", "t", "I", "M", "p", "Q", "S", "T", "m", "q", "l"}):
+            n = _name(t)
+            if n:
+                out.add(n); break
+    elif prog == "dig":
+        for t in rest:
+            if t.startswith("@"):
+                n = _name(t[1:])
+                if n:
+                    out.add(n)
+        for t in _positionals(rest, {"b", "c", "f", "k", "m", "p", "q", "t", "x", "y"}):
+            if not t.startswith("@"):
+                n = _name(t)
+                if n:
+                    out.add(n); break
+    elif prog == "openssl" and rest[:1] == ["s_client"]:
+        for k, t in enumerate(rest):
+            if t in ("-connect", "-servername", "-proxy") and k + 1 < len(rest):
+                n = _name(rest[k + 1])
+                if n:
+                    out.add(n)
+    elif prog == "git" and "clone" in rest:
+        for t in rest[rest.index("clone") + 1:]:
+            if t.startswith("-"):
+                continue
+            if "://" in t:
+                h = urllib.parse.urlsplit(t).hostname
+                if h:
+                    out.add(h.lower())
+            elif re.match(r"^[A-Za-z0-9_.-]+@[A-Za-z0-9.-]+:", t):
+                out.add(t.split("@", 1)[1].split(":", 1)[0].lower())
+            break
+    return out
+
+
+def _tokens(line):
+    """one line as shell words, operators (; & | ( )) as words of their own, an inline `# comment` dropped; None when the quoting is unbalanced"""
+    try:
+        lex = _shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+        lex.whitespace_split = True
+        lex.commenters = "#"
+        return list(lex)
     except ValueError:
         return None
 
 
 def url_hosts(text):
+    """every host the command text NAMES: URLs anywhere, and what the programs on each simple command take as hosts. Raises ValueError for a value the URL parser refuses
+    (the caller marks that command unparsed in the encrypted report)."""
     out = set()
-    lines_ = []
+    tokens = []
     for l in text.splitlines():
         if l.lstrip().startswith("#"):
             continue
-        try:
-            l = " ".join(_shlex.quote(t) for t in _shlex.split(l, comments=True))        # an inline `# comment` is not a contact either (quoting kept: a quoted header is one word)
-        except ValueError:
-            pass
-        lines_.append(l)
-    text = "\n".join(lines_)
-    clone_urls = {u for ln in text.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
-    for u in URL_RE.findall(text):
+        toks = _tokens(l)
+        tokens.append(toks)
+    clean = ["\n".join(" ".join(t) if t is not None else "" for t in tokens)][0]
+    clone_urls = {u for ln in clean.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
+    for u in URL_RE.findall(clean):
         try:
             h = urllib.parse.urlsplit(u).hostname
         except ValueError:
@@ -606,30 +850,15 @@ def url_hosts(text):
         if h:
             h = h.lower()
             out.add(h + REPO_SRC if (h in ("raw.githubusercontent.com", "codeload.github.com") or GH_SRC.match(u) or GH_API_SRC.match(u) or (u in clone_urls and h == "github.com")) else h)
-    for line in text.splitlines():
-        try:
-            toks = _shlex.split(line, comments=True)
-        except ValueError:
-            continue
-        prog = next((t for t in toks if t in ("curl", "wget", "kubectl", "cosign")), None)
-        if prog is None:
-            continue
-        if prog == "cosign":
-            for t in toks:
-                if "://" not in t and re.match(r"^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::[0-9]+)?/\S+$", t):
-                    out.add(t.split("/")[0].lower())
-            continue
-        if prog == "kubectl":
-            for i, t in enumerate(toks):
-                v = t.split("=", 1)[1] if t.startswith("--server=") else (toks[i + 1] if t == "--server" and i + 1 < len(toks) else None)
-                if v and "://" not in v and HOST_RE.match(v):
-                    out.add(_host_of(v).lower())
-            continue
-        opt_hosts, positional = _fetch_tokens(prog, toks[toks.index(prog) + 1:])
-        out.update(opt_hosts)
-        for t in positional:
-            if "://" not in t and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
-                out.add(_host_of(t).lower())
+    for toks in tokens:
+        seg = []
+        for t in (toks or []) + [";"]:
+            if t and all(ch in ";&|()" for ch in t):
+                if seg:
+                    out.update(_segment_hosts(seg))
+                seg = []
+            else:
+                seg.append(t)
     return out
 
 
@@ -640,30 +869,74 @@ def registry_of(ref):
 
 HOSTS_LABEL = "Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):"
 ENV_LIMITS_LINE = "Environment limits of this run (reported as friction, never blocking): " + "; ".join("(%s) %s" % (k, t) for k, t in zip("abcd", LIMITS))
-COUNTER_LIMIT = ("Counter limit: a request that finishes server-side more than 3 seconds after its response is not attributed to the persona's window "
-                 "(no in-flight gauge exists to prove otherwise).")
+COUNTER_GUARANTEE = ("Counter guarantee: a persona's window was closed only after its processes and containers were removed, no established connection to the endpoint "
+                     "remained and the request counter was unchanged for 3 seconds; if that did not happen within 20 seconds the persona is blocking (cannot prove) and so is "
+                     "every later one. Not covered: a server-side handler still running more than 3 seconds after its client's connection closed (the server exposes no "
+                     "in-flight gauge).")
+
+
+# cosign flags that take a VALUE (a digest given as one is never the verification target) and the booleans; any other flag is treated as taking a value (fail closed)
+COSIGN_VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp", "--certificate",
+                      "--certificate-chain", "--certificate-github-workflow-name", "--certificate-github-workflow-ref", "--certificate-github-workflow-repository",
+                      "--certificate-github-workflow-sha", "--certificate-github-workflow-trigger", "--key", "--type", "--policy", "--rekor-url", "--output", "-o", "--annotations",
+                      "-a", "--attachment", "--signature", "--platform", "--sk", "--slot", "--bundle", "--registry-username", "--registry-password", "--payload", "--cert-email",
+                      "--max-workers", "--timestamp-certificate-chain", "--trusted-root", "--new-bundle-format", "--ca-roots", "--ca-intermediates"}
+COSIGN_BOOL_FLAGS = {"--offline", "--insecure-ignore-tlog", "--insecure-ignore-sct", "--verbose", "-d", "--check-claims", "--local-image", "--private-infrastructure",
+                     "--use-signed-timestamps", "--allow-insecure-registry", "--allow-http-registry", "--output-file-is-stdout"}
+COSIGN_HELP = {"--help", "-h", "--version"}
+
+
+def cosign_operation(argv):
+    """-> (subcommand, positional words, flags) of a cosign command line, or None when it asks for help/version or cannot be read. A flag's value is never positional."""
+    if any(t in COSIGN_HELP for t in argv):
+        return None
+    sub, pos, flags, i = None, [], [], 0
+    while i < len(argv):
+        t = argv[i]
+        i += 1
+        if t.startswith("-") and t != "-":
+            name = t.split("=", 1)[0]
+            flags.append(name)
+            if "=" in t or name in COSIGN_BOOL_FLAGS:
+                continue
+            i += 1                  # a value flag (or one we do not know: its next word is its value, never a target)
+            continue
+        if sub is None:
+            sub = t
+        else:
+            pos.append(t)
+    return (sub, pos, flags) if sub else None
 
 
 def verified_digest(answer, image):
-    """the compliance reviewer's proof of exercising the RC image: a recorded ACTION whose tool is cosign, whose subcommand is `verify` (the one cosign verification
-    docs/verify-images.md documents for an image), that names the RC image by its DIGEST as an argument (an argument ending @sha256:<digest>, not a flag's value and not
-    text in a shell command), and that exited 0. Words in echo, comments or shell actions are never proof."""
+    """the compliance reviewer's proof of exercising the RC image: a recorded ACTION whose tool is cosign and whose operation PARSES as `cosign verify` (or `cosign
+    verify-attestation` with a --type) of exactly ONE image argument that ends @sha256:<the RC digest> (never a flag's value, never help/version), exit 0. Words in
+    echo, comments or shell actions are never proof."""
     digest = image.split("@")[-1]
     if not digest.startswith("sha256:"):
         return False
     for act in answer.get("actions", []):
-        argv = act.get("argv", [])
-        if (act.get("tool") == "cosign" and act.get("exit") == 0 and argv and argv[0] == "verify"
-                and any(not t.startswith("-") and t.endswith("@" + digest) for t in argv[1:])):
+        if act.get("tool") != "cosign" or act.get("exit") != 0 or not isinstance(act.get("argv"), list):
+            continue
+        op = cosign_operation(act["argv"])
+        if not op:
+            continue
+        sub, pos, flags = op
+        if sub not in ("verify", "verify-attestation") or (sub == "verify-attestation" and "--type" not in flags):
+            continue
+        if len(pos) == 1 and pos[0].endswith("@" + digest):
             return True
     return False
 
 
-def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None):
+def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None, unparsed=0):
     lines = ["VERDICT: %s" % verdict, "persona: %s" % persona, ""]
-    lines += [ENV_LIMITS_LINE, COUNTER_LIMIT, ""]
+    lines += [ENV_LIMITS_LINE, COUNTER_GUARANTEE, ""]
     if hosts is not None:
-        lines += ["%s %s" % (HOSTS_LABEL, ", ".join(hosts) if hosts else "none"), ""]
+        lines += ["%s %s" % (HOSTS_LABEL, ", ".join(hosts) if hosts else "none")]
+        if unparsed:
+            lines += ["Unparsed commands (hosts not extracted): %d" % unparsed]
+        lines += [""]
     if did_not_run:
         lines += ["This persona did not run: %s." % did_not_run, ""]
     for kind, title in (("blocking", "Blocking findings"), ("friction", "Friction (information only)")):
@@ -692,6 +965,8 @@ def parse_args():
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--ready-timeout", type=int, default=120)
     ap.add_argument("--agent-timeout", type=int, default=3600)
+    ap.add_argument("--job-budget", type=float, default=JOB_BUDGET, help="seconds of the job's time the personas may use in all; each agent timeout is cut from what is left")
+    ap.add_argument("--min-persona-seconds", type=float, default=MIN_PERSONA_SECONDS, help="a persona that cannot be given this long is blocking (cannot prove) and not run")
     ap.add_argument("--settle-quiet", type=float, default=SETTLE_QUIET, help="seconds of an unchanged counter before a window closes")
     ap.add_argument("--settle-max", type=float, default=SETTLE_MAX, help="ceiling for that wait: a counter that never settles blocks the persona")
     ap.add_argument("--proc-net", default="/proc/net", help="where the kernel's tcp and tcp6 tables are read (a test passes a fixture)")
@@ -737,13 +1012,47 @@ def configure(a):
     return models, budget, tools
 
 
+STATE = {}        # what the last-resort handler needs to write the encrypted reports of what is known: filled by _main as soon as it is known
+
+
 def main():
+    """the driver. Nothing but the fixed pass/fail lines (and, if something nobody expected goes wrong, the fixed line `driver error`) is ever printed: whatever raises is
+    caught here, the encrypted reports of what is known are still written, and the run fails"""
+    try:
+        return _main()
+    except SystemExit:
+        raise
+    except BaseException:
+        sys.stderr.write("persona-uat: driver error\n")
+        try:
+            return last_resort()
+        except BaseException:
+            return 1
+
+
+def last_resort():
+    """every persona without a result gets an encrypted blocking report saying the driver failed; then the usual pass/fail lines"""
+    results, out_dir, recipient = STATE.get("results"), STATE.get("out_dir"), STATE.get("recipient")
+    if results is None or not out_dir or not recipient:
+        return 1
+    for persona in PERSONAS:
+        if persona in results:
+            continue
+        text = report_text(persona, "blocking", [{"kind": "blocking", "text": "the driver failed before this persona could be recorded (driver error)"}], None, False,
+                           "the driver failed (driver error)")
+        ok = encrypt(recipient, persona, out_dir, [text.encode(), b"\n=== TRANSCRIPT ===\ndriver error\n"])
+        results[persona] = {"verdict": "blocking", "findings": [], "tokens": None, "capped": False, "encfail": not ok}
+    return finish(results, out_dir) or 1
+
+
+def _main():
     a = parse_args()
     try:
         models, budget, tools = configure(a)
     except Refuse as e:
         log("refused: %s" % e)
         return 2
+    job_t0 = time.time()
     docker_cmd = shlex.split(a.docker)
     if not os.path.isabs(docker_cmd[0]) and os.path.isfile(docker_cmd[0]):
         docker_cmd[0] = os.path.abspath(docker_cmd[0])
@@ -751,16 +1060,21 @@ def main():
     agent_cmd = absolutize(shlex.split(a.agent))
     out_dir = os.path.abspath(a.out)
     os.makedirs(out_dir, exist_ok=True)
+    STATE.update(out_dir=out_dir, recipient=a.recipient)
     secrets = [v for v in models.values() if len(v) >= 4]
     run_id = os.environ.get("GITHUB_RUN_ID") or "local"
 
     prev = [0.0]
     results = {}        # persona -> {"verdict", "findings", "tokens", "capped"}
+    STATE["results"] = results
 
     def known_hosts():
         doc_hosts = set()
         for data in (docs or {}).values():
-            doc_hosts |= url_hosts(data.decode("utf-8", "replace"))
+            try:
+                doc_hosts |= url_hosts(data.decode("utf-8", "replace"))
+            except Exception:
+                pass
         return doc_hosts | {"127.0.0.1", "localhost", registry_of(a.image)} | {registry_of(v) for v in tools.values()}      # the image under test's own registry is not "outside"
 
     def labelled(hosts):
@@ -768,38 +1082,57 @@ def main():
         plain = {h for h in hosts if not h.endswith(REPO_SRC)}
         out = set()
         for h in (plain - known_hosts()):
-            out.add(h)
+            out.add(h if len(h) <= 253 else h[:60] + "... (over-long name)")
         for h in src:
             out.add(h[:-len(REPO_SRC)] + " (repository source)")
         return sorted(out)
 
-    def record(persona, answer, transcript, did_not_run=None, proven=True):
+    def hosts_of(commands):
+        """-> (hosts, number of commands whose hosts could not be extracted): one command that cannot be parsed never costs the others or the report"""
+        hosts, bad = set(), 0
+        for c in commands:
+            try:
+                hosts |= url_hosts(c)
+            except Exception:
+                bad += 1
+        return hosts, bad
+
+    def record(persona, answer, transcript, did_not_run=None, proven=True, extra_blocking=None):
+        """the persona's encrypted report and the one pass/fail line. Every step is exception-safe INSIDE this path: whatever fails here costs this persona a 'driver error'
+        report, never a traceback and never an unwritten report"""
+        try:
+            _record(persona, answer, transcript, did_not_run, proven, extra_blocking)
+        except Exception:
+            text = report_text(persona, "blocking", [{"kind": "blocking", "text": "the driver failed while recording this persona (driver error)"}], None, False,
+                               "the driver failed while recording (driver error)")
+            ok = encrypt(a.recipient, persona, out_dir, [text.encode(), b"\n=== TRANSCRIPT ===\ndriver error\n"])
+            results[persona] = {"verdict": "blocking", "findings": [], "tokens": None, "capped": False, "encfail": not ok}
+            sys.stderr.write("persona-uat: %s: fail\n" % persona)
+
+    def _record(persona, answer, transcript, did_not_run, proven, extra_blocking):
         if answer:
             findings, tokens = list(answer["findings"]), answer["tokens"]
             if persona == "compliance-reviewer":
                 proven = verified_digest(answer, a.image)         # the reviewer never calls the endpoint: its proof is a successful verification of the RC's digest
-            if not proven:
+            if extra_blocking:
+                findings.append({"kind": "blocking", "text": extra_blocking})
+            elif not proven:
                 # no proof of exercising the RC image blocks the persona whatever else it reported (friction stays information, and stays in the report)
                 findings.append({"kind": "blocking", "text": (
-                    "the persona did not exercise the image under test: no verification action (cosign verify, attestation, SBOM or VEX) naming the release candidate's digest exited 0"
+                    "the persona did not exercise the image under test: no cosign verify (or verify-attestation with a --type) of the release candidate's digest exited 0"
                     if persona == "compliance-reviewer" else
                     "the persona did not exercise the image under test: the endpoint was never exercised (its request counter did not move during this persona's run)")})
             capped = tokens >= budget
             verdict = "blocking" if any(f["kind"] == "blocking" for f in findings) else ("friction" if findings else "pass")
-            hosts = set()
-            for c in answer.get("commands", []):
-                hosts |= url_hosts(c)
-            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts))
+            hosts, bad = hosts_of(answer.get("commands", []))
+            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts), unparsed=bad)
         else:       # fail closed: whatever is not exactly the contract is a blocking persona that did not run
             findings = [{"kind": "blocking", "text": "%s did not run: %s" % (persona, did_not_run)}]
             tokens, capped, verdict = None, False, "blocking"
-            hosts = set()
-            for ln in transcript.splitlines():
-                if ln.startswith("$ "):
-                    hosts |= url_hosts(ln[2:])
-            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts))
-        transcript = scrub(transcript, secrets)
-        ok = encrypt(a.recipient, persona, out_dir, text + "\n=== TRANSCRIPT ===\n" + transcript)
+            hosts, bad = hosts_of(transcript_commands(transcript))
+            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts), unparsed=bad)
+        ok = encrypt(a.recipient, persona, out_dir, itertools.chain([text.encode("utf-8", "replace"), b"\n=== TRANSCRIPT ===\n"],
+                                                                    (c.encode("utf-8", "replace") for c in transcript_chunks(transcript, secrets))))
         if not ok:          # no readable fallback: the persona fails closed and nothing plaintext exists
             findings = [{"kind": "blocking", "text": "the report could not be encrypted"}]
             verdict = "blocking"
@@ -815,8 +1148,9 @@ def main():
     started = []
     sandboxes = []
     teardown_failed = False
+    unreliable = False
     TD = "teardown failed: window not attributable"
-    token_seconds = min(86400, max(3600, a.agent_timeout + TOKEN_MARGIN))      # the persona's kubeconfig token outlives its window
+    UNRELIABLE = "cannot prove: attribution unreliable (an earlier persona's window could not be closed)"
     try:
         if docs is None:
             all_did_not_run("the public README.md is missing")
@@ -835,6 +1169,17 @@ def main():
             if teardown_failed:         # a survivor may still be sending traffic: no window after it is attributable, and nothing new is started
                 record(persona, None, "did not run: %s\n" % TD, "%s (an earlier teardown failed)" % TD)
                 continue
+            if unreliable:              # an earlier window never closed: no counter reading after it can be trusted
+                record(persona, None, "did not run: %s\n" % UNRELIABLE, UNRELIABLE)
+                continue
+            # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
+            left = len([q for q in PERSONAS if q not in results])
+            persona_timeout = int(min(a.agent_timeout, (a.job_budget - (time.time() - job_t0)) / left))
+            if persona_timeout < a.min_persona_seconds:
+                why_ = "cannot prove: the job's time budget left no time for this persona (%d seconds each, %d needed)" % (max(persona_timeout, 0), a.min_persona_seconds)
+                record(persona, None, "did not run: %s\n" % why_, why_)
+                continue
+            token_seconds = min(86400, max(3600, persona_timeout + TOKEN_MARGIN))      # the persona's kubeconfig token outlives its window
             tool_cids, req_tools = [], {}
             cluster = None
             sandbox = tempfile.mkdtemp(prefix="persona-uat-")
@@ -904,23 +1249,35 @@ def main():
                 args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label, "--transcript-file", tfile]
                 ep = "http://127.0.0.1:%d" % a.port
                 before = scrape(ep)
-                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, a.agent_timeout, tfile)
-                swept = sweep(docker, label)        # containers are the daemon's: whatever this persona's agent left is removed before the window closes
-                after = settled(ep, a.settle_quiet, a.settle_max)
+                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile)
+                # the window is closed BEHIND everything of this persona: its containers (swept by label), its tool containers and cluster are removed, THEN the counter is
+                # read once no connection to the endpoint is left and it has been unchanged for the quiet interval
+                swept = sweep(docker, label)
+                tools_gone = teardown_tools()
+                after = settled(ep, a.settle_quiet, a.settle_max, lambda: established_to(a.proc_net, a.port) == 0)
                 cleaned = cleanup(docker, label, sandbox, tools["shell"])
-                tools_gone = teardown_tools()       # the tool containers and the cluster go after the window is read, before the next persona's
                 if not [q for q in PERSONAS if q not in results and q != persona]:
                     # the last persona: the image under test goes with the rest, and a container that cannot be removed fails the run like any other teardown
                     if docker.remove(started):
                         del started[:]
                     else:
                         tools_gone = False
+                if after is UNSETTLED:
+                    unreliable = True
+                    after = None
+                    cannot = ("cannot prove: this persona's window could not be closed (a connection to the endpoint stayed open or the request counter kept changing for %d seconds): "
+                              "attribution unreliable" % a.settle_max)
+                else:
+                    cannot = None
                 ok = before is not None and after is not None and after - before > 0 and not (before == 0 and prev[0] > 0)
                 if after is not None:
                     prev[0] = after
                 if not (swept and tools_gone and cleaned):
                     teardown_failed = True          # this persona and every later one: a survivor may have sent traffic into a window we cannot attribute
                     record(persona, None, (transcript if answer is None else answer["transcript"]) or "", "%s%s" % (TD, "" if answer is not None else "; " + why))
+                elif cannot:
+                    record(persona, answer, answer["transcript"] if answer is not None else transcript, None if answer is not None else cannot, proven=False,
+                           extra_blocking=cannot if answer is not None else None)
                 elif answer is None:
                     record(persona, None, transcript, why)
                 else:
@@ -965,15 +1322,28 @@ def finish(results, out_dir=None):
 STAGE = []        # destination paths written so far: one failure and every one of them (and the failed one) is removed
 
 
-def encrypt(recipient, persona, out_dir, payload):
+def encrypt(recipient, persona, out_dir, chunks):
+    """openssl cms -encrypt reading the payload from STDIN, chunk by chunk (a transcript of many megabytes is never held twice, and no plaintext file is written); the
+    ciphertext goes to <out>/<persona>.cms. -> False on any failure (the caller removes every artifact)"""
     dest = os.path.join(out_dir, persona + ".cms")
     STAGE.append(dest)
     try:
-        r = subprocess.run(["openssl", "cms", "-encrypt", "-aes-256-cbc", "-binary", "-outform", "DER", "-recip", recipient, "-out", dest], input=payload.encode("utf-8", "replace"),
-                           capture_output=True, env=clean_env(), timeout=120)
+        p = subprocess.Popen(["openssl", "cms", "-encrypt", "-aes-256-cbc", "-binary", "-outform", "DER", "-recip", recipient, "-out", dest],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=clean_env())
+        try:
+            for c in chunks:
+                p.stdin.write(c)
+            p.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        p.wait(timeout=600)
     except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
         return False
-    return r.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0
+    return p.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 0
 
 
 def publish_artifacts(out_dir, ok):

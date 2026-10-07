@@ -620,6 +620,8 @@ def _run_refresher(script):
     m = re.search(r"PERSONA_UAT_REFRESH_SECONDS:-([0-9]+)", script)
     if not m or not 10 <= int(m.group(1)) <= 300:
         probs.append("the identity refresher's default interval is not between 10 seconds and five minutes (an assertion expires after about five)")
+    if not re.search(r"curl\s[^\n|]*--max-time\s+[0-9]+", script):
+        probs.append("the identity refresher's curl has no --max-time: one stalled request would stop the refreshing for the rest of the job")
     state = {"n": 0, "auth": [], "inflight": 0}
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -1010,7 +1012,7 @@ xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.
 H40 = "a" * 40
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n")
-REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
+REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(curl -sSf --max-time 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = 'rm -f "${RUNNER_TEMP}/anthropic-identity-token"'
 def synth_driver(weekly):
     pre = ""
@@ -1466,6 +1468,7 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the refresher interval defaults to 10 minutes", "default interval is not between", lambda j: _sub(j, "REFRESH_SECONDS:-60", "REFRESH_SECONDS:-600"), w)
     mutate(f"{lab} the refresher starts although no token file exists", "starts although the token file does not exist", lambda j: _sub(j, '[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\n', ""), w)
     mutate(f"{lab} the refresher asks the OIDC endpoint without the request token", "did not replace the stale token file", lambda j: _sub(j, 'Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}', 'Authorization: bearer x'), w)
+    mutate(f"{lab} the refresher's curl has no --max-time (a stalled request stops the refreshing)", "has no --max-time", lambda j: _sub(j, " --max-time 20", ""), w)
     mutate(f"{lab} the refresher asks for another audience", "did not replace the stale token file", lambda j: _sub(j, "audience=https://api.anthropic.com", "audience=https://example.invalid"), w)
     mutate(f"{lab} no token cleanup step at the end", "must end with exactly one `if: always()` step that removes", lambda j: j.update(steps=j["steps"][:-1]), w)
     mutate(f"{lab} the cleanup step is not always()", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update({"if": "${{ success() }}"}), w)

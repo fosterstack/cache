@@ -111,7 +111,34 @@
 #       1h-24h request policy. Hosts are inferred from command text (comments excluded, inline ones too); redirects and tool-internal contacts are not observed.
 #       The gradle/maven entrypoint models are the FAKE's (program first; the exact exit status and text of a real digest's failure cannot be checked offline).
 set -euo pipefail
-root=$(cd "$(dirname "$0")/.." && pwd)
+# FIXTURE PORTS are chosen per run (free ones, the endpoint's three consecutive: base, base+1, base+2) so this suite and the others can run side by side: the script rewrites its own
+# port literals into a private copy and runs that
+if [ -z "${PERSONA_TEST_PORTS:-}" ]; then
+  export PERSONA_TEST_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+  ports=$(python3 - <<'PYP'
+import random, socket
+def free(p):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p)); return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+while True:
+    b = random.randrange(20000, 29000)
+    rest = random.sample(range(29100, 31000), 3)
+    if all(free(x) for x in (b, b + 1, b + 2, *rest)):
+        print(b, *rest); break
+PYP
+)
+  set -- $ports
+  me=$(mktemp "${TMPDIR:-/tmp}/persona-test-XXXXXX")
+  perl -pe "s/\\b18080\\b/$1/g; s/\\b18081\\b/$(($1+1))/g; s/\\b18082\\b/$(($1+2))/g; s/\\b18090\\b/$2/g; s/\\b18099\\b/$3/g; s/\\b18123\\b/$4/g; s/PERSONA_TEST_PORTS:-/PERSONA_TEST_PORTS:-/" "$0" >"$me"
+  rc=0; PERSONA_TEST_PORTS=1 bash "$me" "$@" || rc=$?
+  rm -f "$me"; exit $rc
+fi
+root=${PERSONA_TEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 driver="$root/bin/persona-uat.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
@@ -226,6 +253,11 @@ for i in range(p.get("unauth", 0)):    # requests the auth layer answers 401: wi
         urllib.request.urlopen(urllib.request.Request(req["endpoint"] + "/secret-%d" % i, headers={"X-Persona": req["persona"], "X-Unauthorized": "1"}), timeout=5).read()
     except urllib.error.HTTPError:
         pass
+if p.get("hold"):           # a request the SERVER is still working on after this persona ends: held open s seconds (its connection is visible), counted when it finishes
+    urllib.request.urlopen(req["endpoint"] + "/__hold?s=%s&who=%s" % (p["hold"], req["persona"]), timeout=5).read()
+if p.get("orphan_same"):    # work the agent started in ITS OWN session and left running: the driver terminates the agent's whole process group when the persona ends
+    subprocess.Popen([sys.executable, "-c", "import sys,time,urllib.request;time.sleep(float(sys.argv[2]));urllib.request.urlopen(urllib.request.Request(sys.argv[1]+'/orphan-work',headers={'X-Persona':'ORPHAN'}),timeout=5)\n", req["endpoint"], str(p["orphan_same"])],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 if p.get("orphan"):         # work the agent started in its OWN session, outliving it: it requests the endpoint after this many seconds
     subprocess.Popen([sys.executable, "-c", "import sys,time,urllib.request;time.sleep(float(sys.argv[2]));urllib.request.urlopen(urllib.request.Request(sys.argv[1]+'/orphan-work',headers={'X-Persona':'ORPHAN'}),timeout=5)\n", req["endpoint"], str(p["orphan"])],
                      start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -242,9 +274,17 @@ if p.get("foreign"):        # entries a tool image created as ANOTHER uid: hidde
         os.chmod(os.path.join(base, d_), 0o555)
 if p.get("stream"):         # the agent's streamed transcript file: a first completed action, filler, a last completed action, N characters in all
     av_ = sys.argv[2:]
-    head, tail = "$ first-completed-action\nout-first\n", "$ last-completed-action\nout-last\n"
+    head, tail, mid = "$ first-completed-action\nout-first\n", "$ last-completed-action\nout-last\n", "$ middle-completed-action\nout-middle\n"
+    n_ = p["stream"] - len(head) - len(tail) - len(mid)
+    line_ = "y" * 79 + "\n"
     with open(av_[av_.index("--transcript-file") + 1], "w") as fh_:
-        fh_.write(head + "y" * (p["stream"] - len(head) - len(tail)) + tail)
+        fh_.write(head)
+        for i_ in range(0, n_ // 2, 80):
+            fh_.write(line_[:min(80, n_ // 2 - i_)])
+        fh_.write(mid)
+        for i_ in range(0, n_ - n_ // 2, 80):
+            fh_.write(line_[:min(80, n_ - n_ // 2 - i_)])
+        fh_.write(tail)
 if p.get("sleep"):
     time.sleep(p["sleep"])
 kube_rc = None
@@ -284,7 +324,7 @@ cat >"$work/docker.tmpl" <<'SH'
 DOCKER_LOG="__LOG__"
 echo "$*" >>"$DOCKER_LOG"
 if [ -n "${DOCKER_FAIL_MATCH:-}" ] && [[ "$*" == *"$DOCKER_FAIL_MATCH"* ]]; then echo "Unable to find image '$DOCKER_FAIL_MATCH' locally" >&2; echo "docker: Error response from daemon: pull access denied for sha256 digest" >&2; echo "docker: simulated failure" >&2; exit 125; fi
-if [ -n "${DOCKER_NOISE:-}" ] && { [ "$1" = rm ] || { [ "$1" = run ] && [ "$2" = -d ]; }; }; then
+if [ -n "${DOCKER_NOISE:-}" ] && [ "$1" = run ] && [ "$2" = -d ]; then
   # requests the DRIVER's own container handling causes on the endpoint, BETWEEN personas' windows (never part of a persona's)
   python3 -c "
 import sys, urllib.request, urllib.error
@@ -829,7 +869,7 @@ import json, os, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 port, root = int(sys.argv[1]), sys.argv[2]
 lock = threading.Lock()
-S = {"c": {}, "mode": "ok", "dir": "", "silent": False, "seen": False, "queue": [], "unc": 0, "delay": 0.0, "extra": 0.0, "drift_for": "", "drift_secs": 0.0, "drift_until": 0.0}
+S = {"c": {}, "mode": "ok", "dir": "", "silent": False, "seen": False, "queue": [], "unc": 0, "delay": 0.0, "extra": 0.0, "drift_for": "", "drift_secs": 0.0, "drift_until": 0.0, "epoch": 0}
 UNCOUNTED = ("/metrics", "/healthz", "/statusz")
 def total():
     return sum(S["c"].values())
@@ -860,7 +900,26 @@ class H(BaseHTTPRequestHandler):
                 S["extra"] = float(q["s"][0]); return self.reply(200, "ok")
             if u.path == "/__drift":       # once the named persona makes a counted request, EVERY /metrics scrape for the next s seconds bumps the counter (a counter that never settles)
                 S["drift_for"] = q["p"][0]; S["drift_secs"] = float(q["s"][0]); S["drift_until"] = 0.0; return self.reply(200, "ok")
+            if u.path == "/__hold":        # a request still IN FLIGHT server-side: its connection is ESTABLISHED (a line in the case's procnet table) for s seconds, then it is counted (after the handler returns)
+                secs, who_, epoch = float(q["s"][0]), q.get("who", ["HELD"])[0], S["epoch"]
+                tab = os.path.join(S["dir"], "procnet", "tcp") if S["dir"] else None
+                line = "  77: 0100007F:%04X 0100007F:E001 01 00000000:00000000 00:00000000 00000000     0        0 7777 1 0\n" % port
+                def held():
+                    if tab and os.path.isdir(os.path.dirname(tab)):
+                        open(tab, "a").write(line)
+                    time.sleep(secs)
+                    with lock:
+                        if S["epoch"] == epoch:
+                            S["c"][("GET", "200")] = S["c"].get(("GET", "200"), 0) + 1
+                            if S["dir"]:
+                                open(os.path.join(S["dir"], "srv.log"), "a").write(json.dumps({"t": time.time(), "path": "/held", "method": "GET", "counted": True, "persona": who_, "total": total()}) + "\n")
+                    if tab and os.path.exists(tab):
+                        keep = [l for l in open(tab) if l != line]
+                        open(tab, "w").writelines(keep)
+                threading.Thread(target=held, daemon=True).start()
+                return self.reply(200, "ok")
             if u.path == "/__reset":
+                S["epoch"] += 1
                 S["c"].clear(); S["unc"] = 0; S["extra"] = 0.0; S["drift_for"] = ""; S["drift_until"] = 0.0; return self.reply(200, "ok")
             known = u.path in UNCOUNTED or (self.command in ("GET", "HEAD") and os.path.isfile(os.path.join(root, u.path.lstrip("/"))))
             code = "201" if self.command == "PUT" else ("200" if known else "404")
@@ -1042,7 +1101,7 @@ run() {
       PERSONA_UAT_MODEL=MODEL-DEFAULT-X PERSONA_UAT_COMPLIANCE_MODEL=MODEL-COMPLIANCE-X PATH="$work/$name/hostbin:$PATH" "$@" \
       ${tw[@]+"${tw[@]}"} bash -c 'cd "$1" && shift && exec "$@"' _ "$work/plain" python3 "$driver" --mode "$mode" --image "${IMAGE:-$IMG}" --repo "$repo" --out "$work/$name/out" \
         --tools "${TOOLS:-$work/tools.json}" --docker "$work/$name/docker" --recipient "${RECIPIENT:-$work/test.pem}" --port "${PORT:-18080}" --ready-timeout "${READY_TIMEOUT:-5}" \
-        --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${sflags[@]+"${sflags[@]}"} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
+        --agent "python3 $work/stub.py $work/$name" --proc-net "$pnet" ${ALLOW_LISTEN:+--allow-listen $ALLOW_LISTEN} ${AGENT_TIMEOUT:+--agent-timeout $AGENT_TIMEOUT} ${sflags[@]+"${sflags[@]}"} ${JOB_BUDGET:+--job-budget $JOB_BUDGET} ${MIN_PERSONA:+--min-persona-seconds $MIN_PERSONA} >"$work/$name/stdout" 2>"$work/$name/stderr" || rc=$?
   RUNSECS=$((SECONDS - t_start))
   srvctl __case dir ""
   decout "$name"
@@ -1108,8 +1167,12 @@ for p in rows:
     for it in ITEMS:
         assert low.count(it) == 1, (p, "header", it, low.count(it))
     assert "friction, never blocking" in low, hdr[0]
-    lim = [l for l in r.splitlines() if l.startswith("Counter limit:")]
-    assert len(lim) == 1 and "3 seconds" in lim[0] and "not attributed" in lim[0], (p, lim)
+    lim = [l for l in r.splitlines() if l.startswith("Counter guarantee:")]
+    assert len(lim) == 1, (p, lim)
+    g = lim[0].lower()
+    for w in ("closed only after", "processes and containers were removed", "no established connection", "unchanged for 3 seconds", "cannot prove", "20 seconds", "still running more than 3 seconds after its client"):
+        assert w in g, (p, w, lim[0])
+    assert "Counter limit:" not in r, "the old (inaccurate) 'not attributed' claim is gone"
 PY
 CASE="the driver hands every agent --transcript-file: a private file OUTSIDE the sandbox (its directory 0700, a different path per persona), and nothing of it is left when the run ends"
 check python3 - "$work/clean/log" <<'PY'
@@ -3090,9 +3153,15 @@ check test "$(head -1 "$(out cmp7)/compliance-reviewer.report.md")" = "VERDICT: 
 cmpcase cmp8 '{"noverify":true,"commands":["cosign verify x"],"drop":["actions"]}'
 CASE="compliance proof: an answer with commands but no actions is no proof (fail closed): blocking"
 check test "$(head -1 "$(out cmp8)/compliance-reviewer.report.md")" = "VERDICT: blocking"
-cmpcase cmp9 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"download\",\"sbom\",\"$RCD\"],\"exit\":0}]}"
-CASE="compliance proof: only cosign verify (the one verification docs/verify-images.md documents for an image) proves; verify-attestation, verify-blob and download sbom of the RC digest do not: blocking"
+cmpcase cmp9 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"download\",\"sbom\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--help\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"-h\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--version\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: verify-attestation WITHOUT --type, verify-blob, download sbom, and any verify with --help, -h or --version prove nothing: blocking"
 check test "$(head -1 "$(out cmp9)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp12 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"--type\",\"slsaprovenance\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: cosign verify-attestation WITH --type and the RC digest as its one image argument, exit 0, proves: pass"
+check test "$(head -1 "$(out cmp12)/compliance-reviewer.report.md")" = "VERDICT: pass"
+cmpcase cmp13 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity\",\"$RCD\",\"ghcr.io/example/cache:1.0\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"ghcr.io/example/other@sha256:$(printf 'b%.0s' $(seq 64))\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: the RC digest as the VALUE of a flag, or as one of two image arguments, is no proof: blocking"
+check test "$(head -1 "$(out cmp13)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 cmpcase cmp10 "{\"noverify\":true,\"actions\":[{\"tool\":\"shell\",\"argv\":[\"sh\",\"-c\",\"cosign verify $RCD\"],\"exit\":0},{\"tool\":\"kubectl\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":0}]}"
 CASE="compliance proof: a shell action with the words, or another tool's 'verify', is no proof (the TOOL field must be cosign): blocking"
 check test "$(head -1 "$(out cmp10)/compliance-reviewer.report.md")" = "VERDICT: blocking"
@@ -3895,33 +3964,41 @@ assert line("maven-jenkins-ci") == "url-f.example,url-g.example,url-i.example", 
 assert line("compliance-reviewer") == "", line("compliance-reviewer")
 PY
 check publiclog hosts6
-# TRANSCRIPT HEAD AND TAIL (step 8 round 2, B5): the persisted transcript is not cut to its last 400000 characters. Up to 1,000,000 characters it is kept whole; beyond that
-# the first 200000 and the last 800000 are kept with an explicit marker of how many were omitted. 400,038 characters keep the first completed action.
+# THE FULL TRANSCRIPT UP TO THE AGENT'S CAP (step 8 round 3, B4): the encrypted artifact holds the persisted transcript whole (streamed into openssl, never trimmed) up to 16 MiB;
+# only ABOVE the cap are the first 200000 and the last 800000 characters kept, with an explicit marker. A middle action is present in the decrypted artifact below the cap.
 AGENT_TIMEOUT=1 run trstream1 '{"gradle-platform-engineer":{"stream":400038,"sleep":30}}' rc
-CASE="a persisted transcript of 400,038 characters (a timed-out agent) keeps its FIRST completed action and its last: nothing is cut below one million characters"
+CASE="a persisted transcript of 400,038 characters (a timed-out agent) keeps its first, middle and last completed actions"
 check python3 - "$(out trstream1)" <<'PY'
 import sys
 t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
-assert "agent timed out" in t and "$ first-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
-assert t.count("y") >= 399900, "the filler was cut"
+assert "agent timed out" in t and "$ first-completed-action" in t and "$ middle-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
 PY
 AGENT_TIMEOUT=1 run trstream2 '{"gradle-platform-engineer":{"stream":1500000,"sleep":30}}' rc
-CASE="a persisted transcript of 1,500,000 characters keeps the first 200000 (with the first action) and the last 800000 (with the last action) and says '[... 500000 characters omitted ...]' once"
+CASE="a persisted transcript of 1,500,000 characters (below the cap) is kept WHOLE in the decrypted artifact: its middle action is there, and nothing is marked omitted"
 check python3 - "$(out trstream2)" <<'PY'
 import sys
 t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
-assert "$ first-completed-action" in t and "$ last-completed-action" in t, t[:200]
-assert t.count("[... 500000 characters omitted ...]") == 1, [l for l in t.splitlines() if "omitted" in l][:3]
-assert 1000000 <= len(t) <= 1001500, len(t)
+assert "$ first-completed-action" in t and "$ middle-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
+assert len(t) >= 1500000, len(t)
 PY
-AGENT_TIMEOUT=1 run trstream3 '{"gradle-platform-engineer":{"stream":18000000,"sleep":30}}' rc
-CASE="a persisted transcript above the 16 MiB cap (18,000,000 characters, as if the agent ignored its own cap) is still read bounded: first and last kept, the omission counted, the encrypted transcript about one million characters"
+AGENT_TIMEOUT=1 run trstream3 '{"gradle-platform-engineer":{"stream":15000000,"sleep":30}}' rc
+CASE="a persisted transcript of 15,000,000 characters (still below the 16 MiB cap) is kept whole: the middle action is in the decrypted artifact"
 check python3 - "$(out trstream3)" <<'PY'
 import sys
 t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
-assert "$ first-completed-action" in t and "$ last-completed-action" in t and t.count("[... 17000000 characters omitted ...]") == 1
-assert len(t) <= 1001500, len(t)
+assert "$ first-completed-action" in t and "$ middle-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
+assert len(t) >= 15000000, len(t)
 PY
+AGENT_TIMEOUT=1 run trstream4 '{"gradle-platform-engineer":{"stream":17000000,"sleep":30}}' rc
+CASE="only ABOVE the 16 MiB cap (17,000,000 characters, as if the agent ignored its own cap) are the first 200000 and the last 800000 kept, with '[... 16000000 characters omitted ...]' once; the middle action is the one given up"
+check python3 - "$(out trstream4)" <<'PY'
+import sys
+t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
+assert "$ first-completed-action" in t and "$ last-completed-action" in t and "$ middle-completed-action" not in t
+assert t.count("[... 16000000 characters omitted ...]") == 1 and len(t) <= 1001500, len(t)
+PY
+CASE="the plaintext of a large transcript is streamed into openssl (stdin) and never left on disk: no file in any run's private TMPDIR holds the middle action"
+check none_match 'middle-completed-action' "$work/trstream2/tmp" "$work/trstream3/tmp" "$work/trstream4/tmp"
 # curl/wget SHORT-OPTION CLUSTERS with attached values and the other host-naming options (step 8 round 2, B4): -xHOST, -sxHOST, -x HOST, --connect-to, --resolve, wget -e http_proxy=HOST,
 # wget -B HOST; -K/--config FILE and wget -i FILE name a file whose content is not observed (the file name is never mistaken for a host); localhost and docs hosts stay unlisted
 python3 - >"$work/hostsplan7.json" <<'PY'
@@ -3951,6 +4028,164 @@ for p, v in want.items():
     assert line(p) == v, (p, line(p), v)
 PY
 check publiclog hosts7
+# HOST EXTRACTION by program BASENAME and prefix (step 8 round 3, B3): /usr/bin/curl, env/sudo/time/command/nohup/timeout wrappers, NAME=value prefixes (proxy variables name hosts),
+# several programs per line, curl --preproxy/--socks5*, and nc/ssh/ping/dig/telnet/openssl s_client/git clone/scp. Informational only; the label is unchanged.
+python3 - >"$work/hostsplan8.json" <<'PY'
+import json
+print(json.dumps({
+ "gradle-platform-engineer": {"commands": ["/usr/bin/curl -xoutside-a.example:8080 localhost", "env X=1 curl --proxy http://pa-b.example:80 localhost", "http_proxy=pa-c.example:3128 curl localhost",
+                                           "sudo -n curl -s outside-d.example/x", "time curl outside-e.example", "command wget outside-f.example", "nohup curl outside-g.example &",
+                                           "timeout 5 curl outside-h.example", "curl localhost; wget -ehttp_proxy=outside-i.example localhost", "echo a | curl --preproxy socks5://pre-j.example:1080 localhost",
+                                           "curl --proxy-header 'X: y' --proxy-user u:p -x pr-k.example:1 localhost", "curl --socks5-hostname socks-l.example:1080 localhost"]},
+ "maven-jenkins-ci": {"commands": ["nc nc-a.example 443", "ssh user@ssh-b.example uptime", "ping -c1 ping-c.example", "dig dig-d.example @dig-server-e.example", "telnet tel-f.example 23",
+                                   "openssl s_client -connect ossl-g.example:443", "git clone https://git-h.example/x/y.git", "git clone git@git-i.example:o/r.git",
+                                   "git clone ssh://git@git-j.example/o/r.git", "scp file user@scp-k.example:/tmp", "nc -z localhost 80", "ping localhost"]},
+ "compliance-reviewer": {"commands": ["export http_proxy=exp-a.example:8080", "FOO=bar HTTPS_PROXY=http://hp-b.example curl localhost", "/usr/local/bin/wget -q wg-c.example/f", "env -i curl env-d.example"]},
+ "readme-evaluator": {"commands": ["echo curl outside.example", "grep -r wget notes", "ls /usr/bin/curl", "cat curl.txt"]}}))
+PY
+run hosts8 "$(cat "$work/hostsplan8.json")" rc
+CASE="hosts (programs by basename, prefixes, pipelines, network tools): every host a command names to curl/wget (any path, any wrapper, any assignment prefix, several per line), to nc/ssh/scp/ping/dig/telnet/openssl s_client/git clone is listed; words in echo/grep/ls/cat are not commands"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+def line(p):
+    t = open("%s/hosts8/plain/%s.report.md" % (w, p)).read().splitlines()
+    v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
+want = {"gradle-platform-engineer": "outside-a.example,outside-d.example,outside-e.example,outside-f.example,outside-g.example,outside-h.example,outside-i.example,pa-b.example,pa-c.example,pr-k.example,pre-j.example,socks-l.example",
+        "maven-jenkins-ci": "dig-d.example,dig-server-e.example,git-h.example,git-i.example,git-j.example,nc-a.example,ossl-g.example,ping-c.example,scp-k.example,ssh-b.example,tel-f.example",
+        "compliance-reviewer": "env-d.example,exp-a.example,hp-b.example,wg-c.example", "on-call-engineer": "", "readme-evaluator": ""}
+for p, v in want.items():
+    assert line(p) == v, (p, line(p), v)
+PY
+check publiclog hosts8
+# EXCEPTION SAFETY (step 8 round 3, B1): a command that cannot be parsed (a fullwidth slash inside a proxy host, an unclosed IPv6 bracket, NULs, unicode separators, enormous arguments)
+# never raises out of the reporting path: the action is marked unparsed in the ENCRYPTED report, the report is still written, and nothing but the pass/fail lines is public
+python3 - >"$work/fuzzplan.json" <<'PY'
+import json
+big = "A" * 300000
+print(json.dumps({"gradle-platform-engineer": {"commands": [
+    "curl --proxy 'http://PRIVATE-RESULT\uff0finternal' http://127.0.0.1:18080", "curl --proxy http://[::1 localhost", "git clone http://[bad/x", "curl http://\u2028evil\u2029.example/x",
+    "curl\u0000 --url=nul\u0000.example", "curl --resolve ::: x", "curl --connect-to : y", "wget -e http_proxy=\uff1a\uff0f\uff0f", "curl -x \ud7ff\u00e9\u0301.example:80 localhost",
+    "curl " + big + ".example", "ssh " + "u@" * 5000 + "h", "nc \n\n", "curl --url=\u3000", "dig @[", "openssl s_client -connect [:", "scp a: b:"]},
+    "maven-jenkins-ci": {"commands": ["curl 'unterminated", "wget \"also unterminated", "curl -- --proxy", "nohup", "env", "timeout", "sudo -u"]}}))
+PY
+run fuzz "$(cat "$work/fuzzplan.json")" rc
+CASE="fuzzed commands (fullwidth/unicode separators, NULs, enormous arguments, unclosed brackets, unterminated quotes): the run still exits 0, all five reports are written and encrypted, each says how many commands were unparsed, no traceback anywhere, and the public log is only the pass/fail lines"
+check python3 - "$work/fuzz" "$(out fuzz)" "$rc" <<'PY'
+import glob, re, sys
+d, o, rc = sys.argv[1:4]
+assert int(rc) == 0, rc
+err = open(d + "/stderr").read() + open(d + "/stdout").read()
+assert "Traceback" not in err and "PRIVATE-RESULT" not in err and "ValueError" not in err, err[:300]
+assert len(glob.glob(d + "/out/*.cms")) == 5 and len(glob.glob(o + "/*.report.md")) == 5
+r = open(o + "/gradle-platform-engineer.report.md").read()
+m = re.search(r"^Unparsed commands \(hosts not extracted\): ([0-9]+)$", r, re.M)
+assert m and int(m.group(1)) >= 3, r[:600]
+assert "Hosts named in its commands" in r
+PY
+check publiclog fuzz
+# the LAST-RESORT handler: an exception nothing else caught prints only the fixed 'driver error' line, still writes an encrypted report for every persona (what is known: nothing ran) and fails the run
+mkdir -p "$work/lastresort/out" "$work/lastresort/tmp"; : >"$work/lastresort/docker.log"; sed "s#__LOG__#$work/lastresort/docker.log#" "$work/docker.tmpl" >"$work/lastresort/docker"; chmod +x "$work/lastresort/docker"
+echo '{}' >"$work/lastresort/plan.json"; : >"$work/lastresort/log"; mkhost "$work/lastresort"; rc=0
+env -u PERSONA_UAT_TOKEN_BUDGET TMPDIR="$work/lastresort/tmp" PATH="$work/lastresort/hostbin:$PATH" PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 \
+  python3 - "$driver" "$repo" "$work" >"$work/lastresort/stdout" 2>"$work/lastresort/stderr" <<'PY' || rc=$?
+import importlib.util, sys
+drv, repo, w = sys.argv[1:4]
+sp = importlib.util.spec_from_file_location("drv", drv); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+def boom(*a, **k):
+    raise RuntimeError("PRIVATE-DOCS-LEAK /secret/path")
+m.read_docs = boom
+sys.argv = [drv, "--mode", "rc", "--image", "ghcr.io/example/cache@sha256:" + "a" * 64, "--repo", repo, "--out", w + "/lastresort/out", "--tools", w + "/tools.json",
+            "--docker", w + "/lastresort/docker", "--recipient", w + "/test.pem", "--agent", "python3 " + w + "/stub.py " + w + "/lastresort", "--proc-net", w + "/procnet"]
+sys.exit(m.main())
+PY
+decout lastresort
+CASE="last resort: an uncaught exception (carrying private text) prints ONLY the fixed 'driver error' line plus the pass/fail lines, writes an encrypted report for all five personas saying the driver failed, never a traceback or the exception text, and the run fails"
+check python3 - "$work/lastresort" "$rc" "$PERSONAS" <<'PY'
+import glob, re, sys
+d, rc, personas = sys.argv[1], int(sys.argv[2]), sys.argv[3].split()
+out = open(d + "/stdout").read() + open(d + "/stderr").read()
+assert rc == 1, rc
+assert "Traceback" not in out and "PRIVATE-DOCS-LEAK" not in out and "/secret/path" not in out, out[:300]
+lines = [l for l in out.splitlines() if l.strip()]
+pat = re.compile(r"^persona-uat: ((%s|overall): (pass|fail)|driver error)$" % "|".join(personas))
+assert all(pat.match(l) for l in lines), lines
+assert lines.count("persona-uat: driver error") == 1 and "persona-uat: overall: fail" in lines, lines
+assert len(glob.glob(d + "/out/*.cms")) == 5
+for p in personas:
+    r = open("%s/plain/%s.report.md" % (d, p)).read()
+    assert r.splitlines()[0] == "VERDICT: blocking" and "driver error" in r.lower() and "PRIVATE-DOCS-LEAK" not in r, r
+PY
+# ATTRIBUTION (step 8 round 3, B5): the server counts a request AFTER its handler returns, so a late completion could land in the NEXT persona's window. The driver therefore ends every
+# window by removing the persona's processes and containers, waiting for NO established connection to the endpoint (the kernel's socket table) and for an unchanged counter, within
+# a ceiling; a window that cannot be closed that way makes the persona and every later one blocking (cannot prove), never a pass.
+mkdir -p "$work/late7"; cp -R "$work/procnet" "$work/late7/procnet"
+srvctl __reset
+PROCNET="$work/late7/procnet" SETTLE_MAX=15 run late7 '{"gradle-platform-engineer":{"requests":0,"hold":7},"maven-jenkins-ci":{"requests":0}}' rc
+CASE="a request still in flight server-side when persona 1 ends (held 7 seconds: its connection stays ESTABLISHED, then it is counted) is attributed to persona 1, whose window closes only after it; persona 2, with no request of its own, is BLOCKING (it is not credited with persona 1's late request)"
+check python3 - "$(out late7)" "$work/late7" <<'PY'
+import json, sys
+o, d = sys.argv[1:3]
+want = {"gradle-platform-engineer": "pass", "maven-jenkins-ci": "blocking"}
+for p, v in want.items():
+    r = open(o + "/" + p + ".report.md").read()
+    assert r.splitlines()[0] == "VERDICT: " + v, (p, r)
+srv = [json.loads(l) for l in open(d + "/srv.log")]
+held = [e for e in srv if e["path"] == "/held"][0]
+tim = {json.loads(l)["persona"]: json.loads(l) for l in open(d + "/timing.log")}
+assert tim["maven-jenkins-ci"]["t0"] > held["t"], ("persona 2 started before the held request finished: its window was not closed behind it", tim["maven-jenkins-ci"]["t0"], held["t"])
+PY
+check publiclog late7
+mkdir -p "$work/late40"; cp -R "$work/procnet" "$work/late40/procnet"
+srvctl __reset
+PROCNET="$work/late40/procnet" SETTLE_MAX=6 run late40 '{"gradle-platform-engineer":{"requests":1,"hold":40}}' rc
+srvctl __reset
+CASE="a window that cannot be closed within the ceiling (a request held 40 seconds, ceiling 6): that persona is blocking 'cannot prove', every LATER persona is blocking 'attribution unreliable' and is not run, nothing passes, the run fails"
+check python3 - "$(out late40)" "$work/late40" "$rc" <<'PY'
+import json, sys
+o, d, rc = sys.argv[1:4]
+assert int(rc) == 1
+r1 = open(o + "/gradle-platform-engineer.report.md").read()
+assert r1.splitlines()[0] == "VERDICT: blocking" and "cannot prove" in r1, r1
+for p in ("maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
+    r = open("%s/%s.report.md" % (o, p)).read()
+    assert r.splitlines()[0] == "VERDICT: blocking" and "attribution unreliable" in r and "cannot prove" in r, (p, r)
+assert [json.loads(l)["persona"] for l in open(d + "/log")] == ["gradle-platform-engineer"], "later personas must not run"
+PY
+check publiclog late40
+SETTLE_MAX=6 run orphansame '{"gradle-platform-engineer":{"orphan_same":1.5},"maven-jenkins-ci":{"requests":0}}' rc
+CASE="work the agent left running in its own session (it would request the endpoint 1.5s later, inside the next window) is terminated when the persona ends: no such request reaches the endpoint"
+check python3 - "$work/orphansame" <<'PY'
+import json, sys
+srv = [json.loads(l) for l in open(sys.argv[1] + "/srv.log")]
+assert not [e for e in srv if e["persona"] == "ORPHAN"], [e for e in srv if e["persona"] == "ORPHAN"]
+PY
+# THE JOB'S TIME BUDGET (step 8 round 3): the agent timeout is derived from what is left of the job's budget divided by the personas still to run; a persona that cannot be given the minimum
+# is blocking 'cannot prove' and never runs. The default budget (6600 s) fits five default personas into the 120-minute job.
+JOB_BUDGET=10 MIN_PERSONA=3 run budget1 '{}' rc
+CASE="a job budget of 10 s with a 3 s minimum per persona (2 s each): no persona can be given its minimum, none runs, all five are blocking 'cannot prove', the run fails"
+check python3 - "$(out budget1)" "$work/budget1" "$rc" <<'PY'
+import sys
+o, d, rc = sys.argv[1:4]
+assert int(rc) == 1 and open(d + "/log").read() == ""
+for p in "gradle-platform-engineer maven-jenkins-ci compliance-reviewer readme-evaluator on-call-engineer".split():
+    r = open("%s/%s.report.md" % (o, p)).read()
+    assert r.splitlines()[0] == "VERDICT: blocking" and "cannot prove" in r and "time budget" in r, (p, r)
+PY
+check publiclog budget1
+JOB_BUDGET=60 MIN_PERSONA=2 run budget2 '{"gradle-platform-engineer":{"sleep":40}}' rc
+CASE="the agent timeout shrinks to the job's remaining budget over the personas left (60 s / 5 = 12 s for the first, which sleeps 40 s and times out near it); the personas after it still run and pass within the budget"
+check python3 - "$(out budget2)" "$work/budget2" <<'PY'
+import re, sys
+o, d = sys.argv[1:3]
+r = open(o + "/gradle-platform-engineer.report.md").read()
+t = open(o + "/gradle-platform-engineer.transcript.txt").read()
+m = re.search(r"agent timed out after ([0-9]+)s", t)
+assert r.splitlines()[0] == "VERDICT: blocking" and m and 8 <= int(m.group(1)) <= 12, (m and m.group(1), t[:200])
+for p in "maven-jenkins-ci compliance-reviewer readme-evaluator on-call-engineer".split():
+    assert open("%s/%s.report.md" % (o, p)).read().splitlines()[0] == "VERDICT: pass", p
+PY
 # the auth layer wraps the metrics middleware: a 401 is never counted
 run proofauth '{"readme-evaluator":{"requests":0,"unauth":3}}' rc
 CASE="a persona whose only traffic was answered 401 (withAuth wraps withMetrics, so it is never counted) made no counted request: blocking, the others pass"
