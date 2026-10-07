@@ -2071,19 +2071,19 @@ requirements:
       - id: REQ-UAT-001-AC1
         given: a release candidate tag v*-rc.*
         when: its release run promotes
-        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest using only the public docs, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run"
+        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-UAT-001-AC2
         given: the weekly maintenance run
         when: it runs
-        then: "the same five personas exercise the latest release, and a blocking finding opens or updates one issue labelled blocking"
+        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-UAT-001-AC3
         given: a persona finding that is friction (not broken behavior or a failing doc step)
         when: the run ends
-        then: "it is recorded in one issue per run as information and blocks nothing"
+        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-UAT-001-AC4
@@ -2095,6 +2095,6 @@ requirements:
       - id: REQ-UAT-001-AC5
         given: a persona agent
         when: it runs
-        then: "it reads only the public docs and the endpoint (no repository source, no internal docs); its model and token budget come from environment variables the owner sets; its transcript is kept as an artifact"
+        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
