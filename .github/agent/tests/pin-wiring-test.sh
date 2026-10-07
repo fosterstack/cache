@@ -10,8 +10,22 @@ pass=0 failn=0
 
 judge() { python3 - "$1" <<'PY'
 import sys, yaml
-d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
+# cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
+# anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
+_text = open(sys.argv[1]).read()
+_n = 0
+for _t in yaml.scan(_text, Loader=yaml.BaseLoader):
+    _n += 1
+    if isinstance(_t, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):
+        print("the workflow uses a YAML anchor or alias"); sys.exit(1)
+    if _n > 200000:
+        print("the workflow is implausibly large"); sys.exit(1)
+d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
+for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
+    bad.append(f"the workflow sets `{k}`")
+if d.get("permissions") != {"contents": "read"}:
+    bad.append("the workflow permissions are not exactly {contents: read}")
 on = d.get("on", {})
 if "pull_request" not in on:
     bad.append("not triggered on pull_request")
@@ -26,9 +40,12 @@ elif set(push) != {"branches"}:
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
-for k in ("if", "continue-on-error", "defaults"):
-    if k in job:
-        bad.append(f"the allowlist job has `{k}`")
+# the guard's job is exactly name / runs-on / steps: no `needs` (a skipped prerequisite skips the whole guard),
+# `if`, `timeout-minutes`, `permissions`, `strategy`, `concurrency`, `container`, `services`, `env`, `defaults`, ...
+for k in sorted(set(job) - {"name", "runs-on", "steps"}):
+    bad.append(f"the allowlist job has `{k}`")
+if job.get("runs-on") != "ubuntu-latest":
+    bad.append("the allowlist job does not run on exactly `ubuntu-latest` (GitHub-hosted)")
 want = {"bash .github/agent/tests/check-action-pins-test.sh", "python3 .github/agent/bin/check-action-pins.py --verify-tags .",
         "bash .github/agent/tests/pin-wiring-test.sh"}  # this test's own step, too
 seen = set()
@@ -87,6 +104,10 @@ CHECK_RUN = "git ls-files | ./bin/check-file-allowlist.sh"
 def norm(r):  # drop comment lines; the command text itself must match exactly
     return "\n".join(l for l in (r or "").strip().splitlines() if not l.lstrip().startswith("#"))
 steps_ = job.get("steps", [])
+for st in steps_:
+    if norm(st.get("run")) in (FETCH_RUN, CHECK_RUN) or "check-file-allowlist.sh" in (st.get("run") or "") or "git fetch" in (st.get("run") or ""):
+        if "${{" in (st.get("run") or ""):   # raw text, comment lines included: an expression is rendered before bash sees it
+            bad.append("a protected allowlist step's run text contains a `${{` expression")
 plain = ("if", "continue-on-error", "shell", "working-directory", "timeout-minutes")
 idx = {"fetch": [i for i, st in enumerate(steps_) if norm(st.get("run")) == FETCH_RUN],
        "check": [i for i, st in enumerate(steps_) if norm(st.get("run")) == CHECK_RUN]}
@@ -240,6 +261,36 @@ gitcase the-real-ci-at-a-commit   ok  ""
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
+
+case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
+case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
+case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
+case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ wf-concurrency             bad "d['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
+case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
+case_ wf-permissions-removed     bad "d.pop('permissions')"
+case_ runs-on-self-hosted        bad "d['jobs']['allowlist']['runs-on'] = 'self-hosted'"
+case_ runs-on-list               bad "d['jobs']['allowlist']['runs-on'] = ['ubuntu-latest', 'x']"
+case_ job-strategy-matrix        bad "d['jobs']['allowlist']['strategy'] = {'fail-fast': 'true'}"
+case_ expression-in-comment      bad "$ck['run'] = '# \${{ fromJSON(\\'\"\\\\nexit 0\\\\n#\"\\') }}\\n' + $ck['run']"
+case_ expression-in-fetch        bad "$fe['run'] = '# \${{ github.sha }}\\n' + $fe['run']"
+case_ anchor-alias-in-ci         bad "sh = {'k': 'v'}; d['jobs']['test']['x-shared'] = sh; d['jobs']['lint']['x-shared'] = sh"
+case_ anchor-bomb                bad "a = ['x']; b = [a, a, a, a, a, a, a, a, a]; c = [b, b, b, b, b, b, b, b, b]; e = [c, c, c, c, c, c, c, c, c]; d['jobs']['test']['bomb'] = [e, e, e, e, e, e, e, e, e]"
+
+# the trusted gate's judge and sweep jobs are time-bounded (a hung judge must fail, not hang the required check)
+gate_timeouts() {
+  python3 - "$1" <<'PY'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+bad = [j for j in ("judge", "sweep") if not (d["jobs"][j].get("timeout-minutes", "").isdigit() and 0 < int(d["jobs"][j]["timeout-minutes"]) <= 30)]
+print(",".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PY
+}
+if out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pass=$((pass+1)); echo "PASS gate judge+sweep have timeout-minutes"
+else failn=$((failn+1)); echo "FAIL gate jobs without timeout-minutes: $out"; fi
+cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.bak '/^    timeout-minutes:/d' "$work/gate-mut.yml"
+if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

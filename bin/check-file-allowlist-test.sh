@@ -4,6 +4,8 @@
 # osv-scanner.toml, .auditor/accepted-items.json): allowed only on the auditor/
 # lane and on main, blocked on any other branch, and never a hole through which
 # private-side content can reach this PUBLIC repo.
+# Known limit (by design): a PR that changes ALLOW_PATTERNS / SUPPRESSION_PATTERNS in the script cannot pass
+# this check before merge on its own account, because the trusted gate judges it with main's copy of the script.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SCRIPT=./bin/check-file-allowlist.sh
@@ -191,6 +193,21 @@ revrun fail "rev: a rev that is not a full hex sha fails closed" "main" "$PS"
 revrun fail "rev: a hex sha that is not a commit fails closed" "0000000000000000000000000000000000000000" "$PS"
 revrun fail "rev: an option-like rev fails closed" "--help" "$PS"
 revrun fail "rev: private content is still blocked" "$SAME" ops/runbook.md
+
+# criss-cross history: two merge bases; the file must be unchanged against EVERY one of them
+mkrepo "$R"
+( cd "$R" && g checkout -q -b A1 main && echo '{"a":7}' > $PS && g commit -qam a1 \
+  && g checkout -q -b B1 main && echo b > other-b.go && g add -A && g commit -qm b1 \
+  && g checkout -q -b A2 A1 && g merge -q --no-edit B1 \
+  && g checkout -q -b B2 B1 && g merge -q --no-edit A1 \
+  && g update-ref refs/remotes/origin/main B2 && g checkout -q A2 )
+[ "$(cd "$R" && git merge-base --all HEAD origin/main | wc -l | tr -d ' ')" = 2 ] && gp "criss-cross fixture really has two merge bases" || gf "criss-cross fixture" "expected two merge bases"
+# whichever base git would pick alone, one of the two bases has the other content: ensure the single-base pick
+# is the base whose content EQUALS the head's, so only checking every base can block
+PICK="$(cd "$R" && git merge-base HEAD origin/main)"
+( cd "$R" && git cat-file -p "$PICK:$PS" | cmp -s - "$PS" ) && gp "criss-cross: the single-base pick equals the head (only --all can block)" || gf "criss-cross pick" "pick differs from head; reorder the fixture"
+trun fail "criss-cross: file equal to one merge base but not the other is blocked" "$R" feature/x "" "$PS"
+trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .snyk
 
 # other branches keep today's behaviour
 mkrepo "$R"; ( cd "$R" && echo '{"a":3}' > $PS && g commit -qam edit )

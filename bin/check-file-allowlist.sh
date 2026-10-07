@@ -265,7 +265,8 @@ _resolve_merge_base() {
   if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1; then
     _merge_base_err="base ref origin/$_base_name does not exist here (shallow or partial fetch?)"; return 1
   fi
-  if ! _merge_base="$(git merge-base "$_head_rev" "$ref" 2>/dev/null)" || [ -z "$_merge_base" ]; then
+  # --all: a criss-cross history has several merge bases and the file must be unchanged against EVERY one
+  if ! _merge_base="$(git merge-base --all "$_head_rev" "$ref" 2>/dev/null)" || [ -z "$_merge_base" ]; then
     _merge_base=""; _merge_base_err="no merge base between $_head_rev and origin/$_base_name (shallow clone?)"; return 1
   fi
 }
@@ -273,14 +274,22 @@ _resolve_merge_base() {
 _suppression_unchanged() {
   [ "$_merge_base_tried" -eq 1 ] || _resolve_merge_base || true
   [ -n "$_merge_base" ] || return 1
-  git cat-file -e "$_merge_base:$1" 2>/dev/null || return 1
+  local mb
   if [ -n "$_rev" ]; then
     git cat-file -e "$_rev:$1" 2>/dev/null || return 1
-    git diff --quiet "$_merge_base" "$_rev" -- "$1" 2>/dev/null
   else
     git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 1
-    git diff --cached --quiet "$_merge_base" -- "$1" 2>/dev/null
   fi
+  while IFS= read -r mb; do
+    [ -n "$mb" ] || continue
+    git cat-file -e "$mb:$1" 2>/dev/null || return 1
+    if [ -n "$_rev" ]; then
+      git diff --quiet "$mb" "$_rev" -- "$1" 2>/dev/null || return 1
+    else
+      git diff --cached --quiet "$mb" -- "$1" 2>/dev/null || return 1
+    fi
+  done <<< "$_merge_base"
+  return 0
 }
 
 blocked=()
