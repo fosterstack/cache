@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
 # classified fix-class / neutral / not patch-clean by the files they change (a patch-fix label admits a source change);
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
@@ -666,6 +666,91 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# --- REQ-REL-009-AC14 / AC15 (advisor 0254, 0257): a VEX-only range cuts an ordinary patch whose notes say so; the auditor's
+# other work (panel state, knowledge, proposals) cuts nothing by itself
+VEXF = ".vex/fosterstack-cache.openvex.json"
+VEX_FORMS = [".vex/fosterstack-cache.csaf.json", ".vex/fosterstack-cache.inspector.json"]   # generated forms live beside it
+VEXC = c("v1", [VEXF])
+check("AC14 a range whose only change is the VEX file is fix-class", P.classify(VEXC)[0] == "fix", P.classify(VEXC))
+check("AC14 the generated forms beside it are fix-class too", all(P.classify(c("f", [f]))[0] == "fix" for f in VEX_FORMS))
+check("AC14 the VEX-only range is patch-clean and ships bytes", P.patch_clean([VEXC]) == (True, []) and P.ships_bytes([VEXC]), P.patch_clean([VEXC]))
+check("AC14 the next tag is the next patch", P.next_patch(["v0.2.1", "v0.2.0"]) == "v0.2.2")
+D = P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC14 the daily run cuts it as vX.Y.(Z+1)", D["cut"] and D["version"] == "v0.2.2" and not D["not_clean"], D)
+D = P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=True, removed=None)
+check("AC14 a second patch the same day waits", not D["cut"] and "already cut today" in D["reason"], D)
+D = P.decide("schedule", [VEXC, c("v2", VEX_FORMS)], ["v0.2.1"], cut_today=False, removed=None)
+check("AC14 the VEX and its generated forms together are still one clean patch", D["cut"], D)
+D = P.decide("schedule", [VEXC, c("d1", ["internal/cache/store.go"])], ["v0.2.1"], cut_today=False, removed=None)
+check("AC14 a VEX change beside a dirty commit is not patch-clean (named, no cut)", not D["cut"] and D["not_clean"] and "internal/cache/store.go" in D["not_clean"][0], D)
+vex_old = {"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "status": "affected"},
+                          {"vulnerability": {"name": "CVE-2099-0002"}, "status": "not_affected"},
+                          {"vulnerability": {"name": "CVE-2099-0004"}, "status": "not_affected"}]}
+vex_new = {"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "status": "fixed"},
+                          {"vulnerability": {"name": "CVE-2099-0002"}, "status": "not_affected"},
+                          {"vulnerability": {"name": "CVE-2099-0003"}, "status": "not_affected"}]}
+ch = P.vex_changes(vex_old, vex_new)
+txt = P.notes("v0.2.2", [], ch)
+for cve in ("CVE-2099-0001", "CVE-2099-0003", "CVE-2099-0004"):
+    check("AC14 the notes name the changed statement %s" % cve, cve in txt, txt)
+check("AC14 an unchanged statement is not listed", "CVE-2099-0002" not in txt, txt)
+check("AC14 the notes of a patch whose only fixes are VEX changes say VEX-only", "VEX-only" in txt, txt)
+txt2 = P.notes("v0.2.2", fixes, ch)
+check("AC14 a patch that also fixes a package does not say VEX-only", "VEX-only" not in txt2, txt2)
+check("AC14 a patch with no VEX change does not say VEX-only", "VEX-only" not in P.notes("v0.2.2", fixes, []) and "VEX-only" not in P.notes("v0.2.2", [], []), "")
+check("AC14 the VEX-only notes name no vendor or model", not re.search(r"(?i)claude|openai|gemini|codex|sonnet|opus|anthropic", P.notes("v0.2.2", [], [dict(ch[0], cve="CVE-2099-0001 confirmed by Claude")])), "")
+# the command, over a real history: only the VEX file changed since the tag
+vr = tempfile.mkdtemp()
+g(vr, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(vr, ".vex")); os.makedirs(os.path.join(vr, ".auditor", "proposals"))
+open(os.path.join(vr, "main.go"), "w").write("package main\n")
+open(os.path.join(vr, VEXF), "w").write(json.dumps(vex_old) + "\n")
+g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "base"); g(vr, "tag", "v0.2.1")
+vaux = tempfile.mkdtemp()   # the command's own files live outside the history under test
+vrl = os.path.join(vaux, "released.json"); json.dump(["v0.2.1"], open(vrl, "w"))
+vout = os.path.join(vaux, "decision.json")
+def decide_in(repo_, cut_today="false"):
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.main(["decide", "--event", "schedule", "--repo", repo_, "--cut-today", cut_today, "--released", vrl, "--out", vout])
+    return json.load(open(vout))
+# AC15 first: the auditor's own work alone
+for rel, body in ((".auditor/panel-state.json", "{}\n"), (".auditor/knowledge.md", "# knowledge\n"), (".auditor/proposals/p1.json", "[]\n")):
+    open(os.path.join(vr, rel), "w").write(body)
+    g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "auditor " + rel)
+    D = decide_in(vr)
+    check("AC15 %s alone cuts no release (git history)" % rel, not D["cut"] and not D["not_clean"], D)
+check("AC15 auditor work classifies neutral, one by one",
+      all(P.classify(c("a", [f]))[0] == "neutral" for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json")),
+      [P.classify(c("a", [f])) for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json")])
+check("AC15 a range of only auditor work ships no bytes", not P.ships_bytes([c("a", [".auditor/panel-state.json"]), c("b", [".auditor/knowledge.md"]), c("c", [".auditor/proposals/p1.json"])]))
+D = P.decide("schedule", [c("a", [".auditor/panel-state.json"]), c("b", [".auditor/knowledge.md"])], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 decide: nothing shipped, no cut, no issue", not D["cut"] and not D["not_clean"] and "nothing shipped" in D["reason"], D)
+check("AC15 the suppression file .auditor/accepted-items.json stays fix-class", P.classify(c("a", [".auditor/accepted-items.json"]))[0] == "fix")
+check("AC15 an auditor script is never data: still not patch-clean", P.classify(c("a", [".auditor/run.sh"]))[0] == "dirty")
+D = P.decide("schedule", [c("a", [".auditor/panel-state.json"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 auditor work beside a VEX change does not block that patch", D["cut"] and not D["not_clean"], D)
+open(os.path.join(vr, VEXF), "w").write(json.dumps(vex_new) + "\n")
+g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "vex")
+D = decide_in(vr)
+check("AC14 the real history (auditor work, then a VEX-only commit) cuts v0.2.2", D["cut"] and D["version"] == "v0.2.2" and not D["not_clean"], D)
+D = decide_in(vr, cut_today="true")
+check("AC14 the real history, a patch already cut today: waits", not D["cut"] and "already cut today" in D["reason"], D)
+open(os.path.join(vr, "main.go"), "w").write("package main\n// changed\n")
+g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "dirty")
+D = decide_in(vr)
+check("AC14 the real history with a dirty commit after the VEX change: not patch-clean", not D["cut"] and D["not_clean"] and "main.go" in D["not_clean"][0], D)
+# the notes command, end to end, from the VEX at the tag and at HEAD
+vn_old, vn_new = os.path.join(vaux, "old.vex"), os.path.join(vaux, "new.vex")
+json.dump(vex_old, open(vn_old, "w")); json.dump(vex_new, open(vn_new, "w"))
+scan = os.path.join(vaux, "scan.json"); json.dump({"matches": []}, open(scan, "w"))
+gomod = os.path.join(vaux, "go.mod"); open(gomod, "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+pub = os.path.join(vaux, "published.txt"); open(pub, "w").write("")
+nout = os.path.join(vaux, "notes.md")
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = P.main(["notes", "--version", "v0.2.2", "--variant-grype", "=" + scan, "--gomod", gomod, "--vex-old", vn_old, "--vex-new", vn_new,
+                 "--next-notes", os.path.join(vaux, "none.md"), "--published", pub, "--out", nout])
+ntxt = open(nout).read() if rc == 0 else ""
+check("AC14 the notes command: each changed statement named and VEX-only said", rc == 0 and all(x in ntxt for x in ("CVE-2099-0001", "CVE-2099-0003", "CVE-2099-0004", "VEX-only")), (rc, ntxt))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

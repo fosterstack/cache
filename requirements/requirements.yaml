@@ -1517,6 +1517,18 @@ requirements:
         then: "it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-REL-009-AC14
+        given: "the commits on main since the latest release tag change only the VEX file .vex/fosterstack-cache.openvex.json and its generated forms (advisor 0254, 0257)"
+        when: "decide classifies them and the patch notes are generated"
+        then: "they are fix-class and patch-clean, ship bytes, take the next patch tag vX.Y.(Z+1) and obey the one-patch-a-day rule; the notes name each VEX statement added, changed or removed and say VEX-only when the VEX changes are the patch's only fixes (never when a package is also fixed); a VEX change beside any commit that is not patch-clean is not patch-clean, and the notes name no vendor or model"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-009-AC15
+        given: "the commits on main since the latest release tag change only the auditor's own work: its panel state, its knowledge file and its proposals under .auditor/ (advisor 0254)"
+        when: "decide classifies them"
+        then: "they are neutral: they ship no bytes, cut no release by themselves and make main neither patch-clean nor not patch-clean, and they never block a patch cut for another change; the accepted-items suppression file stays fix-class, and a script under .auditor/ is never data"
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-010
     title: The final image index carries the release's VEX as attestation children
@@ -1524,7 +1536,7 @@ requirements:
       The final image index that is built, tested, signed and promoted shall be the built index plus one attestation-manifest
       child per platform carrying the release's OpenVEX statement, produced by a deterministic tool from the built index and
       the VEX file bytes.
-    source: [bin/vex-index.py, .github/workflows/stage-image.yml]
+    source: [bin/vex-index.py, .github/workflows/stage-image.yml, .github/workflows/stage-reproducibility.yml]
     tier: community
     introduced: v0.3.0
     origin: the final index with VEX attestation children (advisor handoffs 0221, 0228 and 0230; scanner-panel rules, owner, Oct 3 2026, "VEX attached to the image for Docker Scout", read as before anything is signed)
@@ -1553,6 +1565,18 @@ requirements:
         when: "the tool pushes the final index"
         then: "it writes only blobs and manifests by digest, never a tag, and fails closed when the stored manifest's digest differs or a child is missing"
         verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC5
+        given: "a release-tag run of the release chain"
+        when: "the image stage has built and pushed the built index D, before anything is attested"
+        then: "the image stage computes, verifies and pushes the final index F from D and the committed VEX file with the committed tool and nothing new (no action, tool, workflow file or permission), fails the stage on any error, and records F, never D, as the digest that the image-build predicate, the provenance, the job output and every later stage name, so D appears in no attestation, subject, output or artifact; the reproducibility stage recomputes F offline from its own rebuilt archive and requires the pushed F; a rerun recomputes the same F and pushes it idempotently; a pull-request build makes no final index and pushes nothing"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC6
+        given: "the final index of a release image, pushed to a registry"
+        when: "Docker Scout analyzes that image"
+        then: "Scout applies the VEX carried by the attestation children: a vulnerability the VEX marks not affected is not reported against the image (proven by a scratch probe against a copy, not by CI)"
+        verification: { method: manual, release_blocking: false }
         status: approved
 
   - id: REQ-SCAN-001

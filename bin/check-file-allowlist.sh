@@ -76,6 +76,7 @@ ALLOW_PATTERNS=(
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
   '^bin/vex-index-test\.sh$'
+  '^bin/stage-image-final-index-test\.sh$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
