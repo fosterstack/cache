@@ -899,6 +899,22 @@ for label, (o, n) in (("formatting only", (json.dumps(V1), json.dumps(V1, indent
     check("AC14 CLI: %s beside a package fix: the fix, no VEX-only" % label, "CVE-2099-1" in t and "VEX-only" not in t and "RC=" not in t, t)
     t = notes_cli2(o, n)
     check("AC14 CLI: %s alone: VEX-only (no statement change)" % label, "VEX-only (no statement change)" in t, t)
+# --- step 6 round 3 (REQ-REL-009-AC14): several statements with the SAME vulnerability and the SAME product set
+TA = stmt("CVE-2099-0500", products=(PA,), justification="component_not_present", timestamp="2026-01-01T00:00:00Z")
+TB = stmt("CVE-2099-0500", products=(PA,), justification="component_not_present", timestamp="2026-02-02T00:00:00Z")
+check("AC14 same-vulnerability same-product statements swapped in the file are no change", P.vex_changes(vdoc2([TA, TB]), vdoc2([TB, TA])) == [], P.vex_changes(vdoc2([TA, TB]), vdoc2([TB, TA])))
+check("AC14 ... and unchanged in place are no change", P.vex_changes(vdoc2([TA, TB]), vdoc2([TA, TB])) == [])
+TA2 = dict(TA, justification="vulnerable_code_not_present")
+for label, (o, n) in {"in place": ([TA, TB], [TA2, TB]), "swapped": ([TA, TB], [TB, TA2]), "old swapped": ([TB, TA], [TA2, TB]), "both swapped": ([TB, TA], [TB, TA2])}.items():
+    chg = P.vex_changes(vdoc2(o), vdoc2(n))
+    check("AC14 one of two identical-key statements changes (%s): exactly that one is reported, with its field" % label,
+          len(chg) == 1 and "justification" in chg[0]["change"] and "timestamp" not in chg[0]["change"], chg)
+t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA])))
+check("AC14 CLI: identical-key statements swapped: VEX-only (no statement change)", "VEX-only (no statement change)" in t and "CVE-2099-0500" not in t, t)
+t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA2])))
+check("AC14 CLI: one of the swapped identical-key statements changed: named once, VEX-only", t.count("CVE-2099-0500") == 1 and "VEX-only" in t and "no statement change" not in t, t)
+t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA])), nn=BEH_TXT)
+check("AC14 CLI: identical-key statements swapped beside a behavior entry: no VEX-only", "advisor 0130" in t and "VEX-only" not in t, t)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

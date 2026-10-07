@@ -731,8 +731,13 @@ if a[:2] == ["buildx", "build"]:
     need("--provenance=false" in a and "--sbom=false" in a, "provenance/sbom exporters are not off")
     need("rewrite-timestamp=true" in out, "the output does not rewrite timestamps")
     need(os.environ.get("SOURCE_DATE_EPOCH", "").isdigit(), "SOURCE_DATE_EPOCH is not the commit time")
-    if "type=image" in out:
-        need("push-by-digest=true" in out and "push=true" in out and "name=127.0.0.1:%%s/fosterowner/cache-candidates" %% os.environ["REG_PORT"] in out.split(",") or "name=127.0.0.1:%%s/fosterowner/cache-candidates" %% os.environ["REG_PORT"] in out, "release output is not push-by-digest to the candidates package: " + out)
+    opts = dict(x.split("=", 1) for x in out.split(",") if "=" in x)
+    if opts.get("type") == "image":
+        need(opts.get("name") == "127.0.0.1:%%s/fosterowner/cache-candidates" %% os.environ["REG_PORT"], "release output names another repository: " + out)
+        need(opts.get("push") == "true", "release output does not push: " + out)
+        need(opts.get("push-by-digest") == "true", "release output is not push-by-digest (it would tag): " + out)
+    else:
+        need(opts.get("type") == "oci" and "push" not in opts and "name" not in opts, "PR output is not a plain local archive: " + out)
     d = open(os.path.join(fx, var + ".digest")).read().strip()
     raw = open(os.path.join(fx, var + ".index"), "rb").read()
     if "type=oci" in out:
@@ -895,7 +900,7 @@ def reject_unmodelled_settings(workflow_name, job_name):
     d = wf(workflow_name)
     job = d["jobs"][job_name]
     for where, o in (("workflow", d), ("job", job)):
-        for k in ("defaults", "container", "services", "strategy", "timeout-minutes"):
+        for k in ("defaults", "container", "services", "strategy", "timeout-minutes", "env", "concurrency", "environment"):
             ok(k not in o, "%s %s of %s uses %r, which this test does not model" % (where, job_name, workflow_name, k))
     for st in job.get("steps") or []:
         extra = set(st) - STEP_KEYS
@@ -1883,6 +1888,30 @@ GOLDEN = json.loads(r'''{
 "top.permissions": "d8d6aceb1abc4199"
 }
 },
+"outer": {
+"stage-image.yml": {
+"jobs": [
+"assemble"
+],
+"jobs.assemble.name": "4ff917d9d2ac207f",
+"jobs.assemble.permissions": "44d3feb81dacebd3",
+"jobs.assemble.runs-on": "a89f3a1c7e4302eb",
+"top.name": "a45e0f095a83bce6",
+"top.on": "e44787407315c80a",
+"top.permissions": "d8d6aceb1abc4199"
+},
+"stage-reproducibility.yml": {
+"jobs": [
+"reproduce"
+],
+"jobs.reproduce.name": "449cc089476fcc90",
+"jobs.reproduce.permissions": "da98527d1c6a9e9a",
+"jobs.reproduce.runs-on": "a89f3a1c7e4302eb",
+"top.name": "f622ee83f3496cdc",
+"top.on": "1612a2df385cc829",
+"top.permissions": "d8d6aceb1abc4199"
+}
+},
 "uses": {
 "stage-image.yml": [
 [
@@ -1954,8 +1983,7 @@ null
 ]
 ]
 }
-}
-''')
+}''')
 
 
 def nz(o, key=None):
@@ -1991,6 +2019,24 @@ def frozen_paths(name):
     return out
 
 
+def outer_paths(name):
+    """everything of an edited workflow except what the reference must change: its job set, the top-level keys and every job key
+    except steps and outputs of the one behavioural job"""
+    d = wf(name)
+    out = {"jobs": sorted(d["jobs"])}
+    for k, v in d.items():
+        if k != "jobs":
+            out["top.%s" % k] = h(v)
+    for jn, j in d["jobs"].items():
+        for k, v in j.items():
+            if k == "steps" and jn in ("assemble", "reproduce"):
+                continue
+            if k == "outputs" and jn == "assemble":
+                continue
+            out["jobs.%s.%s" % (jn, k)] = h(v)
+    return out
+
+
 def uses_pins(name):
     return [[st["uses"], nz(st.get("with"))] for j in wf(name)["jobs"].values() for st in (j.get("steps") or []) if st.get("uses")]
 
@@ -2014,6 +2060,15 @@ def _():
         for jn, j in (d.get("jobs") or {}).items():
             ok(not re.search(r"stage-[a-z-]+\.yml", j.get("uses") or ""), "%s job %s calls a stage workflow outside the frozen set" % (name, jn))
             ok("needs.image" not in json.dumps(j) and "inputs.digests" not in json.dumps(j), "%s job %s reads the image stage's digests" % (name, jn))
+
+
+@case("6", "the job set and everything around the behavioural job of each edited workflow is unchanged (no added job, permission, environment or runner)")
+def _():
+    for name in USES_FILES:
+        got, want = outer_paths(name), GOLDEN["outer"][name]
+        if got != want:
+            raise Fail("%s differs from the golden at %s" % (name, sorted(k for k in set(got) | set(want) if got.get(k) != want.get(k))))
+    ok(vex_steps(assemble()) and vex_steps(repro_steps()), "the changed steps are missing")
 
 
 @case("2", "pins: stage-image and stage-reproducibility use every action exactly as before (checkout takes no inputs: the release commit, this repository)")
@@ -2252,7 +2307,7 @@ def _():
 
 def main():
     if os.environ.get("AC5_DUMP_GOLDEN"):
-        print(json.dumps({"frozen": {n: frozen_paths(n) for n in FROZEN_FILES}, "uses": {n: uses_pins(n) for n in USES_FILES}}, indent=0, sort_keys=True))
+        print(json.dumps({"frozen": {n: frozen_paths(n) for n in FROZEN_FILES}, "uses": {n: uses_pins(n) for n in USES_FILES}, "outer": {n: outer_paths(n) for n in USES_FILES}}, indent=0, sort_keys=True))
         sys.exit(0)
     only = os.environ.get("AC5_ONLY")
     passed = failed = 0
