@@ -185,9 +185,15 @@ jobs:
                 ('sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id')}))
           PY
 
+      - name: pin pip (hash-checked)
+        id: pip_pin
+        if: ${{ !cancelled() && steps.mint.outcome == 'success' }}
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: install the pinned SDK (the auditor's hash-pinned set)
         id: sdk
-        if: ${{ !cancelled() && steps.mint.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.mint.outcome == 'success' && steps.pip_pin.outcome == 'success' }}
         run: |
           set -euo pipefail
           python3 -m pip install --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
