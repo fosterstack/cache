@@ -302,6 +302,7 @@ class Tail(str):
     words = ()
     unknown = False
     cmd_meta = False
+    sub = "install"
 
 
 _PIP_GLOBAL_VAL = {"--proxy", "--retries", "--timeout", "--exists-action", "--trusted-host", "--cert", "--client-cert", "--cache-dir", "--log", "--python", "--use-feature"}
@@ -323,15 +324,17 @@ def _pip_items(tail, out):
         out.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(what.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))
     if tail.unknown or tail.cmd_meta:
         unmeasured(str(tail) + "|opt")
-    for ref, ok in _tail_file_refs(tail.words):          # a FILE fed to pip with -r / -c: read as a requirements file (its pins are items) or, when it cannot be read, unmeasured
+    for ref, ok in _tail_file_refs(tail.words, tail.sub):          # a FILE fed to pip with -r / -c (or to pip-sync): read as a requirements file (its pins are items) or, when it cannot be read, unmeasured
         if ok:
             out.append(Item("package", "pypi/(reqref)", ref))
         else:
             unmeasured(ref)
+    if tail.sub == "sync":
+        return                                                    # pip-sync / uv pip sync install what the files list: no package arguments of their own
     keep, prev = [], ""
     for w in tail.words:
         t = w.text
-        value_of_option = prev in _PIP_VALUE_OPTS or prev == "--hash"      # `-r deps.txt` names a file, not a package
+        value_of_option = _takes_value(prev)      # `-r deps.txt` and `-qr deps.txt` name a file, not a package
         prev = t
         if value_of_option or t.startswith("-"):
             if w.open:
@@ -361,7 +364,7 @@ def _pip_items(tail, out):
         out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", ver))
     prev = ""
     for tok in tail.split():
-        value_of_option = prev in _PIP_VALUE_OPTS or prev == "--hash"
+        value_of_option = _takes_value(prev)
         prev = tok
         if value_of_option:
             continue
@@ -377,10 +380,20 @@ def _pip_items(tail, out):
 
 def _pip_tails(run):
     out = []
-    for sub, ws, unknown, meta in _cmd_scan(run, lambda t: re.fullmatch(r"pip[0-9.]*", t) is not None, {"install"}, _PIP_VALUE_OPTS | {"--timeout", "--retries", "--proxy", "--cert", "--cache-dir", "--log"}, known_opts=_pip_known_opt):
+    for sub, ws, unknown, meta in _cmd_scan(run, lambda t: re.fullmatch(r"pip[0-9.]*", t) is not None, {"install", "sync"}, _PIP_VALUE_OPTS | {"--timeout", "--retries", "--proxy", "--cert", "--cache-dir", "--log"}, known_opts=_pip_known_opt):
         t = Tail(" ".join(w.text for w in ws))
-        t.words, t.unknown, t.cmd_meta = ws, unknown, meta
+        t.words, t.unknown, t.cmd_meta, t.sub = ws, unknown, meta, sub
         out.append(t)
+    for line in run.split("\n"):
+        if "pip-sync" not in line:
+            continue
+        for cmd in _lex(line):
+            for i, w in enumerate(cmd.words):
+                if w.text.rsplit("/", 1)[-1] == "pip-sync":
+                    ws = cmd.words[i + 1:]
+                    t = Tail(" ".join(x.text for x in ws))
+                    t.words, t.unknown, t.cmd_meta, t.sub = ws, False, cmd.meta, "sync"
+                    out.append(t)
     return out
 
 
@@ -555,44 +568,110 @@ HEAD_BYTES = 4096
 
 
 def _pip_file_refs(text):
-    """The FILE names a text feeds to pip with -r / --requirement / -c / --constraint (attached forms too), found with the lexer on the raw lines (backslash-newline deleted): [(name, resolvable)];
-    a name that is `-`, `/dev/stdin` or a heredoc is not a file."""
+    """The FILE names a text feeds to pip with -r / --requirement / -c / --constraint (attached, clustered and `=` forms too), to pip-sync and to uv pip sync, found with the lexer on the raw
+    lines (backslash-newline deleted): [(name, resolvable)]; a name that is `-`, `/dev/stdin` or a heredoc is not a file."""
     out = []
     for line in re.sub(r"\\\r?\n", "", text).split("\n"):
         if "pip" not in line:
             continue
         for tail in _pip_tails(line):
-            out += _tail_file_refs(tail.words)
+            out += _tail_file_refs(tail.words, tail.sub)
     return out
 
 
-def _tail_file_refs(words):
-    out, take = [], False
+_SYNC_VALUE_OPTS = {"--pip-args", "--index-url", "-i", "--extra-index-url", "-f", "--find-links", "--python-executable", "--cert", "--client-cert", "--trusted-host", "--python", "--target"}
+_REF_SHORT = re.compile(r"^-[vqUIhV]*([rc])(=?)(.*)$")
+
+
+def _takes_value(prev):
+    """Does the option word before this one take it as its value (-r FILE, -qr FILE, --index-url URL ...)?"""
+    return prev in _PIP_VALUE_OPTS or prev == "--hash" or re.fullmatch(r"-[vqUIhV]*[rc]", prev) is not None
+
+
+def _tail_file_refs(words, sub="install"):
+    out, take, prev = [], False, ""
     for w in words:
         t = w.text
+        ok = not (w.dyn or w.meta or w.open)
+        if sub == "sync":
+            if not t.startswith("-") and prev not in _SYNC_VALUE_OPTS:
+                out.append((t, ok))                 # pip-sync FILE...: every positional word is a requirements file
+            prev = t
+            continue
         if take:
             take = False
-            out.append((t, not (w.dyn or w.meta or w.open)))
+            out.append((t, ok))
             continue
-        if t in ("-r", "--requirement", "-c", "--constraint"):
+        if t in ("-r", "--requirement", "-c", "--constraint") or re.fullmatch(r"-[vqUIhV]*[rc]", t):
             take = True
         else:
-            m = re.match(r"^(?:--requirement=|--constraint=|-r(?=[^-])|-c(?=[^-]))(.+)$", t)
+            m = re.match(r"^(?:--requirement=|--constraint=)(.+)$", t)
+            m2 = _REF_SHORT.match(t) if not t.startswith("--") else None
             if m:
-                out.append((m.group(1), not (w.dyn or w.meta or w.open)))
+                out.append((m.group(1), ok))
+            elif m2 and m2.group(3):
+                out.append((m2.group(3), ok))        # -rFILE, -r=FILE, -qrFILE
+    if take:
+        out.append(("(no value)", False))            # a trailing -r or -c: its value arrives from xargs or find, so the file cannot be named
     return [(n, ok) for n, ok in out if n not in ("-", "/dev/stdin")]
 
 
-def _ref_candidates(ref, from_path):
-    """The tracked paths a pip FILE argument can name: relative to the repository root, and to the directory of the file that runs the command. None when it names nothing inside the repository."""
+_WD_KEY = re.compile(r"(?m)^[ \t]*(?:-[ \t]*)?working-directory:[ \t]*(.*?)[ \t]*$")
+
+
+def _norm_dir(d):
+    n = posixpath.normpath(d)
+    return "" if n == "." else n
+
+
+def _cmd_dirs(path, text):
+    """(directories a pip FILE can be relative to, whether a cd/pushd/working-directory was seen, whether any directory is built at run time) for the commands of one file: the repository root, the
+    directory of the file, every `working-directory:` value, and every `cd` / `pushd` target (chained: a cd after a cd is relative to each directory known so far)."""
+    wds, cds, dynamic = [], [], False
+    for m in _WD_KEY.finditer(text):
+        v = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"")
+        if v:
+            if "$" in v or "`" in v:
+                dynamic = True
+            else:
+                wds.append(v)
+    for line in re.sub(r"\\\r?\n", "", text).split("\n"):
+        if "cd" not in line and "pushd" not in line:
+            continue
+        for cmd in _lex(line):
+            ws = cmd.words
+            for i, w in enumerate(ws):
+                if w.text.rsplit("/", 1)[-1] in ("cd", "pushd"):
+                    tgt = [x for x in ws[i + 1:] if not x.text.startswith("-") or x.text == "-"][:1]
+                    if not tgt:
+                        continue
+                    x = tgt[0]
+                    if x.dyn or x.meta or x.open or x.text in ("-", "") or x.text.startswith(("/", "~")):
+                        dynamic = True
+                    else:
+                        cds.append(x.text)
+    dirs = {"", _norm_dir(posixpath.dirname(path) or ".")} | {_norm_dir(v) for v in wds if not v.startswith("/")}
+    for t in cds:
+        dirs |= {_norm_dir(posixpath.join(d, t)) for d in list(dirs)}
+        if len(dirs) > 64:
+            dynamic = True
+            break
+    dirs = {d for d in dirs if not d.startswith("..")}
+    return dirs, bool(wds or cds or dynamic), dynamic
+
+
+def _ref_candidates(ref, from_path, text=""):
+    """(the tracked paths a pip FILE argument can name, extra, dynamic): the reference read relative to the repository root, the directory of the file that runs the command, and every directory a cd,
+    pushd or working-directory of that file names. extra: such a directory exists; dynamic: one is built at run time. Nothing for a URL, an absolute path or a variable."""
     if "://" in ref or ref.startswith("/") or "$" in ref or "`" in ref:
-        return []
+        return [], False, False
+    dirs, extra, dynamic = _cmd_dirs(from_path, text)
     out = []
-    for base in ("", posixpath.dirname(from_path)):
-        c = posixpath.normpath(posixpath.join(base, ref))
+    for d in sorted(dirs):
+        c = posixpath.normpath(posixpath.join(d, ref))
         if c and c != "." and not c.startswith("..") and c not in out:
             out.append(c)
-    return out
+    return out, extra, dynamic
 
 
 def tree_files(root, rev, soft=None):
@@ -707,16 +786,22 @@ def _prefetch(root, blobs):
 
 
 def _read_refs(out, tracked, read):
-    """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c is read too (what it is called does not matter)."""
+    """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c is read too (what it is called does not matter). The reference is read relative to EVERY directory
+    the command can run in; when a cd or working-directory exists and the reference cannot be bound to exactly one tracked file, every tracked file whose path ends with the referenced path is read."""
     want = set()
     for p, t in list(out.items()):
         if p in out.links or not (_wf_or_action_name(p) or _is_script(p, t) or p == "bin/install-scanner.sh"):
             continue
         for ref, ok in _pip_file_refs(t):
-            if ok:
-                for c in _ref_candidates(ref, p):
-                    if c in tracked and c not in out:
-                        want.add(c)
+            if not ok:
+                continue
+            cands, extra, dynamic = _ref_candidates(ref, p, t)
+            bound = [c for c in cands if c in tracked]
+            want.update(c for c in bound if c not in out)
+            if extra and (dynamic or len(bound) != 1):
+                nref = posixpath.normpath(ref)
+                if nref and nref != "." and not nref.startswith(".."):
+                    want.update(c for c in tracked if (c == nref or c.endswith("/" + nref)) and c not in out)
     for c in sorted(want):
         read(c)
         if c in out:
@@ -1330,13 +1415,17 @@ def _scan_file(path, text, reqrefs):
 
 
 def _resolve_reqrefs(found, path, files):
-    """The pip FILE arguments a file named (markers left by the pip reader): a file that was read (it is in scope as a requirements file) needs nothing more, one that was not, or cannot be
-    resolved to a tracked file inside the repository, is an unmeasured item."""
+    """The pip FILE arguments a file named (markers left by the pip reader): a file that was read (it is in scope as a requirements file) needs nothing more; one that was not, that cannot be
+    resolved to a tracked file inside the repository, or (with a cd or working-directory in the file) cannot be bound to exactly one tracked file, is an unmeasured item."""
     links = getattr(files, "links", {})
+    text = files.get(path, "")
     for it in [i for i in found if i.name == "pypi/(reqref)"]:
         found.remove(it)
         ref = it.version
-        if not any(c in files and c not in links for c in _ref_candidates(ref, path)):
+        cands, extra, dynamic = _ref_candidates(ref, path, text)
+        present = [c for c in cands if c in files and c not in links]
+        bound = len(present) == 1 and not dynamic if extra else bool(present)
+        if not bound:
             found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(ref.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))
 
 

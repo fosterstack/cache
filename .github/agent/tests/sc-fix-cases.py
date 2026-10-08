@@ -2239,9 +2239,9 @@ def i_pr_added_dangling_entry():
     assert not any(MF in l for l in out.splitlines() if l.startswith("audit: HIT:")), out[-300:]
 
 
-@case("age", "AC11", "x: the accepted BOUNDARY of the install vocabulary, one explicit line each (none of these is an item or an unmeasured form; a change here is a decision): poetry, pipenv, pdm, hatch, tox, pip-sync, bare yarn, pip download, docker compose pull, docker-compose up, buildah from, skopeo copy, crane pull, oras pull, ko build, rustup toolchain install, nvm install, asdf install, mise install, sdk install, conda env create, nix-env, helm pull, docker load, pip.exe, pip${IFS}install, subprocess.run list form")
+@case("age", "AC11", "x: the accepted BOUNDARY of the install vocabulary, one explicit line each (none of these is an item or an unmeasured form; a change here is a decision): poetry, pipenv, pdm, hatch, tox, bare yarn, pip download, docker compose pull, docker-compose up, buildah from, skopeo copy, crane pull, oras pull, ko build, rustup toolchain install, nvm install, asdf install, mise install, sdk install, conda env create, nix-env, helm pull, docker load, pip.exe, pip${IFS}install, subprocess.run list form")
 def x_undetected_vocabulary_boundary():
-    forms = ["poetry install", "poetry add requests", "pipenv install", "pdm install", "hatch env create", "tox", "pip-sync requirements.txt", "yarn", "pip download requests==2.0", "docker compose pull",
+    forms = ["poetry install", "poetry add requests", "pipenv install", "pdm install", "hatch env create", "tox", "yarn", "pip download requests==2.0", "docker compose pull",
              "docker-compose up", "buildah from alpine:3", "skopeo copy docker://a/b docker://c/d", "crane pull alpine:3 out.tar", "oras pull ghcr.io/a/b:1", "ko build ./cmd/x", "rustup toolchain install stable",
              "nvm install 20", "asdf install nodejs 20.0.0", "mise install node@20", "sdk install java 21", "conda env create -f env.yml", "nix-env -iA nixpkgs.hello", "helm pull oci://example.invalid/chart",
              "docker load -i image.tar", "pip.exe install requests==2.0", "pip${IFS}install requests==2.0", "subprocess.run(['pip','install','requests==2.0'])", 'subprocess.run(["pip", "install", "requests==2.0"])']
@@ -3136,6 +3136,95 @@ def x_obfuscation_boundary_other_tools():
     for f in forms:
         repo = history_repo({"bin/x.sh": SHEBANG_BASH + f + "\n"})
         assert not inv.load_at(repo, None) and not inv.unmeasured(inv.tree_files(repo, None)), ("the accepted boundary moved: " + f)
+
+
+# ======================================================================================================================================
+# step 8 round 2: a pip FILE is bound to the directory the command really runs in (cd, pushd, working-directory), never guessed
+# ======================================================================================================================================
+def wd_wf(run, job_wd=None, step_wd=None, default_wd=None):
+    return ("on: push\n" + ("defaults:\n  run:\n    working-directory: %s\n" % default_wd if default_wd else "") + "jobs:\n  j:\n    runs-on: u\n" +
+            ("    defaults:\n      run:\n        working-directory: %s\n" % job_wd if job_wd else "") + "    steps:\n      - run: %s\n" % run + ("        working-directory: %s\n" % step_wd if step_wd else ""))
+
+
+DECOY = {"req.txt": "ok==1.0\n", "sub/req.txt": "evil==1.0\n"}
+WD_ROUTES = [("cd", {"bin/x.sh": SHEBANG_BASH + "cd sub && pip install -r req.txt\n"}), ("cd on its own line", {"bin/x.sh": SHEBANG_BASH + "cd sub\npip install -r req.txt\n"}),
+             ("pushd", {"bin/x.sh": SHEBANG_BASH + "pushd sub >/dev/null\npip install -r req.txt\n"}), ("subshell", {"bin/x.sh": SHEBANG_BASH + "(cd sub; pip install -r req.txt)\n"}),
+             ("run step cd", {WFPATH: wd_wf("cd sub && pip install -r req.txt")}), ("step working-directory", {WFPATH: wd_wf("pip install -r req.txt", step_wd="sub")}),
+             ("job working-directory", {WFPATH: wd_wf("pip install -r req.txt", job_wd="sub")}), ("workflow default working-directory", {WFPATH: wd_wf("pip install -r req.txt", default_wd="sub")}),
+             ("quoted working-directory", {WFPATH: wd_wf("pip install -r req.txt", step_wd="'./sub/'")})]
+
+
+@case("age", "AC11", "i: a pip FILE is bound to where the command RUNS: with `cd sub`, `pushd sub`, a subshell cd, a run-step cd, a step, job or workflow-default `working-directory: sub`, a benign same-named file at the repository root does not hide the real one under sub/: both are read (every tracked file the reference can name), so the real file's pins are items, and the reference that cannot be bound to exactly one tracked file is also an unmeasured item; a PR that bumps the real file's pin MOVES it (age check refuses, audit reports)")
+def i_pip_file_is_bound_to_the_working_directory():
+    for label, route in WD_ROUTES:
+        files = {**route, **DECOY}
+        repo = history_repo(files)
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert "package:pypi/evil@1.0" in ks and [k for k in ks if "(unmeasured:" in k], (label, mode, ks)
+        head = {**files, "sub/req.txt": "evil==9.9.9\n"}
+        young = {"times": {"package:pypi/evil@9.9.9": {"time": "2026-10-06T00:00:00Z", "source": "pypi"}}}
+        rc, out = run_age(exact_repo(files, head), young)
+        assert rc == 1 and "evil@9.9.9" in out, (label, "a bump under sub/ is moved", rc, out[-300:])
+        lists = {"lists": {"package:pypi/evil@9.9.9": {"github": [{"id": "GHSA-test-test-test", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}}}
+        rc, out = run_audit_pr(files, head, lists)
+        assert rc == 1 and any("GHSA-test-test-test" in l for l in out.splitlines() if l.startswith("audit: HIT:")), (label, rc, out[-300:])
+    for label, route in WD_ROUTES:                    # bound to exactly ONE tracked file: read, nothing unmeasured
+        repo = history_repo({**route, "sub/req.txt": "evil==1.0\n"})
+        ks = sorted(inv.load_at(repo, None))
+        assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], (label, "control", ks)
+    for files in both_routes("pip install -r req.txt"):
+        repo = history_repo({**files, "req.txt": "ok==1.0\n"})
+        ks = sorted(inv.load_at(repo, None))
+        assert "package:pypi/ok@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], ("no cd: the root file", ks)
+
+
+@case("age", "AC11", "i: a directory built at run time (`cd \"$DIR\"`, `working-directory: ${{ matrix.dir }}`) cannot be bound: every tracked file whose path ends with the referenced path is read (a pin under any directory is an item) and the reference is unmeasured; a `..` that leaves the repository names nothing")
+def i_dynamic_directory_reads_every_candidate():
+    files = {"req.txt": "ok==1.0\n", "a/req.txt": "evil==1.0\n", "b/c/req.txt": "worse==2.0\n", "notreq.txt": "other==3.0\n"}
+    for label, route in (("cd var", {"bin/x.sh": SHEBANG_BASH + 'cd "$DIR" && pip install -r req.txt\n'}), ("expression working-directory", {WFPATH: wd_wf("pip install -r req.txt", step_wd="${{ matrix.dir }}")}),
+                         ("cd command substitution", {"bin/x.sh": SHEBANG_BASH + "cd $(dirname $F)\npip install -r req.txt\n"})):
+        repo = history_repo({**route, **files})
+        ks = sorted(inv.load_at(repo, None))
+        assert "package:pypi/evil@1.0" in ks and "package:pypi/worse@2.0" in ks and "package:pypi/ok@1.0" in ks and "package:pypi/other@3.0" not in ks and [k for k in ks if "(unmeasured:" in k], (label, ks)
+
+
+@case("age", "AC11", "i: pip file references in more spellings: `-qr FILE`, `-vvr FILE`, `-Ur FILE`, `-r=FILE` are file references (the file's pins are items); a trailing -r or -c with NO value (the value arrives from xargs or find) is an unmeasured item; `pip-sync FILE` and `uv pip sync FILE` and `uv pip install -r FILE` read the file like pip install -r; pip-compile is an accepted boundary (it writes locks, installs nothing)")
+def i_pip_file_reference_spellings():
+    for line in ("pip install -qr req.txt", "pip install -vvr req.txt", "pip install -Ur req.txt", "pip install -r=req.txt", "pip install -r=req.txt -q", "pip-sync req.txt", "uv pip sync req.txt", "uv pip install -r req.txt",
+                 "pip-sync --pip-args '--no-deps' req.txt"):
+        for files in both_routes(line):
+            repo = history_repo({**files, "req.txt": "evil==1.0\n"})
+            ks = sorted(inv.load_at(repo, None))
+            assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k or k.startswith("package:pypi/req")], (line, list(files), ks)
+    for line in ("xargs -n1 pip install -r", "echo req.txt | xargs pip install -c", "find . -name req.txt | xargs -I{} pip install --requirement", "pip install -r", "pip-sync"):
+        for files in both_routes(line):
+            ks = sorted(repo_items(files)[0])
+            if line == "pip-sync":
+                continue
+            assert [k for k in ks if "(unmeasured:" in k], (line, list(files), ks)
+    assert not inv.load_at(history_repo({"bin/x.sh": SHEBANG_BASH + "pip-compile requirements.in\n", "requirements.in": "evil==1.0\n"}), None)
+
+
+@case("age", "AC11", "i: a pip FILE that is a symlink, or sits under a symlinked directory, is an unmeasured symlink item, never read as its link text, in both modes")
+def i_referenced_symlink_is_unmeasured():
+    files = {"bin/x.sh": SHEBANG_BASH + "pip install -r req.txt\n", "docs/payload.txt": "evil==1.0\n", "req.txt": ("symlink", "docs/payload.txt")}
+    repo = history_repo(files)
+    for mode in (None, "HEAD"):
+        ks = sorted(inv.load_at(repo, mode))
+        assert [k for k in ks if k.startswith("tool:(symlink)@")] and "package:pypi/evil@1.0" not in ks, (mode, ks)
+
+
+@case("audit", "AC10", "b: when the OSV record IS the GitHub advisory itself (the same GHSA id), the two lists are one source and GitHub's affected ranges decide: GitHub `< 1.5.0` with an OSV copy that reaches 2.0.0 is clean at v1.8.0; GitHub `< 2.0.0` with an OSV copy fixed at 1.5.0 is an advisory at v1.8.0, and neither is a dispute")
+def b_ghsa_primary_osv_record_is_one_source():
+    def run(gh_range, fixed):
+        g = ghsa("GHSA-test-test-test", "github.com/a/b", [gh_range], "2025-01-01T00:00:00Z")
+        o = osv_rec("GHSA-test-test-test", "2025-01-01T00:00:00Z", [go_aff("github.com/a/b", [{"introduced": "0"}, {"fixed": fixed}])])
+        net, ctx = make_net([g], [o], go_module=lambda p, v: ("github.com/a/b", {"Version": v}))
+        return judge(net, ctx, inv.Item("gotool", "github.com/a/b", "v1.8.0"))[0]
+    assert summary(run("< 1.5.0", "2.0.0")) == [], summary(run("< 1.5.0", "2.0.0"))
+    f = run("< 2.0.0", "1.5.0")
+    assert [x.kind for x in f] == ["advisory"] and not any(x.disputed for x in f), summary(f)
 
 def main(argv):
     suites = {c[0] for c in CASES}

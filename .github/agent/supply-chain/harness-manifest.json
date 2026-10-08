@@ -11,6 +11,11 @@
    "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
   },
   {
+   "path": ".github/agent/tests/coverage-gate.sh",
+   "sha256": "641df8bb677c3828f16de6e8ecc8a1e6f6a60acc4629e1550e2dd79132c3faa0",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
    "path": ".github/agent/tests/k8s-harness-fence-test.sh",
    "sha256": "db412b5dcd814aad71a9a2e436ac7a255507aa9a79f0f6a66884d889f67038c9",
    "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
