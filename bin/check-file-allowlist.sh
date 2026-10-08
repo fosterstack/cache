@@ -147,6 +147,9 @@ ALLOW_PATTERNS=(
   # The hash-pinned adjudicator SDK requirements (anthropic + transitive tree), installed
   # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
   '^\.github/agent/adjudicator-requirements\.txt$'
+  # pip itself, pinned and hash-checked for CI (REQ-SUP-001-AC13); one requirement, bumped by the pip
+  # ecosystem in dependabot.yml under the 7-day cooldown.
+  '^\.github/agent/pip-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
   # docs/cve-auditor-matrix.md and tests/auditor-matrix-test.sh (both under .github/agent/): real
