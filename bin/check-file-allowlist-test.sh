@@ -350,6 +350,24 @@ hkexpect pass "hook: merge bringing a non-ASCII unlisted path from the other par
 mkhk; hkbranch other "$NA" x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config core.quotePath false )
 hkexpect fail "hook: merge resolution adding a non-ASCII unlisted path is rejected (UTF-8 locale, quotePath=false)" 'export LC_ALL=en_US.UTF-8; hk merge -q --no-ff --no-commit other && printf z > "ops/na\303\257ve.md" && hk add -A && hk commit -q -m merge'
 
+# fail closed when the list cannot be produced: a PATH-shadowed tool that fails must make the merge commit
+# fail (non-zero, no merge commit created), never an empty list that accepts everything
+hkfault() {  # hkfault <desc> <tool to shadow with a failing stub>
+  local desc="$1" tool="$2" out rc
+  mkhk; hkbranch other ops/notes.md x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+  mkdir -p "$TMPROOT/stub"; printf '#!/bin/sh\nexit 1\n' > "$TMPROOT/stub/$tool"; chmod +x "$TMPROOT/stub/$tool"
+  out="$(cd "$HK" && hk merge -q --no-ff --no-commit other >/dev/null 2>&1; PATH="$TMPROOT/stub:$PATH" hk commit -q -m merge 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && ! ( cd "$HK" && git rev-parse -q --verify HEAD^2 >/dev/null ); then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (rc=$rc, merge commit created or hook accepted)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+  rm -rf "$TMPROOT/stub"
+}
+hkfault "hook: merge fails closed when sort fails (list cannot be produced)" sort
+hkfault "hook: merge fails closed when mktemp fails" mktemp
+hkfault "hook: merge fails closed when comm fails" comm
+
 # (f) octopus: two other parents, each carrying an unlisted file
 mkhk; hkbranch m1 ops/one.md 1; hkbranch m2 ops/two.md 2
 ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )

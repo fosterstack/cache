@@ -22,7 +22,9 @@ set -euo pipefail
 repo_root=$(git rev-parse --show-toplevel)
 
 # Rule: judge only the staged changes THIS commit introduces.
-#  - normal commit (also squash, cherry-pick, revert, rebase): the staged diff against HEAD.
+#  - normal commit (also squash, cherry-pick, revert, rebase): the staged diff against HEAD. Type changes
+#    (T: file <-> symlink <-> gitlink) are judged too, which is stricter than before and cannot admit a
+#    forbidden path.
 #  - merge commit (MERGE_HEAD present, one line per other parent): only files that differ from
 #    HEAD AND from every MERGE_HEAD parent, so content that merely came from another parent
 #    (already tracked, already judged) is not re-judged, while anything the merge itself adds or
@@ -34,14 +36,20 @@ files=$(git diff --cached --ignore-submodules=none --name-only --diff-filter=ACM
 export LC_ALL=C
 merge_head=$(git rev-parse --git-path MERGE_HEAD)
 if [ -f "$merge_head" ]; then
-  # sorted lists go into variables first so a failing git or sort aborts under set -e
-  files=$(printf '%s\n' "$files" | sort -u)
+  # No process substitution: a producer that fails inside <(...) is invisible to set -e and comm would
+  # see an empty list (fail open). Temp files are created, written and compared by plain commands, so any
+  # failure aborts the hook under set -e / pipefail.
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  printf '%s\n' "$files" | sort -u > "$tmp/a"
   while read -r parent _; do
     [ -n "$parent" ] || continue
     other=$(git diff --cached --ignore-submodules=none --name-only "$parent")  # no status filter: any type, mode or content difference counts
-    other=$(printf '%s\n' "$other" | sort -u)
-    files=$(comm -12 <(printf '%s\n' "$files") <(printf '%s\n' "$other"))
+    printf '%s\n' "$other" | sort -u > "$tmp/b"
+    comm -12 "$tmp/a" "$tmp/b" > "$tmp/c"
+    mv "$tmp/c" "$tmp/a"
   done < "$merge_head"
+  files=$(cat "$tmp/a")
 fi
 printf '%s\n' "$files" | "$repo_root/bin/check-file-allowlist.sh" \
   || { echo "pre-commit: rejected (see above). Unstage with: git restore --staged <file>" >&2; exit 1; }
