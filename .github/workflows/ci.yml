@@ -79,6 +79,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: auditor Python coverage — zero uncovered (REQ-AUD-18 AC2)
         run: |
           set -euo pipefail
@@ -237,6 +241,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: every reusable-workflow caller covers its callees' permissions (R01)
         run: |
           # hash-pinned (row 78 pin pass on #156: no mutable package content in a required check)
@@ -255,6 +263,8 @@ jobs:
         run: python3 .github/agent/bin/check-action-pins.py --verify-tags .
       - name: the pin check's wiring cannot be skipped or weakened (REQ-REL-005-AC1)
         run: bash .github/agent/tests/pin-wiring-test.sh
+      - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
+        run: bash .github/agent/tests/pip-pin-test.sh
 
       # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
       # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
@@ -283,6 +293,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/panel-sdk"
+          # the venv's own pip is the interpreter's bundled one: pin it first, from the same hash-checked file (REQ-SUP-001 AC13)
+          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip --version
           "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
           PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
 
