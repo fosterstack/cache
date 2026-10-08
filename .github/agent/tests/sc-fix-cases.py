@@ -3656,7 +3656,7 @@ def deep_wf(n, steps="      - run: echo hi\n", pin="pip install pyyaml==5.3"):
 SHA_A, SHA_B = "a" * 40, "b" * 40
 
 
-@case("age", "AC2", "i: an INCOMPLETE scan is never 'unchanged across revisions': the `scan limit reached` item of a file is keyed by the file's path AND the sha256 of its exact content, so ANY edit of a file scanned flat is a moved item: with base and head both nested beyond the safe depth, a head that adds a digest-pinned action reference, or changes an installer version, is REFUSED by the age check (exit 1, the item named), a head with the same bytes moves nothing; in a set of files only the edited one moves")
+@case("age", "AC2", "i: an INCOMPLETE scan is never 'unchanged across revisions': the `scan limit reached` item of a file is keyed by the file's path AND the sha256 of its exact content, so ANY edit of a file scanned flat is a moved item: with base and head both nested beyond the safe depth, a head that adds a digest-pinned action reference, or changes an installer version, is REFUSED by the age check (exit 1, the item named), a head with the same bytes moves nothing; in a set of files every incomplete item moves with any change")
 def i_incomplete_scan_is_content_keyed():
     base_steps = "      - run: echo hi\n"
     cases = (("an added action reference", base_steps, base_steps + "      - uses: actions/checkout@%s # v4\n" % SHA_A),
@@ -3668,7 +3668,7 @@ def i_incomplete_scan_is_content_keyed():
         rc, out = run_age(exact_repo(base, head), OLD_FX)
         assert rc == 1 and "scan limit reached" in out, (label, rc, out[-300:])
     same = {WFPATH: deep_wf(400, base_steps)}
-    rc, out = run_age(exact_repo(same, {**same, "README.md": "x\n"}), OLD_FX)
+    rc, out = run_age(exact_repo(same, dict(same)), OLD_FX)
     assert rc == 0 and "no pin moved" in out, ("unchanged bytes move nothing", rc, out[-300:])
     p2 = ".github/workflows/y.yml"
     base = {WFPATH: deep_wf(400, base_steps), p2: deep_wf(300, base_steps)}
@@ -3676,7 +3676,7 @@ def i_incomplete_scan_is_content_keyed():
     k0 = keys(base)
     assert len(k0) == 2, k0
     k1 = keys({**base, p2: deep_wf(300, base_steps + "      - uses: actions/checkout@%s # v4\n" % SHA_A)})
-    assert len(k1) == 2 and sorted(set(k0) - set(k1)) != [] and len(set(k0) & set(k1)) == 1, ("only the edited file's item moves", k0, k1)
+    assert len(k1) == 2 and not (set(k0) & set(k1)), ("while any scan is incomplete, a change anywhere moves every incomplete item", k0, k1)
     a, b = keys({WFPATH: deep_wf(400, base_steps)}), keys({WFPATH: deep_wf(400, base_steps + "# edited\n")})
     assert a != b and len(a) == len(b) == 1, (a, b)
 
@@ -3713,7 +3713,7 @@ def i_incomplete_include_chain_covers_the_unread_tail():
     base, head = include_chain(n, "1.0"), include_chain(n, "9.9")
     rc, out = run_age(exact_repo(base, head), OLD_FX)
     assert rc == 1 and "scan limit reached" in out, ("a change in the final, unread file", rc, out[-300:])
-    rc, out = run_age(exact_repo(base, {**base, "README.md": "x\n"}), OLD_FX)
+    rc, out = run_age(exact_repo(base, dict(base)), OLD_FX)
     assert rc == 0 and "no pin moved" in out, ("an unchanged chain moves nothing", rc, out[-300:])
     repo, rc, out = run_audit_fx(base, head, {})
     assert rc == 1 and any("c/" in l and "incompletely scanned" in l for l in out.splitlines() if l.startswith("information:")), (rc, out[-400:])
@@ -3760,6 +3760,90 @@ def i_incomplete_key_is_the_exact_bytes():
     ka = sorted(k for k in inv.load_at(repo_with(b"\xff"), None) if "scan limit reached" in k)
     kb = sorted(k for k in inv.load_at(repo_with(b"\xfe"), None) if "scan limit reached" in k)
     assert len(ka) == len(kb) == 1 and ka != kb, (ka, kb)
+
+
+# ======================================================================================================================================
+# the incomplete item is keyed by the path and the digest of the WHOLE tree: nothing is enumerated
+# ======================================================================================================================================
+def index_only_commit(d, lines, msg="c"):
+    if lines:
+        subprocess.run(["git", "-C", d, "update-index", "--index-info"], input=("\n".join(lines) + "\n").encode(), check=True, capture_output=True)
+    _git(d, "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg)
+
+
+@case("age", "AC2", "i: while ANY scan is incomplete, ANY change to ANY tracked file moves the item (the item is keyed by the path and the digest of the whole tree: every mode, object id and path of the revision): an unrelated file changed beside a deep workflow is refused by the age check; an identical tree moves nothing; a symlink in the unread tail of an include chain whose target changes moves it; a deep workflow whose PIP_REQUIREMENT value is on the following line (never discovered) moves it when only the referenced requirements file changes")
+def i_incomplete_item_keys_on_the_whole_tree():
+    deep = deep_wf(400)
+    base = {WFPATH: deep, "docs/a.txt": "one\n", "src/b.py": "x = 1\n"}
+    rc, out = run_age(exact_repo(base, {**base, "src/b.py": "x = 2\n"}), OLD_FX)
+    assert rc == 1 and "scan limit reached" in out, ("an unrelated change beside a deep workflow", rc, out[-300:])
+    rc, out = run_age(exact_repo(base, dict(base)), OLD_FX)
+    assert rc == 0 and "no pin moved" in out, ("an identical tree", rc, out[-300:])
+    n = inv.MAX_INCLUDE_DEPTH + 3
+    chain = {"bin/x.sh": SHEBANG_BASH + "pip install -r c/0.txt\n", **{"c/%d.txt" % i: "-r %d.txt\nfiller%d==1.0\n" % (i + 1, i) for i in range(9)}, "c/9.txt": ("symlink", "../real/pins.txt"), "real/pins.txt": "pk==1.0\n"}
+    rc, out = run_age(exact_repo(chain, {**chain, "real/pins.txt": "pk==9.9\n"}), OLD_FX)
+    assert rc == 1 and "scan limit reached" in out, ("a symlink in the unread tail whose target changed", rc, out[-300:])
+    wf = deep_wf(400).replace("on: push\n", "on: push\nenv:\n  PIP_REQUIREMENT:\n    deps/r.txt\n", 1)
+    rc, out = run_age(exact_repo({WFPATH: wf, "deps/r.txt": "pk==1.0\n"}, {WFPATH: wf, "deps/r.txt": "pk==2.0\n"}), OLD_FX)
+    assert rc == 1 and "scan limit reached" in out, ("a requirements file named by a value the deep scan never found", rc, out[-300:])
+
+
+@case("age", "AC11", "i: the tree digest is the same in the working tree and in the revision for the same content, and moves with any change: a clean repository gives one digest in both modes (and the `scan limit reached` keys of the two readers agree); a modified tracked file, a deleted one and a new commit with that change each give a different digest, and the working-tree digest of the modified file equals the revision digest of the commit that records it; a symlink and a gitlink are part of it")
+def i_tree_digest_agrees_between_modes():
+    files = {WFPATH: deep_wf(400), "docs/a.txt": "one\n", "tools/l": ("symlink", "../docs/a.txt"), "tools/sub": ("gitlink", "1" * 40)}
+    repo = history_repo(files)
+    d0 = inv.tree_digest(repo, None)
+    assert d0 == inv.tree_digest(repo, "HEAD"), "a clean working tree and its revision"
+    assert sorted(k for k in inv.load_at(repo, None) if "scan limit reached" in k) == sorted(k for k in inv.load_at(repo, "HEAD") if "scan limit reached" in k)
+    open(os.path.join(repo, "docs/a.txt"), "w").write("two\n")
+    d1 = inv.tree_digest(repo, None)
+    assert d1 != d0 and d1 != inv.tree_digest(repo, "HEAD")
+    _git(repo, "add", "docs/a.txt")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "two")
+    assert inv.tree_digest(repo, "HEAD") == d1 == inv.tree_digest(repo, None), "the digest of the working tree equals that of the commit that records it"
+    os.remove(os.path.join(repo, "docs/a.txt"))
+    assert inv.tree_digest(repo, None) not in (d0, d1), "a deleted tracked file"
+    _git(repo, "checkout", "--", "docs/a.txt")
+    os.remove(os.path.join(repo, "tools/l"))
+    os.symlink("elsewhere", os.path.join(repo, "tools/l"))
+    assert inv.tree_digest(repo, None) != d1, "a symlink retargeted"
+    many = {"f/%03d.txt" % i: "v%d\n" % i for i in range(150)}
+    a, b = history_repo(many), history_repo({**many, "f/149.txt": "changed\n"})
+    assert inv.tree_digest(a, "HEAD") != inv.tree_digest(b, "HEAD"), "a change to the LAST file of a large tree still changes the digest"
+    three = {WFPATH: deep_wf(400), ".github/workflows/y.yml": deep_wf(300), ".github/workflows/z.yml": deep_wf(250)}
+    repo3, calls, orig = history_repo(three), [], inv.tree_digest
+    inv.tree_digest = lambda *a, **k: (calls.append(1), orig(*a, **k))[1]
+    try:
+        ks = [k for k in inv.load_at(repo3, "HEAD") if "scan limit reached" in k]
+    finally:
+        inv.tree_digest = orig
+    assert len(ks) == 3 and len(calls) == 1, ("the digest is computed ONCE per run", len(ks), len(calls))
+
+
+@case("age", "AC11", "x: the incomplete item is computed in LINEAR time: a requirements file with 4000 include lines (36 KB) at the include-depth boundary, over 4000 tracked files, is read by the age check on an unchanged tree in under 10 s (a child process with a deadline), and the tree digest of a 20000-file revision is computed in under 2 s")
+def x_incomplete_item_is_linear():
+    import time
+    d = history_repo({"README.md": "x\n"})
+    put = lambda data: subprocess.run(["git", "-C", d, "hash-object", "-w", "--stdin"], input=data, capture_output=True, check=True).stdout.strip().decode()
+    blob, inc = put(b"x==1\n"), put(("".join("-r d%d.txt\n" % i for i in range(4000))).encode())
+    boundary = inv.MAX_INCLUDE_DEPTH - 1
+    lines = ["100755 %s 0\tbin/x.sh" % put((SHEBANG_BASH + "pip install -r c/0.txt\n").encode())]
+    lines += ["100644 %s 0\tc/%d.txt" % (put(("-r %d.txt\n" % (i + 1)).encode()), i) for i in range(boundary)]
+    lines.append("100644 %s 0\tc/%d.txt" % (inc, boundary))
+    lines += ["100644 %s 0\tc/d%d.txt" % (blob, i) for i in range(4000)]
+    index_only_commit(d, lines, "base")
+    index_only_commit(d, [], "same")
+    json.dump({"times": {}}, open(d + ".fx.json", "w"))
+    r = _run_bounded([sys.executable, os.path.join(SC, "pin-age-check.py"), "--root", d, "--base", "HEAD~1", "--head", "HEAD", "--fixtures", d + ".fx.json", "--now", "2026-10-07T12:00:00Z"], 10)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "Traceback" not in out, (r.returncode, out[-300:])
+    big = history_repo({"README.md": "x\n"})
+    bl = subprocess.run(["git", "-C", big, "hash-object", "-w", "--stdin"], input=b"y\n", capture_output=True, check=True).stdout.strip().decode()
+    index_only_commit(big, ["100644 %s 0\tf/d%d/f%d.dat" % (bl, i % 300, i) for i in range(20000)])
+    t0 = time.time()
+    dig = inv.tree_digest(big, "HEAD")
+    took = time.time() - t0
+    assert took < 2 and len(dig) == 64, (took, dig)
 
 def main(argv):
     suites = {c[0] for c in CASES}

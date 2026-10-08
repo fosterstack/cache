@@ -76,7 +76,6 @@ class Cmd:
 
 _LEX_BUDGET = 4_000_000      # characters of nested text one _lex call may read (a 4000-character line, the longest this check reads, nested a thousand deep, costs under 3 million)
 _LEX_LIMIT = [False]
-_SCAN_DEEP = [False]         # the file just scanned was nested beyond the safe depth
 
 
 def _lex(text):
@@ -569,7 +568,8 @@ class Files(dict):
         self.sha256 = {}
         self.links = {}
         self.reqrefs = set()
-        self.limit = {}                # path -> digest of the include chain that was NOT read after it
+        self.limit = set()             # files whose include chain was cut at the depth bound
+        self.digest_fn = None          # () -> the digest of the whole tree these files come from (see tree_digest), computed once
         self.symlinks = set()          # EVERY tracked symlink (also those that are not read): a reference through a symlinked directory cannot be bound by its text
 
 
@@ -911,14 +911,8 @@ def tree_files(root, rev, soft=None):
                 refuse(n, f"cannot read {n}: {e.strerror or e}")      # never skipped: a file the daily run cannot read is a file it cannot measure
         for n in names:
             read_wt(n)
-        def peek_wt(n):
-            try:
-                with open(rbase + b"/" + names[n], "rb") as fh:
-                    raw = fh.read(MAX_FILE + 1)
-            except OSError:
-                return "unreadable", ""
-            return hashlib.sha256(raw).hexdigest(), raw.decode("utf-8", "replace")
-        _read_refs(out, names, lambda n: read_wt(n, force=True), peek_wt)
+        _read_refs(out, names, lambda n: read_wt(n, force=True))
+        out.digest_fn = _once(lambda: tree_digest(root, None))
         return out
     entries = {}
     for line in git(root, "ls-tree", "-r", "-l", "-z", rev).split("\0"):
@@ -951,13 +945,8 @@ def tree_files(root, rev, soft=None):
     _prefetch(root, [b for (_m, b, sz) in entries.values() if sz <= MAX_FILE])
     for n in entries:
         read_rev(n)
-    def peek_rev(n):
-        blob = entries[n][1]
-        if blob not in _BLOBS:
-            rr = subprocess.run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True)
-            _BLOBS[blob] = rr.stdout if rr.returncode == 0 else b""
-        return hashlib.sha256(_BLOBS[blob]).hexdigest(), _BLOBS[blob].decode("utf-8", "replace")
-    _read_refs(out, entries, lambda n: read_rev(n, force=True), peek_rev)
+    _read_refs(out, entries, lambda n: read_rev(n, force=True))
+    out.digest_fn = _once(lambda: tree_digest(root, rev))
     return out
 
 
@@ -980,26 +969,7 @@ def _prefetch(root, blobs):
         pos = nl + 1 + size + 1
 
 
-def _unread_tail(out, tracked, start, peek):
-    """A digest over (path, exact-bytes hash) of every file the include chain reaches from `start` that is not read (no depth bound, cycles stop it): changing ANY of them moves the incomplete item."""
-    seen, pairs, queue = {start}, [], [start]
-    while queue:
-        f = queue.pop()
-        text = out.get(f) if f in out else (peek(f)[1] if peek else "")
-        for ref, ok in _req_include_refs(text or ""):
-            if not ok:
-                continue
-            for c in _include_matches(ref, f, tracked):
-                if c in seen:
-                    continue
-                seen.add(c)
-                dig, txt = (out.sha256.get(c, ""), out.get(c)) if c in out else (peek(c) if peek else ("", ""))
-                pairs.append((c, dig))
-                queue.append(c)
-    return hashlib.sha256("\n".join("%s\0%s" % pr for pr in sorted(pairs)).encode("utf-8", "replace")).hexdigest()
-
-
-def _read_refs(out, tracked, read, peek=None):
+def _read_refs(out, tracked, read):
     """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c (or names in PIP_CONSTRAINT / PIP_REQUIREMENT, or gives pip-sync) is read too, whatever it is called, and
     so is every file those requirements files include, to a bounded depth. A reference is bound by PATH SUFFIX alone (see _ref_matches); every candidate is read."""
     todo, done = collections.deque(), set()
@@ -1037,10 +1007,66 @@ def _read_refs(out, tracked, read, peek=None):
             if not ok:
                 continue
             if d + 1 > MAX_INCLUDE_DEPTH:
-                out.limit[f] = _unread_tail(out, tracked, f, peek)          # what the chain still holds is not read, but it is part of this file's identity
+                out.limit.add(f)                                       # the rest of the chain is not read: reported, keyed by the whole tree
                 continue
             for c in _include_matches(ref, f, tracked):
                 take(c, d + 1)
+
+
+def _once(fn):
+    box = []
+
+    def run():
+        if not box:
+            box.append(fn())
+        return box[0]
+    return run
+
+
+def _git_bytes(root, *args):
+    r = subprocess.run(["git", "-C", root, *args], capture_output=True)
+    if r.returncode:
+        raise RuntimeError("git %s: %s" % (" ".join(args[:2]), r.stderr.decode("utf-8", "replace").strip()))
+    return r.stdout
+
+
+def tree_digest(root, rev=None):
+    """The digest of a whole revision: sha256 over the sorted lines `mode object-id <TAB> path` of EVERY entry (blobs, symlinks, gitlinks), so any change to any tracked file changes it. rev None is the
+    working tree: the index entries, with the object id recomputed from the bytes of every tracked file that differs from the index (a deleted one is marked), so a clean working tree gives the same digest
+    as its revision. One git call per source, linear in the number of files."""
+    lines = []
+    if rev is not None:
+        for ent in _git_bytes(root, "ls-tree", "-r", "-z", rev).split(b"\0"):
+            meta, _, path = ent.partition(b"\t")
+            if path:
+                mode, _typ, oid = meta.split(b" ")
+                lines.append(mode + b" " + oid + b"\t" + path)
+    else:
+        entries = {}
+        for ent in _git_bytes(root, "ls-files", "-s", "-z").split(b"\0"):
+            meta, _, path = ent.partition(b"\t")
+            if path:
+                mode, oid, _stage = meta.split(b" ")
+                entries[path] = (mode, oid)
+        base = os.fsencode(root)
+        for path in _git_bytes(root, "diff-files", "--name-only", "-z").split(b"\0"):
+            if not path or path not in entries or entries[path][0] == b"160000":
+                continue
+            full = base + b"/" + path
+            try:
+                st = os.lstat(full)
+                if stat.S_ISLNK(st.st_mode):
+                    data, mode = os.readlink(full), b"120000"
+                else:
+                    with open(full, "rb") as fh:
+                        data = fh.read()
+                    mode = b"100755" if st.st_mode & 0o111 else b"100644"
+                algo = hashlib.sha256 if len(entries[path][1]) == 64 else hashlib.sha1
+                entries[path] = (mode, algo(b"blob %d\0" % len(data) + data).hexdigest().encode())
+            except OSError:
+                entries[path] = (entries[path][0], b"deleted")
+        lines = [mode + b" " + oid + b"\t" + path for path, (mode, oid) in entries.items()]
+    return hashlib.sha256(b"\n".join(sorted(lines))).hexdigest()
 
 
 def manifest_text(root, rev):
@@ -1565,9 +1591,9 @@ def _scan_file_cached(path, text, reqrefs):
     hit = _SCAN_MEMO.get(key)
     if hit is None:
         found = _scan_file(path, text, reqrefs)
-        _SCAN_MEMO[key] = (copy.deepcopy(found), _LEX_LIMIT[0], _SCAN_DEEP[0])
+        _SCAN_MEMO[key] = (copy.deepcopy(found), _LEX_LIMIT[0])
         return found
-    _LEX_LIMIT[0], _SCAN_DEEP[0] = hit[1], hit[2]
+    _LEX_LIMIT[0] = hit[1]
     return copy.deepcopy(hit[0])
 
 
@@ -1658,8 +1684,7 @@ def _scan_file(path, text, reqrefs):
             _step({"run": ln}, found, {})
             _bodies(found, ln, {})
         if deep:
-            _LEX_LIMIT[0] = True
-            _SCAN_DEEP[0] = True                     # the structure-dependent readings (the walk, the environment mapping) were not done: reported as `scan limit reached`
+            _LEX_LIMIT[0] = True                     # the structure-dependent readings (the walk, the environment mapping) were not done: reported as `scan limit reached`
     if _wf_or_action_name(path) or _is_script(path, text) or path == "bin/install-scanner.sh":
         for ref, ok in _env_file_refs(text, path):          # PIP_CONSTRAINT / PIP_REQUIREMENT: files pip reads without a command-line flag; PIP_CONFIG_FILE: a configuration file that is not followed
             found.append(Item("package", "pypi/(reqref)", ref) if ok else _unmeasured_item(ref))
@@ -1697,6 +1722,7 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
     if exempt_set is not None:
         exempt = set(exempt_set)
     reqrefs = getattr(files, "reqrefs", set())
+    tree_key = [None]
     path_index = _PathIndex((c for c in files if c not in getattr(files, "links", {})), getattr(files, "symlinks", ()))
     for pi in problems:
         items.setdefault(pi.key, pi)
@@ -1708,7 +1734,6 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
             items.setdefault(pi.key, pi)
     for path, text in sorted(files.items()):
         _LEX_LIMIT[0] = False
-        _SCAN_DEEP[0] = False
         if path in exempt or path == MANIFEST:
             continue                          # listed in the reviewed manifest, bytes unchanged: fixture data (AC11); the manifest itself is not a source of items
         try:
@@ -1721,12 +1746,9 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
             continue
         if _LEX_LIMIT[0] or path in getattr(files, "limit", ()):
             lim = Item("package", "pypi/(unmeasured:scan limit reached)", "(unpinned)")
-            raw = lambda p: getattr(files, "sha256", {}).get(p) or hashlib.sha256(files[p].encode("utf-8", "replace")).hexdigest()          # the hash of the exact BYTES the reader kept
-            if _SCAN_DEEP[0]:
-                basis = path + "\0" + raw(path)                                    # a deep document: the file's own exact bytes are everything that was not read
-            else:
-                basis = path + "\0" + hashlib.sha256(("\n".join("%s\0%s" % (q, raw(q)) for q in sorted(files)) + "\0" + getattr(files, "limit", {}).get(path, "")).encode("utf-8", "replace")).hexdigest()
-                # an include chain or a character budget: the scope digest of EVERY in-scope file plus the unread tail, so a change anywhere moves the item
+            if tree_key[0] is None:                                              # ONE digest of the whole tree per run: any change to any tracked file moves every incomplete item
+                tree_key[0] = files.digest_fn() if getattr(files, "digest_fn", None) else hashlib.sha256("\n".join("%s\0%s" % (q, hashlib.sha256(files[q].encode("utf-8", "replace")).hexdigest()) for q in sorted(files)).encode("utf-8", "replace")).hexdigest()
+            basis = path + "\0" + tree_key[0]
             lim.step = "file:" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:10]
             lim.incomplete, lim.why, lim.file, lim.line = True, "incompletely scanned: action references and installer inputs not read", path, 1       # its own class: judged as an unparseable finding naming the file, never an expression
             found.append(lim)           # a bound was hit: the file was not read in full, which is reported, never silent
