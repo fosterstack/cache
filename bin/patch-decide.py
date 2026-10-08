@@ -53,12 +53,17 @@ MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   
 
 # a vendor or model word anywhere in a version, glued to the number or not: the version is the one place a name can hide
 VERSION_AT = re.compile(r"(@)([0-9A-Za-z.+~_-]+)")
+# the model names as WORDS: exactly the matched letters, no trailing characters (VENDOR eats the rest of a token on purpose;
+# inside a version that would erase the numbers that tell two versions apart)
+MODEL_WORDS = re.compile(r"(?i)chat[-_.\s]*gpt|" + _sep("anthropic", "claude", "openai", "gpt", "codex", "gemini", "llama", "mistral", "mixtral",
+                         "grok", "bedrock", "deepseek", "qwen", "copilot", "cohere", "bard", "sonnet", "opus", "haiku", "xai")
+                         + r"|\bo[1-9](?:-(?:mini|pro|preview))?\b")
 ANYWHERE = re.compile(r"(?i)" + _sep("google", "microsoft", "amazon", "aws", "azure", "meta"))
 
 
 def _guard_version(m):
     # the word goes, the numbers stay (so two versions still differ), and so does the rest of the identifier
-    return m.group(1) + ANYWHERE.sub("<redacted>", VENDOR.sub("<redacted>", m.group(2)))
+    return m.group(1) + ANYWHERE.sub("<redacted>", MODEL_WORDS.sub("<redacted>", m.group(2)))
 
 
 def _alone(m):

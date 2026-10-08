@@ -1142,6 +1142,38 @@ for word in ("azure", "Azure", "aws", "google", "microsoft", "amazon", "meta", "
         digit_a, digit_b = ("1.0.0", "2.0.0") if "v1" in pa else ("@1", "@2")
         check("AC14 ... and when only the first changes, the one line says which (its numeric version, %r)" % word,
               len(one) == 1 and digit_a in one[0] and digit_b not in one[0], one)
+# --- final round (REQ-REL-009-AC14): exactly the vendor or model WORD is redacted from a version; what follows it still tells versions apart
+WORDS_ = ("azure", "Azure", "aws", "google", "microsoft", "amazon", "meta", "claude", "gemini", "openai", "llama", "mistral", "grok", "copilot", "Claude", "GEMINI", "OpenAI", "Llama")
+def after_pairs(w):
+    # (version a, version b, tail of a that must survive, tail of b)
+    return [("v1.0.0-%s1.2" % w, "v1.0.0-%s1.3" % w, "1.2", "1.3"),
+            ("v1.0.0-%s1" % w, "v1.0.0-%s2" % w, "%s1" % "", "2"),
+            ("1%s1" % w, "1%s2" % w, "1", "2"),
+            ("v1.0.0-%s.1.2" % w, "v1.0.0-%s.1.3" % w, "1.2", "1.3"),
+            ("v1.0.0-%s-rc1" % w, "v1.0.0-%s-rc2" % w, "rc1", "rc2"),
+            ("v1.0.0-%s-%s1" % (w, w), "v1.0.0-%s-%s2" % (w, w), "1", "2"),
+            ("v1.0.0+%s.build5" % w, "v1.0.0+%s.build6" % w, "build5", "build6")]
+for w in WORDS_:
+    for va, vb, ta, tb in after_pairs(w):
+        pa, pb = "pkg:golang/example.com/foo@%s" % va, "pkg:golang/example.com/foo@%s" % vb
+        SX, SY = stmt("CVE-2099-0960", products=(pa,), justification="a"), stmt("CVE-2099-0960", products=(pb,), justification="a")
+        sec_both = vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), dict(SY, justification="b")]))))
+        both = [l for l in sec_both.split("\n") if "CVE-2099-0960" in l]
+        check("AC14 versions %r / %r (differing after the word): two lines, different labels, no vendor word" % (va, vb),
+              len(both) == 2 and both[0] != both[1] and not VENDOR_RX.search("".join(both)), both)
+        one = [l for l in vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), SY])))).split("\n") if "CVE-2099-0960" in l]
+        check("AC14 ... only the first changed: one line carrying the first's tail %r and not the second's %r" % (ta, tb),
+              len(one) == 1 and ta in re.search(r"\[(.*?)\]", one[0]).group(1) and tb not in re.search(r"\[(.*?)\]", one[0]).group(1) and not VENDOR_RX.search(one[0]), one)
+        out_ = P._clean("[" + pa + "]")
+        check("redaction: only the word goes from %r: the rest of the version is intact" % va, ("@" + va.replace(w, "<redacted>")) in out_, out_)
+for w in WORDS_[:6]:
+    out_ = P._clean("pkg:golang/example.com/foo@v1.0.0-%s1.2-extra.3" % w)
+    check("redaction: the word %r is replaced and 1.2-extra.3 stays (no trailing characters consumed)" % w, "<redacted>1.2-extra.3" in out_ and not VENDOR_RX.search(out_), out_)
+for ordinary in ("oracle", "ibm", "cloudflare", "hashicorp", "nvidia", "stripe", "alibaba", "rc1", "beta.2", "build.5", "linux", "amd64", "snapshot", "hotfix"):
+    for tmpl in ("%s", "+%s", "[%s]", "`%s`"):
+        ident = "pkg:golang/example.com/foo@v1.0.0-%s" % ordinary
+        out_ = P._clean(tmpl % ident)
+        check("redaction: an ordinary suffix %r stays intact in %r" % (ordinary, tmpl), (tmpl % ident) == out_, out_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
