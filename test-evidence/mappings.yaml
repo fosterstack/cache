@@ -529,6 +529,7 @@ mappings:
   - ac: REQ-SUP-001-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
@@ -549,5 +550,12 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
   - ac: REQ-SUP-001-AC10
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC11
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC12
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }

@@ -107,6 +107,7 @@ ALLOW_PATTERNS=(
   '^\.github/agent/supply-chain/pin-(inventory|age-check|audit)\.py$'
   '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
+  '^\.github/agent/supply-chain/harness-manifest\.json$'
   '^bin/workflow-consolidation-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'

@@ -218,5 +218,86 @@ class GuardFiles(Cli):
         self.assertEqual(self.run_main("--print-tree")[1].strip(), t)      # ci.yml is not part of the bound content
 
 
+class HarnessManifest(unittest.TestCase):
+    """The reviewed harness manifest (.github/agent/supply-chain/harness-manifest.json, REQ-SUP-001 AC11) lies under .github/agent/, so a change to it needs a current review record, and any
+    edit of it invalidates a record made before. It exempts files from the supply-chain checks, so an unreviewed change would silently hide a pin."""
+    M = ".github/agent/supply-chain/harness-manifest.json"
+    setUp, git, write, run_main = Cli.setUp, Cli.git, Cli.write, Cli.run_main
+
+    def commit_manifest(self, text, msg="manifest"):
+        os.makedirs(os.path.dirname(self.M), exist_ok=True)
+        self.write(self.M, text)
+        self.git("add", "-A"); self.git("commit", "-qm", msg)
+
+    def test_the_manifest_is_under_the_reviewed_prefix(self):
+        self.assertTrue(self.M.startswith(G.AGENT))
+        self.assertNotIn(self.M, getattr(G, "GUARDED", ()), "the manifest is covered by the reviewed .github/agent/ prefix, not by the list of guard files outside it")
+
+    def test_a_manifest_only_change_needs_a_record(self):
+        self.commit_manifest('{"files": []}\n')
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertIn("no valid review record", out)
+        self.assertIn(self.M, out)
+
+    def test_a_manifest_only_change_with_a_current_record_passes(self):
+        self.commit_manifest('{"files": []}\n')
+        tree = self.run_main("--print-tree")[1].strip()
+        rec = good(); rec["tree"] = tree
+        os.makedirs(".github/agent/reviews")
+        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 0)
+        self.assertIn("clears the stop rule", out)
+
+    def test_editing_the_manifest_invalidates_an_existing_record(self):
+        self.commit_manifest('{"files": []}\n')
+        tree = self.run_main("--print-tree")[1].strip()
+        rec = good(); rec["tree"] = tree
+        os.makedirs(".github/agent/reviews")
+        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        self.assertEqual(self.run_main("--base", self.base, "--head", "HEAD")[0], 0)
+        self.commit_manifest('{"files": [{"path": "bin/x-test.sh", "sha256": "%s", "reason": "r"}]}\n' % ("0" * 64), "edited after the review")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), tree)
+
+    def test_the_tree_hash_covers_the_manifest_and_still_ignores_records_only(self):
+        t0 = self.run_main("--print-tree")[1].strip()
+        self.commit_manifest('{"files": []}\n')
+        t1 = self.run_main("--print-tree")[1].strip()
+        self.assertNotEqual(t0, t1)
+        self.commit_manifest('{"files":   []}\n', "whitespace")
+        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), t1)
+        os.makedirs(".github/agent/reviews")
+        self.write(".github/agent/reviews/%s.json" % ("0" * 64), "{}")
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), t0)
+
+    def test_deleting_the_manifest_is_a_guarded_change(self):
+        self.commit_manifest('{"files": []}\n')
+        mid = self.git("rev-parse", "HEAD").strip()
+        self.git("rm", "-q", self.M); self.git("commit", "-qm", "delete")
+        rc, out, _ = self.run_main("--base", mid, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertIn(self.M, out)
+
+    def test_an_unchanged_manifest_and_other_outside_changes_need_no_record(self):
+        self.commit_manifest('{"files": []}\n')
+        mid = self.git("rev-parse", "HEAD").strip()
+        self.write("src/y", "t\n"); self.git("commit", "-qam", "outside")
+        rc, out, _ = self.run_main("--base", mid, "--head", "HEAD")
+        self.assertEqual(rc, 0)
+        self.assertIn("nothing to clear", out)
+
+    def test_files_outside_the_prefix_are_not_reviewed(self):
+        self.write(".github/supply-chain-harness.json", "x\n"); self.write(".github/supply-chain-exceptions.json", "{}\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "siblings")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

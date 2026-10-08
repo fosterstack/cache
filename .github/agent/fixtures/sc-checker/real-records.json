@@ -1,0 +1,1390 @@
+{
+ "_note": "Real records fetched on 2026-10-07 from api.osv.dev/v1/vulns/<id> and the GitHub REST advisories API, trimmed to the fields the checker reads (package, ranges, versions, the last-known-affected hint, ids, times). Used only by .github/agent/tests/sc-fix-cases.py.",
+ "gh": {
+  "GHSA-3pqx-4fqf-j49f": {
+   "ghsa_id": "GHSA-3pqx-4fqf-j49f",
+   "type": "reviewed",
+   "updated_at": "2024-10-25T21:15:15Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "5.2",
+     "package": {
+      "ecosystem": "pip",
+      "name": "pyyaml"
+     },
+     "vulnerable_version_range": ">= 5.1, < 5.2"
+    }
+   ]
+  },
+  "GHSA-6757-jp84-gxfx": {
+   "ghsa_id": "GHSA-6757-jp84-gxfx",
+   "type": "reviewed",
+   "updated_at": "2024-10-31T16:18:25Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "5.3.1",
+     "package": {
+      "ecosystem": "pip",
+      "name": "pyyaml"
+     },
+     "vulnerable_version_range": ">= 5.1b7, < 5.3.1"
+    }
+   ]
+  },
+  "GHSA-88jx-383q-w4qc": {
+   "ghsa_id": "GHSA-88jx-383q-w4qc",
+   "type": "reviewed",
+   "updated_at": "2024-04-11T17:05:02Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": null,
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "vulnerable_version_range": "<= 2.2.3"
+    },
+    {
+     "first_patched_version": "2.2.4",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "vulnerable_version_range": "<= 2.2.3"
+    }
+   ]
+  },
+  "GHSA-8q59-q68h-6hv4": {
+   "ghsa_id": "GHSA-8q59-q68h-6hv4",
+   "type": "reviewed",
+   "updated_at": "2024-10-25T21:31:46Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "5.4",
+     "package": {
+      "ecosystem": "pip",
+      "name": "PyYAML"
+     },
+     "vulnerable_version_range": "< 5.4"
+    }
+   ]
+  },
+  "GHSA-95pr-fxf5-86gv": {
+   "ghsa_id": "GHSA-95pr-fxf5-86gv",
+   "type": "reviewed",
+   "updated_at": "2024-04-11T17:15:54Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": null,
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "vulnerable_version_range": "<= 2.2.3"
+    },
+    {
+     "first_patched_version": "2.2.4",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "vulnerable_version_range": "<= 2.2.3"
+    }
+   ]
+  },
+  "GHSA-cxww-7g56-2vh6": {
+   "ghsa_id": "GHSA-cxww-7g56-2vh6",
+   "type": "reviewed",
+   "updated_at": "2025-01-22T17:31:56Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "4.1.3",
+     "package": {
+      "ecosystem": "actions",
+      "name": "actions/download-artifact"
+     },
+     "vulnerable_version_range": ">= 4.0.0, < 4.1.3"
+    }
+   ]
+  },
+  "GHSA-f6mm-5fc7-3g3c": {
+   "ghsa_id": "GHSA-f6mm-5fc7-3g3c",
+   "type": "reviewed",
+   "updated_at": "2024-05-15T18:06:11Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "1.26.1",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/goreleaser/goreleaser"
+     },
+     "vulnerable_version_range": "= 1.26.0"
+    }
+   ]
+  },
+  "GHSA-h3q2-8whx-c29h": {
+   "ghsa_id": "GHSA-h3q2-8whx-c29h",
+   "type": "reviewed",
+   "updated_at": "2024-01-30T20:57:55Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "1.24.0",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/goreleaser/goreleaser"
+     },
+     "vulnerable_version_range": "= 1.23.0"
+    }
+   ]
+  },
+  "GHSA-rprw-h62v-c2w7": {
+   "ghsa_id": "GHSA-rprw-h62v-c2w7",
+   "type": "reviewed",
+   "updated_at": "2026-07-01T17:39:14Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "5.1",
+     "package": {
+      "ecosystem": "pip",
+      "name": "PyYAML"
+     },
+     "vulnerable_version_range": "< 5.1"
+    }
+   ]
+  },
+  "GHSA-vfp6-jrw2-99g9": {
+   "ghsa_id": "GHSA-vfp6-jrw2-99g9",
+   "type": "reviewed",
+   "updated_at": "2023-12-11T20:55:34Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "2.2.1",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "vulnerable_version_range": "< 2.2.1"
+    },
+    {
+     "first_patched_version": "1.13.2",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "vulnerable_version_range": "<= 1.13.1"
+    }
+   ]
+  },
+  "GHSA-vqf5-2xx6-9wfm": {
+   "ghsa_id": "GHSA-vqf5-2xx6-9wfm",
+   "type": "reviewed",
+   "updated_at": "2025-03-31T21:55:43Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "3.28.3",
+     "package": {
+      "ecosystem": "actions",
+      "name": "github/codeql-action"
+     },
+     "vulnerable_version_range": ">= 3.26.11, <= 3.28.2"
+    },
+    {
+     "first_patched_version": null,
+     "package": {
+      "ecosystem": "actions",
+      "name": "github/codeql-action"
+     },
+     "vulnerable_version_range": ">= 2.26.11, < 3.0.0"
+    }
+   ]
+  },
+  "GHSA-w6c6-c85g-mmv6": {
+   "ghsa_id": "GHSA-w6c6-c85g-mmv6",
+   "type": "reviewed",
+   "updated_at": "2026-04-08T00:15:49Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "3.0.6",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "vulnerable_version_range": ">= 3.0.0, < 3.0.6"
+    },
+    {
+     "first_patched_version": "2.6.3",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "vulnerable_version_range": "< 2.6.3"
+    }
+   ]
+  },
+  "GHSA-wfqv-66vq-46rm": {
+   "ghsa_id": "GHSA-wfqv-66vq-46rm",
+   "type": "reviewed",
+   "updated_at": "2026-02-20T16:43:56Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "3.0.5",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "vulnerable_version_range": "<= 3.0.4"
+    }
+   ]
+  },
+  "GHSA-whqx-f9j3-ch6m": {
+   "ghsa_id": "GHSA-whqx-f9j3-ch6m",
+   "type": "reviewed",
+   "updated_at": "2026-01-13T14:58:54Z",
+   "vulnerabilities": [
+    {
+     "first_patched_version": "3.0.4",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign/v3"
+     },
+     "vulnerable_version_range": "<= 3.0.3"
+    },
+    {
+     "first_patched_version": "2.6.2",
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "vulnerable_version_range": "<= 2.6.1"
+    }
+   ]
+  }
+ },
+ "osv": {
+  "GHSA-3pqx-4fqf-j49f": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "pyyaml"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "5.1"
+        },
+        {
+         "fixed": "5.2"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ],
+     "versions": [
+      "5.1",
+      "5.1.1",
+      "5.1.2",
+      "5.2b1"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2019-20477",
+    "PYSEC-2020-176"
+   ],
+   "id": "GHSA-3pqx-4fqf-j49f",
+   "modified": "2024-10-25T21:23:11.506576Z"
+  },
+  "GHSA-6757-jp84-gxfx": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "pyyaml"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "5.1b7"
+        },
+        {
+         "fixed": "5.3.1"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ],
+     "versions": [
+      "5.1",
+      "5.1.1",
+      "5.1.2",
+      "5.1b7",
+      "5.2",
+      "5.2b1",
+      "5.3",
+      "5.3b1"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2020-1747",
+    "PYSEC-2020-96"
+   ],
+   "id": "GHSA-6757-jp84-gxfx",
+   "modified": "2026-05-04T08:57:14.897560893Z"
+  },
+  "GHSA-88jx-383q-w4qc": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "last_affected": "2.2.3"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 2.2.3"
+     },
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.2.4"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2024-29902",
+    "CVE-2024-29902",
+    "GO-2024-2718"
+   ],
+   "id": "GHSA-88jx-383q-w4qc",
+   "modified": "2026-09-10T03:50:12.472087804Z"
+  },
+  "GHSA-8q59-q68h-6hv4": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "pyyaml"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "5.4"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ],
+     "versions": [
+      "3.01",
+      "3.02",
+      "3.03",
+      "3.04",
+      "3.05",
+      "3.06",
+      "3.07",
+      "3.08",
+      "3.09",
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13",
+      "3.13b1",
+      "3.13rc1",
+      "4.2b1",
+      "4.2b2",
+      "4.2b4",
+      "5.1",
+      "5.1.1",
+      "5.1.2",
+      "5.1b1",
+      "5.1b3",
+      "5.1b5",
+      "5.1b7",
+      "5.2",
+      "5.2b1",
+      "5.3",
+      "5.3.1",
+      "5.3b1",
+      "5.4b1",
+      "5.4b2"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2020-14343",
+    "PYSEC-2021-142"
+   ],
+   "id": "GHSA-8q59-q68h-6hv4",
+   "modified": "2026-02-04T03:33:10.792778Z"
+  },
+  "GHSA-95pr-fxf5-86gv": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "last_affected": "2.2.3"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 2.2.3"
+     },
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.2.4"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2024-29903",
+    "CVE-2024-29903",
+    "GO-2024-2719"
+   ],
+   "id": "GHSA-95pr-fxf5-86gv",
+   "modified": "2026-09-10T03:50:00.260031952Z"
+  },
+  "GHSA-cxww-7g56-2vh6": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "GitHub Actions",
+      "name": "actions/download-artifact"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "4.0.0"
+        },
+        {
+         "fixed": "4.1.3"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ]
+    }
+   ],
+   "aliases": [],
+   "id": "GHSA-cxww-7g56-2vh6",
+   "modified": "2025-01-22T17:31:55Z"
+  },
+  "GHSA-f6mm-5fc7-3g3c": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/goreleaser/goreleaser"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "1.26.0"
+        },
+        {
+         "fixed": "1.26.1"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ],
+     "versions": [
+      "1.26.0"
+     ]
+    }
+   ],
+   "aliases": [
+    "GO-2024-2860"
+   ],
+   "id": "GHSA-f6mm-5fc7-3g3c",
+   "modified": "2026-09-10T03:50:00.369183280Z"
+  },
+  "GHSA-h3q2-8whx-c29h": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/goreleaser/goreleaser"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "1.23.0"
+        },
+        {
+         "fixed": "1.24.0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ],
+     "versions": [
+      "1.23.0"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2024-23840",
+    "GO-2024-2482"
+   ],
+   "id": "GHSA-h3q2-8whx-c29h",
+   "modified": "2026-09-10T03:50:09.335473528Z"
+  },
+  "GHSA-rprw-h62v-c2w7": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "pyyaml"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "5.1"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ],
+     "versions": [
+      "3.01",
+      "3.02",
+      "3.03",
+      "3.04",
+      "3.05",
+      "3.06",
+      "3.07",
+      "3.08",
+      "3.09",
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13",
+      "3.13b1",
+      "3.13rc1",
+      "4.2b1",
+      "4.2b2",
+      "4.2b4",
+      "5.1b1",
+      "5.1b3",
+      "5.1b5",
+      "5.1b7"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2017-18342",
+    "PYSEC-2018-49"
+   ],
+   "id": "GHSA-rprw-h62v-c2w7",
+   "modified": "2026-07-01T17:45:34.796248930Z"
+  },
+  "GHSA-vfp6-jrw2-99g9": {
+   "affected": [
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 1.13.1"
+     },
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "1.13.2"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.2.1"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2023-46737",
+    "CVE-2023-46737",
+    "GO-2023-2181"
+   ],
+   "id": "GHSA-vfp6-jrw2-99g9",
+   "modified": "2026-09-10T03:50:04.292430481Z"
+  },
+  "GHSA-vqf5-2xx6-9wfm": {
+   "affected": [
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 3.28.2"
+     },
+     "package": {
+      "ecosystem": "GitHub Actions",
+      "name": "github/codeql-action"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "3.26.11"
+        },
+        {
+         "fixed": "3.28.3"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ]
+    },
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "< 3.0.0"
+     },
+     "package": {
+      "ecosystem": "GitHub Actions",
+      "name": "github/codeql-action"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "2.26.11"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2025-24362"
+   ],
+   "id": "GHSA-vqf5-2xx6-9wfm",
+   "modified": "2026-04-01T17:41:21.034151Z"
+  },
+  "GHSA-w6c6-c85g-mmv6": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "3.0.0"
+        },
+        {
+         "fixed": "3.0.6"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.6.3"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2026-39395",
+    "CVE-2026-39395",
+    "GO-2026-5694"
+   ],
+   "id": "GHSA-w6c6-c85g-mmv6",
+   "modified": "2026-09-10T03:51:03.642188195Z"
+  },
+  "GHSA-wfqv-66vq-46rm": {
+   "affected": [
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 3.0.4"
+     },
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "3.0.5"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2026-24122",
+    "CVE-2026-24122",
+    "GO-2026-4529"
+   ],
+   "id": "GHSA-wfqv-66vq-46rm",
+   "modified": "2026-09-10T03:50:36.127642021Z"
+  },
+  "GHSA-whqx-f9j3-ch6m": {
+   "affected": [
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 3.0.3"
+     },
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v3"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "3.0.4"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "database_specific": {
+      "last_known_affected_version_range": "<= 2.6.1"
+     },
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.6.2"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2026-22703",
+    "CVE-2026-22703",
+    "GO-2026-4309"
+   ],
+   "id": "GHSA-whqx-f9j3-ch6m",
+   "modified": "2026-09-10T03:50:33.665491515Z"
+  },
+  "GO-2023-2181": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.2.1"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2023-46737",
+    "CVE-2023-46737",
+    "GHSA-vfp6-jrw2-99g9"
+   ],
+   "id": "GO-2023-2181",
+   "modified": "2026-02-04T04:29:01.299296Z"
+  },
+  "GO-2024-2482": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/goreleaser/goreleaser"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "1.23.0"
+        },
+        {
+         "fixed": "1.24.0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2024-23840",
+    "GHSA-h3q2-8whx-c29h"
+   ],
+   "id": "GO-2024-2482",
+   "modified": "2026-02-04T04:27:50.038423Z"
+  },
+  "GO-2024-2718": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.2.4"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2024-29902",
+    "CVE-2024-29902",
+    "GHSA-88jx-383q-w4qc"
+   ],
+   "id": "GO-2024-2718",
+   "modified": "2026-02-04T03:18:34.975942Z"
+  },
+  "GO-2024-2719": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.2.4"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2024-29903",
+    "CVE-2024-29903",
+    "GHSA-95pr-fxf5-86gv"
+   ],
+   "id": "GO-2024-2719",
+   "modified": "2026-02-04T02:35:06.535922Z"
+  },
+  "GO-2024-2860": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/goreleaser/goreleaser"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "1.26.0"
+        },
+        {
+         "fixed": "1.26.1"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "GHSA-f6mm-5fc7-3g3c"
+   ],
+   "id": "GO-2024-2860",
+   "modified": "2026-02-04T03:44:32.815450Z"
+  },
+  "GO-2026-4309": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.6.2"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v3"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "3.0.4"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2026-22703",
+    "CVE-2026-22703",
+    "GHSA-whqx-f9j3-ch6m"
+   ],
+   "id": "GO-2026-4309",
+   "modified": "2026-08-24T10:25:51.746398338Z"
+  },
+  "GO-2026-4529": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v3"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "3.0.5"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2026-24122",
+    "CVE-2026-24122",
+    "GHSA-wfqv-66vq-46rm"
+   ],
+   "id": "GO-2026-4529",
+   "modified": "2026-06-16T16:44:28.615704146Z"
+  },
+  "GO-2026-5694": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v2"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "2.6.3"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    },
+    {
+     "package": {
+      "ecosystem": "Go",
+      "name": "github.com/sigstore/cosign/v3"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "3.0.0"
+        },
+        {
+         "fixed": "3.0.6"
+        }
+       ],
+       "type": "SEMVER"
+      }
+     ]
+    }
+   ],
+   "aliases": [
+    "BIT-cosign-2026-39395",
+    "CVE-2026-39395",
+    "GHSA-w6c6-c85g-mmv6"
+   ],
+   "id": "GO-2026-5694",
+   "modified": "2026-06-27T02:14:27.010522086Z"
+  },
+  "PYSEC-2018-49": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "pyyaml"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "5.1"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ],
+     "versions": [
+      "3.01",
+      "3.02",
+      "3.03",
+      "3.04",
+      "3.05",
+      "3.06",
+      "3.07",
+      "3.08",
+      "3.09",
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13",
+      "3.13b1",
+      "3.13rc1",
+      "4.2b1",
+      "4.2b2",
+      "4.2b4",
+      "5.1b1",
+      "5.1b3",
+      "5.1b5",
+      "5.1b7"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2017-18342",
+    "GHSA-rprw-h62v-c2w7"
+   ],
+   "id": "PYSEC-2018-49",
+   "modified": "2023-11-08T03:59:15.614863Z"
+  },
+  "PYSEC-2021-142": {
+   "affected": [
+    {
+     "package": {
+      "ecosystem": "PyPI",
+      "name": "pyyaml"
+     },
+     "ranges": [
+      {
+       "events": [
+        {
+         "introduced": "0"
+        },
+        {
+         "fixed": "5.4"
+        }
+       ],
+       "type": "ECOSYSTEM"
+      }
+     ],
+     "versions": [
+      "3.01",
+      "3.02",
+      "3.03",
+      "3.04",
+      "3.05",
+      "3.06",
+      "3.07",
+      "3.08",
+      "3.09",
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13",
+      "3.13b1",
+      "3.13rc1",
+      "4.2b1",
+      "4.2b2",
+      "4.2b4",
+      "5.1",
+      "5.1.1",
+      "5.1.2",
+      "5.1b1",
+      "5.1b3",
+      "5.1b5",
+      "5.1b7",
+      "5.2",
+      "5.2b1",
+      "5.3",
+      "5.3.1",
+      "5.3b1",
+      "5.4b1",
+      "5.4b2"
+     ]
+    }
+   ],
+   "aliases": [
+    "CVE-2020-14343",
+    "GHSA-8q59-q68h-6hv4"
+   ],
+   "id": "PYSEC-2021-142",
+   "modified": "2023-11-08T04:02:26.414885Z"
+  }
+ }
+}

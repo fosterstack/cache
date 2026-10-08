@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC3, REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC11, REQ-SUP-001-AC12
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE] [--rerun-held]
@@ -772,7 +772,8 @@ for a in gh + osv:
     by.setdefault(a["incident"], []).append(a["affected"])
 assert all(len(set(v)) == 1 for v in by.values()), by            # within one tag-scoped incident the databases AGREE
 import re
-assert ":(glob)**/*.sh" in open(sys.argv[1]).read()
+src = open(sys.argv[1]).read()
+assert ":(glob)" not in src, "the history window is read through the same scope function as the tree, with no pathspec that could leave a file kind out (behaviour: sc-fix-cases h_history_every_file_kind_route)"
 PY
 
 CASE="round 15: more than 200 version tags at one commit is refused, never truncated; an incomplete open-PR collection is not a clean day"
@@ -910,6 +911,25 @@ CASE="unreadable input fails the run (exit 2), it never reports a clean day"
 check test "$rc" -eq 2
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
+
+# --- the checker's false alarms (advisor 0238; cache issues #201-#208): cases in sc-fix-cases.py, rebuilt from the real records, every network seam faked ---------------------------
+scfix() {
+  local line out rc=0 ran=0
+  out=$(python3 "$here/sc-fix-cases.py" "$1" 2>&1) || rc=$?
+  while IFS= read -r line; do
+    case "$line" in
+      "ok   "*) pass=$((pass+1)); ran=$((ran+1)); echo "$line";;
+      "FAIL "*) failn=$((failn+1)); ran=$((ran+1)); echo "$line";;
+      "") ;;
+      *) echo "     $line";;
+    esac
+  done <<<"$out"
+  if [ "$ran" -eq 0 ] || { [ "$rc" -ne 0 ] && ! grep -q '^FAIL ' <<<"$out"; }; then CASE="sc-fix-cases.py $1 did not run to the end (or ran no case)"; bad "$CASE"; fi
+}
+scfix audit
+rc=0; python3 "$here/sc-fix-cases.py" no-such-suite >/dev/null 2>&1 || rc=$?
+CASE="the case runner refuses an unknown suite name (a typo can never run zero cases and pass)"
+check test "$rc" -eq 2
 
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

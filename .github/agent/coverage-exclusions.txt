@@ -61,3 +61,4 @@
 .github/agent/supply-chain/pin-audit.py  supply-chain CI tool (REQ-SUP-001), not auditor code: proved end to end by .github/agent/tests/pin-audit-test.sh (fixtures, a recording gh, real git repositories; subprocess, so statements are not measured here)
 .github/agent/supply-chain/tag_observer.py  supply-chain CI tool (REQ-SUP-001), shared verbatim with the ops repo, not auditor code: exercised by .github/agent/tests/pin-audit-test.sh
 .github/agent/tests/gh-map-stub.py  test double for gh used by the supply-chain shell tests (test code)
+.github/agent/tests/sc-fix-cases.py  the supply-chain checker's false-alarm cases (REQ-SUP-001: real records, faked network), run by pin-audit-test.sh and pin-age-check-test.sh (test code)
