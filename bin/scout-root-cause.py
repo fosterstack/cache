@@ -77,6 +77,8 @@ def judge(before, after, cve, pkg):
         return "inconclusive: the target is not in the before report"
     rest_b = Counter({k: n for k, n in before.items() if k not in target})
     rest_a = Counter({k: n for k, n in after.items() if k not in target})
+    if not rest_a:   # an empty (or target-only) after-report is not comparable: it is what a failed or wrong scan looks like
+        return "inconclusive: the after report holds no finding other than the target (empty or not comparable)"
     if rest_a != rest_b:
         return "inconclusive: findings other than the target changed"
     return "suppressed" if not any(k[0] == cve and k[1] == pkg for k in after) else "not applied"

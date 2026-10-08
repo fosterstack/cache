@@ -23,8 +23,12 @@ PRED=https://openvex.dev/ns/v0.2.0
 use() { install -m 0755 "$SCOUT_DIR/docker-scout-$1" "$HOME/.docker/cli-plugins/docker-scout"
         docker scout version 2>&1 | grep -m1 -i version; }
 # Codex #176 r2, B4: a failed read must never produce sha256("") and be mistaken for a real, unchanged digest
-digest() { local raw; raw=$(skopeo inspect --raw "docker://$1" 2>/dev/null) && [ -n "$raw" ] \
-             && printf '%s' "$raw" | sha256sum | cut -c1-64 || echo READ-FAILED; }
+# Codex probe r1, B2: the raw manifest bytes are hashed from a FILE; a shell substitution would strip trailing newlines, so a copy that
+# appended one would keep the same "digest"
+digest() { local t; t=$(mktemp) || { echo READ-FAILED; return; }
+  if skopeo inspect --raw "docker://$1" > "$t" 2>/dev/null && [ -s "$t" ]; then sha256sum "$t" | cut -c1-64; else echo READ-FAILED; fi
+  rm -f "$t"
+}
 children() { skopeo inspect --raw "docker://$1" | jq -r '[.manifests[]? | "\(.digest) \(.annotations["vnd.docker.reference.type"] // .platform.os // "")"] | join(", ")'; }
 # the scan() wrapper this replaced forwarded "$@" into `docker scout cves`, hiding the real image argument from
 # every call site behind a function boundary a static reader cannot see through; each call below is now inlined
@@ -102,7 +106,8 @@ echo "- release copy attestation list: \`$(head -c 300 "$a/release-attestation-l
 # applies a statement of the documented shape; this proves it for OUR author and OUR product forms. The target is CVE-2023-4911 in
 # the fixture's glibc (the rescan self-check's own target). Each form gets its own scratch tag (an attestation cannot be removed);
 # scanned by tag with --vex-author for OUR published author. A fixture without the target records that and tries nothing.
-OUR_AUTHOR=$(jq -er .author "$here/../.vex/fosterstack-cache.openvex.json" 2>/dev/null || echo "")
+# a missing, null or empty author is "" (jq -er .author would print the string null), which every section below records as not usable
+OUR_AUTHOR=$(jq -er 'select((.author | type) == "string" and (.author | length) > 0) | .author' "$here/../.vex/fosterstack-cache.openvex.json" 2>/dev/null || echo "")
 OUR_AUTHOR_RE=$(python3 bin/scout-root-cause.py author-re "$OUR_AUTHOR")
 g_purl=$(jq -r '[.vulnerabilities[]? | select(.cve == "CVE-2023-4911") | .location.dependency.package.name][0] // empty' "$a/control-before.json" 2>/dev/null)
 echo "- our statement on the fixture's CVE-2023-4911 (author \`${OUR_AUTHOR:-unreadable}\`, package \`${g_purl:-absent from the fixture report}\`):" >> "$summ"
@@ -233,71 +238,86 @@ fi
 # relabelled (Docker manifest list -> OCI index; the children are untouched). Every failure is a recorded "inconclusive (...)"; a control
 # without the target, or a fixture without it, tries nothing. The registry credentials are the GHCR login already on the runner.
 echo -e "\n### 1e. final index built by bin/vex-index.py (scratch tags \`final-base\`, \`final-index\`)\n" >> "$summ"
-if [ -n "$OUR_AUTHOR" ] && [ -n "$g_purl" ]; then
+echo "- What this does NOT prove: the base is debian 12.0's Docker manifest list relabelled as an OCI index (one platform, Docker-typed children, no provenance or SBOM attestation children), NOT the buildx-produced release index D (OCI children, several platforms, existing attestations); it shows Scout applies a VEX carried in OUR attestation child of an index built by OUR tool, not that the release behaves identically." >> "$summ"
+sha_re='^sha256:[0-9a-f]{64}$'
+while :; do   # one pass: every early exit records its verdict and leaves
+  if [ -z "$OUR_AUTHOR" ]; then echo "- 1e verdict: inconclusive (our author could not be read from .vex/fosterstack-cache.openvex.json)" >> "$summ"; break; fi
+  if ! jq -e '.vulnerabilities | type == "array"' "$a/control-before.json" >/dev/null 2>&1; then
+    echo "- 1e verdict: inconclusive (the fixture report from section 1 is not a valid Scout report, so the target cannot be looked up)" >> "$summ"; break; fi
+  if [ -z "$g_purl" ]; then echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"; break; fi
   fi="$a/final"; mkdir -p "$fi"; fbase="$PROBE_REPO:final-base"; findex="$PROBE_REPO:final-index"
   freg=${PROBE_REPO%%/*}; frepo=${PROBE_REPO#*/}; PURL_PUBLISHED="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
-  skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$fbase" >> "$a/copy.log" 2>&1
+  # a failed copy would leave a stale tag that is then scanned and built from: refuse it; the copy must also carry the source's children
+  if ! skopeo copy -q --all "docker://docker.io/library/debian@$MULTI" "docker://$fbase" >> "$a/copy.log" 2>&1; then
+    echo "- 1e verdict: inconclusive (the copy to final-base failed, so a tag left from an earlier run is not used)" >> "$summ"; break; fi
+  src_children=$(children "docker.io/library/debian@$MULTI" 2>/dev/null); base_children=$(children "$fbase" 2>/dev/null)
+  if [ -z "$src_children" ] || [ "$src_children" != "$base_children" ]; then
+    echo "- 1e verdict: inconclusive (final-base's children differ from the source's or could not be read: source \`$src_children\`, copy \`$base_children\`)" >> "$summ"; break; fi
   docker scout cves --format gitlab "registry://$fbase" > "$fi/control.json" 2> "$fi/control.json.err"; rc=$?
-  have=$(jq -r --arg p "$g_purl" '[.vulnerabilities[]? | select(.cve == "CVE-2023-4911" and .location.dependency.package.name == $p)] | length' "$fi/control.json" 2>/dev/null || echo 0)
-  echo "- final-base control scanned with no VEX: exit $rc — CVE-2023-4911 findings: ${have:-0}" >> "$summ"
-  while :; do   # one pass: every early exit records its verdict and leaves
-    if [ "$rc" -ne 0 ] || [ ! -s "$fi/control.json" ]; then echo "- 1e verdict: inconclusive (the final-base control scan exited $rc)" >> "$summ"; break; fi
-    if [ "${have:-0}" -eq 0 ]; then echo "- not tried: the final-base control does not carry CVE-2023-4911" >> "$summ"; break; fi
-    fu=${FSCACHE_REGISTRY_USER:-}; ft=${FSCACHE_REGISTRY_TOKEN:-}
-    if [ -z "$fu" ] || [ -z "$ft" ]; then   # not given: the login the runner already did (docker login writes the registry's user:token)
-      fa=$(jq -r --arg r "$freg" '.auths[$r].auth // empty' "$HOME/.docker/config.json" 2>/dev/null | base64 -d 2>/dev/null || true)
-      case "$fa" in *:*) fu=${fa%%:*}; ft=${fa#*:} ;; *) fu=""; ft="" ;; esac
-    fi
-    if [ -z "$fu" ] || [ -z "$ft" ]; then echo "- 1e verdict: inconclusive (no registry credentials for $freg: set FSCACHE_REGISTRY_USER and FSCACHE_REGISTRY_TOKEN, or log in)" >> "$summ"; break; fi
-    skopeo inspect --raw "docker://$fbase" > "$fi/base.raw" 2> "$fi/base.raw.err"
-    if ! jq -c '.mediaType = "application/vnd.oci.image.index.v1+json"' "$fi/base.raw" > "$fi/base.json" 2>/dev/null || [ ! -s "$fi/base.json" ]; then
-      echo "- 1e verdict: inconclusive (the base index could not be read from $fbase)" >> "$summ"; break; fi
-    echo "- base index D: read from \`final-base\` (copy of \`$MULTI\`, raw digest \`sha256:$(digest "$fbase")\`), mediaType relabelled as an OCI index for vex-index" >> "$summ"
-    echo "- 1e children of the base: $(children "$fbase")" >> "$summ"
-    python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "$PURL_PUBLISHED" CVE-2023-4911 "$g_purl" "$fi/final.vex.json"
-    rm -rf "$fi/out"
-    F=$(python3 bin/vex-index.py compute --index "$fi/base.json" --vex "$fi/final.vex.json" --out-dir "$fi/out" 2> "$fi/compute.err"); crc=$?
-    if [ "$crc" -ne 0 ] || [ -z "$F" ]; then echo "- 1e verdict: inconclusive (vex-index compute failed, exit $crc: \`$(head -c 200 "$fi/compute.err" | tr '\n' ' ')\`), nothing pushed" >> "$summ"; break; fi
-    python3 bin/vex-index.py verify --final "$fi/out/index.json" --vex "$fi/final.vex.json" --blobs "$fi/out/blobs" --base "$fi/base.json" > "$fi/verify.out" 2> "$fi/verify.err"; vrc=$?
-    if [ "$vrc" -ne 0 ]; then echo "- 1e verdict: inconclusive (vex-index verify failed, exit $vrc: \`$(head -c 200 "$fi/verify.err" | tr '\n' ' ')\`), nothing pushed" >> "$summ"; break; fi
-    pushed=$(FSCACHE_REGISTRY_USER="$fu" FSCACHE_REGISTRY_TOKEN="$ft" python3 bin/vex-index.py push --registry "$freg" --repository "$frepo" \
-               --dir "$fi/out" --vex "$fi/final.vex.json" --base "$fi/base.json" 2> "$fi/push.err"); prc=$?
-    if [ "$prc" -ne 0 ]; then echo "- 1e verdict: inconclusive (vex-index push failed, exit $prc: \`$(head -c 200 "$fi/push.err" | tr '\n' ' ')\`)" >> "$summ"; break; fi
-    if [ "$pushed" != "$F" ]; then echo "- 1e verdict: inconclusive (push reported \`$pushed\`, compute \`$F\`)" >> "$summ"; break; fi
-    echo "- final index F \`$F\` (computed, verified, pushed by digest to \`$PROBE_REPO\`)" >> "$summ"
-    echo "- 1e children of F: $(children "$PROBE_REPO@$F")" >> "$summ"
-    skopeo copy -q --all "docker://$PROBE_REPO@$F" "docker://$findex" >> "$a/copy.log" 2>&1; trc=$?
-    td=$(digest "$findex")
-    tagok=0
-    if [ "$trc" -ne 0 ] || [ "$td" = READ-FAILED ]; then tstat="inconclusive (the tag copy exited $trc or the tag could not be read)"
-    elif [ "sha256:$td" = "$F" ]; then tstat=unchanged; tagok=1; else tstat="CHANGED"; fi
-    echo "- tag final-index digest \`sha256:$td\` vs F \`$F\` — $tstat" >> "$summ"
-    jd() { if [ -s "$1" ]; then python3 bin/scout-root-cause.py judge "$fi/control.json" "$1" CVE-2023-4911 "$g_purl" 2>&1 | tail -1; else echo "inconclusive: the scan produced no report"; fi; }
-    tv="not scanned (the tag is not F)"
-    if [ "$tagok" -eq 1 ]; then
-      f="$fi/f-tag.json"; docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$findex" > "$f" 2> "$f.err"; rc=$?
-      tv=$(jd "$f"); echo "- 1e F scanned with --vex-author, by tag: exit $rc — $tv" >> "$summ"
-    fi
-    f="$fi/f-digest.json"; docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@$F" > "$f" 2> "$f.err"; rc=$?
-    dv=$(jd "$f"); echo "- 1e F scanned with --vex-author, by its exact digest \`$F\`: exit $rc — $dv" >> "$summ"
-    f="$fi/f-child.json"; docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@$CHILD" > "$f" 2> "$f.err"; rc=$?
-    echo "- 1e F's amd64 child scanned with --vex-author, by its digest \`$CHILD\` (information: the VEX is carried by F's attestation child, not the platform image): exit $rc — $(jd "$f")" >> "$summ"
-    if [ "$tagok" -eq 1 ]; then
-      docker scout attestation list "registry://$findex" > "$fi/f-attestation-list.txt" 2>&1
-      echo "- 1e F attestation list: \`$(head -c 400 "$fi/f-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
-    fi
-    if [ "$tv" = suppressed ] && [ "$dv" = suppressed ]; then
-      echo "- 1e verdict: PASS — CVE-2023-4911 is present in the final-base control and suppressed in F by tag and by exact digest" >> "$summ"
-    elif [ "$tv" = "not applied" ] || [ "$dv" = "not applied" ]; then
-      echo "- 1e verdict: FAIL — Scout did not apply the VEX carried by F (by tag: $tv; by digest: $dv)" >> "$summ"
-    else
-      echo "- 1e verdict: inconclusive (by tag: $tv; by digest: $dv)" >> "$summ"
-    fi
-    break
-  done
-else
-  echo "- not tried: the fixture does not carry CVE-2023-4911" >> "$summ"
-fi
+  have=$(jq -r --arg p "$g_purl" '[.vulnerabilities[]? | select(.cve == "CVE-2023-4911" and .location.dependency.package.name == $p)] | length' "$fi/control.json" 2>/dev/null)
+  echo "- final-base control scanned with no VEX: exit $rc — CVE-2023-4911 findings: ${have:-unreadable}" >> "$summ"
+  if [ "$rc" -ne 0 ] || [ -z "$have" ]; then echo "- 1e verdict: inconclusive (the final-base control scan exited $rc or its report is not valid)" >> "$summ"; break; fi
+  if [ "$have" -eq 0 ]; then echo "- not tried: the final-base control does not carry CVE-2023-4911" >> "$summ"; break; fi
+  fu=${FSCACHE_REGISTRY_USER:-}; ft=${FSCACHE_REGISTRY_TOKEN:-}
+  if [ -n "$fu$ft" ] && { [ -z "$fu" ] || [ -z "$ft" ]; }; then
+    echo "- 1e verdict: inconclusive (partial registry credentials: FSCACHE_REGISTRY_USER and FSCACHE_REGISTRY_TOKEN must both be set or both unset)" >> "$summ"; break; fi
+  if [ -z "$fu" ]; then   # neither given: the login the runner already did (docker login writes the registry's user:token)
+    fa=$(jq -r --arg r "$freg" '.auths[$r].auth // empty' "$HOME/.docker/config.json" 2>/dev/null | base64 -d 2>/dev/null || true)
+    case "$fa" in *:*) fu=${fa%%:*}; ft=${fa#*:} ;; *) fu=""; ft="" ;; esac
+  fi
+  if [ -z "$fu" ] || [ -z "$ft" ]; then echo "- 1e verdict: inconclusive (no registry credentials for $freg: set FSCACHE_REGISTRY_USER and FSCACHE_REGISTRY_TOKEN, or log in)" >> "$summ"; break; fi
+  if ! skopeo inspect --raw "docker://$fbase" > "$fi/base.raw" 2> "$fi/base.raw.err" \
+     || ! jq -c '.mediaType = "application/vnd.oci.image.index.v1+json"' "$fi/base.raw" > "$fi/base.json" 2>/dev/null || [ ! -s "$fi/base.json" ]; then
+    echo "- 1e verdict: inconclusive (the base index could not be read from $fbase)" >> "$summ"; break; fi
+  echo "- base index D: read from \`final-base\` (copy of \`$MULTI\`), mediaType relabelled as an OCI index for vex-index (children untouched)" >> "$summ"
+  echo "- 1e children of the base: $base_children" >> "$summ"
+  if ! python3 bin/scout-root-cause.py doc "$OUR_AUTHOR" "$PURL_PUBLISHED" CVE-2023-4911 "$g_purl" "$fi/final.vex.json" 2> "$fi/doc.err" || [ ! -s "$fi/final.vex.json" ]; then
+    echo "- 1e verdict: inconclusive (the VEX document could not be written)" >> "$summ"; break; fi
+  rm -rf "$fi/out"
+  F=$(python3 bin/vex-index.py compute --index "$fi/base.json" --vex "$fi/final.vex.json" --out-dir "$fi/out" 2> "$fi/compute.err"); crc=$?
+  if [ "$crc" -ne 0 ] || [[ ! "$F" =~ $sha_re ]]; then echo "- 1e verdict: inconclusive (vex-index compute failed, exit $crc: \`$(head -c 200 "$fi/compute.err" | tr '\n' ' ')\`), nothing pushed" >> "$summ"; break; fi
+  python3 bin/vex-index.py verify --final "$fi/out/index.json" --vex "$fi/final.vex.json" --blobs "$fi/out/blobs" --base "$fi/base.json" > "$fi/verify.out" 2> "$fi/verify.err"; vrc=$?
+  if [ "$vrc" -ne 0 ]; then echo "- 1e verdict: inconclusive (vex-index verify failed, exit $vrc: \`$(head -c 200 "$fi/verify.err" | tr '\n' ' ')\`), nothing pushed" >> "$summ"; break; fi
+  pushed=$(FSCACHE_REGISTRY_USER="$fu" FSCACHE_REGISTRY_TOKEN="$ft" python3 bin/vex-index.py push --registry "$freg" --repository "$frepo" \
+             --dir "$fi/out" --vex "$fi/final.vex.json" --base "$fi/base.json" 2> "$fi/push.err"); prc=$?
+  if [ "$prc" -ne 0 ]; then echo "- 1e verdict: inconclusive (vex-index push failed, exit $prc: \`$(head -c 200 "$fi/push.err" | tr '\n' ' ')\`)" >> "$summ"; break; fi
+  if [ "$pushed" != "$F" ]; then echo "- 1e verdict: inconclusive (push reported \`$pushed\`, compute \`$F\`)" >> "$summ"; break; fi
+  echo "- final index F \`$F\` (computed, verified, pushed by digest to \`$PROBE_REPO\`)" >> "$summ"
+  echo "- 1e children of F: $(children "$PROBE_REPO@$F")" >> "$summ"
+  skopeo copy -q --all "docker://$PROBE_REPO@$F" "docker://$findex" >> "$a/copy.log" 2>&1; trc=$?
+  td=$(digest "$findex")
+  tagok=0
+  if [ "$trc" -ne 0 ] || [[ ! "sha256:$td" =~ $sha_re ]]; then tstat="inconclusive (the tag copy exited $trc or the tag could not be read)"
+  elif [ "sha256:$td" = "$F" ]; then tstat=unchanged; tagok=1; else tstat="CHANGED"; fi
+  echo "- tag final-index digest \`sha256:$td\` vs F \`$F\` — $tstat" >> "$summ"
+  # a scan counts only when it exited 0 and its report is a valid Scout report; judge then needs the target gone and another finding kept
+  jd() { if [ "$2" -ne 0 ]; then echo "inconclusive: the scan exited $2"
+         elif ! jq -e '.vulnerabilities | type == "array"' "$1" >/dev/null 2>&1; then echo "inconclusive: the scan produced no valid report"
+         else python3 bin/scout-root-cause.py judge "$fi/control.json" "$1" CVE-2023-4911 "$g_purl" 2>&1 | tail -1; fi; }
+  tv="not scanned (the tag is not F)"
+  if [ "$tagok" -eq 1 ]; then
+    f="$fi/f-tag.json"; docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$findex" > "$f" 2> "$f.err"; rc=$?
+    tv=$(jd "$f" "$rc"); echo "- 1e F scanned with --vex-author, by tag: exit $rc — $tv" >> "$summ"
+  fi
+  f="$fi/f-digest.json"; docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@$F" > "$f" 2> "$f.err"; rc=$?
+  dv=$(jd "$f" "$rc"); echo "- 1e F scanned with --vex-author, by its exact digest \`$F\`: exit $rc — $dv" >> "$summ"
+  f="$fi/f-noflag.json"; docker scout cves --format gitlab "registry://$PROBE_REPO@$F" > "$f" 2> "$f.err"; rc=$?
+  echo "- 1e (information) F scanned without --vex-author, by its exact digest: exit $rc — $(jd "$f" "$rc")" >> "$summ"
+  f="$fi/f-child.json"; docker scout cves --format gitlab --vex-author "$OUR_AUTHOR_RE" "registry://$PROBE_REPO@$CHILD" > "$f" 2> "$f.err"; rc=$?
+  echo "- 1e F's amd64 child scanned with --vex-author, by its digest \`$CHILD\` (information: the VEX is carried by F's attestation child, not the platform image): exit $rc — $(jd "$f" "$rc")" >> "$summ"
+  if [ "$tagok" -eq 1 ]; then
+    docker scout attestation list "registry://$findex" > "$fi/f-attestation-list.txt" 2>&1
+    echo "- 1e F attestation list: \`$(head -c 400 "$fi/f-attestation-list.txt" | tr '\n' ' ')\`" >> "$summ"
+  fi
+  if [ "$tv" = suppressed ] && [ "$dv" = suppressed ]; then
+    echo "- 1e verdict: PASS — CVE-2023-4911 is present in the final-base control and suppressed in F by tag and by exact digest, with another finding kept" >> "$summ"
+  elif [ "$tv" = "not applied" ] || [ "$dv" = "not applied" ]; then
+    echo "- 1e verdict: FAIL — Scout did not apply the VEX carried by F (by tag: $tv; by digest: $dv)" >> "$summ"
+  else
+    echo "- 1e verdict: inconclusive (by tag: $tv; by digest: $dv)" >> "$summ"
+  fi
+  break
+done
 
 # --- 2. the matrix: control, one field at a time, our forms; three Scout versions --------------------------------------
 echo -e "\n## 2. Matrix\n\n| case | Scout | image | location | file | --vex-author | subcomponent | product | result |\n|---|---|---|---|---|---|---|---|---|" >> "$summ"
