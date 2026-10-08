@@ -308,14 +308,20 @@ hkexpect pass "hook: merge bringing in a file already tracked on the other paren
 mkhk; hkbranch other ops/notes.md main-side
 ( cd "$HK" && nohk checkout -q main && nohk merge -q other && nohk checkout -q feature/x && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
 hkexpect fail "hook: merge whose resolution ADDS a disallowed file is rejected" 'hk merge -q --no-ff --no-commit main && echo S=1 > .env && hk add -f .env && hk commit -q -m merge'
-# (e) both parents carry the same unlisted file with identical content: the merge result equals each side
+# (e) the feature branch LACKS the unlisted file; it exists only on the other parent, so the merge adds it
+# to HEAD's side but it is identical to MERGE_HEAD: it came from that parent, passes (old hook rejects)
 mkhk; hkbranch other ops/shared.md same
-( cd "$HK" && nohk checkout -q main && nohk merge -q other && nohk update-ref refs/remotes/origin/main HEAD && nohk checkout -q feature/x && mkdir -p ops && echo same > ops/shared.md && nohk add -A && nohk commit -q -m feat )
-hkexpect pass "hook: merge where both parents carry the same unlisted file identically passes" 'hk merge -q --no-ff --no-commit main && hk commit -q -m merge'
+( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect pass "hook: merge adding a file present identically in the other parent only passes" 'hk merge -q --no-ff --no-commit other && hk commit -q -m merge'
 # (e2) the resolution modifies a file differently from both parents: introduced by the merge, judged
 mkhk; hkbranch other ops/shared.md theirs
 ( cd "$HK" && nohk checkout -q main && nohk merge -q other && nohk checkout -q feature/x && mkdir -p ops && echo mine > ops/shared.md && nohk add -A && nohk commit -q -m feat )
 hkexpect fail "hook: merge resolution that writes a third version of an unlisted file is rejected" 'hk merge -q --no-ff --no-commit main; echo resolved > ops/shared.md && hk add ops/shared.md && hk commit -q -m merge'
+# stale/leftover MERGE_HEAD: a normal commit with MERGE_HEAD present is a merge commit by git's own logic;
+# the hook must not crash and must still reject a disallowed file staged in it
+mkhk; hkbranch other ops/notes.md x
+( cd "$HK" && git rev-parse other > .git/MERGE_HEAD )
+hkexpect fail "hook: leftover MERGE_HEAD, disallowed file staged: rejected by the allowlist (not a crash)" 'echo S=1 > .env && hk add -f .env && out=$(hk commit -q -m stale 2>&1); rc=$?; echo "$out"; echo "$out" | grep -q "blocked" && exit $rc'
 # (f) octopus: two other parents, each carrying an unlisted file
 mkhk; hkbranch m1 ops/one.md 1; hkbranch m2 ops/two.md 2
 ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )

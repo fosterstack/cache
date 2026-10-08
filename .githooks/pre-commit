@@ -30,10 +30,13 @@ repo_root=$(git rev-parse --show-toplevel)
 files=$(git diff --cached --name-only --diff-filter=ACMR)
 merge_head=$(git rev-parse --git-path MERGE_HEAD)
 if [ -f "$merge_head" ]; then
+  # sorted lists go into variables first so a failing git or sort aborts under set -e
+  files=$(printf '%s\n' "$files" | sort -u)
   while read -r parent _; do
     [ -n "$parent" ] || continue
     other=$(git diff --cached --name-only --diff-filter=ACMR "$parent")
-    files=$(comm -12 <(printf '%s\n' "$files" | sort -u) <(printf '%s\n' "$other" | sort -u))
+    other=$(printf '%s\n' "$other" | sort -u)
+    files=$(comm -12 <(printf '%s\n' "$files") <(printf '%s\n' "$other"))
   done < "$merge_head"
 fi
 printf '%s\n' "$files" | "$repo_root/bin/check-file-allowlist.sh" \
