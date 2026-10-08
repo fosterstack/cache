@@ -959,7 +959,7 @@ def parse_outputs(text):
     return outs
 
 
-def run_steps(b, steps, mode, extra_ctx=None):
+def run_steps(b, steps, mode, extra_ctx=None, after_step=None):
     """execute a job's steps in order, honouring each step's if, working-directory, shell (bash only) and continue-on-error.
     A uses: step is never run: the attest ones are recorded with their inputs read AT THAT MOMENT (res.snaps), other
     actions must be ones this test knows are inert here. returns an object with the step results"""
@@ -1031,6 +1031,8 @@ def run_steps(b, steps, mode, extra_ctx=None):
         outs = parse_outputs(open(out_file).read())
         if s.get("id"):
             res.outputs[s["id"]] = outs
+        if p.returncode == 0 and after_step:
+            after_step(s, b)
         if p.returncode != 0:
             if norm(expand(s.get("continue-on-error", ""), ctx)) == "true":
                 res.ignored.append(s.get("name"))      # GitHub goes on to the next step
@@ -1089,7 +1091,7 @@ def snap_pred(snap):
 _CACHE = {}
 
 
-def assemble_run(mode="release", reg=None, fx=None, fail_after=None, extra_env=None, substitute=None):
+def assemble_run(mode="release", reg=None, fx=None, fail_after=None, extra_env=None, substitute=None, after_step=None):
     reg = reg or Reg(fail_after=fail_after)
     fx = fx or fixtures()
     for var in fx.values():
@@ -1099,7 +1101,7 @@ def assemble_run(mode="release", reg=None, fx=None, fail_after=None, extra_env=N
     b = make_box(reg, fx)
     b.extra_env.update(extra_env or {})
     reject_unmodelled_settings("stage-image.yml", "assemble")
-    res = run_steps(b, assemble(), mode)
+    res = run_steps(b, assemble(), mode, after_step=after_step)
     res.box, res.fx, res.reg = b, fx, reg
     res.job = wf("stage-image.yml")["jobs"]["assemble"]
     return res
@@ -1990,7 +1992,6 @@ GOLDEN = json.loads(r'''{
 },
 {
 "if": "inputs.mode == 'pr' && inputs.upload-oci",
-"name": "upload the OCI archives (pr scan check consumes the exact candidate bytes)",
 "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
 "with": {
 "if-no-files-found": "error",
@@ -2001,7 +2002,6 @@ GOLDEN = json.loads(r'''{
 },
 {
 "if": "inputs.mode == 'release'",
-"name": "sign the image-build predicate (subjects = the emitted index digests)",
 "uses": "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
 "with": {
 "predicate-path": "/tmp/image-build-predicate.json",
@@ -2011,7 +2011,6 @@ GOLDEN = json.loads(r'''{
 },
 {
 "if": "inputs.mode == 'release'",
-"name": "attest build provenance for the images",
 "uses": "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
 "with": {
 "subject-checksums": "/tmp/image-subjects.txt"
@@ -2036,7 +2035,6 @@ GOLDEN = json.loads(r'''{
 }
 },
 {
-"name": "sign the reproducibility predicate",
 "uses": "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
 "with": {
 "predicate-path": "/tmp/repro-predicate.json",
@@ -2106,7 +2104,8 @@ def outer_paths(name):
 
 
 def uses_pins(name):
-    return [nz(st) for j in wf(name)["jobs"].values() for st in (j.get("steps") or []) if st.get("uses")]
+    # the step name is a label, not configuration: the attest step is renamed (and its name tested) separately
+    return [nz({k: v for k, v in st.items() if k != "name"}) for j in wf(name)["jobs"].values() for st in (j.get("steps") or []) if st.get("uses")]
 
 
 @case("3", "frozen: every downstream workflow is exactly what it was before this change (parsed structure: env at every level, ids, order, scripts)")
@@ -2548,6 +2547,43 @@ def _():
     i = t.index("# The predicate's subjects are the FINAL index digests")
     block_ = re.sub(r"\s*\n\s*#?\s*", " ", t[i:t.index("- name:", i)])
     ok("local" in block_ and "final index" in block_, "the comment does not say the platform list comes from the locally computed, verified final index: %r" % block_[:300])
+
+
+@case("1", "e2e: a saved final index altered between the final step and the predicate step cannot reach the signed predicate")
+def _():
+    control = released()
+    need_ok(control)
+    fx = fixtures()
+    want = {v: indep_final_index(fx[v]) for v in VARIANTS}
+    touched = []
+
+    def tamper(step, b):
+        if "vex-index.py push" not in run_of(step):
+            return
+        for root, _dirs, files in os.walk(b.t):
+            for name in files:
+                path = os.path.join(root, name)
+                data = open(path, "rb").read()
+                for v in VARIANTS:
+                    if data == want[v]:
+                        o = json.loads(data)
+                        plat = [m_ for m_ in o["manifests"] if (m_.get("annotations") or {}).get("vnd.docker.reference.type") != ATTEST_TYPE][0]
+                        plat["digest"] = fx[v]["digest"]
+                        open(path, "wb").write(jb(o))
+                        touched.append(path)
+    r = assemble_run(fx=fx, after_step=tamper)
+    ok(touched, "the saved final index could not be found in the sandbox to tamper with (the predicate must read a saved local copy of the verified index)")
+    if r.failed is None:
+        pred = snap_pred(snap_of(r, "actions/attest@"))
+        got = {e["variant"]: sorted(x["digest"] for x in e["platforms"]) for e in pred["platform_manifests"]}
+        eq(got, {v: sorted(k["digest"] for k in fx[v]["kids"]) for v in VARIANTS}, "the signed predicate's platform manifests after the saved index was altered")
+
+
+@case("7", "documentation: the image-build attestation step is named for the final index digests, not 'emitted' ones")
+def _():
+    names = [s_.get("name", "") for s_ in assemble() if (s_.get("uses") or "").startswith("actions/attest@")]
+    eq(len(names), 1, "image-build attest steps")
+    ok("final index" in names[0].lower() and "emitted" not in names[0].lower(), "the step is named %r" % names[0])
 
 
 def main():

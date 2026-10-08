@@ -245,7 +245,7 @@ jobs:
           done > /tmp/image-subjects.txt
           cat /tmp/image-build-predicate.json
 
-      - name: sign the image-build predicate (subjects = the emitted index digests)
+      - name: sign the image-build predicate (subjects = the final index digests)
         if: inputs.mode == 'release'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:

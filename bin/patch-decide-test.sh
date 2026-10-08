@@ -1120,6 +1120,28 @@ for vers in ("v1.2.3", "1.2.3", "v0.0.0-20200101-abcdef", "1.0.0-rc.1", "v1.0.0+
     check("redaction: a plain version %r keeps a vendor-named module path intact" % vers, ("+pkg:golang/google.golang.org/grpc@%s" % vers) in out_, out_)
     out_ = P._clean("-pkg:maven/com.google.guava/guava@%s" % vers)
     check("redaction: a plain version %r keeps a vendor-named maven coordinate intact" % vers, ("-pkg:maven/com.google.guava/guava@%s" % vers) in out_, out_)
+# --- verification round (REQ-REL-009-AC14): redacting a version must not eat the rest of the identifier or make labels collide
+for vers in BAD_VERSIONS:
+    out_ = P._clean("pkg:golang/example.com/foo@%s[pkg:golang/x]" % vers)
+    check("redaction: a bad version %r before a subcomponent list keeps the member intact" % vers, "[pkg:golang/x]" in out_ and not VENDOR_RX.search(out_) and "<redacted>" in out_, out_)
+    out_ = P._clean("+pkg:golang/example.com/foo@%s[pkg:golang/x] -pkg:golang/example.com/foo@%s[pkg:golang/y]," % (vers, vers))
+    check("redaction: signed parents with bad version %r keep each member named" % vers, "[pkg:golang/x]" in out_ and "[pkg:golang/y]" in out_ and not VENDOR_RX.search(out_), out_)
+    ch_ = P.vex_changes(vdoc2([pstmt(prod("pkg:golang/example.com/foo@v1.0.0", "pkg:golang/x"))]), vdoc2([pstmt(prod("pkg:golang/example.com/foo@%s" % vers, "pkg:golang/y"))]))
+    ln_ = [l for l in vex_section(P.notes("v0.2.2", [], ch_)).split("\n") if "CVE-2099-0700" in l]
+    check("AC14 a parent moving to the bad version %r with a subcomponent change names the changed members" % vers,
+          len(ln_) == 1 and "pkg:golang/x" in ln_[0] and "pkg:golang/y" in ln_[0] and not VENDOR_RX.search(ln_[0]), ln_)
+for word in ("azure", "Azure", "aws", "google", "microsoft", "amazon", "meta", "claude", "gemini", "openai"):
+    va, vb = "pkg:golang/example.com/foo@v1.0.0-%s" % word, "pkg:golang/example.com/foo@v2.0.0-%s" % word
+    glued_a, glued_b = "pkg:golang/example.com/foo@1%s" % word, "pkg:golang/example.com/foo@2%s" % word
+    for pa, pb in ((va, vb), (glued_a, glued_b)):
+        SX, SY = stmt("CVE-2099-0950", products=(pa,), justification="a"), stmt("CVE-2099-0950", products=(pb,), justification="a")
+        both = [l for l in vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), dict(SY, justification="b")])))).split("\n") if "CVE-2099-0950" in l]
+        check("AC14 two statements whose versions differ only in numbers (vendor word %r): two lines with different labels" % word,
+              len(both) == 2 and both[0] != both[1] and not VENDOR_RX.search("".join(both)), both)
+        one = [l for l in vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), SY])))).split("\n") if "CVE-2099-0950" in l]
+        digit_a, digit_b = ("1.0.0", "2.0.0") if "v1" in pa else ("@1", "@2")
+        check("AC14 ... and when only the first changes, the one line says which (its numeric version, %r)" % word,
+              len(one) == 1 and digit_a in one[0] and digit_b not in one[0], one)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

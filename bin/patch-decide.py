@@ -52,12 +52,13 @@ MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   
 
 
 # a vendor or model word anywhere in a version, glued to the number or not: the version is the one place a name can hide
-VERSION_AT = re.compile(r"(@)([^\s,;)\]}`'\">]+)")
+VERSION_AT = re.compile(r"(@)([0-9A-Za-z.+~_-]+)")
 ANYWHERE = re.compile(r"(?i)" + _sep("google", "microsoft", "amazon", "aws", "azure", "meta"))
 
 
 def _guard_version(m):
-    return m.group(1) + ("<redacted>" if VENDOR.search(m.group(2)) or ANYWHERE.search(m.group(2)) else m.group(2))
+    # the word goes, the numbers stay (so two versions still differ), and so does the rest of the identifier
+    return m.group(1) + ANYWHERE.sub("<redacted>", VENDOR.sub("<redacted>", m.group(2)))
 
 
 def _alone(m):
