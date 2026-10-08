@@ -272,5 +272,135 @@ if grep -qF 'docker buildx imagetools create --tag ghcr.io/fosterstack/cache-sco
    && grep -qF 'registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG6" && grep -q 'variant annot' "$e4/out6/summary.md"; then
   echo "ok: when the --file form fails the annotated two-source form is tried and its built index is scanned"; pass=$((pass+1))
 else echo "FAIL: the annotated fallback form was not tried or not scanned"; fail=$((fail+1)); fi
+# REQ-REL-010 AC6 (advisor 0214/0221 follow-up), section 1e: the FINAL INDEX F built by OUR tool (bin/vex-index.py compute, verify, push)
+# from a scratch copy of debian 12.0's manifest list plus our statement; F is tagged `final-index` (the digest must survive the tag
+# copy) and scanned by tag, by exact digest and through its amd64 child, with our author; the `final-base` control is scanned with no
+# VEX. docker/skopeo are stubbed; python3 is a shim that runs bin/vex-index.py compute and verify FOR REAL and stubs only push (it
+# needs a registry). Knobs: BAD_BASE (the base index is not one compute accepts), NOCVE_BASE (the control lacks the target),
+# NOSUP (Scout does not apply F's VEX), CHANGE_TAG (the tag copy changes the digest), FAIL_PUSH, and a docker config without credentials.
+e6=$(mktemp -d); S6="$e6/state"; mkdir -p "$S6"; REALPY=$(command -v python3)
+cat > "$S6/base.raw" <<'JSON'
+{"manifests":[{"digest":"sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab","mediaType":"application/vnd.docker.distribution.manifest.v2+json","platform":{"architecture":"amd64","os":"linux"},"size":529}],"mediaType":"application/vnd.docker.distribution.manifest.list.v2+json","schemaVersion":2}
+JSON
+cat > "$e6/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $*" >> "$LOG"
+V='{"vulnerabilities": [{"id": "x1", "cve": "CVE-2023-4911", "identifiers": [{"type": "cve", "name": "CVE-2023-4911", "value": "CVE-2023-4911"}], "location": {"dependency": {"package": {"name": "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm"}, "version": "2.36-9"}}}]}'
+F=$(cat "$S6/F" 2>/dev/null || true)
+case "$1 $2" in
+  "scout cves") ref="${@: -1}"
+     case "$ref" in
+       *:final-base) [ -z "${NOCVE_BASE:-}" ] && echo "$V" || echo '{"vulnerabilities": []}' ;;
+       *:final-index) [ -n "${NOSUP:-}" ] && echo "$V" || echo '{"vulnerabilities": []}' ;;
+       *) if [ -n "$F" ] && [ "$ref" = "registry://ghcr.io/fosterstack/cache-scout-probe@$F" ]; then
+            [ -n "${NOSUP:-}" ] && echo "$V" || echo '{"vulnerabilities": []}'
+          else echo "$V"; fi ;;
+     esac ;;
+  "scout attestation") echo "attestation added" ;;
+  "scout version") echo "v1.26.0" ;;
+esac
+STUB
+cat > "$e6/skopeo" <<'STUB'
+#!/usr/bin/env bash
+F=$(cat "$S6/F" 2>/dev/null || true)
+case "$*" in
+  "inspect --raw docker://"*:final-base) echo "skopeo $*" >> "$LOG"; if [ -n "${BAD_BASE:-}" ]; then echo '{"manifests": []}'; else cat "$S6/base.raw"; fi ;;
+  "inspect --raw docker://"*:final-index) echo "skopeo $*" >> "$LOG"
+     if [ -n "${CHANGE_TAG:-}" ] && [ -e "$S6/tagcopied" ]; then jq -c '.annotations = {"changed": "1"}' "$S6/index.json"; else cat "$S6/index.json"; fi ;;
+  "copy -q --all docker://"*"@sha256:"*" docker://"*:final-index) echo "skopeo $*" >> "$LOG"; touch "$S6/tagcopied" ;;
+  "inspect --raw docker://"*"@$F") if [ -n "$F" ]; then echo "skopeo $*" >> "$LOG"; cat "$S6/index.json"; else exec "$E4/skopeo" "$@"; fi ;;
+  *) exec "$E4/skopeo" "$@" ;;
+esac
+STUB
+cat > "$e6/python3" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = bin/vex-index.py ]; then
+  echo "python3 $*" >> "$LOG"
+  if [ "${2:-}" = push ]; then
+    echo "push-env user=${FSCACHE_REGISTRY_USER:-unset} token=${FSCACHE_REGISTRY_TOKEN:+set}" >> "$LOG"
+    [ -z "${FAIL_PUSH:-}" ] || { echo "vex-index: refused: boom" >&2; exit 2; }
+    while [ $# -gt 0 ]; do [ "$1" = --dir ] && d=$2; shift; done
+    cp "$d/index.json" "$S6/index.json"; echo "sha256:$(shasum -a 256 "$d/index.json" | cut -c1-64)" | tee "$S6/F"; exit 0
+  fi
+fi
+exec "$REALPY" "$@"
+STUB
+chmod +x "$e6/docker" "$e6/skopeo" "$e6/python3"
+cp "$e4/install" "$e6/install"
+run6() {  # run6 NAME [ENV=VAL ...]: one stubbed run of the real script; $e6/NAME.log is the command log, $e6/NAME/summary.md the result
+  local n=$1; shift; rm -rf "$S6/F" "$S6/index.json" "$S6/tagcopied" "$e6/home-$n"; mkdir -p "$e6/home-$n/.docker"
+  printf '{"auths": {"ghcr.io": {"auth": "%s"}}}' "$(printf 'someactor:sometoken' | base64 | tr -d '\n')" > "$e6/home-$n/.docker/config.json"
+  case " $* " in *" NOCREDS=1 "*) echo '{}' > "$e6/home-$n/.docker/config.json" ;; esac
+  env "$@" S6="$S6" E4="$e4" REALPY="$REALPY" SCOUT_DIR="$e6" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$e6/$n.log" \
+    HOME="$e6/home-$n" PATH="$e6:$PATH" bash "$here/scout-root-cause.sh" "$e6/$n" > "$e6/$n.run" 2>&1 || true
+}
+SUMM() { echo "$e6/$1/summary.md"; }
+run6 ok
+if grep -q '^### 1e\. ' "$(SUMM ok)"; then echo "ok: section 1e is in the summary"; pass=$((pass+1)); else echo "FAIL: no section 1e in the summary"; fail=$((fail+1)); fi
+if grep -qF 'skopeo copy -q --all docker://docker.io/library/debian@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b docker://ghcr.io/fosterstack/cache-scout-probe:final-base' "$e6/ok.log"; then
+  echo "ok: 1e copies the debian 12.0 manifest list to the scratch tag final-base"; pass=$((pass+1)); else echo "FAIL: 1e does not copy the base to final-base"; fail=$((fail+1)); fi
+if [ "$(grep '^python3 bin/vex-index.py' "$e6/ok.log" | awk '{print $3}' | tr '\n' ' ')" = "compute verify push " ]; then
+  echo "ok: our tool runs compute, then verify, then push, once each, in that order"; pass=$((pass+1)); else echo "FAIL: vex-index was not run as compute, verify, push: $(grep '^python3 bin/vex-index.py' "$e6/ok.log" | cut -c1-80 | tr '\n' '|')"; fail=$((fail+1)); fi
+if grep -qE '^python3 bin/vex-index.py push --registry ghcr.io --repository fosterstack/cache-scout-probe --dir [^ ]+ --vex [^ ]+ --base [^ ]+$' "$e6/ok.log" \
+   && grep -qF 'push-env user=someactor token=set' "$e6/ok.log"; then
+  echo "ok: push targets the scratch repository only and takes its credentials from the registry login in the environment"; pass=$((pass+1))
+else echo "FAIL: push arguments or credentials are wrong"; fail=$((fail+1)); fi
+if grep -qF 'sometoken' "$(SUMM ok)" "$e6/ok.run"; then echo "FAIL: the registry token leaked into the output"; fail=$((fail+1)); else echo "ok: the registry token is not in the output"; pass=$((pass+1)); fi
+vexf=$(ls "$e6"/ok/attest/final/*.vex.json 2>/dev/null | head -1 || true)
+if [ -n "$vexf" ] && jq -e '.author == "FosterStack LLC" and (.statements | length) == 1 and .statements[0].vulnerability.name == "CVE-2023-4911" and .statements[0].status == "not_affected"
+     and .statements[0].products[0]["@id"] == "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"' "$vexf" >/dev/null; then
+  echo "ok: the VEX is ours: our author, one not_affected statement on CVE-2023-4911 for the published product form"; pass=$((pass+1))
+else echo "FAIL: the 1e VEX document is missing or wrong"; fail=$((fail+1)); fi
+F6=$(cat "$S6/F" 2>/dev/null || true)
+if [ -n "$F6" ] && grep -qF "final index F \`$F6\`" "$(SUMM ok)" && grep -qF "skopeo copy -q --all docker://ghcr.io/fosterstack/cache-scout-probe@$F6 docker://ghcr.io/fosterstack/cache-scout-probe:final-index" "$e6/ok.log" \
+   && grep -qF 'tag final-index digest' "$(SUMM ok)" && grep -qF 'unchanged' <(grep 'tag final-index digest' "$(SUMM ok)"); then
+  echo "ok: F is recorded, copied to the tag final-index, and its digest is asserted unchanged"; pass=$((pass+1))
+else echo "FAIL: F, its tag copy or the digest assertion is missing"; fail=$((fail+1)); fi
+if grep -qE '^- 1e children of the base:' "$(SUMM ok)" && grep -qE '^- 1e children of F:' "$(SUMM ok)" && grep -q 'attestation-manifest' <(grep '1e children of F' "$(SUMM ok)"); then
+  echo "ok: the children of the base and of F (platforms and attestation-manifest children) are recorded"; pass=$((pass+1))
+else echo "FAIL: the children before and after are not recorded"; fail=$((fail+1)); fi
+P=ghcr.io/fosterstack/cache-scout-probe
+if grep -qF "docker scout cves --format gitlab registry://$P:final-base" "$e6/ok.log" \
+   && grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://'"$P:final-index" "$e6/ok.log" \
+   && grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://'"$P@$F6" "$e6/ok.log" \
+   && grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://'"$P@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab" "$e6/ok.log"; then
+  echo "ok: the control is scanned with no VEX; F is scanned by tag, by exact digest, and its amd64 child by digest, with our author"; pass=$((pass+1))
+else echo "FAIL: the 1e scans are missing or wrong"; fail=$((fail+1)); fi
+if grep -qF 'docker scout attestation list registry://'"$P:final-index" "$e6/ok.log" && grep -q '1e.*attestation list' "$(SUMM ok)"; then
+  echo "ok: F's attestations are listed and recorded"; pass=$((pass+1)); else echo "FAIL: F's attestation list is not recorded"; fail=$((fail+1)); fi
+if grep -qF -- '- 1e verdict: PASS' "$(SUMM ok)" && grep -qF 'by tag: exit 0 — suppressed' "$(SUMM ok)" && grep -qF 'by its exact digest' "$(SUMM ok)"; then
+  echo "ok: F built and CVE-2023-4911 suppressed by tag and by digest gives the pass line"; pass=$((pass+1))
+else echo "FAIL: no pass line for a suppressed F: $(grep '1e' "$(SUMM ok)" | cut -c1-120 | tr '\n' '|')"; fail=$((fail+1)); fi
+# F built but Scout does not apply it: the fail line
+run6 nosup NOSUP=1
+if grep -qF -- '- 1e verdict: FAIL' "$(SUMM nosup)" && grep -qF 'not applied' "$(SUMM nosup)" && ! grep -qF -- '- 1e verdict: PASS' "$(SUMM nosup)"; then
+  echo "ok: F built but not suppressed gives the fail line"; pass=$((pass+1)); else echo "FAIL: a VEX Scout did not apply was not reported as FAIL"; fail=$((fail+1)); fi
+# the tool refuses the base: inconclusive, and nothing is pushed or tagged
+run6 badbase BAD_BASE=1
+if grep -qF 'inconclusive (vex-index compute failed' "$(SUMM badbase)" && ! grep -q 'vex-index.py push' "$e6/badbase.log" && ! grep -q ':final-index' "$e6/badbase.log" \
+   && ! grep -qF -- '- 1e verdict: PASS' "$(SUMM badbase)"; then
+  echo "ok: a failed compute is inconclusive and nothing is pushed"; pass=$((pass+1)); else echo "FAIL: a failed compute was not inconclusive or still pushed"; fail=$((fail+1)); fi
+# a refused push is recorded, not skipped, and F is not tagged or scanned
+run6 nopush FAIL_PUSH=1
+if grep -qF 'inconclusive (vex-index push failed' "$(SUMM nopush)" && ! grep -q 'registry://.*:final-index' "$e6/nopush.log"; then
+  echo "ok: a failed push is inconclusive and F is not scanned"; pass=$((pass+1)); else echo "FAIL: a failed push was not reported inconclusive"; fail=$((fail+1)); fi
+# no registry credentials: inconclusive, nothing is pushed
+run6 nocreds NOCREDS=1
+if grep -qF 'inconclusive (no registry credentials' "$(SUMM nocreds)" && ! grep -q 'vex-index.py' "$e6/nocreds.log"; then
+  echo "ok: without registry credentials 1e is inconclusive and builds and pushes nothing"; pass=$((pass+1)); else echo "FAIL: missing credentials were not reported inconclusive"; fail=$((fail+1)); fi
+# the tag copy changes the digest: flagged, and the tag is not scanned as F
+run6 chg CHANGE_TAG=1
+if grep -qE 'tag final-index digest .* — CHANGED' "$(SUMM chg)" && ! grep -qF -- '- 1e verdict: PASS' "$(SUMM chg)"; then
+  echo "ok: a digest changed by the tag copy is flagged"; pass=$((pass+1)); else echo "FAIL: a changed digest was not flagged"; fail=$((fail+1)); fi
+# the final-base control does not carry the target: nothing is built
+run6 nocve NOCVE_BASE=1
+if grep -qF 'not tried: the final-base control does not carry CVE-2023-4911' "$(SUMM nocve)" && ! grep -q 'vex-index.py' "$e6/nocve.log" && ! grep -q ':final-index' "$e6/nocve.log"; then
+  echo "ok: a control without the CVE tries nothing"; pass=$((pass+1)); else echo "FAIL: a control without the CVE still built F"; fail=$((fail+1)); fi
+# a fixture without the target (the first stub set) tries no final-index probe at all
+if grep -q 'final-base\|vex-index' "$LOG"; then echo "FAIL: a fixture without the target tried section 1e"; fail=$((fail+1))
+else echo "ok: a fixture without the target tries no section 1e"; pass=$((pass+1)); fi
+if grep -q '^### 1e\. ' "$e2e/out/summary.md" && grep -q 'not tried: the fixture does not carry CVE-2023-4911' <(sed -n '/^### 1e\. /,/^## 2/p' "$e2e/out/summary.md"); then
+  echo "ok: the no-target summary says 1e was not tried"; pass=$((pass+1)); else echo "FAIL: the no-target summary has no 1e not-tried line"; fail=$((fail+1)); fi
+rm -rf "$e6"
 rm -rf "$e2e" "$e4"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]
