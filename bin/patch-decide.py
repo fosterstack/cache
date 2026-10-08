@@ -20,6 +20,9 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
 """
 import argparse, json, os, re, subprocess, sys
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
+# data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15)
+NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
+NEUTRAL_PROPOSALS = re.compile(r"^\.auditor/proposals/[^/]+\.json$")
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
 DOCKERFILES = re.compile(r"^build/docker/Dockerfile\.[a-z0-9-]+$")
@@ -48,13 +51,31 @@ VENDOR_ALONE = re.compile(r"(?i)(?:(?<![a-z0-9])|(?<=[a-z0-9])(?-i:(?=[A-Z])))("
 MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   # every part lowercase (Sonnet r3c, NEW-BLOCKER-3)
 
 
+# a vendor or model word anywhere in a version, glued to the number or not: the version is the one place a name can hide
+VERSION_AT = re.compile(r"(@)([0-9A-Za-z.+~_-]+)")
+# the model names as WORDS: exactly the matched letters, no trailing characters (VENDOR eats the rest of a token on purpose;
+# inside a version that would erase the numbers that tell two versions apart)
+MODEL_WORDS = re.compile(r"(?i)chat[-_.\s]*gpt|" + _sep("anthropic", "claude", "openai", "gpt", "codex", "gemini", "llama", "mistral", "mixtral",
+                         "grok", "bedrock", "deepseek", "qwen", "copilot", "cohere", "bard", "sonnet", "opus", "haiku", "xai")
+                         + r"|\bo[1-9](?:-(?:mini|pro|preview))?\b")
+ANYWHERE = re.compile(r"(?i)" + _sep("google", "microsoft", "amazon", "aws", "azure", "meta"))
+
+
+def _guard_version(m):
+    # the word goes, the numbers stay (so two versions still differ), and so does the rest of the identifier
+    return m.group(1) + ANYWHERE.sub("<redacted>", MODEL_WORDS.sub("<redacted>", m.group(2)))
+
+
 def _alone(m):
     text, i, j = m.string, m.start(), m.end()
-    while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;":
+    while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;`":
         i -= 1
-    while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;":
+    while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;`":
         j += 1
     token = text[i:j].rstrip(".:")
+    token = token.strip("`").lstrip("+-").strip("`")             # a signed product list: +pkg:..., -pkg:..., `pkg:...`
+    token = re.sub(r"^pkg:[a-z0-9.+-]+/", "", token)          # a package URL's type is not part of the module path
+    token = re.sub(r"@(?:v?[0-9][A-Za-z0-9._~+-]*)$", "", token)   # nor is its version: it starts with v or a digit, never a vendor word
     return m.group(0) if MODULE_PATH.match(token) else "<redacted>"
 
 
@@ -180,13 +201,58 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
+SHEBANG_LINE = re.compile(r"(?m)^#!")
+
+
+def _not_data(f, diff, mode, old_mode, contents=None):
+    """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content.
+    A script line is a shebang line (`#!` at the start of ANY line); it is looked for in the whole new content and in the
+    whole old content (what a commit deletes or replaces), read from the blobs when `contents` has them, else from the diff."""
+    if old_mode in ("100755", "120000"):
+        return "%s was %s before: not data" % (f, "a symlink" if old_mode == "120000" else "executable")
+    if mode != "000000" and mode != "100644":
+        return "%s has mode %s; data is a regular non-executable file (100644)" % (f, mode or "?")
+    if mode == "000000" and old_mode != "100644":
+        return "%s is deleted and its old file type is unknown" % f
+    if contents is not None:
+        old_text, new_text = contents.get("old"), contents.get("new")
+    else:
+        lines = (diff or "").split("\n")
+        old_text = "\n".join(l[1:] for l in lines if l[:1] in ("-", " ")) or None
+        new_text = "\n".join(l[1:] for l in lines if l[:1] in ("+", " ")) or None
+    for label, text in (("new", new_text), ("old", old_text)):
+        if text is not None and ("\0" in text):
+            return "%s holds NUL or non-text bytes (%s content): not text" % (f, label)
+        if text is not None and SHEBANG_LINE.search(text):
+            return "%s has a shebang line in its %s content: a script, not data" % (f, label)
+    if mode == "000000":
+        return None
+    if not new_text:
+        return "%s shows no content (binary, or a mode-only change): not proven data" % f
+    if f.endswith(".json"):
+        try:
+            if not isinstance(json.loads(new_text), (dict, list)):
+                return "%s is not a JSON object or array" % f
+        except ValueError:
+            return "%s is not valid JSON" % f
+    return None
+
+
 def classify(commit):
     """('fix' | 'neutral' | 'dirty', reason) for one commit. Neutral means non-executable data only — docs/, requirements/,
     test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3)."""
     files, diffs, modes = commit.get("files") or [], commit.get("diffs") or {}, commit.get("modes") or {}
-    kinds, why = set(), []
+    kinds, why, hard = set(), [], False
+    old_modes = commit.get("old_modes") or {}
     for f in files:
-        if modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
+        if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+            # neutral only as DATA, proven from the committed content and the old and new file types (REQ-REL-009 AC15)
+            bad = _not_data(f, diffs.get(f), modes.get(f), old_modes.get(f), (commit.get("contents") or {}).get(f))
+            if bad:
+                kinds.add("dirty"); why.append(bad); hard = True       # no label turns this into a fix
+            else:
+                kinds.add("neutral")
+        elif modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
             # data is not executable: Git's executable bit, a symlink, or a script's #! line (Codex #159 AC1(h), B01)
             kinds.add("dirty"); why.append("%s is executable (mode %s or a #! line), never data" % (f, modes.get(f, "?")))
         elif TEST_FILE.search(f):
@@ -224,7 +290,7 @@ def classify(commit):
             kinds.add("neutral")
         else:
             kinds.add("dirty"); why.append("%s is shipped source or configuration" % f)
-    if "dirty" in kinds and "patch-fix" in (commit.get("labels") or []):
+    if "dirty" in kinds and not hard and "patch-fix" in (commit.get("labels") or []):
         return "fix", "labelled patch-fix (no behavior change)"
     if "dirty" in kinds:
         return "dirty", "; ".join(why)
@@ -262,7 +328,7 @@ def daily_cut(ships, cut_today):
 
 
 def _clean(s):
-    return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
+    return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", VERSION_AT.sub(_guard_version, str(s))))
 
 
 CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
@@ -300,13 +366,18 @@ def _check_entry(e):
                 raise ValueError("next-release-notes entry names a vendor or model split by whitespace: %r" % e)
 
 
-def notes(version, fixes, vex_changes, behavior=()):
+def notes(version, fixes, vex_changes, behavior=(), vex_bytes_changed=False):
     lines = ["## %s — patch release" % version, "", "### Fixes"]
     for f in fixes:
         lines.append("- %s in %s: %s → %s (severity %s; variants: %s)" % (
             f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
+        statement_changes = [v for v in vex_changes if v["cve"] != "(document)"]
+        if not behavior and statement_changes:
+            lines.append("- VEX-only: this patch changes VEX statements and nothing else")
+        elif not behavior and (vex_changes or vex_bytes_changed):
+            lines.append("- VEX-only (no statement change): the VEX file changed but no statement did")
     lines += ["", "### VEX"]
     lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
     for b in behavior:
@@ -417,18 +488,74 @@ def fixed_findings(release_by_variant, head):
 
 
 def vex_changes(old_doc, new_doc):
-    """AC8: each VEX statement added, changed (its status) or removed since the latest tag, by CVE."""
-    def by_cve(doc):
-        return {s_["vulnerability"]["name"]: s_.get("status", "") for s_ in (doc or {}).get("statements", [])}
-    old, new = by_cve(old_doc), by_cve(new_doc)
+    """AC8/AC14: each VEX statement added, removed or changed since the latest tag. A statement is identified by its
+    vulnerability and its product SET (order-insensitive); statements of one vulnerability are paired by equal product
+    sets first, the rest in file order (a changed product list). A vulnerability with several statements is named with
+    the statement's product set, "CVE [pkg:a, pkg:b]". Reordering is no change; a changed statement names the fields
+    that differ (products as +added -removed); a document-level change is one 'document metadata' entry."""
+    def canon_product(p_):
+        if isinstance(p_, dict) and isinstance(p_.get("subcomponents"), list):
+            p_ = dict(p_, subcomponents=sorted(p_["subcomponents"], key=lambda x: json.dumps(x, sort_keys=True)))
+        return p_
+    def canon(st):
+        st = dict(st)
+        if isinstance(st.get("products"), list):
+            st["products"] = sorted((canon_product(p_) for p_ in st["products"]), key=lambda p_: json.dumps(p_, sort_keys=True))
+        return st
+    def pid(p_):
+        return p_.get("@id") if isinstance(p_, dict) and p_.get("@id") else json.dumps(p_, sort_keys=True)
+    def members(st):
+        out_ = []
+        for p_ in st.get("products", []):
+            out_.append(pid(p_))
+            for sc in (p_.get("subcomponents") or []) if isinstance(p_, dict) else []:
+                out_.append("%s[%s]" % (pid(p_), pid(sc)))
+        return out_
+    def pset(st):
+        return tuple(sorted(members(st)))
+    def groups(doc):
+        g = {}
+        for st in (doc or {}).get("statements", []):
+            g.setdefault(st.get("vulnerability", {}).get("name", ""), []).append(canon(st))
+        return g
+    old, new = groups(old_doc), groups(new_doc)
     out = []
     for cve in sorted(set(old) | set(new)):
-        if cve not in old:
-            out.append({"cve": cve, "status": new[cve], "change": "added"})
-        elif cve not in new:
-            out.append({"cve": cve, "status": old[cve], "change": "removed"})
-        elif old[cve] != new[cve]:
-            out.append({"cve": cve, "status": new[cve], "change": "changed from %s" % old[cve]})
+        o, n = list(old.get(cve, [])), list(new.get(cve, []))
+        many = len(o) > 1 or len(n) > 1
+        label = lambda st: "%s [%s]" % (cve, ", ".join(pset(st))) if many else cve
+        pairs = []
+        for st in list(o):                       # exactly equal statements pair first (a swap of look-alikes is no change)
+            m = next((x for x in n if x == st), None)
+            if m is not None:
+                o.remove(st); n.remove(m)
+        for st in list(o):                       # then equal product sets, in file order
+            m = next((x for x in n if pset(x) == pset(st)), None)
+            if m is not None:
+                o.remove(st); n.remove(m); pairs.append((st, m))
+        while o and n:
+            pairs.append((o.pop(0), n.pop(0)))
+        for st, m in pairs:
+            if st != m:
+                fields = sorted(f for f in set(st) | set(m) if st.get(f) != m.get(f))
+                parts = []
+                if "status" in fields:
+                    parts.append("changed from %s" % st.get("status", ""))
+                other = [f for f in fields if f not in ("status", "products")]
+                if "products" in fields:
+                    plus = [x for x in pset(m) if x not in pset(st)]
+                    minus = [x for x in pset(st) if x not in pset(m)]
+                    other.insert(0, "products " + " ".join(["+" + x for x in plus] + ["-" + x for x in minus]))
+                if other:
+                    parts.append(("also " if parts else "changed: ") + ", ".join(other))
+                out.append({"cve": label(m), "status": m.get("status", ""), "change": "; ".join(parts)})
+        for st in o:
+            out.append({"cve": label(st), "status": st.get("status", ""), "change": "removed"})
+        for st in n:
+            out.append({"cve": label(st), "status": st.get("status", ""), "change": "added"})
+    meta = sorted(f for f in set(old_doc or {}) | set(new_doc or {}) if f != "statements" and (old_doc or {}).get(f) != (new_doc or {}).get(f))
+    if old_doc is not None and meta:
+        out.append({"cve": "(document)", "status": "-", "change": "document metadata: " + ", ".join(meta)})
     return out
 
 
@@ -557,23 +684,40 @@ def _git(*args, cwd="."):
     return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, check=True).stdout
 
 
+def _blob(spec, cwd):
+    """a file's text at a revision (git show rev:path); None when it does not exist there; non-UTF-8 bytes read as binary"""
+    p = subprocess.run(["git", "-C", cwd, "show", spec], capture_output=True)
+    if p.returncode != 0:
+        return None
+    try:
+        return p.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return "\0binary"
+
+
 def gather_commits(since, cwd=".", labels=lambda sha: []):
     """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
-        files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
+        files = [f for f in _git("show", "--format=", "--name-only", "--no-renames", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
-        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
+        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--no-renames", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
-        modes = {}
-        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "-M", sha, cwd=cwd).splitlines():
+        modes, old_modes = {}, {}
+        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd).splitlines():
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]
-        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "labels": list(labels(sha))})
+                old_modes[paths.split("\t")[-1]] = meta.split()[0].lstrip(":")
+        # the old and new blobs of every neutral-named path, read whole (a diff's context window is no limit on what is checked)
+        contents = {}
+        for f in files:
+            if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+                contents[f] = {"old": _blob("%s^:%s" % (sha, f), cwd), "new": _blob("%s:%s" % (sha, f), cwd)}
+        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "old_modes": old_modes, "contents": contents, "labels": list(labels(sha))})
     return out
 
 
@@ -661,7 +805,8 @@ def main(argv=None):
             behavior = unpublished(behavior_entries(nn), open(a.published).read())
             old = json.load(open(a.vex_old)) if a.vex_old else None
             fixes = fixed_findings(rel, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
-            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior)
+            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior,
+                         vex_bytes_changed=bool(a.vex_old) and open(a.vex_old, "rb").read() != open(a.vex_new, "rb").read())
         except (ValueError, OSError, KeyError, TypeError) as e:
             print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
             return 2

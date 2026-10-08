@@ -5,10 +5,12 @@ name: 'Stage: reproducibility'
 # two-assembly digest comparison; THIS stage is the tag chain's version:
 # verify the image-build predicate for the pushed candidate digests, then
 # repeat the assembly from the same verified dist/ on a fresh runner with
-# a local OCI output — no push — and assert the locally computed index
-# digests equal the verified pushed ones, variant for variant. If they
-# differ the release fails and we learn something; nothing papers over it.
-# Signs a reproducibility predicate naming the same digests.
+# a local OCI output — no push — then recompute the final index offline
+# from the rebuilt archive's own index (bin/vex-index.py compute, the same
+# committed VEX) and assert it equals the verified pushed final index,
+# variant for variant. If they differ the release fails and we learn
+# something; nothing papers over it. Signs a reproducibility predicate
+# naming the same final index digests.
 
 on:
   workflow_call:
@@ -108,15 +110,8 @@ jobs:
               --platform linux/amd64,linux/arm64 \
               -f "Dockerfile.${v}" \
               --provenance=false --sbom=false \
-              --output "type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true" \
-              --metadata-file "/tmp/${v}.json" . >/dev/null
-            local_d=$(jq -r '."containerimage.digest"' "/tmp/${v}.json")
-            pushed_d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
-            if [ "$local_d" != "$pushed_d" ]; then
-              echo "::error::${v} is NOT reproducible: pushed ${pushed_d}, rebuilt ${local_d}" >&2
-              exit 1
-            fi
-            echo "${v}: reproducible at ${local_d}"
+              --output "type=oci,dest=/tmp/${v}.oci,rewrite-timestamp=true" . >/dev/null
+            echo "${v}: rebuilt locally"
           done
           jq -c . <<<'${{ inputs.digests }}' | while read -r d; do
             jq -n --argjson digests "$d" --arg sha "${GITHUB_SHA}" --arg buildx "$(docker buildx version)" \
@@ -126,6 +121,27 @@ jobs:
             d=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
             echo "${d#sha256:}  cache-candidates-${v}"
           done > /tmp/repro-subjects.txt
+
+      - name: recompute the final index offline from the rebuilt archives and assert it is the pushed one
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          for v in production debug fips; do
+            # the rebuilt index D' is the archive's own (never a registry read); F' is computed from it offline
+            [ "$(tar -xOf "/tmp/${v}.oci" -C /tmp index.json | jq '.manifests | length')" = 1 ] \
+              || { echo "::error::${v}: the archive does not hold exactly one index" >&2; exit 1; }
+            built_d=$(tar -xOf "/tmp/${v}.oci" -C /tmp index.json | jq -r '.manifests[0].digest')
+            tar -xOf "/tmp/${v}.oci" -C /tmp "blobs/sha256/${built_d#sha256:}" > "${work}/${v}-built.json"
+            [ "sha256:$(sha256sum "${work}/${v}-built.json" | cut -d' ' -f1)" = "${built_d}" ] \
+              || { echo "::error::${v}: the archive's index bytes do not match their digest" >&2; exit 1; }
+            local_f=$(python3 bin/vex-index.py compute --index "${work}/${v}-built.json" --vex .vex/fosterstack-cache.openvex.json --out-dir "$(mktemp -d)")
+            pushed_f=$(jq -r --arg v "$v" '.[$v]' <<<'${{ inputs.digests }}')
+            if [ "$local_f" != "$pushed_f" ]; then
+              echo "::error::${v} is NOT reproducible: pushed final index ${pushed_f}, recomputed ${local_f}" >&2
+              exit 1
+            fi
+            echo "${v}: reproducible at ${local_f}"
+          done
 
       - name: sign the reproducibility predicate
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

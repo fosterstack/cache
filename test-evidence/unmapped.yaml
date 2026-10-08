@@ -34,3 +34,5 @@ unmapped:
     reason: "proven by the first real patch release; the customer suppression files depend on scanner-panel rule 10, a later PR"
   - ac: REQ-REL-009-AC12
     reason: "the lane's process rule (both step-8 records say no behavior change before it applies patch-fix): CI cannot tell the owner's label from the lane's, since both act through the owner's account; each application is recorded in the lane's report with both reviewers' findings"
+  - ac: REQ-REL-010-AC6
+    reason: the live Scout proof is a scratch probe in bin/scout-root-cause.sh that has not run yet (advisor 0221); evidence is mapped once it has, as for REQ-REL-009-AC12

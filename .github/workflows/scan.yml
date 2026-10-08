@@ -78,7 +78,7 @@ jobs:
   # PR-mode proof of the reproducibility property. One build feeds both: `assemble` above is assembly A, `assemble-b`
   # assembles the same attested binaries again in an independent job (verify only: it uploads no oci-candidate, so the
   # artifact name stays unique), and the required check `reproducibility` demands identical index digests for every
-  # variant. The release relies only on release.yml's own reproducibility stage (stage-reproducibility.yml, unchanged);
+  # variant. The release relies only on release.yml's own reproducibility stage (stage-reproducibility.yml, which recomputes the final index);
   # this job is a PR/main proof and never a gate on the tag chain.
   assemble-b:
     needs: build

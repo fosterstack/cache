@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11
+# proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-REL-009-AC14, REQ-REL-009-AC15
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
 # classified fix-class / neutral / not patch-clean by the files they change (a patch-fix label admits a source change);
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
@@ -666,6 +666,514 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# neutral-path commits carry the data they commit: a neutral path is neutral only when the committed content is data
+def nc(f, body=None, mode="100644", old_mode=None, labels=()):
+    body = body if body is not None else ("{}\n" if f.endswith(".json") else "# notes\n")
+    d = dict(c("n", [f], labels=labels, diffs={f: "".join("+%s\n" % l for l in body.split("\n")[:-1])} if mode != "000000" else {f: ""}), modes={f: mode})
+    if old_mode:
+        d["old_modes"] = {f: old_mode}
+    return d
+# --- REQ-REL-009-AC14 / AC15 (advisor 0254, 0257): a VEX-only range cuts an ordinary patch whose notes say so; the auditor's
+# other work (panel state, knowledge, proposals) cuts nothing by itself
+VEXF = ".vex/fosterstack-cache.openvex.json"
+VEX_FORMS = [".vex/fosterstack-cache.csaf.json", ".vex/fosterstack-cache.inspector.json"]   # generated forms live beside it
+VEXC = c("v1", [VEXF])
+check("AC14 a range whose only change is the VEX file is fix-class", P.classify(VEXC)[0] == "fix", P.classify(VEXC))
+check("AC14 the generated forms beside it are fix-class too", all(P.classify(c("f", [f]))[0] == "fix" for f in VEX_FORMS))
+check("AC14 the VEX-only range is patch-clean and ships bytes", P.patch_clean([VEXC]) == (True, []) and P.ships_bytes([VEXC]), P.patch_clean([VEXC]))
+check("AC14 the next tag is the next patch", P.next_patch(["v0.2.1", "v0.2.0"]) == "v0.2.2")
+D = P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC14 the daily run cuts it as vX.Y.(Z+1)", D["cut"] and D["version"] == "v0.2.2" and not D["not_clean"], D)
+D = P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=True, removed=None)
+check("AC14 a second patch the same day waits", not D["cut"] and "already cut today" in D["reason"], D)
+D = P.decide("schedule", [VEXC, c("v2", VEX_FORMS)], ["v0.2.1"], cut_today=False, removed=None)
+check("AC14 the VEX and its generated forms together are still one clean patch", D["cut"], D)
+D = P.decide("schedule", [VEXC, c("d1", ["internal/cache/store.go"])], ["v0.2.1"], cut_today=False, removed=None)
+check("AC14 a VEX change beside a dirty commit is not patch-clean (named, no cut)", not D["cut"] and D["not_clean"] and "internal/cache/store.go" in D["not_clean"][0], D)
+vex_old = {"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "status": "affected"},
+                          {"vulnerability": {"name": "CVE-2099-0002"}, "status": "not_affected"},
+                          {"vulnerability": {"name": "CVE-2099-0004"}, "status": "not_affected"}]}
+vex_new = {"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "status": "fixed"},
+                          {"vulnerability": {"name": "CVE-2099-0002"}, "status": "not_affected"},
+                          {"vulnerability": {"name": "CVE-2099-0003"}, "status": "not_affected"}]}
+ch = P.vex_changes(vex_old, vex_new)
+txt = P.notes("v0.2.2", [], ch)
+for cve in ("CVE-2099-0001", "CVE-2099-0003", "CVE-2099-0004"):
+    check("AC14 the notes name the changed statement %s" % cve, cve in txt, txt)
+check("AC14 an unchanged statement is not listed", "CVE-2099-0002" not in txt, txt)
+check("AC14 the notes of a patch whose only fixes are VEX changes say VEX-only", "VEX-only" in txt, txt)
+txt2 = P.notes("v0.2.2", fixes, ch)
+check("AC14 a patch that also fixes a package does not say VEX-only", "VEX-only" not in txt2, txt2)
+check("AC14 a patch with no VEX change does not say VEX-only", "VEX-only" not in P.notes("v0.2.2", fixes, []) and "VEX-only" not in P.notes("v0.2.2", [], []), "")
+check("AC14 the VEX-only notes name no vendor or model", not re.search(r"(?i)claude|openai|gemini|codex|sonnet|opus|anthropic", P.notes("v0.2.2", [], [dict(ch[0], cve="CVE-2099-0001 confirmed by Claude")])), "")
+# the command, over a real history: only the VEX file changed since the tag
+vr = tempfile.mkdtemp()
+g(vr, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(vr, ".vex")); os.makedirs(os.path.join(vr, ".auditor", "proposals"))
+open(os.path.join(vr, "main.go"), "w").write("package main\n")
+open(os.path.join(vr, VEXF), "w").write(json.dumps(vex_old) + "\n")
+g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "base"); g(vr, "tag", "v0.2.1")
+vaux = tempfile.mkdtemp()   # the command's own files live outside the history under test
+vrl = os.path.join(vaux, "released.json"); json.dump(["v0.2.1"], open(vrl, "w"))
+vout = os.path.join(vaux, "decision.json")
+def decide_in(repo_, cut_today="false"):
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.main(["decide", "--event", "schedule", "--repo", repo_, "--cut-today", cut_today, "--released", vrl, "--out", vout])
+    return json.load(open(vout))
+# AC15 first: the auditor's own work alone
+for rel, body in ((".auditor/panel-state.json", "{}\n"), (".auditor/knowledge.md", "# knowledge\n"), (".auditor/proposals/p1.json", "[]\n")):
+    open(os.path.join(vr, rel), "w").write(body)
+    g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "auditor " + rel)
+    D = decide_in(vr)
+    check("AC15 %s alone cuts no release (git history)" % rel, not D["cut"] and not D["not_clean"], D)
+check("AC15 auditor work classifies neutral, one by one",
+      all(P.classify(nc(f))[0] == "neutral" for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json")),
+      [P.classify(nc(f)) for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json")])
+check("AC15 a range of only auditor work ships no bytes", not P.ships_bytes([nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md"), nc(".auditor/proposals/p1.json")]))
+D = P.decide("schedule", [nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md")], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 decide: nothing shipped, no cut, no issue", not D["cut"] and not D["not_clean"] and "nothing shipped" in D["reason"], D)
+check("AC15 the suppression file .auditor/accepted-items.json stays fix-class", P.classify(c("a", [".auditor/accepted-items.json"]))[0] == "fix")
+check("AC15 an auditor script is never data: still not patch-clean", P.classify(c("a", [".auditor/run.sh"]))[0] == "dirty")
+D = P.decide("schedule", [nc(".auditor/panel-state.json"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 auditor work beside a VEX change does not block that patch", D["cut"] and not D["not_clean"], D)
+open(os.path.join(vr, VEXF), "w").write(json.dumps(vex_new) + "\n")
+g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "vex")
+D = decide_in(vr)
+check("AC14 the real history (auditor work, then a VEX-only commit) cuts v0.2.2", D["cut"] and D["version"] == "v0.2.2" and not D["not_clean"], D)
+D = decide_in(vr, cut_today="true")
+check("AC14 the real history, a patch already cut today: waits", not D["cut"] and "already cut today" in D["reason"], D)
+open(os.path.join(vr, "main.go"), "w").write("package main\n// changed\n")
+g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "dirty")
+D = decide_in(vr)
+check("AC14 the real history with a dirty commit after the VEX change: not patch-clean", not D["cut"] and D["not_clean"] and "main.go" in D["not_clean"][0], D)
+# the notes command, end to end, from the VEX at the tag and at HEAD
+vn_old, vn_new = os.path.join(vaux, "old.vex"), os.path.join(vaux, "new.vex")
+json.dump(vex_old, open(vn_old, "w")); json.dump(vex_new, open(vn_new, "w"))
+scan = os.path.join(vaux, "scan.json"); json.dump({"matches": []}, open(scan, "w"))
+gomod = os.path.join(vaux, "go.mod"); open(gomod, "w").write("module x\n\nrequire golang.org/x/sys v0.47.0\n")
+pub = os.path.join(vaux, "published.txt"); open(pub, "w").write("")
+nout = os.path.join(vaux, "notes.md")
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = P.main(["notes", "--version", "v0.2.2", "--variant-grype", "=" + scan, "--gomod", gomod, "--vex-old", vn_old, "--vex-new", vn_new,
+                 "--next-notes", os.path.join(vaux, "none.md"), "--published", pub, "--out", nout])
+ntxt = open(nout).read() if rc == 0 else ""
+check("AC14 the notes command: each changed statement named and VEX-only said", rc == 0 and all(x in ntxt for x in ("CVE-2099-0001", "CVE-2099-0003", "CVE-2099-0004", "VEX-only")), (rc, ntxt))
+# --- step 6 round 1 (REQ-REL-009-AC14, AC15): what "a changed statement" is, when the notes say VEX-only, which auditor and .vex
+# files are neutral
+def stmt(cve, status="not_affected", products=("pkg:oci/cache",), **extra):
+    d = {"vulnerability": {"name": cve}, "products": [{"@id": x} for x in products], "status": status}
+    d.update(extra)
+    return d
+def vdoc2(stmts, **meta):
+    d = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.test/vex", "author": "A", "timestamp": "2026-01-01T00:00:00Z", "version": 1, "statements": list(stmts)}
+    d.update(meta)
+    return d
+def vex_section(text):
+    sec = text.split("### VEX", 1)[1]
+    return sec.split("\n\n", 1)[0] if "\n\n" in sec else sec
+def vnotes(old, new, fixes_=(), behavior=()):
+    return P.notes("v0.2.2", list(fixes_), P.vex_changes(old, new), behavior=list(behavior))
+BASE_S = stmt("CVE-2099-0100", justification="component_not_present", impact_statement="not shipped")
+for field, newval in (("justification", "vulnerable_code_not_present"), ("impact_statement", "different words"), ("action_statement", "upgrade"),
+                      ("status_notes", "re-checked"), ("timestamp", "2026-02-02T00:00:00Z")):
+    old = vdoc2([BASE_S]); chg = dict(BASE_S); chg[field] = newval
+    sec = vex_section(vnotes(old, vdoc2([chg])))
+    check("AC14 a changed %s alone is a changed statement: named with the field" % field, "CVE-2099-0100" in sec and field in sec and "no change" not in sec, sec)
+sec = vex_section(vnotes(vdoc2([BASE_S]), vdoc2([stmt("CVE-2099-0100", products=("pkg:oci/cache", "pkg:oci/cache-fips"), justification="component_not_present", impact_statement="not shipped")])))
+check("AC14 a changed product set is a changed statement", "CVE-2099-0100" in sec and "no change" not in sec, sec)
+sec = vex_section(vnotes(vdoc2([BASE_S]), vdoc2([BASE_S, stmt("CVE-2099-0101")])))
+check("AC14 an added statement is named", "CVE-2099-0101" in sec and "CVE-2099-0100" not in sec, sec)
+sec = vex_section(vnotes(vdoc2([BASE_S, stmt("CVE-2099-0101")]), vdoc2([BASE_S])))
+check("AC14 a removed statement is named", "CVE-2099-0101" in sec and "removed" in sec, sec)
+A1, B1 = stmt("CVE-2099-0200", products=("pkg:oci/cache",), justification="component_not_present"), stmt("CVE-2099-0200", products=("pkg:golang/example.org/m",), justification="component_not_present")
+B2 = dict(B1, justification="vulnerable_code_not_present")
+for order, (o, n) in {"same order": ([A1, B1], [A1, B2]), "new order reversed": ([A1, B1], [B2, A1]), "old order reversed": ([B1, A1], [A1, B2])}.items():
+    sec = vex_section(vnotes(vdoc2(o), vdoc2(n)))
+    check("AC14 two statements for one vulnerability, only the second changed (%s): reported" % order, "CVE-2099-0200" in sec and "justification" in sec and "no change" not in sec, sec)
+    check("AC14 ... and exactly one statement is reported (%s)" % order, sec.count("CVE-2099-0200") == 1, sec)
+for order, (o, n) in {"reordered": ([A1, B1], [B1, A1])}.items():
+    check("AC14 statements merely reordered are no statement change", P.vex_changes(vdoc2(o), vdoc2(n)) == [], P.vex_changes(vdoc2(o), vdoc2(n)))
+for meta, label in (({"version": 2}, "version"), ({"timestamp": "2026-03-03T00:00:00Z"}, "timestamp")):
+    sec = vex_section(vnotes(vdoc2([BASE_S]), vdoc2([BASE_S], **meta)))
+    check("AC14 a document %s change alone is a VEX change, noted as document metadata" % label, "document metadata" in sec and "no change" not in sec, sec)
+FX_ = [{"cve": "CVE-2099-0001", "package": "golang.org/x/sys", "old": "v0.46.0", "new": "v0.47.0", "severity": "high", "variants": ["production"]}]
+CH_ = [{"cve": "CVE-2099-0005", "status": "not_affected", "change": "added"}]
+BEH_ = ["a change no supported client can see (advisor 0130)"]
+check("AC14 VEX changes alone: VEX-only", "VEX-only" in P.notes("v0.2.2", [], CH_), "")
+check("AC14 VEX changes with a package fix: not VEX-only", "VEX-only" not in P.notes("v0.2.2", FX_, CH_), "")
+check("AC14 VEX changes with behavior entries and no fixes: not VEX-only", "VEX-only" not in P.notes("v0.2.2", [], CH_, behavior=BEH_), P.notes("v0.2.2", [], CH_, behavior=BEH_))
+check("AC14 no VEX change and no fix: not VEX-only", "VEX-only" not in P.notes("v0.2.2", [], []), "")
+# the command: VEX alone, VEX + behavior entries, a reordering-only VEX change, an identical VEX
+def notes_cli(old_doc, new_doc, nn=None, old_raw=None, new_raw=None):
+    po, pn = os.path.join(vaux, "o.vex"), os.path.join(vaux, "n.vex")
+    open(po, "w").write(old_raw if old_raw is not None else json.dumps(old_doc))
+    open(pn, "w").write(new_raw if new_raw is not None else json.dumps(new_doc))
+    nnp = os.path.join(vaux, "nn.md")
+    if nn is None:
+        nnp = os.path.join(vaux, "no-such-notes.md")
+    else:
+        open(nnp, "w").write(nn)
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc_ = P.main(["notes", "--version", "v0.2.2", "--variant-grype", "=" + scan, "--gomod", gomod, "--vex-old", po, "--vex-new", pn,
+                      "--next-notes", nnp, "--published", pub, "--out", nout])
+    return open(nout).read() if rc_ == 0 else "RC=%d" % rc_
+t1 = notes_cli(vdoc2([BASE_S]), vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")]))
+check("AC14 CLI: a statement changed in justification only: named, VEX-only", "CVE-2099-0100" in t1 and "justification" in t1 and "VEX-only" in t1, t1)
+t2 = notes_cli(vdoc2([BASE_S]), vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")]), nn="- a change no supported client can see (advisor 0130)\n")
+check("AC14 CLI: the same VEX change beside a behavior entry: not VEX-only, the entry listed", "VEX-only" not in t2 and "advisor 0130" in t2 and "CVE-2099-0100" in t2, t2)
+t3 = notes_cli(vdoc2([A1, B1]), vdoc2([B1, A1]))
+check("AC14 CLI: a VEX file that only reorders its statements still ships: VEX-only (no statement change)", "VEX-only (no statement change)" in t3, t3)
+t3b = notes_cli(None, None, old_raw=json.dumps(vdoc2([A1, B1])), new_raw=json.dumps(vdoc2([A1, B1]), indent=1))
+check("AC14 CLI: a VEX file that only changes its bytes (formatting) still ships: VEX-only (no statement change)", "VEX-only (no statement change)" in t3b, t3b)
+t4 = notes_cli(vdoc2([A1]), vdoc2([A1]), old_raw=json.dumps(vdoc2([A1])), new_raw=json.dumps(vdoc2([A1])))
+check("AC14 CLI: an identical VEX file is no VEX change and not VEX-only", "VEX-only" not in t4 and "RC=" not in t4, t4)
+t5 = notes_cli(vdoc2([BASE_S]), vdoc2([BASE_S], version=2))
+check("AC14 CLI: a document version change alone: document metadata, VEX-only", "document metadata" in t5 and "VEX-only" in t5, t5)
+# AC15: the neutral auditor set is exactly three names; the neutral .vex file is only its README
+for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json", ".vex/README.md"):
+    check("AC15 %s is neutral" % f, P.classify(nc(f))[0] == "neutral", P.classify(nc(f)))
+for f, want in ((".auditor/accepted-items.json", "fix"), (".auditor/gate.json", "fix"), (".auditor/notes.md", "fix"), (".auditor/proposals/sub/x.json", "fix"),
+                (".auditor/proposals/README.md", "fix"), (".vex/fosterstack-cache.openvex.json", "fix"), (".vex/other.json", "fix"), (".vex/sub/README.md", "fix"),
+                (".auditor/proposals/hook.sh", "dirty"), (".auditor/run.sh", "dirty"), (".auditor/proposals/p_test.go", "dirty"), (".auditor/proposals/test_p.py", "dirty"),
+                (".auditor/panel-state.sh", "dirty")):
+    check("AC15 %s keeps its classification: %s" % (f, want), P.classify(c("n", [f]))[0] == want, P.classify(c("n", [f])))
+for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".vex/README.md"):
+    for mode in ("100755", "120000"):
+        got = P.classify(dict(c("n", [f], diffs={f: "+x\n"}), modes={f: mode}))
+        check("AC15 %s with mode %s is dirty" % (f, mode), got[0] == "dirty", got)
+    got = P.classify(c("n", [f], diffs={f: "+#!/bin/sh\n+echo x\n"}))
+    check("AC15 %s carrying a script is dirty" % f, got[0] == "dirty", got)
+check("AC15 a range of README-only .vex changes ships no bytes", not P.ships_bytes([nc(".vex/README.md")]))
+D = P.decide("schedule", [nc(".vex/README.md")], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a .vex README edit alone cuts no patch", not D["cut"] and not D["not_clean"], D)
+D = P.decide("schedule", [nc(".vex/README.md"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a .vex README edit beside the VEX file does not block that patch", D["cut"], D)
+D = P.decide("schedule", [c("a", [".auditor/proposals/hook.sh"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a script under .auditor/proposals beside a VEX change blocks the patch (named)", not D["cut"] and D["not_clean"] and ".auditor/proposals/hook.sh" in D["not_clean"][0], D)
+# --- step 6 round 2 (REQ-REL-009-AC14): statements sharing a vulnerability are told apart by their product set; the
+# bytes-only note never appears beside a behavior entry or a fix
+PA, PB, PC = "pkg:oci/cache", "pkg:golang/example.org/m", "pkg:deb/debian/libx"
+SA = stmt("CVE-2099-0300", products=(PA,), justification="component_not_present")
+SB = stmt("CVE-2099-0300", products=(PB,), justification="component_not_present")
+def lines_for(text, cve="CVE-2099-0300"):
+    return [l for l in vex_section(text).split("\n") if cve in l]
+SA2, SB2 = dict(SA, justification="vulnerable_code_not_present"), dict(SB, justification="vulnerable_code_not_present")
+for label, (o, n), want_in, want_out in (
+        ("the first statement changes", ([SA, SB], [SA2, SB]), [PA], [PB]),
+        ("the second statement changes", ([SA, SB], [SA, SB2]), [PB], [PA]),
+        ("the second changes and the order flips", ([SA, SB], [SB2, SA]), [PB], [PA])):
+    ls = lines_for(vnotes(vdoc2(o), vdoc2(n)))
+    check("AC14 %s: one line, naming that statement's products only" % label,
+          len(ls) == 1 and all(x in ls[0] for x in want_in) and not any(x in ls[0] for x in want_out), ls)
+ls = lines_for(vnotes(vdoc2([SA, SB]), vdoc2([SA2, SB2])))
+check("AC14 both statements change: two lines, one per product set",
+      len(ls) == 2 and sum(PA in l for l in ls) == 1 and sum(PB in l for l in ls) == 1 and all("justification" in l for l in ls), ls)
+SC = stmt("CVE-2099-0300", products=(PC,), justification="component_not_present")
+ls = lines_for(vnotes(vdoc2([SA, SB]), vdoc2([SA, SB, SC])))
+check("AC14 a third statement for the vulnerability is added: its product named", len(ls) == 1 and PC in ls[0] and "added" in ls[0] and PA not in ls[0], ls)
+ls = lines_for(vnotes(vdoc2([SA, SB, SC]), vdoc2([SA, SC])))
+check("AC14 one of two statements removed: its product named", len(ls) == 1 and PB in ls[0] and "removed" in ls[0] and PA not in ls[0], ls)
+SM1 = stmt("CVE-2099-0400", products=(PA, PB), justification="component_not_present")
+SM2 = stmt("CVE-2099-0400", products=(PB, PA), justification="component_not_present")
+check("AC14 a product list in another order is no change", P.vex_changes(vdoc2([SM1]), vdoc2([SM2])) == [], P.vex_changes(vdoc2([SM1]), vdoc2([SM2])))
+check("AC14 two statements whose product lists are reordered are no change", P.vex_changes(vdoc2([SM1, SA]), vdoc2([SA, SM2])) == [], "")
+SM3 = stmt("CVE-2099-0400", products=(PA, PC), justification="component_not_present")
+ls = lines_for(vnotes(vdoc2([SM1]), vdoc2([SM3])), "CVE-2099-0400")
+check("AC14 a changed product list names the members added and removed", len(ls) == 1 and "+" + PC in ls[0] and "-" + PB in ls[0] and PA not in ls[0].split("products", 1)[-1], ls)
+# bytes-only changes beside behavior entries and fixes (the command)
+BEH_TXT = "- a change no supported client can see (advisor 0130)\n"
+def notes_cli2(old_raw, new_raw, nn=None, fixes_scan=False):
+    po, pn = os.path.join(vaux, "o2.vex"), os.path.join(vaux, "n2.vex")
+    open(po, "w").write(old_raw); open(pn, "w").write(new_raw)
+    nnp = os.path.join(vaux, "nn2.md") if nn is not None else os.path.join(vaux, "no-such2.md")
+    if nn is not None: open(nnp, "w").write(nn)
+    sc = scan
+    if fixes_scan:
+        sc = os.path.join(vaux, "scanfix.json")
+        json.dump({"matches": [{"vulnerability": {"id": "CVE-2099-1", "severity": "High", "fix": {"versions": ["v0.33.0"]}},
+                                "artifact": {"name": "golang.org/x/net", "version": "v0.30.0", "type": "go-module"}}]}, open(sc, "w"))
+        open(os.path.join(vaux, "go2.mod"), "w").write("module x\n\nrequire golang.org/x/net v0.33.0\n")
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc_ = P.main(["notes", "--version", "v0.2.2", "--variant-grype", "=" + sc, "--gomod", os.path.join(vaux, "go2.mod") if fixes_scan else gomod,
+                      "--vex-old", po, "--vex-new", pn, "--next-notes", nnp, "--published", pub, "--out", nout])
+    return open(nout).read() if rc_ == 0 else "RC=%d" % rc_
+V1 = vdoc2([SA, SB])
+for label, (o, n) in (("formatting only", (json.dumps(V1), json.dumps(V1, indent=1))), ("statements reordered", (json.dumps(V1), json.dumps(vdoc2([SB, SA])))),
+                      ("a product list reordered", (json.dumps(vdoc2([SM1])), json.dumps(vdoc2([SM2]))))):
+    t = notes_cli2(o, n, nn=BEH_TXT)
+    check("AC14 CLI: %s beside a behavior entry: the entry, no VEX-only" % label, "advisor 0130" in t and "VEX-only" not in t and "RC=" not in t, t)
+    t = notes_cli2(o, n, fixes_scan=True)
+    check("AC14 CLI: %s beside a package fix: the fix, no VEX-only" % label, "CVE-2099-1" in t and "VEX-only" not in t and "RC=" not in t, t)
+    t = notes_cli2(o, n)
+    check("AC14 CLI: %s alone: VEX-only (no statement change)" % label, "VEX-only (no statement change)" in t, t)
+# --- step 6 round 3 (REQ-REL-009-AC14): several statements with the SAME vulnerability and the SAME product set
+TA = stmt("CVE-2099-0500", products=(PA,), justification="component_not_present", timestamp="2026-01-01T00:00:00Z")
+TB = stmt("CVE-2099-0500", products=(PA,), justification="component_not_present", timestamp="2026-02-02T00:00:00Z")
+check("AC14 same-vulnerability same-product statements swapped in the file are no change", P.vex_changes(vdoc2([TA, TB]), vdoc2([TB, TA])) == [], P.vex_changes(vdoc2([TA, TB]), vdoc2([TB, TA])))
+check("AC14 ... and unchanged in place are no change", P.vex_changes(vdoc2([TA, TB]), vdoc2([TA, TB])) == [])
+TA2 = dict(TA, justification="vulnerable_code_not_present")
+for label, (o, n) in {"in place": ([TA, TB], [TA2, TB]), "swapped": ([TA, TB], [TB, TA2]), "old swapped": ([TB, TA], [TA2, TB]), "both swapped": ([TB, TA], [TB, TA2])}.items():
+    chg = P.vex_changes(vdoc2(o), vdoc2(n))
+    check("AC14 one of two identical-key statements changes (%s): exactly that one is reported, with its field" % label,
+          len(chg) == 1 and "justification" in chg[0]["change"] and "timestamp" not in chg[0]["change"], chg)
+t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA])))
+check("AC14 CLI: identical-key statements swapped: VEX-only (no statement change)", "VEX-only (no statement change)" in t and "CVE-2099-0500" not in t, t)
+t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA2])))
+check("AC14 CLI: one of the swapped identical-key statements changed: named once, VEX-only", t.count("CVE-2099-0500") == 1 and "VEX-only" in t and "no statement change" not in t, t)
+t = notes_cli2(json.dumps(vdoc2([TA, TB])), json.dumps(vdoc2([TB, TA])), nn=BEH_TXT)
+check("AC14 CLI: identical-key statements swapped beside a behavior entry: no VEX-only", "advisor 0130" in t and "VEX-only" not in t, t)
+# --- step 6 round 5 (REQ-REL-009-AC14): removing an optional field of a surviving statement is a changed statement
+RF = stmt("CVE-2099-0600", justification="component_not_present", impact_statement="not shipped", action_statement="none", status_notes="n", timestamp="2026-01-01T00:00:00Z")
+for fld in ("impact_statement", "action_statement", "status_notes", "timestamp", "justification"):
+    gone = {k: v for k, v in RF.items() if k != fld}
+    chg = P.vex_changes(vdoc2([RF]), vdoc2([gone]))
+    check("AC14 removing %s from a surviving statement is a change that names the field" % fld, len(chg) == 1 and fld in chg[0]["change"] and "CVE-2099-0600" in chg[0]["cve"], chg)
+    chg = P.vex_changes(vdoc2([gone]), vdoc2([RF]))
+    check("AC14 adding %s to a surviving statement is a change that names the field" % fld, len(chg) == 1 and fld in chg[0]["change"], chg)
+gone = {k: v for k, v in RF.items() if k != "impact_statement"}
+t = notes_cli2(json.dumps(vdoc2([RF])), json.dumps(vdoc2([gone])))
+check("AC14 CLI: an optional field removed: the statement is named, VEX-only, not 'no statement change'",
+      "CVE-2099-0600" in t and "impact_statement" in t and "VEX-only" in t and "no statement change" not in t, t)
+t = notes_cli2(json.dumps(vdoc2([RF])), json.dumps(vdoc2([gone])), nn=BEH_TXT)
+check("AC14 CLI: an optional field removed beside a behavior entry: the statement named, no VEX-only", "CVE-2099-0600" in t and "VEX-only" not in t and "advisor 0130" in t, t)
+# --- step 8 round 1 (REQ-REL-009-AC14, AC15): data validation of the neutral paths, old modes, renames; metadata-only wording; subcomponents; redaction
+def put_(r_, files):
+    for path, (content, mode) in files.items():
+        full = os.path.join(r_, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+        if os.path.lexists(full): os.remove(full)
+        if mode == "120000": os.symlink(content, full)
+        else:
+            open(full, "w").write(content); os.chmod(full, 0o755 if mode == "100755" else 0o644)
+def mv_(r_, a, b):
+    os.makedirs(os.path.dirname(os.path.join(r_, b)), exist_ok=True); g(r_, "mv", a, b)
+def gitrepo(base):
+    r_ = tempfile.mkdtemp(); g(r_, "init", "-q", "-b", "main"); put_(r_, base)
+    g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "base"); g(r_, "tag", "v0.1.0"); return r_
+def verdict_(base, act, labels=()):
+    r_ = gitrepo(base); act(r_); g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "range")
+    cs_ = P.gather_commits("v0.1.0", cwd=r_, labels=lambda sha: list(labels))
+    return P.classify(cs_[-1]), cs_[-1]
+KN, PS, PJ, RD = ".auditor/knowledge.md", ".auditor/panel-state.json", ".auditor/proposals/p.json", ".vex/README.md"
+BASE0 = {"docs/keep.md": ("x\n", "100644")}
+def verdict_new(path, content, mode="100644"):
+    return verdict_(BASE0, lambda r_: put_(r_, {path: (content, mode)}))[0][0]
+for path, good in ((PS, '{"a": 1}\n'), (PS, "[1, 2]\n"), (PJ, '{"a": 1}\n'), (PJ, "[]\n"), (KN, "# knowledge\ntext\n"), (RD, "# readme\n")):
+    check("AC15 git: a new %s with data content is neutral" % path, verdict_new(path, good) == "neutral", verdict_new(path, good))
+for path in (PS, PJ):
+    for bad in ("{", "3\n", '"str"\n', "null\n", "", "print('x')\n", "#!/bin/sh\necho x\n"):
+        check("AC15 git: a new %s holding %r is not data: dirty" % (path, bad[:12]), verdict_new(path, bad) == "dirty", verdict_new(path, bad))
+for path in (KN, RD):
+    check("AC15 git: a new %s starting with a shebang line is dirty" % path, verdict_new(path, "#!/bin/sh\necho x\n") == "dirty")
+    check("AC15 git: a new %s with a NUL byte is dirty" % path, verdict_new(path, "text\0binary\n") == "dirty")
+    base = dict(BASE0, **{path: ("#!/bin/sh\nold body\n", "100644")})
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nnew body\n", "100644")}))[0][0]
+    check("AC15 git: %s whose first line is an unchanged shebang and whose body is edited is dirty" % path, got == "dirty", got)
+    base = dict(BASE0, **{path: ("plain\nold body\n", "100644")})
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("plain\nnew body\n", "100644")}))[0][0]
+    check("AC15 git: an ordinary edit of %s is neutral" % path, got == "neutral", got)
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nplain\nnew body\n", "100644")}))[0][0]
+    check("AC15 git: an edit of %s that makes line 1 a shebang is dirty" % path, got == "dirty", got)
+for path in (PS, PJ, KN, RD):
+    good = '{"a": 1}\n' if path.endswith(".json") else "text\n"
+    for mode in ("100755", "120000"):
+        got = verdict_new(path, good if mode == "100755" else "docs/keep.md", mode)
+        check("AC15 git: a new %s with mode %s is dirty" % (path, mode), got == "dirty", got)
+        base = dict(BASE0, **{path: (good if mode == "100755" else "docs/keep.md", mode)})
+        got = verdict_(base, lambda r_, path=path: (os.remove(os.path.join(r_, path))))[0][0]
+        check("AC15 git: deleting %s whose old mode was %s is dirty" % (path, mode), got == "dirty", got)
+    base = dict(BASE0, **{path: (good, "100755")})
+    got = verdict_(base, lambda r_, path=path: os.chmod(os.path.join(r_, path), 0o644))[0][0]
+    check("AC15 git: taking the executable bit off %s is not a clean data change: dirty" % path, got == "dirty", got)
+    base = dict(BASE0, **{path: (good, "100755")})
+    got = verdict_(base, lambda r_, path=path: (put_(r_, {path: (good + ("\n" if path.endswith(".json") else "more text\n"), "100644")})))[0][0]
+    check("AC15 git: an executable %s turned into a data file with new content in one commit is dirty (its old mode)" % path, got == "dirty", got)
+    base = dict(BASE0, **{path: (good, "100644")})
+    got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+    check("AC15 git: deleting an ordinary %s is neutral" % path, got == "neutral", got)
+check("AC15 git: renaming an executable neutral-named file away is dirty",
+      verdict_(dict(BASE0, **{KN: ("x\n", "100755")}), lambda r_: mv_(r_, KN, "docs/y.md"))[0][0] == "dirty")
+check("AC15 git: renaming source code onto a neutral path is dirty (the deleted source shows)",
+      verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[0][0] == "dirty")
+check("AC15 git: renaming the production Dockerfile onto a proposals path is dirty",
+      verdict_(dict(BASE0, **{"build/docker/Dockerfile.production": ("FROM x@sha256:" + "a" * 64 + "\nCOPY a b\n", "100644")}),
+               lambda r_: mv_(r_, "build/docker/Dockerfile.production", PJ))[0][0] == "dirty")
+check("AC15 git: renaming a docs file onto a neutral path is neutral",
+      verdict_(dict(BASE0, **{"docs/a.md": ("text\n", "100644")}), lambda r_: mv_(r_, "docs/a.md", KN))[0][0] == "neutral")
+rn_commit = verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[1]
+check("AC15 gather_commits lists the deleted source of a rename", "internal/cache/store.go" in rn_commit["files"] and KN in rn_commit["files"], rn_commit["files"])
+check("AC15 gather_commits records the old mode of every path", rn_commit.get("old_modes", {}).get("internal/cache/store.go") == "100644", rn_commit.get("old_modes"))
+# the patch-fix label never makes a non-data neutral path fix-class
+for mode in ("120000", "100755"):
+    d_ = nc(PS, mode=mode, labels=("patch-fix",))
+    check("AC15 the patch-fix label does not clear a mode-%s change at a neutral path" % mode, P.classify(d_)[0] == "dirty", P.classify(d_))
+    got = verdict_(BASE0, lambda r_, mode=mode: put_(r_, {KN: ("docs/keep.md" if mode == "120000" else "x\n", mode)}), labels=("patch-fix",))[0][0]
+    check("AC15 git: the label does not clear a mode-%s new neutral file" % mode, got == "dirty", got)
+check("AC15 unit: a neutral path without a mode is not proven data: dirty", P.classify(dict(c("n", [PS], diffs={PS: "+{}"}), modes={}))[0] == "dirty")
+check("AC15 unit: mode 100664 is not 100644: dirty", P.classify(nc(PS, mode="100664"))[0] == "dirty")
+check("AC15 unit: a deletion whose old mode is unknown is dirty (fail closed)", P.classify(nc(PS, mode="000000"))[0] == "dirty")
+check("AC15 unit: a deletion of an ordinary file is neutral", P.classify(nc(PS, mode="000000", old_mode="100644"))[0] == "neutral")
+D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: ("#!/bin/sh\nold\n", "100644")}), lambda r_: put_(r_, {KN: ("#!/bin/sh\nnew\n", "100644")}))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 an edited script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+# metadata-only and mixed VEX changes
+MD_OLD, MD_NEW = vdoc2([BASE_S]), vdoc2([BASE_S], version=2, timestamp="2026-05-05T00:00:00Z")
+ch = P.vex_changes(MD_OLD, MD_NEW)
+txt = P.notes("v0.2.2", [], ch)
+check("AC14 a metadata-only change: document metadata and VEX-only (no statement change), not 'changes VEX statements'",
+      "document metadata" in txt and "VEX-only (no statement change)" in txt and "changes VEX statements" not in txt, txt)
+txt = P.notes("v0.2.2", [], P.vex_changes(MD_OLD, vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")], version=2)))
+check("AC14 metadata and a statement change together: says statements, notes the metadata, not 'no statement change'",
+      "changes VEX statements" in txt and "document metadata" in txt and "no statement change" not in txt, txt)
+t = notes_cli2(json.dumps(MD_OLD), json.dumps(MD_NEW))
+check("AC14 CLI: a metadata-only change: document metadata and VEX-only (no statement change)", "document metadata" in t and "VEX-only (no statement change)" in t and "changes VEX statements" not in t, t)
+t = notes_cli2(json.dumps(MD_OLD), json.dumps(vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")], version=2)))
+check("AC14 CLI: metadata and a statement change: says statements", "changes VEX statements" in t and "document metadata" in t and "no statement change" not in t, t)
+t = notes_cli2(json.dumps(MD_OLD), json.dumps(MD_NEW), nn=BEH_TXT)
+check("AC14 CLI: a metadata-only change beside a behavior entry: no VEX-only", "VEX-only" not in t and "advisor 0130" in t, t)
+# a product's subcomponents
+def prod(pid, *subs):
+    p_ = {"@id": pid}
+    if subs: p_["subcomponents"] = [{"@id": x} for x in subs]
+    return p_
+def pstmt(*products, **extra):
+    d = {"vulnerability": {"name": "CVE-2099-0700"}, "products": list(products), "status": "not_affected", "justification": "component_not_present"}
+    d.update(extra); return d
+ch = P.vex_changes(vdoc2([pstmt(prod(PA, "pkg:golang/x"))]), vdoc2([pstmt(prod(PA, "pkg:golang/y"))]))
+line = [l for l in vex_section(P.notes("v0.2.2", [], ch)).split("\n") if "CVE-2099-0700" in l]
+check("AC14 a subcomponent-only change names the members added and removed", len(line) == 1 and "pkg:golang/y" in line[0] and "pkg:golang/x" in line[0] and "+" in line[0] and "-" in line[0], line)
+check("AC14 subcomponents in another order are no change", P.vex_changes(vdoc2([pstmt(prod(PA, "pkg:golang/x", "pkg:golang/y"))]), vdoc2([pstmt(prod(PA, "pkg:golang/y", "pkg:golang/x"))])) == [], "")
+t = notes_cli2(json.dumps(vdoc2([pstmt(prod(PA, "pkg:golang/x"))])), json.dumps(vdoc2([pstmt(prod(PA, "pkg:golang/y"))])))
+check("AC14 CLI: a subcomponent-only change names the members", "pkg:golang/y" in t and "pkg:golang/x" in t, t)
+# redaction keeps product identifiers readable
+INTACT = ["pkg:golang/google.golang.org/grpc@v1.2.0", "pkg:maven/com.google.guava/guava@32.1.0", "pkg:golang/github.com/aws/aws-sdk-go-v2", "google.golang.org/grpc", "pkg:golang/cloud.google.com/go/storage"]
+for ident in INTACT:
+    for tmpl in ("%s", "[%s]", "CVE-1 [%s, pkg:oci/cache]: x", "(%s)", "see %s."):
+        out_ = P._clean(tmpl % ident)
+        check("redaction: %s stays readable in %r" % (ident, tmpl), ident in out_, out_)
+SA_, SB_ = stmt("CVE-2099-0800", products=("pkg:golang/google.golang.org/grpc@v1.2.0",)), stmt("CVE-2099-0800", products=("pkg:maven/com.google.guava/guava@32.1.0",))
+txt = P.notes("v0.2.2", [], P.vex_changes(vdoc2([SA_, SB_]), vdoc2([dict(SA_, justification="x"), SB_])))
+check("redaction: the notes keep the product identity of an ambiguous statement intact", "pkg:golang/google.golang.org/grpc@v1.2.0" in txt, txt)
+for secret in ("confirmed by Google", "reported by Bedrock", "thanks Claude", "see [github.com/Azure/azure-sdk-for-go]", "pkg:golang/github.com/Azure/azure-sdk-for-go", "Meta Llama"):
+    out_ = P._clean(secret)
+    check("redaction: %r is still redacted" % secret, "<redacted>" in out_ and not re.search(r"(?i)claude|bedrock|llama|(?<![a-z])google(?![.\w])|(?<![a-z/])azure", out_.replace("azure-sdk-for-go", "")), out_)
+# --- step 8 round 2 (REQ-REL-009-AC15, AC14): "script lines" are shebang lines, anywhere in the old or the new content; signed product lists keep their identifiers
+SHEBANG_SCRIPT = "#!/bin/sh\necho run\n"
+PY_NO_SHEBANG = "import os\nprint(os.getcwd())\n\ndef main():\n    pass\n"
+for path in (KN, RD):
+    got = verdict_new(path, PY_NO_SHEBANG)
+    check("AC15 git: %s holding script-looking text without any shebang line is data (neutral, documented rule)" % path, got == "neutral", got)
+    for label, body in (("a shebang after a comment line", "# a comment\n#!/bin/sh\necho x\n"), ("a shebang in the middle", "intro\ntext\n#!/usr/bin/env python3\nmore\n"),
+                        ("a shebang on the last line", "text\n#!/bin/sh")):
+        got = verdict_new(path, body)
+        check("AC15 git: a new %s with %s is dirty" % (path, label), got == "dirty", got)
+    base = dict(BASE0, **{path: (SHEBANG_SCRIPT, "100644")})
+    got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+    check("AC15 git: deleting %s whose removed lines hold a shebang line is dirty" % path, got == "dirty", got)
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}))[0][0]
+    check("AC15 git: replacing the shebang script %s by ordinary text is dirty (the removed lines held a shebang)" % path, got == "dirty", got)
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}), labels=("patch-fix",))[0][0]
+    check("AC15 git: the patch-fix label does not clear the replacement of the shebang script %s" % path, got == "dirty", got)
+    got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)), labels=("patch-fix",))[0][0]
+    check("AC15 git: the patch-fix label does not clear the deletion of the shebang script %s" % path, got == "dirty", got)
+    got = verdict_(dict(BASE0, **{path: (PY_NO_SHEBANG, "100644")}), lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+    check("AC15 git: deleting a text file with script-looking lines but no shebang is neutral", got == "neutral", got)
+    big = "#!/bin/sh\n" + "".join("line %d\n" % i for i in range(150000))
+    bigger = big.replace("line 140000\n", "line 140000 edited\n")
+    got = verdict_(dict(BASE0, **{path: (big, "100644")}), lambda r_, path=path: put_(r_, {path: (bigger, "100644")}))[0][0]
+    check("AC15 git: %s of 150k lines with an unchanged shebang first line, edited far from line 1, is dirty" % path, got == "dirty", got)
+    bigt = "plain\n" + "".join("line %d\n" % i for i in range(150000))
+    got = verdict_(dict(BASE0, **{path: (bigt, "100644")}), lambda r_, path=path: put_(r_, {path: (bigt.replace("line 140000\n", "line 140000 edited\n"), "100644")}))[0][0]
+    check("AC15 git: the same 150k-line file without a shebang is neutral", got == "neutral", got)
+D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: (SHEBANG_SCRIPT, "100644")}), lambda r_: os.remove(os.path.join(r_, KN)))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a deleted shebang script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+# signed product lists
+def pl_notes(old_p, new_p):
+    ch_ = P.vex_changes(vdoc2([stmt("CVE-2099-0900", products=old_p)]), vdoc2([stmt("CVE-2099-0900", products=new_p)]))
+    return [l for l in vex_section(P.notes("v0.2.2", [], ch_)).split("\n") if "CVE-2099-0900" in l]
+for old_v, new_v in ((("pkg:golang/google.golang.org/grpc@v1.2.0",), ("pkg:golang/google.golang.org/grpc@v1.3.0",)),
+                     (("pkg:maven/com.google.guava/guava@32.1.0",), ("pkg:maven/com.google.guava/guava@33.0.0",)),
+                     (("pkg:golang/cloud.google.com/go/storage@v1.30.0", "pkg:oci/cache"), ("pkg:golang/cloud.google.com/go/storage@v1.31.0", "pkg:oci/cache"))):
+    ls_ = pl_notes(old_v, new_v)
+    check("AC14 the notes of a product list changing %s -> %s keep both identifiers exactly, signed" % (old_v[0][:40], new_v[0][-14:]),
+          len(ls_) == 1 and all("+" + x in ls_[0] for x in new_v if x not in old_v) and all("-" + x in ls_[0] for x in old_v if x not in new_v), ls_)
+for ident in ("pkg:golang/google.golang.org/grpc@v1.3.0", "pkg:maven/com.google.guava/guava@33.0.0", "google.golang.org/grpc", "pkg:golang/github.com/aws/aws-sdk-go-v2@v2.1.0"):
+    for tmpl in ("+%s", "-%s", "products +%s -%s", "(+%s)", "`%s`", "`+%s`", "[-%s]", "x,+%s,y", "+%s."):
+        out_ = P._clean(tmpl % ((ident,) * tmpl.count("%s")))
+        check("redaction: %s stays intact in %r" % (ident, tmpl), ident in out_, out_)
+for vers, keep in (("v1.2.3", True), ("1.2.3", True), ("v0.0.0-20200101-abcdef", True), ("1.0.0-rc1", True), ("Azure", False), ("Google", False), ("latest", False)):
+    out_ = P._clean("pkg:golang/example.com/foo@%s" % vers)
+    check("redaction: a purl whose version is %r is %s" % (vers, "kept" if keep else "redacted when it names a vendor"),
+          (("@" + vers) in out_) if keep else ((vers.lower() not in ("azure", "google")) or "<redacted>" in out_ or ("@" + vers) not in out_), out_)
+check("redaction: a purl whose version is a vendor word is redacted", "<redacted>" in P._clean("pkg:golang/example.com/foo@Azure") and "<redacted>" in P._clean("pkg:golang/example.com/foo@Google"), P._clean("pkg:golang/example.com/foo@Azure"))
+# --- consultation round (REQ-REL-009-AC14): a vendor or model word in a VERSION is redacted, glued to the number or not
+VENDOR_RX = re.compile(r"(?i)azure|google|aws|amazon|microsoft|meta|claude|gemini|openai")
+BAD_VERSIONS = ["v1azure", "v1Azure", "v1AZURE", "v1aws", "v1google", "v1microsoft", "1azure", "1Azure", "1.0-azure", "1.0-Azure", "v1.0.0-google", "v1.0.0+aws",
+                "v1.0.0+build.Azure", "v1.0.0+build.azure", "v1.0.0-rc.1+amazon", "1.0.0-meta", "v2.0.0-alpha.google1", "azure", "Azure", "AZURE", "v1claude", "v1.0-gemini", "1.0.0-openai"]
+for vers in BAD_VERSIONS:
+    for ident in ("pkg:golang/example.com/foo@%s", "example.com/foo@%s", "pkg:maven/org.example/foo@%s"):
+        for tmpl in ("%s", "+%s", "-%s", "[%s]", "`%s`", "x,+%s,y"):
+            out_ = P._clean(tmpl % (ident % vers))
+            check("redaction: a version %r in %r is redacted" % (vers, tmpl % (ident % vers)), not VENDOR_RX.search(out_) and "<redacted>" in out_, out_)
+    ls_ = pl_notes(("pkg:golang/example.com/foo@v1.0.0",), ("pkg:golang/example.com/foo@%s" % vers,))
+    check("AC14 the notes of a product list moving to version %r name no vendor or model" % vers, len(ls_) == 1 and not VENDOR_RX.search(ls_[0]), ls_)
+for vers in ("v1.2.3", "1.2.3", "v0.0.0-20200101-abcdef", "1.0.0-rc.1", "v1.0.0+build.5", "v2.0.0-beta.3+exp.sha.5114f85"):
+    out_ = P._clean("+pkg:golang/google.golang.org/grpc@%s" % vers)
+    check("redaction: a plain version %r keeps a vendor-named module path intact" % vers, ("+pkg:golang/google.golang.org/grpc@%s" % vers) in out_, out_)
+    out_ = P._clean("-pkg:maven/com.google.guava/guava@%s" % vers)
+    check("redaction: a plain version %r keeps a vendor-named maven coordinate intact" % vers, ("-pkg:maven/com.google.guava/guava@%s" % vers) in out_, out_)
+# --- verification round (REQ-REL-009-AC14): redacting a version must not eat the rest of the identifier or make labels collide
+for vers in BAD_VERSIONS:
+    out_ = P._clean("pkg:golang/example.com/foo@%s[pkg:golang/x]" % vers)
+    check("redaction: a bad version %r before a subcomponent list keeps the member intact" % vers, "[pkg:golang/x]" in out_ and not VENDOR_RX.search(out_) and "<redacted>" in out_, out_)
+    out_ = P._clean("+pkg:golang/example.com/foo@%s[pkg:golang/x] -pkg:golang/example.com/foo@%s[pkg:golang/y]," % (vers, vers))
+    check("redaction: signed parents with bad version %r keep each member named" % vers, "[pkg:golang/x]" in out_ and "[pkg:golang/y]" in out_ and not VENDOR_RX.search(out_), out_)
+    ch_ = P.vex_changes(vdoc2([pstmt(prod("pkg:golang/example.com/foo@v1.0.0", "pkg:golang/x"))]), vdoc2([pstmt(prod("pkg:golang/example.com/foo@%s" % vers, "pkg:golang/y"))]))
+    ln_ = [l for l in vex_section(P.notes("v0.2.2", [], ch_)).split("\n") if "CVE-2099-0700" in l]
+    check("AC14 a parent moving to the bad version %r with a subcomponent change names the changed members" % vers,
+          len(ln_) == 1 and "pkg:golang/x" in ln_[0] and "pkg:golang/y" in ln_[0] and not VENDOR_RX.search(ln_[0]), ln_)
+for word in ("azure", "Azure", "aws", "google", "microsoft", "amazon", "meta", "claude", "gemini", "openai"):
+    va, vb = "pkg:golang/example.com/foo@v1.0.0-%s" % word, "pkg:golang/example.com/foo@v2.0.0-%s" % word
+    glued_a, glued_b = "pkg:golang/example.com/foo@1%s" % word, "pkg:golang/example.com/foo@2%s" % word
+    for pa, pb in ((va, vb), (glued_a, glued_b)):
+        SX, SY = stmt("CVE-2099-0950", products=(pa,), justification="a"), stmt("CVE-2099-0950", products=(pb,), justification="a")
+        both = [l for l in vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), dict(SY, justification="b")])))).split("\n") if "CVE-2099-0950" in l]
+        check("AC14 two statements whose versions differ only in numbers (vendor word %r): two lines with different labels" % word,
+              len(both) == 2 and both[0] != both[1] and not VENDOR_RX.search("".join(both)), both)
+        one = [l for l in vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), SY])))).split("\n") if "CVE-2099-0950" in l]
+        digit_a, digit_b = ("1.0.0", "2.0.0") if "v1" in pa else ("@1", "@2")
+        check("AC14 ... and when only the first changes, the one line says which (its numeric version, %r)" % word,
+              len(one) == 1 and digit_a in one[0] and digit_b not in one[0], one)
+# --- final round (REQ-REL-009-AC14): exactly the vendor or model WORD is redacted from a version; what follows it still tells versions apart
+WORDS_ = ("azure", "Azure", "aws", "google", "microsoft", "amazon", "meta", "claude", "gemini", "openai", "llama", "mistral", "grok", "copilot", "Claude", "GEMINI", "OpenAI", "Llama")
+def after_pairs(w):
+    # (version a, version b, tail of a that must survive, tail of b)
+    return [("v1.0.0-%s1.2" % w, "v1.0.0-%s1.3" % w, "1.2", "1.3"),
+            ("v1.0.0-%s1" % w, "v1.0.0-%s2" % w, "%s1" % "", "2"),
+            ("1%s1" % w, "1%s2" % w, "1", "2"),
+            ("v1.0.0-%s.1.2" % w, "v1.0.0-%s.1.3" % w, "1.2", "1.3"),
+            ("v1.0.0-%s-rc1" % w, "v1.0.0-%s-rc2" % w, "rc1", "rc2"),
+            ("v1.0.0-%s-%s1" % (w, w), "v1.0.0-%s-%s2" % (w, w), "1", "2"),
+            ("v1.0.0+%s.build5" % w, "v1.0.0+%s.build6" % w, "build5", "build6")]
+for w in WORDS_:
+    for va, vb, ta, tb in after_pairs(w):
+        pa, pb = "pkg:golang/example.com/foo@%s" % va, "pkg:golang/example.com/foo@%s" % vb
+        SX, SY = stmt("CVE-2099-0960", products=(pa,), justification="a"), stmt("CVE-2099-0960", products=(pb,), justification="a")
+        sec_both = vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), dict(SY, justification="b")]))))
+        both = [l for l in sec_both.split("\n") if "CVE-2099-0960" in l]
+        check("AC14 versions %r / %r (differing after the word): two lines, different labels, no vendor word" % (va, vb),
+              len(both) == 2 and both[0] != both[1] and not VENDOR_RX.search("".join(both)), both)
+        one = [l for l in vex_section(P.notes("v0.2.2", [], P.vex_changes(vdoc2([SX, SY]), vdoc2([dict(SX, justification="b"), SY])))).split("\n") if "CVE-2099-0960" in l]
+        check("AC14 ... only the first changed: one line carrying the first's tail %r and not the second's %r" % (ta, tb),
+              len(one) == 1 and ta in re.search(r"\[(.*?)\]", one[0]).group(1) and tb not in re.search(r"\[(.*?)\]", one[0]).group(1) and not VENDOR_RX.search(one[0]), one)
+        out_ = P._clean("[" + pa + "]")
+        check("redaction: only the word goes from %r: the rest of the version is intact" % va, ("@" + va.replace(w, "<redacted>")) in out_, out_)
+for w in WORDS_[:6]:
+    out_ = P._clean("pkg:golang/example.com/foo@v1.0.0-%s1.2-extra.3" % w)
+    check("redaction: the word %r is replaced and 1.2-extra.3 stays (no trailing characters consumed)" % w, "<redacted>1.2-extra.3" in out_ and not VENDOR_RX.search(out_), out_)
+for ordinary in ("oracle", "ibm", "cloudflare", "hashicorp", "nvidia", "stripe", "alibaba", "rc1", "beta.2", "build.5", "linux", "amd64", "snapshot", "hotfix"):
+    for tmpl in ("%s", "+%s", "[%s]", "`%s`"):
+        ident = "pkg:golang/example.com/foo@v1.0.0-%s" % ordinary
+        out_ = P._clean(tmpl % ident)
+        check("redaction: an ordinary suffix %r stays intact in %r" % (ordinary, tmpl), (tmpl % ident) == out_, out_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

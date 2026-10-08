@@ -34,6 +34,10 @@ step, never re-resolved from a registry.
   before opening it, assembles each variant with a COPY-only Dockerfile
   (digest-pinned distroless base, zero `RUN`), and pushes by digest only
   to a private candidates package — no tags, nothing public.
+  Before anything is attested, it also makes the final index from the
+  built index and the committed VEX file: the platform manifests plus one
+  VEX attestation child per platform. The final index's digest is the
+  one that is signed, attested, tested and promoted.
 - **Reproducibility** repeats the assembly on a separate runner and
   asserts the digests come out identical. The images are reproducible,
   and this check is what makes that a tested claim rather than a

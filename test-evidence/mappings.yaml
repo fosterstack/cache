@@ -503,6 +503,12 @@ mappings:
   - ac: REQ-REL-009-AC11
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-009-AC3
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -532,6 +538,9 @@ mappings:
   - ac: REQ-REL-010-AC4
     evidence:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
+  - ac: REQ-REL-010-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/stage-image-final-index-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
