@@ -20,5 +20,21 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
-git diff --cached --name-only --diff-filter=ACMR | "$repo_root/bin/check-file-allowlist.sh" \
+
+# Rule: judge only the staged changes THIS commit introduces.
+#  - normal commit (also squash, cherry-pick, revert, rebase): the staged diff against HEAD.
+#  - merge commit (MERGE_HEAD present, one line per other parent): only files that differ from
+#    HEAD AND from every MERGE_HEAD parent, so content that merely came from another parent
+#    (already tracked, already judged) is not re-judged, while anything the merge itself adds or
+#    changes (e.g. a conflict resolution) still is.
+files=$(git diff --cached --name-only --diff-filter=ACMR)
+merge_head=$(git rev-parse --git-path MERGE_HEAD)
+if [ -f "$merge_head" ]; then
+  while read -r parent _; do
+    [ -n "$parent" ] || continue
+    other=$(git diff --cached --name-only --diff-filter=ACMR "$parent")
+    files=$(comm -12 <(printf '%s\n' "$files" | sort -u) <(printf '%s\n' "$other" | sort -u))
+  done < "$merge_head"
+fi
+printf '%s\n' "$files" | "$repo_root/bin/check-file-allowlist.sh" \
   || { echo "pre-commit: rejected (see above). Unstage with: git restore --staged <file>" >&2; exit 1; }
