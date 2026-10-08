@@ -274,6 +274,9 @@ print("PROOF" if m.verified_digest(a, sys.argv[3]) else "NOPROOF")
 PY
 driver_py="$root/bin/persona-uat.py"
 verdict() { python3 "$work/proof.py" "$driver_py" "$work/$1/out.json" "$RC"; }
+ISS="https://token.actions.githubusercontent.com"
+IDRE="^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0$"
+IDF='"--certificate-identity-regexp='"$IDRE"'","--certificate-oidc-issuer='"$ISS"'"'
 PROOFCASES=(
  'px-echo|{"type":"shell","command":"echo verify '"$RC"'"}|NOPROOF'
  'px-comment|{"type":"shell","command":"true # sbom '"$RC"'"}|NOPROOF'
@@ -296,11 +299,32 @@ PROOFCASES=(
  'px-twopositionals|{"type":"shell","tool":"cosign","args":["verify","'"$OTHER"'","'"$RC"'"]}|NOPROOF'
  'px-unknownflag|{"type":"shell","tool":"cosign","args":["verify","--mystery","'"$RC"'"]}|NOPROOF'
  'px-att-notype|{"type":"shell","tool":"cosign","args":["verify-attestation","'"$RC"'"]}|NOPROOF'
- 'px-att-type|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance","'"$RC"'"]}|PROOF'
- 'px-att-typeeq|{"type":"shell","tool":"cosign","args":["verify-attestation","--type=spdxjson","'"$RC"'"]}|PROOF'
  'px-att-help|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance","-h","'"$RC"'"]}|NOPROOF'
- 'px-bool|{"type":"shell","tool":"cosign","args":["verify","--offline","'"$RC"'"]}|PROOF'
- 'px-goodsep|{"type":"shell","tool":"cosign","args":["verify","--certificate-oidc-issuer","https://token.actions.githubusercontent.com","'"$RC"'"]}|PROOF'
+ 'px-good|{"type":"shell","tool":"cosign","args":["verify",'"$IDF"',"'"$RC"'"]}|PROOF'
+ 'px-good-exact|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity=https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0","--certificate-oidc-issuer='"$ISS"'","'"$RC"'"]}|PROOF'
+ 'px-good-sep|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp","^https://github\\.com/example/cache/\\.github/workflows/stage-promote\\.yml@refs/tags/v1\\.0\\.0$","--certificate-oidc-issuer","'"$ISS"'","'"$RC"'"]}|PROOF'
+ 'px-good-output|{"type":"shell","tool":"cosign","args":["verify",'"$IDF"',"-o","json","'"$RC"'"]}|PROOF'
+ 'px-otherrepo-samedigest|{"type":"shell","tool":"cosign","args":["verify",'"$IDF"',"registry.example/other/repo@sha256:'"$(printf 'c%.0s' $(seq 64))"'"]}|NOPROOF'
+ 'px-evilrepo-samedigest|{"type":"shell","tool":"cosign","args":["verify",'"$IDF"',"ghcr.io/evil/cache@sha256:'"$(printf 'c%.0s' $(seq 64))"'"]}|NOPROOF'
+ 'px-key|{"type":"shell","tool":"cosign","args":["verify","--key","cosign.pub",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-key-only|{"type":"shell","tool":"cosign","args":["verify","--key=cosign.pub","'"$RC"'"]}|NOPROOF'
+ 'px-att-only|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-att-good-flags|{"type":"shell","tool":"cosign","args":["verify-attestation",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-att-typeeq|{"type":"shell","tool":"cosign","args":["verify-attestation","--type=spdxjson","'"$RC"'"]}|NOPROOF'
+ 'px-noid|{"type":"shell","tool":"cosign","args":["verify","--certificate-oidc-issuer='"$ISS"'","'"$RC"'"]}|NOPROOF'
+ 'px-noissuer|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp='"$IDRE"'","'"$RC"'"]}|NOPROOF'
+ 'px-wrongid-workflow|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp=^https://github.com/example/cache/.github/workflows/release.yml@refs/tags/v1.0.0$","--certificate-oidc-issuer='"$ISS"'","'"$RC"'"]}|NOPROOF'
+ 'px-wrongid-repo|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp=^https://github.com/evil/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0$","--certificate-oidc-issuer='"$ISS"'","'"$RC"'"]}|NOPROOF'
+ 'px-id-alternation|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp=^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0$|.*","--certificate-oidc-issuer='"$ISS"'","'"$RC"'"]}|NOPROOF'
+ 'px-id-wild|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp=.*","--certificate-oidc-issuer='"$ISS"'","'"$RC"'"]}|NOPROOF'
+ 'px-id-two-one-bad|{"type":"shell","tool":"cosign","args":["verify",'"$IDF"',"--certificate-identity=https://github.com/evil/x/.github/workflows/y.yml@refs/heads/main","'"$RC"'"]}|NOPROOF'
+ 'px-badissuer|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp='"$IDRE"'","--certificate-oidc-issuer=https://evil.example","'"$RC"'"]}|NOPROOF'
+ 'px-issuer-regexp|{"type":"shell","tool":"cosign","args":["verify","--certificate-identity-regexp='"$IDRE"'","--certificate-oidc-issuer-regexp=.*","'"$RC"'"]}|NOPROOF'
+ 'px-offline|{"type":"shell","tool":"cosign","args":["verify","--offline",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-insecure-tlog|{"type":"shell","tool":"cosign","args":["verify","--insecure-ignore-tlog",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-given-cert|{"type":"shell","tool":"cosign","args":["verify","--certificate","cert.pem",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-good-but-unknownflag|{"type":"shell","tool":"cosign","args":["verify","--mystery",'"$IDF"',"'"$RC"'"]}|NOPROOF'
+ 'px-good-plus-help|{"type":"shell","tool":"cosign","args":["verify",'"$IDF"',"--help=true","'"$RC"'"]}|NOPROOF'
  'px-help-true|{"type":"shell","tool":"cosign","args":["verify","--help=true","'"$RC"'"]}|NOPROOF'
  'px-help-false|{"type":"shell","tool":"cosign","args":["verify","--help=false","'"$RC"'"]}|NOPROOF'
  'px-help-after-true|{"type":"shell","tool":"cosign","args":["verify","'"$RC"'","--help=true"]}|NOPROOF'
@@ -314,8 +338,6 @@ PROOFCASES=(
  'px-abbrev-ver|{"type":"shell","tool":"cosign","args":["verify","--ver","'"$RC"'"]}|NOPROOF'
  'px-cluster-h|{"type":"shell","tool":"cosign","args":["verify","-dh","'"$RC"'"]}|NOPROOF'
  'px-att-help-true|{"type":"shell","tool":"cosign","args":["verify-attestation","--type","slsaprovenance","--help=true","'"$RC"'"]}|NOPROOF'
- 'px-good|{"type":"shell","tool":"cosign","args":["verify","--certificate-oidc-issuer=https://token.actions.githubusercontent.com","'"$RC"'"]}|PROOF'
- 'px-goodother|{"type":"shell","tool":"cosign","args":["verify","registry.example/other/repo@sha256:'"$(printf 'c%.0s' $(seq 64))"'"]}|PROOF'
 )
 for pc in "${PROOFCASES[@]}"; do
   name=${pc%%|*}; rest=${pc#*|}; act=${rest%|*}; want=${rest##*|}

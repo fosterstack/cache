@@ -219,6 +219,10 @@ if p.get("daemon"):         # a tool container managed by the DAEMON, started th
                           ["-v", req["docs_dir"] + ":/work", "-w", "/work", tools["shell"], "sh", "-c", "DAEMON"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.7)
     cl.kill()
+if p.get("tfile_text"):     # the agent's streamed transcript file as the real agent writes it: "$ <command>" then the result, one block per action (a command may span lines)
+    av_ = sys.argv[2:]
+    with open(av_[av_.index("--transcript-file") + 1], "w") as fh_:
+        fh_.write(p["tfile_text"])
 if p.get("crash"):
     sys.stderr.write("PARTIAL-TRANSCRIPT for " + req["persona"] + "\n")
     for ln in p.get("crash_lines", []):
@@ -306,7 +310,8 @@ if "actions" in p and not cmds:
 if req["persona"] == "compliance-reviewer" and not p.get("noverify"):
     # the compliance reviewer's PROOF of exercising the RC image (advisor 0250, step 8 round 2): a cosign TOOL action whose subcommand is verify, naming the RC image by its digest, exit 0
     ref = ("ghcr.io/example/cache@sha256:" + "9" * 64) if p.get("verify_other") else req["image"]
-    av = ["verify", ref]
+    av = ["verify", "--certificate-identity-regexp=^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0$",
+          "--certificate-oidc-issuer=https://token.actions.githubusercontent.com", ref]
     acts.append({"tool": "cosign", "argv": av, "exit": p.get("verify_exit", 0)}); cmds.append("cosign " + " ".join(av))
 if cmds or "commands" in p or "actions" in p:
     ans["commands"] = cmds
@@ -3181,8 +3186,9 @@ cmpcase cmp6 "{\"noverify\":true,\"commands\":[\"echo sha256:$(printf 'a%.0s' $(
 CASE="compliance proof: the RC digest merely NAMED by a command that is not a verification (echo, a shell action) is no proof: blocking"
 check test "$(head -1 "$(out cmp6)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 RCD="ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 64))"
-cmpcase cmp7 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":1},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":0}]}"
-CASE="compliance proof: AT LEAST ONE successful cosign verify of the RC digest is enough (a failed one first): pass"
+GOODV="\"--certificate-identity-regexp=^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0\$\",\"--certificate-oidc-issuer=https://token.actions.githubusercontent.com\""
+cmpcase cmp7 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$GOODV,\"$RCD\"],\"exit\":1},{\"tool\":\"cosign\",\"argv\":[\"verify\",$GOODV,\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: AT LEAST ONE successful cosign verify of the image under test (its own repository and digest, the documented promotion identity and OIDC issuer) is enough (a failed one first): pass"
 check test "$(head -1 "$(out cmp7)/compliance-reviewer.report.md")" = "VERDICT: pass"
 cmpcase cmp8 '{"noverify":true,"commands":["cosign verify x"],"drop":["actions"]}'
 CASE="compliance proof: an answer with commands but no actions is no proof (fail closed): blocking"
@@ -3190,12 +3196,24 @@ check test "$(head -1 "$(out cmp8)/compliance-reviewer.report.md")" = "VERDICT: 
 cmpcase cmp9 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify-blob\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"download\",\"sbom\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--help\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"-h\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--version\",\"$RCD\"],\"exit\":0}]}"
 CASE="compliance proof: verify-attestation WITHOUT --type, verify-blob, download sbom, and any verify with --help, -h or --version prove nothing: blocking"
 check test "$(head -1 "$(out cmp9)/compliance-reviewer.report.md")" = "VERDICT: blocking"
-cmpcase cmp12 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"--type\",\"slsaprovenance\",\"$RCD\"],\"exit\":0}]}"
-CASE="compliance proof: cosign verify-attestation WITH --type and the RC digest as its one image argument, exit 0, proves: pass"
-check test "$(head -1 "$(out cmp12)/compliance-reviewer.report.md")" = "VERDICT: pass"
+cmpcase cmp12 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify-attestation\",\"--type\",\"slsaprovenance\",$GOODV,\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: cosign verify-attestation ALONE proves nothing about the signature (the guide verifies provenance with gh): blocking"
+check test "$(head -1 "$(out cmp12)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 cmpcase cmp13 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity\",\"$RCD\",\"ghcr.io/example/cache:1.0\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"ghcr.io/example/other@sha256:$(printf 'b%.0s' $(seq 64))\",\"$RCD\"],\"exit\":0}]}"
 CASE="compliance proof: the RC digest as the VALUE of a flag, or as one of two image arguments, is no proof: blocking"
 check test "$(head -1 "$(out cmp13)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp14 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",$GOODV,\"ghcr.io/evil/cache@sha256:$(printf 'a%.0s' $(seq 64))\"],\"exit\":0}]}"
+CASE="compliance proof: a successful cosign verify of ANOTHER repository that ends in the same digest is no proof: blocking"
+check test "$(head -1 "$(out cmp14)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp15 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--key\",\"my.pub\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--key\",\"my.pub\",$GOODV,\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: a verify against the reviewer's own --key (with or without the documented flags) verifies nothing of FosterStack's: blocking"
+check test "$(head -1 "$(out cmp15)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp16 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity-regexp=^https://github.com/example/cache/.github/workflows/stage-promote.yml@refs/tags/v1.0.0\$\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-oidc-issuer=https://token.actions.githubusercontent.com\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: a verify without the OIDC issuer, or without any certificate identity, is no proof: blocking"
+check test "$(head -1 "$(out cmp16)/compliance-reviewer.report.md")" = "VERDICT: blocking"
+cmpcase cmp17 "{\"noverify\":true,\"actions\":[{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity-regexp=^https://github.com/example/cache/.github/workflows/release.yml@refs/tags/v1.0.0\$\",\"--certificate-oidc-issuer=https://token.actions.githubusercontent.com\",\"$RCD\"],\"exit\":0},{\"tool\":\"cosign\",\"argv\":[\"verify\",\"--certificate-identity-regexp=.*\",\"--certificate-oidc-issuer=https://token.actions.githubusercontent.com\",\"$RCD\"],\"exit\":0}]}"
+CASE="compliance proof: an identity that is not the documented promotion workflow of this repository (release.yml, a wildcard) is no proof: blocking"
+check test "$(head -1 "$(out cmp17)/compliance-reviewer.report.md")" = "VERDICT: blocking"
 cmpcase cmp10 "{\"noverify\":true,\"actions\":[{\"tool\":\"shell\",\"argv\":[\"sh\",\"-c\",\"cosign verify $RCD\"],\"exit\":0},{\"tool\":\"kubectl\",\"argv\":[\"verify\",\"$RCD\"],\"exit\":0}]}"
 CASE="compliance proof: a shell action with the words, or another tool's 'verify', is no proof (the TOOL field must be cosign): blocking"
 check test "$(head -1 "$(out cmp10)/compliance-reviewer.report.md")" = "VERDICT: blocking"
@@ -4030,13 +4048,13 @@ t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
 assert "$ first-completed-action" in t and "$ middle-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
 assert len(t) >= 1500000, len(t)
 PY
-AGENT_TIMEOUT=1 run trstream3 '{"gradle-platform-engineer":{"stream":15000000,"sleep":30}}' rc
-CASE="a persisted transcript of 15,000,000 characters (still below the 16 MiB cap) is kept whole: the middle action is in the decrypted artifact"
+AGENT_TIMEOUT=1 run trstream3 '{"gradle-platform-engineer":{"stream":16777316,"sleep":30}}' rc
+CASE="a persisted transcript at the CAP EDGE (16 MiB plus the agent's one cap marker line: 16,777,316 characters) is kept whole: the middle action is in the decrypted artifact, nothing is marked omitted"
 check python3 - "$(out trstream3)" <<'PY'
 import sys
 t = open(sys.argv[1] + "/gradle-platform-engineer.transcript.txt").read()
 assert "$ first-completed-action" in t and "$ middle-completed-action" in t and "$ last-completed-action" in t and "omitted" not in t, t[:200]
-assert len(t) >= 15000000, len(t)
+assert len(t) >= 16777316, len(t)
 PY
 AGENT_TIMEOUT=1 run trstream4 '{"gradle-platform-engineer":{"stream":17000000,"sleep":30}}' rc
 CASE="only ABOVE the 16 MiB cap (17,000,000 characters, as if the agent ignored its own cap) are the first 200000 and the last 800000 kept, with '[... 16000000 characters omitted ...]' once; the middle action is the one given up"
@@ -4140,6 +4158,65 @@ assert m and int(m.group(1)) == 3, rep("maven-jenkins-ci")[:700]
 assert "Unparsed commands" not in rep("gradle-platform-engineer"), "no open quote in the gradle persona's commands"
 PY
 check publiclog hosts9
+# DESTINATIONS BUILT AT RUN TIME and other network clients (step 8, consultation round): a destination that is a shell expansion ($VAR, ${VAR}, $(...), backticks, a brace list, a glob) cannot be
+# resolved statically: it is FLAGGED in the encrypted report ("Destination built at run time (not resolved)"), never "none", also after wrappers and inside nested sh -c strings;
+# busybox/toybox applets are the programs they name; python/perl/ruby/node code that is clearly a network client but names no host is flagged "Network client without a statically known host";
+# a URL literal inside such code is read as a host
+python3 - >"$work/hostsplan10.json" <<'PY'
+import json
+print(json.dumps({
+ "gradle-platform-engineer": {"commands": ["H=outside-a.example; curl \"$H\"", "curl ${H}/x", "curl $(cat url)", "curl `cat url`", "curl {a,b}.example", "curl a*.example", "sh -c 'curl \"$H\"'", "sudo -n curl $H",
+                                           "http_proxy=$P curl localhost", "ssh $H uptime", "nc $H 80", "git clone $REPO", "echo $HOME", "curl -o \"$OUT\" localhost", "curl -H \"X: $T\" localhost"]},
+ "maven-jenkins-ci": {"commands": ["busybox wget http://bb-a.example/x", "busybox nc bb-b.example 80", "toybox wget tb-c.example/x", "python3 -c \"import urllib.request as u; u.urlopen(U)\"",
+                                   "python3 -c \"import urllib.request as u; u.urlopen('http://py-d.example/')\"", "perl -e 'use LWP::UserAgent; LWP::UserAgent->new->get($u)'",
+                                   "node -e \"require('https').get('https://nd-e.example')\"", "ruby -e \"require 'net/http'; Net::HTTP.get(URI(u))\"", "python3 -m http.client", "curl -K conf.txt", "wget -i list.txt",
+                                   "curl http://127.0.0.1:18080/a?b=1\\&c=*"]},
+ "compliance-reviewer": {"commands": ["echo \"$HOME\"", "python3 -c \"print(1)\"", "ls *"]},
+ "readme-evaluator": {"commands": ["curl https://docs-only.example.net/guide", "curl https://docs.example.org/x"]},
+ "on-call-engineer": {"commands": ["curl https://docs-only.example.net/guide"]}}))
+PY
+run hosts10 "$(cat "$work/hostsplan10.json")" rc
+CASE="hosts (run-time destinations and other clients): every expansion-built destination is flagged 'Destination built at run time (not resolved)' (12 commands for the gradle persona: variables, command substitution, backticks, braces, globs, nested sh -c, wrappers, proxy assignment, ssh/nc/git operands; options and headers that merely hold a variable are not destinations), busybox/toybox applets and URL literals in interpreter code give their hosts, clients without a host give 'Network client without a statically known host' (6 for the maven persona), a persona with nothing like that has neither line"
+check python3 - "$work" <<'PY'
+import re, sys
+w = sys.argv[1]
+def rep(p):
+    return open("%s/hosts10/plain/%s.report.md" % (w, p)).read()
+def line(p):
+    v = [l for l in rep(p).splitlines() if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
+def n(p, label):
+    m = re.search(r"^%s: ([0-9]+) commands?$" % re.escape(label), rep(p), re.M)
+    return int(m.group(1)) if m else 0
+RT, NH = "Destination built at run time (not resolved)", "Network client without a statically known host"
+assert n("gradle-platform-engineer", RT) == 12, (n("gradle-platform-engineer", RT), rep("gradle-platform-engineer")[:900])
+assert n("gradle-platform-engineer", NH) == 0
+assert line("maven-jenkins-ci") == "bb-a.example,bb-b.example,nd-e.example,py-d.example,tb-c.example", line("maven-jenkins-ci")
+assert n("maven-jenkins-ci", NH) == 6, (n("maven-jenkins-ci", NH), rep("maven-jenkins-ci")[:900])
+assert n("maven-jenkins-ci", RT) == 0
+assert RT not in rep("compliance-reviewer") and NH not in rep("compliance-reviewer")
+# the README-only evaluator knows only the README's hosts: a host that occurs only in docs/install.md is flagged for it, not for a persona that was given install.md
+assert "docs-only.example.net" in line("readme-evaluator") and "docs-only.example.net" not in line("on-call-engineer"), (line("readme-evaluator"), line("on-call-engineer"))
+PY
+check publiclog hosts10
+# RECOVERY KEEPS THE WHOLE COMMAND (step 8, consultation round): after a timeout or a failure the commands come from the agent's streamed transcript; a command that spans lines (its outside proxy on
+# the continuation line) is recovered whole, up to the line that starts its result
+TF='$ curl -sS \\\n  --proxy http://recover-a.example:80 \\\n  localhost\nexit status: 0\nstdout:\nok\n$ echo done\nexit status: 0\n$ bash -c '"'"'curl -x recover-b.example:1 localhost\n  wget recover-c.example'"'"'\nexit status: 0\n'
+AGENT_TIMEOUT=1 run recover1 "{\"gradle-platform-engineer\":{\"tfile_text\":\"$TF\",\"sleep\":30}}" rc
+run recover2 "{\"gradle-platform-engineer\":{\"tfile_text\":\"$TF\",\"crash\":true}}" rc
+CASE="hosts of a persona that did not run (timeout recovery and failure recovery): the continued command keeps its continuation lines, so the outside proxy on the next line and the hosts inside a multi-line quoted nested command are listed"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+for case in ("recover1", "recover2"):
+    t = open("%s/%s/plain/gradle-platform-engineer.report.md" % (w, case)).read().splitlines()
+    v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    got = sorted(x.strip() for x in v.split(","))
+    assert got == ["recover-a.example", "recover-b.example", "recover-c.example"], (case, got)
+    assert t[0] == "VERDICT: blocking"
+PY
+check publiclog recover1
+check publiclog recover2
 # EXCEPTION SAFETY (step 8 round 3, B1): a command that cannot be parsed (a fullwidth slash inside a proxy host, an unclosed IPv6 bracket, NULs, unicode separators, enormous arguments)
 # never raises out of the reporting path: the action is marked unparsed in the ENCRYPTED report, the report is still written, and nothing but the pass/fail lines is public
 python3 - >"$work/fuzzplan.json" <<'PY'

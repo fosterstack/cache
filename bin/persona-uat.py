@@ -55,7 +55,7 @@ METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+
 DEFAULT_BUDGET = 400000
 JOB_BUDGET = 6600           # seconds: the 120-minute job minus setup and the cleanup steps; the agent timeouts are cut from what is left of it
 MIN_PERSONA_SECONDS = 300   # a persona that cannot be given this long is blocking (cannot prove), never run
-TRANSCRIPT_CAP = 16 * 1024 * 1024    # the agent's own cap; the encrypted transcript holds the persisted history whole up to it
+TRANSCRIPT_CAP = 16 * 1024 * 1024 + 4096    # the agent's own cap (16 MiB) plus room for its one cap marker line; the encrypted transcript holds the persisted history whole up to it
 SETTLE_QUIET = 3.0          # seconds of an unchanged request counter before a persona's window is closed
 SETTLE_MAX = 20.0           # the ceiling: a counter that never settles makes the persona blocking
 DEFAULT_PORT = 38080        # the image's host port; never 8080: the docs' `kubectl port-forward svc/fscache 8080:80` must work next to the driver (Jenkins and the runner take the next two)
@@ -82,9 +82,9 @@ INSTRUCTIONS = {
         "build to this cache from a Jenkins job, using the Jenkins container you are given; a GitLab runner container is given too (see the environment "
         "limits: do not try to run a GitLab job, report what a customer could not do here as friction)."),
     "compliance-reviewer": (
-        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool, naming the image under test by the "
-        "digest reference you are given), fetch and inspect its SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is "
-        "complete and verifiable."),
+        "You are a compliance reviewer. Following the documentation's guide, verify the image's signature (with the cosign tool: `cosign verify` of the image under "
+        "test named by the digest reference you are given, with the promotion workflow's certificate identity and the GitHub OIDC issuer the guide shows), fetch and "
+        "inspect its SBOM, and read its VEX statements, exactly as the guide says, and judge whether the evidence is complete and verifiable."),
     "readme-evaluator": (
         "You are an evaluator who has only the README and ten minutes. Decide, from the README alone, what the product is, and try "
         "to get a working result within ten minutes. Do not open any other document."),
@@ -445,8 +445,12 @@ def transcript_chunks(transcript, secrets):
             yield scrub(transcript[i:i + 262144], secrets)
 
 
+COMMAND_END = re.compile(r"^(?:exit status: |timed out after |refused: |\$ |\[finish\]|\[token budget|\[step limit|\[no finish|\[\.\.\. )")
+
+
 def transcript_commands(transcript):
-    """the `$ command` lines of a transcript (a string, or an agent's streamed file read up to the cap), for the hosts of a persona that did not run"""
+    """the commands of a transcript (a string, or an agent's streamed file read up to the cap), for the hosts of a persona that did not run: the WHOLE command, its marker line and
+    its continuation lines, up to the line that starts the result (exit status / timed out / refused) or the next marker"""
     if isinstance(transcript, TranscriptFile):
         lines = transcript.prefix.splitlines()
         try:
@@ -459,7 +463,20 @@ def transcript_commands(transcript):
             pass
     else:
         lines = transcript.splitlines()
-    return [ln[2:] for ln in lines if ln.startswith("$ ")]
+    cmds, cur = [], None
+    for ln in lines:
+        if ln.startswith("$ "):
+            if cur is not None:
+                cmds.append("\n".join(cur))
+            cur = [ln[2:]]
+        elif cur is not None and COMMAND_END.match(ln):
+            cmds.append("\n".join(cur))
+            cur = None
+        elif cur is not None:
+            cur.append(ln)
+    if cur is not None:
+        cmds.append("\n".join(cur))
+    return cmds
 
 
 def kill_group(p):
@@ -655,9 +672,23 @@ def _option_hosts(prog, name, value):
     return [h.lower() for h in out if h]
 
 
-def _fetch_tokens(prog, toks):
-    """-> (hosts named by options, positional words) for a curl/wget command line"""
+DYN = re.compile(r"\$|`|\{[^{}]*(?:,|\.\.)[^{}]*\}|[*?\[]")
+HOST_OPTION_NAMES = {"url", "proxy", "x", "preproxy", "socks4", "socks4a", "socks5", "socks5-hostname", "proxy1.0", "doh-url", "connect-to", "resolve", "e", "execute", "B", "base"}
+
+
+def dynamic(word):
+    """True when a destination is a shell expansion that cannot be resolved statically: $VAR, ${VAR}, $(...), backticks, a brace list or range, a glob. Only the authority of a URL
+    (and the host part of a schemeless destination) counts: a ? or * in a path or query is not a destination."""
+    if "://" in word:
+        word = word.split("://", 1)[1]
+    return bool(DYN.search(word.split("/", 1)[0]))
+
+
+def _fetch_tokens(prog, toks, flags=None):
+    """-> (hosts named by options, positional words) for a curl/wget command line. `flags` (a dict) gets 'runtime' when a destination option or operand is built at run time and
+    'nohost' when the destinations are listed in a file (-K/--config, -i/--input-file)"""
     hosts, positional, i = [], [], 0
+    flags = {} if flags is None else flags
     short_files, long_files = FILE_VALUE[prog]
     while i < len(toks):
         t = toks[i]
@@ -668,8 +699,12 @@ def _fetch_tokens(prog, toks):
                 if not eq:
                     val = toks[i] if i < len(toks) else ""
                     i += 1
-                if name not in long_files:
+                if name in long_files:
+                    flags["nohost"] = True
+                else:
                     hosts += _option_hosts(prog, name, val)
+                    if name in HOST_OPTION_NAMES and dynamic(val):
+                        flags["runtime"] = True
         elif t.startswith("-") and len(t) > 1 and t != "--":
             for k, ch in enumerate(t[1:], 1):               # a cluster: the first value-taking letter takes the rest of the cluster, or the next word
                 if ch in SHORT_VALUE[prog]:
@@ -677,8 +712,12 @@ def _fetch_tokens(prog, toks):
                     if not val:
                         val = toks[i] if i < len(toks) else ""
                         i += 1
-                    if ch not in short_files:
+                    if ch in short_files:
+                        flags["nohost"] = True
+                    else:
                         hosts += _option_hosts(prog, ch, val)
+                        if ch in HOST_OPTION_NAMES and dynamic(val):
+                            flags["runtime"] = True
                     break
         else:
             positional.append(t)
@@ -697,6 +736,9 @@ def _host_of(tok, strict=False):
 PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "no_proxy_unused")
 WRAPPERS = {"env", "sudo", "time", "command", "nohup", "nice", "exec", "stdbuf", "timeout", "setsid", "ionice", "builtin", "doas", "export", "xargs"}
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "esac", "in", "case", "select", "coproc"}
+NET_MODULES = {"http.client", "urllib", "urllib.request", "requests", "socket", "httpx", "aiohttp", "smtplib", "ftplib", "telnetlib", "poplib", "imaplib", "xmlrpc.client"}
+NET_CODE = re.compile(r"urllib|requests|httpx|aiohttp|http\.client|httplib|\bsocket\b|urlopen|urlretrieve|net/http|Net::HTTP|open-uri|LWP|HTTP::Tiny|IO::Socket|\bfetch\(|https?\.(?:get|request)\(|"
+                      r"require\(['\"](?:https?|net|tls)['\"]\)|XMLHttpRequest|axios|curl_init|file_get_contents\(['\"]https?|fsockopen|WebSocket|smtplib|ftplib|telnetlib")
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"}
 WRAPPER_VALUE_OPTS = {"xargs": set("IndaLsE"), "sudo": set("ugCDhpRTt"), "env": {"u", "C", "S"}, "nice": {"n"}, "timeout": {"k", "s"}, "stdbuf": set("ioe"), "ionice": set("cnp"), "doas": {"u", "C"}}
 NET_NAME = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9-]*[A-Za-z]$|^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^localhost$")
@@ -737,11 +779,18 @@ def _segment_hosts(toks, depth=0, info=None):
     out, i = set(), 0
     while toks and (toks[0] in KEYWORDS):
         toks = toks[1:]
+
+    def mark(kind):
+        if info is not None:
+            info[kind] = True
+
     def assign(tok):
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", tok)
         if not m:
             return False
         if m.group(1).lower() in PROXY_VARS and m.group(2):
+            if dynamic(m.group(2)):
+                mark("runtime")
             h = _strip_host(m.group(2))
             if h:
                 out.add(h.lower())
@@ -763,6 +812,20 @@ def _segment_hosts(toks, depth=0, info=None):
     if i >= len(toks):
         return out
     prog, rest = toks[i].rsplit("/", 1)[-1], toks[i + 1:]
+    if prog in ("busybox", "toybox") and rest:          # `busybox wget URL`, `toybox nc host`: the applet is the program
+        prog, rest = rest[0].rsplit("/", 1)[-1], rest[1:]
+    if re.fullmatch(r"python[0-9.]*|pypy3?|ruby|perl|node|nodejs|php|deno|bun|lua", prog):
+        for k, t in enumerate(rest):
+            if t in ("-c", "-e", "-E", "-r", "--eval", "-p", "--print") and k + 1 < len(rest):
+                code = rest[k + 1]
+            elif t == "-m" and k + 1 < len(rest) and rest[k + 1] in NET_MODULES:
+                code = "import " + rest[k + 1]
+            else:
+                continue
+            if NET_CODE.search(code) and not URL_RE.search(code):      # a URL literal is read as a host by the raw scan; a client with none is flagged
+                mark("nohost")
+            break
+        return out
     if prog in SHELLS and depth < 4:
         for k, t in enumerate(rest):
             if t.startswith("-") and not t.startswith("--") and "c" in t[1:] and k + 1 < len(rest):
@@ -773,14 +836,22 @@ def _segment_hosts(toks, depth=0, info=None):
         out.update(url_hosts(" ".join(rest), info, depth + 1))
         return out
     if prog in ("curl", "wget"):
-        opt_hosts, positional = _fetch_tokens(prog, rest)
+        fl = {}
+        opt_hosts, positional = _fetch_tokens(prog, rest, fl)
+        for kind in fl:
+            mark(kind)
         out.update(opt_hosts)
+        for t in positional:
+            if dynamic(t):
+                mark("runtime")
         for t in positional:        # a schemeless DESTINATION operand of a network program is a host whatever its suffix (evil.zip, x.sh, run.py): output names are option values, never here
             if "://" not in t and HOST_RE.match(t):
                 out.add(_host_of(t, strict=True).lower())
     elif prog == "kubectl":
         for k, t in enumerate(rest):
             v = t.split("=", 1)[1] if t.startswith("--server=") else (rest[k + 1] if t == "--server" and k + 1 < len(rest) else None)
+            if v and dynamic(v):
+                mark("runtime")
             if v and "://" not in v and HOST_RE.match(v):
                 out.add(_host_of(v, strict=True).lower())
     elif prog == "cosign":
@@ -794,6 +865,8 @@ def _segment_hosts(toks, depth=0, info=None):
                 if n:
                     out.add(n)
         for t in _positionals(rest, {"w", "p", "s", "i", "q", "T", "X", "x", "I", "O", "P", "m"}):
+            if dynamic(t):
+                mark("runtime")
             n = _name(t)
             if n:
                 out.add(n); break
@@ -806,11 +879,15 @@ def _segment_hosts(toks, depth=0, info=None):
                     if n:
                         out.add(n)
         for t in _positionals(rest, opts):
+            if dynamic(t.rsplit("@", 1)[-1]):
+                mark("runtime")
             n = _name(t.split(":", 1)[0] if prog == "rsync" else t)
             if n:
                 out.add(n); break
     elif prog == "scp":
         for t in _positionals(rest, {"P", "i", "l", "o", "F", "S", "c", "J", "D"}):
+            if (":" in t or "$" in t) and dynamic(t.rsplit("@", 1)[-1].split(":", 1)[0]):
+                mark("runtime")
             if ":" in t and not t.startswith("/") and "://" not in t:
                 n = _name(t.rsplit(":", 1)[0])
                 if n:
@@ -818,23 +895,31 @@ def _segment_hosts(toks, depth=0, info=None):
     elif prog in ("ping", "ping6", "traceroute", "telnet", "nslookup", "host", "whois", "mtr", "tracepath"):
         n = None
         for t in _positionals(rest, {"c", "i", "W", "w", "s", "t", "I", "M", "p", "Q", "S", "T", "m", "q", "l"}):
+            if dynamic(t):
+                mark("runtime")
             n = _name(t)
             if n:
                 out.add(n); break
     elif prog == "dig":
         for t in rest:
             if t.startswith("@"):
+                if dynamic(t[1:]):
+                    mark("runtime")
                 n = _name(t[1:])
                 if n:
                     out.add(n)
         for t in _positionals(rest, {"b", "c", "f", "k", "m", "p", "q", "t", "x", "y"}):
             if not t.startswith("@"):
+                if dynamic(t):
+                    mark("runtime")
                 n = _name(t)
                 if n:
                     out.add(n); break
     elif prog == "openssl" and rest[:1] == ["s_client"]:
         for k, t in enumerate(rest):
             if t in ("-connect", "-servername", "-proxy") and k + 1 < len(rest):
+                if dynamic(rest[k + 1]):
+                    mark("runtime")
                 n = _name(rest[k + 1])
                 if n:
                     out.add(n)
@@ -842,6 +927,8 @@ def _segment_hosts(toks, depth=0, info=None):
         for t in rest[rest.index("clone") + 1:]:
             if t.startswith("-"):
                 continue
+            if dynamic(t.rsplit("@", 1)[-1] if "://" not in t else t):
+                mark("runtime")
             if "://" in t:
                 h = urllib.parse.urlsplit(t).hostname
                 if h:
@@ -886,6 +973,8 @@ def _tokens(text):
             continue
         elif c in " \t\r":
             flush()
+        elif c in "{}" and not (not started and (i == 0 or text[i - 1] in " \t\r\n;&|(){}`") and (i + 1 >= n or text[i + 1] in " \t\r\n;&|()`")):
+            cur.append(c); started = True       # brace EXPANSION ({a,b}.example), not a command group
         elif c in ";&|(){}`\n":
             flush()
             out.append(";" if c == "\n" else c)
@@ -927,6 +1016,8 @@ def url_hosts(text, info=None, depth=0):
     best-effort words are still read, and the raw URL scan covers the rest). Raises ValueError for a value the URL parser refuses: the caller marks the command unparsed."""
     out = set()
     text = _uncomment(text.replace("\\\n", " "))
+    text = re.sub(r"`([^`]*)`", r"$(\1)", text)          # a backtick substitution is a $(...) substitution
+    text = re.sub(r"--certificate-(?:identity|identity-regexp|oidc-issuer|oidc-issuer-regexp)(?:=|\s+)(?:'[^']*'|\"[^\"]*\"|\S+)", "--certificate-X", text)      # identities and issuers are claims to match, not destinations
     clone_urls = {u for ln in text.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
     for u in URL_RE.findall(text):
         try:
@@ -994,7 +1085,8 @@ def asks_for_help(t):
 
 
 def cosign_operation(argv):
-    """-> (subcommand, positional words, flags) of a cosign command line, or None when it asks for help/version or cannot be read. A flag's value is never positional."""
+    """-> (subcommand, positional words, [(flag, value or None)]) of a cosign command line, or None when it asks for help/version or cannot be read. A flag's value is never
+    positional; a flag we do not know takes the next word as its value (fail closed)."""
     if any(asks_for_help(t) for t in argv):
         return None
     sub, pos, flags, i = None, [], [], 0
@@ -1002,11 +1094,14 @@ def cosign_operation(argv):
         t = argv[i]
         i += 1
         if t.startswith("-") and t != "-":
-            name = t.split("=", 1)[0]
-            flags.append(name)
-            if "=" in t or name in COSIGN_BOOL_FLAGS:
-                continue
-            i += 1                  # a value flag (or one we do not know: its next word is its value, never a target)
+            name, eq, val = t.partition("=")
+            if eq:
+                flags.append((name, val))
+            elif name in COSIGN_BOOL_FLAGS:
+                flags.append((name, None))
+            else:
+                flags.append((name, argv[i] if i < len(argv) else ""))
+                i += 1              # a value flag (or one we do not know: its next word is its value, never a target)
             continue
         if sub is None:
             sub = t
@@ -1015,13 +1110,41 @@ def cosign_operation(argv):
     return (sub, pos, flags) if sub else None
 
 
-def verified_digest(answer, image):
-    """the compliance reviewer's proof of exercising the RC image: a recorded ACTION whose tool is cosign and whose operation PARSES as `cosign verify` (or `cosign
-    verify-attestation` with a --type) of exactly ONE image argument that ends @sha256:<the RC digest> (never a flag's value, never help/version), exit 0. Words in
-    echo, comments or shell actions are never proof."""
-    digest = image.split("@")[-1]
-    if not digest.startswith("sha256:"):
+# the ONLY flags a proving `cosign verify` may carry (docs/verify-images.md shows exactly the identity and the issuer; the rest is presentation). Anything else - a --key,
+# --certificate, --offline, --insecure-ignore-*, a trusted root or Rekor override - changes WHAT is verified, so it proves nothing about FosterStack's signature.
+PROOF_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "-o", "--output", "--verbose", "-d", "--platform", "-a", "--annotations"}
+OIDC_ISSUER = "https://token.actions.githubusercontent.com"       # docs/verify-images.md: --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+PROMOTION_WORKFLOW = "stage-promote.yml"                           # docs/verify-images.md: the current chain signs the public image in stage-promote.yml
+
+
+def image_repo_path(image):
+    """owner/name of the image repository under test (ghcr.io/fosterstack/cache@sha256:... -> fosterstack/cache)"""
+    repo = image.split("@")[0]
+    return repo.split("/", 1)[1] if "/" in repo else repo
+
+
+def identity_documented(value, repo_path):
+    """True when a --certificate-identity(-regexp) value names the promotion workflow of THIS repository, as docs/verify-images.md shows it:
+    ^https://github.com/<owner>/<name>/.github/workflows/stage-promote.yml@refs/tags/v<VER>$ (the dots may be escaped, the anchors optional). A value with an alternation or
+    anything before the documented prefix names other identities too and does not count."""
+    v = value.replace("\\.", ".")
+    if v.startswith("^"):
+        v = v[1:]
+    if "|" in v or "*" in v.split("@", 1)[0] or "(" in v:
         return False
+    return v.startswith("https://github.com/%s/.github/workflows/%s@refs/tags/v" % (repo_path, PROMOTION_WORKFLOW))
+
+
+def verified_digest(answer, image):
+    """the compliance reviewer's proof of exercising the RC image, derived from the public guide (docs/verify-images.md): a recorded ACTION whose tool is cosign and whose operation
+    PARSES as `cosign verify` (never verify-attestation alone: the guide verifies provenance with gh, and a bare attestation proves nothing about the signature) of exactly ONE
+    image argument that IS the image under test (the same registry and repository, @sha256:<the candidate digest>: not another repository with the same digest), carrying the
+    documented promotion-workflow identity and the documented OIDC issuer, with no flag that changes what is verified (--key, --certificate, --offline, --insecure-ignore-*...),
+    no help/version spelling, exit 0. Words in echo, comments or shell actions are never proof."""
+    digest = image.split("@")[-1]
+    if not digest.startswith("sha256:") or "@" not in image:
+        return False
+    repo_path = image_repo_path(image)
     for act in answer.get("actions", []):
         if act.get("tool") != "cosign" or act.get("exit") != 0 or not isinstance(act.get("argv"), list):
             continue
@@ -1029,20 +1152,28 @@ def verified_digest(answer, image):
         if not op:
             continue
         sub, pos, flags = op
-        if sub not in ("verify", "verify-attestation") or (sub == "verify-attestation" and "--type" not in flags):
+        if sub != "verify" or len(pos) != 1 or pos[0] != image:
             continue
-        if len(pos) == 1 and pos[0].endswith("@" + digest):
+        if any(name not in PROOF_FLAGS for name, _ in flags):
+            continue
+        ids = [v for name, v in flags if name in ("--certificate-identity", "--certificate-identity-regexp")]
+        issuers = [v for name, v in flags if name == "--certificate-oidc-issuer"]
+        if ids and all(identity_documented(v or "", repo_path) for v in ids) and issuers == [OIDC_ISSUER]:
             return True
     return False
 
 
-def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None, unparsed=0):
+def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None, unparsed=0, flags=None):
     lines = ["VERDICT: %s" % verdict, "persona: %s" % persona, ""]
     lines += [ENV_LIMITS_LINE, COUNTER_GUARANTEE, ""]
     if hosts is not None:
         lines += ["%s %s" % (HOSTS_LABEL, ", ".join(hosts) if hosts else "none")]
         if unparsed:
             lines += ["Unparsed commands (hosts not extracted): %d" % unparsed]
+        if flags and flags.get("runtime"):
+            lines += ["Destination built at run time (not resolved): %d command%s" % (flags["runtime"], "" if flags["runtime"] == 1 else "s")]
+        if flags and flags.get("nohost"):
+            lines += ["Network client without a statically known host: %d command%s" % (flags["nohost"], "" if flags["nohost"] == 1 else "s")]
         lines += [""]
     if did_not_run:
         lines += ["This persona did not run: %s." % did_not_run, ""]
@@ -1174,20 +1305,21 @@ def _main():
     results = {}        # persona -> {"verdict", "findings", "tokens", "capped"}
     STATE["results"] = results
 
-    def known_hosts():
+    def known_hosts(persona=None):
         doc_hosts = set()
-        for data in (docs or {}).values():
+        # the hosts a persona may name without a flag are those of the documents IT was given (the README alone for the evaluator)
+        for data in ({"README.md": docs["README.md"]} if persona == "readme-evaluator" and docs else (docs or {})).values():
             try:
                 doc_hosts |= url_hosts(data.decode("utf-8", "replace"))
             except Exception:
                 pass
         return doc_hosts | {"127.0.0.1", "localhost", registry_of(a.image)} | {registry_of(v) for v in tools.values()}      # the image under test's own registry is not "outside"
 
-    def labelled(hosts):
+    def labelled(hosts, persona=None):
         src = {h for h in hosts if h.endswith(REPO_SRC)}
         plain = {h for h in hosts if not h.endswith(REPO_SRC)}
         out = set()
-        for h in (plain - known_hosts()):
+        for h in (plain - known_hosts(persona)):
             out.add(h if len(h) <= 253 else h[:60] + "... (over-long name)")
         for h in src:
             out.add(h[:-len(REPO_SRC)] + " (repository source)")
@@ -1195,7 +1327,7 @@ def _main():
 
     def hosts_of(commands):
         """-> (hosts, number of commands whose hosts could not be extracted): one command that cannot be parsed never costs the others or the report"""
-        hosts, bad = set(), 0
+        hosts, bad, flags = set(), 0, {"runtime": 0, "nohost": 0}
         for c in commands:
             info = {}
             try:
@@ -1204,7 +1336,9 @@ def _main():
                 bad += 1
                 continue
             bad += 1 if info.get("unparsed") else 0
-        return hosts, bad
+            for k in flags:
+                flags[k] += 1 if info.get(k) else 0
+        return hosts, bad, flags
 
     def record(persona, answer, transcript, did_not_run=None, proven=True, extra_blocking=None):
         """the persona's encrypted report and the one pass/fail line. Every step is exception-safe INSIDE this path: whatever fails here costs this persona a 'driver error'
@@ -1228,18 +1362,18 @@ def _main():
             elif not proven:
                 # no proof of exercising the RC image blocks the persona whatever else it reported (friction stays information, and stays in the report)
                 findings.append({"kind": "blocking", "text": (
-                    "the persona did not exercise the image under test: no cosign verify (or verify-attestation with a --type) of the release candidate's digest exited 0"
+                    "the persona did not exercise the image under test: no `cosign verify` of the image under test by its digest, with the documented promotion-workflow identity and OIDC issuer, exited 0"
                     if persona == "compliance-reviewer" else
                     "the persona did not exercise the image under test: the endpoint was never exercised (its request counter did not move during this persona's run)")})
             capped = tokens >= budget
             verdict = "blocking" if any(f["kind"] == "blocking" for f in findings) else ("friction" if findings else "pass")
-            hosts, bad = hosts_of(answer.get("commands", []))
-            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts), unparsed=bad)
+            hosts, bad, fl = hosts_of(answer.get("commands", []))
+            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts, persona), unparsed=bad, flags=fl)
         else:       # fail closed: whatever is not exactly the contract is a blocking persona that did not run
             findings = [{"kind": "blocking", "text": "%s did not run: %s" % (persona, did_not_run)}]
             tokens, capped, verdict = None, False, "blocking"
-            hosts, bad = hosts_of(transcript_commands(transcript))
-            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts), unparsed=bad)
+            hosts, bad, fl = hosts_of(transcript_commands(transcript))
+            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts, persona), unparsed=bad, flags=fl)
         ok = encrypt(a.recipient, persona, out_dir, itertools.chain([text.encode("utf-8", "replace"), b"\n=== TRANSCRIPT ===\n"],
                                                                     (c.encode("utf-8", "replace") for c in transcript_chunks(transcript, secrets))))
         if not ok:          # no readable fallback: the persona fails closed and nothing plaintext exists
