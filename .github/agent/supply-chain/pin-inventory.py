@@ -1685,7 +1685,8 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
             continue
         if _LEX_LIMIT[0] or path in getattr(files, "limit", ()):
             lim = Item("package", "pypi/(unmeasured:scan limit reached)", "(unpinned)")
-            lim.step = "file:" + hashlib.sha256(path.encode("utf-8", "replace")).hexdigest()[:10]
+            lim.step = "file:" + hashlib.sha256((path + "\0" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()).encode("utf-8", "replace")).hexdigest()[:10]       # path AND content: an incomplete scan is never the same item after an edit
+            lim.expr, lim.why, lim.file, lim.line = True, "incompletely scanned: action references and installer inputs not read", path, 1       # judged as an unparseable HIT naming the file
             found.append(lim)           # a bound was hit: the file was not read in full, which is reported, never silent
         used = set()
         for it in found:

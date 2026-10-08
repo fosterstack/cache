@@ -1043,6 +1043,9 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
+        for k in sorted(head):
+            if "scan limit reached" in head[k].name:
+                print("information: %s: incompletely scanned: action references and installer inputs not read" % clean(head[k].file))
         notes, findings, incomplete = [], [], False
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):

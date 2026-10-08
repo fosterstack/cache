@@ -3645,6 +3645,56 @@ def x_pip_environment_boundary():
     ks = sorted(repo_items({"pip.conf": "[global]\nindex-url = https://evil.example/simple\nfind-links = https://evil.example/wheels\nextra-index-url = https://e.example/s\n"})[0])
     assert not ks, ("index-url and find-links in a pip.conf are not measured", ks)
 
+
+# ======================================================================================================================================
+# step 8 round 8: an incomplete scan is never "unchanged": its item is keyed by the file's content, and the audit does not call it clean
+# ======================================================================================================================================
+def deep_wf(n, steps="      - run: echo hi\n", pin="pip install pyyaml==5.3"):
+    return "on: push\nx:\n" + " [\n" * n + " " + pin + "\n" + " ]\n" * n + "jobs:\n  j:\n    runs-on: u\n    steps:\n" + steps
+
+
+SHA_A, SHA_B = "a" * 40, "b" * 40
+
+
+@case("age", "AC2", "i: an INCOMPLETE scan is never 'unchanged across revisions': the `scan limit reached` item of a file is keyed by the file's path AND the sha256 of its exact content, so ANY edit of a file scanned flat is a moved item: with base and head both nested beyond the safe depth, a head that adds a digest-pinned action reference, or changes an installer version, is REFUSED by the age check (exit 1, the item named), a head with the same bytes moves nothing; in a set of files only the edited one moves")
+def i_incomplete_scan_is_content_keyed():
+    base_steps = "      - run: echo hi\n"
+    cases = (("an added action reference", base_steps, base_steps + "      - uses: actions/checkout@%s # v4\n" % SHA_A),
+             ("an installer version", base_steps + "      - uses: actions/setup-go@%s # v5\n        with:\n          go-version: '1.21'\n" % SHA_A,
+              base_steps + "      - uses: actions/setup-go@%s # v5\n        with:\n          go-version: '1.22'\n" % SHA_A),
+             ("a changed action digest", base_steps + "      - uses: actions/checkout@%s # v4\n" % SHA_A, base_steps + "      - uses: actions/checkout@%s # v4\n" % SHA_B))
+    for label, a, b in cases:
+        base, head = {WFPATH: deep_wf(400, a)}, {WFPATH: deep_wf(400, b)}
+        rc, out = run_age(exact_repo(base, head), OLD_FX)
+        assert rc == 1 and "scan limit reached" in out, (label, rc, out[-300:])
+    same = {WFPATH: deep_wf(400, base_steps)}
+    rc, out = run_age(exact_repo(same, {**same, "README.md": "x\n"}), OLD_FX)
+    assert rc == 0 and "no pin moved" in out, ("unchanged bytes move nothing", rc, out[-300:])
+    p2 = ".github/workflows/y.yml"
+    base = {WFPATH: deep_wf(400, base_steps), p2: deep_wf(300, base_steps)}
+    keys = lambda files: sorted(k for k in inv.inventory(files) if "scan limit reached" in k)
+    k0 = keys(base)
+    assert len(k0) == 2, k0
+    k1 = keys({**base, p2: deep_wf(300, base_steps + "      - uses: actions/checkout@%s # v4\n" % SHA_A)})
+    assert len(k1) == 2 and sorted(set(k0) - set(k1)) != [] and len(set(k0) & set(k1)) == 1, ("only the edited file's item moves", k0, k1)
+    a, b = keys({WFPATH: deep_wf(400, base_steps)}), keys({WFPATH: deep_wf(400, base_steps + "# edited\n")})
+    assert a != b and len(a) == len(b) == 1, (a, b)
+
+
+@case("audit", "AC11", "i: the daily audit does not call an incompletely scanned file clean: for a file nested beyond the safe depth it prints `incompletely scanned: action references and installer inputs not read` naming the file (information) AND reports it as a HIT of the unparseable class naming the file (exit 1); a file at the safe depth (200 levels: nothing unmeasured) and one beyond it (201: the content-keyed item) are told apart at the boundary")
+def i_audit_names_incompletely_scanned_file():
+    files = {WFPATH: deep_wf(400, "      - run: echo hi\n      - uses: actions/checkout@%s # v4\n" % SHA_A)}
+    repo, rc, out = run_audit_fx(files, files, {})
+    assert rc == 1, (rc, out[-400:])
+    assert any(WFPATH in l and "incompletely scanned: action references and installer inputs not read" in l for l in out.splitlines() if l.startswith("information:")), out[-600:]
+    assert any(WFPATH in l and "incompletely scanned" in l for l in hit_lines(out, "unparseable")), out[-600:]
+    for n, deep in ((199, False), (200, True)):               # the document root is level 1: n sequences make n + 1 levels
+        ks = sorted(inv.inventory({WFPATH: deep_wf(n)}))
+        assert bool([k for k in ks if "scan limit reached" in k]) == deep, (n, ks)
+        assert "package:pypi/pyyaml@5.3" in ks, (n, ks)
+        repo, rc, out = run_audit_fx({WFPATH: deep_wf(n)}, {WFPATH: deep_wf(n)}, {})
+        assert ("incompletely scanned" in out) == deep and (rc == 1) == deep, (n, rc, out[-300:])
+
 def main(argv):
     suites = {c[0] for c in CASES}
     suite = argv[1] if len(argv) > 1 else "all"
