@@ -148,5 +148,75 @@ class Cli(unittest.TestCase):
         self.assertIn("sonnet stop verdict is 'blocked'", out)
 
 
+class GuardFiles(Cli):
+    """The allowlist guard's own files sit outside .github/agent/ but are review-gated too: a PR that
+    changes only one of them needs a record bound to the content, and the tree hash covers them."""
+    GUARDS = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh", ".github/workflows/agent-review-gate.yml")
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs("bin"); os.makedirs(".github/workflows")
+        for g in self.GUARDS:
+            self.write(g, "v1\n")
+        self.write(".github/workflows/ci.yml", "ci1\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "guards")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def record(self):
+        tree = self.run_main("--print-tree")[1].strip()
+        rec = good(); rec["tree"] = tree
+        os.makedirs(".github/agent/reviews", exist_ok=True)
+        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        return tree
+
+    def test_each_guard_file_alone_needs_a_record(self):
+        for g in self.GUARDS:
+            self.git("reset", "-q", "--hard", self.base)
+            self.write(g, "v2\n"); self.git("commit", "-qam", "change " + g)
+            rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, g)
+            self.assertIn("no valid review record", out)
+            self.assertIn(g, out)
+
+    def test_a_matching_record_clears_a_guard_only_change(self):
+        self.write("bin/check-file-allowlist.sh", "v2\n"); self.git("commit", "-qam", "change")
+        self.record()
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clears the stop rule", out)
+
+    def test_a_stale_record_does_not_clear_a_later_guard_change(self):
+        self.write("bin/check-file-allowlist.sh", "v2\n"); self.git("commit", "-qam", "change")
+        self.record()
+        self.write("bin/check-file-allowlist.sh", "v3\n"); self.git("commit", "-qam", "change again")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+
+    def test_an_old_record_cannot_be_replayed_over_a_guard_change(self):
+        # a record exists for the unchanged agent content; changing only a guard file must not reuse it
+        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "agent change")
+        self.record()
+        mid = self.git("rev-parse", "HEAD").strip()
+        self.write("bin/check-file-allowlist-test.sh", "v2\n"); self.git("commit", "-qam", "guard only")
+        rc, out, _ = self.run_main("--base", mid, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+
+    def test_deleting_a_guard_file_is_a_change(self):
+        self.git("rm", "-q", "bin/check-file-allowlist.sh"); self.git("commit", "-qm", "delete")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+
+    def test_other_files_including_ci_yml_are_unaffected(self):
+        self.write(".github/workflows/ci.yml", "ci2\n"); self.write("src/y", "t\n")
+        self.git("commit", "-qam", "outside")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 0)
+        self.assertIn("nothing to clear", out)
+        t = self.run_main("--print-tree")[1].strip()
+        self.write(".github/workflows/ci.yml", "ci3\n"); self.git("commit", "-qam", "ci again")
+        self.assertEqual(self.run_main("--print-tree")[1].strip(), t)      # ci.yml is not part of the bound content
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
