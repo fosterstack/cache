@@ -178,6 +178,7 @@ jobs:
             python3 bin/vex-index.py verify --final "${work}/${v}/index.json" --vex .vex/fosterstack-cache.openvex.json --base "${work}/${v}-built.json" --blobs "${work}/${v}/blobs"
             pushed=$(python3 bin/vex-index.py push --registry ghcr.io --repository '${{ github.repository_owner }}/cache-candidates' --dir "${work}/${v}" --vex .vex/fosterstack-cache.openvex.json --base "${work}/${v}-built.json")
             [ "${pushed}" = "${f}" ] || { echo "::error::${v}: pushed ${pushed}, computed ${f}" >&2; exit 1; }
+            cp "${work}/${v}/index.json" "/tmp/final-index-${v}.json"
             final[$v]="${f}"
             echo "${v}: final index ${f}"
           done
@@ -207,8 +208,10 @@ jobs:
           repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
           for v in production debug fips; do
             d=$(jq -r --arg v "$v" '.[$v]' /tmp/digests.json)
-            docker buildx imagetools inspect --raw "${repo}@${d}" \
-              | jq --arg v "$v" '{variant: $v, platforms: [.manifests[] | select(.platform.os != "unknown") | {platform: (.platform.os + "/" + .platform.architecture), digest}]}'
+            # the platform list comes from the final index this job computed and verified, never from a second registry read
+            [ "sha256:$(sha256sum "/tmp/final-index-${v}.json" | cut -d' ' -f1)" = "${d}" ] \
+              || { echo "::error::${v}: the local final index is not ${d}" >&2; exit 1; }
+            jq --arg v "$v" '{variant: $v, platforms: [.manifests[] | select(.platform.os != "unknown") | {platform: (.platform.os + "/" + .platform.architecture), digest}]}' "/tmp/final-index-${v}.json"
           done | jq -s '.' > /tmp/platforms.json
           for v in production debug fips; do
             base=$(grep -oE 'sha256:[0-9a-f]{64}' "build/docker/Dockerfile.${v}" | head -1)

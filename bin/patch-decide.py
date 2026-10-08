@@ -53,13 +53,14 @@ MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   
 
 def _alone(m):
     text, i, j = m.string, m.start(), m.end()
-    while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;":
+    while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;`":
         i -= 1
-    while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;":
+    while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;`":
         j += 1
     token = text[i:j].rstrip(".:")
+    token = token.strip("`").lstrip("+-").strip("`")             # a signed product list: +pkg:..., -pkg:..., `pkg:...`
     token = re.sub(r"^pkg:[a-z0-9.+-]+/", "", token)          # a package URL's type is not part of the module path
-    token = re.sub(r"@[A-Za-z0-9._~+-]+$", "", token)          # nor is its version
+    token = re.sub(r"@(?:v?[0-9][A-Za-z0-9._~+-]*)$", "", token)   # nor is its version: it starts with v or a digit, never a vendor word
     return m.group(0) if MODULE_PATH.match(token) else "<redacted>"
 
 
@@ -185,24 +186,37 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
-def _not_data(f, diff, mode, old_mode):
-    """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content"""
+SHEBANG_LINE = re.compile(r"(?m)^#!")
+
+
+def _not_data(f, diff, mode, old_mode, contents=None):
+    """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content.
+    A script line is a shebang line (`#!` at the start of ANY line); it is looked for in the whole new content and in the
+    whole old content (what a commit deletes or replaces), read from the blobs when `contents` has them, else from the diff."""
     if old_mode in ("100755", "120000"):
         return "%s was %s before: not data" % (f, "a symlink" if old_mode == "120000" else "executable")
-    if mode == "000000":
-        return None if old_mode == "100644" else "%s is deleted and its old file type is unknown" % f
-    if mode != "100644":
+    if mode != "000000" and mode != "100644":
         return "%s has mode %s; data is a regular non-executable file (100644)" % (f, mode or "?")
-    text = "\n".join(l[1:] for l in (diff or "").split("\n") if l[:1] in ("+", " "))
-    if not text:
+    if mode == "000000" and old_mode != "100644":
+        return "%s is deleted and its old file type is unknown" % f
+    if contents is not None:
+        old_text, new_text = contents.get("old"), contents.get("new")
+    else:
+        lines = (diff or "").split("\n")
+        old_text = "\n".join(l[1:] for l in lines if l[:1] in ("-", " ")) or None
+        new_text = "\n".join(l[1:] for l in lines if l[:1] in ("+", " ")) or None
+    for label, text in (("new", new_text), ("old", old_text)):
+        if text is not None and ("\0" in text):
+            return "%s holds NUL or non-text bytes (%s content): not text" % (f, label)
+        if text is not None and SHEBANG_LINE.search(text):
+            return "%s has a shebang line in its %s content: a script, not data" % (f, label)
+    if mode == "000000":
+        return None
+    if not new_text:
         return "%s shows no content (binary, or a mode-only change): not proven data" % f
-    if "\0" in text:
-        return "%s holds NUL bytes: not text" % f
-    if text.startswith("#!"):
-        return "%s starts with a shebang line: a script, not data" % f
     if f.endswith(".json"):
         try:
-            if not isinstance(json.loads(text), (dict, list)):
+            if not isinstance(json.loads(new_text), (dict, list)):
                 return "%s is not a JSON object or array" % f
         except ValueError:
             return "%s is not valid JSON" % f
@@ -218,7 +232,7 @@ def classify(commit):
     for f in files:
         if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
             # neutral only as DATA, proven from the committed content and the old and new file types (REQ-REL-009 AC15)
-            bad = _not_data(f, diffs.get(f), modes.get(f), old_modes.get(f))
+            bad = _not_data(f, diffs.get(f), modes.get(f), old_modes.get(f), (commit.get("contents") or {}).get(f))
             if bad:
                 kinds.add("dirty"); why.append(bad); hard = True       # no label turns this into a fix
             else:
@@ -655,6 +669,17 @@ def _git(*args, cwd="."):
     return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, check=True).stdout
 
 
+def _blob(spec, cwd):
+    """a file's text at a revision (git show rev:path); None when it does not exist there; non-UTF-8 bytes read as binary"""
+    p = subprocess.run(["git", "-C", cwd, "show", spec], capture_output=True)
+    if p.returncode != 0:
+        return None
+    try:
+        return p.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return "\0binary"
+
+
 def gather_commits(since, cwd=".", labels=lambda sha: []):
     """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
@@ -672,7 +697,12 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]
                 old_modes[paths.split("\t")[-1]] = meta.split()[0].lstrip(":")
-        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "old_modes": old_modes, "labels": list(labels(sha))})
+        # the old and new blobs of every neutral-named path, read whole (a diff's context window is no limit on what is checked)
+        contents = {}
+        for f in files:
+            if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+                contents[f] = {"old": _blob("%s^:%s" % (sha, f), cwd), "new": _blob("%s:%s" % (sha, f), cwd)}
+        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "old_modes": old_modes, "contents": contents, "labels": list(labels(sha))})
     return out
 
 

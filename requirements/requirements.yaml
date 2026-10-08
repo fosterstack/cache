@@ -1526,7 +1526,7 @@ requirements:
       - id: REQ-REL-009-AC15
         given: "the commits on main since the latest release tag change only the auditor's own work (.auditor/panel-state.json, .auditor/knowledge.md and the JSON files directly under .auditor/proposals/) or the .vex/README.md file (advisor 0254)"
         when: "decide classifies them"
-        then: "those files are neutral, as data only: they ship no bytes, cut no release by themselves and never block a patch cut for another change; a script, an executable or linked file, a test or a file with a script line at those paths is not data and is not patch-clean; every other file under .auditor/ and .vex/ keeps its classification (the accepted-items suppression file and the VEX JSON stay fix-class)"
+        then: "those files are neutral, as data only: they ship no bytes, cut no release by themselves and never block a patch cut for another change; a script, an executable or linked file, a test, or a file with a shebang line (a line starting with #!, anywhere in its content, or in the content a commit deletes or replaces) at those paths is not data and is not patch-clean (text that looks like a script but has no shebang line is data); every other file under .auditor/ and .vex/ keeps its classification (the accepted-items suppression file and the VEX JSON stay fix-class)"
         verification: { method: unit, release_blocking: false }
         status: approved
 

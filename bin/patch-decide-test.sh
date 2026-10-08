@@ -1055,6 +1055,55 @@ check("redaction: the notes keep the product identity of an ambiguous statement 
 for secret in ("confirmed by Google", "reported by Bedrock", "thanks Claude", "see [github.com/Azure/azure-sdk-for-go]", "pkg:golang/github.com/Azure/azure-sdk-for-go", "Meta Llama"):
     out_ = P._clean(secret)
     check("redaction: %r is still redacted" % secret, "<redacted>" in out_ and not re.search(r"(?i)claude|bedrock|llama|(?<![a-z])google(?![.\w])|(?<![a-z/])azure", out_.replace("azure-sdk-for-go", "")), out_)
+# --- step 8 round 2 (REQ-REL-009-AC15, AC14): "script lines" are shebang lines, anywhere in the old or the new content; signed product lists keep their identifiers
+SHEBANG_SCRIPT = "#!/bin/sh\necho run\n"
+PY_NO_SHEBANG = "import os\nprint(os.getcwd())\n\ndef main():\n    pass\n"
+for path in (KN, RD):
+    got = verdict_new(path, PY_NO_SHEBANG)
+    check("AC15 git: %s holding script-looking text without any shebang line is data (neutral, documented rule)" % path, got == "neutral", got)
+    for label, body in (("a shebang after a comment line", "# a comment\n#!/bin/sh\necho x\n"), ("a shebang in the middle", "intro\ntext\n#!/usr/bin/env python3\nmore\n"),
+                        ("a shebang on the last line", "text\n#!/bin/sh")):
+        got = verdict_new(path, body)
+        check("AC15 git: a new %s with %s is dirty" % (path, label), got == "dirty", got)
+    base = dict(BASE0, **{path: (SHEBANG_SCRIPT, "100644")})
+    got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+    check("AC15 git: deleting %s whose removed lines hold a shebang line is dirty" % path, got == "dirty", got)
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}))[0][0]
+    check("AC15 git: replacing the shebang script %s by ordinary text is dirty (the removed lines held a shebang)" % path, got == "dirty", got)
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("ordinary text now\nnothing else\n", "100644")}), labels=("patch-fix",))[0][0]
+    check("AC15 git: the patch-fix label does not clear the replacement of the shebang script %s" % path, got == "dirty", got)
+    got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)), labels=("patch-fix",))[0][0]
+    check("AC15 git: the patch-fix label does not clear the deletion of the shebang script %s" % path, got == "dirty", got)
+    got = verdict_(dict(BASE0, **{path: (PY_NO_SHEBANG, "100644")}), lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+    check("AC15 git: deleting a text file with script-looking lines but no shebang is neutral", got == "neutral", got)
+    big = "#!/bin/sh\n" + "".join("line %d\n" % i for i in range(150000))
+    bigger = big.replace("line 140000\n", "line 140000 edited\n")
+    got = verdict_(dict(BASE0, **{path: (big, "100644")}), lambda r_, path=path: put_(r_, {path: (bigger, "100644")}))[0][0]
+    check("AC15 git: %s of 150k lines with an unchanged shebang first line, edited far from line 1, is dirty" % path, got == "dirty", got)
+    bigt = "plain\n" + "".join("line %d\n" % i for i in range(150000))
+    got = verdict_(dict(BASE0, **{path: (bigt, "100644")}), lambda r_, path=path: put_(r_, {path: (bigt.replace("line 140000\n", "line 140000 edited\n"), "100644")}))[0][0]
+    check("AC15 git: the same 150k-line file without a shebang is neutral", got == "neutral", got)
+D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: (SHEBANG_SCRIPT, "100644")}), lambda r_: os.remove(os.path.join(r_, KN)))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a deleted shebang script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+# signed product lists
+def pl_notes(old_p, new_p):
+    ch_ = P.vex_changes(vdoc2([stmt("CVE-2099-0900", products=old_p)]), vdoc2([stmt("CVE-2099-0900", products=new_p)]))
+    return [l for l in vex_section(P.notes("v0.2.2", [], ch_)).split("\n") if "CVE-2099-0900" in l]
+for old_v, new_v in ((("pkg:golang/google.golang.org/grpc@v1.2.0",), ("pkg:golang/google.golang.org/grpc@v1.3.0",)),
+                     (("pkg:maven/com.google.guava/guava@32.1.0",), ("pkg:maven/com.google.guava/guava@33.0.0",)),
+                     (("pkg:golang/cloud.google.com/go/storage@v1.30.0", "pkg:oci/cache"), ("pkg:golang/cloud.google.com/go/storage@v1.31.0", "pkg:oci/cache"))):
+    ls_ = pl_notes(old_v, new_v)
+    check("AC14 the notes of a product list changing %s -> %s keep both identifiers exactly, signed" % (old_v[0][:40], new_v[0][-14:]),
+          len(ls_) == 1 and all("+" + x in ls_[0] for x in new_v if x not in old_v) and all("-" + x in ls_[0] for x in old_v if x not in new_v), ls_)
+for ident in ("pkg:golang/google.golang.org/grpc@v1.3.0", "pkg:maven/com.google.guava/guava@33.0.0", "google.golang.org/grpc", "pkg:golang/github.com/aws/aws-sdk-go-v2@v2.1.0"):
+    for tmpl in ("+%s", "-%s", "products +%s -%s", "(+%s)", "`%s`", "`+%s`", "[-%s]", "x,+%s,y", "+%s."):
+        out_ = P._clean(tmpl % ((ident,) * tmpl.count("%s")))
+        check("redaction: %s stays intact in %r" % (ident, tmpl), ident in out_, out_)
+for vers, keep in (("v1.2.3", True), ("1.2.3", True), ("v0.0.0-20200101-abcdef", True), ("1.0.0-rc1", True), ("Azure", False), ("Google", False), ("latest", False)):
+    out_ = P._clean("pkg:golang/example.com/foo@%s" % vers)
+    check("redaction: a purl whose version is %r is %s" % (vers, "kept" if keep else "redacted when it names a vendor"),
+          (("@" + vers) in out_) if keep else ((vers.lower() not in ("azure", "google")) or "<redacted>" in out_ or ("@" + vers) not in out_), out_)
+check("redaction: a purl whose version is a vendor word is redacted", "<redacted>" in P._clean("pkg:golang/example.com/foo@Azure") and "<redacted>" in P._clean("pkg:golang/example.com/foo@Google"), P._clean("pkg:golang/example.com/foo@Azure"))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

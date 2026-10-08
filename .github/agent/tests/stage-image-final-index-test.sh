@@ -617,6 +617,7 @@ class Reg:
 
     def __init__(self, fail_after=None):
         self.blobs, self.mans, self.log, self.fail_after, self.writes_ok = set(), {}, [], fail_after, 0
+        self.gets, self.later_gets = {}, {}
         self.lock = threading.Lock()
         reg = self
 
@@ -707,6 +708,10 @@ class Reg:
                 return 201, {"Docker-Content-Digest": ref}, b""
             if ref in self.mans:
                 b, ct = self.mans[ref]
+                if m == "GET":
+                    self.gets[ref] = self.gets.get(ref, 0) + 1
+                    if self.gets[ref] > 1 and ref in self.later_gets:
+                        b = self.later_gets[ref]      # a registry that changes its answer after the push verified it
                 return 200, {"Content-Type": ct, "Docker-Content-Digest": ref}, b
             return err(404)
         return err(404)
@@ -788,6 +793,20 @@ if [ "$rc" = 0 ] && [ "${2:-}" = compute ] && [ -n "${TAMPER_COMPUTE_N:-}" ]; th
     printf ' ' >> "$out/index.json"
   fi
 fi
+if [ "$rc" = 0 ] && [ "${2:-}" = compute ] && [ -n "${TAMPER_BASEDIGEST_N:-}" ]; then
+  n=$(grep -c '^python3 bin/vex-index.py compute' "$CALLS" || true)
+  if [ "$n" = "$TAMPER_BASEDIGEST_N" ]; then
+    out=""; prev=""
+    for x in "$@"; do if [ "$prev" = --out-dir ]; then out=$x; fi; prev=$x; done
+    "%s" - "$out/result.json" <<'PYEND'
+import json, sys
+p = sys.argv[1]
+o = json.load(open(p))
+o["base_digest"] = "sha256:" + "0" * 64
+open(p, "w").write(json.dumps(o, sort_keys=True, separators=(",", ":")) + "\\n")
+PYEND
+  fi
+fi
 exit $rc
 '''
 
@@ -867,7 +886,7 @@ def make_box(reg, variants_fx, vex_bytes=None, with_registry=True):
     with open(os.path.join(b.bin, "docker"), "w") as f:
         f.write(DOCKER_STUB % {"py": sys.executable})
     with open(os.path.join(b.bin, "python3"), "w") as f:
-        f.write(PY_SHIM % sys.executable)
+        f.write(PY_SHIM % (sys.executable, sys.executable))
     with open(os.path.join(b.bin, "gh"), "w") as f:
         f.write(GH_STUB % {"py": sys.executable})
     for n in ("docker", "python3", "gh"):
@@ -2463,6 +2482,63 @@ def _():
     real = [l.split("\t")[0] for l in r2.stdout.strip().split("\n")]
     eq([x[0] for x in sample], real, "the platform column of the sample vs the filter's output")
     ok(all(re.fullmatch(r"sha256:[0-9a-f]{6,}(\.\.\.)?", x[1]) for x in sample), "the sample digests are not shaped like digests: %s" % sample)
+
+# ================================================================ step 8 round 2: no unbound second read of F; the computed base digest
+def indep_final_index(var):
+    """the final index bytes the committed tool computes from D's bytes and the committed VEX"""
+    d = tempfile.mkdtemp(dir=TMP)
+    idx, out, vp = os.path.join(d, "index.json"), os.path.join(d, "out"), os.path.join(d, "vex.json")
+    open(idx, "wb").write(var["index"])
+    open(vp, "wb").write(open(os.path.join(ROOT, VEX_PATH), "rb").read())
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "vex-index.py"), "compute", "--index", idx, "--vex", vp, "--out-dir", out], capture_output=True, text=True)
+    ok(r.returncode == 0, r.stderr)
+    return open(os.path.join(out, "index.json"), "rb").read()
+
+
+for which in ("production", "fips"):
+    @case("1", "e2e: a registry that answers the SECOND read of %s's F with a platform entry naming D cannot put D into the signed predicate" % which)
+    def _(which=which):
+        control = released()
+        need_ok(control)
+        fx = fixtures()
+        reg = Reg()
+        f_idx = json.loads(indep_final_index(fx[which]))
+        plat = [m_ for m_ in f_idx["manifests"] if (m_.get("annotations") or {}).get("vnd.docker.reference.type") != ATTEST_TYPE][0]
+        plat["digest"] = fx[which]["digest"]
+        reg.later_gets[indep_final(fx[which])] = jb(f_idx)
+        r = assemble_run(reg=reg, fx=fx)
+        want = {v: sorted(k["digest"] for k in fx[v]["kids"]) for v in VARIANTS}
+        if r.failed is None:
+            pred = snap_pred(snap_of(r, "actions/attest@"))
+            got = {e["variant"]: sorted(x["digest"] for x in e["platforms"]) for e in pred["platform_manifests"]}
+            eq(got, want, "the signed predicate's platform manifests (they come from the verified F, not from a second registry read)")
+            for sn in r.snaps:
+                for key in ("subject-checksums", "predicate-path"):
+                    t_ = sn.get(key) or ""
+                    ok(fx[which]["digest"] not in t_ and hexof(fx[which]["digest"]) not in t_, "D appears in the signed %s" % key)
+
+
+@case("1", "e2e: when the registry answers a later read of F with other bytes, no step is fed by that read (the registry is read for F only to verify the push)")
+def _():
+    fx = fixtures()
+    reg = Reg()
+    for v in VARIANTS:
+        reg.later_gets[indep_final(fx[v])] = b'{"schemaVersion":2,"mediaType":"%s","manifests":[]}' % OCI_IDX.encode()
+    r = assemble_run(reg=reg, fx=fx)
+    if r.failed is None:
+        pred = snap_pred(snap_of(r, "actions/attest@"))
+        ok(all(len(e["platforms"]) == 2 for e in pred["platform_manifests"]), "the predicate was built from a registry answer that is not the verified F: %s" % pred["platform_manifests"])
+
+
+@case("1", "e2e: a compute whose result.json names another base digest than D stops the stage before verify and push")
+def _():
+    control = released()
+    need_ok(control)
+    r = assemble_run(extra_env={"TAMPER_BASEDIGEST_N": "1"})
+    ok(r.failed is not None, "the stage passed although compute reported another base digest")
+    ok(not r.attest, "an attest step was reached")
+    cs = calls(r.box)
+    ok(not any(c.startswith("python3 bin/vex-index.py verify") or c.startswith("python3 bin/vex-index.py push") for c in cs), "verify or push ran after compute reported another base digest")
 
 
 def main():
