@@ -5,10 +5,12 @@ name: 'Stage: reproducibility'
 # two-assembly digest comparison; THIS stage is the tag chain's version:
 # verify the image-build predicate for the pushed candidate digests, then
 # repeat the assembly from the same verified dist/ on a fresh runner with
-# a local OCI output — no push — and assert the locally computed index
-# digests equal the verified pushed ones, variant for variant. If they
-# differ the release fails and we learn something; nothing papers over it.
-# Signs a reproducibility predicate naming the same digests.
+# a local OCI output — no push — then recompute the final index offline
+# from the rebuilt archive's own index (bin/vex-index.py compute, the same
+# committed VEX) and assert it equals the verified pushed final index,
+# variant for variant. If they differ the release fails and we learn
+# something; nothing papers over it. Signs a reproducibility predicate
+# naming the same final index digests.
 
 on:
   workflow_call:

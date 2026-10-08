@@ -655,6 +655,10 @@ class Reg:
         self.srv.shutdown()
         self.srv.server_close()
 
+    def substitute(self, digest, body):
+        """answer requests for `digest` with other (valid) bytes, as a faulty or hostile registry could"""
+        self.mans[digest] = (body, OCI_IDX)
+
     def seed(self, var):
         for k in var["kids"]:
             self.mans[k["digest"]] = (k["bytes"], OCI_MAN)
@@ -747,7 +751,10 @@ if a[:2] == ["buildx", "build"]:
                 ti = tarfile.TarInfo(name); ti.size = len(data); t.addfile(ti, io.BytesIO(data))
             add("oci-layout", b'{"imageLayoutVersion":"1.0.0"}')
             add("index.json", json.dumps({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": d, "size": len(raw)}]}).encode())
-            add("blobs/sha256/" + d.split(":")[1], raw)
+            blob = raw + os.environ.get("ARCHIVE_BLOB_SUFFIX", "").encode()
+            if os.environ.get("ARCHIVE_BLOB_FILE"):
+                blob = open(os.environ["ARCHIVE_BLOB_FILE"], "rb").read()
+            add("blobs/sha256/" + d.split(":")[1], blob)
             for k in sorted(os.listdir(os.path.join(fx, var + ".kids"))):
                 add("blobs/sha256/" + k, open(os.path.join(fx, var + ".kids", k), "rb").read())
     if meta:
@@ -989,6 +996,8 @@ def run_steps(b, steps, mode, extra_ctx=None):
         env.update({"PATH": b.bin + os.pathsep + env["PATH"], "CALLS": b.calls, "FX": b.fx, "REG_PORT": str(b.reg.port),
                     "GITHUB_OUTPUT": out_file, "GITHUB_SHA": b.sha, "GITHUB_REPOSITORY": OWNER + "/cache", "GITHUB_WORKSPACE": b.repo,
                     "GITHUB_ACTOR": "ci-actor", "PYTHONDONTWRITEBYTECODE": "1", "HOME": b.dir, "GH_EXPECT_REPO": OWNER + "/cache"})
+        for k_ in ("ARCHIVE_BLOB_SUFFIX", "ARCHIVE_BLOB_FILE"):
+            env.pop(k_, None)
         env.update(getattr(b, "extra_env", {}))
         if not b.with_registry:
             env["NO_REGISTRY"] = "1"
@@ -1061,11 +1070,13 @@ def snap_pred(snap):
 _CACHE = {}
 
 
-def assemble_run(mode="release", reg=None, fx=None, fail_after=None, extra_env=None):
+def assemble_run(mode="release", reg=None, fx=None, fail_after=None, extra_env=None, substitute=None):
     reg = reg or Reg(fail_after=fail_after)
     fx = fx or fixtures()
     for var in fx.values():
         reg.seed(var)
+    for v_, body_ in (substitute or {}).items():
+        reg.substitute(fx[v_]["digest"], body_)
     b = make_box(reg, fx)
     b.extra_env.update(extra_env or {})
     reject_unmodelled_settings("stage-image.yml", "assemble")
@@ -1276,10 +1287,11 @@ def _():
 
 
 # ================================================================ clause 2, executed: the reproducibility steps
-def repro_run(digests, rebuilt, vex_bytes=None, gh_attested=None):
+def repro_run(digests, rebuilt, vex_bytes=None, gh_attested=None, extra_env=None):
     """run stage-reproducibility's steps after the buildx setup against a rebuild that yields `rebuilt`; no registry"""
     reg = Reg()
     b = make_box(reg, rebuilt, vex_bytes=vex_bytes, with_registry=False)
+    b.extra_env.update(extra_env or {})
     if gh_attested is not None:
         b.extra_env["GH_ATTESTED"] = ",".join(gh_attested)
     reject_unmodelled_settings("stage-reproducibility.yml", "reproduce")
@@ -2340,6 +2352,117 @@ def _():
     for c in [c for c in calls(r.box) if c.startswith("docker login")]:
         eq(c.split()[2], host, "the login target of: " + c)
     eq(len(r.results), len([s for s in repro_steps() if "run" in s]), "run steps executed")
+
+# ================================================================ step 8 round 1: source binding, documentation truth
+def altered_index(var, how):
+    o = json.loads(var["index"])
+    if how == "annotation":
+        o["annotations"] = {"substituted": "yes"}
+        return jb(o)
+    if how == "newline":
+        return var["index"] + b"\n"
+    raise Fail(how)
+
+
+def binding_run(how):
+    fx = fixtures()
+    reg = Reg()
+    if how == "child":
+        alt = mk_variant("production", "another-build")
+        reg.seed(alt)        # its children are available in the registry, so the substituted index is a valid, pushable base
+        body = alt["index"]
+    else:
+        body = altered_index(fx["production"], how)
+    r = assemble_run(reg=reg, fx=fx, substitute={"production": body})
+    return r
+
+
+for how, label in (("annotation", "an index with another annotation"), ("child", "an index naming another platform manifest"),
+                   ("newline", "the same bytes plus a trailing newline")):
+    @case("1", "e2e: the registry answers the request for D with %s: the stage fails before compute and before any attest step" % label)
+    def _(how=how):
+        control = released()
+        need_ok(control)
+        r = binding_run(how)
+        ok(r.failed is not None, "the stage went on with bytes that are not D")
+        ok(not r.attest, "an attest step was reached with a substituted base")
+        no_digests_output(r)
+        ok(not any(c.startswith("python3 bin/vex-index.py compute") for c in calls(r.box)), "compute ran on bytes that are not D")
+        ok(not [e for e in r.reg.log if e["m"] in ("PUT", "POST") and e["st"] < 300], "something was pushed for a substituted base")
+
+
+@case("1", "e2e: each variant's fetched bytes are bound to its D (a substitution for the LAST variant stops the stage too)")
+def _():
+    fx = fixtures()
+    r = assemble_run(fx=fx, substitute={"fips": altered_index(fx["fips"], "annotation")})
+    ok(r.failed is not None, "a substituted fips base passed")
+    ok(not r.attest, "an attest step was reached")
+    no_digests_output(r)
+
+
+@case("2", "e2e: the rebuilt archive's index bytes are bound to the digest its own index.json names (extra bytes and another index are refused)")
+def _():
+    fx, F = repro_inputs()
+    repro_control(fx, F)
+    r = repro_run(F, fx, extra_env={"ARCHIVE_BLOB_SUFFIX": "\n"})
+    ok(r.failed is not None and not r.attest, "an archive blob that does not hash to its digest passed")
+    alt = tempfile.mkdtemp(dir=TMP)
+    other = mk_variant("production", "another-build")
+    path = os.path.join(alt, "other.json")
+    open(path, "wb").write(other["index"])
+    r = repro_run(F, fx, extra_env={"ARCHIVE_BLOB_FILE": path})
+    ok(r.failed is not None and not r.attest, "another valid index under the named digest passed")
+
+
+def header_comment(name):
+    out = []
+    for l in wf_text(name).split("\n")[1:]:
+        if l.startswith("#") or not l.strip():
+            out.append(l)
+        else:
+            break
+    return "\n".join(out)
+
+
+@case("7", "documentation: stage-image's comments describe the final index, not digests 'exactly as buildx emitted, never a registry lookup'")
+def _():
+    t = wf_text("stage-image.yml")
+    for stale in ("never a registry lookup", "exactly as buildx's metadata emitted", "digests buildx EMITTED"):
+        ok(stale not in t, "stage-image.yml still says %r" % stale)
+    ok("final index" in header_comment("stage-image.yml").lower(), "stage-image.yml's header does not describe the final index")
+
+
+@case("7", "documentation: stage-reproducibility's header describes the offline recompute of the final index")
+def _():
+    h_ = header_comment("stage-reproducibility.yml").lower()
+    ok("final index" in h_ and "recompute" in h_ and "offline" in h_, "the header does not describe recomputing the final index offline")
+    ok("locally computed index digests equal" not in h_, "the header still describes comparing the rebuilt index digest")
+
+
+@case("7", "documentation: scan.yml does not call the reproducibility stage unchanged")
+def _():
+    for l in wf_text("scan.yml").split("\n"):
+        ok(not ("stage-reproducibility.yml" in l and "unchanged" in l), "scan.yml still says: %s" % l.strip())
+
+
+@case("7", "documentation: docs/verify-images.md's sample output is what its own jq filter prints for a final index")
+def _():
+    doc = open(os.path.join(ROOT, "docs", "verify-images.md"), encoding="utf-8").read()
+    m = re.search(r"```sh\n(docker manifest inspect[^\n]*\\\n[^\n]*jq -r '([^']*)'\n(?:# [^\n]*\n)+)```", doc)
+    ok(m, "the manifest-inspect example block is missing")
+    jq_filter, block = m.group(2), m.group(1)
+    sample = [l[2:].split() for l in block.split("\n") if l.startswith("# ")]
+    fx = mk_variant("production")
+    d = tempfile.mkdtemp(dir=TMP)
+    open(os.path.join(d, "idx.json"), "wb").write(fx["index"])
+    open(os.path.join(d, "vex.json"), "wb").write(open(os.path.join(ROOT, VEX_PATH), "rb").read())
+    r1 = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "vex-index.py"), "compute", "--index", os.path.join(d, "idx.json"), "--vex", os.path.join(d, "vex.json"), "--out-dir", os.path.join(d, "o")], capture_output=True, text=True)
+    ok(r1.returncode == 0, r1.stderr)
+    r2 = subprocess.run(["jq", "-r", jq_filter], stdin=open(os.path.join(d, "o", "index.json")), capture_output=True, text=True)
+    ok(r2.returncode == 0, r2.stderr)
+    real = [l.split("\t")[0] for l in r2.stdout.strip().split("\n")]
+    eq([x[0] for x in sample], real, "the platform column of the sample vs the filter's output")
+    ok(all(re.fullmatch(r"sha256:[0-9a-f]{6,}(\.\.\.)?", x[1]) for x in sample), "the sample digests are not shaped like digests: %s" % sample)
 
 
 def main():

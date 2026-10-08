@@ -58,6 +58,8 @@ def _alone(m):
     while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;":
         j += 1
     token = text[i:j].rstrip(".:")
+    token = re.sub(r"^pkg:[a-z0-9.+-]+/", "", token)          # a package URL's type is not part of the module path
+    token = re.sub(r"@[A-Za-z0-9._~+-]+$", "", token)          # nor is its version
     return m.group(0) if MODULE_PATH.match(token) else "<redacted>"
 
 
@@ -183,13 +185,45 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
+def _not_data(f, diff, mode, old_mode):
+    """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content"""
+    if old_mode in ("100755", "120000"):
+        return "%s was %s before: not data" % (f, "a symlink" if old_mode == "120000" else "executable")
+    if mode == "000000":
+        return None if old_mode == "100644" else "%s is deleted and its old file type is unknown" % f
+    if mode != "100644":
+        return "%s has mode %s; data is a regular non-executable file (100644)" % (f, mode or "?")
+    text = "\n".join(l[1:] for l in (diff or "").split("\n") if l[:1] in ("+", " "))
+    if not text:
+        return "%s shows no content (binary, or a mode-only change): not proven data" % f
+    if "\0" in text:
+        return "%s holds NUL bytes: not text" % f
+    if text.startswith("#!"):
+        return "%s starts with a shebang line: a script, not data" % f
+    if f.endswith(".json"):
+        try:
+            if not isinstance(json.loads(text), (dict, list)):
+                return "%s is not a JSON object or array" % f
+        except ValueError:
+            return "%s is not valid JSON" % f
+    return None
+
+
 def classify(commit):
     """('fix' | 'neutral' | 'dirty', reason) for one commit. Neutral means non-executable data only — docs/, requirements/,
     test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3)."""
     files, diffs, modes = commit.get("files") or [], commit.get("diffs") or {}, commit.get("modes") or {}
-    kinds, why = set(), []
+    kinds, why, hard = set(), [], False
+    old_modes = commit.get("old_modes") or {}
     for f in files:
-        if modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
+        if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+            # neutral only as DATA, proven from the committed content and the old and new file types (REQ-REL-009 AC15)
+            bad = _not_data(f, diffs.get(f), modes.get(f), old_modes.get(f))
+            if bad:
+                kinds.add("dirty"); why.append(bad); hard = True       # no label turns this into a fix
+            else:
+                kinds.add("neutral")
+        elif modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
             # data is not executable: Git's executable bit, a symlink, or a script's #! line (Codex #159 AC1(h), B01)
             kinds.add("dirty"); why.append("%s is executable (mode %s or a #! line), never data" % (f, modes.get(f, "?")))
         elif TEST_FILE.search(f):
@@ -199,8 +233,6 @@ def classify(commit):
             # only data is neutral by its directory (Sonnet #159 r7 B4, r8): anything without a data extension —
             # a script, an extensionless file, another extension — could be executed, so it is not
             kinds.add("dirty"); why.append("%s is not a data file; a directory does not make it neutral" % f)
-        elif f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
-            kinds.add("neutral")
         elif f in FIX_EXACT or (f.startswith(FIX_PREFIX) and DATA_FILE.search(f)):
             # the auditor's output directories make only DATA fix-class — never a script there (Codex #159 r5b, B10)
             kinds.add("fix")
@@ -229,7 +261,7 @@ def classify(commit):
             kinds.add("neutral")
         else:
             kinds.add("dirty"); why.append("%s is shipped source or configuration" % f)
-    if "dirty" in kinds and "patch-fix" in (commit.get("labels") or []):
+    if "dirty" in kinds and not hard and "patch-fix" in (commit.get("labels") or []):
         return "fix", "labelled patch-fix (no behavior change)"
     if "dirty" in kinds:
         return "dirty", "; ".join(why)
@@ -312,9 +344,10 @@ def notes(version, fixes, vex_changes, behavior=(), vex_bytes_changed=False):
             f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
-        if not behavior and vex_changes:
+        statement_changes = [v for v in vex_changes if v["cve"] != "(document)"]
+        if not behavior and statement_changes:
             lines.append("- VEX-only: this patch changes VEX statements and nothing else")
-        elif not behavior and not fixes and vex_bytes_changed:
+        elif not behavior and (vex_changes or vex_bytes_changed):
             lines.append("- VEX-only (no statement change): the VEX file changed but no statement did")
     lines += ["", "### VEX"]
     lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
@@ -431,15 +464,26 @@ def vex_changes(old_doc, new_doc):
     sets first, the rest in file order (a changed product list). A vulnerability with several statements is named with
     the statement's product set, "CVE [pkg:a, pkg:b]". Reordering is no change; a changed statement names the fields
     that differ (products as +added -removed); a document-level change is one 'document metadata' entry."""
+    def canon_product(p_):
+        if isinstance(p_, dict) and isinstance(p_.get("subcomponents"), list):
+            p_ = dict(p_, subcomponents=sorted(p_["subcomponents"], key=lambda x: json.dumps(x, sort_keys=True)))
+        return p_
     def canon(st):
         st = dict(st)
         if isinstance(st.get("products"), list):
-            st["products"] = sorted(st["products"], key=lambda p_: json.dumps(p_, sort_keys=True))
+            st["products"] = sorted((canon_product(p_) for p_ in st["products"]), key=lambda p_: json.dumps(p_, sort_keys=True))
         return st
     def pid(p_):
         return p_.get("@id") if isinstance(p_, dict) and p_.get("@id") else json.dumps(p_, sort_keys=True)
+    def members(st):
+        out_ = []
+        for p_ in st.get("products", []):
+            out_.append(pid(p_))
+            for sc in (p_.get("subcomponents") or []) if isinstance(p_, dict) else []:
+                out_.append("%s[%s]" % (pid(p_), pid(sc)))
+        return out_
     def pset(st):
-        return tuple(sorted(pid(p_) for p_ in st.get("products", [])))
+        return tuple(sorted(members(st)))
     def groups(doc):
         g = {}
         for st in (doc or {}).get("statements", []):
@@ -616,18 +660,19 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
-        files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
+        files = [f for f in _git("show", "--format=", "--name-only", "--no-renames", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
-        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
+        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--no-renames", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
-        modes = {}
-        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "-M", sha, cwd=cwd).splitlines():
+        modes, old_modes = {}, {}
+        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd).splitlines():
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]
-        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "labels": list(labels(sha))})
+                old_modes[paths.split("\t")[-1]] = meta.split()[0].lstrip(":")
+        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "old_modes": old_modes, "labels": list(labels(sha))})
     return out
 
 

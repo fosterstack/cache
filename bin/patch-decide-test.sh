@@ -666,6 +666,13 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# neutral-path commits carry the data they commit: a neutral path is neutral only when the committed content is data
+def nc(f, body=None, mode="100644", old_mode=None, labels=()):
+    body = body if body is not None else ("{}\n" if f.endswith(".json") else "# notes\n")
+    d = dict(c("n", [f], labels=labels, diffs={f: "".join("+%s\n" % l for l in body.split("\n")[:-1])} if mode != "000000" else {f: ""}), modes={f: mode})
+    if old_mode:
+        d["old_modes"] = {f: old_mode}
+    return d
 # --- REQ-REL-009-AC14 / AC15 (advisor 0254, 0257): a VEX-only range cuts an ordinary patch whose notes say so; the auditor's
 # other work (panel state, knowledge, proposals) cuts nothing by itself
 VEXF = ".vex/fosterstack-cache.openvex.json"
@@ -720,14 +727,14 @@ for rel, body in ((".auditor/panel-state.json", "{}\n"), (".auditor/knowledge.md
     D = decide_in(vr)
     check("AC15 %s alone cuts no release (git history)" % rel, not D["cut"] and not D["not_clean"], D)
 check("AC15 auditor work classifies neutral, one by one",
-      all(P.classify(c("a", [f]))[0] == "neutral" for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json")),
-      [P.classify(c("a", [f])) for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json")])
-check("AC15 a range of only auditor work ships no bytes", not P.ships_bytes([c("a", [".auditor/panel-state.json"]), c("b", [".auditor/knowledge.md"]), c("c", [".auditor/proposals/p1.json"])]))
-D = P.decide("schedule", [c("a", [".auditor/panel-state.json"]), c("b", [".auditor/knowledge.md"])], ["v0.2.1"], cut_today=False, removed=None)
+      all(P.classify(nc(f))[0] == "neutral" for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json")),
+      [P.classify(nc(f)) for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json")])
+check("AC15 a range of only auditor work ships no bytes", not P.ships_bytes([nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md"), nc(".auditor/proposals/p1.json")]))
+D = P.decide("schedule", [nc(".auditor/panel-state.json"), nc(".auditor/knowledge.md")], ["v0.2.1"], cut_today=False, removed=None)
 check("AC15 decide: nothing shipped, no cut, no issue", not D["cut"] and not D["not_clean"] and "nothing shipped" in D["reason"], D)
 check("AC15 the suppression file .auditor/accepted-items.json stays fix-class", P.classify(c("a", [".auditor/accepted-items.json"]))[0] == "fix")
 check("AC15 an auditor script is never data: still not patch-clean", P.classify(c("a", [".auditor/run.sh"]))[0] == "dirty")
-D = P.decide("schedule", [c("a", [".auditor/panel-state.json"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+D = P.decide("schedule", [nc(".auditor/panel-state.json"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
 check("AC15 auditor work beside a VEX change does not block that patch", D["cut"] and not D["not_clean"], D)
 open(os.path.join(vr, VEXF), "w").write(json.dumps(vex_new) + "\n")
 g(vr, "add", "-A"); g(vr, "commit", "-q", "-m", "vex")
@@ -824,7 +831,7 @@ t5 = notes_cli(vdoc2([BASE_S]), vdoc2([BASE_S], version=2))
 check("AC14 CLI: a document version change alone: document metadata, VEX-only", "document metadata" in t5 and "VEX-only" in t5, t5)
 # AC15: the neutral auditor set is exactly three names; the neutral .vex file is only its README
 for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/proposals/p1.json", ".auditor/proposals/adjudicator-proposals.json", ".vex/README.md"):
-    check("AC15 %s is neutral" % f, P.classify(c("n", [f]))[0] == "neutral", P.classify(c("n", [f])))
+    check("AC15 %s is neutral" % f, P.classify(nc(f))[0] == "neutral", P.classify(nc(f)))
 for f, want in ((".auditor/accepted-items.json", "fix"), (".auditor/gate.json", "fix"), (".auditor/notes.md", "fix"), (".auditor/proposals/sub/x.json", "fix"),
                 (".auditor/proposals/README.md", "fix"), (".vex/fosterstack-cache.openvex.json", "fix"), (".vex/other.json", "fix"), (".vex/sub/README.md", "fix"),
                 (".auditor/proposals/hook.sh", "dirty"), (".auditor/run.sh", "dirty"), (".auditor/proposals/p_test.go", "dirty"), (".auditor/proposals/test_p.py", "dirty"),
@@ -836,10 +843,10 @@ for f in (".auditor/panel-state.json", ".auditor/knowledge.md", ".auditor/propos
         check("AC15 %s with mode %s is dirty" % (f, mode), got[0] == "dirty", got)
     got = P.classify(c("n", [f], diffs={f: "+#!/bin/sh\n+echo x\n"}))
     check("AC15 %s carrying a script is dirty" % f, got[0] == "dirty", got)
-check("AC15 a range of README-only .vex changes ships no bytes", not P.ships_bytes([c("r", [".vex/README.md"])]))
-D = P.decide("schedule", [c("r", [".vex/README.md"])], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 a range of README-only .vex changes ships no bytes", not P.ships_bytes([nc(".vex/README.md")]))
+D = P.decide("schedule", [nc(".vex/README.md")], ["v0.2.1"], cut_today=False, removed=None)
 check("AC15 a .vex README edit alone cuts no patch", not D["cut"] and not D["not_clean"], D)
-D = P.decide("schedule", [c("r", [".vex/README.md"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
+D = P.decide("schedule", [nc(".vex/README.md"), VEXC], ["v0.2.1"], cut_today=False, removed=None)
 check("AC15 a .vex README edit beside the VEX file does not block that patch", D["cut"], D)
 D = P.decide("schedule", [c("a", [".auditor/proposals/hook.sh"]), VEXC], ["v0.2.1"], cut_today=False, removed=None)
 check("AC15 a script under .auditor/proposals beside a VEX change blocks the patch (named)", not D["cut"] and D["not_clean"] and ".auditor/proposals/hook.sh" in D["not_clean"][0], D)
@@ -929,6 +936,125 @@ check("AC14 CLI: an optional field removed: the statement is named, VEX-only, no
       "CVE-2099-0600" in t and "impact_statement" in t and "VEX-only" in t and "no statement change" not in t, t)
 t = notes_cli2(json.dumps(vdoc2([RF])), json.dumps(vdoc2([gone])), nn=BEH_TXT)
 check("AC14 CLI: an optional field removed beside a behavior entry: the statement named, no VEX-only", "CVE-2099-0600" in t and "VEX-only" not in t and "advisor 0130" in t, t)
+# --- step 8 round 1 (REQ-REL-009-AC14, AC15): data validation of the neutral paths, old modes, renames; metadata-only wording; subcomponents; redaction
+def put_(r_, files):
+    for path, (content, mode) in files.items():
+        full = os.path.join(r_, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+        if os.path.lexists(full): os.remove(full)
+        if mode == "120000": os.symlink(content, full)
+        else:
+            open(full, "w").write(content); os.chmod(full, 0o755 if mode == "100755" else 0o644)
+def mv_(r_, a, b):
+    os.makedirs(os.path.dirname(os.path.join(r_, b)), exist_ok=True); g(r_, "mv", a, b)
+def gitrepo(base):
+    r_ = tempfile.mkdtemp(); g(r_, "init", "-q", "-b", "main"); put_(r_, base)
+    g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "base"); g(r_, "tag", "v0.1.0"); return r_
+def verdict_(base, act, labels=()):
+    r_ = gitrepo(base); act(r_); g(r_, "add", "-A"); g(r_, "commit", "-q", "-m", "range")
+    cs_ = P.gather_commits("v0.1.0", cwd=r_, labels=lambda sha: list(labels))
+    return P.classify(cs_[-1]), cs_[-1]
+KN, PS, PJ, RD = ".auditor/knowledge.md", ".auditor/panel-state.json", ".auditor/proposals/p.json", ".vex/README.md"
+BASE0 = {"docs/keep.md": ("x\n", "100644")}
+def verdict_new(path, content, mode="100644"):
+    return verdict_(BASE0, lambda r_: put_(r_, {path: (content, mode)}))[0][0]
+for path, good in ((PS, '{"a": 1}\n'), (PS, "[1, 2]\n"), (PJ, '{"a": 1}\n'), (PJ, "[]\n"), (KN, "# knowledge\ntext\n"), (RD, "# readme\n")):
+    check("AC15 git: a new %s with data content is neutral" % path, verdict_new(path, good) == "neutral", verdict_new(path, good))
+for path in (PS, PJ):
+    for bad in ("{", "3\n", '"str"\n', "null\n", "", "print('x')\n", "#!/bin/sh\necho x\n"):
+        check("AC15 git: a new %s holding %r is not data: dirty" % (path, bad[:12]), verdict_new(path, bad) == "dirty", verdict_new(path, bad))
+for path in (KN, RD):
+    check("AC15 git: a new %s starting with a shebang line is dirty" % path, verdict_new(path, "#!/bin/sh\necho x\n") == "dirty")
+    check("AC15 git: a new %s with a NUL byte is dirty" % path, verdict_new(path, "text\0binary\n") == "dirty")
+    base = dict(BASE0, **{path: ("#!/bin/sh\nold body\n", "100644")})
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nnew body\n", "100644")}))[0][0]
+    check("AC15 git: %s whose first line is an unchanged shebang and whose body is edited is dirty" % path, got == "dirty", got)
+    base = dict(BASE0, **{path: ("plain\nold body\n", "100644")})
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("plain\nnew body\n", "100644")}))[0][0]
+    check("AC15 git: an ordinary edit of %s is neutral" % path, got == "neutral", got)
+    got = verdict_(base, lambda r_, path=path: put_(r_, {path: ("#!/bin/sh\nplain\nnew body\n", "100644")}))[0][0]
+    check("AC15 git: an edit of %s that makes line 1 a shebang is dirty" % path, got == "dirty", got)
+for path in (PS, PJ, KN, RD):
+    good = '{"a": 1}\n' if path.endswith(".json") else "text\n"
+    for mode in ("100755", "120000"):
+        got = verdict_new(path, good if mode == "100755" else "docs/keep.md", mode)
+        check("AC15 git: a new %s with mode %s is dirty" % (path, mode), got == "dirty", got)
+        base = dict(BASE0, **{path: (good if mode == "100755" else "docs/keep.md", mode)})
+        got = verdict_(base, lambda r_, path=path: (os.remove(os.path.join(r_, path))))[0][0]
+        check("AC15 git: deleting %s whose old mode was %s is dirty" % (path, mode), got == "dirty", got)
+    base = dict(BASE0, **{path: (good, "100755")})
+    got = verdict_(base, lambda r_, path=path: os.chmod(os.path.join(r_, path), 0o644))[0][0]
+    check("AC15 git: taking the executable bit off %s is not a clean data change: dirty" % path, got == "dirty", got)
+    base = dict(BASE0, **{path: (good, "100755")})
+    got = verdict_(base, lambda r_, path=path: (put_(r_, {path: (good + ("\n" if path.endswith(".json") else "more text\n"), "100644")})))[0][0]
+    check("AC15 git: an executable %s turned into a data file with new content in one commit is dirty (its old mode)" % path, got == "dirty", got)
+    base = dict(BASE0, **{path: (good, "100644")})
+    got = verdict_(base, lambda r_, path=path: os.remove(os.path.join(r_, path)))[0][0]
+    check("AC15 git: deleting an ordinary %s is neutral" % path, got == "neutral", got)
+check("AC15 git: renaming an executable neutral-named file away is dirty",
+      verdict_(dict(BASE0, **{KN: ("x\n", "100755")}), lambda r_: mv_(r_, KN, "docs/y.md"))[0][0] == "dirty")
+check("AC15 git: renaming source code onto a neutral path is dirty (the deleted source shows)",
+      verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[0][0] == "dirty")
+check("AC15 git: renaming the production Dockerfile onto a proposals path is dirty",
+      verdict_(dict(BASE0, **{"build/docker/Dockerfile.production": ("FROM x@sha256:" + "a" * 64 + "\nCOPY a b\n", "100644")}),
+               lambda r_: mv_(r_, "build/docker/Dockerfile.production", PJ))[0][0] == "dirty")
+check("AC15 git: renaming a docs file onto a neutral path is neutral",
+      verdict_(dict(BASE0, **{"docs/a.md": ("text\n", "100644")}), lambda r_: mv_(r_, "docs/a.md", KN))[0][0] == "neutral")
+rn_commit = verdict_(dict(BASE0, **{"internal/cache/store.go": ("package cache\n", "100644")}), lambda r_: mv_(r_, "internal/cache/store.go", KN))[1]
+check("AC15 gather_commits lists the deleted source of a rename", "internal/cache/store.go" in rn_commit["files"] and KN in rn_commit["files"], rn_commit["files"])
+check("AC15 gather_commits records the old mode of every path", rn_commit.get("old_modes", {}).get("internal/cache/store.go") == "100644", rn_commit.get("old_modes"))
+# the patch-fix label never makes a non-data neutral path fix-class
+for mode in ("120000", "100755"):
+    d_ = nc(PS, mode=mode, labels=("patch-fix",))
+    check("AC15 the patch-fix label does not clear a mode-%s change at a neutral path" % mode, P.classify(d_)[0] == "dirty", P.classify(d_))
+    got = verdict_(BASE0, lambda r_, mode=mode: put_(r_, {KN: ("docs/keep.md" if mode == "120000" else "x\n", mode)}), labels=("patch-fix",))[0][0]
+    check("AC15 git: the label does not clear a mode-%s new neutral file" % mode, got == "dirty", got)
+check("AC15 unit: a neutral path without a mode is not proven data: dirty", P.classify(dict(c("n", [PS], diffs={PS: "+{}"}), modes={}))[0] == "dirty")
+check("AC15 unit: mode 100664 is not 100644: dirty", P.classify(nc(PS, mode="100664"))[0] == "dirty")
+check("AC15 unit: a deletion whose old mode is unknown is dirty (fail closed)", P.classify(nc(PS, mode="000000"))[0] == "dirty")
+check("AC15 unit: a deletion of an ordinary file is neutral", P.classify(nc(PS, mode="000000", old_mode="100644"))[0] == "neutral")
+D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: ("#!/bin/sh\nold\n", "100644")}), lambda r_: put_(r_, {KN: ("#!/bin/sh\nnew\n", "100644")}))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
+check("AC15 an edited script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+# metadata-only and mixed VEX changes
+MD_OLD, MD_NEW = vdoc2([BASE_S]), vdoc2([BASE_S], version=2, timestamp="2026-05-05T00:00:00Z")
+ch = P.vex_changes(MD_OLD, MD_NEW)
+txt = P.notes("v0.2.2", [], ch)
+check("AC14 a metadata-only change: document metadata and VEX-only (no statement change), not 'changes VEX statements'",
+      "document metadata" in txt and "VEX-only (no statement change)" in txt and "changes VEX statements" not in txt, txt)
+txt = P.notes("v0.2.2", [], P.vex_changes(MD_OLD, vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")], version=2)))
+check("AC14 metadata and a statement change together: says statements, notes the metadata, not 'no statement change'",
+      "changes VEX statements" in txt and "document metadata" in txt and "no statement change" not in txt, txt)
+t = notes_cli2(json.dumps(MD_OLD), json.dumps(MD_NEW))
+check("AC14 CLI: a metadata-only change: document metadata and VEX-only (no statement change)", "document metadata" in t and "VEX-only (no statement change)" in t and "changes VEX statements" not in t, t)
+t = notes_cli2(json.dumps(MD_OLD), json.dumps(vdoc2([dict(BASE_S, justification="vulnerable_code_not_present")], version=2)))
+check("AC14 CLI: metadata and a statement change: says statements", "changes VEX statements" in t and "document metadata" in t and "no statement change" not in t, t)
+t = notes_cli2(json.dumps(MD_OLD), json.dumps(MD_NEW), nn=BEH_TXT)
+check("AC14 CLI: a metadata-only change beside a behavior entry: no VEX-only", "VEX-only" not in t and "advisor 0130" in t, t)
+# a product's subcomponents
+def prod(pid, *subs):
+    p_ = {"@id": pid}
+    if subs: p_["subcomponents"] = [{"@id": x} for x in subs]
+    return p_
+def pstmt(*products, **extra):
+    d = {"vulnerability": {"name": "CVE-2099-0700"}, "products": list(products), "status": "not_affected", "justification": "component_not_present"}
+    d.update(extra); return d
+ch = P.vex_changes(vdoc2([pstmt(prod(PA, "pkg:golang/x"))]), vdoc2([pstmt(prod(PA, "pkg:golang/y"))]))
+line = [l for l in vex_section(P.notes("v0.2.2", [], ch)).split("\n") if "CVE-2099-0700" in l]
+check("AC14 a subcomponent-only change names the members added and removed", len(line) == 1 and "pkg:golang/y" in line[0] and "pkg:golang/x" in line[0] and "+" in line[0] and "-" in line[0], line)
+check("AC14 subcomponents in another order are no change", P.vex_changes(vdoc2([pstmt(prod(PA, "pkg:golang/x", "pkg:golang/y"))]), vdoc2([pstmt(prod(PA, "pkg:golang/y", "pkg:golang/x"))])) == [], "")
+t = notes_cli2(json.dumps(vdoc2([pstmt(prod(PA, "pkg:golang/x"))])), json.dumps(vdoc2([pstmt(prod(PA, "pkg:golang/y"))])))
+check("AC14 CLI: a subcomponent-only change names the members", "pkg:golang/y" in t and "pkg:golang/x" in t, t)
+# redaction keeps product identifiers readable
+INTACT = ["pkg:golang/google.golang.org/grpc@v1.2.0", "pkg:maven/com.google.guava/guava@32.1.0", "pkg:golang/github.com/aws/aws-sdk-go-v2", "google.golang.org/grpc", "pkg:golang/cloud.google.com/go/storage"]
+for ident in INTACT:
+    for tmpl in ("%s", "[%s]", "CVE-1 [%s, pkg:oci/cache]: x", "(%s)", "see %s."):
+        out_ = P._clean(tmpl % ident)
+        check("redaction: %s stays readable in %r" % (ident, tmpl), ident in out_, out_)
+SA_, SB_ = stmt("CVE-2099-0800", products=("pkg:golang/google.golang.org/grpc@v1.2.0",)), stmt("CVE-2099-0800", products=("pkg:maven/com.google.guava/guava@32.1.0",))
+txt = P.notes("v0.2.2", [], P.vex_changes(vdoc2([SA_, SB_]), vdoc2([dict(SA_, justification="x"), SB_])))
+check("redaction: the notes keep the product identity of an ambiguous statement intact", "pkg:golang/google.golang.org/grpc@v1.2.0" in txt, txt)
+for secret in ("confirmed by Google", "reported by Bedrock", "thanks Claude", "see [github.com/Azure/azure-sdk-for-go]", "pkg:golang/github.com/Azure/azure-sdk-for-go", "Meta Llama"):
+    out_ = P._clean(secret)
+    check("redaction: %r is still redacted" % secret, "<redacted>" in out_ and not re.search(r"(?i)claude|bedrock|llama|(?<![a-z])google(?![.\w])|(?<![a-z/])azure", out_.replace("azure-sdk-for-go", "")), out_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
