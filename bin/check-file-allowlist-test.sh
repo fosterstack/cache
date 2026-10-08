@@ -286,10 +286,10 @@ mkhk() {  # a repo on branch feature/x with the real hook installed; main has on
 hkexpect() {  # hkexpect <expect> <desc> <command string run in $HK>
   local expect="$1" desc="$2" out rc
   out="$(cd "$HK" && eval "$3" 2>&1)"; rc=$?
-  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ]; }; then
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'blocked'; }; then
     echo "ok:   $desc"; pass=$((pass+1))
   else
-    echo "FAIL: $desc (expected $expect, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+    echo "FAIL: $desc (expected $expect with the allowlist's 'blocked' message, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
   fi
 }
 # on branch <name> from the base, commit a file with the hook disabled
@@ -322,6 +322,17 @@ hkexpect fail "hook: merge resolution that writes a third version of an unlisted
 mkhk; hkbranch other ops/notes.md x
 ( cd "$HK" && git rev-parse other > .git/MERGE_HEAD )
 hkexpect fail "hook: leftover MERGE_HEAD, disallowed file staged: rejected by the allowlist (not a crash)" 'echo S=1 > .env && hk add -f .env && out=$(hk commit -q -m stale 2>&1); rc=$?; echo "$out"; echo "$out" | grep -q "blocked" && exit $rc'
+# type / mode changes: the other parent's diff reports T (or M), which must still count as "differs from
+# that parent". The feature branch lacks ops/x, so against HEAD the path is an addition.
+hkbranch_link() { ( cd "$HK" && nohk checkout -q -b "$1" main && mkdir -p ops && ln -s target ops/x && nohk add -A && nohk commit -q -m "$1" && nohk checkout -q feature/x ); }
+mkhk; hkbranch_link other; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge replacing the other parent's symlink with a regular file is rejected (type change)" 'hk merge -q --no-ff --no-commit other && rm ops/x && echo data > ops/x && hk add ops/x && hk commit -q -m merge'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge replacing the other parent's regular file with a symlink is rejected (type change)" 'hk merge -q --no-ff --no-commit other && rm ops/x && ln -s target ops/x && hk add ops/x && hk commit -q -m merge'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge replacing the other parent's file with a submodule gitlink is rejected" 'hk merge -q --no-ff --no-commit other && hk rm -q --cached ops/x && hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/x && hk commit -q -m merge'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge changing only the mode (100644 to 100755) of the other parent's file is rejected" 'hk merge -q --no-ff --no-commit other && chmod +x ops/x && hk add ops/x && hk commit -q -m merge'
 # (f) octopus: two other parents, each carrying an unlisted file
 mkhk; hkbranch m1 ops/one.md 1; hkbranch m2 ops/two.md 2
 ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )

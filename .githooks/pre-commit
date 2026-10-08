@@ -27,14 +27,14 @@ repo_root=$(git rev-parse --show-toplevel)
 #    HEAD AND from every MERGE_HEAD parent, so content that merely came from another parent
 #    (already tracked, already judged) is not re-judged, while anything the merge itself adds or
 #    changes (e.g. a conflict resolution) still is.
-files=$(git diff --cached --name-only --diff-filter=ACMR)
+files=$(git diff --cached --name-only --diff-filter=ACMRT)
 merge_head=$(git rev-parse --git-path MERGE_HEAD)
 if [ -f "$merge_head" ]; then
   # sorted lists go into variables first so a failing git or sort aborts under set -e
   files=$(printf '%s\n' "$files" | sort -u)
   while read -r parent _; do
     [ -n "$parent" ] || continue
-    other=$(git diff --cached --name-only --diff-filter=ACMR "$parent")
+    other=$(git diff --cached --name-only "$parent")  # no status filter: any type, mode or content difference counts
     other=$(printf '%s\n' "$other" | sort -u)
     files=$(comm -12 <(printf '%s\n' "$files") <(printf '%s\n' "$other"))
   done < "$merge_head"
