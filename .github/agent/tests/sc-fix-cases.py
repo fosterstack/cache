@@ -3440,6 +3440,90 @@ def i_value_options_and_unknown_short_options():
             ks = sorted(repo_items({**files, "req.txt": "ok==1.0\n"})[0])
             assert PYPIN in ks and not [k for k in ks if "(unmeasured:" in k], (opt, list(files), ks)
 
+
+# ======================================================================================================================================
+# step 8 round 5: anchors and aliases are refused BEFORE any walk; pip configuration; env values that are not scalars
+# ======================================================================================================================================
+def alias_bomb(depth=12, width=10, key="x-bomb"):
+    lines = ["%s:" % key, "  a0: &a0 [%s]" % ", ".join(["x"] * width)]
+    for i in range(1, depth):
+        lines.append("  a%d: &a%d [%s]" % (i, i, ", ".join(["*a%d" % (i - 1)] * width)))
+    return "\n".join(lines) + "\n"
+
+
+BOMB_FILES = {"workflow": (WFPATH, "on: push\nenv:\n  PIP_CONSTRAINT: deps/c.txt\n" + alias_bomb() + "jobs:\n  j:\n    runs-on: u\n    steps:\n      - run: pip install a==1\n"),
+              "composite action": (".github/actions/a/action.yml", "name: a\n" + alias_bomb() + "runs:\n  using: composite\n  steps:\n    - run: pip install a==1\n      shell: bash\n      env:\n        PIP_CONSTRAINT: deps/c.txt\n"),
+              "requirements-bearing env block": (WFPATH, "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_REQUIREMENT: deps/c.txt\n    steps:\n      - run: pip install a==1\n" + alias_bomb(key="y-bomb"))}
+
+
+def _run_bounded(argv, seconds=10, **kw):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=seconds, **kw)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("did not finish in %d s: %s" % (seconds, " ".join(argv[-3:])))
+
+
+@case("age", "AC11", "i: an alias bomb (12 levels of 10 references, in a workflow, a composite action and a requirements-bearing env block) is REFUSED at once, 'alias', before ANY function walks the parsed document: from the working tree and from a revision (a child process with a 10 s deadline), by the daily audit and by the age check (exit 2 each, within the deadline)")
+def i_alias_bomb_is_refused_before_any_walk():
+    code = ("import importlib.util,sys\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
+            "mode=None if sys.argv[3]=='wt' else 'HEAD'\ntry:\n    m.load_at(sys.argv[2], mode)\nexcept RuntimeError as e:\n    print(e); sys.exit(2)\n")
+    for label, (path, text) in BOMB_FILES.items():
+        repo = history_repo({path: text, "deps/c.txt": "evil==1.0\n"})
+        for mode in ("wt", "rev"):
+            r = _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py"), repo, mode])
+            assert r.returncode == 2 and ("alias" in r.stdout or "anchor" in r.stdout), (label, mode, r.returncode, (r.stdout + r.stderr)[-200:])
+        fx = repo + ".fx.json"
+        json.dump({"lists": {}}, open(fx, "w"))
+        r = _run_bounded([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", repo, "--fixtures", fx, "--now", now_iso(), "--report-only"])
+        assert r.returncode == 2 and ("alias" in r.stdout + r.stderr or "anchor" in r.stdout + r.stderr), (label, "audit", r.returncode, (r.stdout + r.stderr)[-200:])
+        clean_base = {path: "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n"} if path == WFPATH else {"README.md": "x\n"}
+        pr = exact_repo({**clean_base, "deps/c.txt": "evil==1.0\n"}, {path: text, "deps/c.txt": "evil==1.0\n"})
+        json.dump({"times": {}}, open(pr + ".fx.json", "w"))
+        r = _run_bounded([sys.executable, os.path.join(SC, "pin-age-check.py"), "--root", pr, "--base", "HEAD~1", "--head", "HEAD", "--fixtures", pr + ".fx.json", "--now", "2026-10-07T12:00:00Z"])
+        assert r.returncode == 2 and ("alias" in r.stdout + r.stderr or "anchor" in r.stdout + r.stderr), (label, "age", r.returncode, (r.stdout + r.stderr)[-200:])
+
+
+@case("age", "AC11", "i: PIP_CONFIG_FILE set anywhere in scope (a workflow, job or step env, a quoted key, an inline assignment, an export) is ONE unmeasured item (the pip configuration file is not followed); a tracked pip.conf or pip.ini whose [install] or [global] section has `requirement` or `constraint` keys is READ as references (the suffix rule: its files' pins are items), keys of other sections are ignored, an unparseable file is unmeasured")
+def i_pip_configuration_file():
+    unm = lambda ks: [k for k in ks if "(unmeasured:" in k]
+    for label, files in (("workflow env", {WFPATH: "on: push\nenv:\n  PIP_CONFIG_FILE: ci/pip.conf\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: pip install a==1\n"}),
+                         ("quoted key", {WFPATH: "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      \"PIP_CONFIG_FILE\": ci/pip.conf\n    steps:\n      - run: pip install a==1\n"}),
+                         ("step env", {WFPATH: "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - env:\n          PIP_CONFIG_FILE: ${{ matrix.c }}\n        run: pip install a==1\n"}),
+                         ("inline", {"bin/x.sh": SHEBANG_BASH + "PIP_CONFIG_FILE=ci/pip.conf pip install a==1\n"}), ("export", {"bin/x.sh": SHEBANG_BASH + "export PIP_CONFIG_FILE='ci/pip.conf'\npip install a==1\n"})):
+        ks = sorted(repo_items({**files, "ci/pip.conf": "[install]\nno-deps = true\n"})[0])
+        assert len(unm(ks)) == 1, (label, ks)
+    for name in ("pip.conf", "ci/pip.ini", "deploy/pip.conf"):
+        files = {name: "[install]\nrequirement = deps/r.txt\n", "deps/r.txt": "evil==1.0\n"}
+        repo = history_repo(files)
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert "package:pypi/evil@1.0" in ks and not unm(ks), (name, mode, ks)
+    ks = sorted(repo_items({"pip.conf": "[global]\nconstraint =\n    deps/c.txt\n    deps/d.txt\nindex-url = https://h/s\n", "deps/c.txt": "evil==1.0\n", "deps/d.txt": "worse==2.0\n"})[0])
+    assert "package:pypi/evil@1.0" in ks and "package:pypi/worse@2.0" in ks and not unm(ks), ks
+    ks = sorted(repo_items({"pip.conf": "[foo]\nrequirement = deps/r.txt\n[install]\nno-deps = true\n", "deps/r.txt": "evil==1.0\n"})[0])
+    assert "package:pypi/evil@1.0" not in ks and not unm(ks), ("other sections and other keys are ignored", ks)
+    assert unm(sorted(repo_items({"pip.conf": "[install\nrequirement = x\n"})[0])), "an unparseable pip.conf is unmeasured"
+    assert unm(sorted(repo_items({"pip.conf": "[install]\nrequirement = nothing/here.txt\n"})[0])), "a missing referenced file is unmeasured"
+    young = {"times": {"package:pypi/evil@9.9.9": {"time": "2026-10-06T00:00:00Z", "source": "pypi"}}}
+    base = {"pip.conf": "[install]\nrequirement = deps/r.txt\n", "deps/r.txt": "evil==1.0\n"}
+    rc, out = run_age(exact_repo(base, {**base, "deps/r.txt": "evil==9.9.9\n"}), young)
+    assert rc == 1 and "evil@9.9.9" in out, ("a bump in a file named by pip.conf is moved", rc, out[-300:])
+
+
+@case("age", "AC11", "i: a PIP_CONSTRAINT or PIP_REQUIREMENT whose value is not a scalar string (a block sequence, a flow sequence, a mapping) is ONE unmeasured item (fail closed), never dropped; an empty value names nothing; a scalar that is not a file (null, 5) is unmeasured as a missing file")
+def i_non_scalar_env_value():
+    unm = lambda ks: [k for k in ks if "(unmeasured:" in k]
+    head = "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n"
+    tail = "    steps:\n      - run: pip install a==1\n"
+    for label, env in (("block sequence", "      PIP_CONSTRAINT:\n        - deps/c.txt\n"), ("flow sequence", "      PIP_REQUIREMENT: [deps/c.txt, deps/d.txt]\n"), ("mapping", "      PIP_CONSTRAINT:\n        file: deps/c.txt\n"),
+                       ("flow mapping", "      PIP_CONSTRAINT: {file: deps/c.txt}\n")):
+        ks = sorted(repo_items({WFPATH: head + env + tail, "deps/c.txt": "evil==1.0\n"})[0])
+        assert len(unm(ks)) == 1 and "package:pypi/evil@1.0" not in ks, (label, ks)
+    assert inv._env_file_refs("a: &x 1\nb: *x\nPIP_CONSTRAINT=deps/c.txt pip install a==1\n", "bin/x.sh") == [("deps/c.txt", True)], "a script is never parsed as YAML (a line that looks like an alias is shell text)"
+    for label, env, want in (("null", "      PIP_CONSTRAINT: null\n", 1), ("number", "      PIP_REQUIREMENT: 5\n", 1), ("empty", "      PIP_CONSTRAINT:\n", 0), ("empty string", "      PIP_CONSTRAINT: ''\n", 0)):
+        ks = sorted(repo_items({WFPATH: head + env + tail})[0])
+        assert len(unm(ks)) == want, (label, ks)
+
 def main(argv):
     suites = {c[0] for c in CASES}
     suite = argv[1] if len(argv) > 1 else "all"

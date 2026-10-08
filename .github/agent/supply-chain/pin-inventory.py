@@ -13,6 +13,7 @@ Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the i
 """
 import bisect
 import collections
+import configparser
 import copy
 import fnmatch
 import hashlib
@@ -593,7 +594,7 @@ def _is_script(path, text):
 HEAD_BYTES = 4096
 
 
-def _pip_file_refs(text):
+def _pip_file_refs(text, path=""):
     """The FILE names a text feeds to pip with -r / --requirement / -c / --constraint (attached, clustered and `=` forms too), to pip-sync and to uv pip sync, found with the lexer on the raw
     lines (backslash-newline deleted): [(name, resolvable)]; a name that is `-`, `/dev/stdin` or a heredoc is not a file."""
     out = []
@@ -602,7 +603,7 @@ def _pip_file_refs(text):
             continue
         for tail in _pip_tails(line):
             out += _tail_file_refs(tail.words, tail.sub)
-    return out + _env_file_refs(text)
+    return out + _env_file_refs(text, path)
 
 
 _SYNC_VALUE_OPTS = {"--pip-args", "--index-url", "-i", "--extra-index-url", "-f", "--find-links", "--python-executable", "--cert", "--client-cert", "--trusted-host", "--python", "--target"}
@@ -643,18 +644,53 @@ def _tail_file_refs(words, sub="install"):
 
 
 MAX_INCLUDE_DEPTH = 8          # how deep a chain of `-r other.txt` includes is followed; deeper is reported ("scan limit reached"), never dropped silently
-_ENV_REF_RX = re.compile(r"\bPIP_(?:CONSTRAINT|REQUIREMENT)\b[ \t]*[:=][ \t]*(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s#;&|,}\]]*))")
+_ENV_REF_RX = re.compile(r"\b(PIP_(?:CONSTRAINT|REQUIREMENT|CONFIG_FILE))\b[ \t]*[:=][ \t]*(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s#;&|,}\]]*))")
 _REQ_INCLUDE = re.compile(r"^(?:--requirement|--constraint|-r|-c)(?:[ \t]*=[ \t]*|[ \t]+|(?=[^\s=-]))(\S.*?)\s*$")
+
+
+def _pip_conf_refs(text):
+    """The reference markers of a pip.conf / pip.ini: the `requirement` and `constraint` keys of its [install] and [global] sections (whitespace-separated files); a file that cannot be parsed is unmeasured."""
+    cp = configparser.RawConfigParser(strict=False)
+    try:
+        cp.read_string(text)
+    except configparser.Error:
+        return [_unmeasured_item("(pip configuration file)")]
+    found = []
+    for sec in ("install", "global"):
+        if cp.has_section(sec):
+            for key in ("requirement", "constraint"):
+                if cp.has_option(sec, key):
+                    for ref in (cp.get(sec, key) or "").split():
+                        found.append(Item("package", "pypi/(reqref)", ref) if not any(c in ref for c in "$`{") else _unmeasured_item(ref))
+    return found
 
 
 def _unmeasured_item(what):
     return Item("package", "pypi/(unmeasured:" + hashlib.sha256(what.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)")
 
 
-def _env_file_refs(text):
-    """The files PIP_CONSTRAINT and PIP_REQUIREMENT name. In YAML (a workflow, an action) they are read from the PARSED document: an env mapping with a quoted key, a value on the next line, a block
-    scalar, flow style or a YAML escape (workflow, job, step and composite-action env), and an assignment or export inside any decoded string (a run block). In a script, from the raw text: a
-    quoted or unquoted assignment, an export, an inline assignment before pip. [(name, resolvable)]"""
+def _yaml_guard(text, path=""):
+    """Compose a YAML text as EVENTS only and refuse what cannot be read safely BEFORE anything builds or walks the document: an alias or anchor (a nest of aliases expands exponentially when the
+    parsed tree is walked) and an absurd number of nodes. This is the first thing that touches the composed text; no function may walk a document that has not passed it."""
+    nodes = 0
+    for ev in yaml.parse(text, Loader=yaml.BaseLoader):
+        if isinstance(ev, yaml.AliasEvent):
+            raise RuntimeError(f"{path or 'a file'} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
+        nodes += 1
+        if nodes > 200000:
+            raise RuntimeError(f"{path or 'a file'} is too large to read safely")
+
+
+_PIP_ENV_KEYS = ("PIP_CONSTRAINT", "PIP_REQUIREMENT")
+_PIP_CONFIG_REF = ("(pip configuration file)", False)
+_PIP_NONSCALAR_REF = ("(pip environment value)", False)
+
+
+def _env_file_refs(text, path=""):
+    """The files PIP_CONSTRAINT and PIP_REQUIREMENT name, and the fact that PIP_CONFIG_FILE is set. In YAML (a workflow, an action) they are read from the PARSED document, after the alias refusal:
+    an env mapping with a quoted key, a value on the next line, a block scalar, flow style or a YAML escape (workflow, job, step and composite-action env), and an assignment or export inside any
+    decoded string (a run block). A value that is not a scalar string is unmeasured. In a script, from the raw text: a quoted or unquoted assignment, an export, an inline assignment before pip.
+    [(name, resolvable)]"""
     out = []
 
     def add(val):
@@ -663,21 +699,30 @@ def _env_file_refs(text):
 
     def scan(string):
         for m in _ENV_REF_RX.finditer(re.sub(r"\\\r?\n", "", string)):
-            add(next((g for g in m.groups() if g is not None), ""))
+            if m.group(1) == "PIP_CONFIG_FILE":
+                out.append(_PIP_CONFIG_REF)
+            else:
+                add(next((g for g in m.groups()[1:] if g is not None), ""))
     doc = None
-    if "PIP_" in text and not text.startswith("#!"):
+    if "PIP_" in text and _wf_or_action_name(path):
         try:
+            _yaml_guard(text, path)                     # first: refuse aliases and anchors before the document is built or walked
             doc = yaml.load(text, Loader=yaml.BaseLoader)
-        except (yaml.YAMLError, RecursionError):
-            doc = None                                  # not YAML, or refused elsewhere with its own message
+        except yaml.YAMLError:
+            doc = None                                  # does not parse: refused with its own message by the file reader
     if isinstance(doc, (dict, list)):
         work = [doc]
         while work:                                     # an explicit work-list: any nesting depth
             node = work.pop()
             if isinstance(node, dict):
                 for k, v in node.items():
-                    if k in ("PIP_CONSTRAINT", "PIP_REQUIREMENT") and isinstance(v, str):
-                        add(v)
+                    if k in _PIP_ENV_KEYS:
+                        if isinstance(v, str):
+                            add(v)
+                        else:
+                            out.append(_PIP_NONSCALAR_REF)      # a sequence or a mapping: which file it names cannot be told
+                    elif k == "PIP_CONFIG_FILE":
+                        out.append(_PIP_CONFIG_REF)
                     elif isinstance(k, str):
                         scan(k)
                     work.append(v)
@@ -779,7 +824,7 @@ def tree_files(root, rev, soft=None):
     reason) and goes on (a historical commit)."""
     def wanted(n):
         return (_wf_or_action_name(n) or n == "bin/install-scanner.sh" or n == MANIFEST or _is_script_name(n) or n.rsplit("/", 1)[-1] in VERSION_FILES
-                or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n) or _requirements_name(n))
+                or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n) or _requirements_name(n) or n.rsplit("/", 1)[-1] in ("pip.conf", "pip.ini"))
     out = Files()
 
     def refuse(n, why):
@@ -900,9 +945,17 @@ def _read_refs(out, tracked, read):
         if c in out and c not in done:
             todo.append((c, d))
     for p, t in list(out.items()):
-        if p in out.links or not (_wf_or_action_name(p) or _is_script(p, t) or p == "bin/install-scanner.sh"):
+        if p in out.links:
             continue
-        for ref, ok in _pip_file_refs(t):
+        if p.rsplit("/", 1)[-1] in ("pip.conf", "pip.ini"):
+            for it in _pip_conf_refs(t):
+                if it.name == "pypi/(reqref)":
+                    for c in _ref_matches(it.version, tracked):
+                        take(c, 1)
+            continue
+        if not (_wf_or_action_name(p) or _is_script(p, t) or p == "bin/install-scanner.sh"):
+            continue
+        for ref, ok in _pip_file_refs(t, p):
             if ok:
                 for c in _ref_matches(ref, tracked):
                     take(c, 1)
@@ -1470,6 +1523,8 @@ def _scan_file(path, text, reqrefs):
             fi = Item("tool", "file:" + path, "(file)")
             fi.step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
             found.append(fi)           # a script that is also named like a version or checksum file: the content item AND the script's items
+    elif path.rsplit("/", 1)[-1] in ("pip.conf", "pip.ini") and not _requirements_name(path):
+        found = _pip_conf_refs(text)
     elif _requirements_name(path) or path in reqrefs:
         found = []
         for body in _req_lines(text):
@@ -1501,13 +1556,7 @@ def _scan_file(path, text, reqrefs):
         for m in re.finditer(r"uses:\s*['\"]?([^\s#'\"]+)['\"]?\s*#\s*(?:tag:\s*)?(\S+)", text):
             labels.setdefault(m.group(1), []).append(m.group(2))
         try:
-            nodes = 0
-            for ev in yaml.parse(text, Loader=yaml.BaseLoader):  # events, not expanded nodes: an alias bomb is refused before anything is built
-                if isinstance(ev, yaml.AliasEvent):
-                    raise RuntimeError(f"{path} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
-                nodes += 1
-                if nodes > 200000:
-                    raise RuntimeError(f"{path} is too large to read safely")
+            _yaml_guard(text, path)                      # events first: an alias bomb is refused before anything is built or walked
             doc = yaml.load(text, Loader=yaml.BaseLoader)
         except yaml.YAMLError as e:
             mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
@@ -1535,7 +1584,7 @@ def _scan_file(path, text, reqrefs):
             _step({"run": ln}, found, {})
             _bodies(found, ln, {})
     if _wf_or_action_name(path) or _is_script(path, text) or path == "bin/install-scanner.sh":
-        for ref, ok in _env_file_refs(text):          # PIP_CONSTRAINT / PIP_REQUIREMENT: files pip reads without a command-line flag
+        for ref, ok in _env_file_refs(text, path):          # PIP_CONSTRAINT / PIP_REQUIREMENT: files pip reads without a command-line flag; PIP_CONFIG_FILE: a configuration file that is not followed
             found.append(Item("package", "pypi/(reqref)", ref) if ok else _unmeasured_item(ref))
     return found
 
