@@ -1,6 +1,6 @@
 {
  "schema": "auditor-review-record/v1",
- "tree": "6a9137f92e38d296b0f3078f38e6e7ee2a2bf9e418ce55808540956169a7b136",
+ "tree": "1956230e5fbc6062443cbccc5d59e62cdbc0cf0eccd167c3d544ae93fb522012",
  "change": "Pre-commit hook: a merge commit is judged only on what the merge itself introduces (files differing from every parent), type changes and submodule differences are never exempt, the intersection runs through checked temporary files -- PR #214",
  "reviewed_commit": "2c6a09fee475d563b0f4e3e75304b9a975309608",
  "closed_commit": "2c6a09fee475d563b0f4e3e75304b9a975309608",
