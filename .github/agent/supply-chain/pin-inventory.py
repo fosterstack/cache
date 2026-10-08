@@ -11,6 +11,9 @@ NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go 
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
+import bisect
+import collections
+import copy
 import fnmatch
 import hashlib
 import shlex
@@ -289,7 +292,7 @@ def _tails(run, is_cmd, subcommands, skip_values=(), keep_sub=False):
     """For every command word `is_cmd` accepts, the resolved words after its subcommand, joined by a space."""
     out = []
     for sub, ws, _unknown, _meta in _cmd_scan(run, is_cmd, subcommands, skip_values):
-        t = " ".join(shlex.quote(w.text) if re.search(r"[\s'\"\\]", w.text) else w.text for w in ws)      # a word with a space stays ONE word for the readers that split the tail again
+        t = " ".join(shlex.quote(w.text) if (not w.text or re.search(r"[\s'\"\\]", w.text)) else w.text for w in ws)      # a word with a space stays ONE word for the readers that split the tail again
         out.append((sub, t) if keep_sub else t)
     return out
 
@@ -320,6 +323,11 @@ def _pip_items(tail, out):
         out.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(what.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))
     if tail.unknown or tail.cmd_meta:
         unmeasured(str(tail) + "|opt")
+    for ref, ok in _tail_file_refs(tail.words):          # a FILE fed to pip with -r / -c: read as a requirements file (its pins are items) or, when it cannot be read, unmeasured
+        if ok:
+            out.append(Item("package", "pypi/(reqref)", ref))
+        else:
+            unmeasured(ref)
     keep, prev = [], ""
     for w in tail.words:
         t = w.text
@@ -378,7 +386,32 @@ def _pip_tails(run):
 
 _PIP_PIN = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?(===|==|>=|<=|~=|!=|>|<)((?:\$\{\{expression\}\}|\$\{var\}|[^\s\\;'\",$`)]|\$(?!\{\{))+)")
 _STDIN_REQ = re.compile(r"(?:^|\s)(?:-r|--requirement)[\s=]*(?:/dev/stdin|-)(?=\s|$)")
-_HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+_HEREDOC_OPEN = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1[^\n]*\n")
+_WORD_LINE = re.compile(r"^[ \t]*(\w+)[ \t]*$", re.M)
+
+
+_Heredoc = collections.namedtuple("_Heredoc", "start body")          # where the `<<` stands, and the text between the opener line and its terminator
+
+
+def _heredocs(text):
+    """The heredocs of a text, in LINEAR time: terminator lines are indexed once by their word and found by bisection (a regex with a lazy body re-scans the rest of the text for every
+    unterminated opener, which is quadratic). A heredoc starts at `<<WORD` and ends at the first later line that is only WORD."""
+    where = {}
+    for m in _WORD_LINE.finditer(text):
+        where.setdefault(m.group(1), []).append(m.start())
+    out, skip = [], 0
+    for m in _HEREDOC_OPEN.finditer(text):
+        if m.start() < skip:
+            continue                               # inside a previous heredoc
+        offs = where.get(m.group(2), ())
+        k = bisect.bisect_left(offs, m.end() + 1)
+        if k >= len(offs):
+            continue                               # unterminated: not a heredoc
+        t = offs[k]
+        out.append(_Heredoc(m.start(), text[m.end():t - 1]))
+        e = text.find("\n", t)
+        skip = len(text) if e < 0 else e
+    return out
 _REQ_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[\w,.-]*\])?\s*==\s*([^\s;\\]+)\s*(?:;[^\n]*?)?(?:\s+--hash[=\s]\S+)*\s*$")
 _OPS = re.compile(r"\s*(===|==|>=|<=|~=|!=)\s*(?=[\w.$'\"])")
 _RUN_IMAGE = re.compile(r"(?<![\w./:@-])((?:[\w.-]+(?::\d+)?/)*[\w.-]+(?::[\w.-]+)?@sha256:[0-9a-f]{64})")
@@ -486,7 +519,7 @@ def _shell_shebang(text):
     if re.search(r"\\(?![_c\"'\\$#])", line):          # an escape this check does not know: treated as a shell, fail closed
         return True
     line = re.sub(r"\\[_c\"'\\$#]", " ", line).replace('"', "").replace("'", "")       # env's own escapes (\_ is a separator) become spaces; quote characters go
-    return re.search(r"(?<![A-Za-z0-9_])[A-Za-z0-9_.-]*sh[0-9]*(?:\.[0-9]+)*(?![A-Za-z0-9_])", line) is not None
+    return re.search(r"(?<![A-Za-z0-9_])[A-Za-z0-9_.-]*sh[0-9]*(?:\.[0-9]+)*(?![A-Za-z0-9_])", line, re.I) is not None
 
 
 class Files(dict):
@@ -495,6 +528,7 @@ class Files(dict):
         super().__init__(*a, **k)
         self.sha256 = {}
         self.links = {}
+        self.reqrefs = set()
 
 
 def _is_script_name(n):
@@ -520,47 +554,107 @@ def _is_script(path, text):
 HEAD_BYTES = 4096
 
 
-def tree_files(root, rev):
+def _pip_file_refs(text):
+    """The FILE names a text feeds to pip with -r / --requirement / -c / --constraint (attached forms too), found with the lexer on the raw lines (backslash-newline deleted): [(name, resolvable)];
+    a name that is `-`, `/dev/stdin` or a heredoc is not a file."""
+    out = []
+    for line in re.sub(r"\\\r?\n", "", text).split("\n"):
+        if "pip" not in line:
+            continue
+        for tail in _pip_tails(line):
+            out += _tail_file_refs(tail.words)
+    return out
+
+
+def _tail_file_refs(words):
+    out, take = [], False
+    for w in words:
+        t = w.text
+        if take:
+            take = False
+            out.append((t, not (w.dyn or w.meta or w.open)))
+            continue
+        if t in ("-r", "--requirement", "-c", "--constraint"):
+            take = True
+        else:
+            m = re.match(r"^(?:--requirement=|--constraint=|-r(?=[^-])|-c(?=[^-]))(.+)$", t)
+            if m:
+                out.append((m.group(1), not (w.dyn or w.meta or w.open)))
+    return [(n, ok) for n, ok in out if n not in ("-", "/dev/stdin")]
+
+
+def _ref_candidates(ref, from_path):
+    """The tracked paths a pip FILE argument can name: relative to the repository root, and to the directory of the file that runs the command. None when it names nothing inside the repository."""
+    if "://" in ref or ref.startswith("/") or "$" in ref or "`" in ref:
+        return []
+    out = []
+    for base in ("", posixpath.dirname(from_path)):
+        c = posixpath.normpath(posixpath.join(base, ref))
+        if c and c != "." and not c.startswith("..") and c not in out:
+            out.append(c)
+    return out
+
+
+def tree_files(root, rev, soft=None):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree): workflows, action files, EVERY tracked file that is a shell script (.sh/.bash/.ksh/.zsh/.bats
-    or a shell shebang on its first line, whatever its name), the requirement/version/checksum files, and the harness manifest. A symlink is read as its link text in both modes. The first
-    4 KB of every blob is read however large it is: a shell script over 1 MB is refused ("too large", exit 2), a large file that is not a shell script is skipped."""
+    or a shell shebang on its first line, whatever its name), the requirement/version/checksum files, every file a script or run step feeds to pip with -r or -c (whatever its name), and the
+    harness manifest. A symlink is read as its link text in both modes. The first 4 KB of every blob is read however large it is: a shell script over 1 MB is refused ("too large", exit 2), a
+    large file that is not a shell script is skipped. A tracked file that cannot be read is REFUSED ("cannot read", exit 2), never skipped. soft: a list that collects refusals as (path,
+    reason) and goes on (a historical commit)."""
     def wanted(n):
         return (_wf_or_action_name(n) or n == "bin/install-scanner.sh" or n == MANIFEST or _is_script_name(n) or n.rsplit("/", 1)[-1] in VERSION_FILES
                 or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n) or _requirements_name(n))
     out = Files()
 
-    def add(n, raw, size, link=False):
+    def refuse(n, why):
+        if soft is None:
+            raise RuntimeError(why)
+        soft.append((n, why))
+
+    def add(n, raw, size, link=False, force=False):
         head = raw[:HEAD_BYTES].decode("utf-8", "replace")
-        shell = _shell_shebang(head)
-        if not wanted(n) and not shell:
+        if not force and not wanted(n) and not _shell_shebang(head):
             return
         if size > MAX_FILE or len(raw) > MAX_FILE:
-            raise RuntimeError(f"{n} is too large to read safely")
+            refuse(n, f"{n} is too large to read safely")
+            return
         text = raw.decode("utf-8", "replace")
         out[n] = text
         out.sha256[n] = hashlib.sha256(raw).hexdigest()
         if link:
             out.links[n] = text
     if rev is None:
-        for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
-            if not n:
-                continue
-            full = f"{root}/{n}"
+        r = subprocess.run(["git", "-C", root, "-c", "core.quotePath=false", "ls-files", "-s", "-z"], capture_output=True)
+        if r.returncode:
+            raise RuntimeError("git ls-files: " + r.stderr.decode("utf-8", "replace").strip())
+        names = {}
+        for ent in r.stdout.split(b"\0"):
+            meta, _, rn = ent.partition(b"\t")
+            if rn and not meta.startswith(b"160000"):          # a gitlink (submodule) is a directory, not a file to read
+                names[rn.decode("utf-8", "replace")] = rn
+        rbase = os.fsencode(root)
+
+        def read_wt(n, force=False):
+            full = rbase + b"/" + names[n]
             try:
                 st = os.lstat(full)
                 if stat.S_ISLNK(st.st_mode):
-                    raw = os.readlink(full).encode("utf-8", "surrogateescape")
-                    add(n, raw, len(raw), link=True)
+                    raw = os.readlink(full)
+                    add(n, raw, len(raw), link=True, force=force)
                 elif stat.S_ISREG(st.st_mode):
                     with open(full, "rb") as fh:
                         head = fh.read(HEAD_BYTES)
-                        if not wanted(n) and not _shell_shebang(head.decode("utf-8", "replace")):
-                            continue
+                        if not force and not wanted(n) and not _shell_shebang(head.decode("utf-8", "replace")):
+                            return
                         raw = head + fh.read(MAX_FILE + 1 - len(head)) if st.st_size <= MAX_FILE else head
-                    add(n, raw, st.st_size)
-            except OSError:
-                continue
+                    add(n, raw, st.st_size, force=force)
+            except OSError as e:
+                refuse(n, f"cannot read {n}: {e.strerror or e}")      # never skipped: a file the daily run cannot read is a file it cannot measure
+        for n in names:
+            read_wt(n)
+        _read_refs(out, names, lambda n: read_wt(n, force=True))
         return out
+    entries = {}
     for line in git(root, "ls-tree", "-r", "-l", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
         if not n:
@@ -568,22 +662,65 @@ def tree_files(root, rev):
         parts = meta.split()
         if len(parts) < 4 or parts[1] != "blob":
             continue                              # a gitlink (submodule) has no blob to read
-        mode, blob = parts[0], parts[2]
-        size = int(parts[3]) if parts[3].isdigit() else 0
+        entries[n] = (parts[0], parts[2], int(parts[3]) if parts[3].isdigit() else 0)
+
+    def read_rev(n, force=False):
+        mode, blob, size = entries[n]
         if size > MAX_FILE:
             pr = subprocess.Popen(["git", "-C", root, "cat-file", "blob", blob], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             head = pr.stdout.read(HEAD_BYTES)
-            pr.kill(); pr.wait()
+            pr.kill()
+            pr.wait()
             raw = head
         else:
             if blob not in _BLOBS:
-                r = subprocess.run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True)
-                if r.returncode:
-                    raise RuntimeError("git cat-file: " + r.stderr.decode("utf-8", "replace").strip())
-                _BLOBS[blob] = r.stdout
+                rr = subprocess.run(["git", "-C", root, "cat-file", "blob", blob], capture_output=True)
+                if rr.returncode:
+                    raise RuntimeError("git cat-file: " + rr.stderr.decode("utf-8", "replace").strip())
+                _BLOBS[blob] = rr.stdout
             raw = _BLOBS[blob]
-        add(n, raw, size, link=(mode == "120000"))
+        add(n, raw, size, link=(mode == "120000"), force=force)
+    _prefetch(root, [b for (_m, b, sz) in entries.values() if sz <= MAX_FILE])
+    for n in entries:
+        read_rev(n)
+    _read_refs(out, entries, lambda n: read_rev(n, force=True))
     return out
+
+
+def _prefetch(root, blobs):
+    """Every blob a tree needs that is not remembered yet, in ONE git process (a process per file costs most of a history scan)."""
+    todo = sorted({b for b in blobs if b not in _BLOBS})
+    if not todo:
+        return
+    r = subprocess.run(["git", "-C", root, "cat-file", "--batch"], input=("\n".join(todo) + "\n").encode(), capture_output=True)
+    data, pos = r.stdout, 0
+    for b in todo:
+        nl = data.find(b"\n", pos)
+        if r.returncode or nl < 0:
+            return                                  # fall back to one process per blob
+        head = data[pos:nl].split()
+        if len(head) != 3 or head[1] != b"blob":
+            return
+        size = int(head[2])
+        _BLOBS[b] = data[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+
+
+def _read_refs(out, tracked, read):
+    """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c is read too (what it is called does not matter)."""
+    want = set()
+    for p, t in list(out.items()):
+        if p in out.links or not (_wf_or_action_name(p) or _is_script(p, t) or p == "bin/install-scanner.sh"):
+            continue
+        for ref, ok in _pip_file_refs(t):
+            if ok:
+                for c in _ref_candidates(ref, p):
+                    if c in tracked and c not in out:
+                        want.add(c)
+    for c in sorted(want):
+        read(c)
+        if c in out:
+            out.reqrefs.add(c)
 
 
 def manifest_text(root, rev):
@@ -909,16 +1046,18 @@ def _step_items(node, out, labels):
             out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4) + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest()[:8] if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             _pip_items(tail, out)
-        heredocs = list(_HEREDOC.finditer(run))
+        heredocs = None          # found only when a pip command reads a requirements list from stdin
         used = set()
         for tail in _pip_tails(run):
             if _STDIN_REQ.search(tail):          # a requirements list on stdin: read ITS heredoc (the one opened on its own line), or refuse what cannot be read
+                if heredocs is None:
+                    heredocs = _heredocs(run)
                 body = None
                 for n, h in enumerate(heredocs):
-                    hdr = run[run.rfind("\n", 0, h.start()) + 1:h.start()]
+                    hdr = run[run.rfind("\n", 0, h.start) + 1:h.start]
                     if n not in used and tail.split("<<")[0].strip() and tail.split("<<")[0].strip() in hdr:
                         used.add(n)
-                        body = h.group(3)
+                        body = h.body
                         break
                 if body is None:
                     out.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(tail.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))
@@ -1047,6 +1186,33 @@ def _locate(text, it, used):
     return lines[0][0] if lines else 0
 
 
+_STDIN_HEADER = re.compile(r"^[^\n]*(?:-r|--requirement)[ =]*(?:/dev/stdin|-)[^\n]*<<-?[ \t]*['\"]?(\w+)['\"]?[^\n]*$")
+
+
+def _stdin_heredoc_blocks(lines):
+    """[(header line, header..terminator text)] for every `pip ... -r /dev/stdin <<WORD` line of a script and the heredoc that follows it, in linear time (terminators are indexed by word)."""
+    where = {}
+    for i, ln in enumerate(lines):
+        w = ln.strip(" \t")
+        if re.fullmatch(r"\w+", w):
+            where.setdefault(w, []).append(i)
+    out, skip = [], -1
+    for i, ln in enumerate(lines):
+        if i <= skip or "<<" not in ln:
+            continue
+        m = _STDIN_HEADER.match(ln)
+        if not m:
+            continue
+        offs = where.get(m.group(1), ())
+        k = bisect.bisect_left(offs, i + 2)
+        if k >= len(offs):
+            continue
+        j = offs[k]
+        out.append((ln, "\n".join(lines[i:j + 1])))
+        skip = j
+    return out
+
+
 def _scan_script(path, text, found):
     joined = re.sub(r"\\\r?\n", "", text).split("\n")
     if len(joined) > MAX_LINES_PER_FILE:
@@ -1057,10 +1223,8 @@ def _scan_script(path, text, found):
         if am:
             assigns[am.group(1)] = am.group(2)
     hd_lines = set()
-    for hm in re.finditer(r"^[^\n]*(?:-r|--requirement)[ =]*(?:/dev/stdin|-)[^\n]*<<-?[ \t]*['\"]?(\w+)['\"]?[^\n]*\n.*?\n[ \t]*\1[ \t]*$", "\n".join(joined), re.M | re.S):
-        block = hm.group(0)
+    for first, block in _stdin_heredoc_blocks(joined):
         _step({"run": block}, found, {})            # a pip requirements HEREDOC is read as one command text (its body is the requirement list)
-        first = block.split("\n", 1)[0]
         hd_lines.add(first)
     for ln in joined:   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
         if ln in hd_lines:
@@ -1071,101 +1235,146 @@ def _scan_script(path, text, found):
             raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
 
 
+_SCAN_MEMO = {}
+
+
+def _scan_file_cached(path, text, reqrefs):
+    """_scan_file, remembered per (path, content, budget): a history scan reads the same file version in many commits, and a version is scanned once (the items are copied out, never shared)."""
+    key = (path, hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), path in reqrefs, _LEX_BUDGET)
+    hit = _SCAN_MEMO.get(key)
+    if hit is None:
+        found = _scan_file(path, text, reqrefs)
+        _SCAN_MEMO[key] = (copy.deepcopy(found), _LEX_LIMIT[0])
+        return found
+    _LEX_LIMIT[0] = hit[1]
+    return copy.deepcopy(hit[0])
+
+
+def _scan_file(path, text, reqrefs):
+    """The raw items of one in-scope file (by its KIND: install-scanner.sh, a version or checksum file, a shell script, a requirements file, a workflow or action file)."""
+    found = []
+    if path == "bin/install-scanner.sh":
+        found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
+        found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
+        found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
+        found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
+        for ln in re.sub(r"\\\r?\n", "", text).split("\n"):   # and the rest of the script like any other: an appended download is seen
+            _step({"run": ln}, found, {})
+    elif not _is_script(path, text) and not _requirements_name(path) and path not in reqrefs and not _wf_or_action_name(path) and (path.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])):
+        found = [Item("tool", "file:" + path, "(file)")]   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
+        found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]      # what an installer's *-version-file selects: a changed content is a changed key
+    elif _is_script(path, text):
+        found = []
+        _scan_script(path, text, found)
+        if path.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]):
+            fi = Item("tool", "file:" + path, "(file)")
+            fi.step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+            found.append(fi)           # a script that is also named like a version or checksum file: the content item AND the script's items
+    elif _requirements_name(path) or path in reqrefs:
+        found = []
+        for body in _req_lines(text):
+            if body.startswith("--hash="):
+                continue
+            m = _REQ_ONE.match(body)
+            if m and m.group(2) == "==":
+                found.append(Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(3)))      # name==version (with its --hash options)
+            elif m and m.group(2) == "===":
+                it3 = Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", "===" + m.group(3))   # its own operator: an item that cannot be proven
+                it3.step = "line:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:10]
+                found.append(it3)
+            else:
+                found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
+        if re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]):
+            fi = Item("tool", "file:" + path, "(file)")
+            fi.step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+            found.append(fi)           # requirements kind beats the name rule; the checksum-named file's content item stays beside its packages
+    elif _wf_or_action_name(path):
+        labels = {}
+        for m in re.finditer(r"uses:\s*['\"]?([^\s#'\"]+)['\"]?\s*#\s*(?:tag:\s*)?(\S+)", text):
+            labels.setdefault(m.group(1), []).append(m.group(2))
+        try:
+            nodes = 0
+            for ev in yaml.parse(text, Loader=yaml.BaseLoader):  # events, not expanded nodes: an alias bomb is refused before anything is built
+                if isinstance(ev, yaml.AliasEvent):
+                    raise RuntimeError(f"{path} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
+                nodes += 1
+                if nodes > 200000:
+                    raise RuntimeError(f"{path} is too large to read safely")
+            doc = yaml.load(text, Loader=yaml.BaseLoader)
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
+            raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
+        _walk(doc, found, labels, "")
+        runs = []
+
+        def _collect(n):
+            if isinstance(n, dict):
+                for k, v in n.items():
+                    if k == "run" and isinstance(v, str):
+                        runs.append(v)
+                    _collect(v)
+            elif isinstance(n, list):
+                for v in n:
+                    _collect(v)
+        _collect(doc)
+        for fv in _extra_scalars(text, [" ".join(r.split()) for r in runs]):      # a run scalar is read whole by the walk already
+            _step({"run": fv}, found, {})
+            _bodies(found, fv, {})
+        for ln in re.sub(r"\\\r?\n", "", text).split("\n"):        # every install-looking string counts, wherever it sits: a comment, an env value, an input default, a name (AC11)
+            rest = re.sub(r"^\s*(?:-\s*)?[\w.-]+:\s*", "", ln).strip().strip("'\"")
+            if rest and any(rest in r for r in runs):
+                continue                    # a line of a run block: already read as one command text
+            _step({"run": ln}, found, {})
+            _bodies(found, ln, {})
+    return found
+
+
+def _resolve_reqrefs(found, path, files):
+    """The pip FILE arguments a file named (markers left by the pip reader): a file that was read (it is in scope as a requirements file) needs nothing more, one that was not, or cannot be
+    resolved to a tracked file inside the repository, is an unmeasured item."""
+    links = getattr(files, "links", {})
+    for it in [i for i in found if i.name == "pypi/(reqref)"]:
+        found.remove(it)
+        ref = it.version
+        if not any(c in files and c not in links for c in _ref_candidates(ref, path)):
+            found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(ref.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))
+
+
+class Items(dict):
+    """{key: Item} with .refused = [(path, reason)] for the files a historical commit could not be read in (mode 'history' only; any other mode raises)."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.refused = []
+
+
 def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=None):
-    """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
-    items = {}
+    """The items of one tree's files ({path: text}). Raises on a file that cannot be read safely (a workflow that does not parse, a line over the limit): a pin we cannot read is never
+    skipped. In mode 'history' such a file is collected in .refused and the rest is read."""
+    items = Items()
     exempt, problems = harness_exempt(files, manifest, mode) if (exempt_on or exempt_set is not None) else (set(), [])
     if exempt_set is not None:
         exempt = set(exempt_set)
-    elif not exempt_on:
-        exempt = set()
+    reqrefs = getattr(files, "reqrefs", set())
     for pi in problems:
         items.setdefault(pi.key, pi)
-    for lp, target in sorted(getattr(files, "links", {}).items()):          # a script-named symlink whose target is not itself in scope cannot be measured: fail closed
-        if _is_script_name(lp) or _shell_shebang(files.get(lp, "")):
-            tgt = posixpath.normpath(posixpath.join(posixpath.dirname(lp), target))
-            if tgt not in files or tgt in getattr(files, "links", {}):
-                pi = _problem("(symlink)", "the script-named symlink %s points to %s, which is not a file in scope: it cannot be measured" % (lp, target[:80]), "link:" + lp)
-                pi.file = lp
-                items.setdefault(pi.key, pi)
+    for lp, target in sorted(getattr(files, "links", {}).items()):          # a symlink with an in-scope name (script, workflow, action, requirements, version, checksum) whose target is not itself in scope cannot be measured: fail closed
+        tgt = posixpath.normpath(posixpath.join(posixpath.dirname(lp), target))
+        if tgt not in files or tgt in getattr(files, "links", {}):
+            pi = _problem("(symlink)", "the symlink %s points to %s, which is not a file in scope: it cannot be measured" % (lp, target[:80]), "link:" + lp)
+            pi.file = lp
+            items.setdefault(pi.key, pi)
     for path, text in sorted(files.items()):
-        found = []
         _LEX_LIMIT[0] = False
         if path in exempt or path == MANIFEST:
             continue                          # listed in the reviewed manifest, bytes unchanged: fixture data (AC11); the manifest itself is not a source of items
-        if path == "bin/install-scanner.sh":
-            found = [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in _VER_PIN.finditer(text) if m.group(1) != "PATH"]
-            found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
-            found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
-            found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
-            for ln in re.sub(r"\\\r?\n", "", text).split("\n"):   # and the rest of the script like any other: an appended download is seen
-                _step({"run": ln}, found, {})
-        elif not _is_script(path, text) and not _requirements_name(path) and (path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py")))):
-            found = [Item("tool", "file:" + path, "(file)")]   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
-            found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]      # what an installer's *-version-file selects: a changed content is a changed key
-        elif _is_script(path, text):
-            found = []
-            _scan_script(path, text, found)
-            if path.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]):
-                fi = Item("tool", "file:" + path, "(file)")
-                fi.step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
-                found.append(fi)           # a script that is also named like a version or checksum file: the content item AND the script's items
-        elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
-            found = []
-            for body in _req_lines(text):
-                if body.startswith("--hash="):
-                    continue
-                m = _REQ_ONE.match(body)
-                if m and m.group(2) == "==":
-                    found.append(Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(3)))      # name==version (with its --hash options)
-                elif m and m.group(2) == "===":
-                    it3 = Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", "===" + m.group(3))   # its own operator: an item that cannot be proven
-                    it3.step = "line:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:10]
-                    found.append(it3)
-                else:
-                    found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
-            if re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]):
-                fi = Item("tool", "file:" + path, "(file)")
-                fi.step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
-                found.append(fi)           # requirements kind beats the name rule; the checksum-named file's content item stays beside its packages
-        else:
-            labels = {}
-            for m in re.finditer(r"uses:\s*['\"]?([^\s#'\"]+)['\"]?\s*#\s*(?:tag:\s*)?(\S+)", text):
-                labels.setdefault(m.group(1), []).append(m.group(2))
-            try:
-                nodes = 0
-                for ev in yaml.parse(text, Loader=yaml.BaseLoader):  # events, not expanded nodes: an alias bomb is refused before anything is built
-                    if isinstance(ev, yaml.AliasEvent):
-                        raise RuntimeError(f"{path} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
-                    nodes += 1
-                    if nodes > 200000:
-                        raise RuntimeError(f"{path} is too large to read safely")
-                doc = yaml.load(text, Loader=yaml.BaseLoader)
-            except yaml.YAMLError as e:
-                mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
-                raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
-            _walk(doc, found, labels, "")
-            runs = []
-
-            def _collect(n):
-                if isinstance(n, dict):
-                    for k, v in n.items():
-                        if k == "run" and isinstance(v, str):
-                            runs.append(v)
-                        _collect(v)
-                elif isinstance(n, list):
-                    for v in n:
-                        _collect(v)
-            _collect(doc)
-            for fv in _extra_scalars(text, [" ".join(r.split()) for r in runs]):      # a run scalar is read whole by the walk already
-                _step({"run": fv}, found, {})
-                _bodies(found, fv, {})
-            for ln in text.split("\n"):        # every install-looking string counts, wherever it sits: a comment, an env value, an input default, a name (AC11)
-                rest = re.sub(r"^\s*(?:-\s*)?[\w.-]+:\s*", "", ln).strip().strip("'\"")
-                if rest and any(rest in r for r in runs):
-                    continue                    # a line of a run block: already read as one command text
-                _step({"run": ln}, found, {})
-                _bodies(found, ln, {})
+        try:
+            found = _scan_file_cached(path, text, reqrefs)
+            _resolve_reqrefs(found, path, files)
+        except RuntimeError as e:
+            if mode != "history":
+                raise
+            items.refused.append((path, str(e)))          # a historical commit holds a file this check refuses: reported as information, the rest is read
+            continue
         if _LEX_LIMIT[0]:
             lim = Item("package", "pypi/(unmeasured:scan limit reached)", "(unpinned)")
             lim.step = "file:" + hashlib.sha256(path.encode("utf-8", "replace")).hexdigest()[:10]
@@ -1230,11 +1439,16 @@ def moved(base_items, head_items):
 def load_at(root, rev, manifest_rev=None, exempt=True, mode=None):
     """Items at a revision. The harness manifest is read from manifest_rev when given (a pull request's own exemptions never count: its BASE decides); exempt=False measures every
     in-scope file in full (the BASE side of a pull request); mode: 'daily' (default), 'pr' or 'history'."""
-    files = tree_files(root, rev)
     mode = mode or ("pr" if manifest_rev is not None else "daily")
+    soft = [] if mode == "history" else None          # a historical commit's refusals are collected, not raised
+    files = tree_files(root, rev, soft)
     if manifest_rev is None:
-        return inventory(files, exempt_on=exempt, mode=mode)
-    return inventory(files, manifest_text(root, manifest_rev), mode=mode, exempt_on=exempt)
+        items = inventory(files, exempt_on=exempt, mode=mode)
+    else:
+        items = inventory(files, manifest_text(root, manifest_rev), mode=mode, exempt_on=exempt)
+    if soft:
+        items.refused += soft
+    return items
 
 
 _UNMEASURED = [
@@ -1244,22 +1458,15 @@ _UNMEASURED = [
     (re.compile(r"\bgit\s+(?:-\S+\s+)*(?:clone|submodule\s+update|fetch\s+\S*https?://|archive\s+--remote)\b"), "a git clone or remote fetch"),
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
-    (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
 ]
-
-
-def tree_scripts(root, rev):
-    """{path: text} for every shell script at a revision: where a download or install can hide outside the workflows."""
-    f = tree_files(root, rev)
-    return {p: t for p, t in f.items() if _is_script(p, t)}
 
 
 def unmeasured(files, manifest=_UNSET, exempt_on=True, mode="daily", exempt_set=None):
     """{(file, form, command line): occurrences} for every install form in the workflows and scripts that this inventory does not measure, read after
     joining backslash continuations. Reported as information; a pull request that ADDS an entry (a new command line, even in place of another) is refused."""
     out = {}
-    exempt, _problems = harness_exempt(files, manifest, mode) if exempt_on else (set(), [])
+    exempt, _problems = harness_exempt(files, manifest, mode) if (exempt_on or exempt_set is not None) else (set(), [])
     if exempt_set is not None:
         exempt = set(exempt_set)
     for path, text in sorted(files.items()):

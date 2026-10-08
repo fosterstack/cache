@@ -17,7 +17,7 @@
   },
   {
    "path": ".github/agent/tests/pin-age-check-test.sh",
-   "sha256": "a0755ce7730d034e71a65fb7cbb6b55570b05b17a5fc918988e81eae1cfee71f",
+   "sha256": "5120fdb2d6fb992c97726d3c56707652fbf4e12f6d136986950cf548d2ac84bb",
    "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
   },
   {

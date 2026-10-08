@@ -290,8 +290,8 @@ class LiveNet:
 
     @staticmethod
     def _judged1(item, label, tags):
-        """The tags one comment judges: an exact tag, by that tag; a floating comment (v4, or v4.3 within its minor), by the HIGHEST RELEASE X.Y.Z of its major (minor) by numeric order,
-        a pre-release never (none: unresolved); no comment, every version-like tag."""
+        """The tags one comment judges (advisor 0255): an exact tag, by that tag; a floating comment (v4, or v4.3 within its minor), by EVERY exact X.Y.Z tag on the commit, pre-releases and other
+        majors included (affected if ANY is; none: unresolved); no comment, every version-like tag."""
         if not label:
             return tags
         rel = [t for t in tags if re.fullmatch(r"v?\d+\.\d+\.\d+", t)]
@@ -883,6 +883,8 @@ def history_items(root, start, now):
     items = {}
     for r in revs:
         loaded = inv.load_at(root, r, mode="history")
+        for path, why in getattr(loaded, "refused", ()):          # a file this check refuses, in a past commit: information, the daily audit goes on (today's tree and open PRs still refuse loudly)
+            print("information: history: %s %s refused (%s)" % (r[:12], clean(path), clean(why)))
         for k, it in loaded.items():
             it.commit = r[:12]
             if k in items:

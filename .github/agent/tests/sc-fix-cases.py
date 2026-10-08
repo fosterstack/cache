@@ -2262,7 +2262,13 @@ def x_real_tree_every_script_accounted():
             continue
         if p.endswith((".sh", ".bash", ".ksh", ".zsh", ".bats")) or t.startswith("#!"):
             n += 1
-            assert strip(inv.inventory({p: t})) <= whole, ("dropped", p)
+            sub = inv.Files()
+            sub[p] = t
+            for r in files:                              # the requirements files a script feeds to pip are read with it
+                if inv._requirements_name(r) or r in files.reqrefs:
+                    sub[r] = files[r]
+            sub.reqrefs = set(files.reqrefs)
+            assert strip(inv.inventory(sub)) <= whole, ("dropped", p)
     assert n >= 10, n
 
 
@@ -2768,7 +2774,7 @@ def i_shebang_text_rule_every_line():
         assert not inv.load_at(repo, None), sb
 
 
-@case("age", "AC11", "x: the remaining PRE-EXISTING limits, pinned as decisions: a constraints file that is not named requirements*.txt is not read (its pins are not items), and `-c constraints.txt` adds nothing; go, npm and the other install forms keep their own readers")
+@case("age", "AC11", "x: the remaining PRE-EXISTING limits, pinned as decisions: a constraints or requirements file that no script feeds to pip and that is not named requirements*.txt is not read (its pins are not items); one a script names with -r or -c IS read; go, npm and the other install forms keep their own readers")
 def x_constraints_boundary():
     assert not repo_items({"constraints.txt": "pyyaml==5.3\n"})[0] and not repo_items({"tools/pins.txt": "pyyaml==5.3\n"})[0]
     ks = sorted(repo_items({"bin/x.sh": SHEBANG_BASH + "pip install -c constraints.txt pyyaml==5.3\n"})[0])
@@ -2927,6 +2933,207 @@ def x_boundary_more():
     for f in ("pipenv install requests==2.0", "poetry add requests==2.0", "pdm add requests==2.0", "python -c 'import pip; pip.main([\"install\", \"requests==2.0\"])'",
               "python -c \"import subprocess; subprocess.run(['pip','install','requests==2.0'])\"", "$VAR install requests==2.0", "p$'i'p install requests==2.0", "{pip,x} install requests==2.0",
               "pip download requests==2.0", "pip wheel requests==2.0", "pip lock requests==2.0"):
+        repo = history_repo({"bin/x.sh": SHEBANG_BASH + f + "\n"})
+        assert not inv.load_at(repo, None) and not inv.unmeasured(inv.tree_files(repo, None)), ("the accepted boundary moved: " + f)
+
+
+# ======================================================================================================================================
+# step 8 round 1 on the implementation: names that cannot be read, symlinked scope, continuations in every block, requirements files by reference,
+# empty words, bounded time, history refusals, and the pinned obfuscation boundary
+# ======================================================================================================================================
+def bytes_name_repo(name_bytes, content):
+    """A repository whose index holds a file under a name that is not valid UTF-8 (an index-only entry: the working tree has no such file)."""
+    d = history_repo({"README.md": "x\n"})
+    blob = subprocess.run(["git", "-C", d, "hash-object", "-w", "--stdin"], input=content.encode(), capture_output=True, check=True).stdout.strip()
+    subprocess.run([b"git", b"-C", os.fsencode(d), b"update-index", b"--add", b"--cacheinfo", b"100644," + blob + b"," + name_bytes], check=True, capture_output=True)
+    _git(d, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "bytes")
+    return d
+
+
+@case("age", "AC11", "i: a tracked file the working-tree reader cannot read is NEVER silently skipped: a name that is not valid UTF-8 (an index-only entry), a file that is not readable, a tracked file that is missing from disk: the daily reader refuses with 'cannot read' (exit 2) or reads it, never an empty inventory; the revision reader reads the blob and the two modes agree on the pin when both read it")
+def i_unreadable_tracked_file_is_not_skipped():
+    d = bytes_name_repo(b"bin/\xff.sh", SHEBANG_BASH + PIP_REAL)
+    assert PYPIN in sorted(inv.load_at(d, "HEAD"))
+    try:
+        wt = sorted(inv.load_at(d, None))
+    except RuntimeError as e:
+        assert "cannot read" in str(e), str(e)
+    else:
+        assert PYPIN in wt, wt
+    fx = d + ".fx.json"
+    json.dump({"lists": {}}, open(fx, "w"))
+    r = subprocess.run([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", d, "--fixtures", fx, "--now", now_iso(), "--report-only"], capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    assert PYPIN in out or (r.returncode == 2 and "cannot read" in out), (r.returncode, out[-300:])
+    d2 = history_repo({"README.md": "x\n", "bin/x.sh": SHEBANG_BASH + PIP_REAL})
+    os.chmod(os.path.join(d2, "bin/x.sh"), 0)
+    try:
+        try:
+            wt = sorted(inv.load_at(d2, None))
+        except RuntimeError as e:
+            assert "cannot read" in str(e), str(e)
+        else:
+            assert PYPIN in wt, wt
+    finally:
+        os.chmod(os.path.join(d2, "bin/x.sh"), 0o644)
+    d3 = history_repo({"README.md": "x\n", "bin/x.sh": SHEBANG_BASH + PIP_REAL})
+    os.remove(os.path.join(d3, "bin/x.sh"))
+    try:
+        wt = sorted(inv.load_at(d3, None))
+    except RuntimeError as e:
+        assert "cannot read" in str(e), str(e)
+    else:
+        assert PYPIN in wt, wt
+
+
+SYMLINK_NAMES = [".github/actions/x/action.yml", ".github/actions/deep/er/action.yaml", ".github/workflows/w.yml", ".github/workflows/w.yaml", "requirements.txt", "deploy/requirements-dev.txt"]
+
+
+@case("age", "AC11", "i: a symlink with an in-scope NAME (a workflow, an action file, a requirements file) is refused as an unmeasured symlink item unless its target is itself in scope, like the script-named ones, in both modes; a link to another in-scope file raises nothing")
+def i_in_scope_named_symlink_is_refused():
+    for name in SYMLINK_NAMES:
+        up = "../" * name.count("/")
+        files = {"README.md": "x\n", "docs/payload.txt": "pip install evil==1.0\n", name: ("symlink", up + "docs/payload.txt")}
+        repo = history_repo(files)
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert [k for k in ks if k.startswith("tool:(symlink)@")], (name, mode, ks)
+    files = {"README.md": "x\n", ".github/workflows/w.yml": "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n", ".github/workflows/w2.yml": ("symlink", "w.yml")}
+    repo = history_repo(files)
+    for mode in (None, "HEAD"):
+        assert not [k for k in sorted(inv.load_at(repo, mode)) if k.startswith("tool:(symlink)@")], mode
+    files = {"README.md": "x\n", "requirements.txt": "pyyaml==5.3 --hash=sha256:aa\n", "deploy/requirements.txt": ("symlink", "../requirements.txt")}
+    repo = history_repo(files)
+    for mode in (None, "HEAD"):
+        ks = sorted(inv.load_at(repo, mode))
+        assert not [k for k in ks if k.startswith("tool:(symlink)@")] and PYPIN in ks, (mode, ks)
+
+
+CONT_ENV = "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      S: |\n        go install \\\n          github.com/a/b@v%s\n        pip install \\\n          evil==%s\n    steps:\n      - run: echo hi\n"
+CONT_ACTION = "name: a\ninputs:\n  cmd:\n    default: |\n      go install \\\n        github.com/a/b@v%s\n      pip install \\\n        evil==%s\nruns:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n"
+CONT_WITH = "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - uses: actions/github-script@%s # v7\n        with:\n          script: |\n            go install \\\n              github.com/a/b@v%%s\n            pip install \\\n              evil==%%s\n" % ("3" * 40)
+
+
+@case("age", "AC11", "i: a backslash-newline is deleted in EVERY block, not only in run text and scripts: a literal | block of an env value, an input default and a `with: script:` value holding `go install \\` + a target or `pip install \\` + `evil==1.0` give the real items, and changing the version on the continuation line changes the item (the old one is gone)")
+def i_continuations_in_every_block():
+    for tmpl, path in ((CONT_ENV, WFPATH), (CONT_ACTION, ".github/actions/a/action.yml"), (CONT_WITH, WFPATH)):
+        ks = repo_items({path: tmpl % ("1.0.0", "1.0")})[0]
+        assert "gotool:github.com/a/b@v1.0.0" in ks and "package:pypi/evil@1.0" in ks, (path, ks)
+        ks2 = repo_items({path: tmpl % ("2.0.0", "2.0")})[0]
+        assert "gotool:github.com/a/b@v2.0.0" in ks2 and "package:pypi/evil@2.0" in ks2 and "package:pypi/evil@1.0" not in ks2, (path, ks2)
+        young = {"times": {"package:pypi/evil@2.0": {"time": "2026-10-06T00:00:00Z", "source": "pypi"}}}
+        rc, out = run_age(exact_repo({path: tmpl % ("1.0.0", "1.0")}, {path: tmpl % ("2.0.0", "2.0")}), young)
+        assert rc == 1 and "evil@2.0" in out, (path, rc, out[-300:])
+
+
+REQ_FORMS = ["pip install -r requirements/base.txt", "pip install --require-hashes -r requirements/base.txt", "pip install --requirement requirements/base.txt", "pip install --requirement=requirements/base.txt",
+             "pip install -rrequirements/base.txt", "pip install -r 'requirements/base.txt'", "pip install -c requirements/base.txt pyyaml==5.3", "pip install --constraint requirements/base.txt pyyaml==5.3",
+             "pip install --constraint=requirements/base.txt pyyaml==5.3"]
+
+
+@case("age", "AC11", "i: any FILE a script or run step feeds to pip with -r, --requirement (also attached, -rFILE and --requirement=FILE) or -c/--constraint is READ with the requirements parser wherever it sits and whatever it is called (requirements/base.txt, deps/pins.in): its pins are items, in a script and a run step, in both modes; a FILE that cannot be read (missing, outside the repository, absolute, a URL, a variable) is an unmeasured item; the old `file not named requirements*.txt` line item is gone; a bump of evil in such a file is a MOVED pin")
+def i_requirements_by_reference():
+    for line in REQ_FORMS:
+        for files in both_routes(line):
+            files = {**files, "requirements/base.txt": "evil==1.0\n"}
+            repo = history_repo(files)
+            for mode in (None, "HEAD"):
+                ks = sorted(inv.load_at(repo, mode))
+                assert "package:pypi/evil@1.0" in ks, (line, list(files), mode, ks)
+    for name in ("deps/pins.in", "deps/pins.txt", "base"):
+        files = {"bin/x.sh": SHEBANG_BASH + "pip install -r %s\n" % name, name: "evil==1.0\n"}
+        repo = history_repo(files)
+        for mode in (None, "HEAD"):
+            assert "package:pypi/evil@1.0" in sorted(inv.load_at(repo, mode)), (name, mode)
+    for ref in ("missing.txt", "../outside.txt", "/etc/x.txt", "https://h.example/x.txt", '"$REQ"', "a/../../b.txt"):
+        for files in both_routes("pip install -r %s" % ref):
+            ks = sorted(repo_items(files)[0])
+            assert [k for k in ks if "(unmeasured:" in k], (ref, list(files), ks)
+    assert not inv.unmeasured({"bin/x.sh": SHEBANG_BASH + "pip install -r deps/pins.in\n"}), "no unmeasured-form line for a requirements file"
+    base = {"bin/x.sh": SHEBANG_BASH + "pip install -r requirements/base.txt\n", "requirements/base.txt": "evil==1.0\n"}
+    head = {**base, "requirements/base.txt": "evil==9.9.9\n"}
+    young = {"times": {"package:pypi/evil@9.9.9": {"time": "2026-10-06T00:00:00Z", "source": "pypi"}}}
+    rc, out = run_age(exact_repo(base, head), young)
+    assert rc == 1 and "evil@9.9.9" in out, ("a bump in a referenced file is moved", rc, out[-300:])
+    lists = {"lists": {"package:pypi/evil@9.9.9": {"github": [{"id": "GHSA-test-test-test", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}}}
+    rc, out = run_audit_pr(base, head, lists)
+    assert rc == 1 and any("GHSA-test-test-test" in l for l in out.splitlines() if l.startswith("audit: HIT:")), (rc, out[-300:])
+
+
+@case("age", "AC11", "i: an EMPTY shell word survives to the docker readers: `docker run -w \"\" alpine:3.20`, `--user \"\"`, `--entrypoint \"\" alpine:3.20 id`, `-e ''` still name the image alpine:3.20 (never `id`, never no image), in a script and a run step")
+def i_empty_words_survive():
+    for line in ('docker run -w "" alpine:3.20', 'docker run --user "" alpine:3.20', 'docker run --entrypoint "" alpine:3.20 id', "docker run --entrypoint '' alpine:3.20 id", "docker run -e '' alpine:3.20",
+                 'docker run --rm -w "" --user "" --entrypoint "" alpine:3.20 id'):
+        for files in both_routes(line):
+            ks = sorted(repo_items(files)[0])
+            assert any(k.startswith("image:alpine:3.20@") for k in ks) and not [k for k in ks if k.startswith("image:id@")], (line, list(files), ks)
+
+
+def bounded_load(files, seconds):
+    """load_at in a child process that is KILLED at the deadline (a regex in C cannot be interrupted from inside)."""
+    repo = history_repo(files)
+    code = ("import importlib.util,sys\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
+            "try:\n    m.load_at(sys.argv[2], None)\nexcept RuntimeError as e:\n    print(e); sys.exit(2)\n")
+    try:
+        r = subprocess.run([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py"), repo], capture_output=True, text=True, timeout=seconds)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("did not finish in %d s" % seconds)
+    return r
+
+
+@case("age", "AC11", "i: hostile input is read in BOUNDED time: 8000 distinct unterminated heredoc openers in one run block, 8000 in a script, and 8000 `pip install -r /dev/stdin <<X` openers each finish within 8 seconds (a child process killed at the deadline; a pip reading its list from stdin is present, so the heredocs are searched), none exits with a crash")
+def i_heredoc_scans_are_bounded():
+    run = "".join("cat <<A%d\n" % i for i in range(8000))
+    stdin = "pip install --require-hashes -r /dev/stdin <<'REQ'\npyyaml==5.3 --hash=sha256:aa\nREQ\n"         # a pip reading its list from stdin makes the heredocs of the step matter
+    wf = "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: |\n" + "".join("          " + l + "\n" for l in (run + stdin).split("\n") if l)
+    for files in ({WFPATH: wf}, {"bin/x.sh": SHEBANG_BASH + run + stdin}, {"bin/y.sh": SHEBANG_BASH + "".join("pip install -r /dev/stdin <<X%d\n" % i for i in range(8000))}):
+        r = bounded_load(files, 8)
+        assert r.returncode in (0, 2), (list(files), r.returncode, r.stderr[-300:])
+
+
+@case("audit", "AC12", "h: a file REFUSED in a historical commit (a shell script over 1 MB, a command line over the line limit) does not abort the daily audit: each is an information line `history: <commit> <path> refused (<reason>)` and the audit goes on (exit 0 here); the same refusals in TODAY's tree still stop the audit loudly (exit 2)")
+def h_history_refusals_are_information():
+    big = SHEBANG_BASH + PIP_REAL + "#" * 1_100_000 + "\n"
+    longwf = "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo " + "x" * 5000 + "\n"
+    repo, rc, out = run_audit_history([{"README.md": "x\n"}, {"README.md": "x\n", "bin/big": big, WFPATH: longwf}, {"README.md": "x\n"}], {"lists": {}})
+    assert rc == 0, (rc, out[-400:])
+    assert re.search(r"history: [0-9a-f]{12} bin/big refused \(.*too large", out), out[-500:]
+    assert re.search(r"history: [0-9a-f]{12} %s refused \(.*longer than" % re.escape(WFPATH), out), out[-500:]
+    repo, rc, out = run_audit_history([{"README.md": "x\n"}, {"README.md": "x\n", "bin/big": big}], {"lists": {}})
+    assert rc == 2 and "too large" in out, ("today's tree refuses loudly", rc, out[-300:])
+
+
+@case("audit", "AC5", "e: the floating-comment docstring states the rule that is implemented (every exact tag, pre-releases included), not the retired highest-release reading")
+def e_judged1_docstring_is_current():
+    doc = pa.LiveNet._judged1.__doc__ or ""
+    assert "HIGHEST RELEASE" not in doc and "highest release" not in doc.lower(), doc
+
+
+@case("age", "AC11", "i: a file named like a checksum that is NOT a workflow or an action (checksums.py, docs/sha256-notes.yml, sha256sums.yaml) is read by its content kind: a content item, never a YAML parse that fails the whole check; a workflow or action with such a name is still a workflow")
+def i_checksum_named_non_yaml_file():
+    files = {"README.md": "x\n", "tools/checksums.py": "x = (\n", "docs/sha256-notes.yml": "a: [\n", "docs/sha256sums.yaml": "{{{\n",
+             ".github/workflows/checksums.yml": runner_wf("pip install --require-hashes pyyaml==5.3 --hash=sha256:aa")}
+    repo = history_repo(files)
+    for mode in (None, "HEAD"):
+        ks = sorted(inv.load_at(repo, mode))
+        for p in ("tools/checksums.py", "docs/sha256-notes.yml", "docs/sha256sums.yaml"):
+            assert any(k.startswith("tool:file:%s@(file)" % p) for k in ks), (p, mode, ks)
+        assert PYPIN in ks, (mode, ks)
+
+
+@case("age", "AC11", "i: shell shebang words are matched case-insensitively (#!/bin/BASH, #!/usr/bin/env BASH, #!/bin/Sh, #!/usr/bin/env -S ZSH -f): they run on a case-insensitive filesystem")
+def i_shebang_case_insensitive():
+    for sb in ("#!/bin/BASH", "#!/usr/bin/env BASH", "#!/bin/Sh", "#!/usr/bin/env -S ZSH -f", "#!/usr/bin/Nice Bash"):
+        repo = history_repo({"tools/run": sb + "\n" + PIP_REAL})
+        for mode in (None, "HEAD"):
+            assert PYPIN in sorted(inv.load_at(repo, mode)), (sb, mode)
+
+
+@case("age", "AC11", "x: the accepted OBFUSCATION boundary of the other tools' commands, one line each (no item and no unmeasured form; a change is a decision, owner Oct 3: plain forms only): quote or backslash fragments in go (`go ins\"\"tall`, `\"go\" install`, `go install \"mod\"@v1.0.0`), curl (`c''url`), wget (`w\\get`), apt (`apt-'get'`), npm (`n''pm`), gh (`g''h`); and the empty installs `xargs pip install` and a bare `pip install` (the packages arrive on stdin)")
+def x_obfuscation_boundary_other_tools():
+    forms = ['go ins""tall github.com/a/b@v1.0.0', '"go" install github.com/a/b@v1.0.0', 'go install "github.com/a/b"@v1.0.0', "c''url https://example.com/x.sh", "w\\get https://example.com/x.sh",
+             "apt-'get' install x", "n''pm install x", "g''h release download v1", "xargs pip install", "pip install"]
+    for f in forms:
         repo = history_repo({"bin/x.sh": SHEBANG_BASH + f + "\n"})
         assert not inv.load_at(repo, None) and not inv.unmeasured(inv.tree_files(repo, None)), ("the accepted boundary moved: " + f)
 

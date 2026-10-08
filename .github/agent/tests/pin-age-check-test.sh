@@ -498,7 +498,7 @@ repo = sys.argv[2] + "/badutf"; os.makedirs(repo + "/.github/workflows", exist_o
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/.github/workflows/a.yml", "wb").write(b"on: x\njobs:\n  j:\n    steps:\n      - run: echo \xff\xfe\n")
 subprocess.run(["git", "-C", repo, "add", "-A"], check=True); subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "x"], check=True)
-inv.load_at(repo, "HEAD"); inv.tree_scripts(repo, "HEAD")   # no UnicodeDecodeError
+inv.load_at(repo, "HEAD"); inv.tree_files(repo, "HEAD")   # no UnicodeDecodeError
 PY
 
 CASE="forms outside workflow run steps are measured too: a script's go install / pip / docker run / release download, install-scanner.sh's *_VERSION and download source, a composite action anywhere, a local action reference, an oddly named requirements file"
@@ -512,7 +512,7 @@ got = inv.inventory({"bin/tool.sh": "go install example.org/evil@v9.9.9\ndocker 
 for k in ("gotool:example.org/evil@v9.9.9", "image:alpine:3.99@", "package:pypi/evilpkg@1.0", "tool:evil/evil/x.tgz@v1.0", "tool:newt@9.9.9", "action:evil/act@v1", "action:local:./tools/act@(local)"):
     assert k in got, (k, sorted(got))
 assert any(k.startswith("tool:source:tool_base_url=https://evil.example/dl@") for k in got), sorted(got)
-assert ("a pip requirements file not named requirements*.txt" in {k[1] for k in inv.unmeasured({".github/workflows/a.yml": "x: pip install -r deps.txt\n"})})
+assert not inv.unmeasured({".github/workflows/a.yml": "x: pip install -r deps.txt\n"}), "a requirements file named by -r is READ (as an item source), not listed as an unmeasured form"
 assert not inv.unmeasured({".github/workflows/a.yml": "x: pip install -r .github/pins/adjudicator-requirements.txt\n"})
 PY
 CASE="a CHANGED download source or a new local action is refused (a placeholder is never a pin)"
@@ -543,7 +543,7 @@ repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)
 subprocess.run(["git", "-C", repo, "add", "-A"], check=True); subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "x"], check=True)
-for fn in (lambda: inv.tree_scripts(repo, "HEAD"), lambda: inv.tree_scripts(repo, None)):
+for fn in (lambda: inv.tree_files(repo, "HEAD"), lambda: inv.tree_files(repo, None)):
     try:
         fn()
     except RuntimeError as e:
@@ -643,7 +643,8 @@ g = inv.inventory(wf("curl -L https://github.com/o/r/releases/download/v1.2.3/x.
 it = [v for v in g.values() if v.name == "o/r"][0]
 assert (it.version, it.label) == ("v1.2.3", "v1.2.3")
 assert inv.inventory(wf("python3 -m pip --disable-pip-version-check install evilpkg==9.9.9")).get("package:pypi/evilpkg@9.9.9")
-assert inv.unmeasured(wf("pip install --requirement deps.txt")) and not inv.unmeasured(wf("pip install --requirement .github/pins/adjudicator-requirements.txt"))
+assert [k for k in inv.inventory(wf("pip install --requirement deps.txt")) if "(unmeasured:" in k], "a requirements file that cannot be read is an unmeasured item"
+assert not inv.unmeasured(wf("pip install --requirement .github/pins/adjudicator-requirements.txt"))
 uses = {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: actions/setup-python@" + "a" * 40 + " # v6\n        with:\n          python-version-file: .python-version\n"}
 assert any("python-version-file@(input)" in k for k in inv.inventory(uses)), sorted(inv.inventory(uses))
 a = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - env:\n          IMAGE: alpine@sha256:" + "a" * 64 + "\n        run: docker run --rm \"$IMAGE\" true\n"})
@@ -688,7 +689,7 @@ k2 = set(inv.inventory(wf("curl -L https://github.com/o/r/releases/download/1.2.
 assert k1 != k2
 assert inv.unmeasured(wf("curl -L https://github.com/o/r/releases/download/release%2F1.2.3/x.tgz -o x")), "an encoded-tag URL must be refused"
 for ln in ("pip install -r requirements.in", "pip install -r requirements-dev", "pip install --requirement requirements.lock"):
-    assert inv.unmeasured(wf(ln)), ln
+    assert [k for k in inv.inventory(wf(ln)) if "(unmeasured:" in k], ln      # not readable here (not in the tree): refused as an unmeasured item
 assert not inv.unmeasured(wf("pip install -r requirements.txt")) and not inv.unmeasured(wf("pip install -r .github/pins/adjudicator-requirements.txt"))
 assert [k for k in inv.inventory(wf("go install -mod=mod github.com/securego/gosec/v2/cmd/gosec")) if "(unversioned)" in k]
 it = [v for v in inv.inventory(wf('go install "$TOOL@v1.2.3"')).values() if v.kind == "gotool"][0]
