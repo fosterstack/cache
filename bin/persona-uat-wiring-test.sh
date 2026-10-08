@@ -543,46 +543,79 @@ def run_resolver(script):
             out.append("weekly persona-uat's resolver does not write tag=<release tag> and image=<registry>/<owner>/cache@<inspected digest> to GITHUB_OUTPUT: " + repr(outs))
     return out
 
+CLAIM_ALLOWLIST = ["sub", "aud", "ref", "job_workflow_ref", "environment", "repository", "repository_owner_id", "event_name", "iss"]
+
 def run_identity(step):
-    """EXECUTE the identity step's script in node against a fake core and a capturing console: the token is minted (awaited), the TOKEN ITSELF is registered for masking, it is
-    written to RUNNER_TEMP/anthropic-identity-token with mode 0600, nothing is exported to later steps and no timer is started, and it is never logged."""
+    """EXECUTE the identity step's script in node against a fake core and a capturing console, twice: with a JWT-shaped token (carrying claims that are NOT on the allowlist and a
+    signature) and with a token that cannot be decoded. The token is minted (awaited), the TOKEN ITSELF is registered for masking, written to RUNNER_TEMP/anthropic-identity-token
+    with mode 0600, nothing is exported to later steps and no timer is started; and the job log gets exactly ONE line of non-secret claims (the allowlist, nothing else: never the
+    token, its signature or any other claim), and a decode failure only warns."""
     import subprocess, shutil
     if not shutil.which("node"):
         return ["node is required to execute the identity step's script (the proof must not be skipped)"]
     body = str((step.get("with", {}) or {}).get("script", ""))
-    with tempfile.TemporaryDirectory() as d:
-        open(d + "/s.js", "w").write(body)
-        open(d + "/run.js", "w").write("""
+    probs = []
+    for mode in ("jwt", "bad"):
+        with tempfile.TemporaryDirectory() as d:
+            open(d + "/s.js", "w").write(body)
+            open(d + "/run.js", "w").write("""
 const fs = require('fs'); const body = fs.readFileSync(process.argv[2], 'utf8');
 const calls = {exported: {}, masked: [], logs: [], timers: 0};
-const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res('FIXTURE-TOKEN-1:' + aud), 5)), setSecret: (t) => calls.masked.push(t),
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const PAYLOAD = {sub: 'repo:o/r:environment:persona-uat', aud: 'https://api.anthropic.com', ref: 'refs/tags/v1.0.0-rc.1', job_workflow_ref: 'o/r/.github/workflows/release.yml@refs/tags/v1.0.0-rc.1',
+                 environment: 'persona-uat', repository: 'o/r', repository_owner_id: '42', event_name: 'push', iss: 'https://token.actions.githubusercontent.com',
+                 jti: 'SECRET-JTI', actor: 'SECRET-ACTOR', sha: 'SECRET-SHA', run_id: 'SECRET-RUN'};
+const TOK = process.argv[4] === 'bad' ? 'not-a-jwt-SECRETTOKEN' : b64({alg: 'RS256'}) + '.' + b64(PAYLOAD) + '.SIGNATURESECRET';
+const core = { getIDToken: (aud) => new Promise((res) => setTimeout(() => res(TOK), 5)), setSecret: (t) => calls.masked.push(t),
                exportVariable: (k, v) => { calls.exported[k] = v; }, setFailed: () => {}, info: (m) => calls.logs.push(String(m)), debug: (m) => calls.logs.push(String(m)),
-               warning: (m) => calls.logs.push(String(m)) };
+               warning: (m) => calls.logs.push('WARNING ' + String(m)) };
 const cons = { log: (...a) => calls.logs.push(a.join(' ')), info: (...a) => calls.logs.push(a.join(' ')), warn: (...a) => calls.logs.push(a.join(' ')), error: (...a) => calls.logs.push(a.join(' ')) };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
 const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (e) { return null; } };
 const mode = (p) => { try { return (fs.statSync(p).mode & 0o777).toString(8); } catch (e) { return null; } };
 new AsyncFunction('core', 'require', 'process', 'console', 'setInterval', 'setTimeout', body)(core, require, process, cons, () => { calls.timers++; return {unref() {}}; }, () => { calls.timers++; return {unref() {}}; }).then(() => {
-  fs.writeFileSync(process.argv[3], JSON.stringify({content: read(f), mode: mode(f), masked: calls.masked, exported: calls.exported, timers: calls.timers, logs: calls.logs}));
-}).catch((e) => fs.writeFileSync(process.argv[3], JSON.stringify({error: String(e)})));
+  fs.writeFileSync(process.argv[3], JSON.stringify({token: TOK, payload: PAYLOAD, content: read(f), mode: mode(f), masked: calls.masked, exported: calls.exported, timers: calls.timers, logs: calls.logs}));
+}).catch((e) => fs.writeFileSync(process.argv[3], JSON.stringify({error: String(e), token: TOK, logs: calls.logs})));
 """)
-        env = dict(os.environ, RUNNER_TEMP=d)
-        subprocess.run(["node", d + "/run.js", d + "/s.js", d + "/res.json"], env=env, capture_output=True, text=True)
-        try:
-            res = json.load(open(d + "/res.json"))
-        except Exception:
-            return ["the identity step's script could not be executed"]
-        tok = "FIXTURE-TOKEN-1:https://api.anthropic.com"
-        if res.get("error") or res.get("content") != tok or tok not in (res.get("masked") or []):
+            env = dict(os.environ, RUNNER_TEMP=d)
+            subprocess.run(["node", d + "/run.js", d + "/s.js", d + "/res.json", mode], env=env, capture_output=True, text=True)
+            try:
+                res = json.load(open(d + "/res.json"))
+            except Exception:
+                return ["the identity step's script could not be executed"]
+        tok = res.get("token", "")
+        logs = res.get("logs", [])
+        if res.get("error"):
+            if mode == "jwt":
+                return ["the identity step does not mint (await), mask THE TOKEN and write it to RUNNER_TEMP/anthropic-identity-token: %s" % res.get("error")[:120]]
+            probs.append("the identity step throws when the token cannot be decoded (a decode failure may only warn): %s" % res.get("error")[:120])
+            continue
+        if res.get("content") != tok or tok not in (res.get("masked") or []):
             return [f"the identity step does not mint (await), mask THE TOKEN and write it to RUNNER_TEMP/anthropic-identity-token: {res}"]
-        if any("FIXTURE-TOKEN" in l for l in res.get("logs", [])):
+        sig = tok.split(".")[-1]
+        if any(tok in l or (mode == "jwt" and (sig in l or tok.split(".")[1] in l)) for l in logs):
             return ["the identity step logs the token"]
-        probs = []
-        if res.get("mode") != "600":
-            probs.append(f"the identity token file is created with mode {res.get('mode')}, not 0600 (it is a credential: the owner only)")
-        if res.get("exported") or res.get("timers"):
-            probs.append(f"the identity step exports {sorted(res.get('exported') or {})} or starts a timer ({res.get('timers')}): the path reaches the driver step's env only, and a timer dies with the github-script step")
+        if mode == "jwt":
+            lines = [l for l in logs if l.startswith("OIDC identity claims (federation-rule inputs): ")]
+            if len(lines) != 1:
+                probs.append(f"the identity step does not print the allowlisted non-secret token claims exactly once (found {len(lines)}): a token-exchange 401 is undiagnosable without them")
+            else:
+                try:
+                    claims = json.loads(lines[0].split(": ", 1)[1])
+                except ValueError:
+                    claims = None
+                if claims is None or sorted(claims) != sorted(CLAIM_ALLOWLIST) or any(claims[k] != res["payload"][k] for k in CLAIM_ALLOWLIST):
+                    probs.append(f"the identity step's claims line is not exactly the allowlist {CLAIM_ALLOWLIST} with their values: {lines[0][:200]}")
+            if any(w in l for l in logs for w in ("SECRET-JTI", "SECRET-ACTOR", "SECRET-SHA", "SECRET-RUN", "SIGNATURESECRET")):
+                probs.append("the identity step prints a claim or part of the token that is not on the allowlist")
+            if res.get("mode") != "600":
+                probs.append(f"the identity token file is created with mode {res.get('mode')}, not 0600 (it is a credential: the owner only)")
+            if res.get("exported") or res.get("timers"):
+                probs.append(f"the identity step exports {sorted(res.get('exported') or {})} or starts a timer ({res.get('timers')}): the path reaches the driver step's env only, and a timer dies with the github-script step")
+        else:
+            if not [l for l in logs if l.startswith("WARNING ")] or any("OIDC identity claims" in l for l in logs):
+                probs.append("a token that cannot be decoded must produce a warning and no claims line")
     return probs
 
 def judge_refresher(name, steps, d, bad):
@@ -1010,8 +1043,9 @@ xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.
 
 # --- a COMPLETE known-good synthetic release.yml and go-freshness.yml, run through the REAL entry point judge() -> judge_release/judge_weekly -> common() ----------
 H40 = "a" * 40
+CLAIMS_JS = "// Print ONLY the identity claims the Anthropic federation rule matches on (never the token, which stays masked): a token-exchange 401 is then diagnosable.\ntry {\n  const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));\n  const claims = {};\n  for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {\n    claims[k] = payload[k];\n  }\n  core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));\n} catch (e) {\n  core.warning('could not decode OIDC claims for logging');\n}\n"
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
-         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n")
+         "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n" + CLAIMS_JS)
 REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(curl -sSf --max-time 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = 'rm -f "${RUNNER_TEMP}/anthropic-identity-token"'
 def synth_driver(weekly):
@@ -1453,6 +1487,17 @@ def _sub(j, old, new): _refr(j).update(run=_refr(j)["run"].replace(old, new))
 for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} a setInterval timer inside github-script (the round-1 design: it dies with the step)", "starts a timer", lambda j: _idscript(j).update(script=_idscript(j)["script"] + "setInterval(async () => {}, 4 * 60 * 1000).unref?.();\n"), w)
     mutate(f"{lab} the identity step exports the token path to every later step", "exports the token file's path", lambda j: _idscript(j).update(script=_idscript(j)["script"] + "core.exportVariable('ANTHROPIC_IDENTITY_TOKEN_FILE', f);\n"), w)
+    # the mint step prints the allowlisted non-secret claims (advisor request, step 8 round 4): exactly sub, aud, ref, job_workflow_ref, environment, repository, repository_owner_id,
+    # event_name and iss, one line, never the token or anything else; a decode failure only warns. Each mutant is made in the rc job and in the weekly job alike.
+    mutate(f"{lab} the claims line is widened by one claim (jti)", "not exactly the allowlist", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("'iss']", "'iss', 'jti']")), w)
+    mutate(f"{lab} the claims line prints EVERY claim of the token", "not exactly the allowlist", lambda j: _idscript(j).update(script=re.sub(r"for \(const k of \[[^\]]*\]\)", "for (const k of Object.keys(payload))", _idscript(j)["script"])), w)
+    mutate(f"{lab} the whole payload is printed too", "not on the allowlist", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("const claims = {};", "core.info(JSON.stringify(payload)); const claims = {};")), w)
+    mutate(f"{lab} the token itself is printed next to the claims", "logs the token", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("const claims = {};", "core.info(token); const claims = {};")), w)
+    mutate(f"{lab} only the token's signature segment is printed", "logs the token", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("const claims = {};", "core.info(token.split('.')[2]); const claims = {};")), w)
+    mutate(f"{lab} the mint step prints no claims at all", "does not print the allowlisted non-secret token claims exactly once", lambda j: _idscript(j).update(script=_idscript(j)["script"][:_idscript(j)["script"].index("// Print ONLY")]), w)
+    mutate(f"{lab} the claims are printed twice", "exactly once", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));", "core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims)); core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));")), w)
+    mutate(f"{lab} a claims decode failure throws instead of warning", "throws when the token cannot be decoded", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("try {", "{", 1).replace("} catch (e) {\n  core.warning('could not decode OIDC claims for logging');\n}", "}")), w)
+    mutate(f"{lab} a claims decode failure is silent (no warning)", "must produce a warning", lambda j: _idscript(j).update(script=_idscript(j)["script"].replace("core.warning('could not decode OIDC claims for logging');", "")), w)
     mutate(f"{lab} no refresher step at all (the token expires mid-run)", "expected exactly one identity refresher step", lambda j: j.update(steps=[x for x in j["steps"] if x is not _refr(j)]), w)
     mutate(f"{lab} a second refresher step", "expected exactly one identity refresher step", lambda j: j["steps"].insert(j["steps"].index(_refr(j)) + 1, copy.deepcopy(_refr(j))), w)
     mutate(f"{lab} the refresher runs BEFORE the identity step wrote the file", "BEFORE the identity step wrote", lambda j: (lambda r: (j["steps"].remove(r), j["steps"].insert(0, r)))(_refr(j)), w)

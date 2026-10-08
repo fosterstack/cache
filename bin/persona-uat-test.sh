@@ -254,7 +254,7 @@ for i in range(p.get("unauth", 0)):    # requests the auth layer answers 401: wi
     except urllib.error.HTTPError:
         pass
 if p.get("hold"):           # a request the SERVER is still working on after this persona ends: held open s seconds (its connection is visible), counted when it finishes
-    urllib.request.urlopen(req["endpoint"] + "/__hold?s=%s&who=%s" % (p["hold"], req["persona"]), timeout=5).read()
+    urllib.request.urlopen(req["endpoint"] + "/__hold?s=%s&who=%s&conn=%d" % (p["hold"], req["persona"], p.get("hold_conn", 1)), timeout=5).read()
 if p.get("orphan_same"):    # work the agent started in ITS OWN session and left running: the driver terminates the agent's whole process group when the persona ends
     subprocess.Popen([sys.executable, "-c", "import sys,time,urllib.request;time.sleep(float(sys.argv[2]));urllib.request.urlopen(urllib.request.Request(sys.argv[1]+'/orphan-work',headers={'X-Persona':'ORPHAN'}),timeout=5)\n", req["endpoint"], str(p["orphan_same"])],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -348,6 +348,11 @@ if [ "$1" = run ] && [ "$2" = -d ] && [[ "$*" =~ -p\ 127\.0\.0\.1:([0-9]+):9252\
   nohup python3 "$CASEDIR/../runnerfix.py" "${BASH_REMATCH[1]}" "$CASEDIR/runner-hits.log" </dev/null >/dev/null 2>&1 &
   echo $! >"$CASEDIR/../runner.pid"
 fi
+# a FRESH container of the IMAGE UNDER TEST: published 127.0.0.1:<port>:8080 -> the fixture server opens a listener with a request counter of its own on that port; `rm -f` drops it
+if [ "$1" = run ] && [ "$2" = -d ] && [[ "$*" =~ -p\ 127\.0\.0\.1:([0-9]+):8080\  ]] && [[ "$*" == */cache@sha256:* ]] && [ -z "${DOCKER_IMAGE_DEAD:-}" ]; then
+  python3 -c "import sys,urllib.request;urllib.request.urlopen('http://127.0.0.1:18080/__spawn?port='+sys.argv[1],timeout=10).read()" "${BASH_REMATCH[1]}"
+  mkdir -p "$CASEDIR/imgs"; echo "${BASH_REMATCH[1]}" >"$CASEDIR/imgs/cid-$(( $(grep -c '^run -d ' "$DOCKER_LOG") ))"
+fi
 # injected TEARDOWN failures: from the n-th `ps` (DOCKER_PS_FAIL_AT) or the n-th `rm` (DOCKER_RM_FAIL_AT) on, the daemon is unreachable (exit 1)
 if [ "$1" = ps ] && [ -n "${DOCKER_PS_FAIL_AT:-}" ]; then
   n=$(( $(cat "$CASEDIR/ps.count" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$CASEDIR/ps.count"
@@ -368,6 +373,7 @@ if [ "$1" = rm ] || [ "$1" = stop ] || [ "$1" = kill ]; then
   for t in "$@"; do if [ -n "$t" ] && [ -e "${CONTAINERS:?}/${t:?}" ]; then kill -9 "$(sed -n 2p "${CONTAINERS:?}/${t:?}")" 2>/dev/null; rm -f "${CONTAINERS:?}/${t:?}"; fi; done
 fi
 if [ "$1" = rm ]; then kill $(cat "$CASEDIR/../runner.pid" 2>/dev/null) 2>/dev/null; rm -f "${CASEDIR:?}/../runner.pid"; fi
+if [ "$1" = rm ]; then for t in "$@"; do if [ -e "$CASEDIR/imgs/$t" ]; then python3 -c "import sys,urllib.request;urllib.request.urlopen('http://127.0.0.1:18080/__drop?port='+sys.argv[1],timeout=10).read()" "$(cat "$CASEDIR/imgs/$t")"; rm -f "${CASEDIR:?}/imgs/${t:?}"; fi; done; fi
 # what the real client prints: the ids of what it removed or stopped (stdout), and the host-network warning for a published port (stderr)
 if [ "$1" = rm ] || [ "$1" = stop ] || [ "$1" = kill ]; then for t in "$@"; do case "$t" in -*) ;; ?*) echo "$t"; echo "container-id-noise-${t}" >&2;; esac; done; fi
 if [ "$1" = run ]; then echo "WARNING: Published ports are discarded when using host network mode" >&2; fi
@@ -869,10 +875,15 @@ import json, os, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 port, root = int(sys.argv[1]), sys.argv[2]
 lock = threading.Lock()
-S = {"c": {}, "mode": "ok", "dir": "", "silent": False, "seen": False, "queue": [], "unc": 0, "delay": 0.0, "extra": 0.0, "drift_for": "", "drift_secs": 0.0, "drift_until": 0.0, "epoch": 0}
+S = {"mode": "ok", "dir": "", "silent": False, "seen": False, "queue": [], "delay": 0.0, "extra": 0.0, "drift_for": "", "drift_secs": 0.0, "drift_until": 0.0, "epoch": 0}
 UNCOUNTED = ("/metrics", "/healthz", "/statusz")
-def total():
-    return sum(S["c"].values())
+# one INSTANCE per listening port: the master (the control port) and one per persona container the fake docker spawns (`run -d` of the image under test) and drops (`rm -f`): each
+# has its OWN request counter, exactly as a fresh container of the image would
+INST, SERVERS = {}, {}
+def new_inst():
+    return {"c": {}, "unc": 0, "seen": False}
+def total(I):
+    return sum(I["c"].values())
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     def log_message(self, *a):
@@ -886,6 +897,8 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         with lock:
+            lport = self.server.server_address[1]
+            I = INST.get(lport) or new_inst()
             if u.path == "/__case":
                 S["dir"] = q.get("dir", [""])[0]; return self.reply(200, "ok")
             if u.path == "/__mode":
@@ -900,36 +913,52 @@ class H(BaseHTTPRequestHandler):
                 S["extra"] = float(q["s"][0]); return self.reply(200, "ok")
             if u.path == "/__drift":       # once the named persona makes a counted request, EVERY /metrics scrape for the next s seconds bumps the counter (a counter that never settles)
                 S["drift_for"] = q["p"][0]; S["drift_secs"] = float(q["s"][0]); S["drift_until"] = 0.0; return self.reply(200, "ok")
+            if u.path == "/__spawn":       # a FRESH container of the image under test: a listener of its own on this port with a counter at zero
+                sp_ = int(q["port"][0])
+                INST[sp_] = new_inst()
+                srv_ = ThreadingHTTPServer(("127.0.0.1", sp_), H)
+                SERVERS[sp_] = srv_
+                threading.Thread(target=srv_.serve_forever, daemon=True).start()
+                return self.reply(200, "ok")
+            if u.path == "/__drop":        # `docker rm -f` of that container: the listener and its counter are gone (a late completion lands nowhere)
+                dp_ = int(q["port"][0])
+                srv_ = SERVERS.pop(dp_, None)
+                INST.pop(dp_, None)
+                if srv_ is not None:
+                    threading.Thread(target=lambda: (srv_.shutdown(), srv_.server_close()), daemon=True).start()
+                return self.reply(200, "ok")
             if u.path == "/__hold":        # a request still IN FLIGHT server-side: its connection is ESTABLISHED (a line in the case's procnet table) for s seconds, then it is counted (after the handler returns)
-                secs, who_, epoch = float(q["s"][0]), q.get("who", ["HELD"])[0], S["epoch"]
+                secs, who_, epoch, conn_ = float(q["s"][0]), q.get("who", ["HELD"])[0], S["epoch"], q.get("conn", ["1"])[0] == "1"
                 tab = os.path.join(S["dir"], "procnet", "tcp") if S["dir"] else None
-                line = "  77: 0100007F:%04X 0100007F:E001 01 00000000:00000000 00:00000000 00000000     0        0 7777 1 0\n" % port
+                line = "  77: 0100007F:%04X 0100007F:E001 01 00000000:00000000 00:00000000 00000000     0        0 7777 1 0\n" % lport
                 def held():
-                    if tab and os.path.isdir(os.path.dirname(tab)):
+                    if conn_ and tab and os.path.isdir(os.path.dirname(tab)):       # conn=0: the client already closed its side; only the server-side handler is still running
                         open(tab, "a").write(line)
                     time.sleep(secs)
                     with lock:
-                        if S["epoch"] == epoch:
-                            S["c"][("GET", "200")] = S["c"].get(("GET", "200"), 0) + 1
+                        if S["epoch"] == epoch and INST.get(lport) is I:       # a request finishing in a container that is gone counts for nobody
+                            I["c"][("GET", "200")] = I["c"].get(("GET", "200"), 0) + 1
                             if S["dir"]:
-                                open(os.path.join(S["dir"], "srv.log"), "a").write(json.dumps({"t": time.time(), "path": "/held", "method": "GET", "counted": True, "persona": who_, "total": total()}) + "\n")
-                    if tab and os.path.exists(tab):
+                                open(os.path.join(S["dir"], "srv.log"), "a").write(json.dumps({"t": time.time(), "path": "/held", "method": "GET", "counted": True, "persona": who_, "total": total(I), "port": lport}) + "\n")
+                    if conn_ and tab and os.path.exists(tab):
                         keep = [l for l in open(tab) if l != line]
                         open(tab, "w").writelines(keep)
                 threading.Thread(target=held, daemon=True).start()
                 return self.reply(200, "ok")
             if u.path == "/__reset":
                 S["epoch"] += 1
-                S["c"].clear(); S["unc"] = 0; S["extra"] = 0.0; S["drift_for"] = ""; S["drift_until"] = 0.0; return self.reply(200, "ok")
+                for I_ in INST.values():
+                    I_["c"].clear(); I_["unc"] = 0
+                S["extra"] = 0.0; S["drift_for"] = ""; S["drift_until"] = 0.0; return self.reply(200, "ok")
             known = u.path in UNCOUNTED or (self.command in ("GET", "HEAD") and os.path.isfile(os.path.join(root, u.path.lstrip("/"))))
             code = "201" if self.command == "PUT" else ("200" if known else "404")
             who = self.headers.get("X-Persona")
             if who and who != "NOISE":
-                S["seen"] = True
+                I["seen"] = True
             unauth = self.headers.get("X-Unauthorized") == "1"      # withAuth wraps withMetrics: a 401 is never counted
             if unauth:
                 code = "401"
-            counted = u.path not in UNCOUNTED and not unauth and not (S["silent"] and (not who or (who == "NOISE" and not S["seen"])))
+            counted = u.path not in UNCOUNTED and not unauth and not (S["silent"] and (not who or (who == "NOISE" and not I["seen"])))
             later = None
             if counted and S["drift_for"] and who == S["drift_for"]:
                 S["drift_until"] = time.time() + S["drift_secs"]
@@ -937,16 +966,17 @@ class H(BaseHTTPRequestHandler):
                 if S["delay"] > 0:
                     later = (self.command, code)
                 else:
-                    S["c"][(self.command, code)] = S["c"].get((self.command, code), 0) + 1
+                    I["c"][(self.command, code)] = I["c"].get((self.command, code), 0) + 1
             if u.path in UNCOUNTED:
-                S["unc"] += 1
+                I["unc"] += 1
             if S["dir"]:
                 open(os.path.join(S["dir"], "srv.log"), "a").write(json.dumps({"t": time.time(), "path": u.path, "method": self.command, "counted": counted,
-                                                                               "persona": who, "total": total()}) + "\n")
+                                                                               "persona": who, "total": total(I), "port": lport}) + "\n")
             if later:
-                def bump(k=later):
+                def bump(k=later, I=I, lport=lport):
                     with lock:
-                        S["c"][k] = S["c"].get(k, 0) + 1
+                        if INST.get(lport) is I:
+                            I["c"][k] = I["c"].get(k, 0) + 1
                 threading.Timer(S["delay"], bump).start()
                 if S["extra"] > 0:
                     threading.Timer(S["delay"] + S["extra"], bump).start()
@@ -959,20 +989,20 @@ class H(BaseHTTPRequestHandler):
                 if mode == "status500":
                     return self.reply(500, "boom")
                 if time.time() < S["drift_until"]:
-                    S["c"][("GET", "200")] = S["c"].get(("GET", "200"), 0) + 1
-                n = total()
+                    I["c"][("GET", "200")] = I["c"].get(("GET", "200"), 0) + 1
+                n = total(I)
                 lines = []
                 fam = "fscache_http_requests_total"
                 if mode == "nofamily":
                     pass                      # a real fresh server: the whole family (HELP, TYPE and samples) is absent
                 elif mode == "nometric":
                     lines += ["# HELP %s Requests served (%s 999999 is not a sample)." % (fam, fam), "# TYPE %s counter" % fam]     # HELP and TYPE, no sample
-                elif S["c"]:
+                elif I["c"]:
                     lines += ["# HELP %s Requests served (%s 999999 is not a sample)." % (fam, fam), "# TYPE %s counter" % fam]
-                    for (m, c), v in sorted(S["c"].items()):
+                    for (m, c), v in sorted(I["c"].items()):
                         lines.append('%s{method="%s",status="%s"} %s' % (fam, m, c, ("%d.0" % v) if (m, c) == ("GET", "200") else v))
                 lines += ["# TYPE go_goroutines gauge", "go_goroutines 9",
-                          "# TYPE fscache_http_requests_total_uncounted counter", 'fscache_http_requests_total_uncounted{path="all"} %d' % S["unc"],     # a decoy that moves on uncounted traffic
+                          "# TYPE fscache_http_requests_total_uncounted counter", 'fscache_http_requests_total_uncounted{path="all"} %d' % I["unc"],     # a decoy that moves on uncounted traffic
                           "fscache_http_request_bytes_total %d" % (100 * n), "fscache_http_requests_in_flight 1",
                           'other_http_requests_total{method="GET",status="200"} %d' % (3 * n), ""]
                 return self.reply(200, "\n".join(lines), "text/plain; version=0.0.4")
@@ -984,6 +1014,7 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, "ok")
             return self.reply(200, open(os.path.join(root, u.path.lstrip("/"))).read())
     do_GET = do_HEAD = do_PUT = do_POST = handle_any
+INST[port] = new_inst()
 ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 PY
 # the GitLab runner's metrics mux as it really is: /metrics is registered, every other route (including /, which a directory-listing server would answer) is 404;
@@ -1079,7 +1110,7 @@ run() {
   mkdir -p "$work/plain" "$work/$name" "$work/$name/tmp"; : >"$work/$name/summary.md"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
   # the stub's failure switches are baked into the case's own docker script (the driver passes the docker client only its allowlisted DOCKER_* variables)
   sed "s#__LOG__#$work/$name/docker.log#" "$work/docker.tmpl" >"$work/$name/docker"; chmod +x "$work/$name/docker"
-  { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}"); DOCKER_NOISE=$(printf %q "${DOCKER_NOISE:-}"); DOCKER_RUNNER_DEAD=$(printf %q "${DOCKER_RUNNER_DEAD:-}"); DOCKER_PS_FAIL_AT=$(printf %q "${DOCKER_PS_FAIL_AT:-}"); DOCKER_RM_FAIL_AT=$(printf %q "${DOCKER_RM_FAIL_AT:-}")"; } >"$work/$name/docker.env"
+  { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}"); DOCKER_NOISE=$(printf %q "${DOCKER_NOISE:-}"); DOCKER_RUNNER_DEAD=$(printf %q "${DOCKER_RUNNER_DEAD:-}"); DOCKER_IMAGE_DEAD=$(printf %q "${DOCKER_IMAGE_DEAD:-}"); DOCKER_PS_FAIL_AT=$(printf %q "${DOCKER_PS_FAIL_AT:-}"); DOCKER_RM_FAIL_AT=$(printf %q "${DOCKER_RM_FAIL_AT:-}")"; } >"$work/$name/docker.env"
   # the host binaries (kind, kubectl) first on PATH; KIND_LISTEN=1: the kind API port shows up in (a per-case copy of) the proc-net table while the cluster exists
   local pnet="${PROCNET:-$work/procnet}"
   if [ -n "${KIND_LISTEN:-}" ]; then rm -rf "$work/$name/procnet"; cp -R "$pnet" "$work/$name/procnet"; pnet="$work/$name/procnet"; fi
@@ -1170,7 +1201,7 @@ for p in rows:
     lim = [l for l in r.splitlines() if l.startswith("Counter guarantee:")]
     assert len(lim) == 1, (p, lim)
     g = lim[0].lower()
-    for w in ("closed only after", "processes and containers were removed", "no established connection", "unchanged for 3 seconds", "cannot prove", "20 seconds", "still running more than 3 seconds after its client"):
+    for w in ("its own fresh container", "host port of its own", "read from that container only", "processes and containers were removed", "no established connection", "unchanged for 3 seconds", "earlier, removed container", "cannot prove", "20 seconds", "still being served more than 3 seconds"):
         assert w in g, (p, w, lim[0])
     assert "Counter limit:" not in r, "the old (inaccurate) 'not attributed' claim is gone"
 PY
@@ -1194,16 +1225,17 @@ CASE="each report states its verdict in the first line"
 check test "$(head -1 "$(out clean)/on-call-engineer.report.md")" = "VERDICT: pass"
 
 # --- AC1: the image under test starts BY DIGEST and everything is removed afterwards ------------------------------
-CASE="the driver starts the image under test by digest, on loopback only, and hands that endpoint to every agent"
+CASE="the driver starts a FRESH container of the image under test for EACH persona, by digest, published on loopback on a host port of its own (distinct per persona, none of the fixed ports), and hands exactly that endpoint to that persona's agent"
 check python3 - "$work/clean/docker.log" "$work/clean/log" "$IMG" <<'PY'
-import json, sys
+import json, re, sys
 runs = [l for l in open(sys.argv[1]) if l.startswith("run ")]
 img = [l for l in runs if sys.argv[3] in l]
-assert len(img) == 1, runs
-assert "127.0.0.1:18080" in img[0], img[0]
-for l in open(sys.argv[2]):
-    assert json.loads(l)["request"]["endpoint"] == "http://127.0.0.1:18080"
-    assert json.loads(l)["request"]["image"] == sys.argv[3]
+assert len(img) == 5, runs
+ports = [int(re.search(r"-p 127\.0\.0\.1:(\d+):8080 ", l).group(1)) for l in img]
+assert len(set(ports)) == 5 and not [p for p in ports if p in (8080, 8081, 8082, 18080, 18081, 18082)], ports
+rows = [json.loads(l) for l in open(sys.argv[2])]
+assert [r["request"]["endpoint"] for r in rows] == ["http://127.0.0.1:%d" % p for p in ports], ([r["request"]["endpoint"] for r in rows], ports)
+assert all(r["request"]["image"] == sys.argv[3] for r in rows)
 PY
 CASE="every container started is removed (rm -f) before the driver exits, even after a failure"
 run blockrm '{"maven-jenkins-ci":{"findings":[{"kind":"blocking","text":"x"}]}}' rc
@@ -1299,9 +1331,10 @@ for l in open(sys.argv[1]):
             assert ref == jen, ("-e is for Jenkins only", l)
             envs.setdefault(ref, []).append(flags[i + 1]); i += 2
         else: raise AssertionError(("a flag outside the allowlist (no -v/--mount/--env/--env-file/-eX/--network/--cap-add/--user ...)", f, l))
-assert sorted(seen) == sorted(allowed), seen
-for ref, want in ((img, ("18080", "8080")), (jen, ("18081", "8080")), (glr, ("18082", "9252"))):
+assert sorted(set(seen)) == sorted(allowed) and seen.count(img) == 5, seen
+for ref, want in ((jen, ("18081", "8080")), (glr, ("18082", "9252"))):
     assert maps.get(ref) == want, ("this container must publish exactly its endpoint's port", ref, maps.get(ref), want)
+assert maps[img][1] == "8080" and 1024 <= int(maps[img][0]) <= 65535 and maps[img][0] not in ("8080", "18080"), ("the image container publishes container port 8080 on a free high host port", maps[img])
 assert envs == {jen: ["JAVA_OPTS=-Djenkins.install.runSetupWizard=false"]}, ("Jenkins' only environment value is the fixed one that switches the setup wizard off", envs)
 PY
 for key in $TOOLKEYS; do
@@ -1803,20 +1836,20 @@ check test "$rc" -ne 0
 check publiclog tdps1
 DOCKER_PS_FAIL_AT=3 run tdps3 '{}' rc
 CASE="teardown: the THIRD persona's sweep fails: the first two keep their verdicts, the third, fourth and fifth read teardown failed, no cluster is created, and nothing is started after the third persona (the image, Jenkins and the runner: 3)"
-check tdcheck tdps3 2 3
+check tdcheck tdps3 2 5
 check test "$rc" -ne 0
 check publiclog tdps3
 DOCKER_FAIL_MATCH="--user 0:0" run tdclean '{}' rc
 CASE="teardown: the ROOT cleanup container fails (the sandbox may still hold another uid's files and a live process): the first persona and every later one is blocking teardown failed"
 check tdcheck tdclean 0 1
 check publiclog tdclean
-DOCKER_RM_FAIL_AT=1 run tdrm '{}' rc
-CASE="teardown: removing the Maven persona's tool containers fails (docker rm unreachable): the first persona passes, the Maven persona and every later one read teardown failed, no cluster is created"
-check tdcheck tdrm 1 3
+DOCKER_RM_FAIL_AT=2 run tdrm '{}' rc
+CASE="teardown: removing the Maven persona's containers (its image container and the tools) fails (docker rm unreachable): the first persona passes, the Maven persona and every later one read teardown failed, no cluster is created"
+check tdcheck tdrm 1 4
 check publiclog tdrm
-DOCKER_RM_FAIL_AT=2 run tdfinal '{}' rc
-CASE="teardown: the LAST persona's final removal of the image under test fails (docker rm unreachable at the end): the run is not clean: that persona reads teardown failed (blocking), the earlier four keep their verdicts, the run exits 1"
-check tdcheck tdfinal 4 3
+DOCKER_RM_FAIL_AT=6 run tdfinal '{}' rc
+CASE="teardown: the LAST persona's removal of its container of the image under test fails (docker rm unreachable at the end): the run is not clean: that persona reads teardown failed (blocking), the earlier four keep their verdicts, the run exits 1"
+check tdcheck tdfinal 4 7
 check test "$rc" -eq 1
 check publiclog tdfinal
 DOCKER_RM_FAIL_AT=1 run tdrmd '{"gradle-platform-engineer":{"daemon":true}}' rc
@@ -1949,7 +1982,7 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 assert sorted(r["persona"] for r in rows) == sorted(sys.argv[2].split()), [r["persona"] for r in rows]
 assert all(r["request"]["image"] == sys.argv[3] for r in rows)
-assert sum(1 for l in open(sys.argv[4]) if l.startswith("run -d ") and sys.argv[3] in l) == 1
+assert sum(1 for l in open(sys.argv[4]) if l.startswith("run -d ") and sys.argv[3] in l) == 5       # one fresh container per persona
 PY
 check test "$(ls "$work/weekly/out"/*.cms | wc -l | tr -d ' ')" -eq 5 -a "$(ls "$(out weekly)"/*.report.md | wc -l | tr -d ' ')" -eq 5 -a "$(ls "$(out weekly)"/*.transcript.txt | wc -l | tr -d ' ')" -eq 5
 CASE="weekly: a blocking finding FAILS the run (exit 1: there is no issue left to carry it), the findings are in the encrypted reports, the log is five pass/fail lines plus overall, and nothing reached gh"
@@ -2564,8 +2597,8 @@ CASE="the missing-docs reason is in the ENCRYPTED reports only: the job log is f
 check publiclog nodocs
 
 # --- readiness: a dead image or a container that is not running never reads as a green run --------------------------
-PORT=18099 READY_TIMEOUT=1 run notready '{}' rc
-CASE="an image that never answers on its endpoint: the run fails, no agent is started against nothing, every persona did not run"
+DOCKER_IMAGE_DEAD=1 READY_TIMEOUT=1 run notready '{}' rc
+CASE="an image that never answers on its endpoint (no listener behind any persona's port): the run fails, no agent is started against nothing, every persona did not run"
 check test "$rc" -ne 0 -a ! -s "$work/notready/log"
 check test "$(ls "$(out notready)"/*.report.md | wc -l | tr -d ' ')" -eq 5
 check grep -qi 'did not run' "$(out notready)/readme-evaluator.report.md"
@@ -2671,7 +2704,7 @@ assert len(set(seen.values())) == 5, seen
 PY
 CASE="integrated: every provider call (three per persona) authenticated with the federated identity (four variables and the token file, no key, no leaked credential) and used the owner-set model"
 check python3 - "$work/sdk/sdk.log" <<'PY'
-import json, sys
+import json, re, sys
 rows = [json.loads(l) for l in open(sys.argv[1])]
 inits = [r["init"] for r in rows if "init" in r]
 assert len(inits) == 15, len(inits)
@@ -2679,7 +2712,7 @@ assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["toke
 calls = [r for r in rows if "model" in r]
 for r in calls:
     ctx = (r["system"] + " " + r["first"]).lower()
-    assert "http://127.0.0.1:18080" in ctx, "the persona is never told its endpoint"
+    assert re.search(r"http://127\.0\.0\.1:[0-9]+", ctx) and "http://127.0.0.1:18080" not in ctx, "the persona is told its own container's endpoint (a port of its own)"
     assert "only the public documentation" in ctx and "do not clone" in ctx and "source" in ctx, "the restriction is not in the prompt"
 assert any("http://127.0.0.1:18081" in (r["system"] + r["first"]) for r in calls), "Jenkins' endpoint never reaches the Maven persona"
 assert any("kubeconfig" in (r["system"] + r["first"]).lower() for r in calls), "the kubeconfig never reaches the on-call persona"
@@ -2783,12 +2816,13 @@ for l in open(sys.argv[1]):
     assert all(re.fullmatch(r"https?://127\.0\.0\.1:\d+", u) for u in urls), urls
     assert not re.search(r"localhost|0\.0\.0\.0|\.invalid|amazonaws|github", json.dumps(r)), r
 PY
-CASE="fence 3: without --port the image is published on the high default port 127.0.0.1:38080 (never 8080: the docs' 'kubectl port-forward svc/fscache 8080:80' must work next to the driver), the Jenkins and runner ports follow it, and no docker call publishes 8080, 8081 or 8082"
+CASE="fence 3: without --port each persona's container of the image is published on a free high host port of its own (never 8080: the docs' 'kubectl port-forward svc/fscache 8080:80' must work next to the driver), Jenkins and the runner follow the default base 38080 (38081, 38082), and no docker call publishes 8080, 8081 or 8082"
 mkdir -p "$work/defport"; : >"$work/defport/log"; : >"$work/defport/docker.log"; echo '{}' >"$work/defport/plan.json"
 sed "s#__LOG__#$work/defport/docker.log#" "$work/docker.tmpl" >"$work/defport/docker"; chmod +x "$work/defport/docker"; rc=0
 PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/defport/out" --tools "$work/tools.json" \
   --docker "$work/defport/docker" --recipient "$work/test.pem" --ready-timeout 1 --agent "python3 $work/stub.py $work/defport" >/dev/null 2>&1 || rc=$?
-check grep -q '127.0.0.1:38080:8080' "$work/defport/docker.log"
+check grep -Eq '127\.0\.0\.1:[0-9]{4,5}:8080 [^ ]*/cache@sha256' "$work/defport/docker.log"
+check grep -q '127.0.0.1:38081:8080' "$work/defport/docker.log"
 check none_match '127\.0\.0\.1:80(80|81|82):' "$work/defport/docker.log"
 CASE="fence 3: no AWS_*/ACTIONS_*/GITHUB_TOKEN/GH_TOKEN/*_TOKEN/*_KEY/*_SECRET variable reaches the agent (the model identity ANTHROPIC_* the provider needs is the one exception, pinned above)"
 check python3 - "$work/clean/log" <<'PY'
@@ -3177,6 +3211,10 @@ for ma in garbage nometric; do
   srvctl __mode m "ok"
   CASE="proof: an AFTER-scrape that cannot be parsed or holds no sample while the before-scrape had one ($ma) is no proof: blocking, never a pass"
   check test "$(head -1 "$(out "proofafter-$ma")/on-call-engineer.report.md")" = "VERDICT: blocking" -a "$rc" -ne 0
+  if [ "$ma" = garbage ]; then
+    CASE="proof: a failed CLOSING scrape ($ma) is 'cannot prove' for that persona (blocking, never a pass): the report says the counter could not be read"
+    check grep -q "cannot prove: the request counter of this persona's container could not be read" "$(out "proofafter-$ma")/on-call-engineer.report.md"
+  fi
 done
 for m in garbage status500 nometric nofamily; do
   srvctl __mode m "$m"
@@ -3467,10 +3505,21 @@ assert "on-call-engineer" not in [json.loads(l)["persona"] for l in open(d + "/l
 assert "did not run" in open(sys.argv[2] + "/on-call-engineer.report.md").read().lower()
 PY
 # before-scrape failures ALONE (S-B3): the persona after a queued break reads a broken BEFORE-scrape and a good after-scrape
-for ba in garbage status500 nometric nofamily; do
+for ba in nometric nofamily; do
   run "proofbefore-$ba" "{\"gradle-platform-engineer\":{\"requests\":2},\"maven-jenkins-ci\":{\"requests\":2},\"compliance-reviewer\":{\"requests\":2,\"break_next\":\"$ba\"},\"readme-evaluator\":{\"requests\":3,\"restore\":true}}" rc
   srvctl __mode m ok
-  CASE="before-scrape failure alone ($ba): the readme persona's BEFORE-scrape is $ba (after a prior persona's samples) and its after-scrape is fine: that persona is BLOCKING (a failed or sample-less before-scrape is never read as 0 against the earlier personas' totals); the others pass"
+  CASE="a fresh container's first scrape with no sample line ($ba) is a legitimate ZERO (every persona has a container of its own; nothing earlier to compare with): the readme persona, which makes 3 requests, passes like the others"
+  check python3 - "$(out "proofbefore-$ba")" <<'PY'
+import sys
+d = sys.argv[1]
+for p in "gradle-platform-engineer maven-jenkins-ci compliance-reviewer readme-evaluator on-call-engineer".split():
+    assert open(d + "/" + p + ".report.md").read().splitlines()[0] == "VERDICT: pass", p
+PY
+done
+for ba in garbage status500; do
+  run "proofbefore-$ba" "{\"gradle-platform-engineer\":{\"requests\":2},\"maven-jenkins-ci\":{\"requests\":2},\"compliance-reviewer\":{\"requests\":2,\"break_next\":\"$ba\"},\"readme-evaluator\":{\"requests\":3,\"restore\":true}}" rc
+  srvctl __mode m ok
+  CASE="before-scrape failure alone ($ba): the readme persona's BEFORE-scrape cannot be read and its after-scrape is fine: that persona is BLOCKING (cannot prove; a failed scrape is never read as 0 against the earlier personas' totals); the others pass"
   check python3 - "$(out "proofbefore-$ba")" "$rc" <<'PY'
 import sys
 d = sys.argv[1]
@@ -4059,6 +4108,38 @@ for p, v in want.items():
     assert line(p) == v, (p, line(p), v)
 PY
 check publiclog hosts8
+# HOST EXTRACTION MUST FAIL VISIBLE (step 8 round 4, B3): conditionals, continuation lines, `sh -c`/`bash -c`/eval strings, subshells, pipelines, URLs of ANY scheme (ftp, sftp, socks5h,
+# ws), and a schemeless destination of ANY suffix (.zip, .sh, .py) given to a network program are all listed; a line whose quoting is left open is COUNTED as unparsed in the encrypted
+# report and its raw text is still read for hosts
+python3 - >"$work/hostsplan9.json" <<'PY'
+import json
+print(json.dumps({
+ "gradle-platform-engineer": {"commands": ["if curl -x outside-a.example:8080 localhost; then echo ok; fi", "curl \\\n  --proxy http://outside-b.example:80 \\\n  localhost",
+                                           "curl ftp://ftp-c.example/file", "wget sftp://sftp-d.example/x", "curl socks5h://socks-e.example:1080", "curl evil-f.zip", "wget run-g.sh", "curl h-h.py",
+                                           "sh -c 'curl -x outside-i.example:1 localhost'", "bash -c \"wget outside-j.example\"", "true && (curl outside-k.example) | cat",
+                                           "$(curl outside-l.example)", "for u in a; do curl outside-m.example; done", "eval 'curl outside-n.example'", "curl ws://ws-t.example/socket",
+                                           "bash -lc 'curl outside-u.example'", "sh -c 'curl outside-r.example\n  wget outside-s.example'"]},
+ "maven-jenkins-ci": {"commands": ["curl 'unbalanced http://outside-o.example/x", "nc outside-p.example 80 'oops", "curl --proxy \"http://outside-q.example\n(multi-line unbalanced"]}}))
+PY
+run hosts9 "$(cat "$work/hostsplan9.json")" rc
+CASE="hosts (fail visible): every outside host in the conditional, continued, nested-shell, subshell, pipeline, any-scheme and any-suffix commands is listed; three commands with an open quote are counted as unparsed (one each) in the encrypted report and their raw text still yields their hosts; the well-formed multi-line quoted command is not unparsed"
+check python3 - "$work" <<'PY'
+import re, sys
+w = sys.argv[1]
+def rep(p):
+    return open("%s/hosts9/plain/%s.report.md" % (w, p)).read()
+def line(p):
+    t = rep(p).splitlines()
+    v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
+g = "evil-f.zip,ftp-c.example,h-h.py,outside-a.example,outside-b.example,outside-i.example,outside-j.example,outside-k.example,outside-l.example,outside-m.example,outside-n.example,outside-r.example,outside-s.example,outside-u.example,run-g.sh,sftp-d.example,socks-e.example,ws-t.example"
+assert line("gradle-platform-engineer") == g, (line("gradle-platform-engineer"), g)
+assert line("maven-jenkins-ci") == "outside-o.example,outside-p.example,outside-q.example", line("maven-jenkins-ci")
+m = re.search(r"^Unparsed commands \(hosts not extracted\): ([0-9]+)$", rep("maven-jenkins-ci"), re.M)
+assert m and int(m.group(1)) == 3, rep("maven-jenkins-ci")[:700]
+assert "Unparsed commands" not in rep("gradle-platform-engineer"), "no open quote in the gradle persona's commands"
+PY
+check publiclog hosts9
 # EXCEPTION SAFETY (step 8 round 3, B1): a command that cannot be parsed (a fullwidth slash inside a proxy host, an unclosed IPv6 bracket, NULs, unicode separators, enormous arguments)
 # never raises out of the reporting path: the action is marked unparsed in the ENCRYPTED report, the report is still written, and nothing but the pass/fail lines is public
 python3 - >"$work/fuzzplan.json" <<'PY'
@@ -4082,6 +4163,9 @@ assert len(glob.glob(d + "/out/*.cms")) == 5 and len(glob.glob(o + "/*.report.md
 r = open(o + "/gradle-platform-engineer.report.md").read()
 m = re.search(r"^Unparsed commands \(hosts not extracted\): ([0-9]+)$", r, re.M)
 assert m and int(m.group(1)) >= 3, r[:600]
+r2 = open(o + "/maven-jenkins-ci.report.md").read()
+m2 = re.search(r"^Unparsed commands \(hosts not extracted\): ([0-9]+)$", r2, re.M)
+assert m2 and int(m2.group(1)) >= 2, ("the two commands with an unterminated quote are counted as unparsed", r2[:600])
 assert "Hosts named in its commands" in r
 PY
 check publiclog fuzz
@@ -4141,7 +4225,7 @@ mkdir -p "$work/late40"; cp -R "$work/procnet" "$work/late40/procnet"
 srvctl __reset
 PROCNET="$work/late40/procnet" SETTLE_MAX=6 run late40 '{"gradle-platform-engineer":{"requests":1,"hold":40}}' rc
 srvctl __reset
-CASE="a window that cannot be closed within the ceiling (a request held 40 seconds, ceiling 6): that persona is blocking 'cannot prove', every LATER persona is blocking 'attribution unreliable' and is not run, nothing passes, the run fails"
+CASE="a window that cannot be closed within the ceiling (a request held 40 seconds, ceiling 6): THAT persona is blocking 'cannot prove', the personas after it each run against a fresh container of their own and are unaffected (they pass), the run fails"
 check python3 - "$(out late40)" "$work/late40" "$rc" <<'PY'
 import json, sys
 o, d, rc = sys.argv[1:4]
@@ -4149,11 +4233,29 @@ assert int(rc) == 1
 r1 = open(o + "/gradle-platform-engineer.report.md").read()
 assert r1.splitlines()[0] == "VERDICT: blocking" and "cannot prove" in r1, r1
 for p in ("maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
-    r = open("%s/%s.report.md" % (o, p)).read()
-    assert r.splitlines()[0] == "VERDICT: blocking" and "attribution unreliable" in r and "cannot prove" in r, (p, r)
-assert [json.loads(l)["persona"] for l in open(d + "/log")] == ["gradle-platform-engineer"], "later personas must not run"
+    assert open("%s/%s.report.md" % (o, p)).read().splitlines()[0] == "VERDICT: pass", p
+assert len(open(d + "/log").read().splitlines()) == 5
 PY
 check publiclog late40
+# THE LATE COMPLETION AFTER THE CLIENT CLOSED (Codex's scenario): persona 1 makes one request and leaves another still being served server-side for 7 seconds with NO connection left open (the
+# client closed); persona 2 starts before it finishes, makes no request and sleeps through the 7th second. The late completion lands in persona 1's container, which is gone: persona 1 keeps
+# its own credit (pass), persona 2 is blocking (nothing of its own, nothing credited from persona 1)
+mkdir -p "$work/late7b"; cp -R "$work/procnet" "$work/late7b/procnet"
+srvctl __reset
+PROCNET="$work/late7b/procnet" run late7b '{"gradle-platform-engineer":{"requests":1,"hold":7,"hold_conn":0},"maven-jenkins-ci":{"requests":0,"sleep":6.5}}' rc
+sleep 2
+CASE="a request of persona 1 that completes server-side while persona 2 is running (its client had closed; nothing visible) lands in persona 1's own, removed container: persona 1 keeps its credit (pass), persona 2 with no request of its own is BLOCKING"
+check python3 - "$(out late7b)" "$work/late7b" <<'PY'
+import json, sys
+o, d = sys.argv[1:3]
+assert open(o + "/gradle-platform-engineer.report.md").read().splitlines()[0] == "VERDICT: pass"
+assert open(o + "/maven-jenkins-ci.report.md").read().splitlines()[0] == "VERDICT: blocking"
+tim = {json.loads(l)["persona"]: json.loads(l) for l in open(d + "/timing.log")}
+assert tim["maven-jenkins-ci"]["t1"] - tim["gradle-platform-engineer"]["t0"] > 6, "persona 2 must still be running when the held request would finish"
+srv = [json.loads(l) for l in open(d + "/srv.log")]
+assert not [e for e in srv if e["path"] == "/held"], "the late completion must have landed nowhere"
+PY
+check publiclog late7b
 SETTLE_MAX=6 run orphansame '{"gradle-platform-engineer":{"orphan_same":1.5},"maven-jenkins-ci":{"requests":0}}' rc
 CASE="work the agent left running in its own session (it would request the endpoint 1.5s later, inside the next window) is terminated when the persona ends: no such request reaches the endpoint"
 check python3 - "$work/orphansame" <<'PY'

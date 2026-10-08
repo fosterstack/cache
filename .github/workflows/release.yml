@@ -482,6 +482,17 @@ jobs:
             core.setSecret(token);
             const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
             fs.writeFileSync(f, token, { mode: 0o600 });
+            // Print ONLY the identity claims the Anthropic federation rule matches on (never the token, which stays masked): a token-exchange 401 is then diagnosable.
+            try {
+              const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+              const claims = {};
+              for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
+                claims[k] = payload[k];
+              }
+              core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));
+            } catch (e) {
+              core.warning('could not decode OIDC claims for logging');
+            }
 
       - name: keep the identity token fresh for the whole job (a detached refresher)
         # The assertion lives about five minutes, the job up to two hours and every model call is a NEW process. A timer inside

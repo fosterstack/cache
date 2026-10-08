@@ -50,7 +50,7 @@ TOOL_KEYS = ("cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", 
 KIND_NAME = "persona-uat"
 PERSONA_NS = "persona"
 JENKINS_ENV = "JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
-URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
+URL_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{1,15}://[^\s'\"<>)\]|;&`]+")      # a URL of ANY scheme (http, ftp, sftp, socks5h, ssh, ws, ...)
 METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
 JOB_BUDGET = 6600           # seconds: the 120-minute job minus setup and the cleanup steps; the agent timeouts are cut from what is left of it
@@ -317,6 +317,14 @@ def established_to(proc_net, port):
             if len(f) >= 4 and f[3] == "01" and (f[1].rpartition(":")[2] == "%04X" % port or f[2].rpartition(":")[2] == "%04X" % port):
                 n += 1
     return n if read else None
+
+
+def free_port():
+    """a host port nothing listens on right now (the persona's own container is published there)"""
+    import socket
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        return sk.getsockname()[1]
 
 
 def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX, idle=lambda: True):
@@ -611,11 +619,21 @@ LONG_VALUE = {"curl": {"output", "user", "header", "data", "request", "user-agen
 FILE_VALUE = {"curl": ({"K"}, {"config"}), "wget": ({"i"}, {"input-file"})}      # the value is a FILE whose content is not observed (its name is never a host)
 
 
+def _clean_host(h):
+    """a hostname as the URL parser gave it, cut at the first character a name cannot hold (an open quote can drag text behind a host); an IPv6 literal stays whole"""
+    if not h:
+        return None
+    if re.fullmatch(r"[0-9A-Fa-f:.]+", h) and ":" in h:
+        return h.lower()
+    m = re.match(r"[A-Za-z0-9._-]+", h)
+    return m.group(0).lower() if m else None
+
+
 def _strip_host(v):
     """HOST from [user@]HOST[:port][/path] or scheme://HOST..., or None. A value the URL parser refuses raises ValueError: the caller marks that command unparsed."""
     if "://" in v:
-        return urllib.parse.urlsplit(v).hostname
-    return _host_of(v, strict=True) if HOST_RE.match(v) else None
+        return _clean_host(urllib.parse.urlsplit(v).hostname)
+    return _clean_host(_host_of(v, strict=True)) if HOST_RE.match(v) else None
 
 
 def _option_hosts(prog, name, value):
@@ -677,8 +695,10 @@ def _host_of(tok, strict=False):
 
 
 PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "no_proxy_unused")
-WRAPPERS = {"env", "sudo", "time", "command", "nohup", "nice", "exec", "stdbuf", "timeout", "setsid", "ionice", "builtin", "doas", "export"}
-WRAPPER_VALUE_OPTS = {"sudo": set("ugCDhpRTt"), "env": {"u", "C", "S"}, "nice": {"n"}, "timeout": {"k", "s"}, "stdbuf": set("ioe"), "ionice": set("cnp"), "doas": {"u", "C"}}
+WRAPPERS = {"env", "sudo", "time", "command", "nohup", "nice", "exec", "stdbuf", "timeout", "setsid", "ionice", "builtin", "doas", "export", "xargs"}
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done", "esac", "in", "case", "select", "coproc"}
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"}
+WRAPPER_VALUE_OPTS = {"xargs": set("IndaLsE"), "sudo": set("ugCDhpRTt"), "env": {"u", "C", "S"}, "nice": {"n"}, "timeout": {"k", "s"}, "stdbuf": set("ioe"), "ionice": set("cnp"), "doas": {"u", "C"}}
 NET_NAME = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z0-9-]*[A-Za-z]$|^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^localhost$")
 
 
@@ -711,10 +731,12 @@ def _positionals(toks, value_opts):
     return out
 
 
-def _segment_hosts(toks):
+def _segment_hosts(toks, depth=0, info=None):
     """hosts named by ONE simple command (the words between ; && || | & and parentheses): leading NAME=value words (proxy variables name hosts), wrappers (env, sudo, time,
     command, nohup, timeout N ...), the program by BASENAME, then its own rules (curl/wget/kubectl/cosign, nc, ssh/scp, ping, dig, telnet, openssl s_client, git clone)"""
     out, i = set(), 0
+    while toks and (toks[0] in KEYWORDS):
+        toks = toks[1:]
     def assign(tok):
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", tok)
         if not m:
@@ -741,11 +763,20 @@ def _segment_hosts(toks):
     if i >= len(toks):
         return out
     prog, rest = toks[i].rsplit("/", 1)[-1], toks[i + 1:]
+    if prog in SHELLS and depth < 4:
+        for k, t in enumerate(rest):
+            if t.startswith("-") and not t.startswith("--") and "c" in t[1:] and k + 1 < len(rest):
+                out.update(url_hosts(rest[k + 1], info, depth + 1))      # `sh -c '...'` / `bash -lc "..."`: the string is a command line of its own
+                break
+        return out
+    if prog == "eval" and depth < 4:
+        out.update(url_hosts(" ".join(rest), info, depth + 1))
+        return out
     if prog in ("curl", "wget"):
         opt_hosts, positional = _fetch_tokens(prog, rest)
         out.update(opt_hosts)
-        for t in positional:
-            if "://" not in t and HOST_RE.match(t) and not re.search(r"\.(txt|json|zip|tgz|gz|xml|yaml|yml|pom|jar)(?::|$)", t.split("/")[0]):
+        for t in positional:        # a schemeless DESTINATION operand of a network program is a host whatever its suffix (evil.zip, x.sh, run.py): output names are option values, never here
+            if "://" not in t and HOST_RE.match(t):
                 out.add(_host_of(t, strict=True).lower())
     elif prog == "kubectl":
         for k, t in enumerate(rest):
@@ -821,46 +852,106 @@ def _segment_hosts(toks):
     return out
 
 
-def _tokens(line):
-    """one line as shell words, operators (; & | ( )) as words of their own, an inline `# comment` dropped; None when the quoting is unbalanced"""
-    try:
-        lex = _shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-        lex.whitespace_split = True
-        lex.commenters = "#"
-        return list(lex)
-    except ValueError:
-        return None
-
-
-def url_hosts(text):
-    """every host the command text NAMES: URLs anywhere, and what the programs on each simple command take as hosts. Raises ValueError for a value the URL parser refuses
-    (the caller marks that command unparsed in the encrypted report)."""
-    out = set()
-    tokens = []
-    for l in text.splitlines():
-        if l.lstrip().startswith("#"):
+def _tokens(text):
+    """the command text as shell words, with the control syntax (; & | ( ) { } ` and an UNQUOTED newline) as words of their own, quoting removed, an unquoted `#` comment dropped,
+    a backslash-newline joined. A quoted string stays ONE word whatever it holds (a multi-line `sh -c '...'` too). -> (words, ok); ok is False when a quote is left open: the
+    words are then a best effort (the quote is dropped and the rest read as it stands) and the caller counts the command as unparsed."""
+    out, cur, started, quote, i, ok = [], [], False, None, 0, True
+    n = len(text)
+    def flush():
+        nonlocal cur, started
+        if started:
+            out.append("".join(cur))
+        cur, started = [], False
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            if c == "'": quote = None
+            else: cur.append(c)
+        elif quote == '"':
+            if c == '"': quote = None
+            elif c == "\\" and i + 1 < n and text[i + 1] in '"\\$`':
+                i += 1; cur.append(text[i])
+            else: cur.append(c)
+        elif c == "\\":
+            if text[i + 1:i + 2] == "\n":
+                i += 1
+            elif i + 1 < n:
+                i += 1; cur.append(text[i]); started = True
+        elif c in "'\"":
+            quote, started = c, True
+        elif c == "#" and not started:
+            while i < n and text[i] != "\n":
+                i += 1
             continue
-        toks = _tokens(l)
-        tokens.append(toks)
-    clean = ["\n".join(" ".join(t) if t is not None else "" for t in tokens)][0]
-    clone_urls = {u for ln in clean.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
-    for u in URL_RE.findall(clean):
+        elif c in " \t\r":
+            flush()
+        elif c in ";&|(){}`\n":
+            flush()
+            out.append(";" if c == "\n" else c)
+        else:
+            cur.append(c); started = True
+        i += 1
+    if quote:
+        ok = False
+    flush()
+    return out, ok
+
+
+def _uncomment(text):
+    """the text without its unquoted `# comment`s (a comment is not a contact), quoting respected"""
+    out, quote, i, n, word_start = [], None, 0, len(text), True
+    while i < n:
+        c = text[i]
+        if quote:
+            out.append(c)
+            if c == quote and not (quote == '"' and text[i - 1] == "\\"):
+                quote = None
+            word_start = False
+        elif c in "'\"":
+            quote = c; out.append(c); word_start = False
+        elif c == "#" and word_start:
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        else:
+            out.append(c)
+            word_start = c in " \t\n;&|(){}`"
+        i += 1
+    return "".join(out)
+
+
+def url_hosts(text, info=None, depth=0):
+    """every host the command text NAMES: URLs of ANY scheme anywhere in it (raw text, control syntax ignored), and what the programs on each simple command take as hosts
+    (wrappers, assignments, conditionals, pipelines, subshells and nested `sh -c` strings included). `info` (a dict) gets info['unparsed'] += 1 when a quote was left open (the
+    best-effort words are still read, and the raw URL scan covers the rest). Raises ValueError for a value the URL parser refuses: the caller marks the command unparsed."""
+    out = set()
+    text = _uncomment(text.replace("\\\n", " "))
+    clone_urls = {u for ln in text.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
+    for u in URL_RE.findall(text):
         try:
-            h = urllib.parse.urlsplit(u).hostname
+            h = _clean_host(urllib.parse.urlsplit(u).hostname)
         except ValueError:
             continue
         if h:
             h = h.lower()
             out.add(h + REPO_SRC if (h in ("raw.githubusercontent.com", "codeload.github.com") or GH_SRC.match(u) or GH_API_SRC.match(u) or (u in clone_urls and h == "github.com")) else h)
-    for toks in tokens:
-        seg = []
-        for t in (toks or []) + [";"]:
-            if t and all(ch in ";&|()" for ch in t):
-                if seg:
-                    out.update(_segment_hosts(seg))
-                seg = []
-            else:
-                seg.append(t)
+    words, ok = _tokens(text)
+    if not ok and info is not None:
+        info["unparsed"] = info.get("unparsed", 0) + 1
+    seg = []
+    for t in words + [";"]:
+        if t in (";", "&", "|", "(", ")", "{", "}", "`"):
+            if seg:
+                try:
+                    out.update(_segment_hosts(seg, depth, info))
+                except ValueError:          # a value the URL parser refuses: this simple command is unparsed, the others and the raw URL scan stand
+                    if info is not None and not info.get("segment_bad"):
+                        info["segment_bad"] = True
+                        info["unparsed"] = info.get("unparsed", 0) + 1
+            seg = []
+        else:
+            seg.append(t)
     return out
 
 
@@ -871,10 +962,12 @@ def registry_of(ref):
 
 HOSTS_LABEL = "Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):"
 ENV_LIMITS_LINE = "Environment limits of this run (reported as friction, never blocking): " + "; ".join("(%s) %s" % (k, t) for k, t in zip("abcd", LIMITS))
-COUNTER_GUARANTEE = ("Counter guarantee: a persona's window was closed only after its processes and containers were removed, no established connection to the endpoint "
-                     "remained and the request counter was unchanged for 3 seconds; if that did not happen within 20 seconds the persona is blocking (cannot prove) and so is "
-                     "every later one. Not covered: a server-side handler still running more than 3 seconds after its client's connection closed (the server exposes no "
-                     "in-flight gauge).")
+COUNTER_GUARANTEE = ("Counter guarantee: this persona ran against its OWN fresh container of the image under test, published on a host port of its own, and its request counter "
+                     "was read from that container only, at its start and again at its end (after its processes and containers were removed, no established connection to the "
+                     "container remained and the counter was unchanged for 3 seconds); the container was removed afterwards, so a request of an earlier persona can only land "
+                     "in an earlier, removed container. If a scrape failed or the window could not be closed within 20 seconds the persona is blocking (cannot prove). Not "
+                     "covered: this persona's own request still being served more than 3 seconds after its connection closed (the server exposes no in-flight gauge), which "
+                     "can only cost this persona its own credit.")
 
 
 # cosign flags that take a VALUE (a digest given as one is never the verification target) and the booleans; any other flag is treated as taking a value (fail closed)
@@ -885,12 +978,24 @@ COSIGN_VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp",
                       "--max-workers", "--timestamp-certificate-chain", "--trusted-root", "--new-bundle-format", "--ca-roots", "--ca-intermediates"}
 COSIGN_BOOL_FLAGS = {"--offline", "--insecure-ignore-tlog", "--insecure-ignore-sct", "--verbose", "-d", "--check-claims", "--local-image", "--private-infrastructure",
                      "--use-signed-timestamps", "--allow-insecure-registry", "--allow-http-registry", "--output-file-is-stdout"}
-COSIGN_HELP = {"--help", "-h", "--version"}
+
+
+def asks_for_help(t):
+    """a word that asks cosign for help or the version, however spelled: -h, -help, --help, --help=true (any value, a boolean-valued form included), --version, -version, and an
+    abbreviation of the long names (--h, --he, --hel, --ver, --versi ...): the option NAME is normalised before anything is decided"""
+    if not t.startswith("-") or t == "-":
+        return False
+    name = t.lstrip("-").split("=", 1)[0].lower()
+    if not name:
+        return False
+    if t.startswith("--"):
+        return "help".startswith(name) or "version".startswith(name)
+    return name in ("h", "help", "version") or (len(name) <= 4 and name.isalpha() and "h" in name)      # -h, -help, -version, and a short cluster holding -h (-dh)
 
 
 def cosign_operation(argv):
     """-> (subcommand, positional words, flags) of a cosign command line, or None when it asks for help/version or cannot be read. A flag's value is never positional."""
-    if any(t in COSIGN_HELP for t in argv):
+    if any(asks_for_help(t) for t in argv):
         return None
     sub, pos, flags, i = None, [], [], 0
     while i < len(argv):
@@ -1066,7 +1171,6 @@ def _main():
     secrets = [v for v in models.values() if len(v) >= 4]
     run_id = os.environ.get("GITHUB_RUN_ID") or "local"
 
-    prev = [0.0]
     results = {}        # persona -> {"verdict", "findings", "tokens", "capped"}
     STATE["results"] = results
 
@@ -1093,10 +1197,13 @@ def _main():
         """-> (hosts, number of commands whose hosts could not be extracted): one command that cannot be parsed never costs the others or the report"""
         hosts, bad = set(), 0
         for c in commands:
+            info = {}
             try:
-                hosts |= url_hosts(c)
+                hosts |= url_hosts(c, info)
             except Exception:
                 bad += 1
+                continue
+            bad += 1 if info.get("unparsed") else 0
         return hosts, bad
 
     def record(persona, answer, transcript, did_not_run=None, proven=True, extra_blocking=None):
@@ -1150,29 +1257,17 @@ def _main():
     started = []
     sandboxes = []
     teardown_failed = False
-    unreliable = False
     TD = "teardown failed: window not attributable"
-    UNRELIABLE = "cannot prove: attribution unreliable (an earlier persona's window could not be closed)"
     try:
         if docs is None:
             all_did_not_run("the public README.md is missing")
             finish(results, out_dir)
             return 3
-        # the image under test: by digest, loopback only
-        try:
-            cid = docker.start(a.image, (a.port, 8080))
-            started.append(cid)
-            wait_ready(docker, cid, "http://127.0.0.1:%d" % a.port, a.ready_timeout)
-        except Exception as e:
-            all_did_not_run("the image under test did not start or answer (%s)" % e)
         for persona in PERSONAS:
             if persona in results:
                 continue
             if teardown_failed:         # a survivor may still be sending traffic: no window after it is attributable, and nothing new is started
                 record(persona, None, "did not run: %s\n" % TD, "%s (an earlier teardown failed)" % TD)
-                continue
-            if unreliable:              # an earlier window never closed: no counter reading after it can be trusted
-                record(persona, None, "did not run: %s\n" % UNRELIABLE, UNRELIABLE)
                 continue
             # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
             left = len([q for q in PERSONAS if q not in results])
@@ -1188,12 +1283,19 @@ def _main():
             sandboxes.append(sandbox)
             tdir = tempfile.mkdtemp(prefix="persona-uat-tr-")          # the agent's streamed transcript: private, outside the sandbox the shell containers mount
 
-            def teardown_tools():
-                """every tool container and the cluster of THIS persona are gone. -> False when one could not be removed"""
+            image_cids = []
+
+            def teardown_tools(image=False):
+                """the persona's tool containers and its cluster are gone (and, with image=True, its OWN container of the image under test: that one is removed only AFTER the
+                closing scrape reads its counter). -> False when one could not be removed"""
                 ok = cluster.delete() if cluster else True
                 ok = docker.remove(tool_cids) and ok
                 del tool_cids[:]
+                if image:
+                    ok = docker.remove(image_cids) and ok
+                    del image_cids[:]
                 return ok and not Cluster.leaked
+            img_port = free_port()          # this persona's endpoint: a container of its own, a host port of its own, a request counter of its own
             try:
                 files = dict(docs)
                 if persona == "readme-evaluator":
@@ -1204,6 +1306,18 @@ def _main():
                     with open(dest, "wb") as fh:
                         fh.write(data)
                 open_modes(sandbox)
+                try:
+                    cid = docker.start(a.image, (img_port, 8080))
+                    image_cids.append(cid)
+                    started.append(cid)
+                    wait_ready(docker, cid, "http://127.0.0.1:%d" % img_port, a.ready_timeout)
+                except Exception as e:
+                    reason = "the image under test did not start or answer (%s)" % e
+                    if not teardown_tools(image=True):
+                        teardown_failed = True
+                        reason += "; " + TD
+                    record(persona, None, "did not run: %s\n" % reason, reason)
+                    continue
                 try:
                     for i, tool in enumerate(TOOLS_FOR.get(persona, ())):
                         if tool == "jenkins":
@@ -1223,22 +1337,22 @@ def _main():
                             req_tools[tool] = {"endpoint": cluster.server, "kubeconfig": "kubeconfig", "namespace": PERSONA_NS}
                 except Exception as e:
                     reason = "a tool container did not start or answer (%s)" % e
-                    if not teardown_tools():
+                    if not teardown_tools(image=True):
                         teardown_failed = True
                         reason += "; " + TD
                     record(persona, None, "did not run: %s\n" % reason, reason)
                     continue
-                if not docker.running(started[0]):
+                if not docker.running(cid):
                     record(persona, None, "did not run: the image under test stopped\n", "the image under test stopped")
                     continue
                 request = {
-                    "docs_dir": sandbox, "endpoint": "http://127.0.0.1:%d" % a.port, "image": a.image,
+                    "docs_dir": sandbox, "endpoint": "http://127.0.0.1:%d" % img_port, "image": a.image,
                     "instructions": INSTRUCTIONS[persona] + " " + CLASSIFY,
                     "model": models["PERSONA_UAT_COMPLIANCE_MODEL" if persona == "compliance-reviewer" else "PERSONA_UAT_MODEL"],
                     "persona": persona, "token_budget": budget, "tools": req_tools,
                 }
                 try:
-                    stray = sorted(loopback_listeners(a.proc_net) - {53, a.port, a.port + 1, a.port + 2} - set(a.allow_listen) - ({cluster.port} if cluster else set()))
+                    stray = sorted(loopback_listeners(a.proc_net) - {53, a.port, a.port + 1, a.port + 2, img_port} - set(a.allow_listen) - ({cluster.port} if cluster else set()))
                 except Refuse as e:
                     record(persona, None, "did not run: %s\n" % e, "the loopback could not be inspected (%s)" % e)
                     continue
@@ -1249,31 +1363,27 @@ def _main():
                 label = "persona-uat=%s" % uuid.uuid4()
                 tfile = os.path.join(tdir, "transcript")
                 args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label, "--transcript-file", tfile]
-                ep = "http://127.0.0.1:%d" % a.port
+                ep = "http://127.0.0.1:%d" % img_port
                 before = scrape(ep)
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile)
                 # the window is closed BEHIND everything of this persona: its containers (swept by label), its tool containers and cluster are removed, THEN the counter is
                 # read once no connection to the endpoint is left and it has been unchanged for the quiet interval
                 swept = sweep(docker, label)
                 tools_gone = teardown_tools()
-                after = settled(ep, a.settle_quiet, a.settle_max, lambda: established_to(a.proc_net, a.port) == 0)
+                after = settled(ep, a.settle_quiet, a.settle_max, lambda: established_to(a.proc_net, img_port) == 0)
                 cleaned = cleanup(docker, label, sandbox, tools["shell"])
-                if not [q for q in PERSONAS if q not in results and q != persona]:
-                    # the last persona: the image under test goes with the rest, and a container that cannot be removed fails the run like any other teardown
-                    if docker.remove(started):
-                        del started[:]
-                    else:
-                        tools_gone = False
+                image_gone = docker.remove(image_cids)          # the persona's container goes only now, after its counter was read; whatever completes in it later counts for nobody
+                del image_cids[:]
+                tools_gone = tools_gone and image_gone
                 if after is UNSETTLED:
-                    unreliable = True
                     after = None
-                    cannot = ("cannot prove: this persona's window could not be closed (a connection to the endpoint stayed open or the request counter kept changing for %d seconds): "
-                              "attribution unreliable" % a.settle_max)
+                    cannot = ("cannot prove: this persona's window could not be closed (a connection to its container stayed open or its request counter kept changing for %d seconds)"
+                              % a.settle_max)
+                elif persona != "compliance-reviewer" and (before is None or after is None):
+                    cannot = "cannot prove: the request counter of this persona's container could not be read (the opening or the closing scrape failed)"
                 else:
                     cannot = None
-                ok = before is not None and after is not None and after - before > 0 and not (before == 0 and prev[0] > 0)
-                if after is not None:
-                    prev[0] = after
+                ok = before is not None and after is not None and after - before > 0
                 if not (swept and tools_gone and cleaned):
                     teardown_failed = True          # this persona and every later one: a survivor may have sent traffic into a window we cannot attribute
                     record(persona, None, (transcript if answer is None else answer["transcript"]) or "", "%s%s" % (TD, "" if answer is not None else "; " + why))
@@ -1285,10 +1395,10 @@ def _main():
                 else:
                     record(persona, answer, answer["transcript"], proven=ok)
             finally:
-                teardown_tools()
+                teardown_tools(image=True)
                 shutil.rmtree(tdir, ignore_errors=True)
     finally:
-        docker.remove(started)
+        docker.remove(started)          # whatever is left of the personas' containers (they were removed with each persona's teardown)
         for s_ in sandboxes:
             for d, dirs, fs in os.walk(s_):
                 try:
