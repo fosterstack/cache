@@ -712,6 +712,8 @@ class Finding:
 
 
 def judge(item, net, exceptions, notes, current=True):
+    if getattr(item, "incomplete", False):      # a scan that was not complete (a deep document, a budget, an include chain): a finding naming the file, now or in the history window; never an expression
+        return [Finding(item, "unparseable", ["unparseable"], "%s (at %s:%s), so its action references and installer inputs could not be checked" % (item.why, _safe(item.file, 120), item.line))]
     if getattr(item, "expr", False) or "${{" in (item.version or ""):      # advisor 0245: an expression where a version is pinned is never resolved, never looked up, never excepted
         where = "%s:%s" % (_safe(item.file, 120), item.line) if getattr(item, "file", "") else "a file this check could not locate"
         if getattr(item, "why", ""):
@@ -1044,7 +1046,7 @@ def main(argv=None):
         for k in sorted(head):
             print(f"  {clean(k)}")
         for k in sorted(head):
-            if "scan limit reached" in head[k].name:
+            if getattr(head[k], "incomplete", False):
                 print("information: %s: incompletely scanned: action references and installer inputs not read" % clean(head[k].file))
         notes, findings, incomplete = [], [], False
         for it in audited:
@@ -1058,6 +1060,8 @@ def main(argv=None):
 
         def one(it):
             n2 = []
+            if getattr(it, "incomplete", False) and a.base is None and it.key not in head:
+                print("information: history: %s %s incompletely scanned: action references and installer inputs not read" % (getattr(it, "commit", "?"), clean(it.file)))
             if getattr(it, "expr", False) and a.base is None and it.key not in head:
                 print("information: history, not judged: %s:%s@%s (a version in the last %d days was an expression; it is not in today's tree)" % (clean(it.file), it.line, getattr(it, "commit", "?"), LOOKBACK_DAYS))
                 return [], n2

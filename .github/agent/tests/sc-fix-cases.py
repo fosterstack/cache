@@ -3695,6 +3695,72 @@ def i_audit_names_incompletely_scanned_file():
         repo, rc, out = run_audit_fx({WFPATH: deep_wf(n)}, {WFPATH: deep_wf(n)}, {})
         assert ("incompletely scanned" in out) == deep and (rc == 1) == deep, (n, rc, out[-300:])
 
+
+# ======================================================================================================================================
+# final round: the identity of an incomplete scan covers what was not read; its own class (not an expression); exact bytes
+# ======================================================================================================================================
+def include_chain(n, version, extra=None):
+    files = {"bin/x.sh": SHEBANG_BASH + "pip install -r c/0.txt\n"}
+    for i in range(n):
+        files["c/%d.txt" % i] = "-r %d.txt\nfiller%d==1.0\n" % (i + 1, i)
+    files["c/%d.txt" % n] = "pk==%s\n" % version
+    return {**files, **(extra or {})}
+
+
+@case("age", "AC2", "i: the incomplete item of an INCLUDE CHAIN longer than the include-depth limit covers everything that was not read: with the package in the final file of a chain three longer than the limit, changing ONLY that version moves the item (the age check refuses, exit 1, the audit reports the file as incompletely scanned), an unchanged tree moves nothing, and the identity is a digest over (path, exact-bytes hash) of every in-scope file plus the unread tail; for a character-budget hit the identity changes with any in-scope file too")
+def i_incomplete_include_chain_covers_the_unread_tail():
+    n = inv.MAX_INCLUDE_DEPTH + 3
+    base, head = include_chain(n, "1.0"), include_chain(n, "9.9")
+    rc, out = run_age(exact_repo(base, head), OLD_FX)
+    assert rc == 1 and "scan limit reached" in out, ("a change in the final, unread file", rc, out[-300:])
+    rc, out = run_age(exact_repo(base, {**base, "README.md": "x\n"}), OLD_FX)
+    assert rc == 0 and "no pin moved" in out, ("an unchanged chain moves nothing", rc, out[-300:])
+    repo, rc, out = run_audit_fx(base, head, {})
+    assert rc == 1 and any("c/" in l and "incompletely scanned" in l for l in out.splitlines() if l.startswith("information:")), (rc, out[-400:])
+    keys = lambda files: sorted(k for k in repo_items(files)[0] if "scan limit reached" in k)
+    assert len(keys(base)) == 1 and keys(base) != keys(head) and keys(base) == keys(include_chain(n, "1.0")), (keys(base), keys(head))
+    saved = inv._LEX_BUDGET
+    try:
+        inv._LEX_BUDGET = 3000
+        wf = {WFPATH: runner_wf("echo hi"), "bin/x.sh": SHEBANG_BASH + nest_subst(60) + "\n", "docs/requirements.txt": "flask==2.0\n"}
+        k = lambda files: sorted(x for x in inv.inventory(files) if "scan limit reached" in x)
+        k0, k1, k2 = k(wf), k({**wf, "docs/requirements.txt": "flask==2.1\n"}), k({**wf, WFPATH: runner_wf("echo other")})
+        assert len(k0) == 1 and k0 != k1 and k0 != k2 and k0 == k(dict(wf)), ("a budget hit covers every in-scope file", k0, k1, k2)
+    finally:
+        inv._LEX_BUDGET = saved
+
+
+DEEP_HIST_WF = deep_wf(400, "      - run: echo hi\n      - uses: sigstore/cosign-installer@%s # v3.5.0\n        with:\n          cosign-release: 'v1.13.1'\n" % SHA_A)
+
+
+@case("audit", "AC12", "h: the history-only exemption is for VERSIONS WRITTEN AS EXPRESSIONS only: a historical workflow nested beyond the safe depth (removed from the tree) is not an expression: with a literal vulnerable pin it is an advisory HIT (exit 1) like a shallow one; with only an unrecoverable installer version it is an unparseable HIT naming the file plus `history: <commit> <file> incompletely scanned ...` (exit 1), never described as an expression; a genuine historical expression stays informational (exit 0)")
+def h_deep_historical_document_is_not_an_expression():
+    lists = {"lists": {PYPIN: {"github": [{"id": "GHSA-8q59-q68h-6hv4", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}}}
+    repo, rc, out = run_audit_history([{"README.md": "x\n"}, {"README.md": "x\n", WFPATH: deep_wf(400)}, {"README.md": "x\n"}], lists)
+    assert rc == 1 and any("GHSA-8q59-q68h-6hv4" in l for l in out.splitlines() if l.startswith("audit: HIT:")), ("a literal vulnerable pin in a deep historical document", rc, out[-400:])
+    repo, rc, out = run_audit_history([{"README.md": "x\n"}, {"README.md": "x\n", WFPATH: DEEP_HIST_WF}, {"README.md": "x\n"}], {"lists": {}})
+    assert rc == 1, (rc, out[-500:])
+    assert any(WFPATH in l and "incompletely scanned" in l and "expression" not in l for l in out.splitlines() if l.startswith("information:")), out[-600:]
+    assert any(WFPATH in l and "incompletely scanned" in l for l in hit_lines(out, "unparseable")), ("an unparseable HIT naming the file", out[-600:])
+    old = goreleaser_wf(top="env:\n  GORELEASER_VERSION: '2.17.1'\n")
+    repo, rc, out = run_audit_history([{"README.md": "x\n"}, {"README.md": "x\n", WFPATH: old}, {"README.md": "x\n"}], {"lists": {}})
+    assert rc == 0 and "history, not judged" in out, ("a genuine historical expression stays informational", rc, out[-400:])
+
+
+@case("age", "AC11", "i: the identity of an incomplete scan is the sha256 of the file's exact BYTES, not of decoded text: two repositories whose deep workflows differ only in a non-UTF-8 comment byte (\\xff against \\xfe, both decoding to the same replacement character) give different `scan limit reached` keys")
+def i_incomplete_key_is_the_exact_bytes():
+    def repo_with(byte):
+        d = tempfile.mkdtemp(dir=TMP)
+        _git(d, "init", "-q")
+        os.makedirs(os.path.join(d, ".github/workflows"))
+        open(os.path.join(d, WFPATH), "wb").write(deep_wf(400).encode() + b"# comment " + byte + b"\n")
+        _git(d, "add", "-A")
+        _git(d, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "c")
+        return d
+    ka = sorted(k for k in inv.load_at(repo_with(b"\xff"), None) if "scan limit reached" in k)
+    kb = sorted(k for k in inv.load_at(repo_with(b"\xfe"), None) if "scan limit reached" in k)
+    assert len(ka) == len(kb) == 1 and ka != kb, (ka, kb)
+
 def main(argv):
     suites = {c[0] for c in CASES}
     suite = argv[1] if len(argv) > 1 else "all"
