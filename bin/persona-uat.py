@@ -22,6 +22,7 @@ Exit status: 0 clean (friction is information, never a failure), 1 a blocking pe
 encryption, 2 a refused configuration (nothing was started), 3 the public docs are missing.
 """
 import argparse
+import warnings
 import itertools
 import json
 import os
@@ -41,6 +42,7 @@ import base64
 import uuid
 import shlex as _shlex
 
+warnings.simplefilter("ignore")        # nothing but the fixed lines is ever printed: no interpreter warning either
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
@@ -686,7 +688,7 @@ def _name(v):
     if v.startswith("["):
         v = v.split("]", 1)[0] + "]" if "]" in v else v
         return v.lower() if re.fullmatch(r"\[[0-9A-Fa-f:.]+\]", v) else None
-    v = re.split(r"[:/]", v, 1)[0]
+    v = re.split(r"[:/]", v, maxsplit=1)[0]
     return v.lower() if NET_NAME.match(v) else None
 
 
@@ -1175,7 +1177,7 @@ def _main():
             # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
             left = len([q for q in PERSONAS if q not in results])
             persona_timeout = int(min(a.agent_timeout, (a.job_budget - (time.time() - job_t0)) / left))
-            if persona_timeout < a.min_persona_seconds:
+            if persona_timeout < min(a.min_persona_seconds, a.agent_timeout):      # an explicitly short --agent-timeout is the caller's choice, not a lack of budget
                 why_ = "cannot prove: the job's time budget left no time for this persona (%d seconds each, %d needed)" % (max(persona_timeout, 0), a.min_persona_seconds)
                 record(persona, None, "did not run: %s\n" % why_, why_)
                 continue

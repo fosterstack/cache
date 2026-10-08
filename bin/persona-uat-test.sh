@@ -3387,7 +3387,7 @@ for d in sys.argv[1:3]:
     dels = [r for r in kh.kind(d) if r["argv"][:2] == ["delete", "cluster"]]
     assert len(dels) == 1 and dels[0]["t"] > t["t1"], ("the cluster was deleted before the persona's recorded end", dels[0]["t"], t["t1"])
 PY
-AGENT_TIMEOUT=5000 run kindtmo '{}' rc
+JOB_BUDGET=100000 AGENT_TIMEOUT=5000 run kindtmo '{}' rc
 CASE="the persona kubeconfig's token duration follows --agent-timeout: 5000s + 15 minutes = 5900s (within 1h..24h); a very long agent timeout is capped at 24h; a short one keeps the 1h floor"
 check python3 - "$work/kindtmo" "$work" <<'PY'
 import sys
@@ -3395,7 +3395,7 @@ sys.path.insert(0, sys.argv[2]); import kh
 a = [r for r in kh.kubectl(sys.argv[1]) if "create" in r["argv"] and "token" in r["argv"]][0]["argv"]
 assert kh.go_duration(a[a.index("--duration") + 1]) == 5900, a
 PY
-AGENT_TIMEOUT=100000 run kindtmo2 '{}' rc
+JOB_BUDGET=1000000 AGENT_TIMEOUT=100000 run kindtmo2 '{}' rc
 check python3 - "$work/kindtmo2" "$work" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[2]); import kh
@@ -4163,8 +4163,8 @@ assert not [e for e in srv if e["persona"] == "ORPHAN"], [e for e in srv if e["p
 PY
 # THE JOB'S TIME BUDGET (step 8 round 3): the agent timeout is derived from what is left of the job's budget divided by the personas still to run; a persona that cannot be given the minimum
 # is blocking 'cannot prove' and never runs. The default budget (6600 s) fits five default personas into the 120-minute job.
-JOB_BUDGET=10 MIN_PERSONA=3 run budget1 '{}' rc
-CASE="a job budget of 10 s with a 3 s minimum per persona (2 s each): no persona can be given its minimum, none runs, all five are blocking 'cannot prove', the run fails"
+JOB_BUDGET=10 MIN_PERSONA=11 run budget1 '{}' rc
+CASE="a job budget of 10 s with an 11 s minimum per persona (more than the whole budget, so independent of how long each step takes): no persona can be given its minimum, none runs, all five are blocking 'cannot prove', the run fails"
 check python3 - "$(out budget1)" "$work/budget1" "$rc" <<'PY'
 import sys
 o, d, rc = sys.argv[1:4]
