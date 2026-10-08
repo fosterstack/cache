@@ -333,6 +333,23 @@ mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk a
 hkexpect fail "hook: merge replacing the other parent's file with a submodule gitlink is rejected" 'hk merge -q --no-ff --no-commit other && hk rm -q --cached ops/x && hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/x && hk commit -q -m merge'
 mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
 hkexpect fail "hook: merge changing only the mode (100644 to 100755) of the other parent's file is rejected" 'hk merge -q --no-ff --no-commit other && chmod +x ops/x && hk add ops/x && hk commit -q -m merge'
+# HEAD side: a type change staged in a PLAIN commit is judged too (T in the HEAD-side filter)
+mkhk; ( cd "$HK" && mkdir -p ops && ln -s target ops/x && nohk add -A && nohk commit -q -m link )
+hkexpect fail "hook: plain commit turning a tracked symlink into a regular file (type change) is rejected" 'rm ops/x && echo data > ops/x && hk add ops/x && hk commit -q -m tc'
+mkhk; ( cd "$HK" && mkdir -p ops && echo data > ops/x && nohk add -A && nohk commit -q -m file )
+hkexpect fail "hook: plain commit turning a tracked regular file into a symlink (type change) is rejected" 'rm ops/x && ln -s target ops/x && hk add ops/x && hk commit -q -m tc'
+# diff.ignoreSubmodules=all must not hide gitlink differences
+mkhk; ( cd "$HK" && git config diff.ignoreSubmodules all )
+hkexpect fail "hook: plain commit adding a gitlink at an unlisted path is rejected even with diff.ignoreSubmodules=all" 'hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/g && hk commit -q -m gl'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config diff.ignoreSubmodules all )
+hkexpect fail "hook: merge replacing the other parent's file with a gitlink is rejected even with diff.ignoreSubmodules=all" 'hk merge -q --no-ff --no-commit other && hk rm -q --cached ops/x && hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/x && hk commit -q -m merge'
+# non-ASCII paths, UTF-8 locale, unquoted names: the merge still judges the right paths
+NA=$(printf 'ops/caf\303\251.md')
+mkhk; hkbranch other "$NA" x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config core.quotePath false )
+hkexpect pass "hook: merge bringing a non-ASCII unlisted path from the other parent passes (UTF-8 locale, quotePath=false)" 'export LC_ALL=en_US.UTF-8; hk merge -q --no-ff --no-commit other && hk commit -q -m merge'
+mkhk; hkbranch other "$NA" x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config core.quotePath false )
+hkexpect fail "hook: merge resolution adding a non-ASCII unlisted path is rejected (UTF-8 locale, quotePath=false)" 'export LC_ALL=en_US.UTF-8; hk merge -q --no-ff --no-commit other && printf z > "ops/na\303\257ve.md" && hk add -A && hk commit -q -m merge'
+
 # (f) octopus: two other parents, each carrying an unlisted file
 mkhk; hkbranch m1 ops/one.md 1; hkbranch m2 ops/two.md 2
 ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
