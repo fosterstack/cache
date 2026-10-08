@@ -2428,7 +2428,7 @@ def i_more_shell_names():
 def x_boundary_kinds_and_dynamic_words():
     cmd = "pip install requests==2.0"
     kinds = {"Makefile": "all:\n\t" + cmd + "\n", "Dockerfile": "FROM alpine\nRUN " + cmd + "\n", "tools/x.py": "import os\nos.system('" + cmd + "')\n", "tools/x.ps1": cmd + "\n",
-             "tools/x.cmd": cmd + "\n", "tools/plain": "echo start\n" + cmd + "\n", "docs/x.md": "```\n" + cmd + "\n```\n"}
+             "tools/x.cmd": cmd + "\n", "tools/plain": "echo start\n" + cmd + "\n", "docs/x.md": "```\n" + cmd + "\n```\n", "sub/Makefile": "install:\n\tcd sub && pip install -r r.txt\n"}
     for name, body in kinds.items():
         repo = history_repo({name: body})
         assert not inv.load_at(repo, None) and not inv.unmeasured(inv.tree_files(repo, None)), ("outside the rule: " + name)
@@ -3225,6 +3225,102 @@ def b_ghsa_primary_osv_record_is_one_source():
     assert summary(run("< 1.5.0", "2.0.0")) == [], summary(run("< 1.5.0", "2.0.0"))
     f = run("< 2.0.0", "1.5.0")
     assert [x.kind for x in f] == ["advisory"] and not any(x.disputed for x in f), summary(f)
+
+
+# ======================================================================================================================================
+# step 8 round 3: a pip FILE is bound by PATH SUFFIX alone, wherever the command runs; nested includes; env variables; options after the subcommand
+# ======================================================================================================================================
+SUFFIX_ROUTES = [("cd", {"bin/x.sh": SHEBANG_BASH + "cd sub && pip install -r req.txt\n"}), ("pushd", {"bin/x.sh": SHEBANG_BASH + "pushd sub >/dev/null\npip install -r req.txt\n"}),
+                 ("step working-directory", {WFPATH: wd_wf("pip install -r req.txt", step_wd="sub")}), ("job working-directory", {WFPATH: wd_wf("pip install -r req.txt", job_wd="sub")}),
+                 ("default working-directory", {WFPATH: wd_wf("pip install -r req.txt", default_wd="sub")}), ("env -C", {"bin/x.sh": SHEBANG_BASH + "env -C sub pip install -r req.txt\n"}),
+                 ("env --chdir=", {"bin/x.sh": SHEBANG_BASH + "env --chdir=sub pip install -r req.txt\n"}), ("sudo -D", {"bin/x.sh": SHEBANG_BASH + "sudo -D sub pip install -r req.txt\n"}),
+                 ("uv --directory", {"bin/x.sh": SHEBANG_BASH + "uv --directory sub pip install -r req.txt\n"}), ("poetry --directory run", {WFPATH: runner_wf("poetry --directory sub run pip install -r req.txt")}),
+                 ("make -C", {"bin/x.sh": SHEBANG_BASH + "make -C sub pip install -r req.txt\n"}), ("a wrapper script", {"bin/x.sh": SHEBANG_BASH + "./sub/run.sh pip install -r req.txt\n"}),
+                 ("env -C in a run step", {WFPATH: runner_wf("env -C sub pip install -r req.txt")}), ("nothing at all", {"bin/x.sh": SHEBANG_BASH + "pip install -r req.txt\n"})]
+
+
+@case("age", "AC11", "i: a pip FILE is bound by PATH SUFFIX ALONE, ignoring where the command runs (cd, pushd, working-directory at step, job and workflow level, env -C, env --chdir=, sudo -D, uv --directory, poetry --directory, make -C, a wrapper script: the class is closed by construction): every tracked file whose path equals the reference or ends with `/` + the reference is a candidate; ONE candidate is read and nothing is unmeasured; MORE THAN ONE are ALL read and the reference is an unmeasured item; NONE is unmeasured; a decoy at the root beside the real file under sub/ gives both files read and exactly one unmeasured item for every spelling; a PR that bumps the pin under sub/ is moved")
+def i_pip_file_binds_by_path_suffix():
+    for label, route in SUFFIX_ROUTES:
+        files = {**route, **DECOY}
+        repo = history_repo(files)
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert "package:pypi/evil@1.0" in ks and "package:pypi/ok@1.0" in ks and len([k for k in ks if "(unmeasured:" in k]) == 1, (label, mode, ks)
+        head = {**files, "sub/req.txt": "evil==9.9.9\n"}
+        young = {"times": {"package:pypi/evil@9.9.9": {"time": "2026-10-06T00:00:00Z", "source": "pypi"}}}
+        rc, out = run_age(exact_repo(files, head), young)
+        assert rc == 1 and "evil@9.9.9" in out, (label, "a bump under sub/ is moved", rc, out[-300:])
+        repo = history_repo({**route, "sub/req.txt": "evil==1.0\n"})                       # ONE candidate, no decoy
+        ks = sorted(inv.load_at(repo, None))
+        assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], (label, "one candidate", ks)
+
+
+@case("age", "AC11", "i: the referenced path is NORMALISED before the suffix rule: a leading ./, any ../ segments and doubled separators are removed (`./x.txt`, `../x.txt`, `a//x.txt`, `../../a/x.txt` all name the tracked x.txt or a/x.txt), a reference that names two tracked files by suffix reads both and is unmeasured, and one that names none is unmeasured")
+def i_pip_file_reference_is_normalised():
+    for ref, tracked in (("./x.txt", "x.txt"), ("../x.txt", "x.txt"), ("a//x.txt", "a/x.txt"), ("../../a/x.txt", "a/x.txt"), (".//a/./x.txt", "a/x.txt")):
+        repo = history_repo({"bin/x.sh": SHEBANG_BASH + "pip install -r %s\n" % ref, tracked: "evil==1.0\n"})
+        ks = sorted(inv.load_at(repo, None))
+        assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], (ref, ks)
+    repo = history_repo({"bin/x.sh": SHEBANG_BASH + "pip install -r a/x.txt\n", "a/x.txt": "one==1.0\n", "b/a/x.txt": "two==2.0\n", "c/other.txt": "three==3.0\n"})
+    ks = sorted(inv.load_at(repo, None))
+    assert "package:pypi/one@1.0" in ks and "package:pypi/two@2.0" in ks and "package:pypi/three@3.0" not in ks and len([k for k in ks if "(unmeasured:" in k]) == 1, ks
+    repo = history_repo({"bin/x.sh": SHEBANG_BASH + "pip install -r y.txt\n", "ay.txt": "nope==1.0\n"})
+    ks = sorted(inv.load_at(repo, None))
+    assert len([k for k in ks if "(unmeasured:" in k]) == 1 and "package:pypi/nope@1.0" not in ks, ("a suffix is a PATH suffix, not a name suffix", ks)
+
+
+@case("age", "AC11", "i: an include INSIDE a requirements file (`-r more.txt`, `--requirement=more.txt`, `-c base.in`, `-rmore.txt`) is followed whatever the files are called: relative to the including file's directory first, then by the suffix rule; its pins are items and a bump in it is moved; a cycle terminates; a chain deeper than the bound gives a `scan limit reached` item, a shallow chain none")
+def i_nested_requirements_includes():
+    base = {"bin/x.sh": SHEBANG_BASH + "pip install -r deps/top.in\n"}
+    for inc in ("-r more.txt", "--requirement=more.txt", "-c more.txt", "-rmore.txt", "--constraint more.txt", "-r ./more.txt"):
+        files = {**base, "deps/top.in": inc + "\nflask==2.0\n", "deps/more.txt": "evil==1.0\n"}
+        ks = sorted(repo_items(files)[0])
+        assert "package:pypi/evil@1.0" in ks and "package:pypi/flask@2.0" in ks and not [k for k in ks if "(unmeasured:" in k], (inc, ks)
+    ks = sorted(repo_items({**base, "deps/top.in": "-r more.txt\n", "deps/more.txt": "evil==1.0\n", "other/more.txt": "decoy==1.0\n"})[0])
+    assert "package:pypi/evil@1.0" in ks and "package:pypi/decoy@1.0" not in ks and not [k for k in ks if "(unmeasured:" in k], ("the file next to the including one is pip's own binding", ks)
+    files = {**base, "deps/top.in": "-r more.txt\n", "deps/more.txt": "evil==1.0\n"}
+    young = {"times": {"package:pypi/evil@9.9.9": {"time": "2026-10-06T00:00:00Z", "source": "pypi"}}}
+    rc, out = run_age(exact_repo(files, {**files, "deps/more.txt": "evil==9.9.9\n"}), young)
+    assert rc == 1 and "evil@9.9.9" in out, ("a bump in a nested include is moved", rc, out[-300:])
+    ks = sorted(repo_items({"requirements.txt": "-r common.in\nflask==2.0\n", "common.in": "evil==1.0\n"})[0])
+    assert "package:pypi/evil@1.0" in ks and "package:pypi/flask@2.0" in ks and not [k for k in ks if "(unmeasured:" in k], ("an include of a NAMED requirements file", ks)
+    ks = sorted(repo_items({"requirements-dev.txt": "-r requirements-base.txt\ndev==1.0\n", "requirements-base.txt": "-r requirements-dev.txt\nbase==1.0\n"})[0])
+    assert "package:pypi/dev@1.0" in ks and "package:pypi/base@1.0" in ks and not [k for k in ks if "(unmeasured:" in k or "scan limit" in k], ("a cycle", ks)
+    chain = lambda n: {**{"bin/x.sh": SHEBANG_BASH + "pip install -r c/0.txt\n"}, **{"c/%d.txt" % i: "-r %d.txt\npin%d==1.0\n" % (i + 1, i) for i in range(n)}, "c/%d.txt" % n: "pin%d==1.0\n" % n}
+    ks = sorted(repo_items(chain(4))[0])
+    assert "package:pypi/pin4@1.0" in ks and not [k for k in ks if "scan limit" in k or "(unmeasured:" in k], ("a shallow chain", ks)
+    ks = sorted(repo_items(chain(30))[0])
+    assert [k for k in ks if k.startswith("package:pypi/(unmeasured:scan limit reached)")], ("a chain deeper than the bound", ks)
+
+
+@case("age", "AC11", "i: PIP_CONSTRAINT and PIP_REQUIREMENT name files to pip: in a workflow env block, an inline assignment before pip, an export, a step env, they are references read by the suffix rule (a variable or expression value is unmeasured); `python -m piptools sync FILE` reads FILE like pip-sync")
+def i_pip_env_variables_and_piptools():
+    for label, files in (("workflow env", {WFPATH: "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_CONSTRAINT: deps/c.txt\n    steps:\n      - run: pip install a==1\n"}),
+                         ("step env", {WFPATH: "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - env:\n          PIP_REQUIREMENT: 'deps/c.txt'\n        run: pip install\n"}),
+                         ("inline", {"bin/x.sh": SHEBANG_BASH + "PIP_CONSTRAINT=deps/c.txt pip install a==1\n"}), ("export", {"bin/x.sh": SHEBANG_BASH + "export PIP_CONSTRAINT=\"deps/c.txt\"\npip install a==1\n"}),
+                         ("piptools", {"bin/x.sh": SHEBANG_BASH + "python -m piptools sync deps/c.txt\n"}), ("pip-sync", {"bin/x.sh": SHEBANG_BASH + "pip-sync deps/c.txt\n"})):
+        repo = history_repo({**files, "deps/c.txt": "evil==1.0\n"})
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], (label, mode, ks)
+    for label, files in (("expression", {WFPATH: "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_CONSTRAINT: ${{ matrix.c }}\n    steps:\n      - run: pip install a==1\n"}),
+                         ("variable", {"bin/x.sh": SHEBANG_BASH + 'PIP_CONSTRAINT="$C" pip install a==1\n'})):
+        ks = sorted(repo_items(files)[0])
+        assert [k for k in ks if "(unmeasured:" in k], (label, ks)
+
+
+@case("age", "AC11", "i: an option AFTER the install subcommand is never a package: `--chdir sub`, `--anything value`, `--anything=value` give an unmeasured item and no pypi/sub or pypi/value item; the known value-taking options (--target, --index-url, --root ...) and the known flags (--no-deps, --pre, --user, -U, --require-hashes ...) give no finding")
+def i_pip_options_after_the_subcommand():
+    for line in ("pip install -r r.txt --chdir sub", "pip install pyyaml==5.3 --chdir sub", "pip install pyyaml==5.3 --anything value", "pip install pyyaml==5.3 --anything=value"):
+        for files in both_routes(line):
+            ks = sorted(repo_items({**files, "r.txt": "ok==1.0\n"})[0])
+            assert [k for k in ks if "(unmeasured:" in k] and not [k for k in ks if k.startswith(("package:pypi/sub", "package:pypi/value"))], (line, list(files), ks)
+    for line in ("pip install pyyaml==5.3 --target out --no-deps --pre --user -U --require-hashes --upgrade --force-reinstall --no-cache-dir --quiet --no-input --only-binary=:all: --index-url https://h/s --root /r --prefix /p",
+                 "pip install pyyaml==5.3 --break-system-packages --no-build-isolation --ignore-installed --no-warn-script-location -q"):
+        for files in both_routes(line):
+            ks = sorted(repo_items(files)[0])
+            assert PYPIN in ks and not [k for k in ks if "(unmeasured:" in k or k.startswith(("package:pypi/out", "package:pypi/r@", "package:pypi/p@"))], (line, list(files), ks)
 
 def main(argv):
     suites = {c[0] for c in CASES}

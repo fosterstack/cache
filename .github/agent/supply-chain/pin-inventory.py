@@ -314,6 +314,18 @@ def _pip_known_opt(t):
     return t.split("=", 1)[0] in _PIP_GLOBAL_VAL or t in _PIP_GLOBAL_BOOL or re.fullmatch(r"-[vq]+", t) is not None
 
 
+_PIP_INSTALL_FLAGS = {"--no-deps", "--pre", "--user", "--upgrade", "--force-reinstall", "--ignore-installed", "--ignore-requires-python", "--no-build-isolation", "--use-pep517", "--no-use-pep517",
+                      "--check-build-dependencies", "--break-system-packages", "--compile", "--no-compile", "--no-warn-script-location", "--no-warn-conflicts", "--prefer-binary", "--require-hashes",
+                      "--no-clean", "--no-index", "--dry-run", "--disable-pip-version-check", "--no-cache-dir", "--quiet", "--verbose", "--no-input", "--isolated", "--no-color", "--debug",
+                      "--require-virtualenv", "--no-python-version-warning", "--help", "--version", "--no-binary-all", "--editable", "--upgrade-strategy", "--use-feature", "--use-deprecated",
+                      "--hash", "--config-settings", "--global-option", "--install-option", "--build-option", "--no-user"}
+
+
+def _known_install_opt(t):
+    base = t.split("=", 1)[0]
+    return base in _PIP_VALUE_OPTS or base in _PIP_INSTALL_FLAGS or base in _PIP_GLOBAL_VAL or base in _PIP_GLOBAL_BOOL
+
+
 _PIP_NAME = re.compile(r"[A-Za-z0-9][\w.-]*(?:\[[\w.,\s-]*\])?")
 
 
@@ -331,11 +343,21 @@ def _pip_items(tail, out):
             unmeasured(ref)
     if tail.sub == "sync":
         return                                                    # pip-sync / uv pip sync install what the files list: no package arguments of their own
-    keep, prev = [], ""
+    keep, prev, skip_next = [], "", False
     for w in tail.words:
         t = w.text
+        if skip_next:
+            skip_next = False
+            if not t.startswith("-"):
+                prev = t
+                continue                           # the value of an option this check does not know: never a package
         value_of_option = _takes_value(prev)      # `-r deps.txt` and `-qr deps.txt` name a file, not a package
         prev = t
+        if t.startswith("--") and not value_of_option and not _known_install_opt(t):
+            unmeasured(t)                          # an option unknown to this check (--chdir sub, --anything): unmeasured, and what follows it is its value, not a package
+            skip_next = "=" not in t
+            keep.append(w)
+            continue
         if value_of_option or t.startswith("-"):
             if w.open:
                 unmeasured(t)
@@ -385,12 +407,13 @@ def _pip_tails(run):
         t.words, t.unknown, t.cmd_meta, t.sub = ws, unknown, meta, sub
         out.append(t)
     for line in run.split("\n"):
-        if "pip-sync" not in line:
+        if "pip-sync" not in line and "piptools" not in line:
             continue
         for cmd in _lex(line):
             for i, w in enumerate(cmd.words):
-                if w.text.rsplit("/", 1)[-1] == "pip-sync":
-                    ws = cmd.words[i + 1:]
+                base = w.text.rsplit("/", 1)[-1]
+                if base == "pip-sync" or (base == "piptools" and i + 1 < len(cmd.words) and cmd.words[i + 1].text == "sync"):
+                    ws = cmd.words[i + (1 if base == "pip-sync" else 2):]
                     t = Tail(" ".join(x.text for x in ws))
                     t.words, t.unknown, t.cmd_meta, t.sub = ws, False, cmd.meta, "sync"
                     out.append(t)
@@ -542,6 +565,7 @@ class Files(dict):
         self.sha256 = {}
         self.links = {}
         self.reqrefs = set()
+        self.limit = set()
 
 
 def _is_script_name(n):
@@ -576,7 +600,7 @@ def _pip_file_refs(text):
             continue
         for tail in _pip_tails(line):
             out += _tail_file_refs(tail.words, tail.sub)
-    return out
+    return out + _env_file_refs(text)
 
 
 _SYNC_VALUE_OPTS = {"--pip-args", "--index-url", "-i", "--extra-index-url", "-f", "--find-links", "--python-executable", "--cert", "--client-cert", "--trusted-host", "--python", "--target"}
@@ -616,62 +640,57 @@ def _tail_file_refs(words, sub="install"):
     return [(n, ok) for n, ok in out if n not in ("-", "/dev/stdin")]
 
 
-_WD_KEY = re.compile(r"(?m)^[ \t]*(?:-[ \t]*)?working-directory:[ \t]*(.*?)[ \t]*$")
+MAX_INCLUDE_DEPTH = 8          # how deep a chain of `-r other.txt` includes is followed; deeper is reported ("scan limit reached"), never dropped silently
+_ENV_REF_RX = re.compile(r"\bPIP_(?:CONSTRAINT|REQUIREMENT)\b[ \t]*[:=][ \t]*(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s#;&|]*))")
+_REQ_INCLUDE = re.compile(r"^(?:--requirement|--constraint|-r|-c)(?:[ \t]*=[ \t]*|[ \t]+|(?=[^\s=-]))(\S.*?)\s*$")
 
 
-def _norm_dir(d):
-    n = posixpath.normpath(d)
-    return "" if n == "." else n
+def _unmeasured_item(what):
+    return Item("package", "pypi/(unmeasured:" + hashlib.sha256(what.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)")
 
 
-def _cmd_dirs(path, text):
-    """(directories a pip FILE can be relative to, whether a cd/pushd/working-directory was seen, whether any directory is built at run time) for the commands of one file: the repository root, the
-    directory of the file, every `working-directory:` value, and every `cd` / `pushd` target (chained: a cd after a cd is relative to each directory known so far)."""
-    wds, cds, dynamic = [], [], False
-    for m in _WD_KEY.finditer(text):
-        v = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"")
-        if v:
-            if "$" in v or "`" in v:
-                dynamic = True
-            else:
-                wds.append(v)
-    for line in re.sub(r"\\\r?\n", "", text).split("\n"):
-        if "cd" not in line and "pushd" not in line:
-            continue
-        for cmd in _lex(line):
-            ws = cmd.words
-            for i, w in enumerate(ws):
-                if w.text.rsplit("/", 1)[-1] in ("cd", "pushd"):
-                    tgt = [x for x in ws[i + 1:] if not x.text.startswith("-") or x.text == "-"][:1]
-                    if not tgt:
-                        continue
-                    x = tgt[0]
-                    if x.dyn or x.meta or x.open or x.text in ("-", "") or x.text.startswith(("/", "~")):
-                        dynamic = True
-                    else:
-                        cds.append(x.text)
-    dirs = {"", _norm_dir(posixpath.dirname(path) or ".")} | {_norm_dir(v) for v in wds if not v.startswith("/")}
-    for t in cds:
-        dirs |= {_norm_dir(posixpath.join(d, t)) for d in list(dirs)}
-        if len(dirs) > 64:
-            dynamic = True
-            break
-    dirs = {d for d in dirs if not d.startswith("..")}
-    return dirs, bool(wds or cds or dynamic), dynamic
-
-
-def _ref_candidates(ref, from_path, text=""):
-    """(the tracked paths a pip FILE argument can name, extra, dynamic): the reference read relative to the repository root, the directory of the file that runs the command, and every directory a cd,
-    pushd or working-directory of that file names. extra: such a directory exists; dynamic: one is built at run time. Nothing for a URL, an absolute path or a variable."""
-    if "://" in ref or ref.startswith("/") or "$" in ref or "`" in ref:
-        return [], False, False
-    dirs, extra, dynamic = _cmd_dirs(from_path, text)
+def _env_file_refs(text):
+    """The files PIP_CONSTRAINT and PIP_REQUIREMENT name (a workflow env block, an inline assignment, an export): [(name, resolvable)]."""
     out = []
-    for d in sorted(dirs):
-        c = posixpath.normpath(posixpath.join(d, ref))
-        if c and c != "." and not c.startswith("..") and c not in out:
-            out.append(c)
-    return out, extra, dynamic
+    for m in _ENV_REF_RX.finditer(re.sub(r"\\\r?\n", "", text)):
+        val = next((g for g in m.groups() if g is not None), "")
+        for w in val.split():
+            out.append((w, not any(c in w for c in "$`{")))
+    return out
+
+
+def _req_include_refs(text):
+    """[(name, resolvable)] for the `-r FILE` / `-c FILE` / `--requirement=FILE` lines INSIDE a requirements file."""
+    out = []
+    for body in _req_lines(text):
+        m = _REQ_INCLUDE.match(body)
+        if m:
+            f = m.group(1).strip("'\"")
+            out.append((f, not any(c in f for c in "$`{") and "://" not in f))
+    return out
+
+
+def _norm_ref(ref):
+    """The referenced path without leading ./, any ../ segments or doubled separators."""
+    return "/".join(p for p in ref.split("/") if p not in ("", ".", ".."))
+
+
+def _ref_matches(ref, names):
+    """The paths of `names` that a pip FILE argument can name, by PATH SUFFIX ALONE: equal to the normalised reference or ending with `/` + it. Where the command runs (cd, working-directory, env -C,
+    sudo -D, uv --directory ...) is never modelled: a decoy with the same suffix just makes two candidates. Nothing for a URL, an absolute path or a variable."""
+    n = _norm_ref(ref)
+    if not n or "://" in ref or ref.startswith("/") or "$" in ref or "`" in ref:
+        return []
+    suf = "/" + n
+    return sorted(c for c in names if c == n or c.endswith(suf))
+
+
+def _include_matches(ref, from_path, names):
+    """An include inside a requirements file: the file next to the including one when it exists (pip's own rule), otherwise the suffix rule."""
+    exact = posixpath.normpath(posixpath.join(posixpath.dirname(from_path), ref))
+    if exact in names and not exact.startswith("..") and not ref.startswith("/"):
+        return [exact]
+    return _ref_matches(ref, names)
 
 
 def tree_files(root, rev, soft=None):
@@ -786,26 +805,38 @@ def _prefetch(root, blobs):
 
 
 def _read_refs(out, tracked, read):
-    """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c is read too (what it is called does not matter). The reference is read relative to EVERY directory
-    the command can run in; when a cd or working-directory exists and the reference cannot be bound to exactly one tracked file, every tracked file whose path ends with the referenced path is read."""
-    want = set()
+    """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c (or names in PIP_CONSTRAINT / PIP_REQUIREMENT, or gives pip-sync) is read too, whatever it is called, and
+    so is every file those requirements files include, to a bounded depth. A reference is bound by PATH SUFFIX alone (see _ref_matches); every candidate is read."""
+    todo, done = [], set()
+
+    def take(c, d):
+        if c not in out:
+            read(c)
+            if c in out:
+                out.reqrefs.add(c)
+        if c in out and c not in done:
+            todo.append((c, d))
     for p, t in list(out.items()):
         if p in out.links or not (_wf_or_action_name(p) or _is_script(p, t) or p == "bin/install-scanner.sh"):
             continue
         for ref, ok in _pip_file_refs(t):
+            if ok:
+                for c in _ref_matches(ref, tracked):
+                    take(c, 1)
+    todo += [(p, 0) for p in sorted(out) if _requirements_name(p) and p not in out.links]
+    while todo:
+        f, d = todo.pop(0)
+        if f in done or f in out.links:
+            continue
+        done.add(f)
+        for ref, ok in _req_include_refs(out[f]):
             if not ok:
                 continue
-            cands, extra, dynamic = _ref_candidates(ref, p, t)
-            bound = [c for c in cands if c in tracked]
-            want.update(c for c in bound if c not in out)
-            if extra and (dynamic or len(bound) != 1):
-                nref = posixpath.normpath(ref)
-                if nref and nref != "." and not nref.startswith(".."):
-                    want.update(c for c in tracked if (c == nref or c.endswith("/" + nref)) and c not in out)
-    for c in sorted(want):
-        read(c)
-        if c in out:
-            out.reqrefs.add(c)
+            if d + 1 > MAX_INCLUDE_DEPTH:
+                out.limit.add(f)
+                continue
+            for c in _include_matches(ref, f, tracked):
+                take(c, d + 1)
 
 
 def manifest_text(root, rev):
@@ -1367,6 +1398,14 @@ def _scan_file(path, text, reqrefs):
                 it3 = Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", "===" + m.group(3))   # its own operator: an item that cannot be proven
                 it3.step = "line:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:10]
                 found.append(it3)
+            elif _REQ_INCLUDE.match(body):
+                for ref, ok in _req_include_refs(body):          # an include of another requirements file: followed (the second pass), or unmeasured when it cannot be named
+                    if ok:
+                        mk = Item("package", "pypi/(reqref)", ref)
+                        mk.why = "nested"
+                        found.append(mk)
+                    else:
+                        found.append(_unmeasured_item(ref))
             else:
                 found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
         if re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]):
@@ -1411,22 +1450,23 @@ def _scan_file(path, text, reqrefs):
                 continue                    # a line of a run block: already read as one command text
             _step({"run": ln}, found, {})
             _bodies(found, ln, {})
+    if _wf_or_action_name(path) or _is_script(path, text) or path == "bin/install-scanner.sh":
+        for ref, ok in _env_file_refs(text):          # PIP_CONSTRAINT / PIP_REQUIREMENT: files pip reads without a command-line flag
+            found.append(Item("package", "pypi/(reqref)", ref) if ok else _unmeasured_item(ref))
     return found
 
 
 def _resolve_reqrefs(found, path, files):
-    """The pip FILE arguments a file named (markers left by the pip reader): a file that was read (it is in scope as a requirements file) needs nothing more; one that was not, that cannot be
-    resolved to a tracked file inside the repository, or (with a cd or working-directory in the file) cannot be bound to exactly one tracked file, is an unmeasured item."""
+    """The pip FILE arguments a file named (markers left by the readers): bound by path suffix. EXACTLY ONE candidate was read (it is in scope as a requirements file): nothing more. None, or
+    more than one (all of them were read): the reference is also an unmeasured item."""
     links = getattr(files, "links", {})
-    text = files.get(path, "")
+    names = [c for c in files if c not in links]
     for it in [i for i in found if i.name == "pypi/(reqref)"]:
         found.remove(it)
         ref = it.version
-        cands, extra, dynamic = _ref_candidates(ref, path, text)
-        present = [c for c in cands if c in files and c not in links]
-        bound = len(present) == 1 and not dynamic if extra else bool(present)
-        if not bound:
-            found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(ref.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))
+        cands = _include_matches(ref, path, names) if it.why == "nested" else _ref_matches(ref, names)
+        if len(cands) != 1:
+            found.append(_unmeasured_item(ref))
 
 
 class Items(dict):
@@ -1464,7 +1504,7 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
                 raise
             items.refused.append((path, str(e)))          # a historical commit holds a file this check refuses: reported as information, the rest is read
             continue
-        if _LEX_LIMIT[0]:
+        if _LEX_LIMIT[0] or path in getattr(files, "limit", ()):
             lim = Item("package", "pypi/(unmeasured:scan limit reached)", "(unpinned)")
             lim.step = "file:" + hashlib.sha256(path.encode("utf-8", "replace")).hexdigest()[:10]
             found.append(lim)           # a bound was hit: the file was not read in full, which is reported, never silent
