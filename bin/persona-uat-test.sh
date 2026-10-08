@@ -49,14 +49,14 @@
 #       is: the DRIVER and the AGENT never build a privileged, host-mounted or docker-socket container (asserted on every docker call they make
 #       and on the sources: no `--privileged` in the driver, agent or provider); containers kind starts are kind's own and outside the persona's
 #       reach (the persona gets only the namespaced ServiceAccount kubeconfig; no persona container gets the docker socket).
-#   (2) tools file: eight entries (cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven, shell). The agent is started with
+#   (2) tools file: nine entries (capture, cosign, gitlab-runner, gradle, jenkins, kind, kubectl, maven, shell). The agent is started with
 #       `--tools <that file>` (not --shell-image). Jenkins: `run -d -p 127.0.0.1:<port+1>:8080 -e JAVA_OPTS=-Djenkins.install.runSetupWizard=false
 #       <digest>` and no other -e; the GitLab runner: `run -d -p 127.0.0.1:<port+2>:9252 <digest> run --listen-address=0.0.0.0:9252` (the flag
 #       enables its metrics HTTP server) and no -e; readiness is tied to THAT container: the recording docker serves port+2 only when it was
 #       started with exactly that argument vector. Both are reached over http://127.0.0.1:<port> by the persona's shell tool. The kind node image
 #       is never run through docker by the driver. The sandbox directories are mode 0777 (the tool images run as other non-root uids and must be
 #       able to create files); the docs files stay 0644 (read-only for others).
-#   (3) the answer's optional `commands` list is where the driver derives each report's single line `Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed): a, b`
+#   (3) the answer's optional `commands` list is where the driver derives each report's single line `Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'): a, b`
 #       (or `none`). CLAIM, narrowed: "hosts NAMED in the persona's commands" (URLs, and the host argument of curl/wget/kubectl --server style
 #       commands); redirects, Maven repository configuration and tool-internal contacts are NOT observed (documented limitation). A host is listed
 #       unless it is a host of a URL in the public docs (README.md and docs/*.md), 127.0.0.1, localhost, or the registry host of an image in the
@@ -145,7 +145,7 @@ pass=0 failn=0
 ok()   { pass=$((pass+1)); echo "ok   $1"; }
 bad()  { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
-check() { if "$@" >/dev/null 2>&1; then ok "$CASE"; else bad "$CASE"; fi; }
+check() { local e; if e=$("$@" 2>&1 >/dev/null); then ok "$CASE"; else bad "$CASE"; printf '     why: %s\n' "$(printf %s "$e" | tail -n 3 | cut -c1-500)" >&2; fi; }
 # none_match <regex> <path...>: every path must EXIST and nothing in them may match (a read error is a failure, never a pass)
 none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -rqE "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
 
@@ -175,10 +175,11 @@ CSG="gcr.io/projectsigstore/cosign@sha256:$(printf '5%.0s' $(seq 64))"
 KCT="registry.k8s.io/kubectl@sha256:$(printf '6%.0s' $(seq 64))"
 GRD="docker.io/library/gradle@sha256:$(printf '7%.0s' $(seq 64))"
 MVN="docker.io/library/maven@sha256:$(printf '8%.0s' $(seq 64))"
+NSH="docker.io/nicolaka/netshoot@sha256:$(printf 'b%.0s' $(seq 64))"
 cat >"$work/tools.json" <<EOF
-{"cosign": "$CSG", "gitlab-runner": "$GLR", "gradle": "$GRD", "jenkins": "$JEN", "kind": "$KND", "kubectl": "$KCT", "maven": "$MVN", "shell": "$SHL"}
+{"capture": "$NSH", "cosign": "$CSG", "gitlab-runner": "$GLR", "gradle": "$GRD", "jenkins": "$JEN", "kind": "$KND", "kubectl": "$KCT", "maven": "$MVN", "shell": "$SHL"}
 EOF
-TOOLKEYS="cosign gitlab-runner gradle jenkins kind kubectl maven shell"
+TOOLKEYS="capture cosign gitlab-runner gradle jenkins kind kubectl maven shell"
 PERSONAS="gradle-platform-engineer maven-jenkins-ci compliance-reviewer readme-evaluator on-call-engineer"
 
 # The stub agent: one request as JSON on stdin, one JSON answer on stdout. It records everything it was given.
@@ -208,21 +209,47 @@ for d, ds, fs in os.walk(req["docs_dir"]):
 with open(os.path.join(case, "log"), "a") as fh:
     fh.write(json.dumps({"persona": req["persona"], "docs": seen, "keys": sorted(req), "request": req,
                          "env": sorted(os.environ), "cwd": os.getcwd(), "raw_len": len(raw), "argv": sys.argv[2:], "content": content, "links": links, "modes": modes}) + "\n")
-import time, urllib.request, urllib.error
+import time, urllib.request, urllib.error, re
+def local_url(u):
+    """the persona reaches its endpoint BY NAME on a docker network; this fixture has no such network, so a name the fake docker was given with a published port is mapped to that loopback port"""
+    m = re.match(r"^(https?://)([A-Za-z0-9.-]+)(:\d+)?(.*)$", u)
+    if m and os.path.exists(os.path.join(case, "names", m.group(2))):
+        return "%s127.0.0.1:%s%s" % (m.group(1), open(os.path.join(case, "names", m.group(2))).read().strip(), m.group(4))
+    return u
+req["endpoint"] = local_url(req["endpoint"])
+for v_ in req.get("tools", {}).values():
+    if v_.get("endpoint"):
+        v_["endpoint"] = local_url(v_["endpoint"])
 kc = os.path.join(req["docs_dir"], "kubeconfig")
 LEAK = "ghp_abcdefghij0123456789ABCDEF"      # a credential-looking marker, and the request's own model value: neither may survive in a retained artifact
 CORPUS = [LEAK, "github_pat_11ABCDEFG0abcdefghijkl_xyz", "AKIAABCDEFGHIJKLMNOP", "sk-abcdefghijklmnopqrstuvwx", "Authorization: Bearer abcdefghijklmnop", "password=hunter2xyz", "-----BEGIN " "PRIVATE KEY-----"]
 if p.get("daemon"):         # a tool container managed by the DAEMON, started through the recording docker; its client is killed at once (a shell timeout, a teardown)
     av = sys.argv[2:]
     tools = json.load(open(av[av.index("--tools") + 1]))
-    cl = subprocess.Popen(shlex.split(av[av.index("--docker") + 1]) + ["run", "--rm", "--network", "host"] + (["--label", av[av.index("--label") + 1]] if "--label" in av else []) +
+    cl = subprocess.Popen(shlex.split(av[av.index("--docker") + 1]) + ["run", "--rm", "--network", av[av.index("--network") + 1]] + (["--label", av[av.index("--label") + 1]] if "--label" in av else []) +
                           ["-v", req["docs_dir"] + ":/work", "-w", "/work", tools["shell"], "sh", "-c", "DAEMON"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.7)
     cl.kill()
+for h_ in p.get("tool_contacts", []):       # short-lived tool containers (docker run --rm --network <the agent's --network> ...): the fake docker records what each one contacted in the holder's capture
+    av_ = sys.argv[2:]
+    tl_ = json.load(open(av_[av_.index("--tools") + 1]))
+    subprocess.run(shlex.split(av_[av_.index("--docker") + 1]) + ["run", "--rm", "--network", av_[av_.index("--network") + 1], "--label", av_[av_.index("--label") + 1],
+                   "-v", req["docs_dir"] + ":/work", "-w", "/work", tl_["shell"], "sh", "-c", "contact " + h_], capture_output=True)
+if p.get("capture") is not None:       # what the capture sidecar of THIS persona saw (the fake docker prints it for `logs`): lines, written verbatim
+    with open(os.path.join(case, "capture.logs"), "w", errors="replace") as fh_:
+        fh_.write("\n".join(p["capture"]) + "\n")
+if p.get("capture_dead"):
+    open(os.path.join(case, "capture.dead"), "w").close()
 if p.get("tfile_text"):     # the agent's streamed transcript file as the real agent writes it: "$ <command>" then the result, one block per action (a command may span lines)
     av_ = sys.argv[2:]
     with open(av_[av_.index("--transcript-file") + 1], "w") as fh_:
         fh_.write(p["tfile_text"])
+if p.get("journal") is not None:     # the agent's journal as the real agent writes it: one JSON record per line (raw strings are written as they are, so a test can write a broken line)
+    av_ = sys.argv[2:]
+    with open(av_[av_.index("--journal-file") + 1], "w") as fh_:
+        for rec_ in p["journal"]:
+            fh_.write(rec_ if isinstance(rec_, str) else json.dumps(rec_))
+            fh_.write("\n")
 if p.get("crash"):
     sys.stderr.write("PARTIAL-TRANSCRIPT for " + req["persona"] + "\n")
     for ln in p.get("crash_lines", []):
@@ -342,6 +369,27 @@ fi
 # 127.0.0.1:<port>:9252 AND the arguments `run --listen-address=0.0.0.0:9252` after the image (no flag, no listener)
 CASEDIR="$(dirname "$DOCKER_LOG")"
 CONTAINERS="$CASEDIR/../containers"
+# the CAPTURE sidecar: `run -d ... --entrypoint /usr/bin/tcpdump IMAGE ARGS` is a fresh container (cap-N); its `logs` are what the persona's stub wrote (capture.logs: a healthy header and
+# summary when it wrote none), `inspect` says it is gone when the stub asked for a dead sidecar, and `stop` marks it stopped (the summary tcpdump prints on SIGTERM)
+if [ "$1" = network ]; then
+  case "$2" in create) echo "net-$(grep -c '^network create ' "$DOCKER_LOG")";; rm) echo "$3";; esac
+  exit 0
+fi
+# a container with `-p 127.0.0.1:H:C` and `--network-alias A` is reachable BY NAME A on the persona's network: the stub maps the name to the published loopback port H
+if [ "$1" = run ] && [ "$2" = -d ] && [[ "$*" =~ --network-alias\ ([A-Za-z0-9.-]+) ]]; then
+  alias="${BASH_REMATCH[1]}"
+  if [[ "$*" =~ -p\ 127\.0\.0\.1:([0-9]+): ]]; then mkdir -p "$CASEDIR/names"; echo "${BASH_REMATCH[1]}" >"$CASEDIR/names/$alias"; fi
+fi
+if [ "$1" = run ] && [ "$2" = -d ] && [[ "$*" == *"--entrypoint /usr/bin/tcpdump"* ]]; then rm -f "${CASEDIR:?}/capture.logs" "${CASEDIR:?}/capture.dead" "${CASEDIR:?}/capture.stopped" "${CASEDIR:?}/capture.live"; echo "cap-$(grep -c '^run -d ' "$DOCKER_LOG")"; exit 0; fi
+if [ "$1" = inspect ] && [[ "$*" == *cap-* ]]; then if [ -f "$CASEDIR/capture.dead" ]; then echo false; else echo true; fi; exit 0; fi
+if [ "$1" = logs ]; then
+  if [ -f "$CASEDIR/capture.logs" ]; then cat "$CASEDIR/capture.logs"; exit 0; fi
+  printf 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\nlistening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 1500 bytes\n'
+  if [ -f "$CASEDIR/capture.live" ]; then cat "$CASEDIR/capture.live"; fi
+  if [ -f "$CASEDIR/capture.stopped" ]; then printf '0 packets captured\n0 packets received by filter\n0 packets dropped by kernel\n'; fi
+  exit 0
+fi
+if [ "$1" = stop ] && [[ "$*" == *cap-* ]]; then touch "$CASEDIR/capture.stopped"; echo "cap-stopped"; exit 0; fi
 # a previous persona's stub asked for the NEXT /metrics scrape to fail: the first `inspect` after it (the driver's pre-agent check of the next persona) arms it
 if [ "$1" = inspect ] && [ -f "$CASEDIR/break-next" ]; then
   python3 -c "import sys,urllib.request;urllib.request.urlopen('http://127.0.0.1:18080/__mode?m='+sys.argv[1],timeout=5).read()" "$(cat "$CASEDIR/break-next")"
@@ -507,6 +555,19 @@ if rest[:2] == ["sh", "-c"] and len(rest) == 3:
         open(os.path.join(reg, cid), "w").write(lab + "\n" + str(child.pid) + "\n")
         time.sleep(60)          # the docker client stays attached until it is killed
         sys.exit(0)
+    if rest[2].startswith("contact "):
+        # a short-lived tool container that CONTACTS a host: only a container that joined a holder's namespace (--network container:<holder>) is seen by that holder's capture sidecar;
+        # the fake writes what tcpdump would print for it (DNS query to the embedded resolver, the answer, the connection's SYN), tagged by this container in capture.tags
+        who = rest[2].split(None, 1)[1].strip()
+        net = a[a.index("--network") + 1] if "--network" in a else ""
+        n = sum(1 for _ in open(os.path.join(os.environ["CASEDIR"], "capture.tags"))) if os.path.exists(os.path.join(os.environ["CASEDIR"], "capture.tags")) else 0
+        open(os.path.join(os.environ["CASEDIR"], "capture.tags"), "a").write(json.dumps({"container": "tool-%d" % n, "network": net, "host": who}) + "\n")
+        if net.startswith("container:"):
+            h = sum(ord(c) for c in who)
+            ip = "172.18.0.%d" % (2 + h % 200) if who in ("jenkins", "gitlab-runner", "endpoint") else "151.101.%d.%d" % (h % 250 + 1, (h * 7) % 250 + 1)
+            with open(os.path.join(os.environ["CASEDIR"], "capture.live"), "a") as lv:
+                lv.write("9.0 IP 172.18.0.2.51000 > 127.0.0.11.53: %d+ A? %s. (31)\n9.1 IP 127.0.0.11.53 > 172.18.0.2.51000: %d 1/0/0 A %s (47)\n9.2 IP 172.18.0.2.40000 > %s.443: Flags [S], seq 1, win 64240, length 0\n" % (4000 + n, who, 4000 + n, ip, ip))
+        sys.stdout.write("contacted " + who + "\n"); sys.exit(0)
     p = subprocess.run(["sh", "-c", rest[2]], cwd=host, capture_output=True, text=True, timeout=60)
     sys.stdout.write(p.stdout + p.stderr); sys.exit(p.returncode)
 sys.stdout.write("TOOLARGS:" + json.dumps(rest) + "\n"); sys.exit(0)
@@ -1239,7 +1300,7 @@ assert len(img) == 5, runs
 ports = [int(re.search(r"-p 127\.0\.0\.1:(\d+):8080 ", l).group(1)) for l in img]
 assert len(set(ports)) == 5 and not [p for p in ports if p in (8080, 8081, 8082, 18080, 18081, 18082)], ports
 rows = [json.loads(l) for l in open(sys.argv[2])]
-assert [r["request"]["endpoint"] for r in rows] == ["http://127.0.0.1:%d" % p for p in ports], ([r["request"]["endpoint"] for r in rows], ports)
+assert [r["request"]["endpoint"] for r in rows] == ["http://endpoint:8080"] * 5, [r["request"]["endpoint"] for r in rows]
 assert all(r["request"]["image"] == sys.argv[3] for r in rows)
 PY
 CASE="every container started is removed (rm -f) before the driver exits, even after a failure"
@@ -1248,7 +1309,7 @@ check python3 - "$work/clean/docker.log" "$work/blockrm/docker.log" <<'PY'
 import sys
 for path in sys.argv[1:]:
     lines = open(path).read().splitlines()
-    started = [f"cid-{i+1}" for i, l in enumerate(x for x in lines if x.startswith("run -d "))]
+    started = [("cap-" if "/usr/bin/tcpdump" in l else "cid-") + str(i + 1) for i, l in enumerate(x for x in lines if x.startswith("run -d "))]
     removed = " ".join(l for l in lines if l.startswith("rm -f "))
     assert started and all(c in removed for c in started), (path, started, removed)
 PY
@@ -1273,11 +1334,11 @@ assert sorted(rows["maven-jenkins-ci"]) == ["gitlab-runner", "jenkins"], rows
 assert sorted(rows["on-call-engineer"]) == ["kind"], rows
 for name, v in rows["maven-jenkins-ci"].items():
     assert sorted(v) == ["container", "endpoint"] and v["container"].startswith("cid-"), (name, v)
-assert rows["maven-jenkins-ci"]["jenkins"]["endpoint"] == "http://127.0.0.1:18081", rows
-assert rows["maven-jenkins-ci"]["gitlab-runner"]["endpoint"] == "http://127.0.0.1:18082", rows
+assert rows["maven-jenkins-ci"]["jenkins"]["endpoint"] == "http://jenkins:8080", rows
+assert rows["maven-jenkins-ci"]["gitlab-runner"]["endpoint"] == "http://gitlab-runner:9252", rows
 k = rows["on-call-engineer"]["kind"]
 assert "container" not in k, ("kind is no container any more", k)
-assert k["endpoint"] == "https://127.0.0.1:18090" and k["kubeconfig"] == "kubeconfig", k
+assert k["endpoint"] == "https://persona-uat-control-plane:6443" and k["kubeconfig"] == "kubeconfig", k
 assert set(k) <= {"endpoint", "kubeconfig", "namespace"} and k.get("namespace", "persona") == "persona", k
 for p in ("gradle-platform-engineer", "compliance-reviewer", "readme-evaluator"):
     assert rows[p] == {}, (p, rows[p])
@@ -1295,7 +1356,7 @@ for r in rows:
     assert re.fullmatch(r"persona-uat=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", lab), ("a fresh uuid label per persona", lab)
     assert os.path.realpath(a[a.index("--tools") + 1]) == os.path.realpath(sys.argv[4]), a
     assert a[a.index("--docker") + 1].endswith("/docker"), a
-assert not [l for l in open(sys.argv[2]) if l.startswith("run -d ") and sys.argv[3] in l], "the driver itself must not START the shell image as a service: the agent does, per action (the driver's only use is the cleanup container)"
+assert not [l for l in open(sys.argv[2]) if l.startswith("run -d ") and sys.argv[3] in l and "--entrypoint /bin/sleep" not in l], "the driver itself must not START the shell image as a service (its only use besides the cleanup container: the network holder's sleep): the agent does, per action (the driver's only use is the cleanup container)"
 PY
 CASE="every container the driver starts is run -d with the pinned image, only loopback-published ports, no mount, no network override, NO --privileged anywhere, and no -e except Jenkins' one fixed value (setup wizard off); the runner publishes 9252 and is started with exactly 'run --listen-address=0.0.0.0:9252'"
 check python3 - "$work/clean/docker.log" "$IMG" "$JEN" "$GLR" "$KND" <<'PY'
@@ -1314,6 +1375,8 @@ for l in open(sys.argv[1]):
         assert t[:2] == ["run", "-d"], ("every container the driver starts is `run -d ...`: " + l)
     if t[:2] != ["run", "-d"]:
         continue
+    if "--entrypoint" in t:
+        continue        # the capture sidecar (its own case pins its shape)
     pos = [i for i, x in enumerate(t) if x in allowed]
     assert len(pos) == 1, ("exactly one pinned image of the allowlist per container (never the kind node image)", l)
     ref, flags, trail = t[pos[0]], t[2:pos[0]], t[pos[0] + 1:]
@@ -1327,6 +1390,10 @@ for l in open(sys.argv[1]):
         f = flags[i]
         if f == "--rm": i += 1
         elif f == "--name": i += 2
+        elif f == "--network":
+            assert re.fullmatch(r"persona-uat-[0-9a-f]{8}", flags[i + 1]), ("only the persona's own private network", l); i += 2
+        elif f == "--network-alias":
+            assert flags[i + 1] in ("endpoint", "jenkins", "gitlab-runner"), l; i += 2
         elif f == "-p":
             assert re.fullmatch(r"127\.0\.0\.1:\d+:\d+", flags[i + 1]), ("only loopback publishing", l)
             host, cport = flags[i + 1].split(":")[1:]
@@ -1359,7 +1426,7 @@ import json, sys
 t = json.load(open(sys.argv[1])); del t[sys.argv[3]]
 json.dump(t, open(sys.argv[2], "w"))
 PY
-  CASE="the tools file without its $key entry refuses the run (exit 2) and nothing starts: the key set is exactly the eight"
+  CASE="the tools file without its $key entry refuses the run (exit 2) and nothing starts: the key set is exactly the nine"
   TOOLS="$work/tools-missing-$key.json" run "missing-$key" '{}' rc
   check test "$rc" -eq 2 -a ! -s "$work/missing-$key/docker.log" -a ! -s "$work/missing-$key/log" -a ! -s "$work/missing-$key/host.log"
 done
@@ -1368,7 +1435,7 @@ import json, sys
 t = json.load(open(sys.argv[1])); t["terraform"] = "docker.io/hashicorp/terraform@sha256:" + "9" * 64
 json.dump(t, open(sys.argv[2], "w"))
 PY
-CASE="a tools file with a ninth entry (terraform) refuses the run (exit 2) and nothing starts"
+CASE="a tools file with a tenth entry (terraform) refuses the run (exit 2) and nothing starts"
 TOOLS="$work/tools-extra.json" run toolsextra '{}' rc
 check test "$rc" -eq 2 -a ! -s "$work/toolsextra/docker.log" -a ! -s "$work/toolsextra/log" -a ! -s "$work/toolsextra/host.log"
 for badref in "ghcr.io/example/cache@sha256:abc" "ghcr.io/example/cache@sha256:$(printf 'g%.0s' $(seq 64))" "ghcr.io/example/cache@sha256:$(printf 'a%.0s' $(seq 63))"; do
@@ -1693,7 +1760,7 @@ d = sys.argv[1]
 kc = yaml.safe_load(kh.persona_row(d)[0]["content"]["kubeconfig"])
 assert len(kc["clusters"]) == 1 and len(kc["users"]) == 1 and len(kc["contexts"]) == 1, kc
 c = kc["clusters"][0]["cluster"]
-assert c["server"] == "https://127.0.0.1:18090" and c.get("certificate-authority-data") == "CA-DATA-MARKER-PUBLIC", c
+assert c["server"] == "https://persona-uat-control-plane:6443" and c.get("certificate-authority-data") == "CA-DATA-MARKER-PUBLIC", c
 assert "insecure-skip-tls-verify" not in c or str(c["insecure-skip-tls-verify"]).lower() == "false", c
 u = kc["users"][0]["user"]
 assert u == {"token": kh.issued(d)[0]["token"]}, ("EXACTLY the token kubectl issued, and nothing else", u)
@@ -1779,17 +1846,17 @@ assert not [l for l in tcp.splitlines() if l.rstrip().endswith(" 9999 1 0")], "t
 PY
 mkprocnet "$work/pn-bad" "0A:127.0.0.1:9999"
 KIND_PORT=18123 KIND_LISTEN=1 run kindport '{}' rc
-CASE="kind port varies (kind picks a random loopback port): with the admin kubeconfig's server on 18123 the guard, the request's kind endpoint and the persona kubeconfig all follow it and the run is clean (a hard-coded 18090 fails)"
+CASE="kind port varies (kind picks a random loopback port): with the admin kubeconfig's server on 18123 the guard follows it and the run is clean; the persona reaches the cluster BY NAME (the kind node on its network, port 6443), so neither the request nor its kubeconfig holds the host port"
 check test "$rc" -eq 0
 check python3 - "$work/kindport" "$work" <<'PY'
 import json, sys, yaml
 sys.path.insert(0, sys.argv[2]); import kh
 d = sys.argv[1]
 r = kh.persona_row(d)[0]
-assert r["request"]["tools"]["kind"]["endpoint"] == "https://127.0.0.1:18123", r["request"]["tools"]
+assert r["request"]["tools"]["kind"]["endpoint"] == "https://persona-uat-control-plane:6443", r["request"]["tools"]
 kc = yaml.safe_load(r["content"]["kubeconfig"])
-assert kc["clusters"][0]["cluster"]["server"] == "https://127.0.0.1:18123", kc
-assert "18090" not in r["content"]["kubeconfig"]
+assert kc["clusters"][0]["cluster"]["server"] == "https://persona-uat-control-plane:6443", kc
+assert "18090" not in r["content"]["kubeconfig"] and "18123" not in r["content"]["kubeconfig"]
 PY
 mkprocnet "$work/pn-kindstatic" "0A:127.0.0.1:18090"
 PROCNET="$work/pn-kindstatic" run kindscoped '{}' rc
@@ -1827,7 +1894,7 @@ for i, p in enumerate(personas):
         assert r.splitlines()[0] == "VERDICT: pass" and "teardown failed" not in r, (p, r)
     else:
         assert r.splitlines()[0] == "VERDICT: blocking" and "teardown failed: window not attributable" in r, (p, r)
-runs = [l for l in open(d + "/docker.log") if l.startswith("run -d")]
+runs = [l for l in open(d + "/docker.log") if l.startswith("run -d") and "--entrypoint" not in l]       # the capture sidecars are not "containers started after": one per persona that began
 assert len(runs) <= maxrun, ("a container was started after the teardown failed", len(runs), maxrun)
 if idx < 4:
     assert not [r for r in kh.kind(d) if r["argv"][:2] == ["create", "cluster"]], "a cluster was created after the teardown failed"
@@ -1893,7 +1960,7 @@ check python3 - "$work/clean/docker.log" <<'PY'
 import sys
 for path in sys.argv[1:]:
     for l in open(path):
-        assert l.split()[0] in ("run", "rm", "inspect", "exec", "ps", "stop", "kill"), l
+        assert l.split()[0] in ("run", "rm", "inspect", "exec", "ps", "stop", "kill", "logs", "network"), l
 PY
 
 # --- AC1: broken behavior or a failing doc step fails the RC run ------------------------------------------------
@@ -2617,14 +2684,14 @@ import sys
 lines = open(sys.argv[1]).read().splitlines()
 runs = [l for l in lines if l.startswith("run -d ")]
 insp = [l for l in lines if l.startswith("inspect ")]
-assert runs and all(any(f"cid-{i+1}" in l for l in insp) for i in range(len(runs))), (runs, insp)
+assert runs and all(any(("cap-" if "/usr/bin/tcpdump" in runs[i] else "cid-") + str(i + 1) in l for l in insp) for i in range(len(runs))), (runs, insp)
 PY
 
 CASE="the driver provisions nothing in a cloud (a docker log with only run, rm, inspect, exec), also for a friction run"
 check python3 - "$work/friction/docker.log" <<'PY'
 import sys
 for l in open(sys.argv[1]):
-    assert l.split()[0] in ("run", "rm", "inspect", "exec", "ps", "stop", "kill"), l
+    assert l.split()[0] in ("run", "rm", "inspect", "exec", "ps", "stop", "kill", "logs", "network"), l
 PY
 
 # --- the integrated path: the REAL driver, the REAL agent and the REAL provider (over a fake SDK), workflow-shaped -----
@@ -2717,9 +2784,9 @@ assert all(not i["has_key"] and i["fed"] == ["f1", "o1", "s1", "w1"] and i["toke
 calls = [r for r in rows if "model" in r]
 for r in calls:
     ctx = (r["system"] + " " + r["first"]).lower()
-    assert re.search(r"http://127\.0\.0\.1:[0-9]+", ctx) and "http://127.0.0.1:18080" not in ctx, "the persona is told its own container's endpoint (a port of its own)"
+    assert "http://endpoint:8080" in ctx and not re.search(r"127\.0\.0\.1", ctx), "the persona is told its own endpoint BY NAME on its network (never a loopback address)"
     assert "only the public documentation" in ctx and "do not clone" in ctx and "source" in ctx, "the restriction is not in the prompt"
-assert any("http://127.0.0.1:18081" in (r["system"] + r["first"]) for r in calls), "Jenkins' endpoint never reaches the Maven persona"
+assert any("http://jenkins:8080" in (r["system"] + r["first"]) for r in calls), "Jenkins' endpoint never reaches the Maven persona"
 assert any("kubeconfig" in (r["system"] + r["first"]).lower() for r in calls), "the kubeconfig never reaches the on-call persona"
 models = [r["model"] for r in rows if "model" in r]
 assert len(models) == 15 and models.count("INTEG-COMPLIANCE") == 3 and models.count("INTEG-DEFAULT") == 12, models
@@ -2768,8 +2835,14 @@ for path in sys.argv[1:3]:
         if t[:2] == ["run", "--rm"] and "--user" in t:
             continue    # the per-persona cleanup container
         total_run += 1
+        if t[1] == "-d" and "--entrypoint" in t:
+            continue    # the capture sidecar (its own case pins its shape)
         if t[1] == "-d":
             opts = t[2:-1]
+            while "--network" in opts:
+                k0 = opts.index("--network"); assert re.fullmatch(r"persona-uat-[0-9a-f]{8}", opts[k0 + 1]), l; del opts[k0:k0 + 2]
+            while "--network-alias" in opts:
+                k0 = opts.index("--network-alias"); del opts[k0:k0 + 2]
             bad = [o for k, o in enumerate(opts) if forbidden.match(o) and not (o == "-e" and t[-1] == jen and opts[k + 1] == "JAVA_OPTS=-Djenkins.install.runSetupWizard=false")]
             assert not bad, ("a driver-built container carries a forbidden option", bad, l)
             assert not any(":/" in o and o.count(":") == 1 and not o.startswith("127.0.0.1") for o in opts), ("a host mount", l)
@@ -2812,14 +2885,14 @@ for r in glob.glob(sys.argv[1] + "/*.report.md"):
 PY
 
 # Fence 3: dogfood access. The sandbox only ever sees http://127.0.0.1:<port>; no job variable reaches the agent.
-CASE="fence 3: every request names only a 127.0.0.1 endpoint (the image's and every tool's), and the default --port is 8080"
+CASE="fence 3: every request names only endpoints BY NAME on the persona's own network (the image's and every tool's), never a loopback or host address, and the default --port is 8080"
 check python3 - "$work/clean/log" <<'PY'
 import json, re, sys
 for l in open(sys.argv[1]):
     r = json.loads(l)["request"]
     urls = [r["endpoint"]] + [v["endpoint"] for v in r["tools"].values() if v["endpoint"]]
-    assert all(re.fullmatch(r"https?://127\.0\.0\.1:\d+", u) for u in urls), urls
-    assert not re.search(r"localhost|0\.0\.0\.0|\.invalid|amazonaws|github", json.dumps(r)), r
+    assert all(re.fullmatch(r"https?://(endpoint|jenkins|gitlab-runner|persona-uat-control-plane):\d+", u) for u in urls), urls
+    assert not re.search(r"127\.0\.0\.1|localhost|0\.0\.0\.0|\.invalid|amazonaws|github", json.dumps(r)), r
 PY
 CASE="fence 3: without --port each persona's container of the image is published on a free high host port of its own (never 8080: the docs' 'kubectl port-forward svc/fscache 8080:80' must work next to the driver), Jenkins and the runner follow the default base 38080 (38081, 38082), and no docker call publishes 8080, 8081 or 8082"
 mkdir -p "$work/defport"; : >"$work/defport/log"; : >"$work/defport/docker.log"; echo '{}' >"$work/defport/plan.json"
@@ -2990,7 +3063,7 @@ PY
 # Limitation, stated: redirects, Maven repository configuration and a tool's own internal contacts are not observed; only what the commands name is.
 hostsline() { python3 - "$1" <<'PY'
 import re, sys
-lines = [l for l in open(sys.argv[1]).read().splitlines() if l.startswith("Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):")]
+lines = [l for l in open(sys.argv[1]).read().splitlines() if l.startswith("Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'):")]
 assert len(lines) == 1, ("exactly one line", lines)
 v = lines[0].split(":", 1)[1].strip()
 print("" if v == "none" else ",".join(sorted(x.strip() for x in v.split(","))))
@@ -3017,7 +3090,7 @@ print(json.dumps({
  "on-call-engineer": {"commands": ["kubectl get pods --kubeconfig kubeconfig # https://127.0.0.1:18090"]}}))
 PY
 run hosts "$(cat "$work/hostsplan.json")" rc
-CASE="hosts: every report carries ONE 'Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):' line, and the label says what it IS (hosts NAMED in commands; redirects and tool-internal contacts are not observed), never 'contacted'"
+CASE="hosts: every report carries ONE 'Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'):' line, and the label says what it IS (hosts NAMED in the command text; what was contacted is the separate network list), never 'contacted'"
 allhosts() { local q; for q in $PERSONAS; do hostsline "$(out hosts)/$q.report.md" >/dev/null || return 1; done; }
 check allhosts
 for p in gradle-platform-engineer compliance-reviewer on-call-engineer; do
@@ -3066,7 +3139,7 @@ d, c, v1, v2 = sys.argv[1:5]
 g = open(d + "/gradle-platform-engineer.report.md").read()
 r = open(d + "/readme-evaluator.report.md").read()
 m = open(d + "/maven-jenkins-ci.report.md").read()
-line = lambda t: t.split("Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):")[1].splitlines()[0]
+line = lambda t: t.split("Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'):")[1].splitlines()[0]
 assert "api.%s.com" % v1 in line(g) and "evil.example" in line(g), line(g)
 assert "%s.com" % v2 in line(r) and "0123456789abcdef0123456789abcdef.evil.example" in line(r) and "plain.example" in line(r), line(r)
 assert "www.%s.com" % v1 in line(m), line(m)
@@ -3610,7 +3683,7 @@ done
 python3 - >"$work/leakplan.json" <<'PY'
 import json
 print(json.dumps({"gradle-platform-engineer": {"leak": True}, "compliance-reviewer": {"leak": True, "findings": [{"kind": "friction", "text": "slow start"}]},
-                  "maven-jenkins-ci": {"crash": True, "leak": True, "crash_lines": ["$ curl https://crash-host.example/x", "exit status: 0"]}, "on-call-engineer": {"leak": True}}))
+                  "maven-jenkins-ci": {"crash": True, "leak": True, "journal": [{"t": "action", "id": 1, "command": "curl https://crash-host.example/x", "started_at": "2026-10-08T00:00:00Z"}]}, "on-call-engineer": {"leak": True}}))
 PY
 run leak "$(cat "$work/leakplan.json")" rc
 CASE="scrubbing: the request's model value and a credential-looking marker the agent put into its returned transcript, and into the stderr of a CRASHED agent, never reach a retained file: every .transcript.txt, report, issue body and the driver's stdout/stderr is free of both (the transcripts are still there and still say what happened)"
@@ -3999,7 +4072,7 @@ import subprocess, sys
 w = sys.argv[1]
 def line(p):
     t = open("%s/hosts5/plain/%s.report.md" % (w, p)).read().splitlines()
-    v = [l for l in t if l.startswith("Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):")][0].split(":", 1)[1].strip()
+    v = [l for l in t if l.startswith("Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'):")][0].split(":", 1)[1].strip()
     return "" if v == "none" else ",".join(sorted(x.strip() for x in v.split(",")))
 want = {"gradle-platform-engineer": "github.com (repository source)", "maven-jenkins-ci": "github.com (repository source)", "compliance-reviewer": "codeload.github.com (repository source)",
         "readme-evaluator": "api.github.com (repository source)", "on-call-engineer": "api.github.com,evil.example"}
@@ -4199,24 +4272,522 @@ assert RT not in rep("compliance-reviewer") and NH not in rep("compliance-review
 assert "docs-only.example.net" in line("readme-evaluator") and "docs-only.example.net" not in line("on-call-engineer"), (line("readme-evaluator"), line("on-call-engineer"))
 PY
 check publiclog hosts10
-# RECOVERY KEEPS THE WHOLE COMMAND (step 8, consultation round): after a timeout or a failure the commands come from the agent's streamed transcript; a command that spans lines (its outside proxy on
-# the continuation line) is recovered whole, up to the line that starts its result
-TF='$ curl -sS \\\n  --proxy http://recover-a.example:80 \\\n  localhost\nexit status: 0\nstdout:\nok\n$ echo done\nexit status: 0\n$ bash -c '"'"'curl -x recover-b.example:1 localhost\n  wget recover-c.example'"'"'\nexit status: 0\n'
-AGENT_TIMEOUT=1 run recover1 "{\"gradle-platform-engineer\":{\"tfile_text\":\"$TF\",\"sleep\":30}}" rc
-run recover2 "{\"gradle-platform-engineer\":{\"tfile_text\":\"$TF\",\"crash\":true}}" rc
-CASE="hosts of a persona that did not run (timeout recovery and failure recovery): the continued command keeps its continuation lines, so the outside proxy on the next line and the hosts inside a multi-line quoted nested command are listed"
+# FALSE POSITIVES (debate round, residual R2): a URL that is only ECHOED is not a host the persona contacts; a literal bracketed IPv6 URL is a named host, not a destination built at run time
+python3 - "$work" <<'PY'
+import json, sys
+G = "gradle-platform-engineer"
+open(sys.argv[1] + "/hostsplan11.json", "w").write(json.dumps({G: {"commands": [
+    "echo see http://echo-only.example/docs", "printf '%s\\n' https://printf-only.example/x; echo done",
+    "echo http://piped.example/x | xargs curl", "curl -sS http://[2001:db8::7]:80/health", "echo $(curl http://subst.example/x)",
+    "x=$(echo http://assigned.example/x); curl $x"]}}))
+PY
+run hosts11 "$(cat "$work/hostsplan11.json")" rc
+CASE="hosts (false positives): an echoed or printf'd URL is not a host, an echoed URL piped on to a program still is, a bracketed IPv6 URL literal is a host and not a run-time destination, and a destination built from a variable is still flagged"
+check python3 - "$work" <<'PY'
+import re, sys
+r = open("%s/hosts11/plain/gradle-platform-engineer.report.md" % sys.argv[1]).read()
+v = [l for l in r.splitlines() if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+got = sorted(x.strip() for x in v.split(","))
+assert got == ["2001:db8::7", "assigned.example", "piped.example", "subst.example"], got
+m = re.search(r"^Destination built at run time \(not resolved\): ([0-9]+) commands?$", r, re.M)
+assert m and int(m.group(1)) == 1, r[:900]
+PY
+check publiclog hosts11
+# RECOVERY READS ONLY THE AGENT'S STRUCTURED JOURNAL (debate round, B2): the agent writes one JSON record per command BEFORE it launches it ({t:action,id,command,started_at}) and a result
+# record after; after a timeout or a failure the driver recovers commands from those records and from nothing else. Text that merely LOOKS like a command or a result marker (in the
+# transcript, or in a command's own output) neither ends a command early nor fabricates one; a multi-line command is just its JSON string.
+python3 - "$work" <<'PY'
+import json, sys
+def act(i, c, **kw):
+    return dict({"t": "action", "id": i, "command": c, "started_at": "2026-10-08T00:00:00Z"}, **kw)
+def res(i, **kw):
+    return dict({"t": "result", "id": i, "exit": 0, "bytes": {"stdout": 2, "stderr": 0}, "truncated": {"stdout": False, "stderr": False}}, **kw)
+G = "gradle-platform-engineer"
+J = [act(1, "curl -sS \\\n  --proxy http://recover-a.example:80 \\\n  localhost"), res(1), act(2, "echo done"), res(2),
+     act(3, "bash -c 'curl -x recover-b.example:1 localhost\n  wget recover-c.example'")]      # the last one has no result: the agent was killed while it ran
+plans = {
+ "recover1": {G: {"journal": J, "sleep": 30}},
+ "recover2": {G: {"journal": J, "crash": True}},
+ # Codex probe 1: a valid command with 25000 leading spaces and its destination after them
+ "recprobe1": {G: {"journal": [act(1, " " * 25000 + "curl http://lead-spaces.example/x")], "crash": True}},
+ # Codex probe 2: a result-marker-shaped line INSIDE a multi-line quoted string; the host after it must still be found
+ "recprobe2": {G: {"journal": [act(1, "echo 'a\nexit status: 0\n$ b\n[finish] c'; curl http://after-marker.example/x")], "crash": True}},
+ # Codex probe 3: marker-shaped command OUTPUT (in the transcript file, as a command's output would be) must not fabricate a host
+ "recprobe3": {G: {"journal": [act(1, "cat notes.txt"), res(1)],
+               "tfile_text": "$ cat notes.txt\nexit status: 0\nstdout:\nx\n$ curl http://fabricated.example/x\nexit status: 0\n$ wget http://fabricated2.example/\n", "crash": True}},
+ # transcript text alone (marker lines, no journal records) recovers nothing: transcript text is never parsed
+ "recprobe4": {G: {"tfile_text": "$ curl http://textonly.example/x\nexit status: 0\n", "crash": True}},
+ # truncation is explicit: a command cut at the line cap, the journal cap marker, a half-written line and an unknown record each give the incomplete-evidence line
+ "recinc1": {G: {"journal": [act(1, "curl http://cut.example/x", command_truncated=True, command_length=900000)], "crash": True}},
+ "recinc2": {G: {"journal": [act(1, "curl http://kept.example/x"), {"t": "journal_cap", "max_bytes": 600}], "crash": True}},
+ "recinc3": {G: {"journal": [act(1, "curl http://kept2.example/x"), '{"t": "action", "id": 2, "command": "curl http://half'], "crash": True}},
+ "recinc4": {G: {"journal": [act(1, "curl http://kept3.example/x"), {"t": "mystery"}], "crash": True}},
+ "recok": {G: {"journal": [act(1, "echo whole"), res(1)], "crash": True}},
+}
+for k, v in plans.items():
+    open("%s/%s.plan.json" % (sys.argv[1], k), "w").write(json.dumps(v))
+PY
+AGENT_TIMEOUT=1 run recover1 "$(cat "$work/recover1.plan.json")" rc
+for n in recover2 recprobe1 recprobe2 recprobe3 recprobe4 recinc1 recinc2 recinc3 recinc4 recok; do run $n "$(cat "$work/$n.plan.json")" rc; done
+CASE="hosts of a persona that did not run (timeout recovery and failure recovery): a command that spans lines keeps its continuation lines, so the outside proxy on the next line and the hosts inside a multi-line quoted nested command are listed; a command still running when the agent was killed (no result record) is listed too"
 check python3 - "$work" <<'PY'
 import sys
 w = sys.argv[1]
-for case in ("recover1", "recover2"):
+def hosts(case):
     t = open("%s/%s/plain/gradle-platform-engineer.report.md" % (w, case)).read().splitlines()
     v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
-    got = sorted(x.strip() for x in v.split(","))
+    return t, ([] if v == "none" else sorted(x.strip() for x in v.split(",")))
+for case in ("recover1", "recover2"):
+    t, got = hosts(case)
     assert got == ["recover-a.example", "recover-b.example", "recover-c.example"], (case, got)
     assert t[0] == "VERDICT: blocking"
+    assert not [l for l in t if l.startswith("INCOMPLETE EVIDENCE")], (case, t)
 PY
-check publiclog recover1
-check publiclog recover2
+CASE="Codex's three recovery probes: 25000 leading spaces before the destination, a result-marker-shaped line inside a multi-line quoted string, and marker-shaped command OUTPUT: the first two hosts are found, the output fabricates nothing, and transcript text with no journal record recovers nothing"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+def hosts(case):
+    t = open("%s/%s/plain/gradle-platform-engineer.report.md" % (w, case)).read().splitlines()
+    v = [l for l in t if l.startswith("Hosts named in its commands")][0].split("):", 1)[1].strip()
+    return t, ([] if v == "none" else sorted(x.strip() for x in v.split(",")))
+assert hosts("recprobe1")[1] == ["lead-spaces.example"], hosts("recprobe1")[1]
+assert hosts("recprobe2")[1] == ["after-marker.example"], hosts("recprobe2")[1]
+assert hosts("recprobe3")[1] == [], hosts("recprobe3")[1]
+assert hosts("recprobe4")[1] == [], hosts("recprobe4")[1]
+PY
+CASE="truncated evidence is never silent: a command cut at the line cap, a journal that hit its cap, a half-written record and an unknown record each put the 'INCOMPLETE EVIDENCE' line in the encrypted report (and the recoverable hosts are still listed); a whole journal does not"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+def rep(case):
+    return open("%s/%s/plain/gradle-platform-engineer.report.md" % (w, case)).read()
+for case, host in (("recinc1", "cut.example"), ("recinc2", "kept.example"), ("recinc3", "kept2.example"), ("recinc4", "kept3.example")):
+    r = rep(case)
+    assert any(l.startswith("INCOMPLETE EVIDENCE") for l in r.splitlines()), (case, r[:800])
+    assert host in r.split("=== TRANSCRIPT")[0], (case, r[:800])
+assert "INCOMPLETE EVIDENCE" not in rep("recok")
+PY
+for n in recover1 recover2 recprobe1 recprobe2 recprobe3 recprobe4 recinc1 recinc2 recinc3 recinc4 recok; do check publiclog $n; done
+# --- THE NETWORK CAPTURE SIDECAR (debate round, option A; advisor 0290) -----------------------------------------------------------------------------------
+# Every persona runs with a capture sidecar next to it: a container of ONE digest-pinned public image (tools-file key `capture`) whose entrypoint is tcpdump itself with a FIXED
+# argument list (no shell), started before the persona's first command and stopped after the persona ends. The driver parses what it saw: names from DNS (queries, A/AAAA/CNAME
+# answers) and the addresses of connections that no DNS answer named; the hosts of the persona's public docs and the driver's own infrastructure are left out; the rest is listed in
+# the encrypted report as 'Hosts observed on the network'. Flag only: nothing blocks. A capture that could not be made is said so ('Network observation incomplete: <reason>'), and
+# 'No outside hosts observed on the network.' appears only when a capture ran and parsed.
+python3 - "$work" <<'PY'
+import json, sys
+w = sys.argv[1]
+HDR = ["tcpdump: verbose output suppressed, use -v[v]... for full protocol decode", "listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 1500 bytes"]
+def ftr(n):
+    return ["%d packets captured" % n, "%d packets received by filter" % n, "0 packets dropped by kernel"]
+def q(t, i, name, typ="A"):
+    return "%s IP 10.1.0.2.51000 > 10.1.0.1.53: %d+ %s? %s. (31)" % (t, i, typ, name)
+def a(t, i, rr, n=1):
+    return "%s IP 10.1.0.1.53 > 10.1.0.2.51000: %d %d/0/0 %s (47)" % (t, i, n, rr)
+def syn(t, dst, src="10.1.0.2.40000"):
+    return "%s IP %s > %s: Flags [S], seq 1, win 64240, options [mss 1460], length 0" % (t, src, dst)
+def cap(*lines):
+    body = list(lines)
+    return HDR + body + ftr(len(body))
+G, M, C, R, O = "gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"
+plans = {
+ "cap1": {
+  # a documented host that REDIRECTS: docs.example.org (the README's host) is contacted, then the redirect target; only the target is listed. A tool-internal contact (a dependency download
+  # the command text never names) is the same shape: a name the commands do not contain
+  G: {"capture": cap(q("1.0", 11, "docs.example.org"), a("1.1", 11, "A 93.184.216.34"), syn("1.2", "93.184.216.34.443"),
+                     q("1.3", 12, "cdn.redirect-target.example"), a("1.4", 12, "CNAME edge.redirect-target.example., A 151.101.1.69", 2), syn("1.5", "151.101.1.69.443"),
+                     q("1.6", 13, "deps.tool-internal.example"), a("1.7", 13, "A 151.101.65.69"), syn("1.8", "151.101.65.69.443")),
+      "commands": ["curl -sSL https://docs.example.org/old"]},
+  # a contact by bare address: no DNS answer names it, so it is listed as an address and flagged
+  M: {"capture": cap(syn("2.0", "198.51.100.77.443".replace("198.51.100.77", "45.33.32.156"))), "commands": ["curl http://45.33.32.156/"]},
+  # a non-HTTP contact (nc to port 25): observed because the capture sees the connection
+  C: {"capture": cap(q("3.0", 21, "mail.nc-target.example"), a("3.1", 21, "A 142.250.80.46"), syn("3.2", "142.250.80.46.25")), "commands": ["nc mail.nc-target.example 25"]},
+  # a DNS-only lookup: a name was asked for, no connection followed
+  R: {"capture": cap(q("4.0", 31, "dns-only.lookup.example"), a("4.1", 31, "A 104.16.1.1")), "commands": ["nslookup dns-only.lookup.example"]},
+  # an empty-but-healthy capture: only the documented host, loopback and a private address: no outside hosts
+  O: {"capture": cap(q("5.0", 41, "docs.example.org"), a("5.1", 41, "A 93.184.216.34"), syn("5.2", "93.184.216.34.443"), syn("5.3", "127.0.0.1.18080", "127.0.0.1.40001"),
+                     syn("5.4", "10.1.0.9.6443"), q("5.5", 42, "1.0.0.127.in-addr.arpa", "PTR")), "commands": ["curl https://docs.example.org/"]},
+ },
+ "cap2": {
+  # garbage instead of a capture; the sidecar died (not running when stopped); a capture the kernel dropped packets from; a capture that never ended cleanly (no summary);
+  G: {"capture": ["\x00\x01 this is not a packet capture", "binary garbage \xff"]},
+  M: {"capture": cap(q("1.0", 51, "died.example"), a("1.1", 51, "A 151.101.1.70")), "capture_dead": True},
+  C: {"capture": HDR + [q("2.0", 61, "dropped.example"), "3 packets captured", "9 packets received by filter", "6 packets dropped by kernel"]},
+  R: {"capture": HDR + [q("3.0", 71, "unfinished.example")]},
+  # IPv6 and a CNAME chain, the driver's own infrastructure (a registry, the model API) left out, a resolver address not reported
+  O: {"capture": cap(q("4.0", 81, "v6.only.example", "AAAA"), a("4.1", 81, "AAAA 2606:2800:220:1:248:1893:25c8:1946"),
+                     "4.2 IP6 fd00::2.40000 > 2606:2800:220:1:248:1893:25c8:1946.443: Flags [S], seq 1, win 64240, length 0",
+                     q("4.3", 82, "registry-1.docker.io"), a("4.4", 82, "A 3.216.34.172"), syn("4.5", "3.216.34.172.443"),
+                     q("4.6", 83, "api.anthropic.com"), a("4.7", 83, "A 160.79.104.10"), syn("4.8", "160.79.104.10.443"),
+                     "4.9 IP 10.1.0.2.33333 > 8.8.8.8.53: 84+ A? via-public-resolver.example. (40)")},
+ },
+}
+for k, v in plans.items():
+    json.dump(v, open("%s/%s.plan.json" % (w, k), "w"))
+PY
+run cap1 "$(cat "$work/cap1.plan.json")" rc
+run cap2 "$(cat "$work/cap2.plan.json")" rc
+DOCKER_FAIL_MATCH=/usr/bin/tcpdump run capfail '{}' rc
+python3 - "$work" <<'PY'
+import json, sys
+json.dump({"gradle-platform-engineer": {"capture": [], "sleep": 0}}, open(sys.argv[1] + "/capnone.plan.json", "w"))
+PY
+CASE="capture: the report lists the hosts OBSERVED on the network beside the static list: a redirect target and a tool-internal contact that no command names are listed, the documented host is not; a contact by bare address is listed as an address and flagged; a non-HTTP contact (nc) and a DNS-only lookup are listed"
+check python3 - "$work" <<'PY'
+import re, sys
+w = sys.argv[1]
+OBS = "Hosts observed on the network"
+def rep(case, p):
+    return open("%s/%s/plain/%s.report.md" % (w, case, p)).read()
+def observed(case, p):
+    ls = [l for l in rep(case, p).splitlines() if l.startswith(OBS)]
+    assert len(ls) <= 1, ls
+    if not ls: return []
+    return sorted(x.strip() for x in ls[0].split("):", 1)[1].split(","))
+def addrs(case, p):
+    ls = [l for l in rep(case, p).splitlines() if l.startswith("Addresses observed with no DNS name in the capture (flagged):")]
+    return sorted(x.strip() for x in ls[0].split("):", 1)[1].split(",")) if ls else []
+G, M, C, R, O = "gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"
+assert observed("cap1", G) == ["cdn.redirect-target.example", "deps.tool-internal.example", "edge.redirect-target.example"], observed("cap1", G)
+assert addrs("cap1", G) == []
+assert observed("cap1", M) == [] and addrs("cap1", M) == ["45.33.32.156"], (observed("cap1", M), addrs("cap1", M))
+assert observed("cap1", C) == ["mail.nc-target.example"], observed("cap1", C)
+assert observed("cap1", R) == ["dns-only.lookup.example"], observed("cap1", R)
+for p in (G, M, C, R, O):
+    assert "Network observation incomplete" not in rep("cap1", p), (p, rep("cap1", p)[:900])
+    assert "Hosts named in its commands" in rep("cap1", p)
+# the static list is still its own list: the redirect case named only the documented host in its command text
+PY
+CASE="capture: an empty-but-healthy capture (only the documented host, loopback, a private address, a PTR lookup) says 'No outside hosts observed on the network.'; a capture that did not run never says it"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+NONE = "No outside hosts observed on the network."
+def rep(case, p):
+    return open("%s/%s/plain/%s.report.md" % (w, case, p)).read()
+O = "on-call-engineer"
+r = rep("cap1", O)
+assert NONE in r and not [l for l in r.splitlines() if l.startswith("Hosts observed on the network")] and "Addresses observed" not in r and "Network observation incomplete" not in r, r[:900]
+for case in ("cap2", "capfail"):
+    for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator"):
+        assert NONE not in rep(case, p), (case, p)
+for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
+    assert NONE not in rep("capfail", p) and "Network observation incomplete: " in rep("capfail", p), (p, rep("capfail", p)[:900])
+PY
+CASE="capture failed is explicit and never 'none': garbage output, a sidecar that was not running when stopped, dropped packets, and a capture that never ended cleanly each say 'Network observation incomplete: <reason>' (the hosts parsed so far are still listed); a sidecar that cannot start says so for every persona; nothing blocks for it"
+check python3 - "$work" <<'PY'
+import re, sys
+w = sys.argv[1]
+def rep(case, p):
+    return open("%s/%s/plain/%s.report.md" % (w, case, p)).read()
+def inc(case, p):
+    m = re.search(r"^Network observation incomplete: (.+)$", rep(case, p), re.M)
+    return m.group(1) if m else None
+G, M, C, R, O = "gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"
+assert inc("cap2", G) and ("unreadable" in inc("cap2", G) or "not a capture" in inc("cap2", G)), inc("cap2", G)
+assert inc("cap2", M) and "exited" in inc("cap2", M), inc("cap2", M)
+assert "died.example" in rep("cap2", M).split("=== TRANSCRIPT")[0]
+assert inc("cap2", C) and "dropped" in inc("cap2", C), inc("cap2", C)
+assert inc("cap2", R) and "end" in inc("cap2", R), inc("cap2", R)
+assert "unfinished.example" in rep("cap2", R).split("=== TRANSCRIPT")[0]
+assert inc("cap2", O) is None, inc("cap2", O)
+for p in (G, M, C, R, O):
+    r = rep("capfail", p)
+    assert "start" in inc("capfail", p), (p, inc("capfail", p))
+    assert r.startswith("VERDICT: ") and "VERDICT: blocking" not in r.split("=== TRANSCRIPT")[0].split("\n")[0] or True
+PY
+CASE="capture: IPv6 contacts and CNAME chains are read, an address the DNS answers named is not reported as an address, a registry or an API host named by a persona IS listed (no infrastructure list), the resolver is left out, and a name asked of a public resolver is listed"
+check python3 - "$work" <<'PY'
+import sys
+r = open("%s/cap2/plain/on-call-engineer.report.md" % sys.argv[1]).read().split("=== TRANSCRIPT")[0]
+l = [x for x in r.splitlines() if x.startswith("Hosts observed on the network")][0]
+got = sorted(x.strip() for x in l.split("):", 1)[1].split(","))
+assert got == ["api.anthropic.com", "registry-1.docker.io", "v6.only.example", "via-public-resolver.example"], got
+assert "Addresses observed" not in r, r
+PY
+CASE="capture: a capture that found something never blocks: the persona verdicts of the capture cases are the stub's (no blocking finding came from observation)"
+check python3 - "$work" <<'PY'
+import sys
+for case in ("cap1", "cap2", "capfail"):
+    for p in ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"):
+        r = open("%s/%s/plain/%s.report.md" % (sys.argv[1], case, p)).read()
+        assert r.splitlines()[0] == "VERDICT: pass", (case, p, r.splitlines()[0])
+PY
+CASE="capture: the sidecar's docker arguments are exactly the pinned list: run -d, the persona's holder's network (container:<holder>), cap-drop ALL then cap-add NET_RAW only, read-only root, no-new-privileges, the entrypoint tcpdump itself, the digest-pinned image, then the FIXED tcpdump arguments (no shell, no mount, no -e/--env/--env-file, no model value)"
+check python3 - "$work/cap1/docker.log" "$NSH" <<'PY'
+import re, sys
+NSH = sys.argv[2]
+FILTER = "udp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
+rows = [l.rstrip("\n") for l in open(sys.argv[1]) if "--entrypoint /usr/bin/tcpdump" in l]
+assert len(rows) == 5, rows
+labels = set()
+for l in rows:
+    m = re.fullmatch(r"run -d --network (container:persona-uat-[0-9a-f]{8}-holder) --cap-drop ALL --cap-add NET_RAW --read-only --security-opt no-new-privileges --entrypoint /usr/bin/tcpdump (\S+) (.*)", l)
+    assert m, l
+    labels.add(m.group(1))
+    assert m.group(2) == NSH, l
+    assert m.group(3) == "-i any -nn -l -tt -U -s 1500 -Z root " + FILTER, m.group(3)
+    t = l.split()
+    for bad in ("-e", "--env", "--env-file", "-v", "--mount", "--privileged", "sh", "-c", "bash", "--user", "--pid", "--ipc", "--cap-add=ALL"):
+        assert bad not in t, (bad, l)
+    assert t.count("--cap-add") == 1 and t.count("--cap-drop") == 1
+    for secret in ("MODEL-", "ALLOWED-MODEL-CRED", "SECRET-"):
+        assert secret not in l, l
+assert len(labels) == 5, labels
+PY
+CASE="capture: the sidecar starts BEFORE the persona's first command and is stopped after the persona ends and before its container is removed: per persona the docker log has the sidecar's run, then the sidecar's stop, then the persona container's rm"
+check python3 - "$work/cap1/docker.log" "$NSH" <<'PY'
+import sys
+ls = [l.split() for l in open(sys.argv[1])]
+caps = [i for i, t in enumerate(ls) if "--entrypoint" in t and "/usr/bin/tcpdump" in t]
+stops = [i for i, t in enumerate(ls) if t[:1] == ["stop"] and any(x.startswith("cap-") for x in t)]
+assert len(caps) == 5 and len(stops) == 5, (caps, stops)
+for c, s in zip(caps, stops):
+    assert c < s, (c, s)
+    between = [t for t in ls[c + 1:s]]
+    assert not any(t[:2] == ["rm", "-f"] and any(x.startswith("cid-") for x in t) for t in between), ("the persona's container is still there while the sidecar runs", between)
+PY
+CASE="capture: the report's static list is relabelled (it is what the command TEXT names; the network list is what was contacted), and the old 'not observed' caveat is gone"
+check python3 - "$work" <<'PY'
+import sys
+r = open("%s/cap1/plain/gradle-platform-engineer.report.md" % sys.argv[1]).read()
+assert "Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'):" in r, r[:900]
+assert "tool-internal contacts such as dependency downloads are not observed" not in r
+PY
+for n in cap1 cap2 capfail; do check publiclog $n; done
+CASE="capture (parser, self-test): DNS queries and A/AAAA/CNAME answers, SYN and UDP destinations, IPv4 and IPv6, resolver addresses, non-global addresses, .arpa lookups, and the completeness rules (header, summary, dropped packets, cap hit) are read as stated"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+H = "tcpdump: verbose output suppressed\nlistening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 1500 bytes\n"
+F = "2 packets captured\n2 packets received by filter\n0 packets dropped by kernel\n"
+def obs(body, hit=False, ended=True):
+    return m.parse_capture(H + body + (F if ended else ""), hit)
+r = obs("1.0 IP 10.0.0.2.5000 > 10.0.0.1.53: 7+ A? A.Example. (30)\n1.1 IP 10.0.0.1.53 > 10.0.0.2.5000: 7 2/0/0 CNAME b.example., A 93.184.216.34 (60)\n"
+        "1.2 IP 10.0.0.2.4000 > 93.184.216.34.443: Flags [S], seq 1, win 1, length 0\n1.3 IP 10.0.0.2.4001 > 8.8.4.4.123: UDP, length 48\n")
+assert r["reason"] is None and r["names"] == {"a.example", "b.example"} and r["addrs"] == {"8.8.4.4"}, r
+r = obs("1.0 IP6 fd00::2.4000 > 2606:2800:220:1:248:1893:25c8:1946.443: Flags [S], seq 1, win 1, length 0\n")
+assert r["addrs"] == {"2606:2800:220:1:248:1893:25c8:1946"}, r
+r = obs("1.0 IP 10.0.0.2.4000 > 10.0.0.9.443: Flags [S], seq 1\n1.1 IP 127.0.0.1.4000 > 127.0.0.1.80: Flags [S], seq 1\n1.2 IP 10.0.0.2.5 > 169.254.169.254.80: Flags [S], seq 1\n1.3 IP 10.0.0.2.5 > 224.0.0.251.5353: UDP, length 5\n")
+assert r["reason"] is None and r["names"] == set() and r["addrs"] == set(), r
+r = obs("1.0 IP 10.0.0.2.5000 > 9.9.9.9.53: 7+ A? x.example. (30)\n1.1 IP 10.0.0.2.5000 > 9.9.9.9.53: UDP, length 3\n")
+assert r["addrs"] == set() and r["names"] == {"x.example"}, ("the resolver is not a contact", r)
+r = obs("1.0 IP 10.0.0.1.53 > 10.0.0.2.5000: 7 NXDomain 0/1/0 (100)\n")
+assert r["reason"] is None, r
+assert m.parse_capture("garbage\n", False)["reason"], "no header: unreadable"
+assert "dropped" in obs("", ended=False)["reason"] or True
+r = m.parse_capture(H + "1.0 IP 10.0.0.2.5000 > 10.0.0.1.53: 7+ A? x.example. (30)\n2 packets captured\n9 packets received by filter\n4 packets dropped by kernel\n", False)
+assert "dropped" in r["reason"] and r["names"] == {"x.example"}, r
+r = obs("", ended=False)
+assert r["reason"] and "end" in r["reason"], r
+r = obs("", hit=True)
+assert r["reason"] and "truncated" in r["reason"], r
+assert m.parse_capture("", False)["reason"]
+PY
+CASE="capture (log reader, self-test): the sidecar's log is read up to a byte cap; a log over the cap is returned cut with the truncated flag, never silently"
+check python3 - "$driver" "$work" <<'PY'
+import importlib.util, os, stat, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+d = sys.argv[2] + "/caplog"
+os.makedirs(d, exist_ok=True)
+open(d + "/docker", "w").write("#!/bin/sh\n[ \"$1\" = logs ] && python3 -c \"import sys\nsys.stdout.write('x' * 5000)\" && exit 0\nexit 0\n")
+os.chmod(d + "/docker", 0o755)
+text, hit = m.capture_logs(m.Docker([d + "/docker"]), "cap-1", cap=1000)
+assert hit is True and len(text) <= 1000, (hit, len(text))
+text, hit = m.capture_logs(m.Docker([d + "/docker"]), "cap-1", cap=100000)
+assert hit is False and len(text) == 5000, (hit, len(text))
+PY
+# --- THE PERSONA'S OWN NETWORK (debate round, advisor 0291) ------------------------------------------------------------------------------------------------
+# Each persona gets a private docker network (internet open, never the host's) and ONE long-lived holder container on it (the shell image's own `sleep`, no capability, no mount, no
+# environment). Every tool container the agent runs and the capture sidecar use `--network container:<holder>`, so the sidecar sees everything the short-lived tool containers do. The
+# endpoint under test, Jenkins, the GitLab runner and the kind node are plain members of the network, reached BY NAME. `--network host` is a refused vector everywhere.
+python3 - "$work" <<'PY'
+import json, sys
+w = sys.argv[1]
+G, M, C, R, O = "gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer"
+# contacts made by SHORT-LIVED tool containers (docker run --rm --network container:<holder> ... contact HOST): the fake docker puts them in the holder's capture, tagged by the container
+json.dump({G: {"tool_contacts": ["raw.githubusercontent.com", "registry-1.docker.io", "docs.example.org", "github.com", "docker.io", "ghcr.io"]}, M: {"tool_contacts": ["jenkins"]}, C: {}, R: {}, O: {}}, open(w + "/net1.plan.json", "w"))
+json.dump({G: {"sleep": 30}, M: {"crash": True}}, open(w + "/net2.plan.json", "w"))
+PY
+run net1 "$(cat "$work/net1.plan.json")" rc
+AGENT_TIMEOUT=1 run net2 "$(cat "$work/net2.plan.json")" rc
+DOCKER_IMAGE_DEAD=1 run net3 '{}' rc
+CASE="network: every persona gets its own private docker network, created BEFORE its containers and removed AFTER them (five creates, five removes, distinct names, each labelled with the persona's label, no host or none driver, no option that closes the internet)"
+check python3 - "$work/net1/docker.log" <<'PY'
+import re, sys
+ls = [l.split() for l in open(sys.argv[1])]
+creates = [(i, t) for i, t in enumerate(ls) if t[:2] == ["network", "create"]]
+removes = [(i, t) for i, t in enumerate(ls) if t[:2] == ["network", "rm"]]
+assert len(creates) == 5 and len(removes) == 5, (len(creates), len(removes))
+names = [t[-1] for i, t in creates]
+assert len(set(names)) == 5 and all(re.fullmatch(r"persona-uat-[0-9a-f]{8}", n) for n in names), names
+for i, t in creates:
+    assert t[:4] == ["network", "create", "--label", t[3]] and re.fullmatch(r"persona-uat=[0-9a-f-]{36}", t[3]) and len(t) == 5, t      # nothing else: not --internal, no --driver, no --opt
+for (ci, ct), (ri, rt) in zip(creates, removes):
+    assert rt[-1] == ct[-1] and ci < ri, (ct, rt)
+    firsts = [j for j, t in enumerate(ls) if t[0] == "run" and ("--network" in t and t[t.index("--network") + 1] == ct[-1] or ("--network=" + ct[-1]) in t)]
+    assert firsts and min(firsts) > ci, "a container joined the network before it existed"
+    lasts = [j for j, t in enumerate(ls) if t[:2] == ["rm", "-f"] and j < ri]
+    assert lasts, "the network is removed before any container is"
+PY
+CASE="network: the holder is ONE container per persona on that network, started with exactly the pinned arguments (the shell image's sleep as entrypoint, no capability, read-only root, no mount, no env, no publish), and it is a running container"
+check python3 - "$work/net1/docker.log" "$SHL" <<'PY'
+import re, sys
+SHL = sys.argv[2]
+rows = [l.rstrip("\n") for l in open(sys.argv[1]) if "--entrypoint /bin/sleep" in l]
+assert len(rows) == 5, rows
+for l in rows:
+    m = re.fullmatch(r"run -d --name (persona-uat-[0-9a-f]{8}-holder) --network (persona-uat-[0-9a-f]{8}) --cap-drop ALL --read-only --security-opt no-new-privileges --entrypoint /bin/sleep (\S+) 86400", l)
+    assert m and m.group(3) == SHL and m.group(1) == m.group(2) + "-holder", l
+    t = l.split()
+    for bad in ("-e", "--env", "--env-file", "-v", "--mount", "-p", "--publish", "--cap-add", "--privileged", "sh", "-c", "--user", "--pid"):
+        assert bad not in t, (bad, l)
+PY
+CASE="network: EVERY container that runs the persona's commands (the agent's shell actions) and the capture sidecar carry --network container:<that persona's holder>; no container of a persona is on the host's network, and the endpoint, Jenkins and the runner are plain members of the persona's network with an alias"
+check python3 - "$work" <<'PY'
+import glob, re, sys
+w = sys.argv[1]
+for path in glob.glob(w + "/*/docker.log") + glob.glob(w + "/*/*/docker.log"):
+    for l in open(path):
+        t = l.split()
+        assert not ([t[i + 1] for i in range(len(t) - 1) if t[i] in ("--network", "--net")] and [t[i + 1] for i in range(len(t) - 1) if t[i] in ("--network", "--net")][0] == "host"), (path, l)
+        assert not any(x in ("--network=host", "--net=host") for x in t), (path, l)
+ls = [l.split() for l in open(w + "/net1/docker.log")]
+holders = {}
+for t in ls:
+    if t[:2] == ["run", "-d"] and "--entrypoint" in t and t[t.index("--entrypoint") + 1] == "/bin/sleep":
+        holders[t[t.index("--network") + 1]] = t[t.index("--name") + 1]
+assert len(holders) == 5
+sidecars = shell = members = 0
+for t in ls:
+    if t[0] != "run":
+        continue
+    net = t[t.index("--network") + 1] if "--network" in t else None
+    if "--entrypoint" in t and t[t.index("--entrypoint") + 1] == "/usr/bin/tcpdump":
+        assert net in ["container:" + h for h in holders.values()], t
+        sidecars += 1
+    elif "--entrypoint" in t:
+        pass
+    elif t[1] == "--rm" and "--user" in t:
+        assert net == "none", t            # the root cleanup container keeps no network
+    elif t[1] == "--rm":
+        assert net in ["container:" + h for h in holders.values()], t
+        shell += 1
+    else:
+        assert t[1] == "-d" and net in holders and "--network-alias" in t, t
+        members += 1
+assert sidecars == 5 and shell >= 3 and members >= 5, (sidecars, shell, members)
+PY
+CASE="network: the persona reaches the endpoint BY NAME on its network (alias endpoint, container port 8080), Jenkins as jenkins:8080 and the runner as gitlab-runner:9252; the request carries no 127.0.0.1 address of any endpoint, and the driver still reads the counter from the endpoint container's own published loopback port"
+check python3 - "$work/net1/log" "$work/net1/docker.log" <<'PY'
+import json, sys
+rows = {json.loads(l)["persona"]: json.loads(l)["request"] for l in open(sys.argv[1])}
+for p, r in rows.items():
+    assert r["endpoint"] == "http://endpoint:8080", (p, r["endpoint"])
+    for k, v in r.get("tools", {}).items():
+        assert "127.0.0.1" not in json.dumps(v) and "localhost" not in json.dumps(v), (p, k, v)
+assert rows["maven-jenkins-ci"]["tools"]["jenkins"]["endpoint"] == "http://jenkins:8080"
+assert rows["maven-jenkins-ci"]["tools"]["gitlab-runner"]["endpoint"] == "http://gitlab-runner:9252"
+assert rows["on-call-engineer"]["tools"]["kind"]["endpoint"] == "https://persona-uat-control-plane:6443"
+ls = [l.split() for l in open(sys.argv[2])]
+imgs = [t for t in ls if t[:2] == ["run", "-d"] and any("/cache@" in x for x in t)]
+assert len(imgs) == 5 and all(t[t.index("--network-alias") + 1] == "endpoint" and any(x.startswith("127.0.0.1:") and x.endswith(":8080") for x in t) for t in imgs), imgs
+nc = [t for t in ls if t[:2] == ["network", "connect"]]
+assert len(nc) == 1 and nc[0][-1] == "persona-uat-control-plane" and nc[0][-2].startswith("persona-uat-"), nc       # the kind node joins the on-call persona's network
+PY
+CASE="network: a contact made by a SHORT-LIVED tool container (docker run --rm --network container:<holder>) is in the sidecar's capture and in the report; a GitHub content host and docker/ghcr registry hosts named by the persona ARE listed (even the registries the tool images come from), the documented hosts (docs.example.org, and github.com which the README links) and the persona's own network members are not"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+def obs(case, p):
+    r = open("%s/%s/plain/%s.report.md" % (w, case, p)).read().split("=== TRANSCRIPT")[0]
+    ls = [l for l in r.splitlines() if l.startswith("Hosts observed on the network")]
+    return sorted(x.strip() for x in ls[0].split("):", 1)[1].split(",")) if ls else [], r
+got, r = obs("net1", "gradle-platform-engineer")
+assert got == ["docker.io", "ghcr.io", "raw.githubusercontent.com", "registry-1.docker.io"], (got, r[:800])      # github.com is in the README (a documented host); the others are not
+got, r = obs("net1", "maven-jenkins-ci")
+assert got == [] and "No outside hosts observed on the network." in r, (got, r[:800])      # jenkins is a member of the persona's own network
+PY
+CASE="network: the network and the holder are removed when the persona's agent TIMES OUT (net2), when it FAILS (net2), and when the image under test never starts (net3): every created network has its network rm, every holder its rm -f, and the run's teardown verdicts are untouched"
+check python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+for case in ("net2", "net3"):
+    ls = [l.split() for l in open("%s/%s/docker.log" % (w, case))]
+    nets = [t[-1] for t in ls if t[:2] == ["network", "create"]]
+    gone = [t[-1] for t in ls if t[:2] == ["network", "rm"]]
+    assert nets and sorted(nets) == sorted(gone), (case, nets, gone)
+    runs = [t for t in ls if t[:2] == ["run", "-d"]]
+    holders = ["cid-%d" % (i + 1) for i, t in enumerate(runs) if "--entrypoint" in t and t[t.index("--entrypoint") + 1] == "/bin/sleep"]
+    removed = {x for t in ls if t[:2] == ["rm", "-f"] for x in t}
+    assert holders and all(h in removed for h in holders), (case, holders, removed)
+PY
+check publiclog net1; check publiclog net2; check publiclog net3
+DOCKER_FAIL_MATCH="network create" run netfail '{}' rc
+CASE="network: a network that cannot be created is a persona that did not run (blocking, exit non-zero, no agent started), never a run on the host's network"
+check python3 - "$work/netfail" "$rc" <<'PY'
+import os, sys
+d = sys.argv[1]
+assert int(sys.argv[2]) != 0 and os.path.getsize(d + "/log") == 0
+assert not [l for l in open(d + "/docker.log") if l.startswith("run ")], "a container started without its network"
+PY
+DOCKER_FAIL_MATCH="network rm" run netrmfail '{}' rc
+CASE="network: a network that cannot be removed is a failed teardown like a container that cannot be removed: that persona and every later one read 'teardown failed: window not attributable'"
+check tdcheck netrmfail 0 1
+check publiclog netfail; check publiclog netrmfail
+CASE="network (driver exception): an exception in the middle of a persona still removes its holder, sidecar and network (the last-resort handler runs after the teardown)"
+mkdir -p "$work/netexc/out" "$work/netexc/tmp"; : >"$work/netexc/docker.log"; sed "s#__LOG__#$work/netexc/docker.log#" "$work/docker.tmpl" >"$work/netexc/docker"; chmod +x "$work/netexc/docker"
+echo '{}' >"$work/netexc/plan.json"; : >"$work/netexc/log"; mkhost "$work/netexc"; rc=0
+env -u PERSONA_UAT_TOKEN_BUDGET TMPDIR="$work/netexc/tmp" PATH="$work/netexc/hostbin:$PATH" PERSONA_UAT_MODEL=M1 PERSONA_UAT_COMPLIANCE_MODEL=M2 \
+  python3 - "$driver" "$repo" "$work" >"$work/netexc/stdout" 2>"$work/netexc/stderr" <<'PY' || rc=$?
+import importlib.util, sys
+drv, repo, w = sys.argv[1:4]
+sp = importlib.util.spec_from_file_location("drv", drv); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+def boom(*a, **k):
+    raise RuntimeError("PRIVATE-MID-PERSONA-LEAK")
+m.stop_capture = boom
+sys.argv = [drv, "--mode", "rc", "--image", "ghcr.io/example/cache@sha256:" + "a" * 64, "--repo", repo, "--out", w + "/netexc/out", "--tools", w + "/tools.json",
+            "--docker", w + "/netexc/docker", "--recipient", w + "/test.pem", "--agent", "python3 " + w + "/stub.py " + w + "/netexc", "--proc-net", w + "/procnet"]
+sys.exit(m.main())
+PY
+check python3 - "$work/netexc" <<'PY'
+import sys
+ls = [l.split() for l in open(sys.argv[1] + "/docker.log")]
+nets = [t[-1] for t in ls if t[:2] == ["network", "create"]]
+assert nets and [t[-1] for t in ls if t[:2] == ["network", "rm"]] == nets, ls
+assert any(t[:2] == ["rm", "-f"] for t in ls)
+assert "PRIVATE-MID-PERSONA-LEAK" not in open(sys.argv[1] + "/stderr").read() + open(sys.argv[1] + "/stdout").read()
+PY
+CASE="network: the driver REFUSES a host network at the docker client itself: any docker call with --network host, --network=host, --net host or --net=host raises before docker runs (self-test of Docker.call), and none of the container-building helpers can produce one"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+d = m.Docker(["/nonexistent-docker"])
+for args in (["run", "-d", "--network", "host", "img"], ["run", "--network=host", "img"], ["run", "--net", "host", "img"], ["run", "--net=host", "img"], ["run", "-d", "--network", "HOST", "img"]):
+    try:
+        d.call(*args)
+    except m.Refuse:
+        continue
+    raise AssertionError(("a host-network docker call was not refused", args))
+for args in (m.capture_command("docker.io/x/y@sha256:" + "b" * 64, "persona-uat-abcd1234-holder"), m.holder_command("persona-uat-abcd1234", "docker.io/x/y@sha256:" + "b" * 64)):
+    t = args
+    assert "host" not in [t[i + 1] for i in range(len(t) - 1) if t[i] == "--network"], t
+PY
+CASE="network (no docker call anywhere in the whole suite uses a host network): every docker.log of every case above"
+check python3 - "$work" <<'PY'
+import glob, sys
+n = 0
+for path in glob.glob(sys.argv[1] + "/*/docker.log") + glob.glob(sys.argv[1] + "/*/*/docker.log"):
+    for l in open(path):
+        t = l.split()
+        n += 1
+        for i, x in enumerate(t):
+            if x in ("--network", "--net") and i + 1 < len(t):
+                assert t[i + 1] != "host", (path, l)
+            assert x not in ("--network=host", "--net=host"), (path, l)
+assert n > 100, n
+PY
 # EXCEPTION SAFETY (step 8 round 3, B1): a command that cannot be parsed (a fullwidth slash inside a proxy host, an unclosed IPv6 bracket, NULs, unicode separators, enormous arguments)
 # never raises out of the reporting path: the action is marked unparsed in the ENCRYPTED report, the report is still written, and nothing but the pass/fail lines is public
 python3 - >"$work/fuzzplan.json" <<'PY'

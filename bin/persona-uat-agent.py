@@ -18,6 +18,7 @@ for a model that spends nothing and never finishes. With --transcript-file every
 (scrubbed, flushed and fsynced) before the next model call, so a kill keeps what was completed.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -110,10 +111,13 @@ def call_provider(cmd, model, system, messages, timeout):
     raise Fail("the provider's action is outside the protocol")
 
 
+JOURNAL_MAX_BYTES = 16 * 1024 * 1024         # the journal never grows past this (plus one cap record); records after it are not written and ONE journal_cap record says so
+JOURNAL_LINE_MAX = 200000                    # a command longer than this many characters is journaled cut to it, with command_truncated true and its original length
 TRANSCRIPT_MAX_BYTES = 16 * 1024 * 1024      # the streamed transcript file never grows past this; the first actions are kept and one marker says the rest was not written
 RESERVE = 0.15                       # of the token budget: kept for the forced final finish call
 FORCED_FINISH = ("You have reached your token budget and cannot run any more commands. Reply now with a finish action: "
                  "{\"action\": \"finish\", \"findings\": [...]} reporting your findings so far (what you observed, quoting the failing step), and nothing else.")
+NETWORK_RE = re.compile(r"^container:persona-uat-[0-9a-f]{8}-holder\Z")      # the ONLY network a tool container may join: the persona's own holder (never the host's)
 LABEL_RE = re.compile(r"^persona-uat=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 SCRUB = [re.compile(x) for x in (r"gh[pousr]_[A-Za-z0-9]{8,}", r"github_pat_[A-Za-z0-9_]{8,}", r"\bsk-[A-Za-z0-9_-]{12,}", r"\b(AKIA|ASIA)[0-9A-Z]{12,}", r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}", r"-----BEGIN", r"(?i)bearer[\s-]+\S+", r"(?i)password\s*[=:]\s*\S+")]
 
@@ -126,10 +130,10 @@ def scrub(text, model):
     return text
 
 
-def run_shell(docker, image, sandbox, act, timeout, label=None):
+def run_shell(docker, image, sandbox, act, timeout, label=None, network=None):
     # FIXED argument vector (pinned by the tests): the model's text is only ever after the image
     tail = ["sh", "-c", act["command"]] if "command" in act else list(act["args"])
-    argv = docker + ["run", "--rm", "--network", "host", "--label", label, "-v", "%s:/work" % sandbox, "-w", "/work", image] + tail
+    argv = docker + ["run", "--rm", "--network", network, "--label", label, "-v", "%s:/work" % sandbox, "-w", "/work", image] + tail
     rc, out, err, timed_out = run_bounded(argv, None, timeout, child_env(False))
     if timed_out:
         ids = run_bounded(docker + ["ps", "-aq", "--filter", "label=" + label], None, 30, child_env(False))[1].split()
@@ -138,7 +142,7 @@ def run_shell(docker, image, sandbox, act, timeout, label=None):
         return "timed out after %ss (the command was cut off)" % timeout, None, False
     if rc == DOCKER_OWN_FAILURE:
         raise Fail("docker could not run the shell action: %s" % err.strip()[:200])
-    return "exit status: %d\nstdout:\n%s\nstderr:\n%s" % (rc, clip(out), clip(err)), (rc, out), True
+    return "exit status: %d\nstdout:\n%s\nstderr:\n%s" % (rc, clip(out), clip(err)), (rc, out, err), True
 
 
 def open_stream(path):
@@ -157,7 +161,7 @@ def system_prompt(req):
         "You may use only the public documentation in your working directory (README.md and the docs) and the product's running endpoint. "
         "Do not clone the repository, do not read its source, do not look for internal documents: a real customer cannot.",
         "Follow the documentation as written, step by step, with shell commands. Each command runs in a fresh minimal container whose "
-        "working directory is /work (your documentation) on the host network, so the endpoint and tool endpoints below are reachable on 127.0.0.1.",
+        "working directory is /work (your documentation) on your private network, where the endpoint and tool endpoints below are reachable by the names given.",
         "Reply with exactly one JSON object and nothing else. To run a command: {\"action\": \"shell\", \"tool\": \"shell\", \"command\": \"<sh command>\"}. "
         "To run another tool (cosign, kubectl, gradle, maven) give its args as a list: {\"action\": \"shell\", \"tool\": \"cosign\", \"args\": [\"version\"]}. "
         "For gradle and maven the FIRST element of args is the program (\"gradle\", \"mvn\"); for cosign and kubectl it is the subcommand. ",
@@ -184,11 +188,15 @@ def main():
     ap.add_argument("--docker", required=True)
     ap.add_argument("--tools", required=True)
     ap.add_argument("--label", required=True)
+    ap.add_argument("--network", required=True)
     ap.add_argument("--provider-cmd")
     ap.add_argument("--shell-timeout", type=int, default=300)
     ap.add_argument("--provider-timeout", type=int, default=600)
     ap.add_argument("--max-steps", type=int, default=400)
     ap.add_argument("--transcript-file")
+    ap.add_argument("--journal-file")
+    ap.add_argument("--journal-max-bytes", type=int, default=JOURNAL_MAX_BYTES)
+    ap.add_argument("--journal-line-max", type=int, default=JOURNAL_LINE_MAX)
     ap.add_argument("--transcript-max-bytes", type=int, default=TRANSCRIPT_MAX_BYTES)
     a = ap.parse_args()
     try:
@@ -204,6 +212,8 @@ def main():
             raise Fail("the tools file is unreadable")
         if not isinstance(tools, dict) or "shell" not in tools or not all(isinstance(v, str) and DIGEST_REF.match(v) for v in tools.values()):
             raise Fail("the tools file is not a map of digest-pinned images with a shell")
+        if not NETWORK_RE.match(a.network):
+            raise Fail("--network must be container:<the persona's holder container> (a host network is refused)")
         if not LABEL_RE.match(a.label):
             raise Fail("--label is not persona-uat=<uuid>")
         docker = shlex.split(a.docker)
@@ -218,6 +228,20 @@ def main():
         stream = open_stream(a.transcript_file)
 
         written = [0, False]
+        jstream = open_stream(a.journal_file)
+        jwritten = [0, False]
+
+        def journal(rec):
+            """one structured record (a JSON object on its own line), made durable before anything else happens; past the cap ONE journal_cap record says the rest is not written"""
+            if jstream is None or jwritten[1]:
+                return
+            line = json.dumps(rec) + "\n"
+            if jwritten[0] + len(line.encode("utf-8", "replace")) > a.journal_max_bytes:
+                line, jwritten[1] = json.dumps({"t": "journal_cap", "max_bytes": a.journal_max_bytes}) + "\n", True
+            jwritten[0] += len(line.encode("utf-8", "replace"))
+            jstream.write(line)
+            jstream.flush()
+            os.fsync(jstream.fileno())
 
         def note(entry):
             """one transcript entry: kept in memory and, when asked, appended to the transcript file and made durable before anything else happens"""
@@ -270,9 +294,17 @@ def main():
                 continue
             shells += 1
             commands.append(label)
-            text, res, ran = run_shell(docker, tools[tool], req["docs_dir"], act, a.shell_timeout, a.label)
+            jid = shells
+            shown = scrub(label, req["model"])
+            cut = len(shown) > a.journal_line_max
+            journal(dict({"t": "action", "id": jid, "command": shown[:a.journal_line_max], "started_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+                         **({"command_truncated": True, "command_length": len(shown)} if cut else {})))     # BEFORE the command is launched: a killed or timed-out command stays recoverable
+            text, res, ran = run_shell(docker, tools[tool], req["docs_dir"], act, a.shell_timeout, a.label, a.network)
             actions.append({"tool": tool, "argv": ["sh", "-c", act["command"]] if "command" in act else list(act["args"]),
                             "exit": res[0] if res else 124})        # a timed-out action has no status of its own: 124, like timeout(1)
+            o_, e_ = (res[1], res[2]) if res else ("", "")
+            journal({"t": "result", "id": jid, "exit": res[0] if res else 124, "bytes": {"stdout": len(o_.encode("utf-8", "replace")), "stderr": len(e_.encode("utf-8", "replace"))},
+                     "truncated": {"stdout": len(o_) > OUT_LIMIT, "stderr": len(e_) > OUT_LIMIT}})
             note("$ %s\n%s" % (label, text))
             messages.append({"role": "assistant", "content": json.dumps(act)})
             messages.append({"role": "user", "content": text})

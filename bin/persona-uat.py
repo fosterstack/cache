@@ -46,11 +46,13 @@ warnings.simplefilter("ignore")        # nothing but the fixed lines is ever pri
 PERSONAS = ("gradle-platform-engineer", "maven-jenkins-ci", "compliance-reviewer", "readme-evaluator", "on-call-engineer")
 TOOLS_FOR = {"maven-jenkins-ci": ("jenkins", "gitlab-runner"), "on-call-engineer": ("kind",)}
 DIGEST_REF = re.compile(r"^[a-z0-9][^\s@]*@sha256:[0-9a-f]{64}$")
-TOOL_KEYS = ("cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell")
+TOOL_KEYS = ("capture", "cosign", "gitlab-runner", "gradle", "jenkins", "kind", "kubectl", "maven", "shell")
 KIND_NAME = "persona-uat"
+KIND_NODE = KIND_NAME + "-control-plane"
+KIND_SERVER = "https://%s:6443" % KIND_NODE        # the kind API server as the persona reaches it: by the node's name on the persona's network
 PERSONA_NS = "persona"
 JENKINS_ENV = "JAVA_OPTS=-Djenkins.install.runSetupWizard=false"
-URL_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{1,15}://[^\s'\"<>)\]|;&`]+")      # a URL of ANY scheme (http, ftp, sftp, socks5h, ssh, ws, ...)
+URL_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{1,15}://(?:\[[0-9A-Fa-f:.%A-Za-z]*\]|[^\s'\"<>)\]|;&`])+")      # a URL of ANY scheme (http, ftp, sftp, socks5h, ssh, ws, ...)
 METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
 JOB_BUDGET = 6600           # seconds: the 120-minute job minus setup and the cleanup steps; the agent timeouts are cut from what is left of it
@@ -141,8 +143,171 @@ def docker_env():
 
 class TranscriptFile:
     """a transcript kept in the agent's streamed file: `prefix` text first, then the file (read bounded, never whole into memory)"""
-    def __init__(self, prefix, path):
-        self.prefix, self.path = prefix, path
+    def __init__(self, prefix, path, journal=None):
+        self.prefix, self.path, self.journal = prefix, path, journal
+
+
+# --- the network capture sidecar (option A): what the persona's commands actually contacted -----------------------------------------------------------------
+CAPTURE_FILTER = "udp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"          # DNS and other UDP, and the first packet (SYN) of every TCP connection
+CAPTURE_ARGS = ["-i", "any", "-nn", "-l", "-tt", "-U", "-s", "1500", "-Z", "root", CAPTURE_FILTER]
+CAPTURE_MAX_BYTES = 8 * 1024 * 1024        # the sidecar's log is read up to this; more is reported as truncated
+CAPTURE_READY_SECONDS = 15
+MEMBER_NAMES = ("endpoint", "jenkins", "gitlab-runner", KIND_NODE)      # the persona's own network members: its endpoint under test, Jenkins, the runner, the kind node
+_ARPA = (".in-addr.arpa", ".ip6.arpa")
+_DNS_RR = ("A", "AAAA", "CNAME")
+_Q_RE = re.compile(r"\sIP6? \S+ > (\S+)\.53: (\d+)[+*|%-]*\s+(?:\[[^\]]*\]\s+)*[A-Za-z0-9]+\?\s+(\S+?)\.?\s+\(")
+_A_RE = re.compile(r"\sIP6? \S+\.53 > \S+: (\d+)[*|%-]*\s+(?:[A-Za-z]+\s+)?(\d+)/\d+/\d+\s*(.*?)\s*\(\d+\)\s*$")
+_CONN_RE = re.compile(r"\sIP6? \S+ > (\S+)\.(\d+): (?:Flags \[S\]|UDP)")
+
+
+def _addr_ok(addr):
+    """a public (global) address: loopback, private, link-local, multicast and reserved ranges are not outside hosts"""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(addr)
+        return ip.is_global and not ip.is_multicast
+    except ValueError:
+        return False
+
+
+def parse_capture(text, hit_cap):
+    """-> {"names": {DNS names asked for or answered}, "addrs": {connection addresses no DNS answer named}, "reason": why the observation is incomplete, or None}. Read from tcpdump's
+    `-nn -tt` text: DNS queries (qname by transaction id), A/AAAA/CNAME answers, the SYN of each TCP connection and each UDP packet's destination. A capture is complete only when it
+    has tcpdump's header, ends with tcpdump's summary (a clean stop), dropped no packets and was not cut at the read cap."""
+    names, answered, conns, resolvers, qnames = set(), set(), [], set(), {}
+    header = summary = False
+    dropped = 0
+    for ln in text.replace("\x00", "").splitlines():
+        if ln.startswith("listening on "):
+            header = True
+        elif re.match(r"^\d+ packets captured$", ln):
+            summary = True
+        elif re.match(r"^\d+ packets dropped by kernel$", ln):
+            dropped = int(ln.split()[0])
+        m = _Q_RE.search(ln)
+        if m:
+            resolvers.add(m.group(1))
+            qname = m.group(3).lower()
+            qnames[m.group(2)] = qname
+            if not qname.endswith(_ARPA):
+                names.add(qname)
+            continue
+        m = _A_RE.search(ln)
+        if m:
+            qname = qnames.get(m.group(1))
+            for rr in m.group(3).split(", "):
+                parts = rr.split(None, 1)
+                if len(parts) == 2 and parts[0] in _DNS_RR:
+                    val = parts[1].strip().rstrip(".").lower()
+                    if parts[0] == "CNAME":
+                        if not val.endswith(_ARPA):
+                            names.add(val)
+                    elif val:
+                        answered.add(val)
+            continue
+        m = _CONN_RE.search(ln)
+        if m:
+            conns.append(m.group(1).lower())
+    addrs = {c for c in conns if c not in answered and c not in resolvers and _addr_ok(c)}
+    reason = None
+    if not header:
+        reason = "the capture output is unreadable (no tcpdump header)"
+    elif hit_cap:
+        reason = "the capture output was truncated at the read cap (%d bytes)" % CAPTURE_MAX_BYTES
+    elif not summary:
+        reason = "the capture did not end cleanly (no tcpdump summary)"
+    elif dropped:
+        reason = "the kernel dropped %d packets" % dropped
+    return {"names": names, "addrs": addrs, "reason": reason}
+
+
+def capture_logs(docker, cid, cap=CAPTURE_MAX_BYTES):
+    """-> (the sidecar's log text, hit): its stdout and stderr read up to `cap` bytes; hit is True when there was more. Raises OSError when docker cannot be run"""
+    p = subprocess.Popen(docker.cmd + ["logs", cid], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=docker_env())
+    try:
+        blob = p.stdout.read(cap + 1)
+        hit = len(blob) > cap
+        if hit:
+            p.kill()
+    finally:
+        p.stdout.close()
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+    return blob[:cap].decode("utf-8", "replace"), hit
+
+
+def holder_command(net, image):
+    """the persona's network holder: ONE long-lived container that owns the network namespace every tool container and the capture sidecar join. The shell image's own `sleep` as the
+    entrypoint (no shell), no capability, a read-only root, no mount, no environment, nothing published"""
+    return ["run", "-d", "--name", net + "-holder", "--network", net, "--cap-drop", "ALL", "--read-only", "--security-opt", "no-new-privileges",
+            "--entrypoint", "/bin/sleep", image, "86400"]
+
+
+def capture_command(image, holder):
+    """the sidecar's `docker run` arguments: FIXED. The holder's network namespace (so it sees everything the short-lived tool containers do), NET_RAW alone, a read-only root, no mount, no
+    environment, tcpdump itself as the entrypoint with a fixed argument list: no shell is involved"""
+    return ["run", "-d", "--network", "container:" + holder, "--cap-drop", "ALL", "--cap-add", "NET_RAW", "--read-only", "--security-opt", "no-new-privileges",
+            "--entrypoint", "/usr/bin/tcpdump", image] + CAPTURE_ARGS
+
+
+def start_capture(docker, image, holder, ready_seconds=CAPTURE_READY_SECONDS):
+    """-> (container id or None, reason or None): the sidecar is listening (tcpdump printed its header) before this returns"""
+    try:
+        p = docker.call(*capture_command(image, holder))
+    except Exception:
+        return None, "the capture sidecar could not be started (docker failed)"
+    cid = p.stdout.strip()
+    if p.returncode != 0 or not cid or len(cid.split()) != 1:
+        return None, "the capture sidecar could not be started"
+    deadline = time.time() + ready_seconds
+    while True:
+        try:
+            if not docker.running(cid):
+                return cid, "the capture sidecar exited at start"
+            text, _ = capture_logs(docker, cid, 65536)
+            if "listening on " in text:
+                return cid, None
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return cid, "the capture sidecar was not listening after %d seconds" % ready_seconds
+        time.sleep(0.3)
+
+
+def stop_capture(docker, cid, started_reason):
+    """-> {"names", "addrs", "reason"}: the sidecar is asked to stop (tcpdump prints its summary), its log is read and parsed. Every way this can fail is a reason, never silence"""
+    if cid is None:
+        return {"names": set(), "addrs": set(), "reason": started_reason or "the capture did not run"}
+    alive = docker.running(cid)
+    try:
+        docker.call("stop", "-t", "5", cid, timeout=60)
+    except Exception:
+        pass
+    try:
+        text, hit = capture_logs(docker, cid)
+    except Exception:
+        return {"names": set(), "addrs": set(), "reason": "the capture output could not be read"}
+    r = parse_capture(text, hit)
+    if started_reason and not r["reason"]:
+        r["reason"] = started_reason
+    elif not alive and not r["reason"]:
+        r["reason"] = "the capture sidecar exited before the persona ended"
+    elif not alive:
+        r["reason"] = "the capture sidecar exited before the persona ended (%s)" % r["reason"]
+    return r
+
+
+def refuse_host_network(args):
+    """a docker call that puts a container on the HOST's network is refused outright (every spelling of the option): a persona's traffic must never share the runner's namespace"""
+    a = [str(x).lower() for x in args]
+    for i, x in enumerate(a):
+        if x in ("--network", "--net") and i + 1 < len(a) and a[i + 1] == "host":
+            raise Refuse("a container on the host's network is refused")
+        if x.startswith(("--network=", "--net=")) and x.split("=", 1)[1] == "host":
+            raise Refuse("a container on the host's network is refused")
 
 
 class Docker:
@@ -150,11 +315,14 @@ class Docker:
         self.cmd = cmd
 
     def call(self, *args, timeout=120):
+        refuse_host_network(args)
         return subprocess.run(self.cmd + list(args), capture_output=True, text=True, timeout=timeout, env=docker_env())
 
-    def start(self, ref, port_map=None, env=None, tail=()):
-        """`run -d [-e FIXED] [-p 127.0.0.1:H:C] REF`: the only shapes the driver ever builds"""
+    def start(self, ref, port_map=None, env=None, tail=(), net=None, alias=None):
+        """`run -d [--network NET --network-alias ALIAS] [-e FIXED] [-p 127.0.0.1:H:C] REF`: the only shapes the driver ever builds"""
         args = ["run", "-d"]
+        if net:
+            args += ["--network", net, "--network-alias", alias]
         if env:
             args += ["-e", env]
         if port_map:
@@ -164,6 +332,16 @@ class Docker:
         if p.returncode != 0 or not cid or len(cid.split()) != 1:
             raise RuntimeError("could not start a container")
         return cid
+
+    def network_create(self, name, label):
+        return self.call("network", "create", "--label", label, name).returncode == 0
+
+    def network_remove(self, name):
+        """True when the network is gone; a failing `docker network rm` is a failed teardown"""
+        try:
+            return self.call("network", "rm", name).returncode == 0
+        except Exception:
+            return False
 
     def running(self, cid):
         p = self.call("inspect", "-f", "{{.State.Running}}", cid)
@@ -445,38 +623,58 @@ def transcript_chunks(transcript, secrets):
             yield scrub(transcript[i:i + 262144], secrets)
 
 
-COMMAND_END = re.compile(r"^(?:exit status: |timed out after |refused: |\$ |\[finish\]|\[token budget|\[step limit|\[no finish|\[\.\.\. )")
+JOURNAL_READ_CAP = 40 * 1024 * 1024         # the journal is read up to this many bytes; more is an incomplete record, said so
+JOURNAL_LINE_READ = 4 * 1024 * 1024         # one journal line is read up to this many bytes; a longer one is skipped and said so
 
 
 def transcript_commands(transcript):
-    """the commands of a transcript (a string, or an agent's streamed file read up to the cap), for the hosts of a persona that did not run: the WHOLE command, its marker line and
-    its continuation lines, up to the line that starts the result (exit status / timed out / refused) or the next marker"""
-    if isinstance(transcript, TranscriptFile):
-        lines = transcript.prefix.splitlines()
-        try:
-            with open(transcript.path, errors="replace") as fh:
-                for ln in fh:
-                    lines.append(ln.rstrip("\n")[:20000])
-                    if len(lines) > 400000:
+    """-> (commands, incomplete): the commands of a failed persona, from the agent's STRUCTURED journal only (one JSON record per line, written before the command was launched).
+    Text of the transcript is never parsed for commands: output that looks like a marker neither ends a command nor makes one. `incomplete` counts the reasons the record cannot be
+    taken as the whole story: a command cut at the agent's line cap, the agent's journal cap marker, a line that is not a whole record, an unknown record, an unreadable or oversized journal."""
+    cmds, incomplete = [], 0
+    path = getattr(transcript, "journal", None) if isinstance(transcript, TranscriptFile) else None
+    if not path:
+        return cmds, incomplete
+    try:
+        fh = open(path, "rb")
+    except FileNotFoundError:
+        return cmds, incomplete                 # the agent never opened it: nothing was launched
+    except (OSError, TypeError):
+        return cmds, incomplete + 1
+    read = 0
+    with fh:
+        while True:
+            raw = fh.readline(JOURNAL_LINE_READ + 1)
+            if not raw:
+                break
+            read += len(raw)
+            if len(raw) > JOURNAL_LINE_READ and not raw.endswith(b"\n"):
+                incomplete += 1
+                while True:                     # skip the rest of the oversized line
+                    rest = fh.readline(JOURNAL_LINE_READ)
+                    if not rest or rest.endswith(b"\n"):
                         break
-        except (OSError, TypeError):
-            pass
-    else:
-        lines = transcript.splitlines()
-    cmds, cur = [], None
-    for ln in lines:
-        if ln.startswith("$ "):
-            if cur is not None:
-                cmds.append("\n".join(cur))
-            cur = [ln[2:]]
-        elif cur is not None and COMMAND_END.match(ln):
-            cmds.append("\n".join(cur))
-            cur = None
-        elif cur is not None:
-            cur.append(ln)
-    if cur is not None:
-        cmds.append("\n".join(cur))
-    return cmds
+                    read += len(rest)
+                continue
+            if read > JOURNAL_READ_CAP:
+                incomplete += 1
+                break
+            try:
+                rec = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                incomplete += 1
+                continue
+            if not isinstance(rec, dict):
+                incomplete += 1
+            elif rec.get("t") == "action" and isinstance(rec.get("command"), str):
+                cmds.append(rec["command"])
+                if rec.get("command_truncated"):
+                    incomplete += 1
+            elif rec.get("t") == "result":
+                pass
+            else:                               # journal_cap, or a record this driver does not know: the evidence is not known to be whole
+                incomplete += 1
+    return cmds, incomplete
 
 
 def kill_group(p):
@@ -492,7 +690,7 @@ def kill_group(p):
         pass
 
 
-def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None):
+def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfile=None):
     """-> (answer or None, transcript (text or a TranscriptFile), failure reason or None). The agent's stderr is kept for the encrypted transcript only; the actions it completed
     before a timeout or a failure come from its streamed transcript file. Whatever the agent left running is killed on EVERY exit: its window must end with nothing of it alive."""
     p = subprocess.Popen(agent_cmd + agent_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=sandbox,
@@ -502,14 +700,14 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None):
     except subprocess.TimeoutExpired:
         kill_group(p)
         out, err = p.communicate()
-        return None, TranscriptFile("agent timed out after %ss\n%s\n" % (timeout, (err or "")[-200000:]), tfile), "timed out after %ss" % timeout
+        return None, TranscriptFile("agent timed out after %ss\n%s\n" % (timeout, (err or "")[-200000:]), tfile, jfile), "timed out after %ss" % timeout
     kill_group(p)
     if p.returncode != 0:
-        return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile), "the agent failed (exit %d)" % p.returncode
+        return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile, jfile), "the agent failed (exit %d)" % p.returncode
     try:
         return validate_answer(out), None, None
     except ValueError as e:
-        return None, TranscriptFile("the agent's answer was refused: %s\n%s\n" % (e, err[-200000:]), tfile), "the agent's answer is outside the contract (%s)" % e
+        return None, TranscriptFile("the agent's answer was refused: %s\n%s\n" % (e, err[-200000:]), tfile, jfile), "the agent's answer is outside the contract (%s)" % e
 
 
 def absolutize(tokens):
@@ -554,13 +752,18 @@ class Cluster:
         self.server, self.port, self.ca = m.group(1), int(m.group(2)), c.group(1)
         self.kubectl("wait", "--for=condition=Ready", "node", "--all", "--timeout=120s")       # `kind create cluster --wait 0s` returns before the node is Ready
 
+    def join(self, docker, net):
+        """the kind node joins the persona's network (by its own name, which the API server's certificate names), so the persona reaches the cluster without the host's loopback"""
+        if docker.call("network", "connect", net, KIND_NODE).returncode != 0:
+            raise RuntimeError("the kind node could not join the persona's network")
+
     def kubectl(self, *args, stdin=None):
         p = host_run(["kubectl", "--kubeconfig", self.kc] + list(args), stdin)
         if p.returncode != 0:
             raise RuntimeError("kubectl %s failed" % args[0])
         return p.stdout
 
-    def provision(self, duration):
+    def provision(self, duration, server=None):
         ns = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": PERSONA_NS, "labels": {"pod-security.kubernetes.io/" + k: "restricted" for k in ("enforce", "warn", "audit")}}}
         sa = {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "persona", "namespace": PERSONA_NS}}
         role = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "persona", "namespace": PERSONA_NS}, "rules": [
@@ -585,7 +788,7 @@ class Cluster:
         if life < duration or remaining < duration - 60 or life > 86400:
             raise RuntimeError("the issued token is shorter-lived than a persona window")
         name = "kind-" + KIND_NAME
-        return json.dumps({"apiVersion": "v1", "kind": "Config", "clusters": [{"name": name, "cluster": {"server": self.server, "certificate-authority-data": self.ca}}],
+        return json.dumps({"apiVersion": "v1", "kind": "Config", "clusters": [{"name": name, "cluster": {"server": server or self.server, "certificate-authority-data": self.ca}}],
                            "users": [{"name": "persona", "user": {"token": token}}], "contexts": [{"name": name, "context": {"cluster": name, "user": "persona", "namespace": PERSONA_NS}}],
                            "current-context": name}, indent=1)
 
@@ -681,7 +884,7 @@ def dynamic(word):
     (and the host part of a schemeless destination) counts: a ? or * in a path or query is not a destination."""
     if "://" in word:
         word = word.split("://", 1)[1]
-    return bool(DYN.search(word.split("/", 1)[0]))
+    return bool(DYN.search(re.sub(r"\[[0-9A-Fa-f:.]+(?:%[0-9A-Za-z]+)?\]", "", word.split("/", 1)[0])))      # a bracketed IPv6 literal is an address, not a glob
 
 
 def _fetch_tokens(prog, toks, flags=None):
@@ -1018,8 +1221,10 @@ def url_hosts(text, info=None, depth=0):
     text = _uncomment(text.replace("\\\n", " "))
     text = re.sub(r"`([^`]*)`", r"$(\1)", text)          # a backtick substitution is a $(...) substitution
     text = re.sub(r"--certificate-(?:identity|identity-regexp|oidc-issuer|oidc-issuer-regexp)(?:=|\s+)(?:'[^']*'|\"[^\"]*\"|\S+)", "--certificate-X", text)      # identities and issuers are claims to match, not destinations
+    # a URL that is only echoed or printed (the command ends at ; && || or the line end, and builds nothing with $( or `) is text, not a contact; one piped on to a program still counts
+    raw = re.sub(r"(?:(?<=^)|(?<=[;&|\n]))([ \t]*)(?:echo|printf)\b(?:(?![$`]\(|`)[^;&|\n])*(?=;|&&|\|\||\n|$)", r"\1", text)
     clone_urls = {u for ln in text.splitlines() if re.search(r"\bgit\s+clone\b", ln) for u in URL_RE.findall(ln)}
-    for u in URL_RE.findall(text):
+    for u in URL_RE.findall(raw):
         try:
             h = _clean_host(urllib.parse.urlsplit(u).hostname)
         except ValueError:
@@ -1051,7 +1256,10 @@ def registry_of(ref):
     return first.lower() if "/" in ref and ("." in first or ":" in first or first == "localhost") else "docker.io"
 
 
-HOSTS_LABEL = "Hosts named in its commands (redirects and tool-internal contacts such as dependency downloads are not observed):"
+HOSTS_LABEL = "Hosts named in its commands (read from the command text only; what was contacted is under 'Hosts observed on the network'):"
+OBSERVED_LABEL = "Hosts observed on the network (DNS names and connection destinations seen on the persona's own network while it ran; its public-docs hosts and its own network members are left out):"
+ADDR_LABEL = "Addresses observed with no DNS name in the capture (flagged):"
+NO_OBSERVED = "No outside hosts observed on the network."
 ENV_LIMITS_LINE = "Environment limits of this run (reported as friction, never blocking): " + "; ".join("(%s) %s" % (k, t) for k, t in zip("abcd", LIMITS))
 COUNTER_GUARANTEE = ("Counter guarantee: this persona ran against its OWN fresh container of the image under test, published on a host port of its own, and its request counter "
                      "was read from that container only, at its start and again at its end (after its processes and containers were removed, no established connection to the "
@@ -1126,13 +1334,17 @@ def image_repo_path(image):
 def identity_documented(value, repo_path):
     """True when a --certificate-identity(-regexp) value names the promotion workflow of THIS repository, as docs/verify-images.md shows it:
     ^https://github.com/<owner>/<name>/.github/workflows/stage-promote.yml@refs/tags/v<VER>$ (the dots may be escaped, the anchors optional). A value with an alternation or
-    anything before the documented prefix names other identities too and does not count."""
+    anything before the documented prefix names other identities too and does not count; neither does a wildcard, class or group in the tag after it."""
     v = value.replace("\\.", ".")
     if v.startswith("^"):
         v = v[1:]
-    if "|" in v or "*" in v.split("@", 1)[0] or "(" in v:
+    if v.endswith("$"):
+        v = v[:-1]
+    prefix = "https://github.com/%s/.github/workflows/%s@refs/tags/v" % (repo_path, PROMOTION_WORKFLOW)
+    if not v.startswith(prefix):
         return False
-    return v.startswith("https://github.com/%s/.github/workflows/%s@refs/tags/v" % (repo_path, PROMOTION_WORKFLOW))
+    # the release tag after the prefix is a literal version (digits first, then letters, digits, dot, hyphen): no wildcard, class, group, alternation or escape can widen it
+    return re.fullmatch(r"[0-9][0-9A-Za-z.-]*", v[len(prefix):]) is not None
 
 
 def verified_digest(answer, image):
@@ -1163,7 +1375,7 @@ def verified_digest(answer, image):
     return False
 
 
-def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None, unparsed=0, flags=None):
+def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, hosts=None, unparsed=0, flags=None, observed=None):
     lines = ["VERDICT: %s" % verdict, "persona: %s" % persona, ""]
     lines += [ENV_LIMITS_LINE, COUNTER_GUARANTEE, ""]
     if hosts is not None:
@@ -1174,6 +1386,19 @@ def report_text(persona, verdict, findings, tokens, capped, did_not_run=None, ho
             lines += ["Destination built at run time (not resolved): %d command%s" % (flags["runtime"], "" if flags["runtime"] == 1 else "s")]
         if flags and flags.get("nohost"):
             lines += ["Network client without a statically known host: %d command%s" % (flags["nohost"], "" if flags["nohost"] == 1 else "s")]
+        if flags and flags.get("incomplete"):
+            lines += ["INCOMPLETE EVIDENCE: the agent's record of the commands it ran is incomplete (%d problem%s: a command cut at the record cap, a record cap reached, or a record that could not be read); "
+                      "hosts of the missing commands are not listed" % (flags["incomplete"], "" if flags["incomplete"] == 1 else "s")]
+        lines += [""]
+    if observed is not None:        # the network list: {"names": [...], "addrs": [...], "reason": str or None}; the 'none' sentence only for a capture that ran and parsed
+        if observed["names"]:
+            lines += ["%s %s" % (OBSERVED_LABEL, ", ".join(observed["names"]))]
+        if observed["addrs"]:
+            lines += ["%s %s" % (ADDR_LABEL, ", ".join(observed["addrs"]))]
+        if observed["reason"]:
+            lines += ["Network observation incomplete: %s" % observed["reason"]]
+        elif not observed["names"] and not observed["addrs"]:
+            lines += [NO_OBSERVED]
         lines += [""]
     if did_not_run:
         lines += ["This persona did not run: %s." % did_not_run, ""]
@@ -1305,7 +1530,7 @@ def _main():
     results = {}        # persona -> {"verdict", "findings", "tokens", "capped"}
     STATE["results"] = results
 
-    def known_hosts(persona=None):
+    def docs_hosts(persona=None):
         doc_hosts = set()
         # the hosts a persona may name without a flag are those of the documents IT was given (the README alone for the evaluator)
         for data in ({"README.md": docs["README.md"]} if persona == "readme-evaluator" and docs else (docs or {})).values():
@@ -1313,7 +1538,10 @@ def _main():
                 doc_hosts |= url_hosts(data.decode("utf-8", "replace"))
             except Exception:
                 pass
-        return doc_hosts | {"127.0.0.1", "localhost", registry_of(a.image)} | {registry_of(v) for v in tools.values()}      # the image under test's own registry is not "outside"
+        return doc_hosts
+
+    def known_hosts(persona=None):
+        return docs_hosts(persona) | {"127.0.0.1", "localhost", registry_of(a.image)} | {registry_of(v) for v in tools.values()}      # the image under test's own registry is not "outside"
 
     def labelled(hosts, persona=None):
         src = {h for h in hosts if h.endswith(REPO_SRC)}
@@ -1324,6 +1552,15 @@ def _main():
         for h in src:
             out.add(h[:-len(REPO_SRC)] + " (repository source)")
         return sorted(out)
+
+    captures = {}       # persona -> the parsed capture {"names", "addrs", "reason"}
+
+    def observed_for(persona):
+        """the network list of a persona's report: its capture minus the hosts of the docs it was given and the persona's own network members. A persona with no capture on record says so"""
+        cp = captures.get(persona) or {"names": set(), "addrs": set(), "reason": "the capture did not run for this persona"}
+        known = docs_hosts(persona) | set(MEMBER_NAMES) | {"localhost"}       # ONLY the documented hosts and the persona's own network members: a registry or github.com named by a persona is reported
+        names = sorted(n if len(n) <= 253 else n[:60] + "... (over-long name)" for n in cp["names"] if n not in known)
+        return {"names": names, "addrs": sorted(cp["addrs"]), "reason": cp["reason"]}
 
     def hosts_of(commands):
         """-> (hosts, number of commands whose hosts could not be extracted): one command that cannot be parsed never costs the others or the report"""
@@ -1368,12 +1605,14 @@ def _main():
             capped = tokens >= budget
             verdict = "blocking" if any(f["kind"] == "blocking" for f in findings) else ("friction" if findings else "pass")
             hosts, bad, fl = hosts_of(answer.get("commands", []))
-            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts, persona), unparsed=bad, flags=fl)
+            text = report_text(persona, verdict, findings, tokens, capped, hosts=labelled(hosts, persona), unparsed=bad, flags=fl, observed=observed_for(persona))
         else:       # fail closed: whatever is not exactly the contract is a blocking persona that did not run
             findings = [{"kind": "blocking", "text": "%s did not run: %s" % (persona, did_not_run)}]
             tokens, capped, verdict = None, False, "blocking"
-            hosts, bad, fl = hosts_of(transcript_commands(transcript))
-            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts, persona), unparsed=bad, flags=fl)
+            cmds_, inc_ = transcript_commands(transcript)
+            hosts, bad, fl = hosts_of(cmds_)
+            fl = dict(fl or {}, incomplete=inc_)
+            text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts, persona), unparsed=bad, flags=fl, observed=observed_for(persona))
         ok = encrypt(a.recipient, persona, out_dir, itertools.chain([text.encode("utf-8", "replace"), b"\n=== TRANSCRIPT ===\n"],
                                                                     (c.encode("utf-8", "replace") for c in transcript_chunks(transcript, secrets))))
         if not ok:          # no readable fallback: the persona fails closed and nothing plaintext exists
@@ -1413,6 +1652,10 @@ def _main():
             token_seconds = min(86400, max(3600, persona_timeout + TOKEN_MARGIN))      # the persona's kubeconfig token outlives its window
             tool_cids, req_tools = [], {}
             cluster = None
+            label = "persona-uat=%s" % uuid.uuid4()
+            net = "persona-uat-" + label.split("=", 1)[1][:8]          # this persona's private docker network (internet open, never the host's)
+            holder = net + "-holder"
+            net_made = []
             sandbox = tempfile.mkdtemp(prefix="persona-uat-")
             sandboxes.append(sandbox)
             tdir = tempfile.mkdtemp(prefix="persona-uat-tr-")          # the agent's streamed transcript: private, outside the sandbox the shell containers mount
@@ -1428,6 +1671,9 @@ def _main():
                 if image:
                     ok = docker.remove(image_cids) and ok
                     del image_cids[:]
+                    if net_made:
+                        ok = docker.network_remove(net) and ok          # after the containers: a network with a member cannot be removed
+                        del net_made[:]
                 return ok and not Cluster.leaked
             img_port = free_port()          # this persona's endpoint: a container of its own, a host port of its own, a request counter of its own
             try:
@@ -1441,7 +1687,18 @@ def _main():
                         fh.write(data)
                 open_modes(sandbox)
                 try:
-                    cid = docker.start(a.image, (img_port, 8080))
+                    if not docker.network_create(net, label):
+                        raise RuntimeError("the persona's network could not be created")
+                    net_made.append(net)
+                    hp = docker.call(*holder_command(net, tools["shell"]))
+                    if hp.returncode != 0 or len(hp.stdout.split()) != 1:
+                        raise RuntimeError("the persona's network holder could not be started")
+                    hcid = hp.stdout.strip()
+                    image_cids.append(hcid)
+                    started.append(hcid)
+                    if not docker.running(hcid):
+                        raise RuntimeError("the persona's network holder is not running")
+                    cid = docker.start(a.image, (img_port, 8080), net=net, alias="endpoint")
                     image_cids.append(cid)
                     started.append(cid)
                     wait_ready(docker, cid, "http://127.0.0.1:%d" % img_port, a.ready_timeout)
@@ -1455,20 +1712,21 @@ def _main():
                 try:
                     for i, tool in enumerate(TOOLS_FOR.get(persona, ())):
                         if tool == "jenkins":
-                            tc = docker.start(tools[tool], (a.port + 1, 8080), env=JENKINS_ENV); tool_cids.append(tc)
+                            tc = docker.start(tools[tool], (a.port + 1, 8080), env=JENKINS_ENV, net=net, alias="jenkins"); tool_cids.append(tc)
                             wait_ready(docker, tc, "http://127.0.0.1:%d" % (a.port + 1), a.ready_timeout, strict=True)
-                            req_tools[tool] = {"container": tc, "endpoint": "http://127.0.0.1:%d" % (a.port + 1)}
+                            req_tools[tool] = {"container": tc, "endpoint": "http://jenkins:8080"}
                         elif tool == "gitlab-runner":
-                            tc = docker.start(tools[tool], (a.port + 2, 9252), tail=("run", "--listen-address=0.0.0.0:9252")); tool_cids.append(tc)
+                            tc = docker.start(tools[tool], (a.port + 2, 9252), tail=("run", "--listen-address=0.0.0.0:9252"), net=net, alias="gitlab-runner"); tool_cids.append(tc)
                             wait_ready(docker, tc, "http://127.0.0.1:%d/metrics" % (a.port + 2), a.ready_timeout)
-                            req_tools[tool] = {"container": tc, "endpoint": "http://127.0.0.1:%d" % (a.port + 2)}
+                            req_tools[tool] = {"container": tc, "endpoint": "http://gitlab-runner:9252"}
                         else:
                             cluster = Cluster(tools[tool], timeout=max(a.ready_timeout * 2, 3))
-                            kc = cluster.provision(token_seconds)
+                            cluster.join(docker, net)
+                            kc = cluster.provision(token_seconds, KIND_SERVER)
                             with open(os.path.join(sandbox, "kubeconfig"), "w") as fh:
                                 fh.write(kc)
                             open_modes(sandbox)
-                            req_tools[tool] = {"endpoint": cluster.server, "kubeconfig": "kubeconfig", "namespace": PERSONA_NS}
+                            req_tools[tool] = {"endpoint": KIND_SERVER, "kubeconfig": "kubeconfig", "namespace": PERSONA_NS}
                 except Exception as e:
                     reason = "a tool container did not start or answer (%s)" % e
                     if not teardown_tools(image=True):
@@ -1480,7 +1738,7 @@ def _main():
                     record(persona, None, "did not run: the image under test stopped\n", "the image under test stopped")
                     continue
                 request = {
-                    "docs_dir": sandbox, "endpoint": "http://127.0.0.1:%d" % img_port, "image": a.image,
+                    "docs_dir": sandbox, "endpoint": "http://endpoint:8080", "image": a.image,
                     "instructions": INSTRUCTIONS[persona] + " " + CLASSIFY,
                     "model": models["PERSONA_UAT_COMPLIANCE_MODEL" if persona == "compliance-reviewer" else "PERSONA_UAT_MODEL"],
                     "persona": persona, "token_budget": budget, "tools": req_tools,
@@ -1494,12 +1752,19 @@ def _main():
                     record(persona, None, "did not run: unexpected loopback listener(s)\n",
                            "an unexpected listener is bound to the loopback (port%s %s): a persona's containers share the host network, so none runs" % ("s" if len(stray) > 1 else "", ", ".join(map(str, stray))))
                     continue
-                label = "persona-uat=%s" % uuid.uuid4()
                 tfile = os.path.join(tdir, "transcript")
-                args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label, "--transcript-file", tfile]
+                jfile = os.path.join(tdir, "journal")
+                args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label, "--network", "container:" + holder, "--transcript-file", tfile, "--journal-file", jfile]
                 ep = "http://127.0.0.1:%d" % img_port
+                # the capture sidecar listens BEFORE the persona's first command (and before the opening scrape, so the driver's own docker work stays outside the persona's window); it is
+                # stopped as soon as the persona ends, before its container goes. It never blocks the persona
+                cap_cid, cap_why = start_capture(docker, tools["capture"], holder)
+                if cap_cid:
+                    image_cids.append(cap_cid)          # removed with the persona's own container after the closing scrape (a failed removal is a failed teardown)
+                    started.append(cap_cid)
                 before = scrape(ep)
-                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile)
+                answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
+                captures[persona] = stop_capture(docker, cap_cid, cap_why)
                 # the window is closed BEHIND everything of this persona: its containers (swept by label), its tool containers and cluster are removed, THEN the counter is
                 # read once no connection to the endpoint is left and it has been unchanged for the quiet interval
                 swept = sweep(docker, label)
@@ -1508,6 +1773,9 @@ def _main():
                 cleaned = cleanup(docker, label, sandbox, tools["shell"])
                 image_gone = docker.remove(image_cids)          # the persona's container goes only now, after its counter was read; whatever completes in it later counts for nobody
                 del image_cids[:]
+                if net_made:
+                    image_gone = docker.network_remove(net) and image_gone          # the persona's network, once nothing is on it
+                    del net_made[:]
                 tools_gone = tools_gone and image_gone
                 if after is UNSETTLED:
                     after = None

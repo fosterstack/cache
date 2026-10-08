@@ -1,4 +1,5 @@
 {
+  "capture": "docker.io/nicolaka/netshoot@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
   "cosign": "gcr.io/projectsigstore/cosign@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8",
   "gitlab-runner": "docker.io/gitlab/gitlab-runner@sha256:1114649f86b818a030549f94624aa1b38a2275045bd47d37027a87f21c48feec",
   "gradle": "docker.io/library/gradle@sha256:3695cd3c4b617ccb7b351ff1481c0f141c5e87a89872dc8ca1e5a8eeac6a85e3",
