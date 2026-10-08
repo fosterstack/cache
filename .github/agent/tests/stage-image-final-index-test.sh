@@ -22,7 +22,7 @@
 # Exit status is non-zero when any case fails.
 set -euo pipefail
 
-ROOT="${AC5_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ROOT="${AC5_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 export ROOT
 T="$(mktemp -d)"
 export T

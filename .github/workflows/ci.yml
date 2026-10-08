@@ -344,7 +344,7 @@ jobs:
         run: bash bin/vex-index-test.sh
 
       - name: the final index in the release chain — made before anything is attested, recorded instead of the built index, recomputed offline, rerun-safe (REQ-REL-010 AC5)
-        run: bash bin/stage-image-final-index-test.sh
+        run: bash .github/agent/tests/stage-image-final-index-test.sh
 
       - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
         run: bash bin/scout-root-cause-test.sh

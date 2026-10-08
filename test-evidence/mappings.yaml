@@ -540,7 +540,7 @@ mappings:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
   - ac: REQ-REL-010-AC5
     evidence:
-      - { type: shell-test, ref: "bin/stage-image-final-index-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/stage-image-final-index-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
