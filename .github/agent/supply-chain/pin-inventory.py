@@ -317,13 +317,14 @@ def _pip_known_opt(t):
 _PIP_INSTALL_FLAGS = {"--no-deps", "--pre", "--user", "--upgrade", "--force-reinstall", "--ignore-installed", "--ignore-requires-python", "--no-build-isolation", "--use-pep517", "--no-use-pep517",
                       "--check-build-dependencies", "--break-system-packages", "--compile", "--no-compile", "--no-warn-script-location", "--no-warn-conflicts", "--prefer-binary", "--require-hashes",
                       "--no-clean", "--no-index", "--dry-run", "--disable-pip-version-check", "--no-cache-dir", "--quiet", "--verbose", "--no-input", "--isolated", "--no-color", "--debug",
-                      "--require-virtualenv", "--no-python-version-warning", "--help", "--version", "--no-binary-all", "--editable", "--upgrade-strategy", "--use-feature", "--use-deprecated",
-                      "--hash", "--config-settings", "--global-option", "--install-option", "--build-option", "--no-user"}
+                      "--require-virtualenv", "--no-python-version-warning", "--help", "--version", "--no-binary-all", "--hash", "--no-user"}
 
 
 def _known_install_opt(t):
     base = t.split("=", 1)[0]
-    return base in _PIP_VALUE_OPTS or base in _PIP_INSTALL_FLAGS or base in _PIP_GLOBAL_VAL or base in _PIP_GLOBAL_BOOL
+    if t.startswith("--"):
+        return base in _PIP_VALUE_OPTS or base in _PIP_INSTALL_FLAGS or base in _PIP_GLOBAL_VAL or base in _PIP_GLOBAL_BOOL
+    return t in _PIP_VALUE_OPTS or t in _PIP_GLOBAL_BOOL or re.fullmatch(r"-[vqUIhV]+", t) is not None or _REF_SHORT.match(t) is not None
 
 
 _PIP_NAME = re.compile(r"[A-Za-z0-9][\w.-]*(?:\[[\w.,\s-]*\])?")
@@ -353,7 +354,7 @@ def _pip_items(tail, out):
                 continue                           # the value of an option this check does not know: never a package
         value_of_option = _takes_value(prev)      # `-r deps.txt` and `-qr deps.txt` name a file, not a package
         prev = t
-        if t.startswith("--") and not value_of_option and not _known_install_opt(t):
+        if t.startswith("-") and len(t) > 1 and not value_of_option and not _known_install_opt(t):
             unmeasured(t)                          # an option unknown to this check (--chdir sub, --anything): unmeasured, and what follows it is its value, not a package
             skip_next = "=" not in t
             keep.append(w)
@@ -566,6 +567,7 @@ class Files(dict):
         self.links = {}
         self.reqrefs = set()
         self.limit = set()
+        self.symlinks = set()          # EVERY tracked symlink (also those that are not read): a reference through a symlinked directory cannot be bound by its text
 
 
 def _is_script_name(n):
@@ -641,7 +643,7 @@ def _tail_file_refs(words, sub="install"):
 
 
 MAX_INCLUDE_DEPTH = 8          # how deep a chain of `-r other.txt` includes is followed; deeper is reported ("scan limit reached"), never dropped silently
-_ENV_REF_RX = re.compile(r"\bPIP_(?:CONSTRAINT|REQUIREMENT)\b[ \t]*[:=][ \t]*(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s#;&|]*))")
+_ENV_REF_RX = re.compile(r"\bPIP_(?:CONSTRAINT|REQUIREMENT)\b[ \t]*[:=][ \t]*(?:\"([^\"\n]*)\"|'([^'\n]*)'|([^\s#;&|,}\]]*))")
 _REQ_INCLUDE = re.compile(r"^(?:--requirement|--constraint|-r|-c)(?:[ \t]*=[ \t]*|[ \t]+|(?=[^\s=-]))(\S.*?)\s*$")
 
 
@@ -650,13 +652,47 @@ def _unmeasured_item(what):
 
 
 def _env_file_refs(text):
-    """The files PIP_CONSTRAINT and PIP_REQUIREMENT name (a workflow env block, an inline assignment, an export): [(name, resolvable)]."""
+    """The files PIP_CONSTRAINT and PIP_REQUIREMENT name. In YAML (a workflow, an action) they are read from the PARSED document: an env mapping with a quoted key, a value on the next line, a block
+    scalar, flow style or a YAML escape (workflow, job, step and composite-action env), and an assignment or export inside any decoded string (a run block). In a script, from the raw text: a
+    quoted or unquoted assignment, an export, an inline assignment before pip. [(name, resolvable)]"""
     out = []
-    for m in _ENV_REF_RX.finditer(re.sub(r"\\\r?\n", "", text)):
-        val = next((g for g in m.groups() if g is not None), "")
-        for w in val.split():
+
+    def add(val):
+        for w in str(val).split():
             out.append((w, not any(c in w for c in "$`{")))
-    return out
+
+    def scan(string):
+        for m in _ENV_REF_RX.finditer(re.sub(r"\\\r?\n", "", string)):
+            add(next((g for g in m.groups() if g is not None), ""))
+    doc = None
+    if "PIP_" in text and not text.startswith("#!"):
+        try:
+            doc = yaml.load(text, Loader=yaml.BaseLoader)
+        except (yaml.YAMLError, RecursionError):
+            doc = None                                  # not YAML, or refused elsewhere with its own message
+    if isinstance(doc, (dict, list)):
+        work = [doc]
+        while work:                                     # an explicit work-list: any nesting depth
+            node = work.pop()
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k in ("PIP_CONSTRAINT", "PIP_REQUIREMENT") and isinstance(v, str):
+                        add(v)
+                    elif isinstance(k, str):
+                        scan(k)
+                    work.append(v)
+            elif isinstance(node, list):
+                work.extend(node)
+            elif isinstance(node, str):
+                scan(node)
+    else:
+        scan(text)
+    seen, res = set(), []
+    for item in out:
+        if item not in seen:
+            seen.add(item)
+            res.append(item)
+    return res
 
 
 def _req_include_refs(text):
@@ -671,26 +707,68 @@ def _req_include_refs(text):
 
 
 def _norm_ref(ref):
-    """The referenced path without leading ./, any ../ segments or doubled separators."""
-    return "/".join(p for p in ref.split("/") if p not in ("", ".", ".."))
+    """(the referenced path normalised like posixpath.normpath, whether that was clean): no ./ and no doubled separators, an interior `..` collapses with the segment before it, a leading `..`
+    that would leave the repository is dropped. Not clean: a `..` that escapes AFTER a real segment (`a/../../x`), where the text no longer says which file is meant."""
+    out, clean, seen = [], True, False
+    for part in ref.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if out:
+                out.pop()
+            elif seen:
+                clean = False
+            continue
+        out.append(part)
+        seen = True
+    return "/".join(out), clean
 
 
-def _ref_matches(ref, names):
-    """The paths of `names` that a pip FILE argument can name, by PATH SUFFIX ALONE: equal to the normalised reference or ending with `/` + it. Where the command runs (cd, working-directory, env -C,
-    sudo -D, uv --directory ...) is never modelled: a decoy with the same suffix just makes two candidates. Nothing for a URL, an absolute path or a variable."""
-    n = _norm_ref(ref)
+class _PathIndex:
+    """Tracked paths indexed by path (a set) and by last segment (a dict), and the basenames of the tracked symlinks: a candidate lookup is O(1), not a scan of every file."""
+    def __init__(self, names, symlinks=()):
+        self.names = set()
+        self.by_base = {}
+        self.link_bases = {x.rsplit("/", 1)[-1] for x in symlinks}
+        for n in names:
+            self.add(n)
+
+    def add(self, n):
+        if n not in self.names:
+            self.names.add(n)
+            self.by_base.setdefault(n.rsplit("/", 1)[-1], []).append(n)
+
+    def __contains__(self, n):
+        return n in self.names
+
+
+def _ref_matches(ref, idx):
+    """The files a pip FILE argument can name: EVERY tracked file with the same last segment (all are read), wherever it sits and however the directories in front are spelled (a symlinked
+    directory or a `..` makes the text useless). Nothing for a URL, an absolute path or a variable."""
+    n, _clean = _norm_ref(ref)
     if not n or "://" in ref or ref.startswith("/") or "$" in ref or "`" in ref:
         return []
-    suf = "/" + n
-    return sorted(c for c in names if c == n or c.endswith(suf))
+    return sorted(idx.by_base.get(n.rsplit("/", 1)[-1], ()))
 
 
-def _include_matches(ref, from_path, names):
-    """An include inside a requirements file: the file next to the including one when it exists (pip's own rule), otherwise the suffix rule."""
+def _ref_is_bound(ref, cands, idx):
+    """A reference is BOUND (nothing is unmeasured) only when exactly one file has that last segment, its path equals the normalised reference or ends with a separator and it, the
+    normalisation was clean, and no tracked symlink has the name of a directory in front of the file. Anything else: all candidates are read and the reference is unmeasured too."""
+    n, clean = _norm_ref(ref)
+    if len(cands) != 1 or not clean:
+        return False
+    c = cands[0]
+    if not (c == n or c.endswith("/" + n)):
+        return False
+    return not any(seg in idx.link_bases for seg in n.split("/")[:-1])
+
+
+def _include_matches(ref, from_path, idx):
+    """An include inside a requirements file: the file next to the including one when it exists (pip's own rule), otherwise the rule for every reference."""
     exact = posixpath.normpath(posixpath.join(posixpath.dirname(from_path), ref))
-    if exact in names and not exact.startswith("..") and not ref.startswith("/"):
+    if exact in idx and not exact.startswith("..") and not ref.startswith("/"):
         return [exact]
-    return _ref_matches(ref, names)
+    return _ref_matches(ref, idx)
 
 
 def tree_files(root, rev, soft=None):
@@ -730,6 +808,8 @@ def tree_files(root, rev, soft=None):
             meta, _, rn = ent.partition(b"\t")
             if rn and not meta.startswith(b"160000"):          # a gitlink (submodule) is a directory, not a file to read
                 names[rn.decode("utf-8", "replace")] = rn
+                if meta.startswith(b"120000"):
+                    out.symlinks.add(rn.decode("utf-8", "replace"))
         rbase = os.fsencode(root)
 
         def read_wt(n, force=False):
@@ -761,6 +841,8 @@ def tree_files(root, rev, soft=None):
         if len(parts) < 4 or parts[1] != "blob":
             continue                              # a gitlink (submodule) has no blob to read
         entries[n] = (parts[0], parts[2], int(parts[3]) if parts[3].isdigit() else 0)
+        if parts[0] == "120000":
+            out.symlinks.add(n)
 
     def read_rev(n, force=False):
         mode, blob, size = entries[n]
@@ -807,7 +889,8 @@ def _prefetch(root, blobs):
 def _read_refs(out, tracked, read):
     """Second pass: every tracked file a script, workflow or action feeds to pip with -r or -c (or names in PIP_CONSTRAINT / PIP_REQUIREMENT, or gives pip-sync) is read too, whatever it is called, and
     so is every file those requirements files include, to a bounded depth. A reference is bound by PATH SUFFIX alone (see _ref_matches); every candidate is read."""
-    todo, done = [], set()
+    todo, done = collections.deque(), set()
+    tracked = _PathIndex(tracked, out.symlinks)        # indexed once: a reference is a lookup by last segment
 
     def take(c, d):
         if c not in out:
@@ -823,9 +906,9 @@ def _read_refs(out, tracked, read):
             if ok:
                 for c in _ref_matches(ref, tracked):
                     take(c, 1)
-    todo += [(p, 0) for p in sorted(out) if _requirements_name(p) and p not in out.links]
+    todo.extend((p, 0) for p in sorted(out) if _requirements_name(p) and p not in out.links)
     while todo:
-        f, d = todo.pop(0)
+        f, d = todo.popleft()
         if f in done or f in out.links:
             continue
         done.add(f)
@@ -1008,7 +1091,8 @@ def _uses(u, node, out, labels):
 
 _PIP_VALUE_OPTS = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target",
                    "--prefix", "--root", "--cache-dir", "--python", "--platform", "--python-version", "--implementation", "--abi", "--only-binary", "--no-binary", "--progress-bar",
-                   "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action"}
+                   "--proxy", "--retries", "--timeout", "--trusted-host", "--src", "--upgrade-strategy", "--report", "--log", "--exists-action", "--cert", "--client-cert", "--root-user-action",
+                   "--config-settings", "-C", "--use-feature", "--global-option", "--install-option", "--build-option", "--use-deprecated", "--keyring-provider", "--lang", "--constraint-file"}
 # docker run/pull/create options that take a value (the next word is not the image); options not listed here and not in _DOCKER_BOOL_OPTS withhold the --pull=never exemption
 _DOCKER_VALUE_OPTS = {
     "--add-host", "--annotation", "--blkio-weight", "--cap-add", "--cap-drop", "--cgroup-parent", "--cgroupns", "--cidfile", "--config", "--context",
@@ -1456,16 +1540,19 @@ def _scan_file(path, text, reqrefs):
     return found
 
 
-def _resolve_reqrefs(found, path, files):
+def _resolve_reqrefs(found, path, files, idx):
     """The pip FILE arguments a file named (markers left by the readers): bound by path suffix. EXACTLY ONE candidate was read (it is in scope as a requirements file): nothing more. None, or
     more than one (all of them were read): the reference is also an unmeasured item."""
-    links = getattr(files, "links", {})
-    names = [c for c in files if c not in links]
     for it in [i for i in found if i.name == "pypi/(reqref)"]:
         found.remove(it)
         ref = it.version
-        cands = _include_matches(ref, path, names) if it.why == "nested" else _ref_matches(ref, names)
-        if len(cands) != 1:
+        if it.why == "nested":
+            cands = _include_matches(ref, path, idx)
+            bound = len(cands) == 1 and (posixpath.normpath(posixpath.join(posixpath.dirname(path), ref)) == cands[0] or _ref_is_bound(ref, cands, idx))
+        else:
+            cands = _ref_matches(ref, idx)
+            bound = _ref_is_bound(ref, cands, idx)
+        if not bound:
             found.append(_unmeasured_item(ref))
 
 
@@ -1484,6 +1571,7 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
     if exempt_set is not None:
         exempt = set(exempt_set)
     reqrefs = getattr(files, "reqrefs", set())
+    path_index = _PathIndex((c for c in files if c not in getattr(files, "links", {})), getattr(files, "symlinks", ()))
     for pi in problems:
         items.setdefault(pi.key, pi)
     for lp, target in sorted(getattr(files, "links", {}).items()):          # a symlink with an in-scope name (script, workflow, action, requirements, version, checksum) whose target is not itself in scope cannot be measured: fail closed
@@ -1498,7 +1586,7 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
             continue                          # listed in the reviewed manifest, bytes unchanged: fixture data (AC11); the manifest itself is not a source of items
         try:
             found = _scan_file_cached(path, text, reqrefs)
-            _resolve_reqrefs(found, path, files)
+            _resolve_reqrefs(found, path, files, path_index)
         except RuntimeError as e:
             if mode != "history":
                 raise

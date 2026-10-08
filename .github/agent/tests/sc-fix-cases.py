@@ -3322,6 +3322,124 @@ def i_pip_options_after_the_subcommand():
             ks = sorted(repo_items(files)[0])
             assert PYPIN in ks and not [k for k in ks if "(unmeasured:" in k or k.startswith(("package:pypi/out", "package:pypi/r@", "package:pypi/p@"))], (line, list(files), ks)
 
+
+# ======================================================================================================================================
+# step 8 round 4: references normalised like normpath, environment variables read from the PARSED YAML, linear time for references
+# ======================================================================================================================================
+@case("age", "AC11", "i: an INTERIOR `..` in a pip file reference is collapsed like a normal path before the suffix rule (a leading `..` that leaves the repository is dropped): `a/../x.txt`, `a/b/../../x.txt`, `sub/../sub/x.txt`, `a/x.txt/../x.txt`, `./a/./x.txt`, `../../x.txt`, `a//../x.txt` name what they say, so a decoy with the segments joined (`a/x.txt`, `a/b/x.txt`) cannot hide the real file: the real file is read (its pins are items)")
+def i_interior_dotdot_is_collapsed():
+    for ref, real, decoy in (("a/../x.txt", "x.txt", "a/x.txt"), ("a/b/../../x.txt", "x.txt", "a/b/x.txt"), ("sub/../sub/x.txt", "sub/x.txt", "sub/sub/x.txt"), ("a/x.txt/../x.txt", "a/x.txt", "b/a/x.txt"),
+                             ("./a/./x.txt", "a/x.txt", "a/a/x.txt"), ("../../x.txt", "x.txt", "../x.txt"), ("a//../x.txt", "x.txt", "a/x.txt"), ("a/./b/../c/../x.txt", "a/x.txt", "a/b/c/x.txt")):
+        files = {"bin/x.sh": SHEBANG_BASH + "pip install -r %s\n" % ref, real: "evil==1.0\n"}
+        if not decoy.startswith(".."):
+            files[decoy] = "ok==1.0\n"
+        ks = sorted(repo_items(files)[0])
+        assert "package:pypi/evil@1.0" in ks, (ref, ks)
+    ks = sorted(repo_items({"bin/x.sh": SHEBANG_BASH + "pip install -r a/../x.txt\n", "x.txt": "evil==1.0\n"})[0])
+    assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], ("one candidate after the collapse", ks)
+
+
+ENV_YAML = {"value on the next line": "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_CONSTRAINT:\n        deps/c.txt\n    steps:\n      - run: pip install a==1\n",
+            "literal block": "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_CONSTRAINT: |\n        deps/c.txt\n    steps:\n      - run: pip install a==1\n",
+            "folded block": "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_REQUIREMENT: >-\n        deps/c.txt\n    steps:\n      - run: pip install a==1\n",
+            "double-quoted key": "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      \"PIP_CONSTRAINT\": deps/c.txt\n    steps:\n      - run: pip install a==1\n",
+            "single-quoted key": "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      'PIP_REQUIREMENT': 'deps/c.txt'\n    steps:\n      - run: pip install a==1\n",
+            "flow mapping": "on: push\njobs:\n  j:\n    runs-on: u\n    env: {PIP_CONSTRAINT: deps/c.txt}\n    steps:\n      - run: pip install a==1\n",
+            "workflow env": "on: push\nenv:\n  PIP_CONSTRAINT: deps/c.txt\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: pip install a==1\n",
+            "step env, block": "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - env:\n          PIP_CONSTRAINT: |-\n            deps/c.txt\n        run: pip install a==1\n",
+            "escaped value": "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_CONSTRAINT: \"deps/\\x63.txt\"\n    steps:\n      - run: pip install a==1\n"}
+
+
+@case("age", "AC11", "i: PIP_CONSTRAINT and PIP_REQUIREMENT are read from the PARSED YAML, not only from raw lines: a value on the next line, a literal or folded block scalar, a quoted key, a single-quoted value, a flow mapping, workflow, job and step env, a value with a YAML escape, and a composite action's step env all name the file (its pins are items, nothing unmeasured); in scripts a quoted assignment before pip, an export with quotes, `env NAME=value pip` and two variables at once do the same; a YAML anchor or alias is refused, loudly, in both modes")
+def i_env_files_from_parsed_yaml():
+    for label, text in ENV_YAML.items():
+        repo = history_repo({WFPATH: text, "deps/c.txt": "evil==1.0\n"})
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], (label, mode, ks)
+    act = "name: a\nruns:\n  using: composite\n  steps:\n    - run: pip install a==1\n      shell: bash\n      env:\n        'PIP_CONSTRAINT':\n          deps/c.txt\n"
+    assert "package:pypi/evil@1.0" in sorted(inv.load_at(history_repo({".github/actions/a/action.yml": act, "deps/c.txt": "evil==1.0\n"}), None))
+    for line in ('PIP_CONSTRAINT="deps/c.txt" pip install a==1', "export PIP_CONSTRAINT='deps/c.txt'", "env PIP_CONSTRAINT=deps/c.txt pip install a==1", "PIP_CONSTRAINT=deps/c.txt PIP_REQUIREMENT=deps/d.txt pip install a==1"):
+        repo = history_repo({"bin/x.sh": SHEBANG_BASH + line + "\n", "deps/c.txt": "evil==1.0\n", "deps/d.txt": "worse==2.0\n"})
+        ks = sorted(inv.load_at(repo, None))
+        assert "package:pypi/evil@1.0" in ks and not [k for k in ks if "(unmeasured:" in k], (line, ks)
+    alias = "on: push\njobs:\n  j:\n    runs-on: u\n    env: &e\n      PIP_CONSTRAINT: deps/c.txt\n    steps:\n      - env: *e\n        run: pip install a==1\n"
+    repo = history_repo({WFPATH: alias, "deps/c.txt": "evil==1.0\n"})
+    for mode in (None, "HEAD"):
+        try:
+            inv.load_at(repo, mode)
+        except RuntimeError as e:
+            assert "alias" in str(e) or "anchor" in str(e), str(e)
+        else:
+            raise AssertionError("an alias was read")
+
+
+@case("age", "AC11", "i: references are LINEAR in the number of files: ~45000 tracked files (9000 scripts feeding a requirements file, 18000 requirements files that each include another by a path that does not exist next to them, 20000 others) are read in bounded time (a child process killed at the deadline); files are indexed by last segment, never scanned per reference")
+def i_references_are_linear():
+    d = history_repo({"README.md": "x\n"})
+    put = lambda data: subprocess.run(["git", "-C", d, "hash-object", "-w", "--stdin"], input=data, capture_output=True, check=True).stdout.strip().decode()
+    blob, sb, inc = put(b"pk==1.0\n"), put((SHEBANG_BASH + "pip install -r deps/p1/req-1.txt\n").encode()), put(b"-r ../common/base.txt\nq==1.0\n")
+    lines = []
+    for i in range(9000):
+        lines.append("100755 %s 0\tbin/s%d.sh" % (sb, i))
+        lines.append("100644 %s 0\tdeps/p%d/req-%d.txt" % (blob, i % 50, i))
+    lines += ["100644 %s 0\tdeps/g%d/requirements.txt" % (inc, i) for i in range(18000)]
+    lines.append("100644 %s 0\tcommon/base.txt" % blob)
+    lines += ["100644 %s 0\tfiles/d%d/f%d.dat" % (blob, i % 300, i) for i in range(20000)]
+    subprocess.run(["git", "-C", d, "update-index", "--index-info"], input=("\n".join(lines) + "\n").encode(), check=True, capture_output=True)
+    _git(d, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "many")
+    code = ("import importlib.util,sys,time\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
+            "ks=m.load_at(sys.argv[2], 'HEAD')\nprint(len(ks))\n")
+    try:
+        r = subprocess.run([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py"), d], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("45000 files with 27000 references did not finish in 30 s")
+    assert r.returncode == 0, r.stderr[-300:]
+    assert int(r.stdout.split()[0]) >= 1, r.stdout
+
+@case("age", "AC11", "i: a pip FILE is bound only when it is UNAMBIGUOUS: every tracked file with the reference's last segment is a candidate and is READ; nothing is unmeasured only when exactly one such file exists, its path equals the normalised reference or ends with it, the normalisation was clean (no `..` escaping after a real segment) and no tracked symlink has the name of a directory in front of it: Exploit A (`sub/../deps.lst` with the real file at the root and a decoy at sub/deps.lst, also through PIP_REQUIREMENT), Exploit B (`link/deps.lst` where link is a tracked symlink to real/, with a decoy a/link/deps.lst, and with no decoy), `a/../../x.txt`; the plain cases stay bound")
+def i_unambiguous_binding_only():
+    def ks_of(files):
+        return sorted(repo_items(files)[0])
+    unm = lambda ks: [k for k in ks if "(unmeasured:" in k]
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r sub/../deps.lst\n", "deps.lst": "evil==1.0\n", "sub/deps.lst": "ok==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and "package:pypi/ok@1.0" in ks and len(unm(ks)) == 1, ("Exploit A", ks)
+    wf = "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n      PIP_REQUIREMENT: sub/../deps.lst\n    steps:\n      - run: pip install a==1\n"
+    ks = ks_of({WFPATH: wf, "deps.lst": "evil==1.0\n", "sub/deps.lst": "ok==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and unm(ks), ("Exploit A, PIP_REQUIREMENT", ks)
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r link/deps.lst\n", "link": ("symlink", "real"), "real/deps.lst": "evil==1.0\n", "a/link/deps.lst": "ok==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and "package:pypi/ok@1.0" in ks and unm(ks), ("Exploit B", ks)
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r link/deps.lst\n", "link": ("symlink", "real"), "real/deps.lst": "evil==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and unm(ks), ("a symlinked directory, no decoy: read, and unmeasured", ks)
+    repo = history_repo({"bin/x.sh": SHEBANG_BASH + "pip install -r sub/deps.lst\n", "sub": ("symlink", "../outside"), "a/sub/deps.lst": "ok==1.0\n"})
+    for mode in (None, "HEAD"):
+        ks = sorted(inv.load_at(repo, mode))
+        assert "package:pypi/ok@1.0" in ks and unm(ks), ("the only suffix match sits behind another directory of the same name than the symlink: still not bound", mode, ks)
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r real/deps.lst\n", "real/deps.lst": "evil==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and not unm(ks), ("control", ks)
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r a/../../x.txt\n", "x.txt": "evil==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and unm(ks), ("an escaping .. after a real segment is not clean", ks)
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r ../x.txt\n", "x.txt": "evil==1.0\n"})
+    assert "package:pypi/evil@1.0" in ks and not unm(ks), ("a leading .. is dropped", ks)
+    ks = ks_of({"bin/x.sh": SHEBANG_BASH + "pip install -r nothing/y.txt\n", "z/y.txt": "a==1\n", "other.txt": "evil==1.0\n"})
+    assert "package:pypi/a@1" in ks and unm(ks) and "package:pypi/evil@1.0" not in ks, ("same last segment only", ks)
+
+
+@case("age", "AC11", "i: options with a value after the install subcommand take their value out of the package list: --config-settings a=b, -C a=b, --global-option x, --install-option y, --use-feature fast-deps, --build-option z, --implementation cp, --abi cp311, --platform linux_x86_64, --python-version 3.11 give the pin and NO unmeasured item and no package named after a value; an unknown SHORT option (-x value, -z) is one unmeasured item and its value is never a package, like an unknown long one; known clusters (-qq, -U, -vv, -Ur FILE) give no finding")
+def i_value_options_and_unknown_short_options():
+    for opt in ("--config-settings a=b", "-C a=b", "--global-option x", "--install-option y", "--use-feature fast-deps", "--build-option z", "--implementation cp", "--abi cp311", "--platform linux_x86_64", "--python-version 3.11"):
+        for files in both_routes("pip install %s pyyaml==5.3" % opt):
+            ks = sorted(repo_items(files)[0])
+            assert PYPIN in ks and not [k for k in ks if "(unmeasured:" in k or k.startswith(("package:pypi/a@", "package:pypi/b@", "package:pypi/x@", "package:pypi/y@", "package:pypi/z@", "package:pypi/cp", "package:pypi/fast"))], (opt, list(files), ks)
+    for opt in ("-x value", "-z", "-x=value"):
+        for files in both_routes("pip install pyyaml==5.3 %s" % opt):
+            ks = sorted(repo_items(files)[0])
+            assert PYPIN in ks and len([k for k in ks if "(unmeasured:" in k]) == 1 and not [k for k in ks if k.startswith("package:pypi/value")], (opt, list(files), ks)
+    for opt in ("-qq", "-U", "-vv", "-qU", "-Ur req.txt"):
+        for files in both_routes("pip install pyyaml==5.3 %s" % opt):
+            ks = sorted(repo_items({**files, "req.txt": "ok==1.0\n"})[0])
+            assert PYPIN in ks and not [k for k in ks if "(unmeasured:" in k], (opt, list(files), ks)
+
 def main(argv):
     suites = {c[0] for c in CASES}
     suite = argv[1] if len(argv) > 1 else "all"
