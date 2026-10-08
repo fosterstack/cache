@@ -2541,6 +2541,15 @@ def _():
     ok(not any(c.startswith("python3 bin/vex-index.py verify") or c.startswith("python3 bin/vex-index.py push") for c in cs), "verify or push ran after compute reported another base digest")
 
 
+@case("7", "documentation: the comment above the platform predicate describes the verified local final index, not an imagetools inspect below it")
+def _():
+    t = wf_text("stage-image.yml")
+    ok("imagetools inspect below" not in t, "a comment still describes an imagetools inspect below it")
+    i = t.index("# The predicate's subjects are the FINAL index digests")
+    block_ = re.sub(r"\s*\n\s*#?\s*", " ", t[i:t.index("- name:", i)])
+    ok("local" in block_ and "final index" in block_, "the comment does not say the platform list comes from the locally computed, verified final index: %r" % block_[:300])
+
+
 def main():
     if os.environ.get("AC5_DUMP_GOLDEN"):
         print(json.dumps({"frozen": {n: frozen_paths(n) for n in FROZEN_FILES}, "uses": {n: uses_pins(n) for n in USES_FILES}, "outer": {n: outer_paths(n) for n in USES_FILES}}, indent=0, sort_keys=True))

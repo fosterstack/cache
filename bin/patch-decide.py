@@ -51,6 +51,15 @@ VENDOR_ALONE = re.compile(r"(?i)(?:(?<![a-z0-9])|(?<=[a-z0-9])(?-i:(?=[A-Z])))("
 MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   # every part lowercase (Sonnet r3c, NEW-BLOCKER-3)
 
 
+# a vendor or model word anywhere in a version, glued to the number or not: the version is the one place a name can hide
+VERSION_AT = re.compile(r"(@)([^\s,;)\]}`'\">]+)")
+ANYWHERE = re.compile(r"(?i)" + _sep("google", "microsoft", "amazon", "aws", "azure", "meta"))
+
+
+def _guard_version(m):
+    return m.group(1) + ("<redacted>" if VENDOR.search(m.group(2)) or ANYWHERE.search(m.group(2)) else m.group(2))
+
+
 def _alone(m):
     text, i, j = m.string, m.start(), m.end()
     while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;`":
@@ -313,7 +322,7 @@ def daily_cut(ships, cut_today):
 
 
 def _clean(s):
-    return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
+    return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", VERSION_AT.sub(_guard_version, str(s))))
 
 
 CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")

@@ -1104,6 +1104,22 @@ for vers, keep in (("v1.2.3", True), ("1.2.3", True), ("v0.0.0-20200101-abcdef",
     check("redaction: a purl whose version is %r is %s" % (vers, "kept" if keep else "redacted when it names a vendor"),
           (("@" + vers) in out_) if keep else ((vers.lower() not in ("azure", "google")) or "<redacted>" in out_ or ("@" + vers) not in out_), out_)
 check("redaction: a purl whose version is a vendor word is redacted", "<redacted>" in P._clean("pkg:golang/example.com/foo@Azure") and "<redacted>" in P._clean("pkg:golang/example.com/foo@Google"), P._clean("pkg:golang/example.com/foo@Azure"))
+# --- consultation round (REQ-REL-009-AC14): a vendor or model word in a VERSION is redacted, glued to the number or not
+VENDOR_RX = re.compile(r"(?i)azure|google|aws|amazon|microsoft|meta|claude|gemini|openai")
+BAD_VERSIONS = ["v1azure", "v1Azure", "v1AZURE", "v1aws", "v1google", "v1microsoft", "1azure", "1Azure", "1.0-azure", "1.0-Azure", "v1.0.0-google", "v1.0.0+aws",
+                "v1.0.0+build.Azure", "v1.0.0+build.azure", "v1.0.0-rc.1+amazon", "1.0.0-meta", "v2.0.0-alpha.google1", "azure", "Azure", "AZURE", "v1claude", "v1.0-gemini", "1.0.0-openai"]
+for vers in BAD_VERSIONS:
+    for ident in ("pkg:golang/example.com/foo@%s", "example.com/foo@%s", "pkg:maven/org.example/foo@%s"):
+        for tmpl in ("%s", "+%s", "-%s", "[%s]", "`%s`", "x,+%s,y"):
+            out_ = P._clean(tmpl % (ident % vers))
+            check("redaction: a version %r in %r is redacted" % (vers, tmpl % (ident % vers)), not VENDOR_RX.search(out_) and "<redacted>" in out_, out_)
+    ls_ = pl_notes(("pkg:golang/example.com/foo@v1.0.0",), ("pkg:golang/example.com/foo@%s" % vers,))
+    check("AC14 the notes of a product list moving to version %r name no vendor or model" % vers, len(ls_) == 1 and not VENDOR_RX.search(ls_[0]), ls_)
+for vers in ("v1.2.3", "1.2.3", "v0.0.0-20200101-abcdef", "1.0.0-rc.1", "v1.0.0+build.5", "v2.0.0-beta.3+exp.sha.5114f85"):
+    out_ = P._clean("+pkg:golang/google.golang.org/grpc@%s" % vers)
+    check("redaction: a plain version %r keeps a vendor-named module path intact" % vers, ("+pkg:golang/google.golang.org/grpc@%s" % vers) in out_, out_)
+    out_ = P._clean("-pkg:maven/com.google.guava/guava@%s" % vers)
+    check("redaction: a plain version %r keeps a vendor-named maven coordinate intact" % vers, ("-pkg:maven/com.google.guava/guava@%s" % vers) in out_, out_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

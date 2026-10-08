@@ -187,10 +187,10 @@ jobs:
           mv /tmp/digests.tmp /tmp/digests.json
           echo "digests=$(jq -c . /tmp/digests.json)" >> "$GITHUB_OUTPUT"
 
-      # The predicate's subjects are the FINAL index digests made above. The
-      # imagetools inspect below reads the children of those final indexes —
-      # content-addressed, so a child listed in a signed index is covered by
-      # the signature on the index digest.
+      # The predicate's subjects are the FINAL index digests made above. Its
+      # platform list is read from the locally computed and verified final
+      # index (never a second registry read) — content-addressed, so a child
+      # listed in a signed index is covered by the signature on the index digest.
       - name: upload the OCI archives (pr scan check consumes the exact candidate bytes)
         if: inputs.mode == 'pr' && inputs.upload-oci
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
