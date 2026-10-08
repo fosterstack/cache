@@ -1143,7 +1143,7 @@ requirements:
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
       by an automated bump.
-    source: [.github/workflows/scan.yml, bin/inspector-gate.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml]
+    source: [.github/workflows/scan.yml, bin/inspector-gate.py, bin/inspector-reuse.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml]
     tier: community
     introduced: v0.2.1
     origin: audit-2026-09-15; v0.2.0 release-pipeline scan failure
@@ -1171,6 +1171,13 @@ requirements:
         given: a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor)
         when: the scheduled toolchain-freshness job runs
         then: it opens a pull request bumping the go directive in both modules to that release
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      # Why the SBOM and not the image digest: every commit stamps its id into the binary, so digests never repeat.
+      - id: REQ-REL-004-AC5
+        given: "an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day"
+        when: the scan check or the rescan would call Amazon Inspector for it
+        then: "it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

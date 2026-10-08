@@ -194,6 +194,7 @@ COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
 ACTIONS = {
     "actions/attest": "node: signs attestations; no image run",
     "actions/attest-build-provenance": "composite over actions/attest; no image run",
+    "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC5); no image run",
     "actions/checkout": "node: git checkout",
     "actions/create-github-app-token": "node: mints a token",
     "actions/dependency-review-action": "node: GitHub API diff review",

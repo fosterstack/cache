@@ -220,39 +220,87 @@ jobs:
           aws-region: ${{ env.INSPECTOR_REGION }}
           role-session-name: cache-pr-scan-${{ github.run_id }}
 
+      # Same-day reuse of Amazon Inspector results (REQ-REL-004-AC5): keyed by the SBOM's package inventory (bin/inspector-reuse.py),
+      # stored in the Actions cache, one entry per UTC day per run. The restore key never matches exactly, so restore-keys
+      # picks the newest same-day entry; a run that only reused saves nothing. Same-repo runs only (no fork reads or writes).
+      - name: Amazon Inspector - today's date (UTC) for the same-day reuse
+        id: insp-date
+        if: matrix.scanner == 'inspector'
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - restore today's results (same-repo runs only)
+        if: matrix.scanner == 'inspector' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/inspector-cache
+          key: inspector-${{ steps.insp-date.outputs.date }}-${{ github.run_id }}-miss
+          restore-keys: inspector-${{ steps.insp-date.outputs.date }}-
+
       - name: Amazon Inspector scan every loaded image
+        id: insp-scan
         if: matrix.scanner == 'inspector'
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
           # inspector-sbomgen inventories each child on the runner; only the
-          # SBOM leaves the runner. Identical inventories (a variant's two
-          # platform children usually match) are sent once and their verdict
-          # reused. bin/inspector-gate.py prints the package count, applies
-          # the published VEX, and returns 0 clean / 1 findings / 2 did not run.
-          mkdir -p /tmp/insp; rc=0; sent=0
+          # SBOM leaves the runner. bin/inspector-reuse.py keys the inventory
+          # (package names and versions only): an inventory Inspector already
+          # scanned today (an earlier image of this run, or the day's cache)
+          # is reused, anything else calls ScanSbom once and stores the answer
+          # (REQ-REL-004-AC5). bin/inspector-gate.py prints the package count,
+          # applies the published VEX to the findings, reused or fresh, and
+          # returns 0 clean / 1 findings / 2 did not run.
+          mkdir -p /tmp/insp /tmp/inspector-cache; rc=0; sent=0; stored=0; reused=0
+          # the UTC day is read from the clock at each decision (never once per run); a fresh answer is cached only if the
+          # clock still reads that day when it arrives (UTC midnight during the call: used this run, not cached)
           echo "## Amazon Inspector" >> "$GITHUB_STEP_SUMMARY"
           while read -r ref; do
             tag="${ref##*:}"
             if ! inspector-sbomgen container --image "${ref}" --outfile "/tmp/insp/${tag}.sbom.json" --disable-progress-bar; then
               echo "::error::inspector-sbomgen could not inventory ${ref} — did not run, not a clean pass" >&2; rc=2; continue
             fi
-            key=$(jq -S '[.components[]? | .purl // (.name + "@" + (.version // ""))] | sort' "/tmp/insp/${tag}.sbom.json" | sha256sum | cut -c1-16)
-            if [ ! -f "/tmp/insp/${key}.findings.json" ]; then
+            key=$(python3 bin/inspector-reuse.py key "/tmp/insp/${tag}.sbom.json") || { echo "::error::no inventory key for ${ref} — did not run, not a clean pass" >&2; rc=2; continue; }
+            day=$(date -u +%F)
+            verdict=$(python3 bin/inspector-reuse.py decide /tmp/inspector-cache "${day}" "/tmp/insp/${tag}.sbom.json") || verdict=call
+            if [ "${verdict%%$'\n'*}" = reuse ] && cp "${verdict#*$'\n'}" "/tmp/insp/${key}.findings.json"; then
+              reused=$((reused+1))
+            else
+              rm -f "/tmp/insp/${key}.findings.json"
               aws inspector-scan scan-sbom --sbom "file:///tmp/insp/${tag}.sbom.json" --output-format CYCLONE_DX_1_5 \
                 > "/tmp/insp/${key}.findings.json" || { echo "::error::inspector-scan:ScanSbom failed for ${ref} — did not run, not a clean pass" >&2; rm -f "/tmp/insp/${key}.findings.json"; rc=2; continue; }
+              if ! python3 bin/inspector-reuse.py validate "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json"; then
+                echo "::error::the ScanSbom answer for ${ref} is not the response for this image's inventory — did not run, not a clean pass" >&2; rm -f "/tmp/insp/${key}.findings.json"; rc=2; continue
+              fi
               sent=$((sent+1))
+              if [ "$(date -u +%F)" != "${day}" ]; then
+                echo "::notice::UTC midnight passed during the ScanSbom call for ${ref}: its answer is used this run and not cached" >&2
+              elif python3 bin/inspector-reuse.py store /tmp/inspector-cache "${day}" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json"; then
+                stored=$((stored+1))
+              else
+                echo "::warning::the validated ScanSbom answer for ${ref} could not be cached" >&2
+              fi
             fi
             out=$(python3 bin/inspector-gate.py "${tag}" "/tmp/insp/${tag}.sbom.json" "/tmp/insp/${key}.findings.json" .vex/fosterstack-cache.openvex.json) && c=0 || c=$?
             echo "${out}"; echo "- ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
             [ "$c" -gt "$rc" ] && rc=$c
           done < /tmp/refs.txt
-          echo "- SBOMs assessed: ${sent} (identical inventories assessed once)" >> "$GITHUB_STEP_SUMMARY"
+          echo "fresh=${stored}" >> "$GITHUB_OUTPUT"
+          echo "- SBOMs assessed: ${sent} sent to Inspector, ${reused} reused (same inventory, same UTC day)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -eq 1 ]; then
             echo "::error::Amazon Inspector found vulnerabilities. Fix the dependency, or publish a VEX statement via the audit-lane review." >&2
           elif [ "$rc" -ge 2 ]; then
             echo "::error::Amazon Inspector did not run on every image — a pipeline failure, not a finding and not a clean pass." >&2
           fi
           exit "$rc"
+
+      - name: Amazon Inspector - the UTC day at save time
+        id: insp-save-day
+        if: always() && matrix.scanner == 'inspector'
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)
+        if: always() && matrix.scanner == 'inspector' && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/inspector-cache
+          key: inspector-${{ steps.insp-save-day.outputs.date }}-${{ github.run_id }}
 
       # The SBOMs and the raw ScanSbom responses, as evidence of what was
       # inventoried and what came back (kept even when the leg is red).
