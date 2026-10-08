@@ -3524,6 +3524,83 @@ def i_non_scalar_env_value():
         ks = sorted(repo_items({WFPATH: head + env + tail})[0])
         assert len(unm(ks)) == want, (label, ks)
 
+
+# ======================================================================================================================================
+# step 8 round 6: keys with YAML escapes, the alias guard on its own, bounded nesting, and the accepted boundary of the other spellings
+# ======================================================================================================================================
+@case("age", "AC11", "i: PIP_* env KEYS written with a YAML escape are keys all the same: `\"\\x50IP_CONSTRAINT\"`, `\"P\\u0049P_REQUIREMENT\"`, `\"PIP\\x5fCONSTRAINT\"`, and `\"\\x50IP_CONFIG_FILE\"` name their files (or the unmeasured configuration file) although the raw text never contains `PIP_`; the parsed environment of a workflow or action is read always, with no raw-text precheck")
+def i_escaped_env_keys():
+    head = "on: push\njobs:\n  j:\n    runs-on: u\n    env:\n"
+    tail = "    steps:\n      - run: pip install a==1\n"
+    unm = lambda ks: [k for k in ks if "(unmeasured:" in k]
+    for label, key in (("hex first letter", '"\\x50IP_CONSTRAINT"'), ("unicode", '"P\\u0049P_REQUIREMENT"'), ("hex underscore", '"PIP\\x5fCONSTRAINT"'), ("all hex", '"\\x50\\x49\\x50_CONSTRAINT"')):
+        text = head + "      " + key + ": deps/c.txt\n" + tail
+        repo = history_repo({WFPATH: text, "deps/c.txt": "evil==1.0\n"})
+        for mode in (None, "HEAD"):
+            ks = sorted(inv.load_at(repo, mode))
+            assert "package:pypi/evil@1.0" in ks and not unm(ks), (label, mode, ks)
+    text = head + '      "\\x50IP_CONFIG_FILE": ci/pip.conf\n' + tail
+    assert len(unm(sorted(repo_items({WFPATH: text, "ci/pip.conf": "[install]\nno-deps = true\n"})[0]))) == 1
+    act = "name: a\nruns:\n  using: composite\n  steps:\n    - run: pip install a==1\n      shell: bash\n      env:\n        \"\\x50IP_CONSTRAINT\": deps/c.txt\n"
+    assert "package:pypi/evil@1.0" in sorted(inv.load_at(history_repo({".github/actions/a/action.yml": act, "deps/c.txt": "evil==1.0\n"}), None))
+
+
+def _bounded_inventory(files_dict, seconds=10):
+    """inv.inventory on a plain {path: text} dict (no tree reader in front of it) in a child process killed at the deadline: exit status and output."""
+    code = ("import importlib.util,sys,json\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
+            "d=json.loads(sys.stdin.read())\ntry:\n    m.inventory(d)\nexcept RuntimeError as e:\n    print(e); sys.exit(2)\n")
+    return _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py")], seconds, input=json.dumps(files_dict))
+
+
+@case("age", "AC11", "i: the alias guard of the FILE READER stands on its own: an alias bomb with NO pip content and no PIP_ anywhere (a workflow and a composite action that only echo) is refused 'alias' within a 10 s deadline when the inventory reads the files directly, and from the working tree, a revision, the daily audit and the age check")
+def i_alias_guard_without_pip_content():
+    wf = "on: push\n" + alias_bomb() + "jobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n"
+    act = "name: a\n" + alias_bomb() + "runs:\n  using: composite\n  steps:\n    - run: echo hi\n      shell: bash\n"
+    for path, text in ((WFPATH, wf), (".github/actions/a/action.yml", act)):
+        assert "PIP_" not in text
+        r = _bounded_inventory({path: text})
+        assert r.returncode == 2 and ("alias" in r.stdout or "anchor" in r.stdout), (path, "inventory", r.returncode, (r.stdout + r.stderr)[-200:])
+        repo = history_repo({path: text})
+        fx = repo + ".fx.json"
+        json.dump({"lists": {}}, open(fx, "w"))
+        r = _run_bounded([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", repo, "--fixtures", fx, "--now", now_iso(), "--report-only"])
+        assert r.returncode == 2 and "alias" in r.stdout + r.stderr, (path, "audit", r.returncode, (r.stdout + r.stderr)[-200:])
+
+
+@case("age", "AC11", "i: a YAML text nested absurdly deep (`[` x 5000, `{` x 5000, `[{` pairs, 400 levels of block mappings) is refused CLEANLY, 'too deeply nested', within a 10 s deadline, never an uncaught RecursionError, a stall or a crash: in a workflow, a composite action and beside a pip.conf, by the inventory, the working-tree and revision readers, the daily audit and the age check (exit 2 each)")
+def i_deep_nesting_is_refused_cleanly():
+    flow = lambda o, c: "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\nx: " + o * 5000 + c * 5000 + "\n"
+    block = "on: push\n" + "".join("%sk%d:\n" % ("  " * i, i) for i in range(400)) + "jobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n"
+    texts = {"[": flow("[", "]"), "{": flow("{a: ", "}"), "[{": "on: push\nx: " + "[{a: " * 2500 + "1" + "}]" * 2500 + "\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n", "block": block}
+    code = ("import importlib.util,sys\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
+            "mode=None if sys.argv[3]=='wt' else 'HEAD'\ntry:\n    m.load_at(sys.argv[2], mode)\nexcept RuntimeError as e:\n    print(type(e).__name__, e); sys.exit(2)\n")
+    for label, text in texts.items():
+        for path in (WFPATH, ".github/actions/a/action.yml"):
+            r = _bounded_inventory({path: text})
+            assert r.returncode == 2 and "too deeply nested" in r.stdout and "RecursionError" not in r.stdout, (label, path, "inventory", r.returncode, (r.stdout + r.stderr)[-200:])
+        repo = history_repo({WFPATH: text, "pip.conf": "[install]\nno-deps = true\n"})
+        for mode in ("wt", "rev"):
+            r = _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py"), repo, mode])
+            assert r.returncode == 2 and "too deeply nested" in r.stdout and "RecursionError" not in r.stdout, (label, mode, r.returncode, (r.stdout + r.stderr)[-200:])
+        fx = repo + ".fx.json"
+        json.dump({"lists": {}}, open(fx, "w"))
+        r = _run_bounded([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", repo, "--fixtures", fx, "--now", now_iso(), "--report-only"])
+        assert r.returncode == 2 and "too deeply nested" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr, (label, "audit", r.returncode, (r.stdout + r.stderr)[-300:])
+        pr = exact_repo({WFPATH: runner_wf("echo hi")}, {WFPATH: text})
+        json.dump({"times": {}}, open(pr + ".fx.json", "w"))
+        r = _run_bounded([sys.executable, os.path.join(SC, "pin-age-check.py"), "--root", pr, "--base", "HEAD~1", "--head", "HEAD", "--fixtures", pr + ".fx.json", "--now", "2026-10-07T12:00:00Z"])
+        assert r.returncode == 2 and "too deeply nested" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr, (label, "age", r.returncode, (r.stdout + r.stderr)[-300:])
+
+
+@case("age", "AC11", "x: the accepted OBFUSCATION boundary of the pip environment and configuration (owner Oct 3: plain forms only), one line each, none is an item, a reference or an unmeasured form: a NAME split by quotes or built from a variable (`PIP_REQ\"\"UIREMENT=f pip install`, `V=PIP_CONSTRAINT; export $V=f`, `env \"PIP_CONFIG\"_FILE=f pip install`, `declare -x PIP_CON\\STRAINT=f`), `pip config set global.requirement f`, and index-url / find-links in a pip.conf (not measured)")
+def x_pip_environment_boundary():
+    for line in ('PIP_REQ""UIREMENT=deps/c.txt pip install a==1', "V=PIP_CONSTRAINT; export $V=deps/c.txt", 'env "PIP_CONFIG"_FILE=ci/pip.conf pip install a==1', "declare -x PIP_CON\\STRAINT=deps/c.txt", "pip config set global.requirement deps/c.txt"):
+        for files in both_routes(line):
+            ks = sorted(repo_items({**files, "deps/c.txt": "evil==1.0\n", "ci/pip.conf": "[install]\nno-deps = true\n"})[0])
+            assert "package:pypi/evil@1.0" not in ks and not [k for k in ks if "(unmeasured:" in k], ("the accepted boundary moved: " + line, list(files), ks)
+    ks = sorted(repo_items({"pip.conf": "[global]\nindex-url = https://evil.example/simple\nfind-links = https://evil.example/wheels\nextra-index-url = https://e.example/s\n"})[0])
+    assert not ks, ("index-url and find-links in a pip.conf are not measured", ks)
+
 def main(argv):
     suites = {c[0] for c in CASES}
     suite = argv[1] if len(argv) > 1 else "all"

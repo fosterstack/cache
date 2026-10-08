@@ -669,18 +669,32 @@ def _unmeasured_item(what):
     return Item("package", "pypi/(unmeasured:" + hashlib.sha256(what.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)")
 
 
+MAX_YAML_DEPTH = 100          # real workflows nest a dozen levels; deeper is refused, never composed
+
+
 def _yaml_guard(text, path=""):
-    """Compose a YAML text as EVENTS only and refuse what cannot be read safely BEFORE anything builds or walks the document: an alias or anchor (a nest of aliases expands exponentially when the
-    parsed tree is walked) and an absurd number of nodes. This is the first thing that touches the composed text; no function may walk a document that has not passed it."""
-    nodes = 0
-    for ev in yaml.parse(text, Loader=yaml.BaseLoader):
-        if isinstance(ev, yaml.AliasEvent):
-            raise RuntimeError(f"{path or 'a file'} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
-        nodes += 1
-        if nodes > 200000:
-            raise RuntimeError(f"{path or 'a file'} is too large to read safely")
+    """Refuse what cannot be read safely BEFORE anything builds or walks the document. The YAML is read as EVENTS only, one at a time, and the first offence stops it: an alias or anchor (a nest of aliases expands exponentially when the parsed tree is walked), a nesting deeper than MAX_YAML_DEPTH (the composer recurses and ends in a
+    RecursionError), an absurd number of nodes. This is the first thing that touches the text; no function may walk a document that has not passed it."""
+    name = path or "a file"
+    nodes = depth = 0
+    try:
+        for ev in yaml.parse(text, Loader=yaml.BaseLoader):
+            if isinstance(ev, yaml.AliasEvent):
+                raise RuntimeError(f"{name} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
+            if isinstance(ev, (yaml.SequenceStartEvent, yaml.MappingStartEvent)):
+                depth += 1
+                if depth > MAX_YAML_DEPTH:
+                    raise RuntimeError(f"{name} is too deeply nested to read safely")
+            elif isinstance(ev, (yaml.SequenceEndEvent, yaml.MappingEndEvent)):
+                depth -= 1
+            nodes += 1
+            if nodes > 200000:
+                raise RuntimeError(f"{name} is too large to read safely")
+    except RecursionError:
+        raise RuntimeError(f"{name} is too deeply nested to read safely")
 
 
+_ENV_MEMO = {}
 _PIP_ENV_KEYS = ("PIP_CONSTRAINT", "PIP_REQUIREMENT")
 _PIP_CONFIG_REF = ("(pip configuration file)", False)
 _PIP_NONSCALAR_REF = ("(pip environment value)", False)
@@ -691,6 +705,9 @@ def _env_file_refs(text, path=""):
     an env mapping with a quoted key, a value on the next line, a block scalar, flow style or a YAML escape (workflow, job, step and composite-action env), and an assignment or export inside any
     decoded string (a run block). A value that is not a scalar string is unmeasured. In a script, from the raw text: a quoted or unquoted assignment, an export, an inline assignment before pip.
     [(name, resolvable)]"""
+    key = (hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), _wf_or_action_name(path))
+    if key in _ENV_MEMO:
+        return list(_ENV_MEMO[key])
     out = []
 
     def add(val):
@@ -704,7 +721,7 @@ def _env_file_refs(text, path=""):
             else:
                 add(next((g for g in m.groups()[1:] if g is not None), ""))
     doc = None
-    if "PIP_" in text and _wf_or_action_name(path):
+    if _wf_or_action_name(path):                       # always: a key written with a YAML escape never shows `PIP_` in the raw text
         try:
             _yaml_guard(text, path)                     # first: refuse aliases and anchors before the document is built or walked
             doc = yaml.load(text, Loader=yaml.BaseLoader)
@@ -737,6 +754,7 @@ def _env_file_refs(text, path=""):
         if item not in seen:
             seen.add(item)
             res.append(item)
+    _ENV_MEMO[key] = tuple(res)
     return res
 
 
