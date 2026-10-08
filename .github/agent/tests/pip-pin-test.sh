@@ -79,23 +79,24 @@ def logical_lines(run):
 
 SEP = {";", "&&", "||", "|", "&", "(", ")"}
 def commands(line):
+    """-> [(tokens, previous separator, next separator)]"""
     try:
         lx = shlex.shlex(line, posix=True, punctuation_chars=True); lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
     except ValueError:
         toks = line.split()
-    cmds, cur, i = [], [], 0
+    cmds, cur, prev, i = [], [], None, 0
     while i < len(toks):
         t = toks[i]
         if t in SEP:
-            if cur: cmds.append(cur)
-            cur = []
+            if cur: cmds.append((cur, prev, t))
+            cur = []; prev = t
         elif t[:1] in "<>" and set(t) <= set("<>&"):
             i += 1   # a redirection and its target
         else:
             cur.append(t)
         i += 1
-    if cur: cmds.append(cur)
+    if cur: cmds.append((cur, prev, None))
     return cmds
 
 def env_of_prog(p, active):
@@ -112,6 +113,10 @@ def classify(t, active):
         return None
     p, rest = norm(t[0]), t[1:]
     base = os.path.basename(p)
+    if base in ("exit", "return"):
+        return ("unsafe", None, None)
+    if base == "set" and ("+e" in rest or ("+o" in rest and "errexit" in rest)):
+        return ("unsafe", None, None)
     if base in ("source", ".") and rest and norm(rest[0]).endswith("/bin/activate"):
         return ("activate", norm(rest[0])[: -len("/bin/activate")], None)
     if re.fullmatch(r"pip(\d+(\.\d+)*)?", base):
@@ -140,21 +145,46 @@ def classify(t, active):
         return ("other", active or "system", "uv")
     return None
 
+OPEN_KW = {"if", "while", "until", "for", "case", "{"}
+LEAD_KW = OPEN_KW | {"then", "else", "elif", "do", "!"}
+CLOSE_KW = {"fi", "done", "esac", "}"}
 def events(steps):
     ev = []
     for si, st in enumerate(steps):
-        active = None
+        active, depth, pos = None, 0, 0
         for li, line in enumerate(logical_lines((st or {}).get("run", ""))):
-            for cmd in commands(line):
-                c = classify(cmd, active)
+            for tok, prev, nxt in commands(line):
+                t = tok
+                while t and t[0] in LEAD_KW:
+                    if t[0] in OPEN_KW: depth += 1
+                    t = t[1:]
+                if not t: continue
+                if t[0] in CLOSE_KW:
+                    depth = max(0, depth - 1); continue
+                pos += 1
+                c = classify(t, active)
                 if not c: continue
                 if c[0] == "activate": active = c[1]; continue
-                ev.append({"step": si, "line": li, "kind": c[0], "env": c[1], "tok": [norm(x) for x in cmd], "text": line, "what": c[2]})
+                cond = depth > 0 or prev in ("&&", "||", "|", "&", "(") or nxt in ("||", "|", "&")
+                ev.append({"step": si, "line": li, "pos": pos, "kind": c[0], "env": c[1], "tok": [norm(x) for x in t], "text": line,
+                           "what": c[2], "cond": cond})
     return ev
 
 def prog_ok(tok0, env):
     p = norm(tok0)
     return p == "python3" if env == "system" else p in (f"{env}/bin/python", f"{env}/bin/python3")
+
+def pin_reaches(e, steps, ev):
+    """the pin command must really run and its failure must stop the step: not conditional, not masked, no exit / set +e before it, no custom shell, not `if: false`"""
+    st = steps[e["step"]] or {}
+    iff = str(st.get("if", "")).strip()
+    if re.sub(r"^\$\{\{\s*|\s*\}\}$", "", iff).strip().strip("'\"").lower() in ("false", "0"):
+        return False
+    if st.get("shell") not in (None, "bash"):
+        return False
+    if e["cond"]:
+        return False
+    return not any(x["kind"] == "unsafe" and x["step"] == e["step"] and x["pos"] < e["pos"] for x in ev)
 
 def is_pin(e):
     t = e["tok"]
@@ -167,6 +197,57 @@ def is_pin(e):
 def is_log(e):
     t = e["tok"]
     return e["kind"] == "version" and len(t) == 4 and prog_ok(t[0], e["env"]) and t[1:] == ["-m", "pip", "--version"]
+
+STATUS_FN = re.compile(r"\b(always|cancelled|failure|success)\s*\(")
+def split_top(e, op):
+    parts, depth, cur, i = [], 0, "", 0
+    quote = None
+    while i < len(e):
+        ch = e[i]
+        if quote:
+            cur += ch
+            if ch == quote: quote = None
+        elif ch in "'\"":
+            quote = ch; cur += ch
+        elif ch == "(":
+            depth += 1; cur += ch
+        elif ch == ")":
+            depth -= 1; cur += ch
+        elif depth == 0 and e.startswith(op, i):
+            parts.append(cur); cur = ""; i += len(op) - 1
+        else:
+            cur += ch
+        i += 1
+    parts.append(cur)
+    return [p.strip() for p in parts]
+
+def guarded(e, pin_id):
+    """does this condition keep the step from running after a FAILED pin? (a status function other than a success() / pin-outcome conjunct cancels GitHub's implicit success())"""
+    e = e.strip()
+    while e.startswith("(") and e.endswith(")"):
+        d, wraps = 0, True
+        for k, ch in enumerate(e):
+            d += ch == "("; d -= ch == ")"
+            if d == 0 and k < len(e) - 1: wraps = False; break
+        if not wraps: break
+        e = e[1:-1].strip()
+    ors = split_top(e, "||")
+    if len(ors) > 1:
+        return all(guarded(x, pin_id) for x in ors)
+    ands = split_top(e, "&&")
+    if len(ands) > 1:
+        return any(guarded(x, pin_id) for x in ands)
+    if e == "success()":
+        return True
+    return bool(pin_id) and re.fullmatch(r"steps\." + re.escape(pin_id) + r"\.(outcome|conclusion)\s*==\s*['\"]success['\"]", e) is not None
+
+def step_guard_ok(iff, pin_id):
+    if iff is None:
+        return True
+    e = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", str(iff).strip()).strip()
+    if not STATUS_FN.search(e):
+        return True   # GitHub adds the implicit success()
+    return guarded(e, pin_id)
 
 def sequences(docs):
     for f, d in docs.items():
@@ -193,20 +274,25 @@ def judge(t):
             where = "the system python" if env == "system" else f"the venv {env}"
             if first["kind"] == "other" and label in ALLOW_OTHER:
                 continue
-            if not is_pin(first):
-                later = any(is_pin(e) for e in mine[1:])
-                r.append(("C1", f"{label}: {where}: " + ("another install (" + (first["what"] or "pip install") + f", step {first['step'] + 1}) comes before the pin" if later else "no earlier step installs the pinned pip (-r " + REQ + ", --require-hashes, --only-binary=:all:) into it")))
+            if not (is_pin(first) and pin_reaches(first, steps, ev)):
+                later = any(is_pin(e) and pin_reaches(e, steps, ev) for e in mine[1:])
+                r.append(("C1", f"{label}: {where}: " + ("another install (" + (first["what"] or "pip install") + f", step {first['step'] + 1}) comes before the pin" if later else "no earlier step installs the pinned pip (-r " + REQ + ", --require-hashes, --only-binary=:all:) into it, or the one there can be skipped, masked, or never reached")))
                 if not later:
                     r.append(("C2", f"{label}: {where}: no pin step, so nothing logs the pip version"))
                 continue
             pst = steps[first["step"]]
             if str(pst.get("continue-on-error", "false")).lower() not in ("false", ""):
                 r.append(("C1", f"{label}: {where}: the pin step has continue-on-error"))
-            if pst.get("if") is not None:
-                for e in mine[1:]:
-                    if (steps[e["step"]] or {}).get("if") != pst.get("if"):
-                        r.append(("C1", f"{label}: {where}: the pin step has an `if` that does not cover the install in step {e['step'] + 1}")); break
-            if not any(is_log(e) and e["env"] == env and (e["step"], e["line"]) > (first["step"], first["line"]) and e["step"] == first["step"] for e in ev):
+            pid = pst.get("id")
+            for e in gate:
+                if e["step"] <= first["step"]:
+                    continue
+                iff = (steps[e["step"]] or {}).get("if")
+                if not step_guard_ok(iff, pid):
+                    r.append(("C8", f"{label}: {where}: the install in step {e['step'] + 1} has `if: {iff}`, which still runs after a FAILED pin (a status function cancels the implicit success(); add `&& steps.<pin id>.outcome == 'success'`)"))
+                elif pst.get("if") is not None and iff != pst.get("if") and not (iff is not None and re.search(r"steps\." + re.escape(pid or "-") + r"\.(outcome|conclusion)\s*==\s*['\"]success['\"]", str(iff))):
+                    r.append(("C8", f"{label}: {where}: the pin step is conditional but the install in step {e['step'] + 1} is not tied to it (same `if`, or its outcome)"))
+            if not any(is_log(e) and e["env"] == env and e["step"] == first["step"] and e["pos"] > first["pos"] for e in ev):
                 r.append(("C2", f"{label}: {where}: the pin step does not log `python -m pip --version` of that python after installing"))
     if n_pip == 0:
         r.append(("C1", "no job runs pip install (the reader found nothing: the test would pass vacuously)"))
@@ -285,6 +371,7 @@ for case, title in (("C1", "case 1: every pip-installing job pins pip first, in 
                     ("C3", "case 3: the requirement file is exactly one hash-pinned release pip==" + GOLDEN),
                     ("C4", "case 4: Dependabot watches the pin file's directory under the 7-day cooldown"),
                     ("C6", "case 6: ci.yml's required allowlist job runs this test"),
+                    ("C8", "case 8: a pip install after a pin step cannot run when the pin step FAILED (no always()/cancelled()/failure() condition without success() or the pin's outcome)"),
                     ("C7", "case 7: a job-level `uses:` is a local or digest-pinned reusable workflow and the job has no steps of its own")):
     bad = [m for c, m in res if c == case]
     report(not bad, title, "; ".join(bad[:4]))
@@ -348,15 +435,28 @@ def site_mut(key, kind):
         elif kind == "install-step-before-pin":
             cmd = "pip3 install requests" if env == "system" else f"{env}/bin/pip install requests"
             steps.insert(si, {"name": "early", "run": cmd})
+        elif kind == "pin-if-false":
+            st["if"] = "${{ false }}"
+        elif kind == "custom-shell":
+            st["shell"] = "bash {0}"
         else:
-            raise SystemExit("bad kind " + kind)
+            repl = {"exit-before": ["exit 0", text], "or-true": [text + " || true"], "set-e-before": ["set +e", text],
+                    "in-echo": ['echo "' + text + '"'], "in-comment": ["# " + text], "in-heredoc": ["cat <<'NOTE'", text, "NOTE"],
+                    "pipe": [text + " | cat"], "and-chain": ["true && " + text], "if-block": ["if true; then", "  " + text, "fi"],
+                    "background": [text + " &"], "set-o-errexit": ["set +o errexit", text]}.get(kind)
+            if repl is None:
+                raise SystemExit("bad kind " + kind)
+            edit_run(st, lambda L: L[:idx] + repl + L[idx + 1:])
         return True
     return fn
 
 mutants = []   # (name, expected case, fn(tree) -> applied?)
 KINDS = (("missing", "C1"), ("after", "C1"), ("other-env", "C1"), ("no-require-hashes", "C1"), ("no-only-binary", "C1"), ("spelled-apart", "C1"),
          ("other-file", "C1"), ("no-version-log", "C2"), ("version-log-before", "C2"), ("continue-on-error", "C1"),
-         ("install-before-pin-same-step", "C1"), ("install-step-before-pin", "C1"))
+         ("install-before-pin-same-step", "C1"), ("install-step-before-pin", "C1"),
+         # a pin that does not count because it can be skipped, masked or never reached (the test reads lines, so it must refuse what it cannot show runs)
+         ("pin-if-false", "C1"), ("custom-shell", "C1"), ("exit-before", "C1"), ("or-true", "C1"), ("set-e-before", "C1"), ("set-o-errexit", "C1"),
+         ("in-echo", "C1"), ("in-comment", "C1"), ("in-heredoc", "C1"), ("pipe", "C1"), ("and-chain", "C1"), ("if-block", "C1"), ("background", "C1"))
 for key in SITE_KEYS:
     for kind, case in KINDS:
         mutants.append((f"{kind} at {key[0]} [{'system python' if key[1] == 'system' else 'venv ' + key[1]}]", case, site_mut(key, kind)))
@@ -470,6 +570,26 @@ mutants += [
     ("a job-level uses of a local workflow that does not exist", "C7", uses_edit(lambda j: j.__setitem__("uses", "./.github/workflows/not-there.yml"))),
 ]
 
+# a later install whose `if` still runs after a FAILED pin (a status function cancels the implicit success())
+BAD_IFS = ["${{ !cancelled() && steps.mint.outcome == 'success' }}", "always()", "${{ always() }}", "failure() || success()", "success() || failure()",
+           "!cancelled()", "always() && steps.some_other.outcome == 'success'", "(always())", "steps.pip_pin.outcome == 'success' || always()",
+           "!cancelled() && (failure() || success())"]
+def later_if(key, cond):
+    def fn(t):
+        site = next((x for x in pin_sites(t) if site_key(x) == key), None)
+        if not site: return False
+        steps, si = site[5], site[2]
+        gate = sorted({e["step"] for e in events(steps) if e["kind"] in ("install", "other") and e["step"] > si})
+        if not gate: return False
+        for j in gate: steps[j]["if"] = cond
+        return True
+    return fn
+for key in SITE_KEYS:
+    if key[1] != "system":
+        continue
+    for cond in BAD_IFS:
+        mutants.append((f"a later install with `if: {cond}` at {key[0]}", "C8", later_if(key, cond)))
+
 killed = 0
 for name, case, fn in mutants:
     m = copy.deepcopy(tree)
@@ -501,6 +621,21 @@ if SITE_KEYS:
         report(False, "control: correctly pinned jobs are accepted", "no system pin to copy")
 else:
     report(False, "control: correctly pinned jobs are accepted", "no pin sites")
+# guard controls: these conditions DO keep a later install from running after a failed pin
+GOOD_IFS = ["success()", "${{ success() }}", "!cancelled() && success()", "always() && steps.ctlpin.outcome == 'success'", "${{ !cancelled() && steps.mint.outcome == 'success' && steps.ctlpin.outcome == 'success' }}",
+            "(steps.ctlpin.conclusion == 'success')", "github.event_name == 'schedule'", "(success() && x) || (steps.ctlpin.outcome == 'success' && !cancelled())"]
+ok_all = True; why = []
+for cond in GOOD_IFS:
+    m = copy.deepcopy(tree)
+    s0 = next((x for x in pin_sites(m) if x[1] == "system" and any(e["step"] > x[2] for e in events(x[5]) if e["kind"] == "install")), None)
+    if not s0:
+        ok_all = False; why.append("no site"); break
+    steps = s0[5]
+    steps[s0[2]]["id"] = "ctlpin"; steps[s0[2]].pop("if", None)
+    for j in sorted({e["step"] for e in events(steps) if e["kind"] == "install" and e["step"] > s0[2]}): steps[j]["if"] = cond
+    bad = [b for c, b in judge(m) if c == "C8" and b.startswith(s0[0])]
+    if bad: ok_all = False; why.append(cond)
+report(ok_all, "control: conditions with success() or the pin's outcome (or no status function) are accepted", "; ".join(why))
 print(f"{len(mutants)} mutants, {killed} killed; {fails} failure(s)")
 sys.exit(1 if fails else 0)
 PY
