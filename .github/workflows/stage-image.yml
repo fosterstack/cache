@@ -54,7 +54,7 @@ jobs:
       id-token: write     # release mode: sign the image-build predicate
       attestations: write
     outputs:
-      digests: ${{ steps.build.outputs.digests }}
+      digests: ${{ steps.pr-digests.outputs.digests || steps.final.outputs.digests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -143,6 +143,41 @@ jobs:
           done
           jq -n --arg p "${digest[production]}" --arg d "${digest[debug]}" --arg f "${digest[fips]}" \
             '{production:$p, debug:$d, fips:$f}' | tee /tmp/digests.json
+
+      - name: PR mode records the built index digests (no final index exists in PR mode)
+        id: pr-digests
+        if: inputs.mode == 'pr'
+        run: |
+          set -euo pipefail
+          echo "digests=$(jq -c . /tmp/digests.json)" >> "$GITHUB_OUTPUT"
+
+      # REQ-REL-010 AC5: the index that is signed, tested and promoted is the FINAL index F (the built index D plus the
+      # VEX attestation children), made here BEFORE the first attestation. D is only read: inspected, computed from,
+      # never signed, attested, output or uploaded. F replaces D in /tmp/digests.json and in the step output.
+      - name: final index (built index + VEX attestation children) - compute, verify, push by digest
+        id: final
+        if: inputs.mode == 'release'
+        env:
+          FSCACHE_REGISTRY_USER: ${{ github.actor }}
+          FSCACHE_REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
+          work=$(mktemp -d)
+          declare -A final
+          for v in production debug fips; do
+            d=$(jq -r --arg v "$v" '.[$v]' /tmp/digests.json)
+            docker buildx imagetools inspect --raw "${repo}@${d}" > "${work}/${v}-built.json"
+            f=$(python3 bin/vex-index.py compute --index "${work}/${v}-built.json" --vex .vex/fosterstack-cache.openvex.json --out-dir "${work}/${v}")
+            python3 bin/vex-index.py verify --final "${work}/${v}/index.json" --vex .vex/fosterstack-cache.openvex.json --base "${work}/${v}-built.json" --blobs "${work}/${v}/blobs"
+            pushed=$(python3 bin/vex-index.py push --registry ghcr.io --repository '${{ github.repository_owner }}/cache-candidates' --dir "${work}/${v}" --vex .vex/fosterstack-cache.openvex.json --base "${work}/${v}-built.json")
+            [ "${pushed}" = "${f}" ] || { echo "::error::${v}: pushed ${pushed}, computed ${f}" >&2; exit 1; }
+            final[$v]="${f}"
+            echo "${v}: final index ${f}"
+          done
+          jq -n --arg p "${final[production]}" --arg d "${final[debug]}" --arg f "${final[fips]}" \
+            '{production:$p, debug:$d, fips:$f}' > /tmp/digests.tmp
+          mv /tmp/digests.tmp /tmp/digests.json
           echo "digests=$(jq -c . /tmp/digests.json)" >> "$GITHUB_OUTPUT"
 
       # The predicate's subjects are the digests buildx EMITTED. The
@@ -167,7 +202,7 @@ jobs:
           for v in production debug fips; do
             d=$(jq -r --arg v "$v" '.[$v]' /tmp/digests.json)
             docker buildx imagetools inspect --raw "${repo}@${d}" \
-              | jq --arg v "$v" '{variant: $v, platforms: [.manifests[] | {platform: (.platform.os + "/" + .platform.architecture), digest}]}'
+              | jq --arg v "$v" '{variant: $v, platforms: [.manifests[] | select(.platform.os != "unknown") | {platform: (.platform.os + "/" + .platform.architecture), digest}]}'
           done | jq -s '.' > /tmp/platforms.json
           for v in production debug fips; do
             base=$(grep -oE 'sha256:[0-9a-f]{64}' "build/docker/Dockerfile.${v}" | head -1)

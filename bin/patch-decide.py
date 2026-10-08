@@ -20,6 +20,9 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
 """
 import argparse, json, os, re, subprocess, sys
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
+# data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15)
+NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
+NEUTRAL_PROPOSALS = re.compile(r"^\.auditor/proposals/[^/]+\.json$")
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
 DOCKERFILES = re.compile(r"^build/docker/Dockerfile\.[a-z0-9-]+$")
@@ -196,6 +199,8 @@ def classify(commit):
             # only data is neutral by its directory (Sonnet #159 r7 B4, r8): anything without a data extension —
             # a script, an extensionless file, another extension — could be executed, so it is not
             kinds.add("dirty"); why.append("%s is not a data file; a directory does not make it neutral" % f)
+        elif f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+            kinds.add("neutral")
         elif f in FIX_EXACT or (f.startswith(FIX_PREFIX) and DATA_FILE.search(f)):
             # the auditor's output directories make only DATA fix-class — never a script there (Codex #159 r5b, B10)
             kinds.add("fix")
@@ -300,13 +305,17 @@ def _check_entry(e):
                 raise ValueError("next-release-notes entry names a vendor or model split by whitespace: %r" % e)
 
 
-def notes(version, fixes, vex_changes, behavior=()):
+def notes(version, fixes, vex_changes, behavior=(), vex_bytes_changed=False):
     lines = ["## %s — patch release" % version, "", "### Fixes"]
     for f in fixes:
         lines.append("- %s in %s: %s → %s (severity %s; variants: %s)" % (
             f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
+        if not behavior and vex_changes:
+            lines.append("- VEX-only: this patch changes VEX statements and nothing else")
+        elif not behavior and not fixes and vex_bytes_changed:
+            lines.append("- VEX-only (no statement change): the VEX file changed but no statement did")
     lines += ["", "### VEX"]
     lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
     for b in behavior:
@@ -417,18 +426,63 @@ def fixed_findings(release_by_variant, head):
 
 
 def vex_changes(old_doc, new_doc):
-    """AC8: each VEX statement added, changed (its status) or removed since the latest tag, by CVE."""
-    def by_cve(doc):
-        return {s_["vulnerability"]["name"]: s_.get("status", "") for s_ in (doc or {}).get("statements", [])}
-    old, new = by_cve(old_doc), by_cve(new_doc)
+    """AC8/AC14: each VEX statement added, removed or changed since the latest tag. A statement is identified by its
+    vulnerability and its product SET (order-insensitive); statements of one vulnerability are paired by equal product
+    sets first, the rest in file order (a changed product list). A vulnerability with several statements is named with
+    the statement's product set, "CVE [pkg:a, pkg:b]". Reordering is no change; a changed statement names the fields
+    that differ (products as +added -removed); a document-level change is one 'document metadata' entry."""
+    def canon(st):
+        st = dict(st)
+        if isinstance(st.get("products"), list):
+            st["products"] = sorted(st["products"], key=lambda p_: json.dumps(p_, sort_keys=True))
+        return st
+    def pid(p_):
+        return p_.get("@id") if isinstance(p_, dict) and p_.get("@id") else json.dumps(p_, sort_keys=True)
+    def pset(st):
+        return tuple(sorted(pid(p_) for p_ in st.get("products", [])))
+    def groups(doc):
+        g = {}
+        for st in (doc or {}).get("statements", []):
+            g.setdefault(st.get("vulnerability", {}).get("name", ""), []).append(canon(st))
+        return g
+    old, new = groups(old_doc), groups(new_doc)
     out = []
     for cve in sorted(set(old) | set(new)):
-        if cve not in old:
-            out.append({"cve": cve, "status": new[cve], "change": "added"})
-        elif cve not in new:
-            out.append({"cve": cve, "status": old[cve], "change": "removed"})
-        elif old[cve] != new[cve]:
-            out.append({"cve": cve, "status": new[cve], "change": "changed from %s" % old[cve]})
+        o, n = list(old.get(cve, [])), list(new.get(cve, []))
+        many = len(o) > 1 or len(n) > 1
+        label = lambda st: "%s [%s]" % (cve, ", ".join(pset(st))) if many else cve
+        pairs = []
+        for st in list(o):                       # exactly equal statements pair first (a swap of look-alikes is no change)
+            m = next((x for x in n if x == st), None)
+            if m is not None:
+                o.remove(st); n.remove(m)
+        for st in list(o):                       # then equal product sets, in file order
+            m = next((x for x in n if pset(x) == pset(st)), None)
+            if m is not None:
+                o.remove(st); n.remove(m); pairs.append((st, m))
+        while o and n:
+            pairs.append((o.pop(0), n.pop(0)))
+        for st, m in pairs:
+            if st != m:
+                fields = sorted(f for f in set(st) | set(m) if st.get(f) != m.get(f))
+                parts = []
+                if "status" in fields:
+                    parts.append("changed from %s" % st.get("status", ""))
+                other = [f for f in fields if f not in ("status", "products")]
+                if "products" in fields:
+                    plus = [x for x in pset(m) if x not in pset(st)]
+                    minus = [x for x in pset(st) if x not in pset(m)]
+                    other.insert(0, "products " + " ".join(["+" + x for x in plus] + ["-" + x for x in minus]))
+                if other:
+                    parts.append(("also " if parts else "changed: ") + ", ".join(other))
+                out.append({"cve": label(m), "status": m.get("status", ""), "change": "; ".join(parts)})
+        for st in o:
+            out.append({"cve": label(st), "status": st.get("status", ""), "change": "removed"})
+        for st in n:
+            out.append({"cve": label(st), "status": st.get("status", ""), "change": "added"})
+    meta = sorted(f for f in set(old_doc or {}) | set(new_doc or {}) if f != "statements" and (old_doc or {}).get(f) != (new_doc or {}).get(f))
+    if old_doc is not None and meta:
+        out.append({"cve": "(document)", "status": "-", "change": "document metadata: " + ", ".join(meta)})
     return out
 
 
@@ -661,7 +715,8 @@ def main(argv=None):
             behavior = unpublished(behavior_entries(nn), open(a.published).read())
             old = json.load(open(a.vex_old)) if a.vex_old else None
             fixes = fixed_findings(rel, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
-            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior)
+            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior,
+                         vex_bytes_changed=bool(a.vex_old) and open(a.vex_old, "rb").read() != open(a.vex_new, "rb").read())
         except (ValueError, OSError, KeyError, TypeError) as e:
             print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
             return 2

@@ -252,9 +252,11 @@ docker manifest inspect ghcr.io/fosterstack/cache:${VER} \
 # linux/arm64   sha256:ba6e3cc6...
 ```
 
-The index holds exactly the platform manifests — signatures and attestations
-are separate artifacts keyed to each digest, not extra entries here. A
-third line means something else is in the index.
+The published index is the final index: the platform manifests plus one VEX
+attestation child per platform (these list with the platform `unknown/unknown`,
+so the jq filter above also prints them). Signatures and the other
+attestations are separate artifacts keyed to the index digest. The digests
+signed and attested for a release are the final index's digests.
 
 ## 4. Verify the binary archives
 
