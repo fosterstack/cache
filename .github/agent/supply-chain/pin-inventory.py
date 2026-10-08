@@ -669,29 +669,46 @@ def _unmeasured_item(what):
     return Item("package", "pypi/(unmeasured:" + hashlib.sha256(what.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)")
 
 
-MAX_YAML_DEPTH = 100          # real workflows nest a dozen levels; deeper is refused, never composed
+YAML_SAFE_DEPTH = 200          # the steps that BUILD structures (the composer, the constructor, the walkers) are safe to about 450 levels, measured; a document nested deeper is scanned FLAT
 
 
 def _yaml_guard(text, path=""):
-    """Refuse what cannot be read safely BEFORE anything builds or walks the document. The YAML is read as EVENTS only, one at a time, and the first offence stops it: an alias or anchor (a nest of aliases expands exponentially when the parsed tree is walked), a nesting deeper than MAX_YAML_DEPTH (the composer recurses and ends in a
-    RecursionError), an absurd number of nodes. This is the first thing that touches the text; no function may walk a document that has not passed it."""
+    """Read a YAML text as EVENTS only, one at a time, BEFORE anything builds or walks the document. Refused: an alias or anchor (a nest of aliases expands exponentially when the parsed tree is
+    walked) and an absurd number of nodes. Nesting NEVER refuses: the result is True when the document is nested deeper than YAML_SAFE_DEPTH, and the caller then reads it flat (every decoded scalar
+    from the event stream, no nested structure built) and reports `scan limit reached`. This is the first thing that touches the text; no function may walk a document that has not passed it."""
     name = path or "a file"
-    nodes = depth = 0
+    nodes = depth = peak = 0
     try:
         for ev in yaml.parse(text, Loader=yaml.BaseLoader):
             if isinstance(ev, yaml.AliasEvent):
                 raise RuntimeError(f"{name} uses a YAML alias or anchor, which this check refuses (it cannot be read safely)")
             if isinstance(ev, (yaml.SequenceStartEvent, yaml.MappingStartEvent)):
                 depth += 1
-                if depth > MAX_YAML_DEPTH:
-                    raise RuntimeError(f"{name} is too deeply nested to read safely")
+                if depth > peak:
+                    peak = depth
             elif isinstance(ev, (yaml.SequenceEndEvent, yaml.MappingEndEvent)):
                 depth -= 1
             nodes += 1
             if nodes > 200000:
                 raise RuntimeError(f"{name} is too large to read safely")
     except RecursionError:
-        raise RuntimeError(f"{name} is too deeply nested to read safely")
+        return True
+    return peak > YAML_SAFE_DEPTH
+
+
+def _all_scalars(text):
+    """EVERY decoded scalar of a YAML text (plain, quoted with escapes decoded, folded, literal; keys too), from the event stream: no nested structure is built, so any depth is read. Flattened, once each."""
+    seen, out = set(), []
+    try:
+        for ev in yaml.parse(text, Loader=yaml.BaseLoader):
+            if isinstance(ev, yaml.ScalarEvent) and ev.value:
+                v = " ".join(ev.value.split())
+                if v and v not in seen:
+                    seen.add(v)
+                    out.append(v)
+    except (yaml.YAMLError, RecursionError):
+        pass
+    return out
 
 
 _ENV_MEMO = {}
@@ -723,8 +740,7 @@ def _env_file_refs(text, path=""):
     doc = None
     if _wf_or_action_name(path):                       # always: a key written with a YAML escape never shows `PIP_` in the raw text
         try:
-            _yaml_guard(text, path)                     # first: refuse aliases and anchors before the document is built or walked
-            doc = yaml.load(text, Loader=yaml.BaseLoader)
+            doc = None if _yaml_guard(text, path) else yaml.load(text, Loader=yaml.BaseLoader)       # first: refuse aliases and anchors; a very deep document is not built (read flat by the file reader)
         except yaml.YAMLError:
             doc = None                                  # does not parse: refused with its own message by the file reader
     if isinstance(doc, (dict, list)):
@@ -1574,12 +1590,17 @@ def _scan_file(path, text, reqrefs):
         for m in re.finditer(r"uses:\s*['\"]?([^\s#'\"]+)['\"]?\s*#\s*(?:tag:\s*)?(\S+)", text):
             labels.setdefault(m.group(1), []).append(m.group(2))
         try:
-            _yaml_guard(text, path)                      # events first: an alias bomb is refused before anything is built or walked
-            doc = yaml.load(text, Loader=yaml.BaseLoader)
+            deep = _yaml_guard(text, path)               # events first: an alias bomb is refused before anything is built or walked; nesting never refuses
+            doc = None if deep else yaml.load(text, Loader=yaml.BaseLoader)
         except yaml.YAMLError as e:
             mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
             raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
-        _walk(doc, found, labels, "")
+        if deep:
+            for fv in _all_scalars(text):            # a document nested beyond the safe depth: every decoded scalar is an install-looking candidate, no structure is built
+                _step({"run": fv}, found, {})
+                _bodies(found, fv, {})
+        else:
+            _walk(doc, found, labels, "")
         runs = []
 
         def _collect(n):
@@ -1591,8 +1612,9 @@ def _scan_file(path, text, reqrefs):
             elif isinstance(n, list):
                 for v in n:
                     _collect(v)
-        _collect(doc)
-        for fv in _extra_scalars(text, [" ".join(r.split()) for r in runs]):      # a run scalar is read whole by the walk already
+        if not deep:
+            _collect(doc)
+        for fv in ([] if deep else _extra_scalars(text, [" ".join(r.split()) for r in runs])):      # a run scalar is read whole by the walk already
             _step({"run": fv}, found, {})
             _bodies(found, fv, {})
         for ln in re.sub(r"\\\r?\n", "", text).split("\n"):        # every install-looking string counts, wherever it sits: a comment, an env value, an input default, a name (AC11)
@@ -1601,6 +1623,8 @@ def _scan_file(path, text, reqrefs):
                 continue                    # a line of a run block: already read as one command text
             _step({"run": ln}, found, {})
             _bodies(found, ln, {})
+        if deep:
+            _LEX_LIMIT[0] = True                     # the structure-dependent readings (the walk, the environment mapping) were not done: reported as `scan limit reached`
     if _wf_or_action_name(path) or _is_script(path, text) or path == "bin/install-scanner.sh":
         for ref, ok in _env_file_refs(text, path):          # PIP_CONSTRAINT / PIP_REQUIREMENT: files pip reads without a command-line flag; PIP_CONFIG_FILE: a configuration file that is not followed
             found.append(Item("package", "pypi/(reqref)", ref) if ok else _unmeasured_item(ref))

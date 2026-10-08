@@ -3552,6 +3552,12 @@ def _bounded_inventory(files_dict, seconds=10):
     return _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py")], seconds, input=json.dumps(files_dict))
 
 
+def _bounded_inventory_keys(files_dict, seconds=10):
+    code = ("import importlib.util,sys,json\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
+            "d=json.loads(sys.stdin.read())\nfor k in sorted(m.inventory(d)):\n    print('KEY', k)\n")
+    return _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py")], seconds, input=json.dumps(files_dict))
+
+
 @case("age", "AC11", "i: the alias guard of the FILE READER stands on its own: an alias bomb with NO pip content and no PIP_ anywhere (a workflow and a composite action that only echo) is refused 'alias' within a 10 s deadline when the inventory reads the files directly, and from the working tree, a revision, the daily audit and the age check")
 def i_alias_guard_without_pip_content():
     wf = "on: push\n" + alias_bomb() + "jobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n"
@@ -3567,29 +3573,67 @@ def i_alias_guard_without_pip_content():
         assert r.returncode == 2 and "alias" in r.stdout + r.stderr, (path, "audit", r.returncode, (r.stdout + r.stderr)[-200:])
 
 
-@case("age", "AC11", "i: a YAML text nested absurdly deep (`[` x 5000, `{` x 5000, `[{` pairs, 400 levels of block mappings) is refused CLEANLY, 'too deeply nested', within a 10 s deadline, never an uncaught RecursionError, a stall or a crash: in a workflow, a composite action and beside a pip.conf, by the inventory, the working-tree and revision readers, the daily audit and the age check (exit 2 each)")
-def i_deep_nesting_is_refused_cleanly():
-    flow = lambda o, c: "on: push\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\nx: " + o * 5000 + c * 5000 + "\n"
-    block = "on: push\n" + "".join("%sk%d:\n" % ("  " * i, i) for i in range(400)) + "jobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n"
-    texts = {"[": flow("[", "]"), "{": flow("{a: ", "}"), "[{": "on: push\nx: " + "[{a: " * 2500 + "1" + "}]" * 2500 + "\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n", "block": block}
+PINSTR = "pip install pyyaml==5.3"
+
+
+def deep_doc(kind, n, pin=None):
+    PINSTR = pin or "pip install pyyaml==5.3"
+    if kind == "flow sequences":                            # one bracket per line: no single line passes the line limit
+        v = "x:\n" + " [\n" * n + " " + PINSTR + "\n" + " ]\n" * n
+    elif kind == "flow mappings":
+        v = "x:\n" + " {a:\n" * n + " " + PINSTR + "\n" + " }\n" * n
+    elif kind == "mixed flow":
+        v = "x:\n" + " [{a:\n" * n + " " + PINSTR + "\n" + " }]\n" * n
+    else:                                                   # block mappings, one level per line
+        v = "".join("%sk%d:\n" % ("  " * i, i) for i in range(n)) + "  " * n + "v: " + PINSTR
+    return "on: push\n" + v.rstrip("\n") + "\njobs:\n  j:\n    runs-on: u\n    steps:\n      - run: echo hi\n"
+
+
+DEEP_SAFE = 200          # the structure-building steps are safe to about 450 levels; a document nested deeper than this is scanned flat
+
+
+@case("age", "AC11", "i: the flat scan DECODES: a pin written with YAML escapes (`\"pip\\x20install\\x20pyyaml==5.3\"`) at 150 levels (read normally) and at 400 and 5000 levels (read flat) is an item; the flat scan is needed for it, since no raw line holds the plain text")
+def i_deep_documents_decode_escapes():
+    for n in (150, 400, 2000):
+        text = deep_doc("flow sequences", n, pin='"pip\\x20install\\x20pyyaml==5.3"')
+        r = _bounded_inventory_keys({WFPATH: text})
+        ks = [l[4:] for l in r.stdout.splitlines() if l.startswith("KEY ")]
+        assert r.returncode == 0 and "package:pypi/pyyaml@5.3" in ks and (len([k for k in ks if "scan limit reached" in k]) == (1 if n + 1 > DEEP_SAFE else 0)), (n, r.returncode, ks, r.stderr[-200:])
+
+
+@case("age", "AC11", "i: NESTING NEVER REFUSES: an install-looking string at ANY nesting depth is an item (100, 150 levels: read normally, nothing unmeasured; 400 and 5000 levels, beyond the safe depth: the document is scanned FLAT, from its event stream with every decoded scalar, exactly ONE `scan limit reached` item beside the pin, no RecursionError, a 5000-deep bomb ends within the deadline): flow sequences, flow mappings, mixed flow collections, nested block mappings, in a workflow and a composite action, from the inventory, the working-tree and revision readers, the daily audit and the age check")
+def i_deep_documents_are_scanned_flat():
     code = ("import importlib.util,sys\nsp=importlib.util.spec_from_file_location('inv',sys.argv[1]);m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)\n"
-            "mode=None if sys.argv[3]=='wt' else 'HEAD'\ntry:\n    m.load_at(sys.argv[2], mode)\nexcept RuntimeError as e:\n    print(type(e).__name__, e); sys.exit(2)\n")
-    for label, text in texts.items():
-        for path in (WFPATH, ".github/actions/a/action.yml"):
-            r = _bounded_inventory({path: text})
-            assert r.returncode == 2 and "too deeply nested" in r.stdout and "RecursionError" not in r.stdout, (label, path, "inventory", r.returncode, (r.stdout + r.stderr)[-200:])
-        repo = history_repo({WFPATH: text, "pip.conf": "[install]\nno-deps = true\n"})
-        for mode in ("wt", "rev"):
-            r = _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py"), repo, mode])
-            assert r.returncode == 2 and "too deeply nested" in r.stdout and "RecursionError" not in r.stdout, (label, mode, r.returncode, (r.stdout + r.stderr)[-200:])
-        fx = repo + ".fx.json"
-        json.dump({"lists": {}}, open(fx, "w"))
-        r = _run_bounded([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", repo, "--fixtures", fx, "--now", now_iso(), "--report-only"])
-        assert r.returncode == 2 and "too deeply nested" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr, (label, "audit", r.returncode, (r.stdout + r.stderr)[-300:])
-        pr = exact_repo({WFPATH: runner_wf("echo hi")}, {WFPATH: text})
-        json.dump({"times": {}}, open(pr + ".fx.json", "w"))
-        r = _run_bounded([sys.executable, os.path.join(SC, "pin-age-check.py"), "--root", pr, "--base", "HEAD~1", "--head", "HEAD", "--fixtures", pr + ".fx.json", "--now", "2026-10-07T12:00:00Z"])
-        assert r.returncode == 2 and "too deeply nested" in r.stdout + r.stderr and "Traceback" not in r.stdout + r.stderr, (label, "age", r.returncode, (r.stdout + r.stderr)[-300:])
+            "mode=None if sys.argv[3]=='wt' else 'HEAD'\nfor k in sorted(m.load_at(sys.argv[2], mode)):\n    print('KEY', k)\n")
+    limit = lambda ks: [k for k in ks if "scan limit reached" in k]
+    for kind, depths in (("flow sequences", (100, 150, 400, 5000)), ("flow mappings", (100, 150, 400, 5000)), ("mixed flow", (100, 150, 400, 2500)), ("block mappings", (100, 150, 400))):
+        for n in depths:
+            text = deep_doc(kind, n)
+            for path in (WFPATH, ".github/actions/a/action.yml"):
+                r = _bounded_inventory_keys({path: text})
+                ks = [l[4:] for l in r.stdout.splitlines() if l.startswith("KEY ")]
+                assert r.returncode == 0 and "RecursionError" not in r.stderr, (kind, n, path, "inventory", r.returncode, r.stderr[-200:])
+                assert "package:pypi/pyyaml@5.3" in ks, (kind, n, path, ks)
+                beyond = n * (2 if kind == "mixed flow" else 1) + 1 > DEEP_SAFE
+                if beyond:
+                    assert len(limit(ks)) == 1, (kind, n, path, ks)
+                else:
+                    assert not limit(ks) and not [k for k in ks if "(unmeasured:" in k], (kind, n, path, ks)
+            if n in (150, 400, 5000) and kind in ("flow sequences", "flow mappings"):
+                repo = history_repo({WFPATH: text})
+                for mode in ("wt", "rev"):
+                    r = _run_bounded([sys.executable, "-c", code, os.path.join(SC, "pin-inventory.py"), repo, mode])
+                    assert r.returncode == 0 and "KEY package:pypi/pyyaml@5.3" in r.stdout and "RecursionError" not in r.stderr, (kind, n, mode, r.returncode, r.stderr[-200:])
+                fx = repo + ".fx.json"
+                json.dump({"lists": {}}, open(fx, "w"))
+                r = _run_bounded([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", repo, "--fixtures", fx, "--now", now_iso(), "--report-only"])
+                out = r.stdout + r.stderr
+                assert r.returncode in (0, 1) and "pyyaml@5.3" in out and "Traceback" not in out and ("scan limit reached" in out) == (n * (2 if kind == "mixed flow" else 1) + 1 > DEEP_SAFE), (kind, n, "audit", r.returncode, out[-300:])
+                pr = exact_repo({WFPATH: runner_wf("echo hi")}, {WFPATH: text})
+                json.dump({"times": {}}, open(pr + ".fx.json", "w"))
+                r = _run_bounded([sys.executable, os.path.join(SC, "pin-age-check.py"), "--root", pr, "--base", "HEAD~1", "--head", "HEAD", "--fixtures", pr + ".fx.json", "--now", "2026-10-07T12:00:00Z"])
+                out = r.stdout + r.stderr
+                assert r.returncode == 1 and "pyyaml@5.3" in out and "Traceback" not in out, (kind, n, "age", r.returncode, out[-300:])
 
 
 @case("age", "AC11", "x: the accepted OBFUSCATION boundary of the pip environment and configuration (owner Oct 3: plain forms only), one line each, none is an item, a reference or an unmeasured form: a NAME split by quotes or built from a variable (`PIP_REQ\"\"UIREMENT=f pip install`, `V=PIP_CONSTRAINT; export $V=f`, `env \"PIP_CONFIG\"_FILE=f pip install`, `declare -x PIP_CON\\STRAINT=f`), `pip config set global.requirement f`, and index-url / find-links in a pip.conf (not measured)")
