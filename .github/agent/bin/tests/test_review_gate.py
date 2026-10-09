@@ -736,6 +736,12 @@ class ClockIsSystemOnly(unittest.TestCase):
             for m in re.finditer(r"\bpython3?\s+(\S+)", l):
                 self.assertEqual(m.group(1), "-I", l)
 
+    def test_the_requirement_text_never_names_the_auditor_directory_literally(self):
+        # REQ-AUD-18 AC1: a file outside the auditor directory may not refer to it by its literal path prefix.
+        for rel in ("requirements/requirements.yaml", "docs/quality/traceability.md"):
+            with open(os.path.join(self.ROOT, rel)) as fh:
+                self.assertNotIn(".github/agent/", fh.read(), rel)
+
     def test_an_environment_value_cannot_unexpire_a_substitute(self):
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
         def git(*a):
