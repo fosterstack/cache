@@ -1,0 +1,54 @@
+name: 'Stage: sign'
+
+# The Sign job of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0).
+# It lives in its own file so its certificate identity (the workflow file at the tag) is not shared by any job that runs
+# the build: a step of another job cannot obtain a certificate in this identity, and a second workflow that calls this file
+# still carries its OWN top-level workflow in the certificate's Build Config URI, which the release policy pins to release.yml.
+# It receives only Build's digest list, verifies Build's signed Witness record (data, never run), compares the list with
+# the digest file that record attests, checks the list's format, and only then asks cosign for the provenance signature.
+# The identity token is requested by cosign inside its own process; no step of this file names it.
+# The shape of this file is judged by bin/chain-sign-wiring-test.sh (an allowlist), the checks by bin/chain-verify.py.
+
+on:
+  workflow_call:
+    inputs:
+      digests:
+        description: 'JSON {name: sha256:<hex>} of the digests Build produced (the only input)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    name: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-build
+          path: witness-build
+
+      - name: install cosign (pinned by checksum)
+        run: bash bin/install-scanner.sh cosign
+
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+
+      - name: check Build's record and the digests, then sign the provenance
+        run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provenance
+          path: provenance

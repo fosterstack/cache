@@ -16,14 +16,13 @@
 #                                          slsaprovenance1 -> .../provenance/v1, spdx/cyclonedx/vuln mapped below)
 #   `cosign sign` / `gitsign`           -> pseudo types urn:cosign:signature / urn:gitsign:tag-signature
 # FAIL CLOSED: a producing call whose type cannot be resolved (an expression, a shell variable, no --type) is an error
-# naming the file. Scanned: .github/workflows/*.yml and *.yaml, .github/actions/**/action.yml|yaml, a root action.yml, and every
-# script those files run (bash x.sh, ./x.sh, python3 x.py; bin/chain-verify.py itself excepted: only `chain-verify.py sign` in
-# stage-sign.yml reaches its signing calls). Which tools sign is ONE table shared with chain-sign-wiring-test.sh
-# (bin/chain-test-signers.json: cosign sign/attest, witness run/sign with every attestor flag form, attest-build-provenance,
-# actions/attest, actions/attest-sbom, slsa-github-generator, gitsign, sigstore actions, chain-verify.py sign); a tool in
-# the table with no finer resolver needs a row for its pseudo type, so no known signer is invisible. Comments are stripped
-# first (full-line and trailing). Exclusions, stated plainly: a signer that is not in the table is not seen by either
-# test (add it to the table first); signing done by a binary a script downloads at run time is not seen.
+# naming the file. Scanned: .github/workflows/*.yml and *.yaml, .github/actions/**/action.yml|yaml, a root action.yml, and the
+# scripts LISTED in .github/policy/chain-scripts.json (advisor decision, Oct 9: a stage file may run nothing else, so there is no
+# script discovery and no variable/heredoc/glob machinery; bin/chain-verify.py itself is excepted: only `chain-verify.py sign`
+# in stage-sign.yml reaches its signing calls). Which tools sign is ONE table shared with chain-sign-wiring-test.sh
+# (bin/chain-test-signers.json). Comments are stripped first (full-line and trailing). Exclusions, stated plainly: a signer that
+# is not in the table is not seen (add it to the table first); signing done by a binary a script downloads at run time or reached
+# through an argv array in script code is not seen.
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
 # Needs python3 (no PyYAML: the scan is by text, comments stripped).
 set -euo pipefail
@@ -54,9 +53,9 @@ _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.joi
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
 TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
-def scan(rel, text):
+def scan(rel, text, raw=False):
     def add(t): produced.setdefault(t, set()).add(rel)
-    for e, ctx in _cts.calls(text, TABLE):
+    for e, ctx in _cts.calls(text, TABLE, not raw):      # a LISTED script is scanned raw: a signer name in a comment, quote or heredoc counts
         n = e["name"]
         if n == "witness run":
             add(COLL)
@@ -84,11 +83,16 @@ def scan(rel, text):
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
-scripts, serrs = _cts.reachable_scripts(base, texts)
-bad += ["unresolved script reference (fail closed): " + x for x in serrs]
-for sp in sorted(scripts):
-    if sp == "bin/chain-verify.py": continue
-    scan(sp, open(os.path.join(base, sp), errors="replace").read())
+# scripts: ONLY those listed in .github/policy/chain-scripts.json (a stage file may run nothing else: chain-sign-wiring-test.sh
+# judges that grammar); a missing chain-scripts.json is that test's finding, not this one's. A listed script is scanned as RAW text
+# (the same conservative text scan chain-sign-wiring-test.sh applies, advisor decision b, Oct 9): comments and quoted strings are not
+# skipped, so a signer named anywhere in a listed script is a producer that needs a row (it over-reports by design).
+if os.path.exists(os.path.join(base, ".github/policy/chain-scripts.json")):
+    srows, serrs, _envn = _cts.load_scripts(base)
+    bad += ["chain-scripts.json: " + x for x in serrs]
+    for sp in sorted(srows):
+        if sp == "bin/chain-verify.py": continue
+        scan(sp, open(os.path.join(base, sp), errors="replace").read(), True)
 types = [r.get("type") for r in rows]
 for t in sorted(produced):
     if types.count(t) == 0: bad.append("produced type has no row: %s (in %s)" % (t, ", ".join(sorted(produced[t]))))
@@ -191,16 +195,36 @@ d=$(mk hashq); printf 'jobs:\n  c:\n    steps:\n      - run: echo "step #1"; cos
 expect_named "a '#' inside quotes does not hide a signer on the same line" "$d" "stage-verify.yml"
 d=$(mk wra); printf 'jobs:\n  c:\n    steps:\n      - uses: testifysec/witness-run-action@%s # v1\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
 expect_named "testifysec/witness-run-action is a provenance producer (fail closed) and needs a row" "$d" "stage-verify.yml"
-d=$(mk make); printf 'jobs:\n  c:\n    steps:\n      - run: make publish\n' > "$d/.github/workflows/stage-verify.yml"; printf 'publish:\n\tcosign sign --yes $(IMG)\n' > "$d/Makefile"
-expect_named "a Makefile a workflow runs signs an image with no row" "$d" "Makefile"
-d=$(mk js); mkdir -p "$d/scripts"; printf 'jobs:\n  c:\n    steps:\n      - run: node scripts/pub.js\n' > "$d/.github/workflows/stage-verify.yml"; printf 'require("child_process").execSync("cosign sign --yes " + process.env.IMG)\n' > "$d/scripts/pub.js"
-expect_named "a node script a workflow runs signs an image with no row" "$d" "scripts/pub.js"
 d=$(mk trailing); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG" # verify only\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "a trailing comment exempts nothing (cosign sign with no row still fails)" "$d"
-d=$(mk script); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"
-expect caught "a script a workflow runs signs an image with no row (bin/publish.sh)" "$d"
-d=$(mk scriptvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: ./bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/publish.sh"
-expect caught "a script a workflow runs attests with an unresolved type: fails closed" "$d"
+listed() { # listed DIR PATH TOOL...: write DIR/.github/policy/chain-scripts.json listing PATH with its real sha256 (a script a stage file may run)
+  python3 - "$@" <<'PY'
+import hashlib, json, os, sys
+d, path, tools = sys.argv[1], sys.argv[2], sys.argv[3:]
+f = d + "/.github/policy/chain-scripts.json"
+j = json.load(open(f)) if os.path.exists(f) else {"scripts": []}
+j["scripts"].append({"path": path, "sha256": hashlib.sha256(open(os.path.join(d, path), "rb").read()).hexdigest(), "tools": tools, "signs": "other", "reason": "x", "runs": []})
+json.dump(j, open(f, "w"))
+PY
+}
+d=$(mk lscript); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
+expect_named "a LISTED script that signs an image has no row: the judge names the script" "$d" "bin/publish.sh"
+d=$(mk lscriptvar); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
+expect_named "a LISTED script that attests with an unresolved type fails closed, naming the script" "$d" "bin/publish.sh"
+d=$(mk lscriptpy); mkdir -p "$d/bin"; printf 'import subprocess\nsubprocess.run("cosign sign --yes x", shell=True)\n' > "$d/bin/publish.py"; listed "$d" bin/publish.py
+expect_named "a LISTED python script is scanned for direct signing calls too" "$d" "bin/publish.py"
+d=$(mk lscriptcmt); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\n# cosign sign the image later\necho nothing\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh echo
+expect_named "a signer named only in a COMMENT of a LISTED script is a producer that needs a row (raw text scan)" "$d" "bin/publish.sh"
+d=$(mk lscriptq); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho "cosign sign --yes x"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh echo
+expect_named "a signer named only inside a QUOTED string of a LISTED script is a producer that needs a row" "$d" "bin/publish.sh"
+d=$(mk lscriptnoext); mkdir -p "$d/bin"; printf 'cosign sign --yes x\n' > "$d/bin/publish"; listed "$d" bin/publish
+expect_named "a LISTED file with no extension and no shebang is scanned too" "$d" "bin/publish"
+d=$(mk lscriptok); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho nothing signs here\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo
+expect ok "a listed script that signs nothing is no producer" "$d"
+d=$(mk unlisted); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/hidden.sh"
+expect ok "an UNLISTED script is not scanned here (a stage file cannot run it: chain-sign-wiring-test.sh refuses the unlisted path)" "$d"
+d=$(mk lbadhash); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho a\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo; printf '#!/usr/bin/env bash\necho changed\n' > "$d/bin/ok.sh"
+expect_named "a listed script whose sha256 no longer matches is an error naming chain-scripts.json" "$d" "chain-scripts.json"
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 SH40=$(printf 'a%.0s' $(seq 40))
@@ -231,33 +255,10 @@ d=$(mk notation); printf 'jobs:\n  c:\n    steps:\n      - run: notation sign "$
 expect_named "notation sign is a known signer that needs a row" "$d" "stage-verify.yml"
 d=$(mk intoto); printf 'jobs:\n  c:\n    steps:\n      - run: in-toto-run --step-name build -- ./x\n' > "$d/.github/workflows/stage-verify.yml"
 expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify.yml"
-# scripts a workflow reaches: every form resolves, and what cannot be resolved is an error naming the workflow
-d=$(mk ws); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash "$GITHUB_WORKSPACE/bin/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "bash \"\$GITHUB_WORKSPACE/bin/pub.sh\" is resolved and its signing call seen" "$d" "bin/pub.sh"
-d=$(mk ws2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash ${{ github.workspace }}/bin/pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "bash \${{ github.workspace }}/bin/pub.sh is resolved" "$d" "bin/pub.sh"
-d=$(mk cdp); mkdir -p "$d/scripts"; printf 'jobs:\n  c:\n    steps:\n      - run: cd scripts && ./pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/scripts/pub.sh"
-expect_named "cd scripts && ./pub.sh is resolved through the cd prefix" "$d" "scripts/pub.sh"
-d=$(mk noext); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: ./bin/publish\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish"; chmod +x "$d/bin/publish"
-expect_named "an extensionless script that starts with #! is scanned" "$d" "bin/publish"
-d=$(mk pym); mkdir -p "$d/tools"; printf 'jobs:\n  c:\n    steps:\n      - run: python3 -m tools.pub\n' > "$d/.github/workflows/stage-verify.yml"; printf 'import subprocess\nsubprocess.run(["x"])  # cosign sign --yes img\n' > "$d/tools/pub.py"; printf 'cosign sign --yes img\n' >> "$d/tools/pub.py"
-expect_named "python3 -m tools.pub is resolved to tools/pub.py" "$d" "tools/pub.py"
-d=$(mk trans); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$(dirname "$0")/b.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/b.sh"
-expect_named "a script that calls another script is followed (bin/a.sh -> bin/b.sh)" "$d" "bin/b.sh"
-d=$(mk unres); printf 'jobs:\n  c:\n    steps:\n      - run: bash "$SOME_DIR/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"
-expect_named "a script path in an unknown variable is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
-d=$(mk missing); printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
-expect_named "a script reference with no such file is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
-d=$(mk nvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "a script that reaches its next script through a variable is an error naming the script, not skipped (round 6)" "$d" "bin/a.sh"
-d=$(mk ntest); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
-expect_named "a *-test.sh with an unresolved reference, reached from a stage file, is judged strictly" "$d" "bin/x-test.sh"
-d=$(mk ntest2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
-expect ok "a *-test.sh that builds throw-away scripts and is reached only from ci.yml is not an error" "$d"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=63
+EXPECT=57
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: ''
+      hostile:
+        description: 'dry run only: run the hostile Build step (bin/chain-hostile-step.sh) and upload what it tried'
+        required: false
+        type: boolean
+        default: false
     outputs:
       checksums:
         description: 'sha256 lines for the produced archives'
@@ -187,3 +192,17 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: /tmp/build-subjects.txt
+
+      # The dry run's hostile Build step (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5). Never runs in a real release: the release.yml
+      # caller passes hostile only from its dry-run input. It writes the raw material of six attempts; the verify job judges them.
+      - name: hostile step (dry run only)
+        if: ${{ inputs.hostile }}
+        run: bash bin/chain-hostile-step.sh
+
+      - name: upload the hostile attempts (dry run only)
+        if: ${{ inputs.hostile }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hostile-attempts
+          path: attempts
+          if-no-files-found: error

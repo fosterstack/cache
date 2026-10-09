@@ -629,6 +629,50 @@ mappings:
   - ac: REQ-REPO-001-AC25
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-CHAIN-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-hostile-test.sh" }
+  - ac: REQ-CHAIN-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-002-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-003-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-records-test.sh" }
+  - ac: REQ-CHAIN-003-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-003-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   - ac: REQ-AUD-018-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
