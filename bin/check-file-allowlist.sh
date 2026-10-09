@@ -115,6 +115,7 @@ ALLOW_PATTERNS=(
   '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
   '^bin/workflow-consolidation-test\.sh$'
+  '^bin/rescan-current-only-test\.sh$'
   '^bin/go-freshness-wiring-test\.sh$'
   '^bin/dependabot-reviewer-gather-test\.sh$'
   '^bin/dispatch-fixer\.sh$'
