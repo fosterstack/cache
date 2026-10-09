@@ -22,10 +22,12 @@ org.gradle.caching=true
 Or pass `--build-cache` on each invocation.
 
 This is the single most common way a correct setup produces no effect. Gradle
-also treats remote-cache failures as non-fatal by design, so a misconfigured
-remote fails **silently** at the default log level — no error, no warning, just
-a build that quietly doesn't use the cache. Run with `-i` when you want to see
-what the remote is actually doing.
+treats remote-cache failures as non-fatal by design: the build still succeeds
+(exit code 0) and simply doesn't use the cache. A rejected login is not hidden,
+though: Gradle prints a `401: Unauthorized` line and "The remote build cache was
+disabled during the build due to errors." at the default log level (tested with
+Gradle 9.8.0; see §5). Run with `-i` when you want more detail about what the <!-- pinned: historical -->
+remote is doing.
 
 ## 2. Point it at your server
 
@@ -77,7 +79,7 @@ needed on either side.
 credentials to a server with auth disabled works fine — the extra header is
 ignored — so the same config works against a test instance and a production one.
 The failure only runs the other way: an auth-enabled server and a
-credential-less client produce silent 401s (see §5).
+credential-less client produce 401s (see §5).
 
 ## 3. Trying it out without TLS
 
@@ -124,12 +126,25 @@ isPush = System.getenv("CI") != null
 
 ## 5. Credentials that stop working on Monday
 
-`System.getenv` reads the environment of the **Gradle daemon**, which snapshots
-it at startup and outlives your shell. So an `export FSCACHE_PASSWORD=...` works
-all week and fails after a reboot, and a fresh `export` does not reliably reach
-a daemon that's already running.
+`System.getenv` reads the environment of the shell (or IDE) that starts the
+build, so a build started from a shell, IDE or CI job that lacks
+`FSCACHE_PASSWORD` runs without credentials, for instance after a reboot or from
+a different terminal. In our tests the Gradle daemon did **not** keep a stale
+copy: with a daemon started without the password, exporting it and running the
+same build again (same daemon) took the entries from the cache, and exporting a
+wrong one made the 401 come back at once. (Tested against FosterStack Cache 0.2.1: Gradle 9.8.0, JDK 21, Linux aarch64 in <!-- pinned: historical -->
+Docker, and Gradle 9.8.0 on macOS arm64. Other Gradle versions and JDKs were not <!-- pinned: historical -->
+tested, and neither was a rejected *push*.)
 
-Two fixes, in order of durability:
+What you will see when the credentials are wrong or missing: the build succeeds,
+and Gradle prints, at the default log level (your host and port will differ),
+
+```text
+Could not load entry <key> from remote build cache: Loading entry from 'http://127.0.0.1:8080/<key>' response status 401: Unauthorized
+The remote build cache was disabled during the build due to errors.
+```
+
+Two things to do, the first being the durable one:
 
 1. **Put it in your user `gradle.properties`** — `~/.gradle/gradle.properties`,
    never the one in the repo, and never committed:
@@ -142,11 +157,13 @@ Two fixes, in order of durability:
    password = providers.gradleProperty("fscachePassword").orNull
    ```
 
-2. **After changing the environment, restart the daemon**: `./gradlew --stop`.
+2. **Check the variable in the shell you build from, as a diagnostic** (`echo "${FSCACHE_PASSWORD:+set}"`).
+   If a build still reports a 401 after you fix it, `./gradlew --stop` starts a
+   fresh daemon; we did not need it in our tests.
 
-This failure is **silent** by default, for the reason in §6: a warm local cache
-serves hits regardless of whether the remote is working, so the build still
-looks fast while the remote 401s on every request.
+A warm *local* cache still serves hits regardless of whether the remote is
+working, so a build can look fast while the remote is rejecting requests (Gradle then switches it off for that build); the
+401 line above is how you notice (see §6).
 
 ## 6. Verify it's actually being used
 
@@ -167,7 +184,7 @@ the remote specifically, take the local cache out of the picture:
 ```sh
 rm -rf ~/.gradle/caches/build-cache-1
 ./gradlew --stop
-./gradlew build --build-cache -i          # -i surfaces remote errors
+./gradlew build --build-cache -i          # -i adds detail about the remote
 ```
 
 Or set `buildCache { local { isEnabled = false } }` for the test.
