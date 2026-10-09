@@ -53,9 +53,9 @@ _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.joi
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
 TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
-def scan(rel, text):
+def scan(rel, text, raw=False):
     def add(t): produced.setdefault(t, set()).add(rel)
-    for e, ctx in _cts.calls(text, TABLE):
+    for e, ctx in _cts.calls(text, TABLE, not raw):      # a LISTED script is scanned raw: a signer name in a comment, quote or heredoc counts
         n = e["name"]
         if n == "witness run":
             add(COLL)
@@ -84,13 +84,15 @@ def scan(rel, text):
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
 # scripts: ONLY those listed in .github/policy/chain-scripts.json (a stage file may run nothing else: chain-sign-wiring-test.sh
-# judges that grammar); a missing chain-scripts.json is that test's finding, not this one's
+# judges that grammar); a missing chain-scripts.json is that test's finding, not this one's. A listed script is scanned as RAW text
+# (the same conservative text scan chain-sign-wiring-test.sh applies, advisor decision b, Oct 9): comments and quoted strings are not
+# skipped, so a signer named anywhere in a listed script is a producer that needs a row (it over-reports by design).
 if os.path.exists(os.path.join(base, ".github/policy/chain-scripts.json")):
-    srows, serrs = _cts.load_scripts(base)
+    srows, serrs, _envn = _cts.load_scripts(base)
     bad += ["chain-scripts.json: " + x for x in serrs]
     for sp in sorted(srows):
         if sp == "bin/chain-verify.py": continue
-        scan(sp, open(os.path.join(base, sp), errors="replace").read())
+        scan(sp, open(os.path.join(base, sp), errors="replace").read(), True)
 types = [r.get("type") for r in rows]
 for t in sorted(produced):
     if types.count(t) == 0: bad.append("produced type has no row: %s (in %s)" % (t, ", ".join(sorted(produced[t]))))
@@ -211,6 +213,12 @@ d=$(mk lscriptvar); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign attes
 expect_named "a LISTED script that attests with an unresolved type fails closed, naming the script" "$d" "bin/publish.sh"
 d=$(mk lscriptpy); mkdir -p "$d/bin"; printf 'import subprocess\nsubprocess.run("cosign sign --yes x", shell=True)\n' > "$d/bin/publish.py"; listed "$d" bin/publish.py
 expect_named "a LISTED python script is scanned for direct signing calls too" "$d" "bin/publish.py"
+d=$(mk lscriptcmt); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\n# cosign sign the image later\necho nothing\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh echo
+expect_named "a signer named only in a COMMENT of a LISTED script is a producer that needs a row (raw text scan)" "$d" "bin/publish.sh"
+d=$(mk lscriptq); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho "cosign sign --yes x"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh echo
+expect_named "a signer named only inside a QUOTED string of a LISTED script is a producer that needs a row" "$d" "bin/publish.sh"
+d=$(mk lscriptnoext); mkdir -p "$d/bin"; printf 'cosign sign --yes x\n' > "$d/bin/publish"; listed "$d" bin/publish
+expect_named "a LISTED file with no extension and no shebang is scanned too" "$d" "bin/publish"
 d=$(mk lscriptok); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho nothing signs here\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo
 expect ok "a listed script that signs nothing is no producer" "$d"
 d=$(mk unlisted); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/hidden.sh"
@@ -250,7 +258,7 @@ expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=54
+EXPECT=57
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
