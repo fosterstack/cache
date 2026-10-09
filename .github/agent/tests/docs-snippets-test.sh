@@ -13,7 +13,7 @@
 # Paths are overridable by environment so the mutants run against edited copies.
 set -uo pipefail
 cd "$(dirname "$0")/../../.."
-export GRADLE_DOC="${GRADLE_DOC:-docs/gradle.md}" MAVEN_DOC="${MAVEN_DOC:-docs/maven.md}"
+export DEPLOY_DOC="${DEPLOY_DOC:-docs/docker-deploy.md}" GRADLE_DOC="${GRADLE_DOC:-docs/gradle.md}" MAVEN_DOC="${MAVEN_DOC:-docs/maven.md}"
 export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
 export ACCEPTANCE="${ACCEPTANCE:-.github/workflows/acceptance.yml}"
@@ -88,6 +88,17 @@ if cfg:
         ok(drem.get("id") in ids, "doc: settings.xml <server><id> repeats the remote id %r" % drem.get("id"))
 wf = open(os.environ["ACCEPTANCE"]).read()
 ok("-Dmaven.build.cache.remote.save.enabled=true" in wf, "acceptance-maven turns uploading on (remote.save.enabled=true), the behaviour saveToRemote=\"true\" states")
+# Kubernetes reset (docs/docker-deploy.md): a Deployment does not recreate a deleted claim, so the documented order must be
+# scale 0, delete the PVC, re-apply the PVC manifest, scale 1.
+dd = open(os.environ["DEPLOY_DOC"]).read()
+rb = [b for b in re.findall(r"```sh\n(.*?)```", dd, re.S) if "delete pvc fscache-data" in b]
+ok(len(rb) == 1, "docker-deploy.md has exactly one Kubernetes reset block (found %d)" % len(rb))
+if rb:
+    cmds = [l.split("#")[0].strip() for l in rb[0].splitlines() if l.strip()]
+    def idx(sub):
+        return next((i for i, c in enumerate(cmds) if sub in c), -1)
+    i0, i1, i2, i3 = idx("--replicas=0"), idx("delete pvc fscache-data"), idx("kubectl apply"), idx("--replicas=1")
+    ok(-1 < i0 < i1 < i2 < i3, "reset order is scale 0, delete the claim, re-apply the claim, scale 1 (positions %s)" % [i0, i1, i2, i3])
 sys.exit(fails)
 PY
 }
@@ -112,6 +123,7 @@ mutant "gradle push missing (loopback)"     GRADLE_DOC 's=s.replace("        isP
 mutant "maven saveToRemote missing"         MAVEN_DOC  's=s.replace(" saveToRemote=\"true\"","")'
 mutant "maven remote before configuration" MAVEN_DOC 'i=s.index("    <!-- FosterStack Cache"); j=s.index("</remote>")+len("</remote>"); blk=s[i:j]; s=s[:i]+s[j:]; s=s.replace("  <configuration>\n","  "+blk.strip()+"\n  <configuration>\n",1)'
 mutant "maven remote sibling of configuration" MAVEN_DOC 'i=s.index("    <!-- FosterStack Cache"); j=s.index("</remote>")+len("</remote>"); blk=s[i:j]; s=s[:i]+s[j:]; s=s.replace("  </configuration>\n","  </configuration>\n"+blk+"\n",1)'
+mutant "k8s reset without the re-apply"    DEPLOY_DOC 's=s.replace("kubectl apply -f fscache-pvc.yaml   # the PersistentVolumeClaim manifest from kubernetes.md\n","")'
 mutant "maven server id mismatch"           MAVEN_DOC  's=s.replace("<id>fosterstack-cache</id>","<id>other</id>")'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]

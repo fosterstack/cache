@@ -224,12 +224,17 @@ docker volume rm fscache-data
 
 **Kubernetes**
 
-Delete the PersistentVolumeClaim — or scale to zero, delete the claim, and
-scale back up. Either way the pod comes back with a fresh volume.
+Scale to zero, delete the PersistentVolumeClaim, create it again from the
+PersistentVolumeClaim manifest in [Kubernetes](kubernetes.md#persistentvolumeclaim),
+then scale back up. A Deployment does not recreate a claim you deleted, so
+without the re-apply the pod stays `Pending` with "persistentvolumeclaim
+fscache-data not found". After the re-apply the pod comes back with a fresh,
+empty volume.
 
 ```sh
 kubectl scale deploy/fscache --replicas=0
 kubectl delete pvc fscache-data
+kubectl apply -f fscache-pvc.yaml   # the PersistentVolumeClaim manifest from kubernetes.md
 kubectl scale deploy/fscache --replicas=1
 ```
 
