@@ -416,6 +416,21 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
+  # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
+  # main-candidate-rescan.yml by file, so neither may ever be callable as a reusable workflow. Its own job: it reads
+  # only the checked-out workflow files and needs no token, no secret and no network.
+  scan-guard:
+    name: scan-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
+        run: bash bin/scan-no-workflow-call-test.sh
+
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
   # match exactly — contexts and integration IDs — on EVERY PR and every push to
