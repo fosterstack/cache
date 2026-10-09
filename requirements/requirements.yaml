@@ -1972,6 +1972,23 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-SCAN-015
+    title: The scanner cloud identities cannot be reached through a caller
+    statement: >
+      The two workflow files that carry the scanner cloud identities (scan.yml and main-candidate-rescan.yml) shall never be callable as reusable workflows, because the cloud trust is pinned to the file and not to its caller: neither declares on: workflow_call, and no workflow or action references either one in a uses:.
+    source: [.github/workflows/scan.yml, .github/workflows/main-candidate-rescan.yml, bin/scan-no-workflow-call-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor-accepted, Oct 9; serves the 0345 hardening (ops#107 pins the Inspector role and the GCP provider to these two files by job_workflow_ref)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-SCAN-015-AC1
+        given: "the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml)"
+        when: "the repository's workflows are read"
+        then: "neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-LIC-001
     title: MIT core, nothing withheld
     statement: >

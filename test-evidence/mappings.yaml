@@ -460,6 +460,9 @@ mappings:
   - ac: REQ-SCAN-014-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-015-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
   - ac: REQ-SCAN-009-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
