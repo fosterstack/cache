@@ -71,7 +71,7 @@ and published as a release asset. VEX is the single source of truth: any
 tool-specific ignore must cite the statement that governs it and may never
 stand alone. No statement, no exception, no push.
 
-Every published image is also rescanned daily — currently at CRITICAL and
+The current release's images are also rescanned daily — currently at CRITICAL and
 HIGH severity, which is softer than the release gate — so a CVE disclosed
 against bytes we already shipped raises a tracked issue rather than waiting
 for someone to look.

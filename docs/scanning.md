@@ -1,7 +1,7 @@
 # Scanning FosterStack in your compliance pipeline
 
 Every scanner in [the repo's scanner list](../.github/policy/scanners.json)
-runs against a snapshot build of every release, and every published image is
+runs against a snapshot build of every release, and the current release's images are
 rescanned daily; [`RELEASING.md`](../RELEASING.md) states exactly what the
 release scan does and does not attach to. This page is about what to expect
 when *you* scan our image, since a minimal image scans differently from a
