@@ -1,0 +1,22 @@
+{
+ "repository": "fosterstack/cache",
+ "oidc_issuer": "https://token.actions.githubusercontent.com",
+ "caller_workflow": ".github/workflows/release.yml",
+ "stages": {
+  "build": {
+   "workflow": ".github/workflows/stage-build.yml"
+  },
+  "sign": {
+   "workflow": ".github/workflows/stage-sign.yml"
+  },
+  "rebuild": {
+   "workflow": ".github/workflows/stage-reproducibility.yml"
+  },
+  "check": {
+   "workflow": ".github/workflows/stage-verify.yml"
+  },
+  "release": {
+   "workflow": ".github/workflows/stage-promote.yml"
+  }
+ }
+}

@@ -2,11 +2,11 @@
 # Install a vulnerability scanner CLI, pinned by VERSION and by a
 # repo-pinned SHA256 (audit follow-up: "scanner installers pinned by
 # checksum; a scanner that cannot run is red and labeled as a pipeline
-# failure, never as a finding"). Downloading install.sh from a moving
+# failure, never as a finding"). Downloading the vendors' installer from a moving
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|snyk|osv-scanner|inspector-sbomgen> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign> [dest-dir]
 # inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
 # second scanner sends its SBOM to inspector-scan:ScanSbom). It is pinned
 # here rather than downloaded by the vendor action at run time, so its
@@ -28,15 +28,18 @@ OSV_VER=2.6.0
 SBOMGEN_VER=1.16.0
 SCOUT_VER=1.26.0
 GITSIGN_VER=0.17.1
+# cosign signs the release provenance in stage-sign.yml (v0.3.0 rule 52): v3.1.3 linux binaries; the sums below were checked on Oct 9 2026
+# with `cosign verify-blob --bundle` against the release's own signatures (identity keyless@projectsigstore.iam.gserviceaccount.com)
+COSIGN_VER=3.1.3
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_COSIGN=linux-amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_COSIGN=linux-arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -60,6 +63,8 @@ case "${TOOL}:${arch}" in
   docker-scout-1.24.0:x86_64|docker-scout-1.24.0:amd64) SUM=f4e2814bd61040365153d5b964b144cb2dc6ee536a68b5bac4cadf00fc0ec34b ;;
   gitsign:x86_64|gitsign:amd64) SUM=69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae ;;
   gitsign:aarch64|gitsign:arm64) SUM=477018736a80b36e703dd58db8d6e158a2c1b8b727af0ab8ffdcce9fdf610ada ;;
+  cosign:x86_64|cosign:amd64) SUM=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;;
+  cosign:aarch64|cosign:arm64) SUM=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;;
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -71,6 +76,7 @@ OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/downloa
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
 SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
 GITSIGN_BASE="${GITSIGN_BASE_URL:-https://github.com/sigstore/gitsign/releases/download}"
+COSIGN_BASE="${COSIGN_BASE_URL:-https://github.com/sigstore/cosign/releases/download}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -148,8 +154,16 @@ case "$TOOL" in
     install -m 0755 "$tmp/gitsign" "${DEST}/gitsign" || pipeline_fail "install failed for gitsign"
     "${DEST}/gitsign" --version >/dev/null || pipeline_fail "gitsign does not run after install"
     ;;
+  cosign)
+    # the release provenance signer (v0.3.0 rule 52): a single binary; cosign asks for the OIDC token inside its own process
+    url="${COSIGN_BASE}/v${COSIGN_VER}/cosign-${A_COSIGN}"
+    curl -fsSL -o "$tmp/cosign" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/cosign"
+    install -m 0755 "$tmp/cosign" "${DEST}/cosign" || pipeline_fail "install failed for cosign"
+    "${DEST}/cosign" version >/dev/null || pipeline_fail "cosign does not run after install"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

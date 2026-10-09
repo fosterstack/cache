@@ -1410,7 +1410,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 25 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, owner ratified Oct 5, new-file amendment Oct 3)"
+        then: "it holds exactly the 26 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, owner ratified Oct 5, new-file amendment Oct 3; stage-sign.yml added by v0.3.0 rule 52, owner ratified Oct 9, the one new workflow file of v0.3.0)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2250,31 +2250,31 @@ requirements:
         when: "they are parsed"
         then: "stage-sign.yml is a reusable workflow with exactly one job; it is the only workflow file v0.3.0 adds beyond the files that existed at v0.2.2; the Sign job runs on a GitHub-hosted runner (never self-hosted); no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json; every stage-*.yml is judged over a closed set of keys (advisor decision b, Oct 9; finite grammar): the workflow, job and step keys come from fixed lists (no defaults, container, services, shell, working-directory, workflow or job env, continue-on-error, job-level uses; strategy only a matrix of literal runner labels), step env names come from the closed env_names list of .github/policy/chain-scripts.json (never BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each is read whole by that step, step uses is only a digest-pinned actions/checkout (persist-credentials false, no ref, repository, path or token), actions/download-artifact (an explicit path that cannot overwrite a listed script, bin/ or .github/) or actions/upload-artifact (no local composite action, docker://, github-script or reusable-workflow call), and every run line is exactly set -euo pipefail, bash or python3 followed by a plain relative path that is listed in chain-scripts.json with the sha256 the file has, or one printf of a whole env variable into digests.json (any other printf line is an error), with arguments that are literals or whole reads of the step own env (anything else at command position, such as a variable, glob, make, xargs, find, npm, a pipe or a direct tool, fails and names the file and line); a listed script is scanned as raw text whatever its extension or shebang: it names no command from the fixed deny list (interpreters, source, eval, exec, make, xargs, find, curl, wget, ssh, gh, git, docker and similar) that its tools list does not allow, names no other script that its runs list does not allow, passes only a literal path in its runs list after witness run --, sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS, and signs only as its signs value says (a signer named anywhere in the text, comments and quotes included, counts); a script whose signs value is provenance is run by stage-sign.yml alone (except through a sign_subcommand row, whose sign call text is itself a provenance signer)"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-001-AC2
         given: "the Sign job"
         when: "its inputs and steps are read"
         then: "its only input is Build's digest list; the one thing it downloads is Build's signed Witness record (the artifact witness-build), as data only, verified against Build's identity before it is read and never executed; none of its steps runs anything Build produced; its job is exactly: checkout, that one download, install the pinned signing tool, write the digest list to a file, one `chain-verify.py sign --check` command, upload the provenance folder; and that command refuses to sign (and writes nothing) unless Build's verified record attests the digest file by the sha256 of its bytes (the real Witness product subject file:digests.json) and the file's own content passes the format check on its own (a JSON object, no duplicate key, every name plain: lower-case letters, digits and hyphens, no code, no path; every value sha256: and 64 lower-case hex characters); the policy it checks against is made per tag by the check itself from the committed template, the committed trust file and the tag in GITHUB_REF (refs/tags/vX.Y.Z exactly: -rc1 tags, other tags, a branch on a push and an empty ref are refused; the one other mode is a dry run, chosen by the run itself as a workflow_dispatch on a branch, where the policy is made for that branch, the provenance says dryRun true and a DRY-RUN marker sits beside it, and Release's tag-pinned policy can never accept such a record); the signing tool is never started on a refusal (the check comes before the signature); the provenance it writes is SLSA v1 with a real buildDefinition and runDetails.builder.id, and what it writes verifies as it stands (certificate, intermediates, timestamp and Rekor entry from the signing bundle)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-001-AC3
         given: "the Sign job's identity token and signing key"
         when: "every step of every stage file is read"
         then: "no step of Sign touches the identity token request at all (the signing tool asks for it inside its own process), so it is never written to a file, an artifact, a log or a step output (or the environment file); the only artifact Sign uploads is the provenance bundle; the short-lived signing key exists only in the signing tool's memory for that run; and Sign's workflow file references no repository or environment secret"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-001-AC4
         given: "provenance written by the Sign job"
         when: "bin/chain-verify.py checks it"
         then: "it is a standard SLSA provenance record (v1) signed keyless with a certificate whose identity is exactly stage-sign.yml of this repository at the tag (the certificate's SAN), whose top-level workflow (the Build Config URI extension) is release.yml of this repository at the same tag, and whose OIDC issuer is GitHub Actions, with the timestamp authority's stamp; provenance signed under any other identity (Build's, Rebuild's, Check's, a sibling file, a file whose name only resembles Sign's, another repository, another tag or a branch) is refused, and so is a certificate that has Sign's SAN but was issued to a run of any other top-level workflow (a second workflow that calls stage-sign.yml), one at another tag or on a branch, and one with the issuer or the Build Config URI extension missing and the refusal names the identity found; provenance presented as any other stage's record is refused"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-001-AC5
         given: "a dry run on GitHub in which a deliberately hostile Build step runs (the runtime proof; the static judge alone does not satisfy this AC)"
         when: "the step tries, as six separate cases each on its own, to mint a certificate in Sign's identity, to read Sign's token, to read Sign's key material, to hand Sign code or a path instead of digests, to forge provenance that Release would accept, and to get provenance accepted from a second workflow that calls stage-sign.yml at the tag (that workflow exists only on a throwaway commit of the pull request branch and is removed before the merge)"
         then: "every attempt fails or is refused by Release's checks, each outcome is the verifier's own result (its exit code), never the hostile step's report of itself, the refusal names the stage and the reason, the test fails if any attempt is accepted, and the GitHub dry run must be green and its run linked in the pull request before the pull request merges; each of the six cases is judged by the verifier invocation pinned for it and counts only when its stage and cause fit the attempt (a refusal because the material was missing or unreadable never counts: a missing file is an error, not a refusal, and writes no row), the results come from the run's own artifact (never a file in the repository), and the verifying job holds no identity token, runs only an allowlist of steps (checkout, the downloads, one policy made for the run's own ref, the attempts, one positive control, collect, upload), and judges every attempt against the same policy as a positive control that must be ACCEPTED (this run's genuine Sign provenance), so a policy that refuses everything cannot make the attempts look refused; the token and key attempts must leave a transcript (an empty material file is an error)"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-CHAIN-002
     title: Timestamps, the transparency log and the per-tag release policy
@@ -2293,25 +2293,25 @@ requirements:
         when: "bin/chain-verify.py checks it from files alone with the network cut"
         then: "it is accepted when it carries a valid timestamp from the authority named in the release policy and refused when the timestamp is missing, from another authority, dated before the certificate's validity or after it expired, taken over a different signature, or when the payload or the signature was altered after signing; the same record is refused when the policy names no authority; the check runs with the network cut"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-002-AC2
         given: "the committed policy template and a tag T"
         when: "the policy for T is made and used to check records"
         then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag, a tag that only begins like T, a branch, another repository or a certificate from another OIDC issuer, requires the certificate's Build Config URI extension to be release.yml of this repository at T (so a second workflow that calls a stage file is refused even though its SAN is the stage's), and pins Sigstore's root, the timestamp authority's root and the Rekor key by the hashes in the committed trust file, refusing a bundle whose hash differs"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-002-AC3
         given: "a customer-verifiable record (image signature, SLSA provenance, SBOM, lock or release file signature)"
         when: "bin/chain-verify.py checks it"
         then: "whether a record needs a Rekor entry is decided by its type, never by a flag the caller sets: every type except Witness's stage records (the SLSA provenance, the signed release policy, and the rest) is refused unless Rekor holds a correctly signed entry for that very record, whose body binds the record's payload hash, signature and certificate; an entry for another record (or with another record's signature or certificate), with a bad or edited signed timestamp, or from another key is refused; Witness's stage records are exempt and are checked for the timestamp instead"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-002-AC4
         given: "the Sign and Build signing steps"
         when: "the workflow files are read"
         then: "nothing a step passes to the signing tool or into a certificate claim comes from a secret, a token or an environment secret; the certificate carries only the public repository, workflow file, commit and run"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
 
   - id: REQ-CHAIN-003
     title: Each stage verifies the one before it; only standard record types; every action pinned
@@ -2330,28 +2330,28 @@ requirements:
         when: "bin/chain-verify.py stage-start runs as that stage's verify step"
         then: "it runs the same verification as the verify command for the previous stage, exits non-zero in each case, the message names the previous stage and the cause (digest, identity, signature, timestamp, rekor or missing), and it exits zero only for a valid record about exactly the digests the stage was given, not a subset and not a superset"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-003-AC2
         given: "a record whose predicate type is not on the committed list (Witness standard records, SLSA provenance, signed release policy)"
         when: "bin/chain-verify.py checks it"
         then: "it is refused, including a made-up type and a Witness-style record with a type of our own"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-003-AC3
         given: "the signed record types the workflow files produce"
         when: ".github/policy/chain-records.json is compared with them"
         then: "every produced type, found by the tool or action that signs it in any workflow, composite action or .yaml file, has one row naming its claim and a consumer that is a real stage (or the customer); a row with no consumer or an unknown one, a row nobody produces, and a produced type with no row fail; a signing call whose type cannot be resolved fails closed; every known signer (cosign, Witness in every attestor-flag form, the attest actions including attest-sbom, slsa-github-generator, gitsign, the sigstore actions, chain-verify.py sign) is found whatever trailing comment follows it, in every workflow, composite action and .yaml file and in every script listed in .github/policy/chain-scripts.json, scanned as raw text (a stage file can run no other script; advisor decision b, Oct 9, finite grammar)"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-003-AC4
         given: "a workflow file at the tagged commit"
         when: "bin/chain-verify.py actions reads it against .github/policy/allowed-actions.json"
         then: "it reads step and job-level uses, container images (string or mapping), services images, docker:// references and composite actions, and rejects any reference that is not a full commit or image digest on the list (a tag, a branch, a short or upper-case sha, an expression in a uses, container or services image, an unlisted digest, or anything at all when the list is empty), follows a listed local composite action into its own steps, and accepts a file whose references are all listed; repository-local reusable calls count as pinned only when named by path in the list"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-003-AC5
         given: "the workflow files of the repository"
         when: "their job-level and step-level uses are read"
         then: "no workflow file other than release.yml calls stage-sign.yml, and no stage-*.yml file calls another stage file, because the certificate's SAN is the file that runs the signing step, so a workflow that calls a stage file inherits that stage's SAN (proven by the nested call in the harness spike); a reference by local path or by repository path and digest counts"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved

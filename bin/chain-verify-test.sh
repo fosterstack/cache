@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3 (key material), REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3,
-#         REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4
+# proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4 — 001-AC3 here is the key-material and token-sentinel part
 # RED until bin/chain-verify.py exists (tests before implementation, step 4 of the nine-step process).
 #
 # Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67).
@@ -1019,7 +1018,7 @@ expect_ok     "003-AC4 a local reusable call named by path in the list is accept
 expect_ok     "003-AC4 a composite action.yml whose steps are all listed is accepted" $(A action-good)
 for c in w_unl:upload-artifact w_tag:checkout@v4 w_branch:checkout@main w_otherd:checkout w_short:aaaaaaa w_upper:checkout w_sub:cache/save \
          w_expr:inputs.ref w_exprname:inputs.action w_jobreuse:other.yml w_jobreusemain:lib.yml@main w_cont:runner:latest w_contmap:runner:latest \
-         w_dig63:runner@sha256 w_digup:runner@sha256 w_tagdig:postgres:16 action-docker:alpine action-dockerfile:Dockerfile w_contd:runner w_svc:postgres:latest w_svcd:postgres w_docker:alpine w_dockerun:alpine w_localbad:stage-build.yml w_localstep:thing action-tag:checkout@v4; do
+         w_dig63:runner@sha256 w_digup:runner@sha256 w_tagdig:postgres:16 action-docker:alpine action-dockerfile:dockerfile w_contd:runner w_svc:postgres:latest w_svcd:postgres w_docker:alpine w_dockerun:alpine w_localbad:stage-build.yml w_localstep:thing action-tag:checkout@v4; do
   expect_refuse "003-AC4 ${c%%:*} is rejected and named" "${c#*:}" $(A "${c%%:*}")
 done
 expect_refuse "003-AC4 a container given as an expression is rejected" "inputs.image" $(A w_contexpr)

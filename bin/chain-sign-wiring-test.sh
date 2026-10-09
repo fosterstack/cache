@@ -197,8 +197,21 @@ stage-verify.yml supply-chain.yml""".split())
             if any(pv for e in TABLE if re.search(e["regex"], str(r.get("tool", ""))) for pv in [e["prov"] == "always"]): bad.append("AC1: signer list names a provenance signer: %s" % r)
             allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
     acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
+    def unprivileged(text):
+        """A job that lacks `id-token: write` cannot request the identity token a signature needs: the dry run's hostile-verify job
+        calls `chain-verify.py sign --check` (the hand-code attempt, which must be REFUSED) with permissions {contents: read}. Such a
+        call is not a signer, so it is renamed before the scan; any job that CAN request a token keeps its call and is flagged."""
+        if "chain-verify.py sign" not in text: return text
+        try: d = yaml.load(text, Loader=yaml.BaseLoader) or {}
+        except Exception: return text
+        for j in (d.get("jobs") or {}).values():
+            perm = j.get("permissions")
+            if j.get("uses") or not isinstance(perm, dict) or perm.get("id-token") == "write": continue
+            for s in j.get("steps") or []:
+                if s.get("run"): s["run"] = s["run"].replace("chain-verify.py sign", "chain-verify.py nosign")
+        return yaml.dump(d, width=10**6, sort_keys=False)
     def check(rel, text):
-        for e, pv, line in signer_calls(text):
+        for e, pv, line in signer_calls(unprivileged(text) if rel.endswith((".yml", ".yaml")) else text):
             if rel == "stage-sign.yml": continue
             if pv:
                 bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
@@ -935,6 +948,10 @@ d=$(mk t_slsagen); printf 'jobs:\n  b:\n    uses: slsa-framework/slsa-github-gen
 expect caught "AC1 slsa-github-generator is a provenance signer" tree "$d"
 d=$(mk t_unl); printf 'jobs:\n  b:\n    steps:\n      - run: cosign sign --yes "$IMG"\n' > "$d/.github/workflows/scan.yml"
 expect caught "AC1 an unlisted signing call (cosign sign) in a stage file" tree "$d"
+d=$(mk t_csign); printf 'jobs:\n  b:\n    permissions: {contents: read, id-token: write}\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d --build-record r --policy p --out o\n' > "$d/.github/workflows/scan.yml"
+expect caught "AC1 a job WITH id-token: write runs chain-verify.py sign outside stage-sign.yml (it could sign)" tree "$d"
+d=$(mk t_csignro); printf 'jobs:\n  b:\n    permissions: {contents: read}\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d --build-record r --policy p --out o\n' > "$d/.github/workflows/scan.yml"
+expect ok "AC1 a job WITHOUT id-token: write may run chain-verify.py sign --check (it cannot request an identity token, so it cannot sign: the dry run's hostile-verify)" tree "$d"
 d=$(mk t_yaml); printf 'jobs:\n  b:\n    steps:\n      - run: cosign attest --predicate p.json "$IMG"\n' > "$d/.github/workflows/other.yaml"
 expect caught "AC1 a .yaml workflow file is scanned too" tree "$d"
 d=$(mk t_comp); printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
@@ -1011,7 +1028,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=248
+EXPECT=250
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

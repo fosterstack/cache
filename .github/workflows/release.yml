@@ -24,6 +24,14 @@ on:
       - main
   schedule:
     - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
+  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch that runs the hostile Build step and judges
+  # what it tried; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'run the hostile-step dry run (no tag, no publish)'
+        type: boolean
+        default: false
 
 # Caller grants must COVER every called job's requests, or the run is a
 # startup_failure with zero jobs. checks/statuses: read are for the
@@ -44,7 +52,7 @@ jobs:
   # a removed critical/high finding on push, else at most once a day, rule 2), signs the tag keylessly with gitsign under
   # THIS workflow's identity (rule 3), and pushes it with the auditor App's token, whose tag push starts the chain below.
   decide:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
     concurrency:
       group: patch-decide
@@ -276,7 +284,7 @@ jobs:
   # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
   patch-notes:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -341,7 +349,7 @@ jobs:
           fi
 
   admission:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     uses: ./.github/workflows/stage-admission.yml
 
   build:
@@ -350,8 +358,22 @@ jobs:
     with:
       mode: release
       admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
+      hostile: ${{ inputs.dry-run }}   # the hostile Build step runs only in the dry run (PR 1; the chain proper arrives in PR 2)
+
+  # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here. In PR 1 it runs only in the dry run; PR 4 makes
+  # it part of the chain. The digests are a placeholder until PR 2's Build writes digests.json.
+  sign:
+    if: ${{ inputs.dry-run }}
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.checksums }}
 
   image:
+    if: ${{ !inputs.dry-run }}
     needs: build
     uses: ./.github/workflows/stage-image.yml
     with:
@@ -360,6 +382,7 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
 
   reproducibility:
+    if: ${{ !inputs.dry-run }}
     needs: [build, image]
     uses: ./.github/workflows/stage-reproducibility.yml
     with:
@@ -368,6 +391,7 @@ jobs:
       digests: ${{ needs.image.outputs.digests }}
 
   scans:
+    if: ${{ !inputs.dry-run }}
     needs: [build, image, reproducibility]
     uses: ./.github/workflows/stage-verify.yml
     with:
@@ -377,6 +401,7 @@ jobs:
     secrets: inherit
 
   acceptance-artifacts:
+    if: ${{ !inputs.dry-run }}
     needs: [build, image, reproducibility]
     uses: ./.github/workflows/stage-acceptance-artifacts.yml
     with:
@@ -386,24 +411,28 @@ jobs:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance:
+    if: ${{ !inputs.dry-run }}
     needs: [image, reproducibility]
     uses: ./.github/workflows/acceptance.yml
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
 
   acceptance-egress:
+    if: ${{ !inputs.dry-run }}
     needs: [image, reproducibility]
     uses: ./.github/workflows/stage-acceptance-egress.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-k8s:
+    if: ${{ !inputs.dry-run }}
     needs: [image, reproducibility]
     uses: ./.github/workflows/stage-acceptance-k8s.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-predicate:
+    if: ${{ !inputs.dry-run }}
     needs: [admission, image, acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
     uses: ./.github/workflows/stage-acceptance-predicate.yml
     with:
@@ -416,6 +445,7 @@ jobs:
       baseline-version: ${{ needs.admission.outputs.baseline }}
 
   authorization:
+    if: ${{ !inputs.dry-run }}
     needs: [admission, build, image, scans, acceptance-predicate]
     # The caller grants what stage-authorize's `authorize` job needs (a reusable workflow cannot
     # raise its caller's grant, R01): contents:read, id-token:write to sign the release-
@@ -435,6 +465,7 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
 
   promotion:
+    if: ${{ !inputs.dry-run }}
     needs: [admission, build, image, authorization]
     uses: ./.github/workflows/stage-promote.yml
     with:
@@ -444,10 +475,97 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
     secrets: inherit
 
+  # The dry run's judges (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
+  # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be
+  # ACCEPTED by the same policy. The outcome of an attempt is the verifier's own exit code, captured per attempt, never a field
+  # the hostile step wrote. A dry run neither tags nor publishes.
+  hostile-verify:
+    if: ${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hostile-attempts
+          path: attempts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: provenance
+          path: provenance
+      - name: make the policy for this run's own ref
+        run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
+      - name: attempt mint_sign_cert
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json --policy policy.json 2> /tmp/mint_sign_cert.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt mint_sign_cert --exit-code "$rc" --stderr /tmp/mint_sign_cert.err --out results/mint_sign_cert.json
+      - name: attempt read_sign_token
+        run: |
+          rc=0
+          python3 bin/chain-verify.py hostile-material --kind token --file attempts/read_sign_token.txt 2> /tmp/read_sign_token.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt read_sign_token --exit-code "$rc" --stderr /tmp/read_sign_token.err --out results/read_sign_token.json
+      - name: attempt read_sign_key
+        run: |
+          rc=0
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
+      - name: attempt hand_sign_code
+        run: |
+          rc=0
+          python3 bin/chain-verify.py sign --check --signer cosign --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json --out attempts/out-hand_sign_code 2> /tmp/hand_sign_code.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "$rc" --stderr /tmp/hand_sign_code.err --out results/hand_sign_code.json
+      - name: attempt forge_provenance
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/forge_provenance.json --policy policy.json 2> /tmp/forge_provenance.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt forge_provenance --exit-code "$rc" --stderr /tmp/forge_provenance.err --out results/forge_provenance.json
+      - name: attempt call_sign_from_other_workflow
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/call_sign_from_other_workflow.json --policy policy.json 2> /tmp/call_sign_from_other_workflow.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt call_sign_from_other_workflow --exit-code "$rc" --stderr /tmp/call_sign_from_other_workflow.err --out results/call_sign_from_other_workflow.json
+      - name: positive control (this run's genuine Sign output must be accepted)
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
+      - name: collect the rows
+        run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hostile-results
+          path: hostile-results.json
+
+  hostile-verdict:
+    if: ${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hostile-results
+          path: hostile-results
+      - name: every hostile attempt refused with its own cause, the positive control accepted
+        run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
+
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:
-    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance,
             acceptance-egress, acceptance-k8s, acceptance-predicate, authorization, promotion]
     runs-on: ubuntu-latest
