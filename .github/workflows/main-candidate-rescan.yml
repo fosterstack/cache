@@ -1,7 +1,7 @@
 name: Daily main-candidate rescan
 
-# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), every PUBLISHED
-# release's digests (the manifests and rescan jobs at the end). main's candidate is never pushed to a package; this builds it from source through the
+# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
+# published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
 # 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
 # images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
@@ -526,14 +526,14 @@ jobs:
           # R12: capture the release list with an EXPLICIT exit check. A `for tag in $(gh release list ...)` swallows the
           # command substitution's failure (set -e does not catch it there), so an API outage would look like "no
           # release". Fail loudly instead; an empty-but-successful list is the no-release case below.
-          if ! gh release list --limit 100 --json tagName,isDraft,isPrerelease > "$w/releases.json"; then
+          if ! gh release list --limit 1000 --json tagName,isDraft,isPrerelease > "$w/releases.json"; then
             echo "::error::could not enumerate releases (gh release list failed) - refusing to rescan a partial inventory" >&2
             exit 1
           fi
           jq -e 'type == "array"' "$w/releases.json" >/dev/null \
             || { echo "::error::gh release list did not return a JSON array" >&2; exit 1; }
           current=$(jq -r '[.[] | select((.isDraft | not) and (.isPrerelease | not)
-                                         and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+$")))
+                                         and (.tagName | test("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$")))
                             | .tagName]
                            | sort_by(ltrimstr("v") | split(".") | map(tonumber)) | last // empty' "$w/releases.json")
 
@@ -582,7 +582,12 @@ jobs:
           echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           n=$(jq 'length' <<<"$targets")
           # No published release is a quiet day, not a failed one: an empty matrix and any=false skip the rescan job.
+          # A current release with no targets (empty legacy images, no scanners, no manifest images) is NOT a quiet day: fail closed.
           if [ "$n" -eq 0 ]; then
+            if [ -n "$current" ]; then
+              echo "::error::current release ${current} produced no rescan targets" >&2
+              exit 1
+            fi
             echo "any=false" >> "$GITHUB_OUTPUT"
             echo "no published release: the rescan matrix is empty"
             exit 0

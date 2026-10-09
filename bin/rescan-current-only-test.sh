@@ -29,7 +29,8 @@ echo "$*" >> "$FIX/calls.log"
 case "$1 $2" in
   "release list")
     [ ! -e "$FIX/list-fails" ] || { echo "HTTP 502" >&2; exit 1; }
-    cat "$FIX/list.json" ;;
+    lim=100000; a=("$@"); for i in "${!a[@]}"; do [ "${a[$i]}" = "--limit" ] && lim=${a[$((i+1))]}; done
+    jq -c ".[:$lim]" "$FIX/list.json" ;;
   "release view")
     tag=$3; [ -e "$FIX/view-$tag.json" ] || { echo "release not found" >&2; exit 1; }
     jq -r "$(printf '%s\n' "$@" | sed -n '/^--jq$/{n;p;}')" "$FIX/view-$tag.json" ;;
@@ -68,10 +69,10 @@ targets() { sed -n 's/^targets=//p' "$work/out"; }
 anyv()    { sed -n 's/^any=//p' "$work/out"; }
 nscan=$(jq '.scanners | length' "$root/.github/policy/scanners.json")
 
-REL='[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.3","isDraft":true,"isPrerelease":false},{"tagName":"v0.3.0-rc.1","isDraft":false,"isPrerelease":true},{"tagName":"nightly","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.1","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.0","isDraft":false,"isPrerelease":false},{"tagName":"v0.1.0","isDraft":false,"isPrerelease":false}]'
+REL='[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.3","isDraft":true,"isPrerelease":false},{"tagName":"v0.3.0-rc.1","isDraft":false,"isPrerelease":true},{"tagName":"v0.3.0","isDraft":false,"isPrerelease":true},{"tagName":"nightly","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.1","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.0","isDraft":false,"isPrerelease":false},{"tagName":"v0.1.0","isDraft":false,"isPrerelease":false}]'
 
 # 1. the fixture list: exactly v0.2.2, its three variants x every scanner, nothing else
-setup "$REL" v0.2.0 v0.2.1 v0.2.2 v0.2.3 v0.3.0-rc.1 nightly
+setup "$REL" v0.2.0 v0.2.1 v0.2.2 v0.2.3 v0.3.0-rc.1 v0.3.0 nightly
 run
 t=$(targets)
 if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v0.2.2"]' ] \
@@ -81,7 +82,7 @@ if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v
 else bad "fixture list: exactly v0.2.2" "rc=$rc targets=${t:0:200} msg=${msg:0:200}"; fi
 
 # 2. a superseded, draft, prerelease or non-semver release is never even looked at (no scan, so no issue for it)
-if ! grep -E 'release (view|download) (v0\.2\.0|v0\.2\.1|v0\.2\.3|v0\.3\.0-rc\.1|nightly|v0\.1\.0)( |$)' "$FIX/calls.log" >/dev/null; then
+if ! grep -E 'release (view|download) (v0\.2\.0|v0\.2\.1|v0\.2\.3|v0\.3\.0-rc\.1|v0\.3\.0|nightly|v0\.1\.0)( |$)' "$FIX/calls.log" >/dev/null; then
   ok "no superseded, draft, prerelease or unsemver release is inspected"
 else bad "no superseded release is inspected" "$(tr '\n' ';' < "$FIX/calls.log")"; fi
 
@@ -143,6 +144,37 @@ PY
 )
 if ! grep -q 'gh release' <<<"$panel" && grep -q 'six images' "$wf"; then ok "the panel/tally jobs are independent of the release enumeration (six images of main's candidate)"
 else bad "panel independence" "panel jobs read the release list"; fi
+
+# 12. B1 fail-open: a CURRENT release that yields no targets is an error, never a quiet day
+CUR='[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false}]'
+setup "$CUR"   # legacy entry with images:[]
+jq '.releases += [{"version":"v0.2.2","images":[]}]' "$root/.github/policy/legacy-releases.json" > "$work/repo/.github/policy/legacy-releases.json"
+run
+if [ "$rc" -ne 0 ] && [ "$(anyv)" != false ] && grep -q 'current release v0.2.2 produced no rescan targets' <<<"$msg"; then ok "B1: legacy entry with images:[] fails closed"
+else bad "B1 legacy images:[]" "rc=$rc any=$(anyv) msg=${msg:0:200}"; fi
+setup "$CUR" v0.2.2   # scanners.json with .scanners=[]
+echo '{"scanners":[]}' > "$work/repo/.github/policy/scanners.json"
+run
+if [ "$rc" -ne 0 ] && [ "$(anyv)" != false ] && grep -q 'current release v0.2.2 produced no rescan targets' <<<"$msg"; then ok "B1: scanners=[] fails closed"
+else bad "B1 scanners=[]" "rc=$rc any=$(anyv) msg=${msg:0:200}"; fi
+setup "$CUR" v0.2.2   # manifest with no images
+echo '{"images":[]}' > "$FIX/m-v0.2.2.json"
+run
+if [ "$rc" -ne 0 ] && [ "$(anyv)" != false ] && grep -q 'v0.2.2' <<<"$msg"; then ok "B1: manifest with no images fails closed"
+else bad "B1 manifest no images" "rc=$rc any=$(anyv) msg=${msg:0:200}"; fi
+
+# 13. R4: more than 100 releases, the current one the oldest by creation date (last in the newest-first list)
+L=$(jq -n -c '[range(1;150) | {tagName:("v0.0."+tostring),isDraft:false,isPrerelease:false}] + [{tagName:"v1.0.0",isDraft:false,isPrerelease:false}]')
+setup "$L" v1.0.0
+run; t=$(targets)
+if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v1.0.0"]' ]; then ok "R4: 150 releases, the oldest-created current release is still found"
+else bad "R4 >100 releases" "rc=$rc targets=${t:0:200} msg=${msg:0:200}"; fi
+
+# 14. R3: a tag with leading zeros is not a version (v0.02.9 would equal v0.2.9 and outrank v0.2.0)
+setup '[{"tagName":"v0.02.9","isDraft":false,"isPrerelease":false},{"tagName":"v0.2.0","isDraft":false,"isPrerelease":false}]' v0.02.9 v0.2.0
+run; t=$(targets)
+if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v0.2.0"]' ] && ! grep -q 'v0\.02\.9\|v0.02.9' <(grep 'release \(view\|download\)' "$FIX/calls.log"); then ok "R3: a leading-zero tag is never current and never inspected"
+else bad "R3 leading zeros" "rc=$rc targets=${t:0:200}"; fi
 
 echo "passed: $pass failed: $failn"
 [ "$failn" -eq 0 ]
