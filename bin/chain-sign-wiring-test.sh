@@ -189,6 +189,15 @@ stage-verify.yml supply-chain.yml""".split())
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         text = open(f).read(); texts[os.path.relpath(f, base)] = text
         check(rel, text, "")
+    # SF-C (Opus r5): the test-script carve-out in the script scan is safe ONLY because ci.yml can neither mint a Sigstore identity nor
+    # hold a signing secret; pin both, so a later ci.yml edit cannot silently widen the carve-out
+    cip = os.path.join(base, ".github/workflows/ci.yml")
+    if os.path.exists(cip):
+        ci = open(cip).read()
+        if re.search(r"id-token\s*:\s*write", ci): bad.append("AC1: ci.yml grants id-token: write; the test-script carve-out is only safe while ci.yml cannot mint an identity")
+        for m in re.finditer(r"secrets\.(\w+)", ci):
+            if re.search(r"SIGN|COSIGN|APK|RELEASE|GPG|REKOR|FULCIO|SIGSTORE", m.group(1), re.I):
+                bad.append("AC1: ci.yml passes the signing secret %s to a step; the test-script carve-out is only safe while ci.yml holds none" % m.group(1))
     scripts, serrs = _cts.reachable_scripts(base, texts)
     for x in serrs: bad.append("AC1: unresolved script reference (fail closed): " + x)
     for sp, by in sorted(scripts.items()):
@@ -472,7 +481,7 @@ expect caught "AC1 a script path in an unknown variable is an error naming the w
 d=$(mk t_gone); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "AC1 a script reference with no such file is an error (fail closed)" tree "$d"
 d=$(mk t_nvar); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
-expect caught "AC1 a script that reaches its next script through a variable (S=bin/pub; bash \"\$S.sh\") is an error, not skipped (round 6)" tree "$d"
+expect caught "AC1 a script that reaches its next script through a variable (S=bin/pub; bash \"\$S.sh\") is now followed (S is a plain literal), so its unlisted cosign call is seen (rounds 6/7)" tree "$d"
 d=$(mk t_ntest); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
 expect caught "AC1 a *-test.sh with an unresolved reference, reached from a STAGE file, is judged strictly" tree "$d"
 d=$(mk t_ntest2); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
@@ -481,6 +490,26 @@ d=$(mk t_nplain); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x.sh\n'
 expect caught "AC1 a non-test script with an unresolved reference is strict even from ci.yml" tree "$d"
 d=$(mk t_nboth); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
 expect caught "AC1 the same test script reached from ci.yml AND a stage file is strict" tree "$d"
+d=$(mk t_ciid); printf 'on: push\npermissions:\n  id-token: write\njobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect caught "AC1 ci.yml grants id-token: write: the test-script carve-out is no longer safe (Opus r5 SF-C)" tree "$d"
+d=$(mk t_cisec); printf 'on: push\njobs:\n  b:\n    steps:\n      - env:\n          K: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n        run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect caught "AC1 ci.yml passes a signing secret to a step (Opus r5 SF-C)" tree "$d"
+d=$(mk t_ciapp); printf 'on: push\njobs:\n  b:\n    steps:\n      - uses: actions/create-github-app-token@%s\n        with:\n          app-id: ${{ secrets.AUDITOR_APP_ID }}\n          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n      - run: bash bin/x-test.sh\n' "$sha" > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect ok "AC1 ci.yml using the auditor App secrets (today's real use) is not a signing secret" tree "$d"
+d=$(mk t_assign); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/pub.sh; bash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
+expect caught "AC1 a plain VAR=literal assignment is followed: CHK=bin/pub.sh; bash \"\$CHK\" reaches pub.sh and its unlisted signing call is seen (round 7, Opus SF-A)" tree "$d"
+d=$(mk t_assignok); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"
+expect ok "AC1 a VAR=literal that resolves to a script with no signer is not an error (the egress-trace test shape: CHK=bin/x.py; python3 \"\$CHK\")" tree "$d"
+d=$(mk t_assignamb); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nCHK=bin/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/pub.sh"
+expect caught "AC1 a variable assigned two different literals is ambiguous: an error, not a guess" tree "$d"
+d=$(mk t_assigncmd); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=$(pwd)/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"
+expect caught "AC1 a variable assigned from a command substitution is not a literal: still an error" tree "$d"
+d=$(mk t_trans1); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/plain.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash bin/x-test.sh\n' > "$d/bin/plain.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect caught "AC1 transitive: stage file -> plain.sh -> x-test.sh stays strict (the carve-out does not follow a script reached from a stage file) (round 7, Sonnet note 6)" tree "$d"
+d=$(mk t_trans2); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/y-test.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/y-test.sh"
+expect ok "AC1 transitive: ci.yml -> x-test.sh -> y-test.sh, all test scripts reached only from ci.yml, may build throw-away scripts" tree "$d"
+d=$(mk t_trans3); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/lib.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/lib.sh"
+expect caught "AC1 transitive: ci.yml -> x-test.sh -> lib.sh (a NON-test script) stays strict" tree "$d"
 d=$(mk t_heredoc); printf 'jobs:\n  b:\n    steps:\n      - run: |\n          cat > x.sh <<EOF\n          cosign sign --yes img\n          EOF\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "AC1 a signing call written inside a heredoc of a workflow step is still seen" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
@@ -509,7 +538,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=127
+EXPECT=137
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

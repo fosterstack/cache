@@ -12,7 +12,7 @@ or a comma (`-a` / value on the next line); for a YAML step (`uses: actions/atte
 `- ` list item, so `with: predicate-type:` on a later line is read.
 Scripts (round 5): every file a workflow or composite action runs is found with `reachable_scripts` (bash/sh/python/node/ruby/
 perl/source/`.` plus a path, ./path with or without an extension if it starts with `#!`, $GITHUB_WORKSPACE and
-${{ github.workspace }} prefixes, `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
+${{ github.workspace }} prefixes, plain `VAR=literal` assignments earlier in the same file (round 7), `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
 scripts, transitively: the scripts they call are judged STRICTLY too, round 6). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
 closed), never skipped. Stated exclusion: a bare `./name` with no extension that is not a file in the tree is taken to be a built
 binary and ignored. Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
@@ -170,12 +170,20 @@ def without_heredocs(text):
         if m: end = m.group(1)
     return "\n".join(out)
 
+ASSIGN = re.compile(r"(?:^|[;&|(]\s*|\s)(?:export\s+|readonly\s+|declare\s+-?\w*\s*)?([A-Za-z_]\w*)=([\"']?)([A-Za-z0-9_./-]+)\2(?=\s*(?:[;&|)]|$))")
+
 RUNTIME = re.compile(r"^\$\{?(?:RUNNER_TEMP|RUNNER_TOOL_CACHE|HOME|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|TMPDIR)\}?/|^/(?:tmp|usr|opt|home|var|dev|proc|sys|etc)/")
 
 def script_refs_ex(base, text, owndir=None, strict=True):
     """(set of repo-relative script paths, [error strings]) for the scripts one file runs."""
     refs, errs = set(), []
+    assigned = {}                              # NAME -> literal path assigned in this file (round 7, Opus SF-A): `CHK=bin/x.py; python3 "$CHK"`
     for line in logical(without_heredocs(strip(text))).splitlines():
+        for m in ASSIGN.finditer(line):        # only a plain literal counts; a second, different literal makes the name ambiguous (None = unresolved)
+            n, v = m.group(1), m.group(3)
+            assigned[n] = v if assigned.get(n, v) == v else None
+        if assigned:
+            line = re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda m: assigned[m.group(1) or m.group(2)] if assigned.get(m.group(1) or m.group(2)) else m.group(0), line)
         cd = None
         for m in re.finditer(r"\bcd\s+(\S+)\s*(?:&&|;)", line):
             c = m.group(1).strip("\"'")

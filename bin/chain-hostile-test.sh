@@ -139,6 +139,8 @@ mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
 mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
 mut("ctl_refused", 6, outcome="refused", stage="sign", reason="identity is stage-build.yml", exit_code=1)
+mut("stage_sign_forge", 4, stage="sign", reason="provenance signed by stage-build.yml, not stage-sign.yml")
+mut("stage_sign_call", 5, stage="sign", reason="build config URI is scan.yml; release.yml required")
 mut("cross_call_identity", 5, reason="identity is stage-build.yml, not stage-sign.yml")
 mut("cross_mint_buildconfig", 0, reason="build config URI is scan.yml; release.yml required")
 mut("forge_provdigest", 4, reason="provenance digest mismatch")
@@ -166,6 +168,8 @@ expect() { # ok|refuse LABEL FILE [word]
 }
 [ -f "$cv" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
 expect ok     "verdict: all six attempts refused by the verifier, each with a stage and a reason, and the positive control accepted" good
+expect ok     "verdict: forge_provenance refused AT STAGE sign (the pinned command is 'verify --stage sign', so its first line is 'refused at sign:') counts" stage_sign_forge
+expect ok     "verdict: call_sign_from_other_workflow refused AT STAGE sign counts" stage_sign_call
 expect refuse "verdict: a forged provenance refused with only the bare word 'provenance' (digest mismatch) does not count (round 6)" forge_provdigest "cause"
 expect refuse "verdict: a forged provenance refused 'provenance: rekor entry missing' does not count" forge_provrekor "cause"
 expect ok     "verdict: a forged provenance refused for its signature is a fine reason for forge_provenance" forge_sig
@@ -273,8 +277,14 @@ PIN = {
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
  "call_sign_from_other_workflow": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/call_sign_from_other_workflow\.json --policy policy\.json',
 }
-GATE = re.compile(r"^\$\{\{ ?(?:[^|]*&& ?)?!inputs\.dry-run(?: ?&& ?[^|]*)? ?\}\}$")
-TAGGATE = re.compile(r"startsWith\(github\.ref, ?'refs/tags/v'\)")
+TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
+def conj(cond):
+    """The && conjuncts of a `${{ ... }}` condition, whitespace-normalised, or None when it has a `||` (fail closed: an or-joined
+    condition proves nothing about either side). A conjunct must be EXACTLY the wanted text: `!startsWith(...)` and
+    `startsWith(...) == false` are different conjuncts (Opus r5 SF-B)."""
+    m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", cond.strip(), re.S)
+    if not m or "||" in m.group(1): return None
+    return [re.sub(r"\s+", " ", c.strip()).replace("startsWith(github.ref,'", "startsWith(github.ref, '") for c in m.group(1).split("&&")]
 OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
@@ -391,8 +401,9 @@ else:
                 if j.get("permissions") != {"contents": "read"}: bad.append("the job %s must have permissions exactly {contents: read}" % jn)
                 continue
             cond = str(j.get("if", ""))
-            if jn in after_sign and not TAGGATE.search(cond): bad.append("the job %s needs Sign (transitively) and its if: must also carry the conjunct startsWith(github.ref, 'refs/tags/v') so a branch run can never reach it: %r" % (jn, cond))
-            if not GATE.match(cond): bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
+            cs = conj(cond)
+            if jn in after_sign and (cs is None or TAGCONJ not in cs): bad.append("the job %s needs Sign (transitively) and its if: must also carry the POSITIVE conjunct startsWith(github.ref, 'refs/tags/v') exactly (not negated, not compared, no ||) so a branch run can never reach it: %r" % (jn, cond))
+            if cs is None or "!inputs.dry-run" not in cs: bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
         bw = (jobs.get("build") or {}).get("with") or {}
         if bw.get("hostile") != "${{ inputs.dry-run }}": bad.append("release.yml's build call must pass `hostile: ${{ inputs.dry-run }}` (else the hostile step never runs): %s" % bw)
         if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
@@ -709,13 +720,16 @@ d=$(mk w_hvor); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ inputs.dry-run || true }}"; wexpect caught "wiring: hostile-verdict's gate is 'inputs.dry-run || true'" "$d"
 d=$(mk w_notag); pymut "$(rel "$d")" " && startsWith(github.ref, 'refs/tags/v')" ""; wexpect caught "wiring: a job after Sign (promotion) has no tag conjunct (a branch dispatch with dry-run unchecked could reach it)" "$d"
 d=$(mk w_tagor); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run || startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the tag conjunct is joined with || " "$d"
+d=$(mk w_tagneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run && !startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the tag conjunct is NEGATED (!startsWith): promotion would run on branches only" "$d"
+d=$(mk w_tagfalse); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v') == false"; wexpect caught "wiring: the tag conjunct is compared (== false)" "$d"
+d=$(mk w_gateneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "inputs.dry-run && startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the dry-run conjunct is not negated (promotion would run ONLY in a dry run)" "$d"
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
 d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
 d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-EXPECT=130
+EXPECT=135
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -248,8 +248,20 @@ d=$(mk unres); printf 'jobs:\n  c:\n    steps:\n      - run: bash "$SOME_DIR/pub
 expect_named "a script path in an unknown variable is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
 d=$(mk missing); printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
 expect_named "a script reference with no such file is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
-d=$(mk nvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "a script that reaches its next script through a variable is an error naming the script, not skipped (round 6)" "$d" "bin/a.sh"
+d=$(mk nvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
+expect_named "a plain VAR=literal is followed (S=bin/pub; bash \"\$S.sh\"): the script it reaches is judged, and its attest with an unresolved type fails closed, naming bin/pub.sh (round 7, Opus SF-A)" "$d" "bin/pub.sh"
+d=$(mk nvarclean); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"
+expect ok "a VAR=literal that resolves to a script with no signer is not an error (the shape of bin/analyze-egress-trace-test.sh: CHK=bin/x.py; python3 \"\$CHK\")" "$d"
+d=$(mk nvaramb); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nCHK=bin/other.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/other.sh"
+expect_named "a variable assigned two different literals is ambiguous: an error naming the script, not a guess" "$d" "bin/a.sh"
+d=$(mk nvarcmd); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=$(pwd)/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"
+expect_named "a variable assigned from a command substitution is not a literal: still an error naming the script" "$d" "bin/a.sh"
+d=$(mk ntr1); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/plain.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash bin/x-test.sh\n' > "$d/bin/plain.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect_named "transitive: stage file -> plain.sh -> x-test.sh stays strict (the carve-out is for scripts reached only from ci.yml)" "$d" "bin/x-test.sh"
+d=$(mk ntr2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/y-test.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/y-test.sh"
+expect ok "transitive: ci.yml -> x-test.sh -> y-test.sh, test scripts reached only from ci.yml, may build throw-away scripts" "$d"
+d=$(mk ntr3); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/lib.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/lib.sh"
+expect_named "transitive: ci.yml -> x-test.sh -> lib.sh (a non-test script) stays strict" "$d" "bin/lib.sh"
 d=$(mk ntest); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
 expect_named "a *-test.sh with an unresolved reference, reached from a stage file, is judged strictly" "$d" "bin/x-test.sh"
 d=$(mk ntest2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
@@ -257,7 +269,7 @@ expect ok "a *-test.sh that builds throw-away scripts and is reached only from c
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=63
+EXPECT=69
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

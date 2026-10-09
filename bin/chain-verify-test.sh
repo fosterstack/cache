@@ -49,6 +49,11 @@
 #       POLICY.json {"tag","repository","oidc_issuer","roots":{id:{"certificate":b64 PEM,"intermediates":[b64 PEM]}},
 #                    "timestampauthorities":{id:{...same...}},"rekor_public_key":PEM,
 #                    "stages":{"<stage>":{"identity":"https://github.com/<repo>/<workflow>@refs/tags/<tag>"}}}
+#       DEFAULTS (round 7, Opus B-NEW a): --trust, --fulcio-chain, --tsa-chain and --rekor-key are OPTIONAL. When absent they default to
+#       sigstore-trust.json, fulcio-chain.pem, tsa-chain.pem and rekor.pub NEXT TO THE TEMPLATE (the committed .github/policy/ files), and the
+#       trust-hash check applies to the defaults exactly as to explicit files ("trust" on a drifted default). The dry run's pinned
+#       `policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json` and Release's
+#       `--tag` line pass no file flags, so this is what makes them work.
 #       chain-verify.py policy make ... --ref REF   (instead of --tag; round 5) makes the policy for a run's own ref: REF
 #       refs/tags/vX.Y.Z (exactly) == --tag vX.Y.Z; a BRANCH ref (the dry run's refs/heads/..., e.g. refs/heads/hostile-proof/x)
 #       makes a policy with "dry_run": true whose identities end @REF; refs/tags/v0.3.0-rc1, refs/tags/x and anything else
@@ -87,6 +92,12 @@
 #        exists under reference/: this shape rests on the cosign bundle format and Rekor's documented SET (the signed entry
 #        timestamp is over the canonical {body, integratedTime, logID, logIndex}); the real kind for DSSE is `intoto`/`dsse`,
 #        which the implementer checks against a real bundle in the dry run (flagged: the stub's body kind is hashedrekord).
+#   DRY-RUN POLICY AND sign --check (round 7, Opus B-NEW b): `sign --check --policy <a made dry_run policy>` is accepted ONLY to
+#       verify Build's record (the hostile hand_sign_code attempt runs exactly that, with the dry policy from `policy make --ref`); the
+#       refusal causes it can give are digest and format, never "dry". It is not the sign-only rule of `verify` that refuses dry
+#       policies for other stages: sign --check checks Build's record under the dry policy's build identity. N-c: the dry run's own
+#       positive control (Sign's dry output, the dry policy, no --now) is covered here only by the synthetic sign_br record; the end to end
+#       run is the GitHub dry run itself.
 #   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json --policy POLICY.json --now ISO8601Z
 #                   --out DIR [--trust TRUST.json --fulcio-chain F.pem --tsa-chain S.pem --rekor-key K.pem]
 #       --policy is EITHER a made POLICY.json OR the committed template (.github/policy/release-policy.template.json, which is what
@@ -129,6 +140,9 @@
 #       reusable call (`uses: ./path`) passes only if its path is in "local".
 #   chain-verify.py hostile-verdict|hostile-row|hostile-collect|hostile-material   (tested in bin/chain-hostile-test.sh)
 set -euo pipefail
+# the runner's own GITHUB_REF / GITHUB_EVENT_NAME (refs/pull/N/merge, pull_request ...) must never leak into a case: every case that
+# needs them sets both itself (Opus r5 N-b, Sonnet r5 finding 4)
+unset GITHUB_REF GITHUB_EVENT_NAME
 root=$(cd "$(dirname "$0")/.." && pwd)
 cv="$root/bin/chain-verify.py"
 work=$(mktemp -d); trap 'rm -rf "$work" 2> /dev/null || sudo -n rm -rf "$work"' EXIT
@@ -359,13 +373,13 @@ add("sign_rc", STAGES["sign"], "refs/tags/v0.3.0-rc1", PROV, D)
 add("sign_othertag", STAGES["sign"], T2, PROV, D)
 add("sign_branch", STAGES["sign"], "refs/heads/main", PROV, D)
 DRYREF = "refs/heads/hostile-proof/x"
-add("sign_dry", STAGES["sign"], DRYREF, PROV, D, predicate={"dryRun": True})            # what a dry run's Sign writes (SAN ref = the branch, dryRun true)
-add("sign_dryflag_tag", STAGES["sign"], T, PROV, D, predicate={"dryRun": True})         # dryRun true even though the SAN ref IS the tag: Release must still refuse
+add("sign_br", STAGES["sign"], DRYREF, PROV, D, predicate={"dryRun": True})            # what a dry run's Sign writes (SAN ref = the branch, dryRun true)
+add("sign_flag_tag", STAGES["sign"], T, PROV, D, predicate={"dryRun": True})         # dryRun true even though the SAN ref IS the tag: Release must still refuse
 # branches NAMED like the tag (round 5 Opus B2a): a "last path segment" ref comparison accepts these
 add("sign_brtag", STAGES["sign"], "refs/heads/v0.3.0", PROV, D)
 add("sign_brrel", STAGES["sign"], "refs/heads/release/v0.3.0", PROV, D)
 add("sign_cfg_brtag", STAGES["sign"], T, PROV, D, config_ref="refs/heads/v0.3.0")
-add("build_coll_dry", STAGES["build"], DRYREF, COLL, None, stmt="v0.1", coll_file="digests.json")
+add("build_coll_br", STAGES["build"], DRYREF, COLL, None, stmt="v0.1", coll_file="digests.json")
 add("build_coll_rc", STAGES["build"], "refs/tags/v0.3.0-rc1", COLL, None, stmt="v0.1", coll_file="digests.json")
 add("build_coll_tagx", STAGES["build"], "refs/tags/x", COLL, None, stmt="v0.1", coll_file="digests.json")
 add("build_coll_branchx", STAGES["build"], "refs/heads/x", COLL, None, stmt="v0.1", coll_file="digests.json")
@@ -404,6 +418,7 @@ add("build_coll_plus", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="d
 for v in ("wrongname", "dup", "dup2", "bak", "xname", "evilhost", "material", "gitoidonly"): add("build_coll_" + v, STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_variant=v)
 add("build_coll_swapped", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-swapped.json")
 for k in FMT: add("build_coll_" + k, STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-%s.json" % k)
+add("build_coll_br_badval", STAGES["build"], DRYREF, COLL, None, stmt="v0.1", coll_file="digests-badval.json")   # a dry-run Build record over a malformed digests file
 # through sign --check, every cause verify knows must be named for Build's record too
 add("build_coll_badissuer", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com")
 add("build_coll_wrongroot", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
@@ -459,8 +474,8 @@ def entry(rec_name, idx, key="rekor", body_from=None, logkey="rekor", cert_from=
     return e
 dj("rekor.json", {"entries": [entry("sign_prov", 7), entry("release_policy", 8)]})
 dj("rekor-empty.json", {"entries": []})
-dj("rekor-dry.json", {"entries": [entry("sign_dry", 11)]})
-dj("rekor-dryflag.json", {"entries": [entry("sign_dryflag_tag", 12)]})
+dj("rekor-br.json", {"entries": [entry("sign_br", 11)]})
+dj("rekor-flag.json", {"entries": [entry("sign_flag_tag", 12)]})
 dj("rekor-brtag.json", {"entries": [entry("sign_brtag", 13), entry("sign_brrel", 14), entry("sign_cfg_brtag", 15)]})
 dj("rekor-other.json", {"entries": [entry("sign_otherdigests", 9)]})
 e = entry("sign_prov", 7); e["signedEntryTimestamp"] = b64(b"\x30\x06\x02\x01\x01\x02\x01\x01"); dj("rekor-badset.json", {"entries": [e]})
@@ -818,8 +833,8 @@ GITHUB_REF=refs/pull/1/merge GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "
 GITHUB_REF= GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with an EMPTY ref is refused" "tag" $(TPR build_coll_branchx evempty)
 GITHUB_REF=main GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 workflow_dispatch with a ref that is not fully qualified (main) is refused" "tag" $(TPR build_coll_branchx evbare)
 GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME= expect_refuse "001-AC2 an empty event name on a branch is refused" "tag" $(TPR build_coll_branchx evnone)
-GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC2 DRY RUN: workflow_dispatch on a branch makes the policy for that ref and signs" $(TPR build_coll_dry dry1)
-python3 - "$work/sd/dry1" <<'PY' 2> /dev/null && ok "001-AC2 DRY RUN: the provenance says dryRun true and DRY-RUN sits beside it" || bad "001-AC2 DRY RUN: marker or dryRun flag missing"
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC2 DRY RUN: workflow_dispatch on a branch makes the policy for that ref and signs" $(TPR build_coll_br br1)
+python3 - "$work/sd/br1" <<'PY' 2> /dev/null && ok "001-AC2 DRY RUN: the provenance says dryRun true and DRY-RUN sits beside it" || bad "001-AC2 DRY RUN: marker or dryRun flag missing"
 import base64, json, os, sys
 d = sys.argv[1]; assert os.path.exists(os.path.join(d, "DRY-RUN"))
 st = json.loads(base64.b64decode(json.load(open(os.path.join(d, "provenance.json")))["payload"]))
@@ -833,25 +848,25 @@ import base64, json, os, sys
 st = json.loads(base64.b64decode(json.load(open(os.path.join(sys.argv[1], "provenance.json")))["payload"]))
 assert not st["predicate"].get("dryRun"), st["predicate"]
 PY
-rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-dry.json" || rc=$?
-[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/heads/hostile-proof/x") else 1)' "$work/policy-dry.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy whose identities end @ that ref" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
+rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-br.json" || rc=$?
+[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/heads/hostile-proof/x") else 1)' "$work/policy-br.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy whose identities end @ that ref" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
 for r in refs/tags/v0.3.0-rc1 refs/tags/x refs/pull/1/merge; do
   expect_refuse "002-AC2 policy make --ref $r is refused" "tag" policy make --template "$work/template.json" --ref "$r" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
 done
 rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-reftag.json" || rc=$?
 [ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/policy-reftag.json" && ok "002-AC2 policy make --ref refs/tags/v0.3.0 is the same policy as --tag v0.3.0" || bad "002-AC2 --ref on the exact tag differs from --tag (exit $rc)"
-expect_ok     "002-AC2 the dry-run policy accepts Sign's record at the dry-run ref (the positive control passes)" verify --policy "$work/policy-dry.json" --now "$NOW" --stage sign $(rec sign_dry) $(R rekor-dry.json)
-expect_refuse "002-AC2 RELEASE'S TAG-PINNED POLICY REFUSES a Sign record whose SAN ref is a branch: a dry run can never be accepted" "refs/heads/hostile-proof/x" verify $(V) --stage sign $(rec sign_dry) $(R rekor-dry.json)
+expect_ok     "002-AC2 the dry-run policy accepts Sign's record at the dry-run ref (the positive control passes)" verify --policy "$work/policy-br.json" --now "$NOW" --stage sign $(rec sign_br) $(R rekor-br.json)
+expect_refuse "002-AC2 RELEASE'S TAG-PINNED POLICY REFUSES a Sign record whose SAN ref is a branch: a dry run can never be accepted" "refs/heads/hostile-proof/x" verify $(V) --stage sign $(rec sign_br) $(R rekor-br.json)
 expect_refuse "002-AC2 round 5 B2a: a BRANCH named like the tag (refs/heads/v0.3.0) is refused by the tag policy (the ref is compared whole, not by its last segment)" "refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_brtag) $(R rekor-brtag.json)
 expect_refuse "002-AC2 round 5 B2a: refs/heads/release/v0.3.0 is refused" "refs/heads/release/v0.3.0" verify $(V) --stage sign $(rec sign_brrel) $(R rekor-brtag.json)
 expect_refuse "002-AC2 round 5 B2a: right SAN but the calling workflow ref is the BRANCH refs/heads/v0.3.0 is refused" "refs/heads/v0.3.0" verify $(V) --stage sign $(rec sign_cfg_brtag) $(R rekor-brtag.json)
-expect_refuse "002-AC2 round 5 B2b: a Sign record whose predicate says dryRun true is refused under the TAG policy even though its SAN ref is the tag" "dry" verify $(V) --stage sign $(rec sign_dryflag_tag) $(R rekor-dryflag.json)
-expect_refuse "003-AC1 round 5 B2b: release <- sign with a dryRun-true record at the tag is refused: names sign and dry" "sign|dry" $(ST release sign) $(rec sign_dryflag_tag) $(R rekor-dryflag.json) --digests "$work/digests.json"
-expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run POLICY (release <- sign, a dry record): names dry" "dry" stage-start --stage release --previous sign --policy "$work/policy-dry.json" --now "$NOW" $(rec sign_dry) $(R rekor-dry.json) --digests "$work/digests.json"
-expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run policy for every stage (rebuild <- build)" "dry" stage-start --stage rebuild --previous build --policy "$work/policy-dry.json" --now "$NOW" $(rec build_coll_dry) --digests "$work/digests.json"
-expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage build is refused)" "dry" verify --policy "$work/policy-dry.json" --now "$NOW" --stage build $(rec build_coll_dry)
-expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage release is refused)" "dry" verify --policy "$work/policy-dry.json" --now "$NOW" --stage release $(rec release_policy) $(R)
-expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names sign and the branch ref" "sign|refs/heads/hostile-proof/x" $(ST release sign) $(rec sign_dry) $(R rekor-dry.json) --digests "$work/digests.json"
+expect_refuse "002-AC2 round 5 B2b: a Sign record whose predicate says dryRun true is refused under the TAG policy even though its SAN ref is the tag" "dry" verify $(V) --stage sign $(rec sign_flag_tag) $(R rekor-flag.json)
+expect_refuse "003-AC1 round 5 B2b: release <- sign with a dryRun-true record at the tag is refused: names sign and dry" "sign|dry" $(ST release sign) $(rec sign_flag_tag) $(R rekor-flag.json) --digests "$work/digests.json"
+expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run POLICY (release <- sign, a dry record): names dry" "dry" stage-start --stage release --previous sign --policy "$work/policy-br.json" --now "$NOW" $(rec sign_br) $(R rekor-br.json) --digests "$work/digests.json"
+expect_refuse "003-AC1 round 5 B2b: stage-start refuses a dry_run policy for every stage (rebuild <- build)" "dry" stage-start --stage rebuild --previous build --policy "$work/policy-br.json" --now "$NOW" $(rec build_coll_br) --digests "$work/digests.json"
+expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage build is refused)" "dry" verify --policy "$work/policy-br.json" --now "$NOW" --stage build $(rec build_coll_br)
+expect_refuse "002-AC2 round 5 B2b: verify with a dry_run policy is for stage sign ONLY (stage release is refused)" "dry" verify --policy "$work/policy-br.json" --now "$NOW" --stage release $(rec release_policy) $(R)
+expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names sign and the branch ref" "sign|refs/heads/hostile-proof/x" $(ST release sign) $(rec sign_br) $(R rekor-br.json) --digests "$work/digests.json"
 # template mode with the DEFAULT locations (no override flags) in a copy of the policy folder, and a drifted default PEM
 mkdir -p "$work/polcopy"; cp "$work/template.json" "$work/polcopy/release-policy.template.json"; cp "$work/trust.json" "$work/polcopy/sigstore-trust.json"
 cp "$work/fulcio-chain.pem" "$work/polcopy/fulcio-chain.pem"; cp "$work/tsa-chain.pem" "$work/polcopy/tsa-chain.pem"; cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
@@ -864,6 +879,34 @@ cp "$work/fulcio-chain.pem" "$work/polcopy/fulcio-chain.pem"; cp "$work/rekor2.p
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Rekor key that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default4"
 cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 with all three default PEMs restored the production invocation succeeds again (the refusals were about the drift)" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default5"
+# ---- round 7 (Opus B-NEW a): policy make with NO file flags (the dry run's and Release's pinned lines), defaults next to the template ----
+rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-made.json" || rc=$?
+[ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/polcopy-made.json" && ok "002-AC2 policy make --tag with NO file flags uses the defaults next to the template and equals the policy made with explicit files (Release's pinned line)" || bad "002-AC2 policy make --tag with no file flags (exit $rc)"
+rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --ref refs/tags/v0.3.0 --out "$work/polcopy-made-ref.json" || rc=$?
+[ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/polcopy-made-ref.json" && ok "002-AC2 policy make --ref refs/tags/v0.3.0 with NO file flags equals the --tag policy" || bad "002-AC2 policy make --ref on the tag with no file flags (exit $rc)"
+rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --ref refs/heads/hostile-proof/x --out "$work/polcopy-made-br.json" || rc=$?
+[ "$rc" = 0 ] && cmp -s "$work/policy-br.json" "$work/polcopy-made-br.json" && ok "002-AC2 policy make --ref <branch> with NO file flags equals the dry-run policy (the dry run's pinned line)" || bad "002-AC2 policy make --ref <branch> with no file flags (exit $rc)"
+for c in tsa-chain:othertsaroot:"TSA" fulcio-chain:otherroot:"Fulcio"; do
+  f=${c%%:*}; r=${c#*:}; r=${r%%:*}; cp "$work/polcopy/$f.pem" "$work/$f.keep"; cp "$work/$r.pem" "$work/polcopy/$f.pem"
+  expect_refuse "002-AC2 policy make --tag with a drifted default ${c##*:} chain and no file flags is refused" "trust" policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-drift.json"
+  cp "$work/$f.keep" "$work/polcopy/$f.pem"
+done
+cp "$work/rekor2.pub" "$work/polcopy/rekor.pub"
+expect_refuse "002-AC2 policy make --tag with a drifted default Rekor key and no file flags is refused" "trust" policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-drift.json"
+cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
+expect_refuse "002-AC2 policy make --ref <branch> with a drifted default is refused too (the dry run trusts nothing the committed hashes do not)" "trust" policy make --template "$work/polcopy/release-policy.template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust-badtsa.json" --out "$work/polcopy-drift.json"
+# ---- round 7 (Opus B-NEW b, Sonnet findings 1-3): the dry run's pinned hostile lines can reach their causes ----------------------------
+# (1) verify --stage sign with NO --rekor-stub: identity / build config is checked BEFORE Rekor, so a hostile record is refused for the
+#     attack, never for the missing stub ("!rekor" is what makes an implementation that checks Rekor first fail here)
+expect_refuse "001-AC5 hostile row shape (no stub): a second workflow that calls stage-sign.yml is refused for its Build Config, not for Rekor" "other-caller.yml|!rekor" verify $(V) --stage sign $(rec sign_othercaller)
+expect_refuse "001-AC5 hostile row shape (no stub): provenance signed by Build's identity is refused for the identity, not for Rekor" "stage-build.yml|!rekor" verify $(V) --stage sign $(rec build_as_sign)
+expect_refuse "001-AC5 hostile row shape (no stub): a certificate with no Build Config URI is refused for that, not for Rekor" "build config|!rekor" verify $(V) --stage sign $(rec sign_noconfig)
+expect_refuse "001-AC5 hostile row shape under the DRY policy (no stub): Build's identity is refused for the identity, not for Rekor" "stage-build.yml|!rekor" verify --policy "$work/policy-br.json" --now "$NOW" --stage sign $(rec build_as_sign)
+# (2) sign --check under a made DRY policy (the hand_sign_code attempt): refused for digest or format, never for "dry"; cosign never called
+DSC() { echo sign --check --signer cosign --build-record "$work/$1.json" --policy "$work/policy-br.json" --now "$NOW" --digests "$work/$2.json" --out "$work/sd/$3"; }
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_br digests-other dsc1)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_br_badval digests-badval dsc2)
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_br digests dsc3)
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 sign --check with no --now (the Sign job passes none) uses the current time" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --digests "$work/digests.json" --out "$work/sd/nonow"
 python3 - "$root" "$OPENSSL" 2> /dev/null <<'PY' && ok "002-AC2 the committed fulcio-chain.pem, tsa-chain.pem and rekor.pub hash to the values in sigstore-trust.json" || bad "002-AC2 committed PEMs missing, or their sha256(DER) differs from sigstore-trust.json"
 import hashlib, json, re, subprocess, sys
@@ -999,7 +1042,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=274
+EXPECT=288
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
