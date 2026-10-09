@@ -813,6 +813,8 @@ class HarnessManifest(unittest.TestCase):
         self.commit_manifest('{"files": [{"path": "bin/x-test.sh", "sha256": "%s", "reason": "r"}]}\n' % ("0" * 64), "edited after the review")
         rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
         self.assertEqual(rc, 1)
+        self.assertIn("no valid review record", out)
+        self.assertIn(self.M, out)
         self.assertNotEqual(self.run_main("--print-tree")[1].strip(), tree)
 
     def test_the_tree_hash_covers_the_manifest_and_still_ignores_records_only(self):
@@ -821,11 +823,12 @@ class HarnessManifest(unittest.TestCase):
         t1 = self.run_main("--print-tree")[1].strip()
         self.assertNotEqual(t0, t1)
         self.commit_manifest('{"files":   []}\n', "whitespace")
-        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), t1)
+        t2 = self.run_main("--print-tree")[1].strip()
+        self.assertNotEqual(t2, t1)
         os.makedirs(".github/agent/reviews")
         self.write(".github/agent/reviews/%s.json" % ("0" * 64), "{}")
         self.git("add", "-A"); self.git("commit", "-qm", "record")
-        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), t0)
+        self.assertEqual(self.run_main("--print-tree")[1].strip(), t2)
 
     def test_deleting_the_manifest_is_a_guarded_change(self):
         self.commit_manifest('{"files": []}\n')
