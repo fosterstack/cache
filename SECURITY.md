@@ -89,9 +89,10 @@ check.
 Two limits of that claim, stated so it cannot be over-read: the check proves
 the paths the test suite executes, built in FIPS mode. The released
 `fscache-fips` binary is separately run by the release's artifact acceptance,
-which reads its `/statusz` and requires the validated-module line; the released
-`-fips` image is not yet started and checked by its published digest (the
-release assembles and serves it, but no test reads its posture); and its status as a merge-blocking check is set by the repository ruleset,
+which reads its `/statusz` and requires the validated-module line; the release
+also starts each published image by digest (amd64, and arm64 under emulation)
+and serves traffic from it, but no test yet reads the `/statusz` posture of
+those running images; and its status as a merge-blocking check is set by the repository ruleset,
 which is listed in [.github/policy/required-checks.json](.github/policy/required-checks.json).
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
