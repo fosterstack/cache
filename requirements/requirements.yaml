@@ -2237,7 +2237,7 @@ requirements:
     title: The Sign job is its own workflow file and cannot be reached from Build
     statement: >
       The release provenance shall be written and signed keyless by a Sign job that lives in its own workflow file, runs on its own fresh GitHub-hosted runner, never runs code from the build, receives only Build's digests, and whose signing identity no other job can obtain, so that a malicious Build step cannot produce provenance that Release accepts (SLSA Build Level 3 design).
-    source: [.github/workflows/stage-sign.yml, .github/workflows/release.yml, bin/chain-verify.py]
+    source: [.github/workflows/stage-sign.yml, .github/workflows/release.yml, bin/chain-verify.py, bin/chain-hostile-step.sh, .github/policy/chain-signers.json]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 50, 50a, 52, 52a, 59 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0325)
@@ -2248,13 +2248,13 @@ requirements:
       - id: REQ-CHAIN-001-AC1
         given: "the workflow files of the release chain"
         when: "they are parsed"
-        then: "stage-sign.yml is a reusable workflow with exactly one job; it is the only workflow file v0.3.0 adds beyond the files that existed at v0.2.2; the Sign job runs on a GitHub-hosted runner (never self-hosted) and no other stage file or job signs provenance"
+        then: "stage-sign.yml is a reusable workflow with exactly one job; it is the only workflow file v0.3.0 adds beyond the files that existed at v0.2.2; the Sign job runs on a GitHub-hosted runner (never self-hosted); and no other workflow, composite action or .yaml file signs provenance, every other signing call being listed with its reason in .github/policy/chain-signers.json"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-001-AC2
         given: "the Sign job"
         when: "its inputs and steps are read"
-        then: "its only input is Build's digest list (no artifact, path, script or code from the build), none of its steps downloads or runs anything Build produced, and it checks the digest list against Build's Witness record before signing and refuses to sign when they differ or when the list carries anything but digests"
+        then: "its only input is Build's digest list; the one thing it downloads is Build's signed Witness record (the artifact witness-build), as data only, verified against Build's identity before it is read and never executed; none of its steps runs anything Build produced; and it refuses to sign unless the digest list and the verified record name the same names with the same sha256 values, every value being sha256 and 64 lower-case hex characters and every name plain (no code, no path)"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-001-AC3
@@ -2266,13 +2266,13 @@ requirements:
       - id: REQ-CHAIN-001-AC4
         given: "provenance written by the Sign job"
         when: "bin/chain-verify.py checks it"
-        then: "it is a standard SLSA provenance record signed keyless with a certificate whose identity is stage-sign.yml at the tag, with the timestamp authority's stamp; provenance signed under any other identity (Build's, Rebuild's, Check's, a sibling file, another tag) is refused and the refusal names the identity found"
+        then: "it is a standard SLSA provenance record (v1) signed keyless with a certificate whose identity is exactly stage-sign.yml of this repository at the tag and whose OIDC issuer is GitHub Actions, with the timestamp authority's stamp; provenance signed under any other identity (Build's, Rebuild's, Check's, a sibling file, a file whose name only resembles Sign's, another repository, another tag or a branch) is refused and the refusal names the identity found; provenance presented as any other stage's record is refused"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-001-AC5
         given: "a dry run on GitHub in which a deliberately hostile Build step runs (the runtime proof; the static judge alone does not satisfy this AC)"
         when: "the step tries, as five separate cases each on its own, to mint a certificate in Sign's identity, to read Sign's token, to read Sign's key material, to hand Sign code or a path instead of digests, and to forge provenance that Release would accept"
-        then: "every attempt fails or is refused by Release's checks, the refusal names the stage and the reason, the test fails if any attempt is accepted, and the GitHub dry run must be green and its run linked in the pull request before the pull request merges"
+        then: "every attempt fails or is refused by Release's checks, each outcome is the verifier's own result (its exit code), never the hostile step's report of itself, the refusal names the stage and the reason, the test fails if any attempt is accepted, and the GitHub dry run must be green and its run linked in the pull request before the pull request merges"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
 
@@ -2291,19 +2291,19 @@ requirements:
       - id: REQ-CHAIN-002-AC1
         given: "a keyless record whose certificate expired 15 or more minutes ago"
         when: "bin/chain-verify.py checks it from files alone with the network cut"
-        then: "it is accepted when it carries a valid timestamp from the authority named in the release policy and refused when the timestamp is missing, from another authority or dated outside the certificate's validity; the same record is refused when the policy names no authority"
+        then: "it is accepted when it carries a valid timestamp from the authority named in the release policy and refused when the timestamp is missing, from another authority, dated before the certificate's validity or after it expired, taken over a different signature, or when the payload or the signature was altered after signing; the same record is refused when the policy names no authority; the check runs with the network cut"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-002-AC2
         given: "the committed policy template and a tag T"
         when: "the policy for T is made and used to check records"
-        then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag or branch, and pins Sigstore's root and timestamp authority by the hashes in the committed trust file, refusing a trust bundle whose hash differs"
+        then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag, a tag that only begins like T, a branch, another repository or a certificate from another OIDC issuer, and pins Sigstore's root, the timestamp authority's root and the Rekor key by the hashes in the committed trust file, refusing a bundle whose hash differs"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-002-AC3
         given: "a customer-verifiable record (image signature, SLSA provenance, SBOM, lock or release file signature)"
         when: "bin/chain-verify.py checks it"
-        then: "it is refused when Rekor holds no entry for it; Witness's stage records are exempt and are checked for the timestamp instead"
+        then: "whether a record needs a Rekor entry is decided by its type, never by a flag the caller sets: every type except Witness's stage records (the SLSA provenance, the signed release policy, and the rest) is refused unless Rekor holds a correctly signed entry for that very record; an entry for another record, with a bad signature or from another key is refused; Witness's stage records are exempt and are checked for the timestamp instead"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-002-AC4
@@ -2326,7 +2326,7 @@ requirements:
       - id: REQ-CHAIN-003-AC1
         given: "a stage that is handed a previous stage's record about other digests, a record signed by the wrong stage, an unsigned record or no record"
         when: "bin/chain-verify.py stage-start runs as that stage's verify step"
-        then: "it exits non-zero in each case, the message names the previous stage and the cause, and it exits zero only for a valid record about exactly the digests the stage was given"
+        then: "it runs the same verification as the verify command for the previous stage, exits non-zero in each case, the message names the previous stage and the cause (digest, identity, signature, timestamp, rekor or missing), and it exits zero only for a valid record about exactly the digests the stage was given, not a subset and not a superset"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-003-AC2
@@ -2338,12 +2338,12 @@ requirements:
       - id: REQ-CHAIN-003-AC3
         given: "the signed record types the workflow files produce"
         when: ".github/policy/chain-records.json is compared with them"
-        then: "every produced type has one row naming its claim and its consumer, no row lacks a consumer, and a produced type with no row fails"
+        then: "every produced type, found by the tool or action that signs it in any workflow, composite action or .yaml file, has one row naming its claim and a consumer that is a real stage (or the customer); a row with no consumer or an unknown one, a row nobody produces, and a produced type with no row fail; a signing call whose type cannot be resolved fails closed"
         verification: { method: ci-workflow, release_blocking: false }
         status: proposed
       - id: REQ-CHAIN-003-AC4
         given: "a workflow file at the tagged commit"
         when: "bin/chain-verify.py actions reads it against .github/policy/allowed-actions.json"
-        then: "it rejects any action, reusable-workflow call or container image the file names that is not a full commit or image digest on the list, and accepts a file whose references are all listed; repository-local reusable calls count as pinned only when named by path in the list"
+        then: "it reads step and job-level uses, container images (string or mapping), services images, docker:// references and composite actions, and rejects any reference that is not a full commit or image digest on the list (a tag, a branch, a short or upper-case sha, an expression, an unlisted digest, or anything at all when the list is empty), and accepts a file whose references are all listed; repository-local reusable calls count as pinned only when named by path in the list"
         verification: { method: unit, release_blocking: true }
         status: proposed
