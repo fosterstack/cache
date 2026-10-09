@@ -101,6 +101,7 @@ ALLOWED_MENTIONS = {
 EXPECT_ALLOW, EXPECT_SUPPRESSION = 132, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
+rstart = rend = 0
 inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}; byblock = {'ALLOW': [], 'SUPPRESSION': []}
 for i, l in enumerate(lines, 1):
     mm = re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l)
@@ -116,18 +117,20 @@ for i, l in enumerate(lines, 1):
             errs.append("line %d: unlisted mention of PATTERNS outside the arrays: %s" % (i, l))
         # Constructs that could mutate an array indirectly are refused anywhere outside comments
         # (none exists today; `local ref=` / `local mb` are plain locals and stay allowed).
+        if re.search(r'(^|[^A-Za-z0-9_])(trap|exec)([^A-Za-z0-9_]|$)|(^|[;&|(]\s*)\.\s', code) or (re.search(r'(^|[^A-Za-z0-9_])read([^A-Za-z0-9_]|$)', code) and not code.startswith('while IFS= read -r ')):
+            errs.append("line %d: trap/exec/dot-source/read outside the pinned text: %s" % (i, l))
         if re.search(r'(^|[^A-Za-z0-9_])(eval|declare|typeset|mapfile|readarray|unset|source)([^A-Za-z0-9_]|$)|printf\s+-v|\blocal\s+-[A-Za-z]*n|\bread\s+-[A-Za-z]*a|\$\{!', code):
             errs.append("line %d: array-mutating construct (eval/declare/mapfile/readarray/unset/source/printf -v/nameref/read -a/indirection) not allowed: %s" % (i, l))
         continue
     if l.strip() == '' : inregion = False; continue
     if l.lstrip().startswith('#'):
-        if l.startswith('  # v0.3.0 build chain'): inregion = True
+        if l.startswith('  # v0.3.0 build chain'): inregion = True; rstart = i
         continue
     m = re.match(r"^  '([^']*)'( +#.*)?$", l)   # at least one space before a comment: '..'#'..' is ONE bash word
     if not m:
         errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
     pats.append((i, m.group(1))); counts[cur] += 1; byblock[cur].append(m.group(1))
-    if inregion: region.append((i, m.group(1)))
+    if inregion: region.append((i, m.group(1))); rend = i
 if (counts['ALLOW'], counts['SUPPRESSION']) != (EXPECT_ALLOW, EXPECT_SUPPRESSION):
     errs.append("pattern lines: ALLOW %d (declared %d), SUPPRESSION %d (declared %d); update the test in the same commit" % (counts['ALLOW'], EXPECT_ALLOW, counts['SUPPRESSION'], EXPECT_SUPPRESSION))
 # element by element: what bash actually loads must equal what was parsed here, in value and order
@@ -137,6 +140,18 @@ if str(loaded).isdigit() and bash_list != _py:
     errs.append("parsed patterns differ from what bash loads at element %d: parsed=%r bash=%r" % (_d, _py[_d:_d+1], bash_list[_d:_d+1]))
 if not str(loaded).isdigit(): errs.append("could not load the arrays in bash: %s" % loaded)
 elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash loads %s" % (len(pats), loaded))
+# Whole-script pin (fail closed). The sha256 of the script with the exactly-checked v0.3.0 region removed (from the
+# '# v0.3.0 build chain' marker line through the last pattern line of the region; nothing else normalised).
+# Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
+# commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
+# defence in depth. The region itself is checked by expansion above, not by hash.
+PINNED_SHA256 = "593f7d74f6f183c538935cd568d926240ec3c781b0db6ca5a8a7bd8b8fa677cf"
+if rstart and rend:
+    import hashlib
+    _b = open(path, 'rb').read().split(b"\n")
+    _dg = hashlib.sha256(b"\n".join(_b[:rstart-1] + _b[rend:])).hexdigest()
+    if _dg != PINNED_SHA256:
+        errs.append("script text outside the v0.3.0 region changed (sha256 %s, pinned %s); if intended, update PINNED_SHA256 in the same commit" % (_dg, PINNED_SHA256))
 def toplevel_bar(p):
     d = 0; i = 0
     while i < len(p):
@@ -231,6 +246,27 @@ mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" 
 mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
 mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
 mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
+# B1 (round 5): the whole-script digest pin must kill each of these even if the readable denylist were bypassed.
+# Each mutant is checked against the pin alone (hash line of the struct_check error), so the pin cannot be dead code.
+pinkill() { # <desc> ; the mutant is already in $_mut_dir/m.sh
+  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; return; fi
+  _out="$(struct_check "$_mut_dir/m.sh" 2>&1)" && { gf "struct check MISSED mutant: $1" ""; return; }
+  case "$_out" in *"outside the v0.3.0 region changed"*) gp "digest pin kills mutant: $1";; *) gf "digest pin did NOT fire for mutant: $1" "$_out";; esac
+}
+pinmutins() { # <desc> <text inserted after the SUPPRESSION array close>
+  awk -v n=2 -v t="$2" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "$1"
+}
+pinmutins "process-substitution dot-source of a split-name append" ". <(echo \"ALLOW_PAT\"\"TERNS+=('^evil/.*\\\$')\")"
+pinmutins "read into a computed array element name"                'n="ALLOW_PAT""TERNS[200]"; read -r "$n" <<< '"'"'^evil/.*$'"'"
+pinmutins "plain dot-source of ./extra.sh"                          ". ./extra.sh"
+pinmutins "DEBUG trap after the arrays"                             "trap 'exit 0' DEBUG"
+pinmutins "RETURN trap after the arrays"                            "trap ':' RETURN"
+pinmutins "ERR trap after the arrays"                               "trap 'exit 0' ERR"
+pinmutins "exec of another script"                                  "exec bash ./other.sh"
+sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern LICENSE replaced in place (count unchanged)"
+sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
+sed -E "345s/return 0/return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
+sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
 rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
 run_ref() {
