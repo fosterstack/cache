@@ -2561,3 +2561,97 @@ requirements:
         then: "stage-acceptance-artifacts.yml, stage-acceptance-egress.yml, stage-acceptance-k8s.yml, stage-acceptance-predicate.yml and stage-authorize.yml no longer exist and no job of release.yml calls them or acceptance.yml; their useful commands live on as listed plain scripts"
         verification: { method: ci-workflow, release_blocking: false }
         status: proposed
+
+  - id: REQ-CHAIN-007
+    title: Release verifies everything first, then alone holds the credentials and publishes the exact bytes
+    statement: >
+      The Release stage shall verify every earlier stage's signed record, in a fixed order and before any credential exists in its job, and only then use the apk signing key and the registry credentials, which no other job holds, to sign the released apks, publish by digest the exact bytes Build made and Rebuild and Check judged, read the registry back, sign everything a customer verifies keyless with a Rekor entry (images in both registries, SBOMs, lock files, the dependency evidence and the release policy), and attach the evidence to the release, without building anything and without creating a version tag.
+    source: [.github/workflows/stage-promote.yml, .github/workflows/release.yml, bin/release-verify.sh, bin/release-apks.sh, bin/release-publish.sh, bin/release-sign.sh, bin/release-assets.sh, .github/policy/chain-scripts.json]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 5, 17, 29, 50, 52, 53, 53b, 56, 57, 60, 61, 63, 64, 65, 69, 70, 71 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md, rule 68 as amended with the timeout sentence; PR 4 read-back approved by the advisor Oct 9, ops/handoffs/outbox/2026-10-09-pipeline-readback-release.md, with three rulings that are quoted in the notes)
+    confidence: implementation-only
+    notes: >
+      ADVISOR RULINGS (Oct 9, on the read-back). (a) A release candidate verifies exactly like a final release, so the tag rule is vX.Y.Z and vX.Y.Z-rc.N and nothing else; PR 1's policy make --tag must accept the same two shapes (its tests and code are on the PR 1 branch and need the same widening). (b) The release policy is signed with cosign, keyless, under Release's identity, so it has a Rekor entry a customer can check; Witness records stay extra evidence. (c) Signatures are made in both registries. (d) The dry-run proof of the whole chain (REQ-CHAIN-001-AC5) must be green before the cutover merge into main, not before each merge into chain-v030 (advisor confirmed).
+      CUTOVER RULE (advisor 0341): PR 4 merges into the integration branch chain-v030 only; the live chain on main is untouched until the one cutover pull request, which has its own read-back, a final whole-diff review round and names the switch moment. A v* tag is the owner's; the first real run is the owner's rc tag. Release creates no tag.
+      THE WITNESS WRAPPING is the one seam shared with PR 2 and 3 (owner's rule 68 amendment, Oct 9, and the readability request): every Witness step runs through the single helper bin/witnessed.sh STEP SCRIPT with timeout 540 inside it; the stage file never repeats Witness flags. Release has five such steps (release-verify, release-apks, release-publish, release-sign, release-assets) so that a credential reaches only the step that needs it and a step stays far below the ten-minute Fulcio certificate.
+      PROPOSED/UNVERIFIED: the script names and command lines of bin/release-*.sh; the tool that re-signs an apk with the stored key (melange sign is assumed; cache-3f's apk-tool.py signer reports assembly.rsa.pub, release.rsa.pub or unsigned and is fixed by cache's tests); the copy tool (crane, pinned by checksum through bin/install-scanner.sh); the registry-state check before publishing; the artifact names images and apks; the floating tags (REQ-REL-009 moves them for finals only); and that cosign's bundle for a sign-blob holds a Rekor entry (tlogEntries) in the shape PR 1 verifies; that PR 1's stage-start accepts --rekor-stub for Sign's provenance (else one more verify line); the crane entry of bin/install-scanner.sh (version, asset names, CRANE_BASE_URL; tested by bin/chain-install-crane-test.sh). The environment named release restricted to v* tags is the owner's setting (note only, no test). This PR cannot be run end to end before PRs 1 to 3 exist.
+    acceptance_criteria:
+      - id: REQ-CHAIN-007-AC1
+        given: "stage-promote.yml"
+        when: "it is parsed"
+        then: "it is a reusable workflow with exactly one job, release, on a fresh GitHub-hosted runner, in the environment named release, with permissions exactly contents write, packages write and id-token write and no container, services, env, defaults, strategy, needs or inherited secrets; its steps are exactly, in this order, a digest-pinned checkout (persist-credentials false and nothing else), one step per tool each running ./bin/install-scanner.sh with witness, cosign or crane, digest-pinned downloads of named artifacts into explicit paths outside bin/ and .github/, then the five witnessed steps release-verify, release-apks, release-publish, release-sign and release-assets (each one line, bash bin/witnessed.sh STEP bin/STEP.sh, and nothing else in the step), then digest-pinned uploads of named artifacts; no third-party action runs after Witness starts and no build command, docker login, or action other than checkout, download-artifact and upload-artifact appears"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC2
+        given: "the steps of the release job"
+        when: "the credentials they name are read"
+        then: "no step up to and including release-verify has an env key or names a secret, a token or an environment credential; afterwards each credential reaches only the steps that need it, as a whole read of a secret or of the job token and nothing else: the apk signing key (APK_RELEASE_SIGNING_KEY) only in release-apks, the registry credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) only in release-publish and release-sign, the GitHub token (GH_TOKEN) only in release-publish, release-sign and release-assets; any other name, a second use, or a name read in part is refused"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC3
+        given: "every other workflow file of the release chain and release.yml"
+        when: "they are read"
+        then: "none grants packages write, names a secret (stage files), the registry token DOCKERHUB_TOKEN or the apk signing key APK_RELEASE_SIGNING_KEY, or uses the release environment; only the release job of stage-promote.yml holds them, release.yml grants write only to the promotion call and passes no secrets to the stage calls (the daily rescan keeps its own read-only Docker Hub Scout token, DOCKERHUB_SCOUT_TOKEN, in the agent environment: a different credential)"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC4
+        given: "bin/release-verify.sh, the first witnessed step"
+        when: "its commands are read"
+        then: "after set -euo pipefail it refuses any tag that is not vX.Y.Z or vX.Y.Z-rc.N, then makes the release policy for that tag with bin/chain-verify.py policy make --tag, then, in this order and with nothing else between or after, verifies Build's record, Rebuild's record, Check's record, Sign's provenance with its Rekor entry, and that the registry holds nothing at the target tags that differs from the attested digests; each verification command is the only thing on its line, nothing swallows its failure and no switch skips or waives one"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC5
+        given: "release-verify.sh run against stub records"
+        when: "one earlier stage's record is missing, invalid or about other digests, or the tag is not allowed"
+        then: "it exits non-zero at the first failure, its first stderr line names that stage (build, rebuild, check or sign) or the tag, no later verification runs, v0.3.0 and v0.3.0-rc.1 pass and v0.3, v0.3.0-rc, v0.3.0-rc.x, v0.3.0-beta.1, v0.3.0.1, a branch name and the empty string are refused, and the script never touches a secret, a registry or the network"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC6
+        given: "bin/release-apks.sh with the stored key in APK_RELEASE_SIGNING_KEY"
+        when: "it signs the released apks"
+        then: "it first checks that each apk's package contents are those Build made (the data section equals Build's, signatures ignored) and refuses before signing otherwise, writes the key to a private file that is removed on every exit and never put on a command line, in the output or in a log, re-signs only the apks it was given, requires each result to be signed by the release key and none left signed by the assembly key or unsigned, and refuses at once, naming the variable, when the key is missing"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC7
+        given: "bin/release-publish.sh with the attested digest list"
+        when: "it publishes"
+        then: "it copies each candidate image index by its attested digest (never by a tag, never after any build command) to ghcr.io and to the Docker Hub mirror with the version tag (a release candidate gets its exact tag only, a final release also its floating tags), reads each registry back and requires the digest it shows to equal the attested one, stops at the first difference with a message naming the image and both digests, and the script contains no build command"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC8
+        given: "bin/release-sign.sh after the dependency evidence is produced by bin/vendor-provenance.py evidence"
+        when: "it signs"
+        then: "it signs keyless with cosign, in both registries, each published image digest; and signs with a bundle the SBOMs, the lock files, vendor-evidence.json, dependency-provenance.json and the release policy; it never turns the transparency log off and it requires a Rekor entry in every bundle, failing and naming the file when one has none; the Witness records of the earlier stages are attached as extra evidence and not signed again"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC9
+        given: "bin/release-assets.sh"
+        when: "it attaches the evidence"
+        then: "it uploads the apks, archives, checksum bundle, SBOMs, lock files, dependency evidence, release policy with its bundle and the Witness records to the existing release; a release is created only with --verify-tag and no script or step creates, moves or pushes a tag"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC10
+        given: "the five release scripts and the witnessed helper"
+        when: "chain-scripts.json and the scripts are read"
+        then: "each is listed with its sha256 and exactly the tools it uses (release-verify: python3 only; release-apks: melange, jq and python3 for the apk tool; release-publish: crane and jq; release-sign: cosign, jq and python3; release-assets: gh), signs false for release-verify, release-publish and release-assets and other, with a reason, for release-apks and release-sign, no script starts another script except through the list, no script prints a credential, and a run with credential sentinels in the environment shows none of them in any output or file"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC11
+        given: "release.yml's job graph"
+        when: "it is read"
+        then: "the release job needs exactly build, sign, rebuild and check (rule 70), no job of the chain has an if that can skip it on a failed predecessor, a continue-on-error or inherited secrets, and a failed predecessor stops release; the dry-run and cutover wiring of REQ-CHAIN-001-AC5 is untouched"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC12
+        given: "a Witness record of any of the five release steps"
+        when: "its environment variables are read (the payload of the signed envelope is decoded first)"
+        then: "none of the credential names or values, no compact JWT and no ACTIONS_ID_TOKEN_REQUEST or ACTIONS_RUNTIME variable is in it, whether plain or inside the base64 payload"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-007-AC13
+        given: "the repository on the integration branch"
+        when: "the old release machinery is looked for"
+        then: "bin/authorize-acceptance-check.py and its test no longer exist, stage-promote.yml neither reads nor writes a release-authorization predicate and no job of release.yml named authorization remains; each removal is named in the pull request description (stage-authorize.yml itself is removed by the Check pull request)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: proposed
