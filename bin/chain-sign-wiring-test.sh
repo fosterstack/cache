@@ -245,6 +245,12 @@ expect() { # expect ok|caught LABEL judge ARG
   elif [ "$1" = caught ] && [ "$rc" != 0 ]; then pass=$((pass + 1)); echo "ok   $2 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $2 -> ${out:0:500}"; fi
 }
+expect_has() { # expect_has LABEL judge ARG NEEDLE : the judge fails AND its message contains NEEDLE (so the intended check, not another, fired)
+  local out rc=0
+  out=$(judge "$2" "$3") || rc=$?
+  if [ "$rc" != 0 ] && printf '%s' "$out" | grep -qF -- "$4"; then pass=$((pass + 1)); echo "ok   $1 (caught: ${out:0:160})"
+  else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc, message lacks '$4': ${out:0:400}"; fi
+}
 sha=$(printf 'a%.0s' $(seq 40))
 good="$work/good.yml"
 cat > "$good" <<EOF
@@ -1063,7 +1069,82 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=182
+
+# ---- round 11: command-position words (Sonnet/Opus fix-verification probes; fail closed) ----------------------------------------
+r11_table() { cat <<'TBL'
+cw_var	err	a variable in command position ("$S") after a conditional default with an inherited S (Opus inherited-value repro)	[ -n "$S" ] || S=bin/clean.sh\n"$S"	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+cw_var2	err	a bare $S in command position	S=bin/clean.sh\n$S	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+cw_brace	err	${S} in command position	S=bin/clean.sh\n${S}	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+cw_sudo	err	sudo "$S" in command position	sudo "$S"	
+cw_ws	err	$GITHUB_WORKSPACE/$S in command position	$GITHUB_WORKSPACE/$S	
+cw_expr	err	a ${{ vars.X }} expression in command position	${{ vars.SIGN_SCRIPT }}	
+cw_config	err	a script named by a command substitution result ("$S" from jq) in command position	S=$(jq -r .sign release.json)\n"$S"	
+cw_case	err	case ... S=bin/clean.sh;; esac; "$S"	case "$X" in a) S=bin/clean.sh;; esac\n"$S"	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+glob_bash	err	bash bin/s*.sh (a glob in an interpreter argument)	bash bin/s*.sh	bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
+glob_q	err	./bin/s?sh (a glob in command position)	./bin/s?sh	bin/sxsh=#!/usr/bin/env bash\ncosign sign x\n
+glob_find	err	find bin -name 's*.sh' -exec sh {} +	find bin -name 's*.sh' -exec sh {} +	bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
+ext_bare	found	an extensionless shebang script called as bin/release-sign (no ./)	bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_ws	found	an extensionless shebang script called through $GITHUB_WORKSPACE	"$GITHUB_WORKSPACE/bin/release-sign"	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_dot	found	an extensionless shebang script called as ./bin/release-sign	./bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_env	found	env FOO=1 bin/release-sign	env FOO=1 bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_exec	found	exec bin/release-sign	exec bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_timeout	found	timeout 60 bin/release-sign	timeout 60 bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_bashc	found	bash -c 'bin/release-sign'	bash -c 'bin/release-sign'	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_path	found	a bare command that names a script in the tree (reached through PATH): release-sign	echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"\nrelease-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
+ext_missing	err	a path in command position that is not a file in the tree (bin/gone)	bin/gone	
+make_recipe	err	make sign (the Makefile recipe is not followed)	make sign	Makefile=sign:\n\tbash bin/s.sh\n;bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
+make_f	err	make -f build/release.mk	make -f build/release.mk	build/release.mk=sign:\n\tbash bin/s.sh\n
+find_exec	err	find DIR -name '*.sh' -exec bash {} \;	find bin -name '*.sh' -exec bash {} \;	bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
+xargs_f	err	cat list.txt | xargs -n1 bash	cat list.txt | xargs -n1 bash	list.txt=bin/s.sh\n
+run_parts	err	run-parts bin/release.d	run-parts bin/release.d	
+npm_run	err	npm run sign	npm run sign	package.json={"scripts":{"sign":"bash bin/s.sh"}}\n
+cat_bash	err	cat bin/x | bash (a pipe into a shell)	cat bin/x | bash	bin/x=#!/usr/bin/env bash\ncosign sign x\n
+pipe_script	ok	`... | bash bin/clean.sh` (the pipe is data, the script is a file)	echo x | bash bin/clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+lit_ok	ok	a literal path to a clean script is fine (bash -eu, sudo, env, timeout, cd bin && ./clean.sh)	bash -eu bin/clean.sh\nsudo bin/clean.sh\nenv A=1 bin/clean.sh\ntimeout 5 bin/clean.sh\ncd bin && ./clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+arith_ok	ok	arithmetic and a [[ regex ]] with parentheses open no command: $(( 1 << 3 )), [[ $x =~ ^(a|b)$ ]], case a|b) ... esac	n=$(( $x / 2 ))\n[[ "$x" =~ ^(a|b)$ ]] || echo no\ncase "$x" in a|b) echo ab ;; esac\nbash bin/clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+subst_ok	ok	a command substitution in a word does not make the next word a command: d=$(mktemp -d)/x.java; echo $(date) $HOME/x	d=$(mktemp -d)/x.java\necho $(date) $HOME/x\nbash bin/clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
+TBL
+}
+r11_case() { # r11_case NAME EXP LABEL RUN FILES
+  local name=$1 exp=$2 label=$3 run=$4 files=$5 d f path body
+  d=$(mk "r11_$name"); mkdir -p "$d/bin"
+  { printf 'jobs:\n  b:\n    steps:\n      - run: |\n'; printf '%b' "$run" | sed 's/^/          /'; printf '\n'; } > "$d/.github/workflows/stage-verify.yml"
+  if [ -n "$files" ]; then
+    local IFS_SAVE=$IFS; IFS=$'\x01'
+    for f in $(printf '%s' "$files" | sed 's/~~/\x01/g'); do
+      path=${f%%=*}; body=${f#*=}; mkdir -p "$d/$(dirname "$path")"; printf '%b' "$body" > "$d/$path"
+    done
+    IFS=$IFS_SAVE
+  fi
+  chmod +x "$d"/bin/* 2>/dev/null || true
+  case "$exp" in
+    ok)    expect ok "round 11: $label" tree "$d" ;;
+    err)   expect_has "round 11: $label: an error, never silence" tree "$d" "fail closed" ;;
+    found) expect_has "round 11: $label: the script is found and its signer seen" tree "$d" "calls 'cosign sign'" ;;
+  esac
+}
+while IFS=$'\t' read -r n e l r fl; do r11_case "$n" "$e" "$l" "$r" "$fl"; done < <(r11_table)
+
+d=$(mk r11ci); mkdir -p "$d/bin"; printf 'jobs:
+  c:
+    steps:
+      - run: bash bin/x-test.sh
+' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash
+"$SUT" --version
+xargs echo < /dev/null
+' > "$d/bin/x-test.sh"; chmod +x "$d/bin/x-test.sh"
+expect ok "round 11: a *-test.sh reached ONLY from ci.yml may run a built binary through a variable and xargs (the carve-out)" tree "$d"
+d=$(mk r11stage); mkdir -p "$d/bin"; printf 'jobs:
+  c:
+    steps:
+      - run: bash bin/x-test.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash
+"$SUT" --version
+xargs echo < /dev/null
+' > "$d/bin/x-test.sh"; chmod +x "$d/bin/x-test.sh"
+expect_has "round 11: the same test script reached from a STAGE file is judged strictly: command-word variable and xargs are errors" tree "$d" "bin/x-test.sh"
+
+EXPECT=215
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

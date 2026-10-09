@@ -14,7 +14,14 @@ Scripts (round 5): every file a workflow or composite action runs is found with 
 perl/source/`.` plus a path, ./path with or without an extension if it starts with `#!`, $GITHUB_WORKSPACE and
 ${{ github.workspace }} prefixes, `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
 scripts, transitively: the scripts they call are judged STRICTLY too, round 6). Round 10: NO variable resolution (a script called through $VAR, ${VAR}, $(cmd) or backticks is an ERROR: call scripts by literal path) and NO heredoc stripping (a heredoc body is scanned as code). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
-closed), never skipped. Stated exclusion: a bare `./name` with no extension that is not a file in the tree is taken to be a built
+closed), never skipped. Round 11 (command position, fail closed): the WORD THAT STARTS A COMMAND (line start, after ; && || | ( { $( `
+then do else, after VAR=1 / exec env sudo timeout nohup nice time command builtin and their options) is judged too: (a) it contains
+$, a backtick, ${{ or a glob character -> ERROR (a variable or expression in command position, `bash bin/s*.sh`, `"$S"`);
+(b) it is a path (contains /) -> a REF when it is a file in the tree, whether or not it has ./ or an extension (a shebang file is
+enough), an ERROR when it is not in the tree (a bare ./name with no extension that is not in the tree stays the stated built-binary
+exclusion); (c) make/gmake/xargs/parallel/run-parts/just/task/at/watch/npx/eval, `find ... -exec|-execdir|-ok|-okdir`,
+`npm|yarn|pnpm run|run-script|exec|start|test|x|dlx`, and a pipe into a shell (`cat x | bash`) are ERRORS: call scripts by literal
+path. `sh -c 'STRING'` / `bash -c 'STRING'` analyse STRING the same way. Interpreter arguments with a glob character are ERRORS. Stated exclusion: a bare `./name` with no extension that is not a file in the tree is taken to be a built
 binary and ignored. Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import json, os, re
 
@@ -159,9 +166,256 @@ def _is_script_file(base, rel):
     try: return open(full, "rb").read(2) == b"#!"
     except OSError: return False
 
-RUNTIME = re.compile(r"^\$\{?(?:RUNNER_TEMP|RUNNER_TOOL_CACHE|HOME|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|TMPDIR)\}?/|^/(?:tmp|usr|opt|home|var|dev|proc|sys|etc)/")
+RUNTIME = re.compile(r"^\$\{?(?:RUNNER_TEMP|RUNNER_TOOL_CACHE|HOME|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|TMPDIR)\}?/|^/(?:tmp|usr|opt|home|var|dev|proc|sys|etc|bin|sbin|lib|lib64|snap|run|mnt|Library|Applications)/")
 
-def script_refs_ex(base, text, owndir=None, strict=True):
+
+# ---- round 11: command-position words --------------------------------------------------------------------------------------
+WRAPPERS = {"exec", "env", "sudo", "timeout", "nohup", "nice", "time", "command", "builtin", "stdbuf", "setsid", "ionice", "doas", "chronic"}
+OPT_WITH_ARG = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"}, "env": {"-u", "-C", "-S"}, "nice": {"-n"},
+                "timeout": {"-s", "-k"}, "ionice": {"-c", "-n", "-p"}, "stdbuf": set(), "doas": {"-u", "-C"}}
+KEYWORDS = {"then", "do", "else", "elif", "if", "while", "until", "!", "{", "}", "(", "(("}          # a command follows these
+ENDERS = {"case", "esac", "fi", "done", "in", "function", "for", "select"}      # no command word follows these
+RUNNER_CMDS = {"make", "gmake", "xargs", "parallel", "run-parts", "just", "task", "at", "watch", "npx", "eval"}
+NODE_RUNNERS = {"npm", "yarn", "pnpm"}
+NODE_SUB = {"run", "run-script", "exec", "start", "test", "x", "dlx"}
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+SHELLS = {"bash", "sh", "dash", "zsh"}
+NONCMD = {"[", "[[", "]", "]]", ":", "true", "false"}
+
+_IDX = {}
+def _script_index(base):
+    """basename -> [repo-relative paths] of every script file (extension or #! line) in the tree, built once per tree."""
+    if base not in _IDX:
+        idx = {}
+        for dp, dn, fn in os.walk(base):
+            dn[:] = [d for d in dn if d not in (".git", "node_modules")]
+            for f in fn:
+                rel = os.path.relpath(os.path.join(dp, f), base)
+                if _is_script_file(base, rel): idx.setdefault(f, []).append(rel)
+        _IDX[base] = idx
+    return _IDX[base]
+
+def lex_commands(code):
+    """[(words, sep)] one entry per simple command in a block of shell code: words keep their quotes; sep is the separator that
+    precedes the command ('' at the start, or one of ; & && || | ( $( ` newline). Quote state carries across lines (a quoted awk or
+    python program spanning lines is one word); a ; or | inside quotes starts nothing; `$(( ))` / `(( ))` arithmetic and
+    `NAME=( ... )` arrays are one word; a command substitution `$( ... )` (also inside double quotes) is lexed as its own commands
+    and leaves the placeholder `0` in the word it sits in; `[[ ... ]]` is one command; a case pattern (`a)` with no open paren) is
+    discarded; and the body of a heredoc whose consumer is NOT a shell (cat, python, kubectl, ...) is skipped ONLY when its
+    terminator line exists (an unclosed or unclassifiable `<<` skips nothing: fail closed)."""
+    cmds, words, cur, q, sep = [], [], "", None, ""
+    i, n, frames, pending, dbl = 0, len(code), [], [], False
+    def flush():
+        nonlocal cur, dbl
+        if cur != "":
+            words.append(cur)
+            if dbl and cur == "]]": dbl = False
+            elif not dbl and cur == "[[": dbl = True
+            cur = ""
+    def end(newsep):
+        nonlocal words, sep
+        flush()
+        if words: cmds.append((words, sep))
+        words, sep = [], newsep
+    def heredoc_here(j):
+        if code.startswith("<<<", j): return None
+        k = j + 2
+        if k < n and code[k] == "-": k += 1
+        while k < n and code[k] in " \t": k += 1
+        m = re.match(r"(\"[^\"\n]+\"|'[^'\n]+'|[A-Za-z_][\w.-]*)", code[k:])
+        return (m.group(1).strip("\"'"), k + m.end()) if m else None
+    def open_subst(kind, width):
+        nonlocal words, cur, sep, q, i
+        frames.append((kind, words, cur, sep, q))
+        words, cur, sep, q = [], "", kind, None
+        i += width
+    while i < n:
+        ch = code[i]
+        if q:
+            if q == '"' and code.startswith("$(", i) and not code.startswith("$((", i): open_subst("$(", 2); continue
+            cur += ch
+            if ch == "\\" and q == '"' and i + 1 < n: cur += code[i + 1]; i += 1
+            elif ch == q: q = None
+            i += 1; continue
+        if ch in "'\"": q = ch; cur += ch; i += 1; continue
+        if ch == "\\" and i + 1 < n: cur += code[i:i + 2]; i += 2; continue
+        if code.startswith("$((", i) or (code.startswith("((", i) and not cur):
+            d, j = 0, i + (1 if code[i] == "$" else 0)
+            while j < n:
+                if code.startswith("((", j): d += 1; j += 2; continue
+                if code.startswith("))", j):
+                    d -= 1; j += 2
+                    if d == 0: break
+                    continue
+                j += 1
+            cur += "0"; i = j; continue
+        if code.startswith("<<", i):
+            h = heredoc_here(i)
+            if h and not cur.endswith(("<", "(")):
+                flush(); pending.append((h[0], list(words))); i = h[1]; continue
+            if code.startswith("<<<", i): cur += "<<<"; i += 3; continue
+        if ch == "\n":
+            if dbl: flush(); i += 1; continue
+            end("\n"); i += 1
+            while pending:
+                term, wsnap = pending.pop(0)
+                k = command_word(wsnap, "")
+                consumer = _unq(wsnap[k]) if k is not None else ""
+                body_end, j = None, i
+                while j <= n:
+                    e = code.find("\n", j); e = n if e < 0 else e
+                    if code[j:e].strip() == term: body_end = e; break
+                    if e >= n: break
+                    j = e + 1
+                if body_end is not None and os.path.basename(consumer) not in SHELLS | {"source", ".", "eval", "xargs", "ssh", "su", "ksh"}:
+                    i = min(body_end + 1, n)
+            continue
+        if code.startswith("$(", i): open_subst("$(", 2); continue
+        if ch == "`":
+            if frames and frames[-1][0] == "`":
+                end(""); kind, words, cur, sep, q = frames.pop(); cur += "0"
+            else: open_subst("`", 1)
+            i += 0 if False else (1 if False else 0)
+            if frames and frames[-1][0] == "`" and cur == "" and False: pass
+            i += 1 if i < n and code[i] == "`" and False else 0
+            continue
+        if dbl and cur == "]]": flush()                     # `]]` ends the test even when a separator touches it (`]];` / `]])`)
+        if dbl and ch in "();&|": cur += ch; i += 1; continue
+        if code.startswith("&&", i) or code.startswith("||", i): end(code[i:i + 2]); i += 2; continue
+        if ch == "(" and re.search(r"(?:^|[\s;&|])[A-Za-z_]\w*\+?=$", cur):
+            d, j, qq = 1, i + 1, None
+            while j < n and d:
+                c2 = code[j]
+                if qq:
+                    if c2 == "\\" and qq == '"': j += 1
+                    elif c2 == qq: qq = None
+                elif c2 in "'\"": qq = c2
+                elif c2 == "(": d += 1
+                elif c2 == ")": d -= 1
+                j += 1
+            cur += "0"; i = j; continue
+        if ch == "(": frames.append(("(", None, None, None, None)); end("("); i += 1; continue
+        if ch == ")":
+            if frames:
+                kind, w0_, c0_, s0_, q0_ = frames.pop()
+                if kind == "$(":
+                    end(""); words, cur, sep, q = w0_, c0_ + "0", s0_, q0_
+                elif kind == "(": end(")")
+                else: end(")")
+            else:                                                # a case pattern (a) or a|b) ...): not commands
+                s_ = sep
+                while s_ == "|" and cmds: _, s_ = cmds.pop()
+                words, cur, sep = [], "", ")"
+            i += 1; continue
+        if ch in ";&|": end(ch); i += 1; continue
+        if ch.isspace(): flush(); i += 1; continue
+        cur += ch; i += 1
+    end("")
+    return cmds
+
+def _unq(w):
+    return w.strip("\"'")
+
+def command_word(words, sep):
+    """(index of the command word or None, preceded-by-pipe) after skipping keywords, VAR=1 assignments and wrappers."""
+    i, wrap = 0, None
+    while i < len(words):
+        w = _unq(words[i])
+        if w in ENDERS: return None
+        if w in KEYWORDS or re.fullmatch(r"[A-Za-z_]\w*\+?=.*", words[i], re.S) or re.fullmatch(r"[A-Za-z_]\w*\[[^\]]*\]\+?=.*", words[i], re.S): i += 1; continue
+        if w in WRAPPERS:
+            wrap = w; i += 1
+            while i < len(words) and words[i].startswith("-"):
+                a = words[i]; i += 1
+                if a in OPT_WITH_ARG.get(wrap, set()) and i < len(words): i += 1
+            if wrap == "timeout" and i < len(words) and re.fullmatch(r"[\d.]+[smhd]?", _unq(words[i])): i += 1
+            if wrap == "nice" and i < len(words) and re.fullmatch(r"-?\d+", _unq(words[i])): i += 1
+            while wrap == "env" and i < len(words) and re.fullmatch(r"[A-Za-z_]\w*=.*", words[i], re.S): i += 1
+            continue
+        return i
+    return None
+
+def command_checks(base, line, cd, refs, errs, strict, depth=0):
+    """Round 11: judge the word that starts every simple command in a block of shell code (see the module docstring)."""
+    for words, sep in lex_commands(line):
+        k = command_word(words, sep)
+        if k is None: continue
+        raw = words[k]; w = _unq(raw)
+        if w == "cd" and k + 1 < len(words):
+            c = WS.sub("", _unq(words[k + 1]))
+            cd = None if re.search(r"[$`*?\[]|\{\{", c) else c.lstrip("/").lstrip("./") if c not in (".", "") else cd
+            continue
+        piped = sep == "|"
+        if w in NONCMD or w.startswith("((") or w == "" : continue
+        w0 = WS.sub("", w)
+        base_w = os.path.basename(w0)
+        if piped and base_w in SHELLS:
+            args = [x for x in words[k + 1:] if not _unq(x).startswith("-")]
+            if args and "-s" not in words[k + 1:]: continue            # `... | bash script.sh`: the pipe is data, the script is a file
+            if strict: errs.append("a pipe into a shell (`... | %s`) runs text this scan cannot read: call the script by literal path" % w); 
+            continue
+        varcmd = w0.startswith("$") or "$(" in w0 or "`" in w0 or "${{" in w0 or ("/" in w0 and "$" in w0)
+        globcmd = bool(re.search(r"[*?\[]", w0)) and not raw[:1] in "'\"" and ("/" in w0 or w0.endswith(EXTS))
+        if varcmd or globcmd:
+            if RUNTIME.match(w): continue
+            if strict: errs.append("command word %r is a variable, expression, command substitution or glob: call the script by literal path (fail closed)" % raw)
+            continue
+        if w0 in RUNNER_CMDS or base_w in RUNNER_CMDS and "/" not in w0:
+            if strict: errs.append("`%s` runs scripts this scan cannot follow: call the script by literal path (fail closed)" % w0)
+            continue
+        if w0 == "find" and any(_unq(x) in FIND_EXEC for x in words[k + 1:]):
+            if strict: errs.append("`find ... -exec` runs scripts this scan cannot follow: call the script by literal path (fail closed)")
+            continue
+        if w0 in NODE_RUNNERS and k + 1 < len(words) and _unq(words[k + 1]) in NODE_SUB:
+            if strict: errs.append("`%s %s` runs package scripts this scan cannot follow: call the script by literal path (fail closed)" % (w0, _unq(words[k + 1])))
+            continue
+        if w0 in SHELLS | {"dash"} and depth < 3:
+            for a in range(k + 1, len(words) - 1):
+                if _unq(words[a]) == "-c" or re.fullmatch(r"-[a-z]*c", _unq(words[a])):
+                    inner = words[a + 1]
+                    if inner[:1] in "'\"": command_checks(base, inner[1:-1] if inner[-1:] == inner[:1] else inner[1:], cd, refs, errs, strict, depth + 1)
+                    break
+        if "/" not in w0 and not w0.startswith(".") and w0 in _script_index(base):
+            refs.update(_script_index(base)[w0]); continue              # a bare command that names a script in the tree (reached through PATH): a REF
+        if "/" in w0 or w0.startswith("."):
+            if RUNTIME.match(w) or w0 in (".", "..") or w0.startswith(("./-", )): continue
+            c = w0.lstrip("/") if w != w0 else w0
+            c = re.sub(r"^(\./)+", "", c)
+            paths = ([os.path.normpath(os.path.join(cd, c))] if cd else []) + [os.path.normpath(c)]
+            hit = [p for p in paths if _is_script_file(base, p)]
+            if hit: refs.update(hit); continue
+            if any(os.path.isfile(os.path.join(base, p)) for p in paths): continue       # a non-script file (a built or vendored binary)
+            if _find_by_basename(base, os.path.basename(c)) and any(_is_script_file(base, p) for p in _find_by_basename(base, os.path.basename(c))):
+                refs.update(p for p in _find_by_basename(base, os.path.basename(c)) if _is_script_file(base, p)); continue
+            if w.startswith("./") and "." not in os.path.basename(c): continue            # stated exclusion: a built binary
+            if strict: errs.append("command path %r is not a file in the tree (fail closed)" % raw)
+
+SHELL_SHEBANG = re.compile(r"^#!\s*(?:/usr/bin/env\s+)?(?:\S*/)?(?:ba|da|z|k)?sh\b")
+NONSHELL = {"python", "python3", "pwsh", "powershell", "cmd", "node", "ruby", "perl"}
+
+def shell_blocks(text, kind):
+    """The shell code in one file: for a workflow/action YAML the `run:` values (a step whose `shell:` names another language is
+    skipped; github-script `script:` is JavaScript and not shell); for a script its whole text when it is shell. A YAML file that
+    cannot be parsed yields its whole text (fail closed: noise, never silence)."""
+    if kind == "shell":
+        return [text] if (text.startswith("#!") and SHELL_SHEBANG.match(text)) or not text.startswith("#!") else []
+    try:
+        import yaml
+        doc = yaml.safe_load(text)
+    except Exception:
+        return [text]
+    out = []
+    def walk(x):
+        if isinstance(x, dict):
+            r = x.get("run")
+            if isinstance(r, str) and str(x.get("shell", "bash")).split()[0] not in NONSHELL: out.append(r)
+            for v in x.values(): walk(v)
+        elif isinstance(x, list):
+            for v in x: walk(v)
+    walk(doc)
+    return out
+
+def script_refs_ex(base, text, owndir=None, strict=True, kind=None):
     """(set of repo-relative script paths, [error strings]) for the scripts one file runs."""
     refs, errs = set(), []
     # Round 10: NO variable resolution and NO heredoc stripping. Static resolution of shell is an unbounded class (rounds 4-9 each
@@ -197,6 +451,10 @@ def script_refs_ex(base, text, owndir=None, strict=True):
             cand = re.sub(r"^[A-Za-z_]\w*=", "", cand).strip("\"'")
             if cand in EXTS or cand.startswith("\\") or len(os.path.basename(cand)) <= 3 and cand.endswith(EXTS): continue
             shaped = ("/" in cand or cand.endswith(EXTS) or bool(UNRESOLVED.search(cand)) or bool(OWN.search(cand))) and not cand.startswith(("<", "-"))
+            shaped = ("/" in cand or cand.endswith(EXTS) or bool(UNRESOLVED.search(cand)) or bool(OWN.search(cand))) and not cand.startswith(("<", "-"))
+            if is_interp and re.search(r"[*?\[]", cand) and not RUNTIME.match(cand) and shaped:
+                if strict: errs.append("script path %r has a glob character: call the script by literal path (fail closed)" % cand)
+                continue
             if not shaped or re.search(r"[*?\[]", cand) or RUNTIME.match(cand) or os.path.basename(cand) == "chain-verify.py": continue
             c = cand
             if OWN.search(c):
@@ -220,11 +478,9 @@ def script_refs_ex(base, text, owndir=None, strict=True):
             elif strict and (is_interp or c.endswith(EXTS)):
                 errs.append("unresolved script reference %r (no such file in the tree)" % cand)
             # else: a bare ./name without an extension that is not in the tree is a built binary: stated exclusion
-        if re.search(r"(?<![\w./-])make\b", line):
-            mm = re.search(r"make\s+(?:-\w+\s+)*-C\s+(\S+)", line)
-            mk = os.path.join(mm.group(1), "Makefile") if mm else "Makefile"
-            if os.path.isfile(os.path.join(base, mk)): refs.add(mk)
-            elif mm: errs.append("make -C names a directory with no %s in the tree" % mk)
+    kind = kind or ("shell" if owndir is not None else "yaml")
+    for code in shell_blocks(text, kind):
+        command_checks(base, logical(strip(code)), None, refs, errs, strict)
     return refs, errs
 
 TEST_WORKFLOWS = {".github/workflows/ci.yml"}
