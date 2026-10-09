@@ -45,9 +45,10 @@ def S():
     return _MOD["m"]
 
 
-def pr(n, head, base="main", state="open", merged=False, hrepo="o/r"):
+def pr(n, head, base="main", state="open", merged=False, hrepo="o/r", sha=None):
     return {"number": n, "state": state, "merged_at": iso(NOW - D(days=1)) if merged else None,
-            "head": {"ref": head, "sha": sha_of(head), "repo": ({"full_name": hrepo} if hrepo else None)},
+            "created_at": iso(NOW - D(days=100) + D(hours=n)),
+            "head": {"ref": head, "sha": sha or sha_of(head), "repo": ({"full_name": hrepo} if hrepo else None)},
             "base": {"ref": base}}
 
 
@@ -71,12 +72,14 @@ def kentry(branch, days=10, reason="in flight"):
 # --------------------------------------------------------------------------------------------- the fake GitHub
 class GH:
     def __init__(self, branches=(), prs=(), keep=None, keep_refs=None, default="main", repo="o/r", cap=None,
-                 fail=None, fail_delete=(), bad_commit=(), keep_status=None, protected=()):
+                 fail=None, fail_delete=(), bad_commit=(), keep_status=None, protected=(), before=None, delete_status=None,
+                 endless=None):
         self.repo, self.default, self.cap = repo, default, cap
         self.branches = [{"name": n, "sha": sha_of(n), "age": a} for n, a in branches]
         self.prs, self.keep, self.keep_refs = list(prs), keep, keep_refs
         self.fail, self.fail_delete, self.bad_commit, self.keep_status = fail, set(fail_delete), set(bad_commit), keep_status
         self.protected = set(protected)
+        self.before, self.delete_status, self.endless = before, dict(delete_status or {}), endless
         self.calls = []
 
     def deletes(self):
@@ -93,6 +96,10 @@ class GH:
 
     def __call__(self, method, path):
         self.calls.append((method, path))
+        if len(self.calls) > 20000:
+            raise RuntimeError("runaway: the sweeper never stopped asking")
+        if self.before:
+            self.before(self, method, path)
         u = urllib.parse.urlsplit(path)
         q = urllib.parse.parse_qs(u.query)
         p = u.path
@@ -103,11 +110,31 @@ class GH:
                 return f[0], f[1], {}
         if method == "GET" and p == r:
             return 200, json.dumps({"full_name": self.repo, "default_branch": self.default}), {}
+        if method == "GET" and p in (r + "/branches", r + "/pulls") and self.endless:
+            kind, mode = self.endless
+            if p.endswith(kind):
+                pg = int(q.get("page", ["1"])[0])
+                n = 1 if mode == "repeat" else pg
+                item = ({"name": "feat/e%d" % n, "commit": {"sha": sha_of("e%d" % n)}, "protected": False} if kind == "branches"
+                        else pr(n, "feat/e%d" % n, state="closed"))
+                return 200, json.dumps([item]), {"link": '<https://api.github.com/x?page=%d>; rel="next"' % (pg + 1)}
         if method == "GET" and p == r + "/branches":
             return self._page([{"name": b["name"], "commit": {"sha": b["sha"]}, "protected": b["name"] in self.protected} for b in self.branches], q)
         if method == "GET" and p == r + "/pulls":
             st = q.get("state", ["open"])[0]
-            return self._page([x for x in self.prs if st == "all" or x["state"] == st], q)
+            sel = [x for x in self.prs if st == "all" or x["state"] == st]
+            if "head" in q:
+                owner, _, ref = q["head"][0].partition(":")
+                sel = [x for x in sel if x["head"]["ref"] == ref and ((x["head"].get("repo") or {}).get("full_name") or "/").split("/")[0].casefold() == owner.casefold()]
+            if "base" in q:
+                sel = [x for x in sel if x["base"]["ref"] == q["base"][0]]
+            return self._page(sel, q)
+        if method == "GET" and p.startswith(r + "/git/ref/heads/"):
+            name = urllib.parse.unquote(p[len(r + "/git/ref/heads/"):])
+            for b in self.branches:
+                if b["name"] == name:
+                    return 200, json.dumps({"ref": "refs/heads/" + name, "object": {"sha": b["sha"], "type": "commit"}}), {}
+            return 404, json.dumps({"message": "Not Found"}), {}
         if method == "GET" and p.startswith(r + "/commits/"):
             sha = p.rsplit("/", 1)[1]
             for b in self.branches:
@@ -124,6 +151,8 @@ class GH:
             return 200, json.dumps({"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}), {}
         if method == "DELETE" and p.startswith(r + "/git/refs/heads/"):
             name = urllib.parse.unquote(p[len(r + "/git/refs/heads/"):])
+            if name in self.delete_status:
+                return self.delete_status[name], json.dumps({"message": "rate limited"}), {}
             if name in self.fail_delete:
                 return 422, json.dumps({"message": "Reference cannot be deleted"}), {}
             for b in self.branches:
@@ -137,12 +166,14 @@ class GH:
 def run_main(gh, args=("--apply",), env=None):
     with tempfile.TemporaryDirectory() as td:
         sp = os.path.join(td, "summary.md")
-        e = {"GITHUB_REPOSITORY": gh.repo, "GITHUB_STEP_SUMMARY": sp}
+        lp = os.path.join(td, "branch-sweep.log")
+        e = {"GITHUB_REPOSITORY": gh.repo, "GITHUB_STEP_SUMMARY": sp, "BRANCH_SWEEP_LOG": lp}
         e.update(env or {})
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = S().main(list(args), e, gh, NOW)
         summary = open(sp).read() if os.path.exists(sp) else ""
+        run_main.last_log = open(lp).read() if os.path.exists(lp) else None
     return rc, out.getvalue(), summary
 
 
@@ -163,6 +194,31 @@ class NeverTouched(unittest.TestCase):  # AC1-AC6
         self.assertEqual((m["main"]["action"], m["main"]["reason"]), ("keep", "default-branch"))
         m = plan_map([B("trunk", 99)], [pr(1, "trunk", state="closed", merged=True)], default_branch="trunk")
         self.assertEqual(m["trunk"]["action"], "keep")
+
+    def test_ac1_only_the_current_default_branch_is_protected(self):
+        m = plan_map([B("main", 99), B("trunk", 99)], [pr(1, "main", state="closed", merged=True)], default_branch="trunk")
+        self.assertEqual(m["trunk"]["action"], "keep")
+        self.assertEqual((m["main"]["action"], m["main"]["reason"]), ("delete", "merged-pr"))
+        self.assertEqual(plan_map([B("main", 99)], default_branch="trunk")["main"]["action"], "delete")
+
+    def test_ac1_default_branch_compares_without_case_both_ways(self):
+        self.assertEqual(plan_map([B("trunk", 99)], default_branch="Trunk")["trunk"]["action"], "keep")
+        self.assertEqual(plan_map([B("TRUNK", 99)], default_branch="trunk")["TRUNK"]["action"], "keep")
+
+    def test_ac1_ac2_ac3_protected_names_compare_without_case(self):
+        for name, want in (("MAIN", "default-branch"), ("Main", "default-branch"), ("Release/1", "release"), ("RELEASE/1.2", "release"),
+                           ("Dependabot/npm/x", "dependabot"), ("DEPENDABOT/go/y", "dependabot")):
+            self.assertEqual(plan_map([B(name, 99)], [pr(1, name, state="closed", merged=True)])[name]["reason"], want, name)
+
+    def test_ac4_repository_names_compare_without_case(self):
+        for hrepo in ("O/R", "o/R", "O/r"):
+            m = plan_map([B("feat/a", 99)], [pr(1, "feat/a", hrepo=hrepo)], repo="o/r")
+            self.assertEqual((m["feat/a"]["action"], m["feat/a"]["reason"]), ("keep", "open-pr"), hrepo)
+        m = plan_map([B("feat/a", 99)], [pr(1, "feat/a", hrepo="fosterstack/cache")], repo="FosterStack/Cache")
+        self.assertEqual(m["feat/a"]["action"], "keep")
+        # and a merged PR from the differently-cased repo still counts for the delete rules
+        m = plan_map([B("feat/a", 1)], [pr(1, "feat/a", state="closed", merged=True, hrepo="O/R")], repo="o/r")
+        self.assertEqual(m["feat/a"]["reason"], "merged-pr")
 
     def test_ac2_release_prefix(self):
         for name in ("release/1.2", "release/v3/x"):
@@ -240,8 +296,30 @@ class DeleteRules(unittest.TestCase):  # AC7-AC9
         m = plan_map([B("feat/a", 1)], [pr(1, "feat/a", state="closed", merged=True)])
         self.assertEqual((m["feat/a"]["action"], m["feat/a"]["reason"]), ("delete", "merged-pr"))
 
-    def test_ac7_merged_wins_over_an_older_closed_pr(self):
+    def test_ac7_newer_merged_beats_an_older_closed_pr(self):
         m = plan_map([B("feat/a", 1)], [pr(1, "feat/a", state="closed"), pr(2, "feat/a", state="closed", merged=True)])
+        self.assertEqual(m["feat/a"]["reason"], "merged-pr")
+
+    def test_ac7_ac8_pr_reason_needs_the_tip_to_be_the_pr_head(self):
+        other = "e" * 40
+        for kw, what in (({"state": "closed", "merged": True}, "merged"), ({"state": "closed"}, "closed")):
+            # new commits after the PR: an old branch falls to the idle rule, a recent one is kept
+            old = plan_map([B("feat/a", 99)], [pr(1, "feat/a", sha=other, **kw)])["feat/a"]
+            self.assertEqual((old["action"], old["reason"]), ("delete", "idle-14d"), what)
+            new = plan_map([B("feat/a", 1)], [pr(1, "feat/a", sha=other, **kw)])["feat/a"]
+            self.assertEqual((new["action"], new["reason"]), ("keep", "recent"), what)
+            # and a PR whose head is the tip still decides
+            self.assertEqual(plan_map([B("feat/a", 1)], [pr(1, "feat/a", sha=sha_of("feat/a"), **kw)])["feat/a"]["action"], "delete")
+
+    def test_ac7_ac8_the_newest_pr_at_the_tip_decides_the_reason(self):
+        m = plan_map([B("feat/a", 1)], [pr(1, "feat/a", state="closed", merged=True), pr(2, "feat/a", state="closed")])
+        self.assertEqual(m["feat/a"]["reason"], "closed-pr")
+        m = plan_map([B("feat/a", 1)], [pr(2, "feat/a", state="closed"), pr(1, "feat/a", state="closed", merged=True)])
+        self.assertEqual(m["feat/a"]["reason"], "closed-pr")
+        m = plan_map([B("feat/a", 1)], [pr(1, "feat/a", state="closed"), pr(2, "feat/a", state="closed", merged=True)])
+        self.assertEqual(m["feat/a"]["reason"], "merged-pr")
+        # a PR at an older head does not take part in the decision
+        m = plan_map([B("feat/a", 1)], [pr(1, "feat/a", state="closed", merged=True), pr(2, "feat/a", state="closed", sha="d" * 40)])
         self.assertEqual(m["feat/a"]["reason"], "merged-pr")
 
     def test_ac8_closed_pr(self):
@@ -392,6 +470,7 @@ class MainSweep(unittest.TestCase):
         gh = GH([("trunk", OLD), ("main", OLD)], default="trunk", keep=None)
         run_main(gh)
         self.assertNotIn("trunk", deleted_names(gh))
+        self.assertIn("main", deleted_names(gh))  # an old default branch is an ordinary branch after a rename
 
     def test_only_reads_and_ref_deletions(self):
         gh = standard()
@@ -431,6 +510,7 @@ class MainSweep(unittest.TestCase):
         self.assertEqual(deleted_names(gh), set(names))
         self.assertEqual([b["name"] for b in gh.branches], ["feat/guarded-by-page-3"])
         got = [p for m, p in gh.calls if m == "GET" and ("/branches" in p or "/pulls" in p)]
+        got = [p for p in got if "state=open" not in p]  # the per-delete re-checks are not listings
         self.assertTrue(all("per_page=100" in p for p in got), got)
         self.assertTrue(any("page=3" in p and "/branches" in p for p in got))
         self.assertTrue(any("page=3" in p and "/pulls" in p for p in got))
@@ -444,10 +524,7 @@ class MainSweep(unittest.TestCase):
 
     def _fail_closed(self, gh):
         S()  # the implementation must exist: an import failure is not a fail-closed pass
-        try:
-            rc, out, summary = run_main(gh)
-        except Exception:
-            rc, out, summary = 99, "", ""
+        rc, out, summary = run_main(gh)  # a runner exception must come back as an exit code, not escape
         self.assertEqual(gh.deletes(), [], gh.calls)
         self.assertNotEqual(rc, 0)
         return out, summary
@@ -458,7 +535,9 @@ class MainSweep(unittest.TestCase):
         for sub, page, status, body in (("/branches", 1, 502, "{}"), ("/pulls", 1, 500, "{}"), ("/pulls", 1, 403, '{"message":"rate limit"}'),
                                         ("/branches", 1, 200, '{"message":"x"}'), ("/pulls", 1, 200, "not json"),
                                         ("/pulls", 1, 200, "null"), ("/branches", 1, 429, "{}"), ("o/r", None, 500, "{}"),
-                                        ("/pulls", 1, 502, "[]"), ("/pulls", 1, 403, "[]")):
+                                        ("/pulls", 1, 502, "[]"), ("/pulls", 1, 403, "[]"),
+                                        ("/branches", 1, 404, '{"message":"Not Found"}'), ("/pulls", 1, 404, '{"message":"Not Found"}'),
+                                        ("/pulls", 1, 404, "[]"), ("/pulls", 1, 200, "{}")):
             out, summary = self._fail_closed(mk(sub, page, status, body))
             self.assertIn("ERROR", out + summary, (sub, status))
 
@@ -474,6 +553,56 @@ class MainSweep(unittest.TestCase):
             raise OSError("network down")
         gh = GH([("feat/a", OLD)], fail=boom)
         self._fail_closed(gh)
+
+    def test_ac12_ac16_runner_exception_at_each_call_class_before_a_delete(self):
+        classes = {"repository": lambda m, p: p == "repos/o/r", "branches": lambda m, p: p.endswith("/branches"),
+                   "pulls": lambda m, p: p.endswith("/pulls"), "keep-file": lambda m, p: p.endswith("branch-keep.json"),
+                   "commit date": lambda m, p: "/commits/" in p}
+        for name, pred in classes.items():
+            def boom(m, p, q, pred=pred):
+                if pred(m, p):
+                    raise OSError("network down")
+            gh = GH([("feat/a", OLD), ("feat/b", OLD), ("feat/kept", OLD)], [pr(1, "feat/z", state="closed", merged=True)],
+                    keep=keepfile(kentry("feat/kept", 5)), fail=boom)
+            out, summary = self._fail_closed(gh)
+            self.assertIn("ERROR", out + summary, name)
+
+    def test_ac17_runner_exception_on_a_delete_is_a_failed_line_and_the_sweep_continues(self):
+        def boom(m, p, q):
+            if m == "DELETE" and p.endswith("/feat/b"):
+                raise OSError("connection reset")
+        gh = GH([("feat/a", OLD), ("feat/b", OLD), ("feat/c", OLD)], fail=boom)
+        rc, out, summary = run_main(gh)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual({b["name"] for b in gh.branches}, {"feat/b"})
+        f = lines(summary, "FAILED")
+        self.assertEqual(len(f), 1)
+        self.assertRegex(f[0], r"FAILED [0-9a-f]{40} idle-14d feat/b$")
+
+    def test_ac16_exact_page_boundaries_and_many_pages(self):
+        for n, pages in ((100, 2), (200, 3), (1050, 11)):
+            gh = GH([("feat/n%04d" % i, OLD) for i in range(n)])
+            rc, out, _ = run_main(gh)
+            self.assertEqual((rc, len(gh.deletes()), gh.branches), (0, n, []), (n, out[-300:]))
+            asked = [p for m, p in gh.calls if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/branches")]
+            self.assertEqual(len(asked), pages, n)
+
+    def test_ac16_a_listing_that_never_ends_or_repeats_fails_closed(self):
+        for kind in ("branches", "pulls"):
+            for mode in ("endless", "repeat"):
+                gh = GH([("feat/a", OLD)], endless=(kind, mode))
+                out, summary = self._fail_closed(gh)
+                self.assertIn("ERROR", out + summary, (kind, mode))
+                listing = [p for m, p in gh.calls if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/" + kind)]
+                self.assertLessEqual(len(listing), 205, (kind, mode, len(listing)))
+                if mode == "repeat":
+                    self.assertLessEqual(len(listing), 5, (kind, mode, len(listing)))  # a repeated page is noticed at once
+
+    def test_ac16_empty_repository_listing_is_not_an_error(self):
+        gh = GH([])
+        rc, out, summary = run_main(gh)
+        self.assertEqual((rc, gh.deletes()), (0, []))
+        self.assertNotIn("ERROR", out + summary)
 
     def test_ac12_keep_file_server_error_fails_closed(self):
         for st in (500, 502, 403, 429):
@@ -580,6 +709,91 @@ class MainSweep(unittest.TestCase):
         self.assertRegex(f[0], r"FAILED [0-9a-f]{40} idle-14d feat/b$")
         self.assertEqual(len(lines(summary, "DELETE")), 2)
 
+    def test_ac17_a_branch_that_changed_after_listing_is_skipped(self):
+        def before(gh, m, p):
+            if m == "GET" and p.startswith("repos/o/r/git/ref/heads/feat/b"):
+                for b in gh.branches:
+                    if b["name"] == "feat/b":
+                        b["sha"] = "f" * 40
+        gh = GH([("feat/a", OLD), ("feat/b", OLD), ("feat/c", OLD)], before=before)
+        rc, out, summary = run_main(gh)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual({b["name"] for b in gh.branches}, {"feat/b"})
+        self.assertRegex("\n".join(lines(summary, "SKIPPED")), r"SKIPPED changed %s idle-14d feat/b$" % sha_of("feat/b"))
+        self.assertEqual(lines(summary, "FAILED"), [])
+
+    def test_ac17_a_pr_opened_after_listing_protects_the_branch(self):
+        def before(gh, m, p):
+            if m == "GET" and p.startswith("repos/o/r/git/ref/heads/feat/c"):
+                gh.prs.append(pr(50, "feat/c"))
+            if m == "GET" and p.startswith("repos/o/r/git/ref/heads/feat/d"):
+                gh.prs.append(pr(51, "feat/top", base="feat/d"))
+        gh = GH([("feat/a", OLD), ("feat/c", OLD), ("feat/d", OLD)], before=before)
+        rc, out, summary = run_main(gh)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(deleted_names(gh), {"feat/a"})
+        self.assertEqual(len(lines(summary, "SKIPPED")), 2)
+
+    def test_ac17_a_branch_already_gone_is_skipped_not_failed(self):
+        def before(gh, m, p):
+            if m == "GET" and p.startswith("repos/o/r/git/ref/heads/feat/b"):
+                gh.branches[:] = [b for b in gh.branches if b["name"] != "feat/b"]
+        gh = GH([("feat/a", OLD), ("feat/b", OLD)], before=before)
+        rc, out, summary = run_main(gh)
+        self.assertEqual((rc, lines(summary, "FAILED")), (0, []))
+        self.assertEqual(deleted_names(gh), {"feat/a"})
+
+    def test_ac17_an_unverifiable_recheck_skips_and_fails_the_run(self):
+        gh = GH([("feat/a", OLD)], fail=lambda m, p, q: (500, "{}") if (p.endswith("/pulls") and q.get("state") == ["open"]) else None)
+        rc, out, summary = run_main(gh)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(gh.deletes(), [])
+
+    def test_ac14_a_dry_run_makes_no_recheck_and_no_ref_call(self):
+        gh = standard()
+        run_main(gh, ())
+        self.assertFalse([p for m, p in gh.calls if "/git/ref" in p])
+
+    def test_ac17_three_consecutive_rate_limit_answers_stop_the_run(self):
+        names = ["feat/n%d" % i for i in range(7)]
+        gh = GH([(n, OLD) for n in names], delete_status={n: 429 for n in names})
+        rc, out, summary = run_main(gh)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(len(gh.deletes()), 3)
+        self.assertEqual(len(lines(summary, "FAILED")), 3)
+        self.assertTrue(any("ERROR" in l and "rate" in l for l in summary.splitlines()), summary)
+
+    def test_ac17_a_success_resets_the_rate_limit_count(self):
+        names = ["feat/n%d" % i for i in range(7)]
+        st = {names[0]: 429, names[1]: 403, names[3]: 403, names[4]: 429, names[5]: 429}
+        gh = GH([(n, OLD) for n in names], delete_status=st)
+        rc, out, summary = run_main(gh)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(len(gh.deletes()), 6)  # n0 n1 ok n3 n4 n5 -> stop before n6
+        self.assertNotIn(urllib.parse.quote(names[6]), " ".join(gh.deletes()))
+
+    def test_ac17_other_refusals_do_not_trip_the_rate_limit_stop(self):
+        names = ["feat/n%d" % i for i in range(6)]
+        gh = GH([(n, OLD) for n in names], delete_status={n: 422 for n in names[:5]})
+        run_main(gh)
+        self.assertEqual(len(gh.deletes()), 6)
+
+    def test_ac13_the_same_lines_go_to_the_artifact_log(self):
+        gh = standard()
+        rc, out, summary = run_main(gh)
+        self.assertIsNotNone(run_main.last_log)
+        self.assertEqual(run_main.last_log.splitlines(), summary.splitlines())
+        self.assertTrue(lines(run_main.last_log, "DELETE"))
+
+    def test_ac7_a_tip_that_differs_from_the_pr_head_falls_to_the_idle_rule_end_to_end(self):
+        prs = [pr(1, "feat/m", state="closed", merged=True, sha="a" * 40), pr(2, "feat/c", state="closed", sha="b" * 40)]
+        gh = GH([("feat/m", OLD), ("feat/c", D(days=1)), ("feat/ok", D(days=1))], prs + [pr(3, "feat/ok", state="closed", merged=True)])
+        rc, out, summary = run_main(gh)
+        got = {re.fullmatch(r"DELETE \S+ (\S+) (.+)", l).group(2): re.fullmatch(r"DELETE \S+ (\S+) (.+)", l).group(1) for l in lines(summary, "DELETE")}
+        self.assertEqual(got, {"feat/m": "idle-14d", "feat/ok": "merged-pr"})
+        looked = {p.rsplit("/", 1)[1].split("?")[0] for m, p in gh.calls if "/commits/" in p}
+        self.assertIn(sha_of("feat/m"), looked)  # a branch whose PR is not at its tip needs its commit date
+
     def test_ac17_idempotent(self):
         gh = standard()
         run_main(gh)
@@ -635,25 +849,107 @@ def load_yaml(rel):
         return yaml.load(fh, Loader=yaml.BaseLoader), open(os.path.join(ROOT, rel)).read()
 
 
-def eval_if(expr, event, ref):
-    """The only condition shapes the sweep may use: event_name / ref comparisons joined by && || ! and parentheses."""
-    if expr is None:
-        return True
+def _truthy(v):
+    return v not in (None, False, "", 0)
+
+
+def _num(v):
+    if v is None:
+        return 0.0
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, str):
+        if v.strip() == "":
+            return 0.0
+        try:
+            return float(v)
+        except ValueError:
+            return float("nan")
+    return float(v)
+
+
+def _gh_eq(a, b):
+    if type(a) == type(b):
+        return a.casefold() == b.casefold() if isinstance(a, str) else a == b
+    return _num(a) == _num(b)
+
+
+def gh_eval(expr, ctx):
+    """A small model of GitHub's expression language (loose == by number coercion, && || returning operands, format())."""
     e = str(expr).strip()
     m = re.fullmatch(r"\$\{\{(.*)\}\}", e, re.S)
     e = (m.group(1) if m else e).strip()
-    strings = []
-    e = re.sub(r"'([^']*)'", lambda mm: strings.append(mm.group(1)) or "STR%d" % (len(strings) - 1), e)
-    for a, b in (("github.event.repository.default_branch", "DEF"), ("github.event_name", "EV"), ("github.ref_name", "REFN"), ("github.ref", "REF")):
-        e = e.replace(a, b)
-    e = e.replace("&&", " and ").replace("||", " or ")
-    e = re.sub(r"!(?!=)", " not ", e)
-    for t in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", e):
-        if t not in ("EV", "REF", "REFN", "DEF", "and", "or", "not", "true", "false") and not re.fullmatch(r"STR\d+", t):
-            raise AssertionError("unsupported condition %r" % expr)
-    env = {"EV": event, "REF": ref, "REFN": ref.replace("refs/heads/", ""), "DEF": "main", "true": True, "false": False}
-    env.update({"STR%d" % i: s for i, s in enumerate(strings)})
-    return bool(eval(e, {"__builtins__": {}}, env))
+    toks = re.findall(r"'(?:[^']|\'\')*'|==|!=|&&|\|\||[!(),]|[A-Za-z_][A-Za-z_0-9.\-]*|\S", e)
+    pos = [0]
+
+    def peek():
+        return toks[pos[0]] if pos[0] < len(toks) else None
+
+    def nxt():
+        pos[0] += 1
+        return toks[pos[0] - 1]
+
+    def p_or():
+        v = p_and()
+        while peek() == "||":
+            nxt(); r = p_and(); v = v if _truthy(v) else r
+        return v
+
+    def p_and():
+        v = p_eq()
+        while peek() == "&&":
+            nxt(); r = p_eq(); v = r if _truthy(v) else v
+        return v
+
+    def p_eq():
+        v = p_un()
+        while peek() in ("==", "!="):
+            op = nxt(); r = p_un(); res = _gh_eq(v, r); v = res if op == "==" else not res
+        return v
+
+    def p_un():
+        if peek() == "!":
+            nxt(); return not _truthy(p_un())
+        return p_prim()
+
+    def p_prim():
+        tk = nxt()
+        if tk == "(":
+            v = p_or()
+            assert nxt() == ")", expr
+            return v
+        if tk.startswith("'"):
+            return tk[1:-1].replace("''", "'")
+        if tk in ("true", "false"):
+            return tk == "true"
+        if tk == "null":
+            return None
+        if peek() == "(":
+            nxt(); args = []
+            while peek() != ")":
+                args.append(p_or())
+                if peek() == ",":
+                    nxt()
+            nxt()
+            if tk != "format":
+                raise AssertionError("unsupported function %r in %r" % (tk, expr))
+            def fmt(v):
+                return "" if v is None else "true" if v is True else "false" if v is False else str(v)
+            return re.sub(r"\{(\d+)\}", lambda mm: fmt(args[int(mm.group(1)) + 1]), args[0])
+        if tk not in ctx:
+            raise AssertionError("unsupported context %r in %r" % (tk, expr))
+        return ctx[tk]
+    v = p_or()
+    assert pos[0] == len(toks), "trailing tokens in %r" % expr
+    return v
+
+
+def eval_if(expr, event, ref, default="main"):
+    if expr is None:
+        return True
+    ctx = {"github.event_name": event, "github.ref": ref, "github.event.repository.default_branch": default,
+           "github.ref_name": re.sub(r"^refs/(heads|tags)/", "", ref)}
+    return _truthy(gh_eval(expr, ctx))
 
 
 GUARD = "reserved-branch-guard.yml"
@@ -771,31 +1067,68 @@ class Wiring(unittest.TestCase):  # AC18-AC20
             return p.returncode, (open(out).read().split() if os.path.exists(out) else None), p.stderr
 
     def test_apply_decision_follows_the_trigger_and_the_input(self):
-        """schedule applies; a dispatch applies only when dry-run is switched off (its default is on)"""
+        """only a schedule applies; a dispatch applies only when dry-run is exactly false: every other value is a dry run"""
         d, _ = wf()
         _, j = sweep_job(d)
         step = [s for s in j["steps"] if "branch-sweep.py" in (s.get("run") or "")][0]
         expr = (step.get("env") or {}).get("DRY_RUN")
         self.assertIsNotNone(expr, "the step must receive the mode as env DRY_RUN")
-        default = str(d["on"]["workflow_dispatch"]["inputs"]["dry-run"]["default"]).lower() == "true"
-        for ev, inp, want_apply in (("schedule", None, True), ("workflow_dispatch", default, False),
-                                    ("workflow_dispatch", True, False), ("workflow_dispatch", False, True)):
-            e = str(expr).strip()
-            m = re.fullmatch(r"\$\{\{(.*)\}\}", e, re.S)
-            e = (m.group(1) if m else e).strip()
-            strs = []
-            e = re.sub(r"'([^']*)'", lambda mm: strs.append(mm.group(1)) or "STR%d" % (len(strs) - 1), e)
-            e = e.replace("github.event_name", "EV").replace("inputs.dry-run", "INP").replace("&&", " and ").replace("||", " or ")
-            e = re.sub(r"!(?!=)", " not ", e)
-            for tok in re.findall(r"[A-Za-z_][A-Za-z_0-9]*", e):
-                self.assertTrue(tok in ("EV", "INP", "and", "or", "not", "true", "false") or re.fullmatch(r"STR\d+", tok), expr)
-            val = eval(e, {"__builtins__": {}}, dict({"EV": ev, "INP": inp, "true": True, "false": False}, **{"STR%d" % i: s for i, s in enumerate(strs)}))
-            val = "true" if val is True else "false" if val is False else str(val)
+        rows = [("schedule", None, True), ("schedule", True, True),
+                ("workflow_dispatch", False, True), ("workflow_dispatch", "false", True), ("workflow_dispatch", "FALSE", True),
+                ("workflow_dispatch", True, False), ("workflow_dispatch", "true", False), ("workflow_dispatch", None, False),
+                ("workflow_dispatch", "", False), ("workflow_dispatch", "garbage", False), ("workflow_dispatch", "0", False),
+                ("workflow_dispatch", " false", False), ("workflow_dispatch", "no", False), ("workflow_dispatch", 0, False),
+                ("push", None, False), ("workflow_run", None, False)]
+        for ev, inp, want_apply in rows:
+            val = gh_eval(expr, {"github.event_name": ev, "inputs.dry-run": inp})
+            val = "true" if val is True else "false" if val is False else "" if val is None else str(val)
             rc, args, err = self._run_step(step, {"DRY_RUN": val})
             self.assertEqual(rc, 0, err)
             self.assertIsNotNone(args)
             self.assertIn("bin/branch-sweep.py", args)
             self.assertEqual("--apply" in args, want_apply, (ev, inp, val, args))
+
+    def test_dry_run_unset_or_odd_environment_never_applies(self):
+        d, _ = wf()
+        _, j = sweep_job(d)
+        step = [s for s in j["steps"] if "branch-sweep.py" in (s.get("run") or "")][0]
+        for val in ("", "true", "TRUE", "garbage", "False ", "0"):
+            rc, args, err = self._run_step(step, {"DRY_RUN": val})
+            self.assertEqual(rc, 0, err)
+            self.assertNotIn("--apply", args, val)
+        env = {k: v for k, v in os.environ.items() if k != "DRY_RUN"}
+        with tempfile.TemporaryDirectory() as td:
+            fb = os.path.join(td, "fb"); os.makedirs(fb)
+            open(os.path.join(fb, "python3"), "w").write('#!/bin/sh\necho "$*" > "$ARGS_OUT"\n')
+            os.chmod(os.path.join(fb, "python3"), 0o755)
+            env.update(PATH=fb + os.pathsep + env["PATH"], ARGS_OUT=os.path.join(td, "a"))
+            subprocess.run(["bash", "-c", step["run"]], env=env, cwd=td, capture_output=True)
+            if os.path.exists(os.path.join(td, "a")):
+                self.assertNotIn("--apply", open(os.path.join(td, "a")).read())
+
+    def test_sweep_condition_uses_the_repositorys_default_branch(self):
+        d, _ = wf()
+        _, j = sweep_job(d)
+        for ev, ref, default, want in (("workflow_dispatch", "refs/heads/trunk", "trunk", True), ("schedule", "refs/heads/trunk", "trunk", True),
+                                       ("workflow_dispatch", "refs/heads/main", "trunk", False), ("schedule", "refs/heads/main", "main", True),
+                                       ("workflow_dispatch", "refs/heads/feat/x", "trunk", False), ("workflow_dispatch", "refs/tags/trunk", "trunk", False)):
+            self.assertEqual(eval_if(j.get("if"), ev, ref, default), want, (ev, ref, default))
+
+    def test_the_log_is_uploaded_as_a_retained_artifact(self):
+        d, _ = wf()
+        _, j = sweep_job(d)
+        ci = open(os.path.join(ROOT, ".github", "workflows", CI)).read()
+        pinned = re.findall(r"actions/upload-artifact@([0-9a-f]{40})", ci)
+        self.assertTrue(pinned)
+        ups = [s for s in j["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+        self.assertEqual(len(ups), 1)
+        self.assertEqual(ups[0]["uses"].split("@")[1].split()[0], pinned[0])
+        self.assertEqual(ups[0]["with"]["name"], "branch-sweep-log")
+        self.assertEqual(str(ups[0]["with"]["retention-days"]), "90")
+        self.assertIn("always()", str(ups[0].get("if", "")))
+        step = [s for s in j["steps"] if "branch-sweep.py" in (s.get("run") or "")][0]
+        self.assertEqual(step["env"]["BRANCH_SWEEP_LOG"], ups[0]["with"]["path"])
+        self.assertTrue(j["steps"].index(ups[0]) > j["steps"].index(step))
 
     def test_guard_step_still_rejects_every_pusher_but_the_app(self):
         d, _ = wf()
@@ -824,6 +1157,132 @@ class Wiring(unittest.TestCase):  # AC18-AC20
         self.assertNotEqual(str(hit[0].get("continue-on-error", "false")).lower(), "true")
 
 
+FAKE_GH = """#!/usr/bin/env python3
+import json, os, sys
+d = os.environ["FAKE_GH_DIR"]
+a = sys.argv[1:]
+assert a[:2] == ["api", "-i"], a
+method, path = a[a.index("-X") + 1], a[-1]
+open(d + "/calls", "a").write(method + " " + path + "\\n")
+r = json.load(open(d + "/table.json")).get(method + " " + path, [404, "{}", {}])
+if r == "NETWORK":
+    sys.stderr.write("error connecting to api.github.com\\n"); sys.exit(1)
+st, body, hdr = r
+sys.stdout.write("HTTP/2.0 %d %s\\r\\n" % (st, {200: "OK", 204: "No Content", 404: "Not Found"}.get(st, "Error")))
+for k, v in hdr.items():
+    sys.stdout.write("%s: %s\\r\\n" % (k, v))
+sys.stdout.write("\\r\\n" + body)
+sys.exit(0 if st < 300 else 1)
+"""
+
+
+class RealRunner(unittest.TestCase):  # AC12, AC16, AC17 through the real gh api -i runner
+    def setUp(self):
+        self.td = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.td, True)
+        os.makedirs(os.path.join(self.td, "bin"))
+        g = os.path.join(self.td, "bin", "gh")
+        open(g, "w").write(FAKE_GH)
+        os.chmod(g, 0o755)
+        self.env = dict(PATH=os.path.join(self.td, "bin") + os.pathsep + os.environ["PATH"], FAKE_GH_DIR=self.td)
+
+    def table(self, t):
+        json.dump(t, open(os.path.join(self.td, "table.json"), "w"))
+
+    def calls(self):
+        f = os.path.join(self.td, "calls")
+        return open(f).read().splitlines() if os.path.exists(f) else []
+
+    def real(self, method, path):
+        import unittest.mock as um
+        with um.patch.dict(os.environ, self.env):
+            return S().default_runner(method, path)
+
+    def test_status_headers_and_body_are_parsed(self):
+        self.table({"GET repos/o/r/x": [200, "[1, 2]", {"Link": '<https://api.github.com/p?page=2>; rel="next"', "X-Other": "v"}],
+                    "GET repos/o/r/missing": [404, '{"message":"Not Found"}', {}], "GET repos/o/r/boom": [502, "<html>", {}],
+                    "DELETE repos/o/r/git/refs/heads/a": [204, "", {}], "GET repos/o/r/down": "NETWORK"})
+        st, body, hdr = self.real("GET", "repos/o/r/x")
+        self.assertEqual((st, json.loads(body)), (200, [1, 2]))
+        self.assertIn('rel="next"', hdr.get("link", ""))
+        self.assertEqual(self.real("GET", "repos/o/r/missing")[0], 404)
+        self.assertEqual(self.real("GET", "repos/o/r/boom")[0], 502)
+        self.assertEqual(self.real("DELETE", "repos/o/r/git/refs/heads/a")[0], 204)
+        try:
+            st = self.real("GET", "repos/o/r/down")[0]
+        except Exception:
+            st = 599
+        self.assertFalse(200 <= st < 300)
+        self.assertTrue(all(c.split(" ")[0] in ("GET", "DELETE") for c in self.calls()))
+
+    def _record(self, gh):
+        table = {}
+
+        def rec(method, path):
+            r = gh(method, path)
+            table[method + " " + path] = [r[0], r[1], {"Link": r[2]["link"]} if r[2].get("link") else {}]
+            return r
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            S().main(["--apply"], {"GITHUB_REPOSITORY": "o/r"}, rec, NOW)
+        return table
+
+    def run_real(self, args=("--apply",)):
+        import unittest.mock as um
+        with tempfile.TemporaryDirectory() as td2:
+            sp = os.path.join(td2, "s.md")
+            out = io.StringIO()
+            with um.patch.dict(os.environ, self.env), contextlib.redirect_stdout(out):
+                rc = S().main(list(args), {"GITHUB_REPOSITORY": "o/r", "GITHUB_STEP_SUMMARY": sp}, None, NOW)
+            return rc, out.getvalue(), (open(sp).read() if os.path.exists(sp) else "")
+
+    def scenario(self):
+        gh = GH([("feat/a", OLD), ("feat/b", OLD), ("release/1", OLD)], [pr(1, "feat/z", state="closed", merged=True)], keep=None)
+        return self._record(gh)
+
+    def test_end_to_end_through_the_real_runner(self):
+        self.table(self.scenario())
+        rc, out, summary = self.run_real()
+        self.assertEqual(rc, 0, out)
+        d = [c for c in self.calls() if c.startswith("DELETE")]
+        self.assertEqual(sorted(d), ["DELETE repos/o/r/git/refs/heads/feat/a", "DELETE repos/o/r/git/refs/heads/feat/b"])
+        self.assertEqual(len(lines(summary, "DELETE")), 2)
+
+    def test_keep_file_404_is_missing_but_5xx_and_network_errors_fail_closed(self):
+        base = self.scenario()
+        key = [k for k in base if "branch-keep.json" in k][0]
+        for label, val, ok in (("404", [404, '{"message":"Not Found"}', {}], True), ("500", [500, "{}", {}], False),
+                               ("403", [403, "{}", {}], False), ("network", "NETWORK", False)):
+            t = dict(base); t[key] = val
+            self.table(t)
+            open(os.path.join(self.td, "calls"), "w").write("")
+            rc, out, summary = self.run_real()
+            dels = [c for c in self.calls() if c.startswith("DELETE")]
+            if ok:
+                self.assertEqual((rc, len(dels)), (0, 2), label)
+            else:
+                self.assertNotEqual(rc, 0, label)
+                self.assertEqual(dels, [], label)
+
+    def test_a_network_error_on_a_listing_or_a_delete(self):
+        base = self.scenario()
+        for sub in ("/branches?", "/pulls?"):
+            key = [k for k in base if sub in k][0]
+            t = dict(base); t[key] = "NETWORK"
+            self.table(t)
+            open(os.path.join(self.td, "calls"), "w").write("")
+            rc, out, _ = self.run_real()
+            self.assertNotEqual(rc, 0, sub)
+            self.assertEqual([c for c in self.calls() if c.startswith("DELETE")], [], sub)
+        t = dict(base); t["DELETE repos/o/r/git/refs/heads/feat/a"] = "NETWORK"
+        self.table(t)
+        open(os.path.join(self.td, "calls"), "w").write("")
+        rc, out, summary = self.run_real()
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(len(lines(summary, "FAILED")), 1)
+        self.assertEqual(len(lines(summary, "DELETE")), 1)
+
+
 class Layout(unittest.TestCase):  # AC21
     FILES = ["bin/branch-sweep.py", "bin/local-prune.sh", "bin/branch-sweep-test.sh", "bin/branch_sweep_test.py", ".github/branch-keep.json"]
 
@@ -848,9 +1307,28 @@ class Layout(unittest.TestCase):  # AC21
         j = t.find("\n  - id: REQ-", i + 10)
         self.assertNotIn(AUD, t[i: j if j > 0 else len(t)])
 
+    def test_requirement_loads_and_has_25_mapped_acs(self):
+        import yaml
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "bin", "branch-sweep.py")))
+        req = yaml.safe_load(open(os.path.join(ROOT, "requirements", "requirements.yaml")))
+        mine = [r for r in req["requirements"] if r["id"] == "REQ-REPO-001"]
+        self.assertEqual(len(mine), 1)
+        ids = [a["id"] for a in mine[0]["acceptance_criteria"]]
+        self.assertEqual(ids, ["REQ-REPO-001-AC%d" % i for i in range(1, 26)])
+        for a in mine[0]["acceptance_criteria"]:
+            for k in ("given", "when", "then"):
+                self.assertTrue(isinstance(a[k], str) and a[k].strip(), (a["id"], k))
+        maps = yaml.safe_load(open(os.path.join(ROOT, "test-evidence", "mappings.yaml")))["mappings"]
+        by = {m["ac"]: m["evidence"] for m in maps}
+        for i in ids:
+            self.assertIn({"type": "shell-test", "ref": "bin/branch-sweep-test.sh"}, by.get(i, []), i)
+        head = open(os.path.join(ROOT, "bin", "branch-sweep-test.sh")).read().splitlines()[1]
+        for i in ids:
+            self.assertIn(i, head.replace(",", " ").split())
+
     def test_keep_file_shipped_is_valid(self):
         text = open(os.path.join(ROOT, ".github", "branch-keep.json")).read()
-        kept, errs = S().parse_keep(text, NOW)
+        kept, errs = S().parse_keep(text, dt.datetime.now(dt.timezone.utc))  # the real clock, not the frozen test time
         self.assertEqual(errs, [])
         for e in json.loads(text)["keep"]:
             self.assertTrue(e["reason"])
@@ -905,8 +1383,18 @@ class Prune(unittest.TestCase):  # AC22-AC24
     def gone(self, name):
         sh("git", "push", "-q", "origin", "--delete", name, cwd=self.w)
 
-    def prs(self, name, *states):
-        open(os.path.join(self.ghdir, name.replace("/", "__") + ".json"), "w").write(json.dumps([{"state": s} for s in states]))
+    def prs(self, name, *states, cross=False, sha=None):
+        tip = sha or sh("git", "rev-parse", "refs/heads/" + name, cwd=self.w).stdout.strip()
+        open(os.path.join(self.ghdir, name.replace("/", "__") + ".json"), "w").write(
+            json.dumps([{"state": s, "headRefOid": tip, "isCrossRepository": cross} for s in states]))
+
+    def prs_raw(self, name, items):
+        open(os.path.join(self.ghdir, name.replace("/", "__") + ".json"), "w").write(json.dumps(items))
+
+    def commit_on(self, name, msg):
+        sh("git", "checkout", "-q", name, cwd=self.w)
+        self.commit(msg)
+        sh("git", "checkout", "-q", "main", cwd=self.w)
 
     def run_prune(self, *args, cwd=None):
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "bin", "local-prune.sh")), "bin/local-prune.sh does not exist")
@@ -944,6 +1432,51 @@ class Prune(unittest.TestCase):  # AC22-AC24
         self.assertIn("origin/feat/a", sh("git", "branch", "-r", cwd=self.w).stdout)  # not yet known here
         self.run_prune("--apply")
         self.assertFalse(self.exists("feat/a"))
+
+    def test_ac22_a_post_merge_local_commit_keeps_the_branch(self):
+        for state in ("MERGED", "CLOSED"):
+            b = "feat/" + state.lower()
+            self.branch(b); self.prs(b, state); self.gone(b)
+            self.commit_on(b, "after-" + state)  # unpushed work the PR never saw
+        p = self.run_prune("--apply")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(self.exists("feat/merged") and self.exists("feat/closed"))
+        self.assertNotRegex(p.stdout, r"(?m)^deleted ")
+
+    def test_ac22_a_fork_pr_with_the_same_branch_name_authorises_nothing(self):
+        self.branch("fix"); self.gone("fix"); self.prs("fix", "MERGED", cross=True)
+        self.branch("patch-1"); self.gone("patch-1"); self.prs("patch-1", "CLOSED", cross=True)
+        self.run_prune("--apply")
+        self.assertTrue(self.exists("fix") and self.exists("patch-1"))
+
+    def test_ac22_a_fork_pr_is_ignored_next_to_a_real_one(self):
+        tip = self.branch("feat/a"); self.gone("feat/a")
+        self.prs_raw("feat/a", [{"state": "OPEN", "headRefOid": tip, "isCrossRepository": True},
+                                {"state": "MERGED", "headRefOid": tip, "isCrossRepository": False}])
+        self.run_prune("--apply")
+        self.assertFalse(self.exists("feat/a"))
+
+    def test_ac22_the_pr_lookup_asks_for_the_head_commit_and_the_repository(self):
+        self.branch("feat/a"); self.gone("feat/a"); self.prs("feat/a", "MERGED")
+        self.run_prune("--apply")
+        calls = open(os.path.join(self.ghdir, "_calls")).read()
+        self.assertIn("--json state,headRefOid,isCrossRepository", calls)
+
+    def test_ac23_a_branch_being_rebased_in_a_worktree_is_kept(self):
+        self.branch("feat/wt"); self.gone("feat/wt")
+        sh("git", "checkout", "-q", "-b", "other", "main", cwd=self.w)
+        open(os.path.join(self.w, "clash.txt"), "w").write("A"); sh("git", "add", "-A", cwd=self.w); sh("git", "commit", "-q", "-m", "A", cwd=self.w)
+        sh("git", "checkout", "-q", "main", cwd=self.w)
+        wt = os.path.join(self.td, "wt")
+        sh("git", "worktree", "add", "-q", wt, "feat/wt", cwd=self.w)
+        open(os.path.join(wt, "clash.txt"), "w").write("B"); sh("git", "add", "-A", cwd=wt); sh("git", "commit", "-q", "-m", "B", cwd=wt)
+        self.prs("feat/wt", "MERGED")
+        r = sh("git", "rebase", "other", cwd=wt, check=False)
+        self.assertNotEqual(r.returncode, 0)  # stopped on the conflict: HEAD is detached
+        p = self.run_prune("--apply")
+        self.assertEqual(p.stderr, "")
+        self.assertTrue(self.exists("feat/wt"))
+        self.assertNotRegex(p.stdout, r"(?m)^deleted ")
 
     def test_ac22_gone_closed_pr_is_deleted(self):
         sha = self.branch("feat/c"); self.gone("feat/c"); self.prs("feat/c", "CLOSED")
