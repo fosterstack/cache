@@ -2337,7 +2337,7 @@ requirements:
     title: Each stage verifies the one before it; only standard record types; every action pinned
     statement: >
       Every stage after Build shall first verify the previous stage's signed record with one shared plain script and stop on failure, naming the stage; only Witness's standard records, SLSA provenance and the signed release policy shall exist as signed record types; every signed record shall have a distinct claim and a named consumer; and every action reference shall be a full commit digest and be on the committed allowed-actions list.
-    source: [bin/chain-verify.py, .github/policy/allowed-actions.json, .github/policy/chain-records.json, .github/policy/chain-scripts.json, .github/agent/bin/check-action-pins.py]
+    source: [bin/chain-verify.py, .github/policy/allowed-actions.json, .github/policy/chain-records.json, .github/policy/chain-scripts.json, check-action-pins.py]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 58, 63, 66, 67 (owner RATIFIED Oct 9 2026; pin checker scope per the owner on Oct 3, plain forms only)
