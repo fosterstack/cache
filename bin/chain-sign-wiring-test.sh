@@ -137,8 +137,10 @@ stage-verify.yml supply-chain.yml""".split())
     return bad
 
 def judge_calls(root):
-    """REQ-CHAIN-003-AC5: a certificate's SAN is the file that runs the witness step (harness spike (b), case 5: a stage that
-    calls another stage's file gets that file's SAN). So only release.yml may call a stage-*.yml reusable workflow."""
+    """REQ-CHAIN-003-AC5 (pipeline reading, advisor to confirm): a certificate's SAN is the file that runs the witness step
+    (harness spike (b), case 5: a stage that calls another stage's file gets that file's SAN). So only release.yml may call
+    stage-sign.yml and no stage file may call another stage file; other workflows (scan.yml, main-candidate-rescan.yml) may
+    still call stage-build.yml / stage-image.yml, because the release policy pins the Build Config URI (release.yml at the tag)."""
     bad = []
     wd = os.path.join(root, ".github/workflows")
     for fn in sorted(os.listdir(wd)):
@@ -148,7 +150,10 @@ def judge_calls(root):
         for jn, j in (d.get("jobs") or {}).items():
             refs = [str(j.get("uses", ""))] + [str(s.get("uses", "")) for s in (j.get("steps") or [])]
             for r in refs:
-                if re.search(r"\.github/workflows/stage-[^@\s]*\.ya?ml", r): bad.append("AC5: %s job %s calls %s; only release.yml may call a stage file" % (fn, jn, r))
+                if re.search(r"\.github/workflows/stage-sign\.ya?ml", r):
+                    bad.append("AC5: %s job %s calls %s; only release.yml may call stage-sign.yml" % (fn, jn, r))
+                elif fn.startswith("stage-") and re.search(r"\.github/workflows/stage-[^@\s]*\.ya?ml", r):
+                    bad.append("AC5: %s job %s calls %s; a stage file may not call another stage file" % (fn, jn, r))
     return bad
 
 if __name__ == "__main__":
@@ -297,14 +302,16 @@ d=$(mk c_remote); printf 'jobs:\n  x:\n    uses: fosterstack/cache/.github/workf
 expect caught "003-AC5 a second workflow calls stage-sign.yml by repository path and digest" calls "$d"
 d=$(mk c_step); printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/workflows/stage-verify.yml\n' > "$d/.github/workflows/stage-promote.yml"
 expect caught "003-AC5 a step-level reference to a stage file from another stage" calls "$d"
-d=$(mk c_yaml); printf 'jobs:\n  x:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/other.yaml"
-expect caught "003-AC5 a .yaml workflow calling a stage file" calls "$d"
+d=$(mk c_yaml); printf 'jobs:\n  x:\n    uses: ./.github/workflows/stage-sign.yml\n' > "$d/.github/workflows/other.yaml"
+expect caught "003-AC5 a .yaml workflow calling stage-sign.yml" calls "$d"
+d=$(mk c_scan); printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/scan.yml"
+expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.yml" calls "$d"
 # the real repository (RED until stage-sign.yml exists and PRs 2-4 remove the old provenance signers)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
-expect ok "the real tree: only release.yml calls a stage file (003-AC5)" calls "$root"
-EXPECT=53
+expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5)" calls "$root"
+EXPECT=54
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

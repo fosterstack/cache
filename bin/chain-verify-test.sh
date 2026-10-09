@@ -291,6 +291,7 @@ variant("sign_tamper_payload", _payload); variant("sign_tamper_sig", _sig); vari
 # ---- Witness collections (real type, Statement v0.1 as Witness writes it; one in v1 form) and the signed policy
 add("build_coll", STAGES["build"], T, COLL, D, stmt="v0.1")
 add("build_coll_v1", STAGES["build"], T, COLL, D, stmt="v1")
+add("build_coll_scan", STAGES["build"], T, COLL, D, stmt="v0.1", config_wf="scan.yml")   # stage-build.yml called from scan.yml, not release.yml
 add("build_coll_nostamp", STAGES["build"], T, COLL, D, tsa=None, stmt="v0.1")
 add("build_coll_plus", STAGES["build"], T, COLL, dict(D, extra="sha256:" + "e" * 64), stmt="v0.1")
 add("build_coll_badval", STAGES["build"], T, COLL, dict(D, apk="./dist/run.sh"), stmt="v0.1")
@@ -423,6 +424,7 @@ for s in build:stage-build.yml rebuild:stage-reproducibility.yml check:stage-ver
 done
 expect_refuse "001-AC4 a sibling file is refused and named" "other.yml" verify $(V) --stage sign $(rec sibling_as_sign) $(R)
 expect_refuse "001-AC4 provenance presented as stage build's record is refused (type is bound to the stage)" "provenance" verify $(V) --stage build $(rec build_as_sign) $(R)
+expect_refuse "003-AC5 stage-build.yml run from scan.yml (Build Config URI scan.yml) is refused for the build stage and the caller is named" "scan.yml" verify $(V) --stage build $(rec build_coll_scan)
 expect_refuse "001-AC4 provenance presented as stage release's record is refused" "provenance" verify $(V) --stage release $(rec release_as_sign) $(R)
 expect_refuse "001-AC4 a Witness collection signed by Sign is refused (Sign signs provenance only)" "collection|sign" verify $(V) --stage sign $(rec sign_coll)
 expect_refuse "001-AC4 SLSA provenance v0.2 is not the allowed type" "predicate" verify $(V) --stage sign $(rec sign_prov_v0.2) $(R)
@@ -570,7 +572,7 @@ assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", x) for x in a["actions"]), a["a
 assert all(re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", x) for x in a["images"]), a["images"]
 PY
 
-EXPECT=147
+EXPECT=148
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

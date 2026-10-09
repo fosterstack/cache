@@ -2323,7 +2323,7 @@ requirements:
     origin: v0.3.0 rules 58, 63, 66, 67 (owner RATIFIED Oct 9 2026; pin checker scope per the owner on Oct 3, plain forms only)
     confidence: implementation-only
     notes: >
-      AC5 is new in round 2 (harness spike (b), case 5; advisor 0334) and needs the advisor's step-5 validation. Pin checker: this repository's bin/check-action-pins.py already treats a local `uses: ./.github/workflows/x.yml` reusable call as a file checked on its own (check-action-pins.py:469-473) and reports 0 findings on release.yml's local calls today, so no checker change is needed here (the ops repo's copy differs). The real tree is red on AC5 until PR 2 stops scan.yml and main-candidate-rescan.yml from calling stage-build.yml and stage-image.yml.
+      AC5 is new in round 2 (harness spike (b), case 5; advisor 0334) and needs the advisor's step-5 validation. AC5 is narrowed (pipeline reading; advisor to confirm): only release.yml may call stage-sign.yml and no stage file may call another stage file; other existing callers of stage-build.yml and stage-image.yml (scan.yml, main-candidate-rescan.yml) stay allowed, because the release policy pins the Build Config URI (release.yml at the tag) for every stage's identity, so a stage file called from another workflow cannot produce a record Release accepts. Pin checker: this repository's bin/check-action-pins.py already treats a local `uses: ./.github/workflows/x.yml` reusable call as a file checked on its own (check-action-pins.py:469-473) and reports 0 findings on release.yml's local calls today, so no checker change is needed here (the ops repo's copy differs). The real tree is red on AC5 until PR 2 stops scan.yml and main-candidate-rescan.yml from calling stage-build.yml and stage-image.yml.
     acceptance_criteria:
       - id: REQ-CHAIN-003-AC1
         given: "a stage that is handed a previous stage's record about other digests, a record signed by the wrong stage, an unsigned record or no record"
@@ -2352,6 +2352,6 @@ requirements:
       - id: REQ-CHAIN-003-AC5
         given: "the workflow files of the repository"
         when: "their job-level and step-level uses are read"
-        then: "no workflow file other than release.yml calls any stage-*.yml reusable workflow, and no stage file calls another stage file, because the certificate's SAN is the file that runs the signing step, so a workflow that calls a stage file inherits that stage's SAN (proven by the nested call in the harness spike); a reference by local path or by repository path and digest counts"
+        then: "no workflow file other than release.yml calls stage-sign.yml, and no stage-*.yml file calls another stage file, because the certificate's SAN is the file that runs the signing step, so a workflow that calls a stage file inherits that stage's SAN (proven by the nested call in the harness spike); a reference by local path or by repository path and digest counts"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
