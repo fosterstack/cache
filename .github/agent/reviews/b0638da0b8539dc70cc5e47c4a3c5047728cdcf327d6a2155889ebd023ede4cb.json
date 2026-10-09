@@ -1,0 +1,53 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "b0638da0b8539dc70cc5e47c4a3c5047728cdcf327d6a2155889ebd023ede4cb",
+ "change": "Docs: Gradle and Maven snippets that work as written, the Kubernetes reset order, and a structure test for them (REQ none; ci.yml step) -- PR #226",
+ "reviewed_commit": "ebf15ff09015c69a29cc5d582c5f8041126e39c1",
+ "closed_commit": "2de992cbd95c4d56e9872256803afb86a0f5b59e",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "first round",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "aa726c459494b2f5e05451a375249a5f17e1cdd8d871b5e79c288f162f597425"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "dc5f093e75f51f0a46376050bfbe734947d6ad70f21ed041e57b6dbf17a5d9d5"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "verify the fixes (PVC file, loopback binding, schema, wording)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "8d07b7bff2ffa44ebe2f0ef80d269e801333a25d54e34b9eb03f084584f61a62"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "168ae0b7e934b83cbe72acadbcd8ca8aa7b730f8c7d2632cc05135ffe2049c53"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "the Gradle claim that 127.0.0.1 works without the opt-in and localhost does not is from the website lane's real Gradle 9.8.0 run, not exercised by this repo's acceptance sample (UNVERIFIED here)",
+  "the Maven saveToRemote attribute is not exercised by acceptance (it enables uploads with a command-line property)",
+  "the full mutant run could not execute in the reviewers' read-only sandboxes (8 of 8 caught locally)",
+  "after the last review one commit changed only the test header comment (a malformed proves declaration the requirements check rejects) and merged main",
+  "re-bound to the tree after merging main (a later merge of main changed the bound .github/agent content; no change to the reviewed files)"
+ ],
+ "row78": "ci.yml gains one run: step in the allowlist job and its step name; no uses: added; check-action-pins.py 27 files, 146 pinned actions, zero findings (both reviewers)"
+}

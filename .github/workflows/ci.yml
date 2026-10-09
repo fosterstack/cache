@@ -290,6 +290,8 @@ jobs:
         run: bash .github/agent/tests/pin-wiring-test.sh
       - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
         run: bash .github/agent/tests/pip-pin-test.sh
+      - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
+        run: bash .github/agent/tests/docs-snippets-test.sh
 
       # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
       # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
