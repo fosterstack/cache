@@ -56,11 +56,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || (format('{0}', inputs.dry-run) == 'false' && 'false' || 'true') }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run }}
           BRANCH_SWEEP_LOG: ${{ runner.temp }}/branch-sweep.log
         run: |
           set -euo pipefail
-          if [ "${DRY_RUN}" = "false" ]; then flag=--apply; else flag=; fi
+          # The shell decides, on the raw values and case-sensitively (an expression's == ignores case): only a
+          # schedule, or a dispatch whose input is exactly the string false, deletes; anything else is a dry run.
+          flag=
+          if [ "${EVENT_NAME:-}" = schedule ] || { [ "${EVENT_NAME:-}" = workflow_dispatch ] && [ "${INPUT_DRY_RUN:-}" = false ]; }; then
+            flag=--apply
+          fi
           python3 bin/branch-sweep.py ${flag}
       - name: keep the log
         if: always()

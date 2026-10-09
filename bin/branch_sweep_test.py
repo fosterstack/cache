@@ -544,6 +544,9 @@ class MainSweep(unittest.TestCase):
         gh = GH([(n, OLD) for n in names], cap=7)
         rc, out, _ = run_main(gh)
         self.assertEqual((rc, deleted_names(gh)), (0, set(names)), out)
+        asked = [urllib.parse.parse_qs(urllib.parse.urlsplit(p).query)["page"][0] for m, p in gh.calls
+                 if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/branches")]
+        self.assertEqual(asked, ["1", "2", "3", "4"])  # pages are requested by number, page=N, one after the other
 
     def _fail_closed(self, gh):
         S()  # the implementation must exist: an import failure is not a fail-closed pass
@@ -1282,45 +1285,54 @@ class Wiring(unittest.TestCase):  # AC18-AC20
             p = subprocess.run(["bash", "-c", step["run"]], cwd=td, env=e, capture_output=True, text=True)
             return p.returncode, (open(out).read().split() if os.path.exists(out) else None), p.stderr
 
-    def test_apply_decision_follows_the_trigger_and_the_input(self):
-        """only a schedule applies; a dispatch applies only when dry-run is exactly false: every other value is a dry run"""
+    def _raw(self, step, name, ctx_key, value):
+        """the env entry must hand the RAW context value to the shell; returns what GitHub would put in the variable"""
+        expr = (step.get("env") or {}).get(name)
+        self.assertIsNotNone(expr, "the step must receive %s through env" % name)
+        self.assertRegex(str(expr).strip(), r"^\$\{\{\s*" + re.escape(ctx_key) + r"\s*\}\}$", "%s must be the raw value, decided in the shell" % name)
+        v = gh_eval(expr, {ctx_key: value})
+        return "true" if v is True else "false" if v is False else "" if v is None else str(v)
+
+    def test_apply_decision_is_made_in_the_shell_on_raw_values_case_sensitively(self):
+        """only a schedule applies; a dispatch applies only when the input is exactly the lowercase string false"""
         d, _ = wf()
         _, j = sweep_job(d)
         step = [s for s in j["steps"] if "branch-sweep.py" in (s.get("run") or "")][0]
-        expr = (step.get("env") or {}).get("DRY_RUN")
-        self.assertIsNotNone(expr, "the step must receive the mode as env DRY_RUN")
-        rows = [("schedule", None, True), ("schedule", True, True),
-                ("workflow_dispatch", False, True), ("workflow_dispatch", "false", True), ("workflow_dispatch", "FALSE", True),
-                ("workflow_dispatch", True, False), ("workflow_dispatch", "true", False), ("workflow_dispatch", None, False),
-                ("workflow_dispatch", "", False), ("workflow_dispatch", "garbage", False), ("workflow_dispatch", "0", False),
-                ("workflow_dispatch", " false", False), ("workflow_dispatch", "no", False), ("workflow_dispatch", 0, False),
-                ("push", None, False), ("workflow_run", None, False)]
+        self.assertNotIn("DRY_RUN", step.get("env") or {}, "an expression must not make the decision")
+        self.assertNotRegex(json.dumps(step.get("env")), r"&&|\|\||format\(|==")
+        rows = [("schedule", None, True), ("schedule", True, True), ("schedule", "true", True),
+                ("workflow_dispatch", False, True), ("workflow_dispatch", "false", True),
+                ("workflow_dispatch", "FALSE", False), ("workflow_dispatch", "False", False), ("workflow_dispatch", "fAlse", False),
+                ("workflow_dispatch", " false", False), ("workflow_dispatch", "false ", False), ("workflow_dispatch", "false\n", False),
+                ("workflow_dispatch", True, False), ("workflow_dispatch", "true", False), ("workflow_dispatch", "TRUE", False),
+                ("workflow_dispatch", None, False), ("workflow_dispatch", "", False), ("workflow_dispatch", "garbage", False),
+                ("workflow_dispatch", "0", False), ("workflow_dispatch", "no", False), ("workflow_dispatch", 0, False),
+                ("push", None, False), ("workflow_run", None, False), ("pull_request", "", False)]
         for ev, inp, want_apply in rows:
-            val = gh_eval(expr, {"github.event_name": ev, "inputs.dry-run": inp})
-            val = "true" if val is True else "false" if val is False else "" if val is None else str(val)
-            rc, args, err = self._run_step(step, {"DRY_RUN": val})
+            env = {"EVENT_NAME": self._raw(step, "EVENT_NAME", "github.event_name", ev),
+                   "INPUT_DRY_RUN": self._raw(step, "INPUT_DRY_RUN", "inputs.dry-run", inp)}
+            rc, args, err = self._run_step(step, env)
             self.assertEqual(rc, 0, err)
             self.assertIsNotNone(args)
             self.assertIn("bin/branch-sweep.py", args)
-            self.assertEqual("--apply" in args, want_apply, (ev, inp, val, args))
+            self.assertEqual("--apply" in args, want_apply, (ev, inp, env, args))
 
-    def test_dry_run_unset_or_odd_environment_never_applies(self):
+    def test_unset_or_odd_environment_never_applies(self):
         d, _ = wf()
         _, j = sweep_job(d)
         step = [s for s in j["steps"] if "branch-sweep.py" in (s.get("run") or "")][0]
-        for val in ("", "true", "TRUE", "garbage", "False ", "0"):
-            rc, args, err = self._run_step(step, {"DRY_RUN": val})
-            self.assertEqual(rc, 0, err)
-            self.assertNotIn("--apply", args, val)
-        env = {k: v for k, v in os.environ.items() if k != "DRY_RUN"}
-        with tempfile.TemporaryDirectory() as td:
-            fb = os.path.join(td, "fb"); os.makedirs(fb)
-            open(os.path.join(fb, "python3"), "w").write('#!/bin/sh\necho "$*" > "$ARGS_OUT"\n')
-            os.chmod(os.path.join(fb, "python3"), 0o755)
-            env.update(PATH=fb + os.pathsep + env["PATH"], ARGS_OUT=os.path.join(td, "a"))
-            subprocess.run(["bash", "-c", step["run"]], env=env, cwd=td, capture_output=True)
-            if os.path.exists(os.path.join(td, "a")):
-                self.assertNotIn("--apply", open(os.path.join(td, "a")).read())
+        for env in ({}, {"EVENT_NAME": "", "INPUT_DRY_RUN": "false"}, {"EVENT_NAME": "Schedule"}, {"EVENT_NAME": "schedule "},
+                    {"EVENT_NAME": "SCHEDULE"}, {"INPUT_DRY_RUN": "false"}, {"EVENT_NAME": "push", "INPUT_DRY_RUN": "false"}):
+            e0 = {k: v for k, v in os.environ.items() if k not in ("EVENT_NAME", "INPUT_DRY_RUN", "DRY_RUN")}
+            with tempfile.TemporaryDirectory() as td:
+                fb = os.path.join(td, "fb"); os.makedirs(fb)
+                open(os.path.join(fb, "python3"), "w").write('#!/bin/sh\necho "$*" > "$ARGS_OUT"\n')
+                os.chmod(os.path.join(fb, "python3"), 0o755)
+                e0.update(PATH=fb + os.pathsep + e0["PATH"], ARGS_OUT=os.path.join(td, "a"))
+                e0.update(env)
+                subprocess.run(["bash", "-c", step["run"]], env=e0, cwd=td, capture_output=True)
+                if os.path.exists(os.path.join(td, "a")):
+                    self.assertNotIn("--apply", open(os.path.join(td, "a")).read(), env)
 
     def test_sweep_condition_uses_the_repositorys_default_branch(self):
         d, _ = wf()
