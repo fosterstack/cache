@@ -1,0 +1,63 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "d8a4733f6eecb148c03e42ee6e376cdfa8c9e4fa1e983398db0af4c50ba7c941",
+ "change": "REQ-AUD-018 back-fill of AC1-AC3 (the ratified auditor layout, coverage and review rules) with the matrix page's verbatim sentences quoted in the mapping file",
+ "reviewed_commit": "9d54f44388952642476929c975387f863a1a0f97",
+ "closed_commit": "9d54f44388952642476929c975387f863a1a0f97",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "routine tier, first round",
+   "completed_at": "2026-10-09T19:40:00Z",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "5ea2df48472a6d76c7adc93c9ba84e77c80f06fc183614fec29295aa446542c2"
+    },
+    "opus": {
+     "vendor": "anthropic",
+     "substitute_for": "codex",
+     "substitute_id": "0317",
+     "model": "opus",
+     "effort": "medium",
+     "blockers_open": 0,
+     "evidence_sha256": "c11943aca44a49119d754857c5c6b1236f506ac997ef9b9b7e1753a44dcd27b2"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "fixes verified (AC1 quote now complete; statement says 100%; notes added)",
+   "completed_at": "2026-10-09T20:59:21Z",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "780ac273e66b0fb0137fac68877240857796c636d089bf61e80ae55d49d46e75"
+    },
+    "opus": {
+     "vendor": "anthropic",
+     "substitute_for": "codex",
+     "substitute_id": "0317",
+     "model": "opus",
+     "effort": "medium",
+     "blockers_open": 0,
+     "evidence_sha256": "4d0b3c580b5c41c68fe21b04d3e73ced7bd325e04b39ae0df73d4b133a0a18df"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "sonnet": "clear",
+  "opus": "clear"
+ },
+ "residuals": [
+  "the proves header for AC3 on test_review_gate.py is deferred (a change to that gate file needs a real codex entry)",
+  "the coverage gate measures only the auditor bin directory and its exclusion list is not in the AC text (owner question pending)",
+  "wording: notes should say the markdown marks are also dropped; AC1 quote header could say 'as amended Oct 2/Oct 3'; the requirement title is narrower than its content",
+  "the layout checker's docstring is stale against the two amendments (follow-up with the coverage-scope PR)",
+  "Opus (second seat) substitutes for Codex under allow-list entry 0317 (owner, Oct 9: stop all codex until 1AM Saturday, replace with opus medium); a Codex catch-up review is owed after Sat 01:00 EDT"
+ ],
+ "row78": "no workflow or action file touched; check-action-pins.py 27 files, 148 pinned actions, zero findings (both reviewers)"
+}
