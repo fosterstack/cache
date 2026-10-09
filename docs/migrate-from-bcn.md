@@ -29,14 +29,15 @@ different failure class entirely, which is what the next paragraph is about.
 Treat the cache as part of your build's supply chain, because it is: any
 writer can influence what later builds consume as task outputs. Two rules
 follow. Run it with Basic Auth anywhere untrusted parties could reach the
-port, and share the credential only with CI and developers you already
-trust to write code. And know what the client-side "push disabled" setting
-is: `isPush = false` in a Gradle config is that *client* volunteering not to
-upload — it is not a server-side permission, and any client holding the
-credential can still write. Today the server has one credential and one
-permission level; a real server-side split (read-only clients, per-writer
-identity) is tracked as issue #8 and specified as a requirement before it
-is built.
+port, and share the read-write credential only with CI and developers you
+already trust to write code. For everyone else, set the optional read-only
+pair (`FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`): a client logged in with
+it can read cache entries and gets `403` on any write. And know what the
+client-side "push disabled" setting is: `isPush = false` in a Gradle config
+is that *client* volunteering not to upload — it is not a server-side
+permission, and any client holding the read-write credential can still
+write. The server has two credentials at most, read-write and read-only;
+per-writer identity is not built, and is tracked as issue #8.
 
 ## Step by step
 
