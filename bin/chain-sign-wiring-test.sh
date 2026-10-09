@@ -38,6 +38,12 @@
 # Needs python3 with PyYAML (apt: python3-yaml).
 # Modelled on: this repo's bin/workflow-consolidation-test.sh (judge + mutation pattern); in-toto-witness docs/commands.md
 # (witness run / sign flags) and docs/attestors/slsa.md for the signing-call patterns.
+# Round 10 (Sonnet R5, Opus R5): the script scan has NO variable resolution and NO heredoc stripping. A script called through $VAR,
+# ${VAR}, $(cmd) or backticks is an ERROR naming the workflow or script (call scripts by literal path); a heredoc body is scanned as
+# code like any other text (a signer word inside heredoc DATA is flagged: list it with a reason in chain-signers.json). Static
+# resolution of shell is an unbounded class (rounds 4-9 each found another plain form), so it is closed by deletion.
+# On the real tree exactly one scan error remains today: bin/analyze-egress-trace-test.sh ($CHK), reached from
+# stage-acceptance-egress.yml as well as ci.yml; that red clears when PR 3 removes that stage file (no unrelated script is edited).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -497,9 +503,9 @@ expect caught "AC1 ci.yml passes a signing secret to a step (Opus r5 SF-C)" tree
 d=$(mk t_ciapp); printf 'on: push\njobs:\n  b:\n    steps:\n      - uses: actions/create-github-app-token@%s\n        with:\n          app-id: ${{ secrets.AUDITOR_APP_ID }}\n          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n      - run: bash bin/x-test.sh\n' "$sha" > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
 expect ok "AC1 ci.yml using the auditor App secrets (today's real use) is not a signing secret" tree "$d"
 d=$(mk t_assign); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/pub.sh; bash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
-expect caught "AC1 a plain VAR=literal assignment is followed: CHK=bin/pub.sh; bash \"\$CHK\" reaches pub.sh and its unlisted signing call is seen (round 7, Opus SF-A)" tree "$d"
+expect caught "AC1 round 10: CHK=bin/pub.sh; bash \"\$CHK\" is a variable script reference: an error, so pub.sh can never be hidden behind it" tree "$d"
 d=$(mk t_assignok); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"
-expect ok "AC1 a VAR=literal that resolves to a script with no signer is not an error (the egress-trace test shape: CHK=bin/x.py; python3 \"\$CHK\")" tree "$d"
+expect caught "AC1 round 10: even a single VAR=literal is NOT followed: CHK=bin/clean.sh; bash \"\$CHK\" is a variable script reference, an error (scripts must be called by literal path)" tree "$d"
 d=$(mk t_assignamb); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nCHK=bin/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/pub.sh"
 expect caught "AC1 a variable assigned two different literals is ambiguous: an error, not a guess" tree "$d"
 d=$(mk t_assigncmd); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=$(pwd)/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"
@@ -888,7 +894,7 @@ d=$(mk t_r9okyaml); mkdir -p "$d/bin"; printf %s 'jobs:
 ' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
 echo hi
 ' > "$d/bin/clean.sh"
-expect ok 'AC1 round 9: S=literal; bash "$S" inside ONE run block of a workflow still resolves (no signer in clean.sh: ok)' tree "$d"
+expect caught 'AC1 round 10: S=literal; bash "$S" inside one run block is NOT followed either: a variable script reference is an error' tree "$d"
 d=$(mk t_r9okhs); mkdir -p "$d/bin"; printf %s 'jobs:
   b:
     steps:
@@ -923,12 +929,141 @@ bash bin/clean.sh
 echo hi
 ' > "$d/bin/clean.sh"
 expect ok 'AC1 round 9: a real heredoc of data (cat > x <<EOF) followed by a clean script is fine' tree "$d"
+# round 10: no resolver, no heredoc stripping (rounds 4-9 each found another plain form; static shell resolution is unbounded)
+d=$(mk r10q1); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+echo "a << b"
+bash bin/other.sh
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"
+expect caught 'round 10: a quoted `<<` (echo "a << b") hides nothing: the script after it is found and its signer seen' tree "$d"
+d=$(mk r10q2); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+echo '\''x<<y'\''
+bash bin/other.sh
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"
+expect caught 'round 10: a quoted `<<` (echo '\''x<<y'\'') hides nothing: the script after it is found and its signer seen' tree "$d"
+d=$(mk r10q3); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+echo "see <<EOF docs"
+bash bin/other.sh
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"
+expect caught 'round 10: a quoted `<<` (echo "see <<EOF docs") hides nothing: the script after it is found and its signer seen' tree "$d"
+d=$(mk r10q4); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    steps:
+      - run: |
+          echo "usage: a << b"
+          bash bin/other.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"
+expect caught 'round 10: a quoted `<<` inside a run block (echo "usage: a << b") hides nothing: the script after it is found and its signer seen' tree "$d"
+d=$(mk r10c1); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    env:
+      S: bin/evil
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+[ -n "$S" ] || S=bin/clean.sh
+bash "$S"
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/evil"
+expect caught 'round 10: a conditional default ([ -n "$S" ] || S=bin/clean.sh; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' tree "$d"
+d=$(mk r10c2); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    env:
+      S: bin/evil
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+test -z "$S" && S=bin/clean.sh
+bash "$S"
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/evil"
+expect caught 'round 10: a conditional default (test -z "$S" && S=bin/clean.sh; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' tree "$d"
+d=$(mk r10c3); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    env:
+      S: bin/evil
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+if [ -z "$S" ]; then S=bin/clean.sh; fi
+bash "$S"
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/evil"
+expect caught 'round 10: a conditional default (if [ -z "$S" ]; then S=bin/clean.sh; fi; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' tree "$d"
+d=$(mk r10c4); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    env:
+      S: bin/evil
+    steps:
+      - run: bash bin/a.sh
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+case "$1" in
+  a) S=bin/clean.sh;;
+esac
+bash "$S"
+' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/evil"
+expect caught 'round 10: a conditional default (case "$1" in a) S=bin/clean.sh;; esac; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' tree "$d"
+d=$(mk r10c5); mkdir -p "$d/bin"; printf %s 'jobs:
+  b:
+    steps:
+      - run: bash bin/setup.sh
+      - run: |
+          test -z "$S" && S=bin/clean.sh
+          bash "$S"
+' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
+echo "S=bin/evil" >> "$GITHUB_ENV"
+' > "$d/bin/setup.sh"; printf %s '#!/usr/bin/env bash
+echo hi
+' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
+cosign sign --yes "$IMG"
+' > "$d/bin/evil"
+expect caught 'round 10: S inherited from $GITHUB_ENV (bin/setup.sh) and read after `test -z "$S" && S=bin/clean.sh` in the next step is a variable script reference: an error' tree "$d"
 # the real repository (RED until stage-sign.yml exists and PRs 2-4 remove the old provenance signers)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=173
+EXPECT=182
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

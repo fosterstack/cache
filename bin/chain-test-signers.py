@@ -12,8 +12,8 @@ or a comma (`-a` / value on the next line); for a YAML step (`uses: actions/atte
 `- ` list item, so `with: predicate-type:` on a later line is read.
 Scripts (round 5): every file a workflow or composite action runs is found with `reachable_scripts` (bash/sh/python/node/ruby/
 perl/source/`.` plus a path, ./path with or without an extension if it starts with `#!`, $GITHUB_WORKSPACE and
-${{ github.workspace }} prefixes, plain `VAR=literal` assignments (round 9: resolved only when provably the one write of that name, inside one run block or script), `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
-scripts, transitively: the scripts they call are judged STRICTLY too, round 6). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
+${{ github.workspace }} prefixes, `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
+scripts, transitively: the scripts they call are judged STRICTLY too, round 6). Round 10: NO variable resolution (a script called through $VAR, ${VAR}, $(cmd) or backticks is an ERROR: call scripts by literal path) and NO heredoc stripping (a heredoc body is scanned as code). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
 closed), never skipped. Stated exclusion: a bare `./name` with no extension that is not a file in the tree is taken to be a built
 binary and ignored. Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import json, os, re
@@ -159,96 +159,15 @@ def _is_script_file(base, rel):
     try: return open(full, "rb").read(2) == b"#!"
     except OSError: return False
 
-def without_heredocs(text):
-    """Drop heredoc bodies. A `<<` opens one only when it is not adjacent to another `<` or `(` (so `<<<` here-strings are not
-    heredocs), is not inside `((...))` arithmetic, and its delimiter is a bare or quoted bare word right after `<<`/`<<-`.
-    A `<<` that is none of those and cannot be classified (a digit delimiter, a bare `<<` at line end, ...) raises ValueError:
-    fail closed, never guess (round 9)."""
-    out, end = [], None
-    for l in text.splitlines():
-        if end is not None:
-            if l.strip() == end: end = None
-            continue
-        out.append(l)
-        if "<<" not in l: continue
-        if re.search(r"\b(?:bash|sh|dash|zsh)\b[^\n;|&]*<<(?![<(])", l): continue        # a heredoc INTO a shell is code, not data: its body stays and is scanned
-        if re.match(r"\s*let\s", l): continue
-        for m in re.finditer(r"<<", l):
-            i = m.start()
-            if (i > 0 and l[i - 1] in "<(") or l[i + 2:i + 3] in ("<", "("): continue          # <<<, (<<, <<(
-            if l[:i].count("((") > l[:i].count("))"): continue                               # arithmetic shift
-            rest = l[i + 2:]
-            if rest.startswith(":"): continue                                                # YAML merge key `<<:`
-            d = re.match(r"-?\s*([\"']?)([A-Za-z_]\w*)\1", rest)
-            if not d: raise ValueError("cannot classify `<<` in %r (not a heredoc with a bare-word delimiter, not a here-string, not arithmetic)" % l.strip()[:60])
-            end = d.group(2); break
-    return "\n".join(out)
-
-ASSIGN = re.compile(r"(?:^|[;&|(]\s*|\s)(?:export\s+|readonly\s+|local\s+|declare\s+-?\w*\s*)?([A-Za-z_]\w*)=([\"']?)([A-Za-z0-9_./-]+)\2(?=\s*(?:[;&|)]|$))", re.M)
-NORESOLVE = re.compile(r"(?:^|[;&|(]\s*)(?:source|\.)\s|\beval\b|\b(?:declare|local|typeset)\s+-\w*n\w*|\bselect\s+\w+\s+in\b|\b(?:bash|sh|dash|zsh)\b[^\n;|&]*<<(?![<(])", re.M)
-
-def _unit_texts(text):
-    """The units a variable may live in: every `run:` block of a workflow or composite action (never across steps or jobs),
-    or the whole file for a script. Returns (units, noresolve_all): an unparseable YAML resolves nothing."""
-    if re.search(r"^\s*(jobs|runs|steps)\s*:", text, re.M):
-        try:
-            import yaml
-            d = yaml.load(text, Loader=yaml.BaseLoader)
-        except Exception:
-            return [], True
-        steps = []
-        if isinstance(d, dict):
-            for j in (d.get("jobs") or {}).values():
-                if isinstance(j, dict): steps += j.get("steps") or []
-            steps += (d.get("runs") or {}).get("steps") or [] if isinstance(d.get("runs"), dict) else []
-        return [s["run"] for s in steps if isinstance(s, dict) and isinstance(s.get("run"), str)], False
-    return [text], False
-
-def var_table(text):
-    """NAME -> literal, for the names that may be substituted (round 9: an ALLOWLIST, no per-form deny-list).
-    A name resolves only when (1) it has exactly one plain `NAME=literal` assignment in exactly one unit (a script file, or one
-    `run:` block of a workflow), (2) EVERY other occurrence of the bare token NAME anywhere in the file is an exact `$NAME` or
-    `${NAME}` read (so quoted-name writes, NAME[0]=, export/declare/local/read/printf -v/unset/select/for/getopts, a second
-    assignment, a write after the use, an indirect `T=NAME`, a YAML env: key or a GITHUB_ENV echo naming it all make it
-    ambiguous), (3) all its reads are inside that same unit, (4) the unit uses no source/./eval/declare -n/select and no
-    heredoc-into-shell, and (5) the value is path-shaped (a `/` or a script extension). Anything else is unresolved."""
-    units, dead = _unit_texts(text)
-    if dead: return {}
-    full = logical(strip(text))
-    table = {}
-    prepared = []
-    for u in units:
-        uu = logical(strip(u))
-        try: body = without_heredocs(uu)
-        except ValueError: body = None
-        prepared.append((uu, body))
-    for k, (uu, body) in enumerate(prepared):
-        if body is None or NORESOLVE.search(uu): continue
-        for m in ASSIGN.finditer(body):
-            n = m.group(1)
-            rd = r"\$\{%s\}|\$%s(?![A-Za-z0-9_])" % (re.escape(n), re.escape(n))
-            if len(ASSIGN.findall(body)) and sum(1 for x in ASSIGN.finditer(body) if x.group(1) == n) != 1: continue
-            if sum(1 for j, (u2, b2) in enumerate(prepared) if j != k and b2 is not None and any(x.group(1) == n for x in ASSIGN.finditer(b2))): continue
-            rest = re.sub(rd, "", full)
-            if len(re.findall(r"(?<![\w$])%s(?![\w])" % re.escape(n), rest)) != 1: continue
-            if len(re.findall(rd, full)) != len(re.findall(rd, uu)): continue
-            v = m.group(3)
-            if "/" in v or v.endswith(EXTS): table[n] = v
-    return table
-
 RUNTIME = re.compile(r"^\$\{?(?:RUNNER_TEMP|RUNNER_TOOL_CACHE|HOME|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|TMPDIR)\}?/|^/(?:tmp|usr|opt|home|var|dev|proc|sys|etc)/")
 
 def script_refs_ex(base, text, owndir=None, strict=True):
     """(set of repo-relative script paths, [error strings]) for the scripts one file runs."""
     refs, errs = set(), []
-    assigned = var_table(text)   # NAME -> its one literal; an ALLOWLIST (round 9): anything not provably one plain assignment stays unresolved
-    try: body = without_heredocs(strip(text))
-    except ValueError as ex:
-        body = strip(text)
-        if strict: errs.append(str(ex) + " (fail closed)")
-    for line in logical(body).splitlines():
-        if assigned:
-            line = re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda m: assigned[m.group(1) or m.group(2)] if assigned.get(m.group(1) or m.group(2)) else m.group(0), line)
+    # Round 10: NO variable resolution and NO heredoc stripping. Static resolution of shell is an unbounded class (rounds 4-9 each
+    # found another plain form); a script reached through a variable is an ERROR, never guessed, and a heredoc body is scanned as
+    # code like any other text (a signer word inside heredoc DATA is flagged: list it with a reason in chain-signers.json).
+    for line in logical(strip(text)).splitlines():
         cd = None
         for m in re.finditer(r"\bcd\s+(\S+)\s*(?:&&|;)", line):
             c = m.group(1).strip("\"'")
