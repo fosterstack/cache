@@ -3311,7 +3311,7 @@ ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited"
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
     and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
     and 'git merge-base HEAD "$HEAD_SHA"' in jr and "base.sha" not in yaml.safe_dump(j)
-    and "python3 .github/agent/bin/auditor-review-gate.py --base" in jr and "checkout" not in jr and "pip install" not in jr
+    and "python3 -I .github/agent/bin/auditor-review-gate.py --base" in jr and "--head \"$HEAD_SHA\" --pr \"$PR\" --subs-rev HEAD" in jr and "checkout" not in jr and "pip install" not in jr
     # publisher: agent-env App token (checks only), no PR data, not on cancellation
     and p.get("needs")=="judge" and p.get("environment")=="agent" and p.get("permissions")=={}
     and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and scoped(tok(p))
@@ -3322,7 +3322,7 @@ ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited"
     and len(wco)==1 and (wco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (wco[0].get("with") or {})
     and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
     and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and 'git merge-base HEAD "$sha"' in wr
-    and "python3 .github/agent/bin/auditor-review-gate.py --base" in wr and "checkout" not in wr and "statuses" not in src)
+    and "python3 -I .github/agent/bin/auditor-review-gate.py --base" in wr and "--head \"$sha\" --pr \"$n\" --subs-rev HEAD" in wr and "checkout" not in wr and "statuses" not in src)
 # the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]

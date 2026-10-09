@@ -156,6 +156,8 @@ ALLOW_PATTERNS=(
   # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
   # .github/agent/bin/auditor-review-gate.py (run from main by .github/workflows/agent-review-gate.yml).
   '^\.github/agent/reviews/[0-9a-f]{64}\.json$'
+  # REQ-AUD-018 AC4: the owner-recorded second-seat substitutes, read from the default branch by the same gate
+  '^\.github/agent/reviews/substitutes\.json$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'

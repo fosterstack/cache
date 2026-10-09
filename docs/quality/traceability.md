@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 76 |
-| Acceptance criteria | 207 |
+| Active requirements | 77 |
+| Acceptance criteria | 208 |
 | Release-blocking ACs | 56 |
-| ACs with mapped evidence | 191 |
+| ACs with mapped evidence | 192 |
 | Release-blocking ACs with mapped evidence | 56 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 33 |
+| Confidence: implementation-only | 34 |
 
 ## Cache protocol
 
@@ -979,3 +979,17 @@ Every stage after Build shall first verify the previous stage's signed record wi
 | REQ-CHAIN-003-AC3 | Given the signed record types the workflow files produce; when .github/policy/chain-records.json is compared with them; then every produced type, found by the tool or action that signs it in any workflow, composite action or .yaml file, has one row naming its claim and a consumer that is a real stage (or the customer); a row with no consumer or an unknown one, a row nobody produces, and a produced type with no row fail; a signing call whose type cannot be resolved fails closed; every known signer (cosign, Witness in every attestor-flag form, the attest actions including attest-sbom, slsa-github-generator, gitsign, the sigstore actions, chain-verify.py sign) is found whatever trailing comment follows it, in every workflow, composite action and .yaml file and in every script listed in .github/policy/chain-scripts.json, scanned as raw text (a stage file can run no other script; advisor decision b, Oct 9, finite grammar) | ci-workflow |  | approved | 1 item(s) |
 | REQ-CHAIN-003-AC4 | Given a workflow file at the tagged commit; when bin/chain-verify.py actions reads it against .github/policy/allowed-actions.json; then it reads step and job-level uses, container images (string or mapping), services images, docker:// references and composite actions, and rejects any reference that is not a full commit or image digest on the list (a tag, a branch, a short or upper-case sha, an expression in a uses, container or services image, an unlisted digest, or anything at all when the list is empty), follows a listed local composite action into its own steps, and accepts a file whose references are all listed; repository-local reusable calls count as pinned only when named by path in the list | unit | yes | approved | 1 item(s) |
 | REQ-CHAIN-003-AC5 | Given the workflow files of the repository; when their job-level and step-level uses are read; then no workflow file other than release.yml calls stage-sign.yml, and no stage-*.yml file calls another stage file, because the certificate's SAN is the file that runs the signing step, so a workflow that calls a stage file inherits that stage's SAN (proven by the nested call in the harness spike); a reference by local path or by repository path and digest counts | ci-workflow | yes | approved | 1 item(s) |
+
+## AUD
+
+### REQ-AUD-018 — The auditor review gate accepts a recorded substitute for the second reviewer
+
+The auditor's review gate (bin/auditor-review-gate.py in the auditor directory) shall let the owner's recorded, time-boxed decision replace the second vendor's review in a review record, and nothing else: only for the codex seat, only by an opus entry named in a reviewed allow-list on the default branch, only before that entry's expiry, and never for the Sonnet review.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: auditor directory bin/auditor-review-gate.py; auditor directory reviews/substitutes.json; .github/workflows/agent-review-gate.yml*
+
+> substitutes.json is read from the trusted revision (the checked-out default branch in the workflow, the merge base when no --subs-rev is given), never from the pull request. A change to it is part of the bound review content (it changes the record's tree) but cannot help the pull request that makes it.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-AUD-018-AC4 | Given a pull request that changes the auditor, whose review record's final round carries, in place of the codex entry, an opus entry (vendor anthropic, model opus, effort medium, substitute_for codex, a substitute_id, zero open blockers, an evidence sha256) beside a clear sonnet entry, and carries a completed_at time (YYYY-MM-DDTHH:MM:SSZ); when the review gate judges it; then the gate accepts the opus entry as the second review only when all hold: substitute_id names exactly one entry of the reviews allow-list file substitutes.json (in the auditor directory) as read from the trusted default-branch revision (never the pull request's own copy, so a pull request cannot add or extend its own substitute); that entry is for codex, by opus, vendor anthropic, with a non-empty owner_quote; the gate's own UTC clock (read from the system clock only; no environment variable or option can change it) and the record's completed_at are both before the entry's effective_until, and completed_at is not in the future of the gate's clock; and its scope is all, or pr:N with N equal to the number given by --pr (a pr:N scope with no --pr fails). The sonnet review is never substitutable and both entries need zero open blockers; the opus entry never counts as vendor openai; the substitute path applies only when the final round has no codex key at all (a codex entry that is present but not a valid object fails, naming codex), and the opus evidence_sha256 differs from the sonnet entry's (a copied entry fails); a change to any file the review gate itself runs or reads (every path under the auditor directory's bin/ and fixtures/testlib/, the review-substitutes allow-list, the gate workflow, the repository's bin/check-file-allowlist.sh and the auditor directory's tests/pin-wiring-test.sh) is never cleared by a substitute and needs a real codex entry; the gate and the pin checker run in Python isolated mode; a record that has a codex entry is judged on the codex entry alone; any missing or malformed field fails the gate with a message naming it; after the expiry the codex entry is required again | unit |  | approved | 1 item(s) |

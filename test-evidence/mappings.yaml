@@ -673,3 +673,6 @@ mappings:
   - ac: REQ-CHAIN-003-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-AUD-018-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
