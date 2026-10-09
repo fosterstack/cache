@@ -51,7 +51,7 @@ passfam() {
   done
 }
 # every ALLOW_PATTERNS / SUPPRESSION_PATTERNS entry is anchored at both ends (parsed from the script itself)
-anch="$(awk '/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1;next} f&&/^\)/{f=0} f&&/^ *\x27/{n++; if ($0 !~ /^ *\x27\^/ || $0 !~ /\$\x27 *(#.*)?$/) print "UNANCHORED: " $0} END{print "count=" n}' bin/check-file-allowlist.sh)"
+anch="$(awk '/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1;next} f&&/^\)/{f=0} f&&/^ *\x27/{n++; if ($0 !~ /^ *\x27\^/ || $0 !~ /\$\x27( +#.*)?$/) print "UNANCHORED: " $0} END{print "count=" n}' bin/check-file-allowlist.sh)"
 case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anch";; *) gp "every allowlist pattern starts with ^ and ends with \$ ($anch)";; esac
 # Structural checks on the pattern arrays, parsed from the script itself (python3; no regex engine involved).
 # ALLOWLIST_STRUCT_FILE=<file> runs ONLY these checks against that file (used to prove them red on mutants).
@@ -62,10 +62,12 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
-  loaded="$(bash -c 'eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"; echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]}))' _ "$f" 2>&1)"
+  loaded="$(bash -c 'eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"; echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]})); printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"' _ "$f" 2>&1)"
   python3 - "$f" "$loaded" <<'PYEOF'
 import re, sys, itertools
-path, loaded = sys.argv[1], sys.argv[2]
+path = sys.argv[1]
+_ld = sys.argv[2].split("\n")
+loaded = _ld[0]; bash_list = _ld[1:]
 errs = []
 lines = open(path).read().split("\n")
 # PR each declared path belongs to is named in the comments
@@ -99,7 +101,7 @@ ALLOWED_MENTIONS = {
 EXPECT_ALLOW, EXPECT_SUPPRESSION = 132, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
-inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}
+inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}; byblock = {'ALLOW': [], 'SUPPRESSION': []}
 for i, l in enumerate(lines, 1):
     mm = re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l)
     if mm: inarr = True; inregion = False; cur = mm.group(1); continue
@@ -121,13 +123,18 @@ for i, l in enumerate(lines, 1):
     if l.lstrip().startswith('#'):
         if l.startswith('  # v0.3.0 build chain'): inregion = True
         continue
-    m = re.match(r"^  '([^']*)'( *#.*)?$", l)
+    m = re.match(r"^  '([^']*)'( +#.*)?$", l)   # at least one space before a comment: '..'#'..' is ONE bash word
     if not m:
         errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
-    pats.append((i, m.group(1))); counts[cur] += 1
+    pats.append((i, m.group(1))); counts[cur] += 1; byblock[cur].append(m.group(1))
     if inregion: region.append((i, m.group(1)))
 if (counts['ALLOW'], counts['SUPPRESSION']) != (EXPECT_ALLOW, EXPECT_SUPPRESSION):
     errs.append("pattern lines: ALLOW %d (declared %d), SUPPRESSION %d (declared %d); update the test in the same commit" % (counts['ALLOW'], EXPECT_ALLOW, counts['SUPPRESSION'], EXPECT_SUPPRESSION))
+# element by element: what bash actually loads must equal what was parsed here, in value and order
+_py = byblock['ALLOW'] + byblock['SUPPRESSION']
+if str(loaded).isdigit() and bash_list != _py:
+    _d = next((k for k in range(min(len(_py), len(bash_list))) if _py[k] != bash_list[k]), min(len(_py), len(bash_list)))
+    errs.append("parsed patterns differ from what bash loads at element %d: parsed=%r bash=%r" % (_d, _py[_d:_d+1], bash_list[_d:_d+1]))
 if not str(loaded).isdigit(): errs.append("could not load the arrays in bash: %s" % loaded)
 elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash loads %s" % (len(pats), loaded))
 def toplevel_bar(p):
@@ -213,6 +220,17 @@ if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not 
 # a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
 awk '{print} /^ALLOW_PATTERNS=\(/{f=1} f&&/^  \x27/&&!d{print "  \x27^evil/.*$\x27"; d=1}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
 if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: older block" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern in an older block" ""; else gp "struct check kills mutant: wide pattern in an older block"; fi
+# B4-1 (quote concatenation through #) and extra readarray/indexed forms
+mutsub() { # <desc> <exact pattern line> <text appended to that line>
+  MUT_LINE="$2" MUT_ADD="$3" awk '!d && $0 == ENVIRON["MUT_LINE"] {print $0 ENVIRON["MUT_ADD"]; d=1; next} {print}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
+}
+mutsub "quote concat via # in the v0.3.0 region" "  '^bin/vendor-check\\.sh\$'" "#'|^bin/vendor-check[a-z]*\\.sh\$'"
+mutsub "quote concat via # in an older block"    "  '^go\\.(mod|sum)\$'" "#'|^evil/.*\$'"
+mutsub "pattern then bare #"                     "  '^bin/vendor-check\\.sh\$'" "#"
+mutsub "pattern then tab then #"                 "  '^bin/vendor-check\\.sh\$'" "$(printf '\t')# c"
+mutins "readarray -t -O 200"                2 "readarray -t -O 200 ALLOW_PATTERNS <<< '^evil/.*\$'"
+mutins "SUPPRESSION_PATTERNS index assign"  2 "SUPPRESSION_PATTERNS[9]='^evil/.*\$'"
 rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
 run_ref() {
