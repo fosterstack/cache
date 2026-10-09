@@ -526,7 +526,8 @@ jobs:
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
-        run: python3 bin/persona-uat.py --mode rc --image "ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
+          PERSONA_UAT_IMAGE: ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}
+        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
 
       - name: upload the encrypted reports and transcripts
         if: ${{ always() }}

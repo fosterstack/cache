@@ -4539,7 +4539,7 @@ CASE="capture: the sidecar's docker arguments are exactly the pinned list: run -
 check python3 - "$work/cap1/docker.log" "$NSH" <<'PY'
 import re, sys
 NSH = sys.argv[2]
-FILTER = "udp or icmp or icmp6 or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn) or (ip6[6] == 6 and ip6[53] & 0x12 == 2)"
+FILTER = "ip6 or udp or icmp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
 rows = [l.rstrip("\n") for l in open(sys.argv[1]) if "--entrypoint /usr/bin/tcpdump" in l]
 assert len(rows) == 5, rows
 labels = set()
@@ -4833,7 +4833,12 @@ udp = struct.pack("!HHHH", 5000, 4444, 8, 0)
 want = {"v4syn": (eth4 + ip4(6, tcp(2)), "93.184.216.34"), "v4ecn": (eth4 + ip4(6, tcp(0xC2)), "93.184.216.34"), "v6syn": (eth6 + ip6(6, tcp(2)), "2606:2800::1"),
         "v4udp": (eth4 + ip4(17, udp), "93.184.216.34"), "v6udp": (eth6 + ip6(17, udp), "2606:2800::1"), "v4icmp": (eth4 + ip4(1, b"\x08\x00\x00\x00\x00\x01\x00\x01"), "93.184.216.34"),
         "v6icmp": (eth6 + ip6(58, b"\x80\x00\x00\x00\x00\x01\x00\x01"), "2606:2800::1"), "v4linklocal": (eth4 + ip4(6, tcp(2), (169, 254, 169, 254)), "169.254.169.254")}
-never = {"v4synack": eth4 + ip4(6, tcp(0x12)), "v4ack": eth4 + ip4(6, tcp(0x10)), "v6synack": eth6 + ip6(6, tcp(0x12))}
+def ext(nxt): return bytes([nxt, 0, 1, 4, 0, 0, 0, 0])          # an 8-byte IPv6 extension header (PadN) that continues with protocol nxt
+# IPv6 behind a destination-options (60) or hop-by-hop (0) header: a protocol-header-dependent filter cannot see through them, so the filter admits all IPv6 and the parser lists the destination
+want.update({"v6dstopt-syn": (eth6 + ip6(60, ext(6) + tcp(2)), "2606:2800::1"), "v6dstopt-udp": (eth6 + ip6(60, ext(17) + udp), "2606:2800::1"),
+              "v6hbh-icmp6": (eth6 + ip6(0, ext(58) + b"\x80\x00\x00\x00\x00\x01\x00\x01"), "2606:2800::1"), "v6hbh-tcp-ack": (eth6 + ip6(0, ext(6) + tcp(0x10)), "2606:2800::1")})
+never = {"v4synack": eth4 + ip4(6, tcp(0x12)), "v4ack": eth4 + ip4(6, tcp(0x10))}
+quiet = {"v6synack": eth6 + ip6(6, tcp(0x12)), "v6ack": eth6 + ip6(6, tcp(0x10))}          # admitted by the IPv6 rule, but not a connection start: they parse to no destination
 f = sys.argv[2] + "/bpf.pcap"
 for name, (pkt, dst) in want.items():
     open(f, "wb").write(pcap([pkt]))
@@ -4847,6 +4852,11 @@ for name, pkt in never.items():
     open(f, "wb").write(pcap([pkt]))
     r = subprocess.run(["tcpdump", "-nn", "-tt", "-r", f, m.CAPTURE_FILTER], capture_output=True, text=True)
     assert not r.stdout.strip(), (name, r.stdout)
+for name, pkt in quiet.items():
+    open(f, "wb").write(pcap([pkt]))
+    r = subprocess.run(["tcpdump", "-nn", "-tt", "-r", f, m.CAPTURE_FILTER], capture_output=True, text=True)
+    res = m.parse_capture("listening on any, link-type EN10MB\n" + r.stdout + "1 packet captured\n1 packet received by filter\n0 packets dropped by kernel\n", False)
+    assert res["reason"] is None and res["addrs"] == set(), (name, r.stdout, res)
 PY
 CASE="capture (parser, real shapes): private, link-local (metadata) and loopback destinations are LISTED (only the resolver 127.0.0.11 is not); ECN SYN flags in any order are connections, SYN-ACK is not; ICMP and ICMPv6 destinations are contacts; a DNS answer with no captured query names nothing and removes nothing from the flagged addresses; Docker's NATed resolver shape is handled"
 check python3 - "$driver" <<'PY'
@@ -5053,6 +5063,102 @@ assert nets and [t[-1] for t in ls if t[:2] == ["network", "rm"]] == nets
 assert any(t[:1] == ["stop"] and any(x.startswith("cap-") for x in t) for t in ls), "the capture was never stopped on the exceptional path"
 PY
 check publiclog evnorm; check publiclog evtd; check publiclog evcap; check publiclog evrec
+# --- FINAL VERIFICATION FIXES (coordinator, Oct 8): each test below is RED against the previous driver -------------------------------------------------------------
+CASE="capture (stop): a docker stop that raises or exits nonzero is a capture INCOMPLETE with a reason even when the log looks healthy; a clean stop is clean"
+check python3 - "$driver" <<'PY'
+import importlib.util, subprocess, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+LOG = ("listening on any, link-type EN10MB\n1.0 IP6 fd00::2.4000 > 2606:2800::1.443: Flags [S], seq 1, win 1, length 0\n"
+       "1 packet captured\n1 packet received by filter\n0 packets dropped by kernel\n")
+m.capture_logs = lambda docker, cid, cap=0: (LOG, False)
+class D:
+    def __init__(self, mode): self.mode = mode
+    def running(self, cid): return True
+    def call(self, *a, **k):
+        if a[:1] == ("stop",):
+            if self.mode == "raise": raise subprocess.TimeoutExpired("docker stop", 60)
+            return subprocess.CompletedProcess(a, 1 if self.mode == "nonzero" else 0, "", "boom")
+        return subprocess.CompletedProcess(a, 0, "", "")
+for mode in ("raise", "nonzero"):
+    r = m.stop_capture(D(mode), "cap-1", None)
+    assert r["reason"] and "stop" in r["reason"], (mode, r)
+    assert r["addrs"] == {"2606:2800::1"}, (mode, "what was parsed is kept", r)
+r = m.stop_capture(D("ok"), "cap-1", None)
+assert r["reason"] is None, r
+PY
+CASE="capture (members): the persona's own members are subtracted by BOTH their IPv4 and IPv6 addresses (docker inspect IPAddress and GlobalIPv6Address)"
+check python3 - "$driver" <<'PY'
+import importlib.util, subprocess, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+seen = []
+class D:
+    def call(self, *a, **k):
+        seen.append(a)
+        return subprocess.CompletedProcess(a, 0, "172.18.0.5 fd00:0:0:1::5 \n172.18.0.6 \n", "")
+got = m.member_addresses(D(), ["c1", "c2"])
+fmt = seen[0][2]
+assert "GlobalIPv6Address" in fmt and ".IPAddress" in fmt, fmt
+assert got == {"172.18.0.5", "fd00:0:0:1::5", "172.18.0.6"}, got
+PY
+CASE="evidence (the action journal): the encrypted transcript input carries the action journal, so a command that only the journal recorded is in the payload"
+check python3 - "$driver" "$work" <<'PY'
+import importlib.util, json, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+w = sys.argv[2]
+open(w + "/jt.transcript", "w").write("streamed transcript line\n")
+open(w + "/jt.journal", "w").write(json.dumps({"t": "action", "id": 1, "command": "curl http://journal-only.example/x"}) + "\n" + json.dumps({"t": "result", "id": 1, "exit": 0}) + "\n")
+tf = m.TranscriptFile("PREFIX\n", w + "/jt.transcript", w + "/jt.journal")
+text = "".join(m.transcript_chunks(tf, []))
+assert "PREFIX" in text and "streamed transcript line" in text and "journal-only.example" in text, text
+PY
+CASE="agent (process group): run_agent kills the agent's whole process group on EVERY exit, including when communicate() raises something other than a timeout"
+check python3 - "$driver" <<'PY'
+import importlib.util, subprocess, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+killed = []
+class P:
+    pid = 4242; returncode = None
+    def __init__(self, *a, **k): pass
+    def communicate(self, *a, **k): raise OSError("broken pipe while talking to the agent")
+m.subprocess.Popen = P
+m.kill_group = lambda p: killed.append(p.pid)
+try:
+    m.run_agent(["x"], [], {}, "/", 5)
+    raised = False
+except OSError:
+    raised = True
+assert killed == [4242], ("the agent's process group was not killed", killed)
+PY
+inproc evorder 'orig_cleanup, orig_run_agent, orig_encrypt = m.cleanup, m.run_agent, m.encrypt
+def cleanup(docker, label, sandbox, image):
+    CALLS.append(("cleanup",)); return orig_cleanup(docker, label, sandbox, image)
+def encrypt(recipient, persona, out_dir, chunks):
+    CALLS.append(("encrypt", persona)); return orig_encrypt(recipient, persona, out_dir, chunks)
+def run_agent(*a, **k):
+    ans, tr, why = orig_run_agent(*a, **k)
+    return None, m.TranscriptFile("agent failed (exit 3)\nAGENT-STDERR-MARKER-77\n", a[5], a[6]), "the agent failed (exit 3)"
+NS = []
+orig_settled = m.settled
+def settled(*a, **k):
+    NS.append(1)
+    if len(NS) == 2: raise RuntimeError("PRIVATE-DRIVER-FAULT")
+    return orig_settled(*a, **k)
+m.cleanup, m.run_agent, m.encrypt, m.settled = cleanup, run_agent, encrypt, settled
+import atexit
+atexit.register(lambda: open("%s/%s/calls.json" % (w, n), "w").write(__import__("json").dumps(CALLS)))'
+CASE="exceptional path (ordering and content): the root-owned cleanup finishes BEFORE the failing persona's evidence is written, the agent's collected failure output (the transcript object's prefix) is kept when there was no answer, and the journal-only command is in the payload"
+check python3 - "$work/evorder" <<'PY'
+import json, sys
+d = sys.argv[1]
+calls = json.load(open(d + "/calls.json"))
+kinds = [c[0] for c in calls]
+first_enc = kinds.index("encrypt")
+assert "cleanup" in kinds[:first_enc], ("the root cleanup did not run before the first encryption", calls)
+tr = open(d + "/plain/gradle-platform-engineer.transcript.txt").read()
+assert "AGENT-STDERR-MARKER-77" in tr, tr[:600]
+assert "evid.example" in tr + open(d + "/plain/gradle-platform-engineer.report.md").read()
+PY
+
 # EXCEPTION SAFETY (step 8 round 3, B1): a command that cannot be parsed (a fullwidth slash inside a proxy host, an unclosed IPv6 bracket, NULs, unicode separators, enormous arguments)
 # never raises out of the reporting path: the action is marked unparsed in the ENCRYPTED report, the report is still written, and nothing but the pass/fail lines is public
 python3 - >"$work/fuzzplan.json" <<'PY'

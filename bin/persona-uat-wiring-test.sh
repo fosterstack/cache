@@ -311,6 +311,9 @@ def judge_script_artifact(text, upload_name, name, bad):
 
 def common(name, job, bad):
     steps = job.get("steps", [])
+    for si, st_ in enumerate(steps):
+        if "${{" in str(st_.get("run", "")):
+            bad.append(f"{name}: step {si} interpolates an expression into its run script (${{{{ }}}} inside run:): pass it through env: and quote the shell variable")
     weekly = name.startswith("weekly")
     pre = ""                                              # the harness is the ROOT checkout (today's main) in both jobs; the weekly job's released docs are under release-docs/
     repo_dir = "release-docs" if weekly else "."
@@ -387,7 +390,7 @@ def common(name, job, bad):
                 if re.search(r"secrets\.|vars\.PERSONA_UAT|ANTHROPIC_", str(v)) or MODEL.search(str(v)) or (CRED_REF.search(str(v)) and not (k == "GH_TOKEN" and expr_is(v, "github.token") and "gh release view" in str(s.get("run", "")))):
                     bad.append(f"{name}: the env {k} of a step other than the driver carries a credential reference or a model name ({v!r})")
     env = d.get("env", {})
-    extra_env = sorted(set(env) - set(VARS) - set(CREDS) - {"ANTHROPIC_IDENTITY_TOKEN_FILE"})
+    extra_env = sorted(set(env) - set(VARS) - set(CREDS) - {"ANTHROPIC_IDENTITY_TOKEN_FILE", "PERSONA_UAT_IMAGE"})
     if extra_env:
         bad.append(f"{name}: the driver step carries environment outside the contract (the six secrets, the budget and the identity token file path only): {extra_env}")
     if not re.fullmatch(r"\$\{\{\s*runner\.temp\s*\}\}/anthropic-identity-token", str(env.get("ANTHROPIC_IDENTITY_TOKEN_FILE", ""))):
@@ -759,10 +762,10 @@ def mode_value(run):
 GATE = "vars.PERSONA_UAT_ENABLED=='true'"
 
 def _atom(a, ctx):
-    """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, ref, ref_name}. Strings compare EXACTLY here (the advisor's table: 'TRUE' is off;
-    GitHub's own == on strings ignores case, see the report)"""
+    """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, ref, ref_name}. The model is GitHub's own: `==` on strings IGNORES CASE, so 'true' and
+    'TRUE' are both on. Enabling the personas by a differently cased value is the owner's act and is accepted; unset, empty, 'false' and '1' are off."""
     if re.fullmatch(r"vars\.PERSONA_UAT_ENABLED=='true'", a):
-        return ctx["vars"].get("PERSONA_UAT_ENABLED") == "true"
+        return str(ctx["vars"].get("PERSONA_UAT_ENABLED", "")).lower() == "true"
     m = re.fullmatch(r"github\.event\.schedule=='([^']*)'", a)
     if m: return ctx.get("schedule") == m.group(1)
     m = re.fullmatch(r"startsWith\(github\.ref,'([^']*)'\)", a)
@@ -785,9 +788,9 @@ def judge_gate(name, wf, j, bad):
     try:
         for tn, base in trig.items():
             trigger_ok = tn in ("tag push", "schedule")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
-            for label, v in (("unset", None), ("empty", ""), ("false", "false"), ("TRUE", "TRUE"), ("1", "1"), ("true", "true")):
+            for label, v in (("unset", None), ("empty", ""), ("false", "false"), ("TRUE", "TRUE"), ("True", "True"), ("1", "1"), ("true", "true"), (" true", " true"), ("yes", "yes")):
                 ctx = dict(base, vars={} if v is None else {"PERSONA_UAT_ENABLED": v})
-                got, want = job_runs(j, ctx), (v == "true" and trigger_ok)
+                got, want = job_runs(j, ctx), (str(v).lower() == "true" and trigger_ok)
                 if got != want:
                     bad.append(f"{name} persona-uat gate: on {tn} with PERSONA_UAT_ENABLED {label} the job {'runs' if got else 'is off'}, expected {'on' if want else 'off'}")
     except ValueError as e:
@@ -844,7 +847,8 @@ def judge_release(r, bad):
         m = re.search(r"--image\s+(\S+(?:\s*\"[^\"]*\")?)", run)
         img = m.group(1) if m else ""
         arg = run.replace("\\\n", " ").split("--image", 1)[-1].split(" --", 1)[0]
-        if not re.search(r"\$\{\{\s*fromJSON\(\s*needs\.image\.outputs\.digests\s*\)\.production\s*\}\}", arg) or "@" not in arg:
+        envimg = str((d.get("env") or {}).get("PERSONA_UAT_IMAGE", ""))
+        if arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"ghcr\.io/\$\{\{\s*github\.repository\s*\}\}@\$\{\{\s*fromJSON\(\s*needs\.image\.outputs\.digests\s*\)\.production\s*\}\}", envimg.strip()):
             bad.append("release persona-uat takes the image from something other than the chain's digests (fromJSON(needs.image.outputs.digests).production)")
         if mode_value(run) != "rc":
             bad.append(f"release persona-uat does not run the driver with --mode rc exactly (parsed value {mode_value(run)!r})")
@@ -908,7 +912,7 @@ def judge_weekly(f, bad):
                 bad.append("weekly persona-uat's resolver does not write its tag= output")
             run = str(d.get("run", ""))
             arg = run.split("--image", 1)[-1].split(" --", 1)[0].strip()
-            if not r.get("id") or not re.fullmatch(r"\$\{\{\s*steps\." + re.escape(str(r.get("id"))) + r"\.outputs\.image\s*\}\}", arg.strip().strip("\"'")):
+            if not r.get("id") or arg.strip() != '"$PERSONA_UAT_IMAGE"' or not re.fullmatch(r"\$\{\{\s*steps\." + re.escape(str(r.get("id"))) + r"\.outputs\.image\s*\}\}", str((d.get("env") or {}).get("PERSONA_UAT_IMAGE", "")).strip()):
                 bad.append("weekly persona-uat does not hand the resolved latest-release image digest to --image")
     if d is not None and mode_value(d.get("run", "")) != "weekly":
         bad.append(f"weekly persona-uat does not run the driver with --mode weekly exactly (parsed value {mode_value(d.get('run', ''))!r})")
@@ -1105,7 +1109,8 @@ def synth_driver(weekly):
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
     env.update({c: "${{ secrets.%s }}" % c for c in CREDS})
     env["ANTHROPIC_IDENTITY_TOKEN_FILE"] = "${{ runner.temp }}/anthropic-identity-token"
-    img = '"${{ steps.resolve.outputs.image }}"' if weekly else '"ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"'
+    env["PERSONA_UAT_IMAGE"] = "${{ steps.resolve.outputs.image }}" if weekly else "ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}"
+    img = '"$PERSONA_UAT_IMAGE"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
                                 f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"'}
 def synth_persona_job(weekly):
@@ -1252,7 +1257,11 @@ mutate("rc job uses a kind action", "is not on the persona job's allowlist", lam
 mutate("rc job runs docker itself", "uses docker for more than", lambda j: j["steps"].insert(0, {"run": "docker run -d jenkins/jenkins:lts"}))
 mutate("rc secrets set at job level", "set at job level", lambda j: j.setdefault("env", {}).update(ANTHROPIC_WORKSPACE_ID="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc image argument is the raw digests JSON", "takes the image from something other than the chain's digests",
-       lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "needs.image.outputs.digests", drv(j)["run"])))
+       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "needs.image.outputs.digests", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
+mutate("rc driver run interpolates an expression", "interpolates an expression into its run script", lambda j: drv(j).update(run=drv(j)["run"].replace('"$PERSONA_UAT_IMAGE"', '"${{ github.ref_name }}"')))
+mutate("weekly driver run interpolates an expression", "interpolates an expression into its run script", lambda j: drv(j).update(run=drv(j)["run"].replace('"$PERSONA_UAT_IMAGE"', '"${{ steps.resolve.outputs.image }}"')), "fresh")
+mutate("rc other step interpolates an expression", "interpolates an expression into its run script", lambda j: j["steps"].insert(0, {"run": 'echo "${{ github.event.head_commit.message }}"'}))
+mutate("weekly other step interpolates an expression", "interpolates an expression into its run script", lambda j: j["steps"].insert(0, {"run": 'echo "${{ github.head_ref }}"'}), "fresh")
 mutate("rc job continue-on-error is an expression", "continue-on-error on the job", lambda j: j.update({"continue-on-error": "${{ true }}"}))
 mutate("rc driver step uses a custom shell", "not plain bash", lambda j: drv(j).update({"shell": "bash {0}"}))
 mutate("rc driver command is only echoed", "not exactly one bare driver command", lambda j: drv(j).update(run="echo " + drv(j)["run"].strip()))
@@ -1265,7 +1274,7 @@ mutate("rc upload runs before the driver", "immediately after the driver", _uplo
 mutate("rc a setup step runs before the driver", "a run step before the driver other than", lambda j: j["steps"].insert(j["steps"].index(drv(j)), {"run": "echo hi"}))
 mutate("rc driver step ends with || true", "not exactly one bare driver command", lambda j: drv(j).update(run=drv(j)["run"].rstrip() + " || true"))
 mutate("rc driver step gets a tag, not the chain's digests", "takes the image from something other than the chain's digests",
-       lambda j: drv(j).update(run=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "github.ref_name", drv(j)["run"])))
+       lambda j: drv(j)["env"].update(PERSONA_UAT_IMAGE=re.sub(r"fromJSON\(needs\.image\.outputs\.digests\)\.production", "github.ref_name", drv(j)["env"]["PERSONA_UAT_IMAGE"])))
 mutate("rc job leaves the persona-uat environment", "persona-uat environment", lambda j: j.update(environment="release"))
 mutate("rc model id hard-coded", "PERSONA_UAT_MODEL is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j).setdefault("env", {}).update(PERSONA_UAT_MODEL="m-1"))
 mutate("rc owner variables moved off the driver step onto the upload step", "is not exactly secrets.PERSONA_UAT_MODEL",

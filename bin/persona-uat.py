@@ -148,9 +148,10 @@ class TranscriptFile:
 
 
 # --- the network capture sidecar (option A): what the persona's commands actually contacted -----------------------------------------------------------------
-# what the sidecar captures: every UDP packet (DNS included), ICMP and ICMPv6, the first packet (SYN, no ACK) of every IPv4 TCP connection, and of every IPv6 TCP connection (the IPv6
-# header is fixed-size when no extension header is present, so the flags byte is at offset 53). Only packets that LEAVE the namespace (-Q out)
-CAPTURE_FILTER = "udp or icmp or icmp6 or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn) or (ip6[6] == 6 and ip6[53] & 0x12 == 2)"
+# what the sidecar captures: EVERY IPv6 packet (a filter on IPv6 protocol fields cannot see through extension headers such as hop-by-hop or destination options, and would drop what it cannot
+# classify; the parser lists the destination of whatever it is not sure is a reply or an ordinary non-start packet), every UDP packet (DNS included), ICMP, and the first packet (SYN, no ACK)
+# of every IPv4 TCP connection. Only packets that LEAVE the namespace (-Q out)
+CAPTURE_FILTER = "ip6 or udp or icmp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"
 CAPTURE_ARGS = ["-i", "any", "-Q", "out", "-nn", "-l", "-tt", "-U", "-s", "1500", "-Z", "root", CAPTURE_FILTER]
 CAPTURE_MAX_BYTES = 8 * 1024 * 1024        # the sidecar's log is read up to this; more is reported as truncated
 CAPTURE_READY_SECONDS = 15
@@ -326,16 +327,21 @@ def stop_capture(docker, cid, started_reason):
         alive = docker.running(cid)
     except Exception:
         return {"names": set(), "addrs": set(), "uncorrelated": set(), "reason": "the capture sidecar could not be inspected when the persona ended"}
+    stop_why = None
     try:
-        docker.call("stop", "-t", "5", cid, timeout=60)
+        sp = docker.call("stop", "-t", "5", cid, timeout=60)
+        if sp.returncode != 0:
+            stop_why = "the capture sidecar could not be stopped cleanly (docker stop exited %d)" % sp.returncode
     except Exception:
-        pass
+        stop_why = "the capture sidecar could not be stopped cleanly (docker stop failed)"
     try:
         text, hit = capture_logs(docker, cid)
     except Exception:
-        return {"names": set(), "addrs": set(), "uncorrelated": set(), "reason": "the capture output could not be read"}
+        return {"names": set(), "addrs": set(), "uncorrelated": set(), "reason": stop_why or "the capture output could not be read"}
     r = parse_capture(text, hit)
-    if started_reason and not r["reason"]:
+    if stop_why:
+        r["reason"] = stop_why + (" (%s)" % r["reason"] if r["reason"] else "")
+    elif started_reason and not r["reason"]:
         r["reason"] = started_reason
     elif not alive and not r["reason"]:
         r["reason"] = "the capture sidecar exited before the persona ended"
@@ -351,12 +357,12 @@ def member_addresses(docker, names):
     if not names:
         return set()
     try:
-        p = docker.call("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", *names)
+        p = docker.call("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.GlobalIPv6Address}} {{end}}", *names)
     except Exception:
         return None
     if p.returncode != 0:
         return None
-    return {_norm(t) for t in p.stdout.split()}
+    return {_norm(t) for t in p.stdout.split()}          # IPv4 and IPv6 (an empty field is no token)
 
 
 def refuse_host_network(args):
@@ -659,6 +665,9 @@ def transcript_chunks(transcript, secrets):
     if isinstance(transcript, TranscriptFile):
         yield scrub(transcript.prefix, secrets)
         yield from file_chunks(transcript.path, secrets)
+        if transcript.journal:          # the action journal is evidence too: a command only the journal recorded must be in the payload
+            yield "\n=== ACTION JOURNAL ===\n"
+            yield from file_chunks(transcript.journal, secrets)
     else:
         for i in range(0, len(transcript), 262144):
             yield scrub(transcript[i:i + 262144], secrets)
@@ -737,12 +746,14 @@ def run_agent(agent_cmd, agent_args, request, sandbox, timeout, tfile=None, jfil
     p = subprocess.Popen(agent_cmd + agent_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=sandbox,
                          env=clean_env(MODEL_ENV_PREFIX), text=True, errors="replace", start_new_session=True)
     try:
-        out, err = p.communicate(json.dumps(request), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        kill_group(p)
-        out, err = p.communicate()
-        return None, TranscriptFile("agent timed out after %ss\n%s\n" % (timeout, (err or "")[-200000:]), tfile, jfile), "timed out after %ss" % timeout
-    kill_group(p)
+        try:
+            out, err = p.communicate(json.dumps(request), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_group(p)
+            out, err = p.communicate()
+            return None, TranscriptFile("agent timed out after %ss\n%s\n" % (timeout, (err or "")[-200000:]), tfile, jfile), "timed out after %ss" % timeout
+    finally:
+        kill_group(p)          # on EVERY exit, whatever communicate() raised
     if p.returncode != 0:
         return None, TranscriptFile("agent failed (exit %d)\n%s\n" % (p.returncode, err[-200000:]), tfile, jfile), "the agent failed (exit %d)" % p.returncode
     try:
@@ -1873,23 +1884,22 @@ def _main():
                 else:
                     record(persona, answer, answer["transcript"], proven=ok)
             except BaseException:
-                # ANY failure of the driver while this persona ran: the evidence collected so far (the agent's answer and transcript, the streamed transcript file, the action journal) is
-                # still written, encrypted; the window's work is undone like on the normal path (sidecar stopped, label sweep, root-owned sandbox emptied); then the run fails
-                try:
-                    sweep(docker, label)
-                    if persona not in captures:
-                        captures[persona] = stop_capture(docker, cap_cid, cap_why)
-                        add_members(persona)
-                except BaseException:
-                    pass
+                # ANY failure of the driver while this persona ran: the window's work is undone like on the normal path (label sweep, sidecar stopped, members read, root-owned sandbox
+                # emptied: all BEFORE anything is written), then the evidence collected so far (the agent's answer and transcript, its collected failure output, the streamed transcript
+                # file, the action journal) is written, encrypted; then the run fails
+                for undo in (lambda: sweep(docker, label), lambda: captures.setdefault(persona, stop_capture(docker, cap_cid, cap_why)), lambda: add_members(persona) if persona in captures and "members" not in captures[persona] else None,
+                             lambda: cleanup(docker, label, sandbox, tools["shell"])):
+                    try:
+                        undo()
+                    except BaseException:
+                        pass
                 try:
                     if persona not in results:
-                        prefix = "the driver failed while this persona ran (driver error)\n" + ((answer["transcript"] + "\n") if answer else "")
+                        if isinstance(transcript, TranscriptFile):
+                            prefix = "the driver failed while this persona ran (driver error)\n" + transcript.prefix
+                        else:
+                            prefix = "the driver failed while this persona ran (driver error)\n" + (transcript or (answer["transcript"] if answer else "")) + "\n"
                         record(persona, None, TranscriptFile(prefix, tfile, jfile), "the driver failed while this persona ran (driver error)")
-                except BaseException:
-                    pass
-                try:
-                    cleanup(docker, label, sandbox, tools["shell"])
                 except BaseException:
                     pass
                 raise
