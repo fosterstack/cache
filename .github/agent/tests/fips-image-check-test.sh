@@ -44,12 +44,16 @@
 #     process wrapper in the container and results steps (they would run a tool around the PATH of the stubs).
 #   deadline Every deadline/timeout constant in the program is at most 3 s; the slow cases must fail within 4.5 s, including a
 #     response whose three phases (status line, headers, body) take 1.2 s each: the budget is for the whole call.
-#   imports  The program imports only the standard modules sys, json, http, urllib, socket, argparse, signal, time, base64, re,
-#     stat, errno and os.path; no subprocess, pathlib, shutil, ctypes or importlib, no os.environ/os.system/..., no eval/exec/
-#     __import__, no path under ~/.docker.
+#   imports  The program imports only the standard modules sys, json, http, urllib, socket, argparse, signal, time, base64, re, stat
+#     and errno - not os, not subprocess, pathlib, shutil, ctypes, importlib. It names no attribute os, modules, environ,
+#     environb, getenv, getenvb, expanduser, expandvars or open, no dunder attribute, and none of getattr, setattr, delattr,
+#     vars, globals, locals, dir, eval, exec, compile, __import__. Its only file access is open(<the --matrix value>, "a").
+#     Building strings from character codes is not banned: the behavioural cases (the exact workflow path, below) cover it.
 #   matrix   The amd64 step initialises /tmp/posture-matrix.txt itself (`: > /tmp/posture-matrix.txt`); the arm64 step never
 #     truncates it. The program has no string constant naming a path (the matrix comes only from --matrix); an integration
-#     case runs the REAL program with the argument form of the steps against real servers on their ports.
+#     case runs the REAL program with the argument form of the steps against real servers on their ports and with --matrix equal
+#     to the exact workflow path /tmp/posture-matrix.txt (a wrong answer, a refused connection: no row; a right answer: one row,
+#     one request); with another --matrix the workflow path must stay untouched.
 #   caller   release.yml calls stage-acceptance-artifacts.yml once, with mode: candidates and the image stage's digests, and the
 #     acceptance predicate needs that job and takes its results as artifacts-results.
 #   (not checked) The pulled image's RepoDigests are not compared with the candidate digest inside the container steps: the
@@ -1228,20 +1232,30 @@ def deadline_values(src):
             if getattr(n.func, "attr", "") in ("settimeout", "alarm", "setitimer") or getattr(n.func, "id", "") == "alarm":
                 vals += [y.value for a in n.args for y in ast.walk(a) if num(y)]
     return vals
-OKMODS = {"sys", "json", "http", "urllib", "socket", "argparse", "signal", "time", "base64", "re", "stat", "errno", "os"}
+OKMODS = {"sys", "json", "http", "urllib", "socket", "argparse", "signal", "time", "base64", "re", "stat", "errno"}
+BAN_ATTR = {"os", "modules", "environ", "environb", "getenv", "getenvb", "expanduser", "expandvars", "open"}
+BAN_NAME = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "dir", "eval", "exec", "compile", "__import__", "breakpoint", "input"}
 def import_problems(src):
-    out = []
-    for n in ast.walk(ast.parse(src)):
+    t = ast.parse(src); out = []
+    mnames = set()      # names assigned from the --matrix argument
+    has = lambda x: any(isinstance(y, ast.Constant) and y.value == "--matrix" for y in ast.walk(x))
+    for n in ast.walk(t):
+        if isinstance(n, ast.Assign):
+            for tg in n.targets:
+                if isinstance(tg, ast.Name) and not isinstance(n.value, ast.Tuple) and has(n.value): mnames.add(tg.id)
+                if isinstance(tg, ast.Tuple) and isinstance(n.value, ast.Tuple) and len(tg.elts) == len(n.value.elts):
+                    mnames |= {a.id for a, b in zip(tg.elts, n.value.elts) if isinstance(a, ast.Name) and has(b)}
+    for n in ast.walk(t):
         if isinstance(n, ast.Import): out += ["import " + a.name for a in n.names if a.name.split(".")[0] not in OKMODS]
         if isinstance(n, ast.ImportFrom):
             m = n.module or ""
-            if m.split(".")[0] not in OKMODS: out.append("from " + m)
-            elif m == "os": out += ["from os import " + a.name for a in n.names if a.name != "path"]
+            if n.level or m.split(".")[0] not in OKMODS: out.append("from " + "." * n.level + m)
             elif m == "sys": out += ["from sys import " + a.name for a in n.names if a.name not in ("argv", "stderr", "stdout", "exit")]
-            elif m == "os.path": out += ["from os.path import " + a.name for a in n.names if a.name in ("expanduser", "expandvars")]
-        if isinstance(n, ast.Attribute) and n.attr in ("expanduser", "expandvars"): out.append(n.attr)
-        if isinstance(n, ast.Name) and n.id in ("__import__", "eval", "exec", "compile"): out.append(n.id)
-        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "os" and n.attr != "path": out.append("os." + n.attr)
+        if isinstance(n, ast.Attribute) and (n.attr in BAN_ATTR or (n.attr.startswith("__") and n.attr.endswith("__"))): out.append("." + n.attr)
+        if isinstance(n, ast.Name) and n.id in BAN_NAME: out.append(n.id)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open":
+            if not (n.args and isinstance(n.args[0], ast.Name) and n.args[0].id in mnames and len(n.args) == 2
+                    and isinstance(n.args[1], ast.Constant) and n.args[1].value == "a" and not n.keywords): out.append("open(...) other than open(<--matrix value>, 'a')")
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.search(r"\.docker|~/|/home/|/etc/", n.value): out.append("path " + n.value)
     return out
 def path_constants(src):
@@ -1263,46 +1277,75 @@ def mkp(port):
         s_ = Srv(("127.0.0.1", port), H); s_.name, s_.cfg, s_.hits = "statusz", {}, []
         threading.Thread(target=s_.serve_forever, daemon=True).start(); return s_
     except OSError: return None
+m_ = re.search(r"/tmp/posture-matrix\.txt", ex["run"] if ex is not None else "")
+WFPATH = m_.group(0) if m_ else None
 def integration(sp):
     """The REAL program, with the argument form the two steps use (taken from their stub runs), against real servers on the
-    steps' own ports (a free port if one is busy), writing a file called posture-matrix.txt: one request per call, a row only
-    after a real answer, six rows in all, and no row after a wrong answer."""
+    steps' own ports (a free port if one is busy). Pass A: --matrix is the EXACT workflow path (the file is saved and restored):
+    per call a wrong answer and a refused connection leave it untouched, a right answer adds exactly one row after exactly one
+    request; six rows in all. Pass B: --matrix is another file and the workflow path must stay exactly as it was."""
     calls = step_calls()
-    if len(calls) != 6: return False, "the steps made %d calls" % len(calls)
-    d = tempfile.mkdtemp(dir=work); m = d + "/posture-matrix.txt"; open(m, "w").close()
-    last = None
-    for a in calls:
-        a = list(a); port0 = int(a[a.index("--port") + 1]); v = a[a.index("--variant") + 1]
-        srv = mkp(port0) or mkp(0)
-        srv.cfg = dict(status=200, headers={}, body=jb(NOTE[v]), mode=None, auth=BASIC if v == "fips" else None, raw=None)
-        a[a.index("--port") + 1] = str(srv.server_address[1]); a[a.index("--matrix") + 1] = m
-        before = open(m).read()
+    if len(calls) != 6 or not WFPATH: return False, "the steps made %d calls; workflow path %r" % (len(calls), WFPATH)
+    def go(a, matrix, v, body, refused=False):
+        a = list(a); srv = None
+        if refused: port = closed_port()
+        else:
+            srv = mkp(int(a[a.index("--port") + 1])) or mkp(0)
+            srv.cfg = dict(status=200, headers={}, body=body, mode=None, auth=BASIC if v == "fips" else None, raw=None); port = srv.server_address[1]
+        a[a.index("--port") + 1] = str(port); a[a.index("--matrix") + 1] = matrix
         try: p = subprocess.run([sys.executable, "-I", sp] + a[2:], capture_output=True, text=True, timeout=15)
-        finally: srv.shutdown(); srv.server_close()
-        row = "linux/%s %s\n" % (a[a.index("--arch") + 1], v)
-        if p.returncode != 0 or len(srv.hits) != 1 or open(m).read() != before + row: return False, "call %s: rc %d, %d requests" % (v, p.returncode, len(srv.hits))
-        last = a
-    if open(m).read().split("\n")[:-1] != SIX: return False, "the six rows are %r" % open(m).read()
-    srv = mkp(0); srv.cfg = dict(status=200, headers={}, body=jb("off"), mode=None, auth=BASIC, raw=None)
-    a = list(last); a[a.index("--port") + 1] = str(srv.server_address[1]); before = open(m).read()
-    try: p = subprocess.run([sys.executable, "-I", sp] + a[2:], capture_output=True, text=True, timeout=15)
-    finally: srv.shutdown(); srv.server_close()
-    if p.returncode == 0 or open(m).read() != before or len(srv.hits) != 1: return False, "a wrong answer was not refused"
-    return True, ""
+        finally:
+            if srv: srv.shutdown(); srv.server_close()
+        return p, (len(srv.hits) if srv else 0)
+    saved = open(WFPATH, "rb").read() if os.path.exists(WFPATH) else None
+    rd_ = lambda f: open(f).read() if os.path.exists(f) else None
+    try:
+        if saved is not None: os.remove(WFPATH)
+        for a in calls:
+            v = a[a.index("--variant") + 1]; arch = a[a.index("--arch") + 1]; row = "linux/%s %s\n" % (arch, v)
+            before = rd_(WFPATH)
+            p, h = go(a, WFPATH, v, jb("off") if v == "fips" else jb(GOOD_FIPS))
+            if p.returncode == 0 or rd_(WFPATH) != before or h != 1: return False, "a wrong answer for %s %s was not refused (rc %d, %d requests, file changed %s)" % (arch, v, p.returncode, h, rd_(WFPATH) != before)
+            p, h = go(a, WFPATH, v, b"", refused=True)
+            if p.returncode == 0 or rd_(WFPATH) != before: return False, "a refused connection for %s %s left a row or exit 0" % (arch, v)
+            p, h = go(a, WFPATH, v, jb(NOTE[v]))
+            if p.returncode != 0 or h != 1 or rd_(WFPATH) != (before or "") + row: return False, "a right answer for %s %s: rc %d, %d requests, file %r" % (arch, v, p.returncode, h, rd_(WFPATH))
+        if (rd_(WFPATH) or "").split("\n")[:-1] != SIX: return False, "the six rows are %r" % rd_(WFPATH)
+        open(WFPATH, "w").write("sentinel\n")
+        other = tempfile.mkdtemp(dir=work) + "/other.txt"; open(other, "w").close()
+        for a in calls:
+            v = a[a.index("--variant") + 1]
+            p, h = go(a, other, v, jb(NOTE[v]))
+            if p.returncode != 0 or h != 1: return False, "another --matrix: rc %d, %d requests" % (p.returncode, h)
+            if rd_(WFPATH) != "sentinel\n": return False, "with another --matrix the workflow path %s was changed to %r" % (WFPATH, rd_(WFPATH))
+        if rd_(other).split("\n")[:-1] != SIX: return False, "the other file holds %r" % rd_(other)
+        return True, ""
+    finally:
+        if saved is None:
+            if os.path.exists(WFPATH): os.remove(WFPATH)
+        else: open(WFPATH, "wb").write(saved)
 ig = integration(script) if exists else (False, "program missing")
-check("integration: the real program, run with the steps' own argument form against real servers on their ports and a file called posture-matrix.txt, makes one request per call, writes six rows only after real answers and none after a wrong one", ig[0], ig[1])
+check("integration: the real program, run with the steps' own argument form against real servers and with --matrix equal to the exact workflow path, refuses a wrong answer and a refused connection, adds one row per right answer after one request, and leaves the workflow path alone when given another --matrix", ig[0], ig[1])
 ig_ref = integration(rp)
 check("integration: the reference passes the integration case", ig_ref[0], ig_ref[1])
-ig_mut = REFSRC.replace('    VARIANT = variant\n', '    VARIANT = variant\n    if MATRIX.endswith("posture-matrix.txt"):\n        open(MATRIX, "a").write("linux/%s %s\\n" % (ARCH, variant)); return 0\n', 1)
-mpi = os.path.join(work, "ig_mut.py"); open(mpi, "w").write(ig_mut)
-check("integration mutant is caught: a program that writes the row for a file called posture-matrix.txt without any request", ig_mut != REFSRC and not integration(mpi)[0] and bool(path_constants(ig_mut)))
+codes = repr([ord(c) for c in (WFPATH or "")])
+IGMUT = [("a program whose early branch writes the exact workflow path (built from character codes) without any request",
+          REFSRC.replace('    VARIANT = variant\n', '    VARIANT = variant\n    if MATRIX == "".join(chr(c) for c in ' + codes + '):\n        open(MATRIX, "a").write("linux/" + ARCH + " " + variant + chr(10)); return 0\n', 1)),
+         ("a program that also writes the exact workflow path (built from character codes) when given another path",
+          REFSRC.replace('        fail(variant, "matrix not writable: %r" % (e,))\n    return 0\n', '        fail(variant, "matrix not writable: %r" % (e,))\n    open("".join(chr(c) for c in ' + codes + '), "a").write("x" + chr(10))\n    return 0\n', 1))]
+for i, (name, t) in enumerate(IGMUT):
+    mpi = os.path.join(work, "ig_mut%d.py" % i); open(mpi, "w").write(t)
+    check("integration mutant is caught: " + name, t != REFSRC and not integration(mpi)[0], integration(mpi)[1])
+check("the import guard also flags the second integration mutant (open of a file other than --matrix); the first is behavioural only", bool(import_problems(IGMUT[1][1])) and not import_problems(IGMUT[0][1]))
 dv = deadline_values(src) if exists else []
 check("static: every deadline/timeout constant in the program is at most 3 s (the contract; the slow cases are timed against it)", exists and bool(dv) and max(dv) <= 3, dv)
 ip = import_problems(src) if exists else ["program missing"]
 check("static: the program imports only the allowed standard modules and reads neither the environment nor ~/.docker", exists and not ip, ip)
-check("the import guard flags from-imports of os/sys names and accepts os.path: from os import environ as e, from os import getenv, import os + os.getenv, from sys import modules, from os.path import expanduser; but not import os.path, from os import path, from sys import argv",
-      all(import_problems(REFSRC + x) for x in ("\nfrom os import environ as e\n", "\nfrom os import getenv\n", "\nimport os\nx = os.getenv('A')\n", "\nfrom sys import modules\n", "\nfrom os.path import expanduser\n"))
-      and not any(import_problems(REFSRC + x) for x in ("\nimport os.path\n", "\nfrom os import path\n", "\nfrom sys import argv, exit\n")))
+check("the import guard flags the probes: from os import path as p + p.os.environ, import os, from os import getenv as e, http.client.os, sys.modules, getattr, vars, globals, a dunder attribute, open of another file, open(MATRIX, 'w'), eval, from sys import modules; and accepts urllib.parse and from sys import argv, exit",
+      all(import_problems(REFSRC + x) for x in ("\nfrom os import path as p\nx = p.os.environ.get('A')\n", "\nimport os\n", "\nfrom os import getenv as e\n", "\nimport http.client\nx = http.client.os\n",
+                                                "\nx = sys.modules\n", "\nx = getattr(sys, 'argv')\n", "\nx = vars()\n", "\nx = globals()\n", "\nx = (1).__class__\n",
+                                                "\nx = open('/etc/passwd')\n", "\nx = open(MATRIX, 'w')\n", "\nx = open('other.txt', 'a')\n", "\nx = eval('1')\n", "\nfrom sys import modules\n"))
+      and not any(import_problems(REFSRC + x) for x in ("\nimport urllib.parse\n", "\nfrom sys import argv, exit\n")), [import_problems(REFSRC + x) for x in ("\nimport urllib.parse\n",)])
 check("the static checks accept the reference and flag these programs: a 5 s deadline, subprocess, os.environ, __import__, a ~/.docker path, pathlib",
       deadline_values(REFSRC) == [3.0] and not import_problems(REFSRC) and max(deadline_values(REFSRC.replace("DEADLINE = 3.0", "DEADLINE = 5.0"))) == 5.0
       and all(import_problems(REFSRC + extra) for extra in ("\nimport subprocess\n", "\nimport os\nx = os.environ.get('A')\n", "\nx = __import__('subprocess')\n",
