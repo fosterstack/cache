@@ -114,8 +114,8 @@ jobs:
       # Go 1.27.2's compiler writes export data version 5; the prebuilt
       # golangci-lint v2.13.2 binary the action downloads reads up to version
       # 4 and fails every package at the import phase. v2.14.0 is installed
-      # with `go install` under the CI Go toolchain, the same pattern as gosec
-      # below; .golangci.yml (the checks) is unchanged, and `config verify`
+      # with `go install` under the CI Go toolchain (pinned, exact version);
+      # .golangci.yml (the checks) is unchanged, and `config verify`
       # still runs before the lint, as the action did.
       - name: install golangci-lint (pinned)
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
