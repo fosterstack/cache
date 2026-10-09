@@ -44,6 +44,24 @@ step, never re-resolved from a registry.
   published VEX statement is the only exception. **Acceptance**: the
   release-artifact scenarios plus the Gradle and Maven acceptance
   suites run against the exact candidate image.
+- **Candidate image posture** (REQ-FIPS-002-AC2): the release-artifact
+  acceptance reads, in candidates mode, `/statusz` of the running
+  production, `-debug` and `-fips` containers on linux/amd64 and, under
+  emulation, on linux/arm64, and `bin/fips-image-posture.py` compares each
+  answer with the exact expected string (no redirects, status 200 only,
+  size and time capped). The image-identity comparison (the container's
+  image against the image it was started from) is UNVERIFIED on runners
+  that use the containerd image store, where a container's `.Image` and
+  the image's `.Id` can differ. The posture check also runs in archives
+  mode (the PR chain) against the locally assembled images and can fail
+  those runs, although REQ-FIPS-002-AC2 only earns the pass in candidates
+  mode. Only "no response yet" (connection refused, reset or closed before a
+  status line, or the deadline before one) is retried; a wrong or non-200
+  answer is final and is not retried. The
+  requirement gates a release through the acceptance predicate only under
+  an approved baseline frozen after it merged; the older frozen baselines
+  (v0.2.0, v0.2.1) do not contain it. The stage failing blocks the
+  release regardless of the baseline.
 - **Release authorization** verifies the entire graph — every predicate,
   signed by the expected stage, naming these digests — and is the only
   stage that can approve promotion. Anything missing fails closed.

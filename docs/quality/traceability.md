@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 73 |
-| Acceptance criteria | 193 |
-| Release-blocking ACs | 44 |
-| ACs with mapped evidence | 177 |
-| Release-blocking ACs with mapped evidence | 44 |
+| Acceptance criteria | 194 |
+| Release-blocking ACs | 45 |
+| ACs with mapped evidence | 178 |
+| Release-blocking ACs with mapped evidence | 45 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
 | Confidence: implementation-only | 30 |
@@ -467,11 +467,12 @@ The startup log and /statusz shall report the actual FIPS operating mode and the
 
 *Introduced v0.2.0 · tier community · confidence documented · source: docs/install.md; docs/offline-install.md; internal/buildinfo*
 
-> Known discrepancy at extraction, recorded in backlog.yaml: the current internal/buildinfo note hardcodes the certificate label behind a mode check, so a runtime-enabled standard build would overstate its posture. The product fix is later requirements-first work, not part of this baseline PR.
+> Known discrepancy at extraction, recorded in backlog.yaml: the current internal/buildinfo note hardcodes the certificate label behind a mode check, so a runtime-enabled standard build would overstate its posture. The product fix is later requirements-first work, not part of this baseline PR. The report that REQ-FIPS-002-AC2 compares is the .fips140_note field of the /statusz JSON.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | 2 item(s) |
+| REQ-FIPS-002-AC2 | Given in candidates mode, the candidate image variants of a release (production, -debug and -fips) by candidate digest, running as the containers the artifact acceptance already starts on linux/amd64 and, under emulation, on linux/arm64 (the emulated arm64 containers are UNVERIFIED until the first run shows they serve /statusz); when /statusz is read from each running container; then the -fips containers report 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug containers report 'off', and any other report (including the forced-mode line on a standard image), a container that does not answer /statusz with HTTP status 200, a container that is not the image pulled by that digest, or a missing variant on either architecture blocks the release; a wrong or non-200 answer is final: it is not retried | acceptance-release-artifact | yes | approved | 2 item(s) |
 
 ### REQ-FIPS-003 — Approved-only crypto enforcement in CI
 
