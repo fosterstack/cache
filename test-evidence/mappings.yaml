@@ -631,7 +631,7 @@ mappings:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
-  #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths [... page line 91 continues with the owner Oct 3 amendment, 'I ratify b.']
+  #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier `bin/patch-decide.py` and its test `bin/patch-decide-test.sh`, which name the auditor directory as data and hold no auditor code.
   - ac: REQ-AUD-018-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
