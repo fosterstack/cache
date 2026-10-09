@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 74 |
-| Acceptance criteria | 197 |
+| Acceptance criteria | 198 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 181 |
+| ACs with mapped evidence | 182 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -892,6 +892,7 @@ Our workflows shall take no new version of an action, or of a tool, image or pac
 | REQ-SUP-001-AC9 | Given any public report or issue the checks write; when it states the result; then it says at most 'no known-compromised versions as of <date>', never 'no supply chain issues' | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC10 | Given two advisory lists that disagree about whether a version we use is affected (one says affected; the other, for the same incident, says not); when the daily check or the pull request check runs; then it neither reports clean nor rolls back: with no matching exception it reports a disputed hit, as a public-facts-only issue labelled supply-chain-hit, to the advisor; with a matching exception it passes; an exception is a checked-in entry (the advisory ids, the package, the version, evidence links, its date and each advisory's last-modified time) and applies only while both advisories are unchanged since it was written | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC13 | Given a workflow job that runs pip install; when the workflows are read; then an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC14 | Given a pinned tool that the audit's committed table lists as a Go module, with a version that parses as plain MAJOR.MINOR.PATCH (a leading v allowed), and an advisory record that lists module paths other than the one Go gives that major (the bare path for major 0 and 1, the path ending in /vMAJOR for major 2 and up; e.g. cosign 3.1.3 against GO-2026-4309, whose bare-path entry is open-ended from 0); when the daily check or the pull request check judges that pin; then only the entry for the exact path of the pinned major decides whether the version is affected; every other entry of the record is ignored and each one is logged by advisory id, module path and reason (the pinned major), never silently; anything the rule cannot settle keeps the old verdict, so a hit stays a hit: a tool not in the table, a version that is not plain MAJOR.MINOR.PATCH, a record with no entry for the exact path or with an entry that has no module path, and a /v0 or /v1 path in a record for a major 0 or 1 pin; a path that merely resembles the exact one (/v30, /v3x, a sub-path, a different case, another module ending in /v3) is another module and never counts as it; the existing exceptions keep working unchanged | ci-workflow |  | approved | 1 item(s) |
 
 ## REPO
 
