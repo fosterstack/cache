@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 73 |
-| Acceptance criteria | 193 |
+| Active requirements | 74 |
+| Acceptance criteria | 194 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 177 |
+| ACs with mapped evidence | 178 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 30 |
+| Confidence: implementation-only | 31 |
 
 ## Cache protocol
 
@@ -930,3 +930,17 @@ The repository shall remove its own stale branches with no human step and never 
 | REQ-REPO-001-AC23 | Given a local branch with no upstream, or one whose upstream still exists, or the current branch, or one checked out in a live worktree (clean or with uncommitted changes) or being rebased in one (rebase in progress), or a gone branch with unmerged commits and an open, unknown or not-at-its-tip pull request, or only a fork's pull request; when bin/local-prune.sh --apply runs; then it keeps that branch, and it removes nothing that has uncommitted changes | unit |  | approved | 1 item(s) |
 | REQ-REPO-001-AC24 | Given bin/local-prune.sh run without arguments; when it runs; then it changes nothing (no branch deleted, no worktree record pruned, no ref or remote-tracking ref changed, no fetch run, no FETCH_HEAD written), prints would-delete lines with the sha and a line saying dry-run, and acts only with --apply; in a dry run gone-detection reads the remote with git ls-remote --heads origin (read-only) and a remote that cannot be read keeps every branch; --apply may run git fetch --prune first; a branch whose upstream is on a remote other than origin is kept; the merged-into-main check in a dry run uses the sha of main read from git ls-remote --heads origin, and only when that commit exists locally, otherwise (or when the remote's main does not contain the branch) the branch falls to the pull request lookup and is kept if that finds nothing, and a stale origin/main tracking ref is never used to decide | unit |  | approved | 1 item(s) |
 | REQ-REPO-001-AC25 | Given a branch that the branches API marks protected (protected: true), with any pull request history and any age; when the sweep decides; then it keeps that branch with the reason protected and makes no delete call for it, so a protected branch never produces a FAILED line | unit |  | approved | 1 item(s) |
+
+## AUD
+
+### REQ-AUD-018 — The auditor review gate accepts a recorded substitute for the second reviewer
+
+The auditor's review gate (bin/auditor-review-gate.py in the auditor directory) shall let the owner's recorded, time-boxed decision replace the second vendor's review in a review record, and nothing else: only for the codex seat, only by an opus entry named in a reviewed allow-list on the default branch, only before that entry's expiry, and never for the Sonnet review.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: auditor directory bin/auditor-review-gate.py; auditor directory reviews/substitutes.json; .github/workflows/agent-review-gate.yml*
+
+> substitutes.json is read from the trusted revision (the checked-out default branch in the workflow, the merge base when no --subs-rev is given), never from the pull request. A change to it is part of the bound review content (it changes the record's tree) but cannot help the pull request that makes it.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-AUD-018-AC4 | Given a pull request that changes the auditor, whose review record's final round carries, in place of the codex entry, an opus entry (vendor anthropic, model opus, effort medium, substitute_for codex, a substitute_id, zero open blockers, an evidence sha256) beside a clear sonnet entry, and carries a completed_at time (YYYY-MM-DDTHH:MM:SSZ); when the review gate judges it; then the gate accepts the opus entry as the second review only when all hold: substitute_id names exactly one entry of the reviews allow-list file substitutes.json (in the auditor directory) as read from the trusted default-branch revision (never the pull request's own copy, so a pull request cannot add or extend its own substitute); that entry is for codex, by opus, vendor anthropic, with a non-empty owner_quote; the gate's own UTC clock (read from the system clock only; no environment variable or option can change it) and the record's completed_at are both before the entry's effective_until, and completed_at is not in the future of the gate's clock; and its scope is all, or pr:N with N equal to the number given by --pr (a pr:N scope with no --pr fails). The sonnet review is never substitutable and both entries need zero open blockers; the opus entry never counts as vendor openai; the substitute path applies only when the final round has no codex key at all (a codex entry that is present but not a valid object fails, naming codex), and the opus evidence_sha256 differs from the sonnet entry's (a copied entry fails); a change to any file the review gate itself runs or reads (every path under the auditor directory's bin/ and fixtures/testlib/, the review-substitutes allow-list, the gate workflow, the repository's bin/check-file-allowlist.sh and the auditor directory's tests/pin-wiring-test.sh) is never cleared by a substitute and needs a real codex entry; the gate and the pin checker run in Python isolated mode; a record that has a codex entry is judged on the codex entry alone; any missing or malformed field fails the gate with a message naming it; after the expiry the codex entry is required again | unit |  | approved | 1 item(s) |

@@ -1,0 +1,23 @@
+{
+  "schema": "review-substitutes/v1",
+  "substitutes": [
+    {
+      "id": "0317",
+      "for": "codex",
+      "by": "opus",
+      "vendor": "anthropic",
+      "effective_until": "2026-10-10T05:00:00Z",
+      "owner_quote": "stop all codex no more codex reviews until after 1AM Saturday. replace all codex with opus medium.",
+      "scope": "all"
+    },
+    {
+      "id": "pr210",
+      "for": "codex",
+      "by": "opus",
+      "vendor": "anthropic",
+      "effective_until": "2026-10-10T05:00:00Z",
+      "owner_quote": "Proceed with opus just for this one that codex is hung up on",
+      "scope": "pr:210"
+    }
+  ]
+}
