@@ -171,10 +171,14 @@ CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0", "fetch-tags
 PERM_PLAIN = {"contents": "read", "id-token": "write"}
 PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"}
 MAT = "${{ matrix.runner }}"
+# Build hands Sign the digests.json text: the stage output reads the assemble job's output, which one pinned step fills from digests.json
+STAGE_OUTPUT = "${{ jobs.assemble.outputs.digests }}"
+JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
+EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
     ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[],
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False,
+    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True,
@@ -194,8 +198,13 @@ def stage(path, family, allowed_path=None):
     if not isinstance(d, dict) or set(d) - {"name", "on", "permissions", "jobs"}:
         return ["top-level keys beyond name/on/permissions/jobs: %s" % (sorted(set(d) - {"name", "on", "permissions", "jobs"}) if isinstance(d, dict) else d)]
     on = d.get("on")
-    if not isinstance(on, dict) or set(on) != {"workflow_call"} or (on.get("workflow_call") or {}) not in ({}, None, ""):
-        bad.append("on: must be exactly workflow_call with no inputs or secrets, got %s" % on)
+    call = on.get("workflow_call") if isinstance(on, dict) else None
+    want_call = {"outputs": {"digests": {"value": STAGE_OUTPUT}}} if family == "build" else None
+    if family == "build" and isinstance(call, dict) and isinstance(call.get("outputs"), dict):
+        call = {"outputs": {k: {a: b for a, b in (v or {}).items() if a != "description"} for k, v in call["outputs"].items()}}   # a description is free text
+    if not isinstance(on, dict) or set(on) != {"workflow_call"} or (call or None) != want_call:
+        bad.append("on: must be exactly workflow_call with no inputs or secrets%s, got %s"
+                   % (" and the one output digests = %s" % STAGE_OUTPUT if want_call else " and no outputs", on))
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
     if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed.sh)")
@@ -224,12 +233,15 @@ def job(j, family, name, allowed):
     spec = JOBS[(family, name)]
     bad = []
     keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if spec["matrix"] else {"needs"})
+    if spec.get("expose"): keys.add("outputs")
     if set(j) - keys:
         bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
     if {"runs-on", "permissions", "steps"} - set(j):
         bad.append("job lacks %s" % sorted({"runs-on", "permissions", "steps"} - set(j)))
     for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error", "uses", "secrets"):
-        if k in j: bad.append("job has %s" % k)
+        if k in j and not (k == "outputs" and spec.get("expose")): bad.append("job has %s" % k)
+    if spec.get("expose") and j.get("outputs") != {"digests": JOB_OUTPUT}:
+        bad.append("the assemble job must expose exactly outputs: digests: %s, got %s" % (JOB_OUTPUT, j.get("outputs")))
     if spec["matrix"]:
         st = j.get("strategy") or {}
         if j.get("runs-on") != MAT:
@@ -268,6 +280,10 @@ def job(j, family, name, allowed):
         bad.append("the admission job's Witness step must carry env exactly GH_TOKEN: ${{ github.token }} (PROPOSED, advisor-confirmed default)")
     if not spec["gh"] and "env" in s: bad.append("the Witness step has env")
     bad += witness_seam(s.get("run") or "", spec, family)
+    if spec.get("expose"):
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
+            bad.append("step %d must be exactly id: digests, run: %s (the stage output is the digests.json text, compact)" % (i, EXPOSE))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
@@ -387,7 +403,9 @@ DRY_RUN_GATE = "${{ !cancelled() && (needs.admission.result == 'success' || inpu
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate (Build hands it the digests)
 BUILD_IF = (TAG_GATE, DRY_RUN_GATE)
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
-SIGN_WITH = {"digests": "${{ needs.build.outputs.checksums }}", "witness-artifact": "witness-build"}
+# PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
+# placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
+SIGN_WITH = {"digests": "${{ needs.build.outputs.digests }}"}
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
 # (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
@@ -429,8 +447,9 @@ def graph(path):
             if job.get("permissions") != SIGN_PERMISSIONS:
                 bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))
             with_ = job.get("with") or {}
-            if "digests" not in with_ or set(with_) - set(SIGN_WITH) or any(with_[k] != SIGN_WITH[k] for k in with_):
-                bad.append("sign must pass only with: %s (the digests of build's output and the witness-build artifact name), got %s" % (SIGN_WITH, with_))
+            if with_ != SIGN_WITH:
+                bad.append("sign must pass exactly with: %s (the digests.json text of build's output; stage-sign.yml takes no other input), got %s"
+                           % (SIGN_WITH, with_))
         if job.get("uses") != "./.github/workflows/" + file:
             bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (name, file, job.get("uses")))
         if sorted(needs_of(job)) != NEEDS[name]:

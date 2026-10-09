@@ -116,18 +116,24 @@ def wrap(line, width=110):      # break a long command at its option boundaries,
 
 
 def stage_text(family):
-    out = "name: 'Stage: %s'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n" % family
+    call = ""
+    if family == "build":
+        call = "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
+    out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
     for job in ("apk", "assemble"):
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
         out += ("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
-        out += "    permissions:\n" + "".join("      %s: %s\n" % kv for kv in sp["perm"].items()) + "    steps:\n"
+        out += "    permissions:\n" + "".join("      %s: %s\n" % kv for kv in sp["perm"].items())
+        if sp.get("expose"): out += "    outputs:\n      digests: %s\n" % S.JOB_OUTPUT
+        out += "    steps:\n"
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n          fetch-tags: true\n"
         out += "      - name: install Witness (pinned by checksum)\n        run: ./bin/install-scanner.sh witness\n"
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
+        if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
         for name, path in sp["up"]: out += "      - uses: %s # v7.0.1\n        with:\n          name: %s\n          path: %s\n" % (UPLOAD, name, path)
     return out
 
@@ -164,8 +170,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/stage-sign.yml
     with:
-      digests: ${{ needs.build.outputs.checksums }}
-      witness-artifact: witness-build
+      digests: ${{ needs.build.outputs.digests }}
   rebuild:
     needs: build
     uses: ./.github/workflows/stage-reproducibility.yml
@@ -264,6 +269,19 @@ st s_direct "AC2 a direct witness run in a stage file (every stage goes through 
 st s_kind   "AC2 the apk job running the assemble script" "exactly the one line" 'bin/build-stage-apk.sh' 'bin/build-stage-assemble.sh'
 st s_step "AC2 the Witness step named differently from its job (the step name selects the record path)" "exactly the one line" 'witnessed.sh apk bin' \
        'witnessed.sh build bin'
+st s_outapk  "AC2 the stage output reads the apk job's output, not the assemble job's" "on: must be" 'value: ${{ jobs.assemble.outputs.digests }}' \
+             'value: ${{ jobs.apk.outputs.digests }}'
+st s_outnone "AC2 the stage has no digests output (Sign would get nothing)" "on: must be" \
+             '    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: ${{ jobs.assemble.outputs.digests }}\n' ''
+st s_outextra "AC2 the stage exposes a second output" "on: must be" 'description: the digests.json text, for Sign' \
+             'description: the digests.json text, for Sign\n      items:\n        value: ${{ jobs.assemble.outputs.digests }}'
+st s_joboutstep "AC2 the assemble job's output reads a step of another job" "must expose exactly" \
+             'digests: ${{ steps.digests.outputs.digests }}' 'digests: ${{ needs.apk.outputs.digests }}'
+st s_joboutnone "AC2 the assemble job exposes no output" "must expose exactly" '    outputs:\n      digests: ${{ steps.digests.outputs.digests }}\n' ''
+st s_exposeother "AC2 the expose step reads another file than digests.json" "id: digests" 'jq -c . digests.json' 'jq -c . items.json'
+st s_exposecat  "AC2 the expose step is not the pinned form (cat of the file)" "id: digests" \
+             'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"' 'cat digests.json >> "$GITHUB_OUTPUT"'
+st s_exposeid   "AC2 the expose step has another id" "id: digests" '      - id: digests' '      - id: other'
 st s_upname "AC2 an upload under another name" "upload-artifact" 'name: digests' 'name: registry-creds'
 st s_uptemp "AC2 an upload of the runner temp folder (it holds the identity token)" "upload-artifact" 'path: digests.json' 'path: ${{ runner.temp }}'
 st s_updot  "AC2 an upload of the whole workspace" "upload-artifact" 'path: digests.json' 'path: .'
@@ -304,6 +322,8 @@ rb r_dl "005-AC4 Rebuild downloads Build's dist (it takes only the record and th
        'name: witness-build\n          path: witness-build' 'name: dist\n          path: witness-build'
 rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" '      - name: rapk under Witness' \
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
+rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
+             'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
@@ -601,10 +621,11 @@ replace "$work/release.yml" "$work/g37.yml" "$SIGN_HEAD" \
   && expect ok "005-AC5 sign with PR 1's dry-run form is accepted like build" "" graph "$work/g37.yml"
 gr g38 "005-AC5 sign with write permissions beyond id-token and contents read" "      contents: read\n      id-token: write\n    uses" \
        "      contents: write\n      id-token: write\n    uses" "sign must hold exactly the permissions"
-gr g39 "005-AC5 sign passing an extra input" "      witness-artifact: witness-build" "      witness-artifact: witness-build\n      token: x" \
-    "sign must pass only with"
-gr g40 "005-AC5 sign taking the digests from another job" "digests: \${{ needs.build.outputs.checksums }}" \
-    "digests: \${{ needs.rebuild.outputs.checksums }}" "sign must pass only with"
+gr g39 "005-AC5 sign passing an extra input" "      digests: \${{ needs.build.outputs.digests }}" \
+       "      digests: \${{ needs.build.outputs.digests }}\n      witness-artifact: witness-build" "sign must pass exactly with"
+gr g40 "005-AC5 sign taking the digests from another job" "needs.build.outputs.digests" "needs.rebuild.outputs.digests" "sign must pass exactly with"
+gr g41 "005-AC5 sign taking PR 1's placeholder (raw checksums.txt text) instead of the digests.json text" "needs.build.outputs.digests" \
+       "needs.build.outputs.checksums" "sign must pass exactly with"
 gr g20 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions:\n  contents: read\njobs' \
        'permissions:\n  contents: write\njobs' "workflow-level permissions"
 # ---- the Witness record never holds the token variables (REQ-CHAIN-004-AC8); the consumer is `chain-verify.py verify` of the next stage --------
@@ -1039,7 +1060,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=347
+EXPECT=357
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
