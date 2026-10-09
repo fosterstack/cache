@@ -602,6 +602,7 @@ expect_refuse() { local l=$1 w=$2 x=; shift 2; local rc=0 miss=0 l1 st reason; r
   l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
   if printf '%s' "$l1" | grep -E -q '^refused at [a-z]+: .'; then
     st=$(printf '%s' "$l1" | sed -E 's/^refused at ([a-z]+): .*/\1/'); reason=${l1#*: }
+    reason=${reason//"$(printf '%s' "$work" | tr 'A-Z' 'a-z')"/}   # round 8: the random mktemp path can never stand in for (or against) a cause word
     IFS='|' read -r -a ws <<< "$w"
     for x in "${ws[@]}"; do
       case $x in
@@ -689,6 +690,10 @@ expect_refuse "002-AC1 no timestamp after expiry is refused" "timestamp|!signatu
 expect_refuse "002-AC1 a stamp from another authority is refused" "timestamp" verify $(V) --stage sign $(rec sign_othertsa) $(R)
 expect_refuse "002-AC1 a stamp BEFORE the certificate's validity is refused even when --now is inside the window" "validity" verify $(V $NOWMID) --stage sign $(rec sign_stampbefore) $(R)
 expect_refuse "002-AC1 a stamp AFTER the certificate expired is refused" "validity" verify $(V) --stage sign $(rec sign_stampafter) $(R)
+# round 8 (Opus N-a, taken without faketime): with NO --now the default clock (the current UTC time) still judges the stamp against the certificate's
+# window. This certificate's window ended an hour before it was issued and the stamp is dated now, so an implementation that skips the time checks when --now is
+# absent accepts it and fails here; a correct one refuses it as a validity failure.
+expect_refuse "002-AC1 no --now: a stamp after the certificate expired is still refused (the default clock does not skip the validity check)" "validity" verify --policy "$work/policy.json" --stage sign $(rec sign_stampafter) $(R)
 expect_refuse "002-AC1 tamper: payload changed after signing is refused" "signature|!timestamp|!rekor|!identity" verify $(V) --stage sign $(rec sign_tamper_payload) $(R)
 expect_refuse "002-AC1 tamper: signature bytes altered is refused" "signature|!timestamp|!rekor|!identity" verify $(V) --stage sign $(rec sign_tamper_sig) $(R)
 expect_refuse "002-AC1 tamper: a stamp taken over a different signature is refused" "timestamp" verify $(V) --stage sign $(rec sign_tamper_stamp) $(R)
@@ -894,7 +899,7 @@ done
 cp "$work/rekor2.pub" "$work/polcopy/rekor.pub"
 expect_refuse "002-AC2 policy make --tag with a drifted default Rekor key and no file flags is refused" "trust" policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-drift.json"
 cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
-expect_refuse "002-AC2 policy make --ref <branch> with a drifted default is refused too (the dry run trusts nothing the committed hashes do not)" "trust" policy make --template "$work/polcopy/release-policy.template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust-badtsa.json" --out "$work/polcopy-drift.json"
+expect_refuse "002-AC2 policy make --ref <branch> given a trust file whose hashes differ from the committed PEMs is refused too (the dry run trusts nothing the committed hashes do not)" "trust" policy make --template "$work/polcopy/release-policy.template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust-badtsa.json" --out "$work/polcopy-drift.json"
 # ---- round 7 (Opus B-NEW b, Sonnet findings 1-3): the dry run's pinned hostile lines can reach their causes ----------------------------
 # (1) verify --stage sign with NO --rekor-stub: identity / build config is checked BEFORE Rekor, so a hostile record is refused for the
 #     attack, never for the missing stub ("!rekor" is what makes an implementation that checks Rekor first fail here)
@@ -1042,7 +1047,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=288
+EXPECT=289
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

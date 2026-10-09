@@ -284,7 +284,11 @@ def conj(cond):
     `startsWith(...) == false` are different conjuncts (Opus r5 SF-B)."""
     m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", cond.strip(), re.S)
     if not m or "||" in m.group(1): return None
-    return [re.sub(r"\s+", " ", c.strip()).replace("startsWith(github.ref,'", "startsWith(github.ref, '") for c in m.group(1).split("&&")]
+    # round 8 (Opus R3 should-fix 1): the ONLY parentheses allowed are those of the exact startsWith(...) call; any other
+    # grouping (`!( a && b )`) changes what the conjuncts mean, so it fails closed
+    body = re.sub(r"startsWith\(\s*github\.ref\s*,\s*'refs/tags/v'\s*\)", "TAGCALL", m.group(1))
+    if "(" in body or ")" in body: return None
+    return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ) for c in body.split("&&")]
 OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
@@ -722,6 +726,7 @@ d=$(mk w_notag); pymut "$(rel "$d")" " && startsWith(github.ref, 'refs/tags/v')"
 d=$(mk w_tagor); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run || startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the tag conjunct is joined with || " "$d"
 d=$(mk w_tagneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run && !startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the tag conjunct is NEGATED (!startsWith): promotion would run on branches only" "$d"
 d=$(mk w_tagfalse); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v') == false"; wexpect caught "wiring: the tag conjunct is compared (== false)" "$d"
+d=$(mk w_tagparen); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!(true && !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') && true)"; wexpect caught "wiring: the whole condition is negated by a grouping parenthesis (round 8, Opus R3)" "$d"
 d=$(mk w_gateneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "inputs.dry-run && startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the dry-run conjunct is not negated (promotion would run ONLY in a dry run)" "$d"
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
@@ -729,7 +734,7 @@ d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ub
 d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-EXPECT=135
+EXPECT=136
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

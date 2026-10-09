@@ -170,18 +170,47 @@ def without_heredocs(text):
         if m: end = m.group(1)
     return "\n".join(out)
 
-ASSIGN = re.compile(r"(?:^|[;&|(]\s*|\s)(?:export\s+|readonly\s+|declare\s+-?\w*\s*)?([A-Za-z_]\w*)=([\"']?)([A-Za-z0-9_./-]+)\2(?=\s*(?:[;&|)]|$))")
+ASSIGN = re.compile(r"(?:^|[;&|(]\s*|\s)(?:export\s+|readonly\s+|local\s+|declare\s+-?\w*\s*)?([A-Za-z_]\w*)=([\"']?)([A-Za-z0-9_./-]+)\2(?=\s*(?:[;&|)]|$))")
+# every write to a name, whatever the form (round 8, Opus R3 blocker): a name written by anything but ONE plain literal is ambiguous
+WRITE = re.compile(r"(?:^|[;&|(]\s*|\s)(?:export\s+|readonly\s+|local\s+|declare\s+-?\w*\s*|typeset\s+-?\w*\s*)?([A-Za-z_]\w*)(\+?)=")
+OTHER_WRITES = (
+    re.compile(r"\bfor\s+([A-Za-z_]\w*)\s+in\b"),
+    re.compile(r"\bunset\b((?:\s+-\w+)*(?:\s+[A-Za-z_]\w*)+)"),
+    re.compile(r"\b(?:local|declare|typeset)\s+(?:-\w+\s+)*([A-Za-z_]\w*)(?![\w=])"),
+    re.compile(r"\bprintf\s+-v\s+([A-Za-z_]\w*)"),
+    re.compile(r"\bgetopts\s+\S+\s+([A-Za-z_]\w*)"),
+    re.compile(r"\$\{([A-Za-z_]\w*)(?::?=)"),
+)
+READ = re.compile(r"\b(?:read|mapfile|readarray)\b([^;&|<>\n]*)")
+
+def var_table(text):
+    """NAME -> the one plain literal it is ever given in this file, or None when anything else also writes it
+    (a second different literal, `$X`/`$(...)` on the right, `+=`, read/mapfile, for-in, unset, local/declare without a literal,
+    printf -v, getopts, ${NAME:=...}). Whole-file, so a write AFTER the use also makes the name ambiguous: fail closed."""
+    table = {}
+    def put(n, v):
+        table[n] = v if table.get(n, v) == v else None
+    for line in logical(without_heredocs(strip(text))).splitlines():
+        lits = {m.start(1): m.group(3) for m in ASSIGN.finditer(line)}
+        for m in WRITE.finditer(line):
+            n = m.group(1)
+            if m.group(2) == "" and m.start(1) in lits: put(n, lits[m.start(1)])
+            else: table[n] = None
+        for rx in OTHER_WRITES:
+            for m in rx.finditer(line):
+                for n in re.findall(r"[A-Za-z_]\w*", m.group(1)): table[n] = None
+        for m in READ.finditer(line):
+            for w in m.group(1).split():
+                if re.fullmatch(r"[A-Za-z_]\w*", w): table[w] = None
+    return table
 
 RUNTIME = re.compile(r"^\$\{?(?:RUNNER_TEMP|RUNNER_TOOL_CACHE|HOME|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|TMPDIR)\}?/|^/(?:tmp|usr|opt|home|var|dev|proc|sys|etc)/")
 
 def script_refs_ex(base, text, owndir=None, strict=True):
     """(set of repo-relative script paths, [error strings]) for the scripts one file runs."""
     refs, errs = set(), []
-    assigned = {}                              # NAME -> literal path assigned in this file (round 7, Opus SF-A): `CHK=bin/x.py; python3 "$CHK"`
+    assigned = {n: v for n, v in var_table(text).items()}   # NAME -> its one literal, or None when ambiguous (round 8)
     for line in logical(without_heredocs(strip(text))).splitlines():
-        for m in ASSIGN.finditer(line):        # only a plain literal counts; a second, different literal makes the name ambiguous (None = unresolved)
-            n, v = m.group(1), m.group(3)
-            assigned[n] = v if assigned.get(n, v) == v else None
         if assigned:
             line = re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda m: assigned[m.group(1) or m.group(2)] if assigned.get(m.group(1) or m.group(2)) else m.group(0), line)
         cd = None

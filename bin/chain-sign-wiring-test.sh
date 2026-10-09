@@ -504,6 +504,22 @@ d=$(mk t_assignamb); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh
 expect caught "AC1 a variable assigned two different literals is ambiguous: an error, not a guess" tree "$d"
 d=$(mk t_assigncmd); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=$(pwd)/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"
 expect caught "AC1 a variable assigned from a command substitution is not a literal: still an error" tree "$d"
+d=$(mk t_vnonlit); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nS=$NEXT\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal followed by an assignment from outside is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vappend); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean\nS+=_x\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal followed by an append is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vread); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nread -r S < list\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal followed by a read into the same name is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vforin); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nfor S in a b; do bash "$S"; done\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal followed by a for-in loop over the same name is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vunset); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nunset S\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal followed by an unset is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vlocal); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nf() { local S; bash "$S"; }\nf\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal and a local declaration with no literal is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vdefault); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\n: "${S:=bin/other.sh}"\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: a literal and a colon-equals default expansion is ambiguous: an error, never the earlier literal" tree "$d"
+d=$(mk t_vbranch); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nif test -n "$X"; then S=bin/clean.sh; else S=bin/other.sh; fi\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect caught "AC1 round 8: two literals in if/else branches are ambiguous: an error, never the earlier literal" tree "$d"
 d=$(mk t_trans1); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/plain.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash bin/x-test.sh\n' > "$d/bin/plain.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
 expect caught "AC1 transitive: stage file -> plain.sh -> x-test.sh stays strict (the carve-out does not follow a script reached from a stage file) (round 7, Sonnet note 6)" tree "$d"
 d=$(mk t_trans2); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/y-test.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/y-test.sh"
@@ -538,7 +554,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=137
+EXPECT=145
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

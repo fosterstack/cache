@@ -256,6 +256,22 @@ d=$(mk nvaramb); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run
 expect_named "a variable assigned two different literals is ambiguous: an error naming the script, not a guess" "$d" "bin/a.sh"
 d=$(mk nvarcmd); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=$(pwd)/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"
 expect_named "a variable assigned from a command substitution is not a literal: still an error naming the script" "$d" "bin/a.sh"
+d=$(mk nvnonlit); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nS=$NEXT\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal followed by an assignment from outside is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvappend); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean\nS+=_x\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal followed by an append is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvread); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nread -r S < list\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal followed by a read into the same name is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvforin); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nfor S in a b; do bash "$S"; done\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal followed by a for-in loop over the same name is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvunset); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nunset S\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal followed by an unset is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvlocal); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nf() { local S; bash "$S"; }\nf\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal and a local declaration with no literal is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvdefault); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\n: "${S:=bin/other.sh}"\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: a literal and a colon-equals default expansion is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
+d=$(mk nvbranch); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nif test -n "$X"; then S=bin/clean.sh; else S=bin/other.sh; fi\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
+expect_named "round 8: two literals in if/else branches are ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
 d=$(mk ntr1); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/plain.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash bin/x-test.sh\n' > "$d/bin/plain.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
 expect_named "transitive: stage file -> plain.sh -> x-test.sh stays strict (the carve-out is for scripts reached only from ci.yml)" "$d" "bin/x-test.sh"
 d=$(mk ntr2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/y-test.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/y-test.sh"
@@ -269,7 +285,7 @@ expect ok "a *-test.sh that builds throw-away scripts and is reached only from c
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=69
+EXPECT=77
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
