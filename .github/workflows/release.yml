@@ -451,8 +451,10 @@ jobs:
   # (bin/persona-uat-recipient.pem) that only the owner can open (bin/persona-uat-decrypt.sh <run id>). A blocking persona fails this
   # job; no other job needs it, so a persona failure never starts the patch-failed issue. The model identities are environment
   # SECRETS (masked), the token budget the one variable. The `persona-uat` environment holds them.
+  # GATE: the job runs only when the repository variable PERSONA_UAT_ENABLED is exactly 'true' (unset = off). The condition is on the JOB, so while it is off the
+  # persona-uat environment is never entered and no token is minted.
   persona-uat:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}
+    if: ${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}
     needs: [image, promotion]
     runs-on: ubuntu-24.04
     timeout-minutes: 120

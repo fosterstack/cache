@@ -756,6 +756,54 @@ def mode_value(run):
     vals = [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == "--mode"] + [t.split("=", 1)[1] for t in argv if t.startswith("--mode=")]
     return vals[0] if len(vals) == 1 else None
 
+GATE = "vars.PERSONA_UAT_ENABLED=='true'"
+
+def _atom(a, ctx):
+    """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, ref, ref_name}. Strings compare EXACTLY here (the advisor's table: 'TRUE' is off;
+    GitHub's own == on strings ignores case, see the report)"""
+    if re.fullmatch(r"vars\.PERSONA_UAT_ENABLED=='true'", a):
+        return ctx["vars"].get("PERSONA_UAT_ENABLED") == "true"
+    m = re.fullmatch(r"github\.event\.schedule=='([^']*)'", a)
+    if m: return ctx.get("schedule") == m.group(1)
+    m = re.fullmatch(r"startsWith\(github\.ref,'([^']*)'\)", a)
+    if m: return str(ctx.get("ref", "")).startswith(m.group(1))
+    m = re.fullmatch(r"contains\(github\.ref_name,'([^']*)'\)", a)
+    if m: return m.group(1) in str(ctx.get("ref_name", ""))
+    raise ValueError("unknown atom " + a)
+
+def job_runs(j, ctx):
+    """True when the job's `if:` (a conjunction of known atoms) holds in ctx"""
+    return all(_atom(a, ctx) for a in norm(j.get("if", "true")).split("&&"))
+
+def judge_gate(name, wf, j, bad):
+    """the PERSONA_UAT_ENABLED gate (owner): the job runs only for the exact string 'true' (unset = off), on every trigger, and nothing mints a token or enters the persona-uat
+    environment when it is off: the condition is the JOB's own `if:`, and no other job of the workflow names the environment, mints an identity token or holds id-token: write"""
+    if name == "release":
+        trig = {"tag push": {"ref": "refs/tags/v1.2.3-rc.1", "ref_name": "v1.2.3-rc.1"}, "workflow_dispatch": {"ref": "refs/heads/main", "ref_name": "main"}}
+    else:
+        trig = {"schedule": {"schedule": "43 6 * * 1", "ref": "refs/heads/main", "ref_name": "main"}, "workflow_dispatch": {"ref": "refs/heads/main", "ref_name": "main"}}
+    try:
+        for tn, base in trig.items():
+            trigger_ok = tn in ("tag push", "schedule")           # a dispatch never satisfies a trigger conjunct; the gate is a separate conjunct that no trigger overrides
+            for label, v in (("unset", None), ("empty", ""), ("false", "false"), ("TRUE", "TRUE"), ("1", "1"), ("true", "true")):
+                ctx = dict(base, vars={} if v is None else {"PERSONA_UAT_ENABLED": v})
+                got, want = job_runs(j, ctx), (v == "true" and trigger_ok)
+                if got != want:
+                    bad.append(f"{name} persona-uat gate: on {tn} with PERSONA_UAT_ENABLED {label} the job {'runs' if got else 'is off'}, expected {'on' if want else 'off'}")
+    except ValueError as e:
+        bad.append(f"{name} persona-uat gate: the job's if has an expression this judge cannot evaluate ({e})")
+    if not norm(j.get("if", "")).startswith(GATE + "&&"):
+        bad.append(f"{name} persona-uat gate: the gate is not the job-level `if:` (it must be vars.PERSONA_UAT_ENABLED == 'true' on the job itself)")
+    for sid, s_ in enumerate(j.get("steps", [])):
+        if "PERSONA_UAT_ENABLED" in json.dumps(s_):
+            bad.append(f"{name} persona-uat gate: step {sid} tests the gate: a step-level gate would let the job (and its environment) start first")
+    for jn, oj in (wf.get("jobs") or {}).items():
+        if jn == "persona-uat":
+            continue
+        dumped = json.dumps(oj)
+        if "persona-uat" in str(oj.get("environment", "")) or "api.anthropic.com" in dumped or "ANTHROPIC_IDENTITY_TOKEN" in dumped:
+            bad.append(f"{name} persona-uat gate: job {jn} enters the persona-uat environment or mints/uses the model identity token outside the gated job")
+
 def judge_release(r, bad):
     workflow_defaults(r, "release.yml", bad)
     judge_workflow_env(r, "release.yml", bad)
@@ -781,8 +829,9 @@ def judge_release(r, bad):
             bad.append(f"release persona-uat does not wait for {n}")
     if set(needs) != {"image", "promotion"}:
         bad.append(f"release persona-uat's needs are not exactly image and promotion (an extra dependency that is skipped on RC tags would skip every persona): {sorted(needs)}")
-    if norm(j.get("if", "")) != "startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc.')":
-        bad.append(f"release persona-uat does not run only for v*-rc.* tags (if: {j.get('if')!r})")
+    if norm(j.get("if", "")) != GATE + "&&startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc.')":
+        bad.append(f"release persona-uat does not run only for v*-rc.* tags behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
+    judge_gate("release", r, j, bad)
     env = j.get("environment")
     if (env if isinstance(env, str) else (env or {}).get("name")) != "persona-uat":
         bad.append("release persona-uat does not run in the persona-uat environment")
@@ -811,8 +860,9 @@ def judge_weekly(f, bad):
         if "actions/github-script" in str(s_.get("uses", "")):
             bad.extend(run_identity(s_))
     cron = [c.get("cron") for c in (f.get("on", {}).get("schedule") or [])] if isinstance(f.get("on"), dict) else []
-    if norm(j.get("if", "")) != norm("github.event.schedule == '43 6 * * 1'") or "43 6 * * 1" not in cron:
-        bad.append(f"weekly persona-uat does not run only on the Monday cron (if: {j.get('if')!r})")
+    if norm(j.get("if", "")) != GATE + "&&" + norm("github.event.schedule == '43 6 * * 1'") or "43 6 * * 1" not in cron:
+        bad.append(f"weekly persona-uat does not run only on the Monday cron behind the PERSONA_UAT_ENABLED gate (if: {j.get('if')!r})")
+    judge_gate("weekly", f, j, bad)
     if "needs" in j:
         bad.append("weekly persona-uat has needs: a skipped dependency (the daily check job is skipped on the Monday cron) would skip every persona")
     env_ = j.get("environment")
@@ -1073,10 +1123,10 @@ def synth_persona_job(weekly):
              {"if": "${{ always() }}", "run": CLEANUP}])
     j = {"runs-on": "ubuntu-24.04", "timeout-minutes": "120", "environment": "persona-uat", "permissions": {"contents": "read", "id-token": "write", "packages": "read"}, "steps": steps}
     if weekly:
-        j["if"] = "${{ github.event.schedule == '43 6 * * 1' }}"
+        j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event.schedule == '43 6 * * 1' }}"
     else:
         j["needs"] = ["image", "promotion"]
-        j["if"] = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}"
+        j["if"] = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}"
     return j
 RS = {"on": {"push": {"tags": ["v*"]}}, "jobs": {
     "image": {"steps": [{"run": "true"}]}, "promotion": {"needs": ["image"], "steps": [{"run": "true"}]},
@@ -1274,6 +1324,23 @@ mutate("rc job gains issues: write (an issue could be opened)", "permissions are
 mutate("rc job mints no model identity token", "mints the model identity token", lambda j: j.update(steps=[s for s in j["steps"] if "getIDToken" not in json.dumps(s)]))
 # weekly job
 mutate("weekly job runs on every cron", "does not run only on the Monday cron", lambda j: j.update({"if": "${{ github.event_name == 'schedule' }}"}), "fresh")
+# the PERSONA_UAT_ENABLED gate (owner): each is caught for the reason named
+RCIF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}"
+WKIF = "${{ github.event.schedule == '43 6 * * 1' }}"
+GATEST = {"if": "${{ vars.PERSONA_UAT_ENABLED == 'true' }}"}
+mutate("rc job without the gate", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": RCIF}))
+mutate("weekly job without the gate", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": WKIF}), "fresh")
+mutate("rc gate compares another value", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("== 'true'", "!= 'false'")}))
+mutate("weekly gate compares another value", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("== 'true'", "!= 'false'")}), "fresh")
+mutate("rc gate OR-ed with the trigger", "behind the PERSONA_UAT_ENABLED gate", lambda j: j.update({"if": str(j["if"]).replace("' && startsWith", "' || startsWith")}))
+mutate("rc gate moved to a step (the environment would be entered first)", "behind the PERSONA_UAT_ENABLED gate", lambda j: (j.update({"if": RCIF}), j["steps"][0].update(GATEST)))
+mutate("weekly gate moved to a step (the environment would be entered first)", "behind the PERSONA_UAT_ENABLED gate", lambda j: (j.update({"if": WKIF}), j["steps"][0].update(GATEST)), "fresh")
+mutate("rc gate also tested in a step", "tests the gate", lambda j: j["steps"][0].update(GATEST))
+mutate("weekly gate also tested in a step", "tests the gate", lambda j: j["steps"][0].update(GATEST), "fresh")
+mutate("rc workflow: another job enters the persona-uat environment", "outside the gated job", lambda d: d["jobs"].update(other={"environment": "persona-uat", "steps": [{"run": "true"}]}), "rel_wf")
+mutate("weekly workflow: another job enters the persona-uat environment", "outside the gated job", lambda d: d["jobs"].update(other={"environment": "persona-uat", "steps": [{"run": "true"}]}), "fresh_wf")
+mutate("rc workflow: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "rel_wf")
+mutate("weekly workflow: another job mints the model identity token", "outside the gated job", lambda d: d["jobs"].update(other={"steps": [{"uses": "actions/github-script@" + "a" * 40, "with": {"script": "await core.getIDToken('https://api.anthropic.com')"}}]}), "fresh_wf")
 mutate("weekly job resolves a fixed release tag", "does not resolve the LATEST release's image digest",
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update(run="gh release view v0.2.0 --json tagName; docker buildx imagetools inspect x"), "fresh")
 mutate("weekly driver is handed a fixed image", "does not hand the resolved latest-release image digest",

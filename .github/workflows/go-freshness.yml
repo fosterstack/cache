@@ -182,8 +182,10 @@ jobs:
   # The harness is the root checkout (today's main, bin/), so a persona never edits the code that judges it; the released docs sit under release-docs/. Results stay
   # private exactly as in the release chain: pass/fail lines only, one encrypted artifact per persona, no issue; a blocking persona
   # fails this job. The model identities are environment SECRETS (masked); the token budget is the one variable.
+  # GATE: the job runs only when the repository variable PERSONA_UAT_ENABLED is exactly 'true' (unset = off). The condition is on the JOB, so while it is off the
+  # persona-uat environment is never entered and no token is minted.
   persona-uat:
-    if: ${{ github.event.schedule == '43 6 * * 1' }}
+    if: ${{ vars.PERSONA_UAT_ENABLED == 'true' && github.event.schedule == '43 6 * * 1' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: persona-uat

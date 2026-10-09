@@ -148,54 +148,84 @@ class TranscriptFile:
 
 
 # --- the network capture sidecar (option A): what the persona's commands actually contacted -----------------------------------------------------------------
-CAPTURE_FILTER = "udp or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn)"          # DNS and other UDP, and the first packet (SYN) of every TCP connection
-CAPTURE_ARGS = ["-i", "any", "-nn", "-l", "-tt", "-U", "-s", "1500", "-Z", "root", CAPTURE_FILTER]
+# what the sidecar captures: every UDP packet (DNS included), ICMP and ICMPv6, the first packet (SYN, no ACK) of every IPv4 TCP connection, and of every IPv6 TCP connection (the IPv6
+# header is fixed-size when no extension header is present, so the flags byte is at offset 53). Only packets that LEAVE the namespace (-Q out)
+CAPTURE_FILTER = "udp or icmp or icmp6 or (tcp[tcpflags] & (tcp-syn|tcp-ack) == tcp-syn) or (ip6[6] == 6 and ip6[53] & 0x12 == 2)"
+CAPTURE_ARGS = ["-i", "any", "-Q", "out", "-nn", "-l", "-tt", "-U", "-s", "1500", "-Z", "root", CAPTURE_FILTER]
 CAPTURE_MAX_BYTES = 8 * 1024 * 1024        # the sidecar's log is read up to this; more is reported as truncated
 CAPTURE_READY_SECONDS = 15
+CAPTURE_LOG_SECONDS = 60                   # `docker logs` may take this long to be read
+RESOLVER_ADDR = "127.0.0.11"              # Docker's embedded DNS, inside every container's namespace on a user-defined network
+TOOL_PORT = {"jenkins": 1, "gitlab-runner": 2}          # the offset above --port at which a persona's tool container publishes
 MEMBER_NAMES = ("endpoint", "jenkins", "gitlab-runner", KIND_NODE)      # the persona's own network members: its endpoint under test, Jenkins, the runner, the kind node
 _ARPA = (".in-addr.arpa", ".ip6.arpa")
 _DNS_RR = ("A", "AAAA", "CNAME")
-_Q_RE = re.compile(r"\sIP6? \S+ > (\S+)\.53: (\d+)[+*|%-]*\s+(?:\[[^\]]*\]\s+)*[A-Za-z0-9]+\?\s+(\S+?)\.?\s+\(")
-_A_RE = re.compile(r"\sIP6? \S+\.53 > \S+: (\d+)[*|%-]*\s+(?:[A-Za-z]+\s+)?(\d+)/\d+/\d+\s*(.*?)\s*\(\d+\)\s*$")
-_CONN_RE = re.compile(r"\sIP6? \S+ > (\S+)\.(\d+): (?:Flags \[S\]|UDP)")
+_PKT_RE = re.compile(r"^\d+(?:\.\d+)?\s+(?:(?:\S+\s+)?(?:In|Out|P|B|M)\s+)?IP6?\s+(\S+)\s+>\s+(\S+?):\s+(.*)$")
+_Q_RE = re.compile(r"^(\d+)[+*|%-]*\s+(?:\[[^\]]*\]\s+)*[A-Za-z0-9]+\?\s+(\S+?)\.?\s+\(")
+_A_RE = re.compile(r"^(\d+)[*|%-]*\s+(?:[A-Za-z]+\s+)?(\d+)/\d+/\d+\s*(.*?)\s*\(\d+\)\s*$")
+_FOOT = (("captured", re.compile(r"^\d+ packets? captured$")), ("received", re.compile(r"^\d+ packets? received by filter$")), ("dropped", re.compile(r"^\d+ packets? dropped by kernel$")))
 
 
-def _addr_ok(addr):
-    """a public (global) address: loopback, private, link-local, multicast and reserved ranges are not outside hosts"""
+def _norm(addr):
     import ipaddress
     try:
-        ip = ipaddress.ip_address(addr)
-        return ip.is_global and not ip.is_multicast
+        return ipaddress.ip_address(addr).compressed.lower()
     except ValueError:
-        return False
+        return addr.lower()
+
+
+def _split(tok, no_port):
+    """ADDRESS and PORT of a tcpdump -nn endpoint (`10.0.0.2.5000`, `fd00::2.40000`); ICMP endpoints carry no port"""
+    if no_port:
+        return _norm(tok), None
+    a, _, port = tok.rpartition(".")
+    return (_norm(a), port) if port.isdigit() and a else (_norm(tok), None)
 
 
 def parse_capture(text, hit_cap):
-    """-> {"names": {DNS names asked for or answered}, "addrs": {connection addresses no DNS answer named}, "reason": why the observation is incomplete, or None}. Read from tcpdump's
-    `-nn -tt` text: DNS queries (qname by transaction id), A/AAAA/CNAME answers, the SYN of each TCP connection and each UDP packet's destination. A capture is complete only when it
-    has tcpdump's header, ends with tcpdump's summary (a clean stop), dropped no packets and was not cut at the read cap."""
-    names, answered, conns, resolvers, qnames = set(), set(), [], set(), {}
-    header = summary = False
-    dropped = 0
+    """-> {"names": {DNS names asked for or answered}, "addrs": {destinations no CORRELATED DNS answer named}, "uncorrelated": {addresses a DNS answer named without a captured query for it},
+    "reason": why the observation is incomplete, or None}. Read from tcpdump's `-nn -tt` text. Every destination is a contact except Docker's embedded resolver (127.0.0.11); replies from
+    it and DNS answers are not contacts. A capture is complete only when it has tcpdump's header, every line is a packet line or tcpdump's own notice, no packet was truncated or
+    dropped, all three summary lines are present, and it was not cut at the read cap."""
+    names, conns, qnames, answered, unc = set(), [], {}, {}, set()
+    header, foot, dropped, bad, trunc = False, set(), 0, None, False
     for ln in text.replace("\x00", "").splitlines():
+        if not ln.strip():
+            continue
+        if "[|" in ln:
+            trunc = True
         if ln.startswith("listening on "):
             header = True
-        elif re.match(r"^\d+ packets captured$", ln):
-            summary = True
-        elif re.match(r"^\d+ packets dropped by kernel$", ln):
-            dropped = int(ln.split()[0])
-        m = _Q_RE.search(ln)
-        if m:
-            resolvers.add(m.group(1))
-            qname = m.group(3).lower()
-            qnames[m.group(2)] = qname
+            continue
+        if ln.startswith("tcpdump:"):
+            continue
+        hit = False
+        for key, rx in _FOOT:
+            if rx.match(ln):
+                foot.add(key)
+                if key == "dropped":
+                    dropped = int(ln.split()[0])
+                hit = True
+        if hit:
+            continue
+        m = _PKT_RE.match(ln)
+        if not m:
+            bad = bad or ln[:60]
+            continue
+        src_t, dst_t, rest = m.group(1), m.group(2), m.group(3)
+        icmp = rest.startswith("ICMP")
+        src, sport = _split(src_t, icmp)
+        dst, dport = _split(dst_t, icmp)
+        q = _Q_RE.match(rest) if dport == "53" else None
+        if q:
+            qname = q.group(2).lower()
+            qnames[q.group(1)] = qname
             if not qname.endswith(_ARPA):
                 names.add(qname)
-            continue
-        m = _A_RE.search(ln)
-        if m:
-            qname = qnames.get(m.group(1))
-            for rr in m.group(3).split(", "):
+        elif sport == "53" and _A_RE.match(rest):
+            am = _A_RE.match(rest)
+            qname = qnames.get(am.group(1))
+            for rr in am.group(3).split(", "):
                 parts = rr.split(None, 1)
                 if len(parts) == 2 and parts[0] in _DNS_RR:
                     val = parts[1].strip().rstrip(".").lower()
@@ -203,22 +233,33 @@ def parse_capture(text, hit_cap):
                         if not val.endswith(_ARPA):
                             names.add(val)
                     elif val:
-                        answered.add(val)
+                        if qname:
+                            answered[_norm(val)] = qname
+                        else:
+                            unc.add(_norm(val))
             continue
-        m = _CONN_RE.search(ln)
-        if m:
-            conns.append(m.group(1).lower())
-    addrs = {c for c in conns if c not in answered and c not in resolvers and _addr_ok(c)}
+        if rest.startswith("Flags ["):
+            fl = rest[len("Flags ["):].split("]", 1)[0]
+            if "S" not in fl or "." in fl:
+                continue                    # not the first packet of a connection (the filter should not have let it in)
+        if src == RESOLVER_ADDR or dst == RESOLVER_ADDR:
+            continue                        # Docker's embedded resolver: the persona's own lookups and the resolver's replies
+        conns.append(dst)
+    addrs = {c for c in conns if c not in answered}
     reason = None
     if not header:
         reason = "the capture output is unreadable (no tcpdump header)"
     elif hit_cap:
         reason = "the capture output was truncated at the read cap (%d bytes)" % CAPTURE_MAX_BYTES
-    elif not summary:
-        reason = "the capture did not end cleanly (no tcpdump summary)"
+    elif bad:
+        reason = "the capture holds an unrecognized line (%s)" % bad
+    elif trunc:
+        reason = "the capture holds a truncated packet (a packet the filter saw was cut before it could be read)"
+    elif len(foot) < 3:
+        reason = "the capture did not end cleanly (tcpdump's summary of packets captured, received and dropped is incomplete)"
     elif dropped:
         reason = "the kernel dropped %d packets" % dropped
-    return {"names": names, "addrs": addrs, "reason": reason}
+    return {"names": names, "addrs": addrs, "uncorrelated": unc & addrs, "reason": reason}
 
 
 def capture_logs(docker, cid, cap=CAPTURE_MAX_BYTES):
@@ -280,8 +321,11 @@ def start_capture(docker, image, holder, ready_seconds=CAPTURE_READY_SECONDS):
 def stop_capture(docker, cid, started_reason):
     """-> {"names", "addrs", "reason"}: the sidecar is asked to stop (tcpdump prints its summary), its log is read and parsed. Every way this can fail is a reason, never silence"""
     if cid is None:
-        return {"names": set(), "addrs": set(), "reason": started_reason or "the capture did not run"}
-    alive = docker.running(cid)
+        return {"names": set(), "addrs": set(), "uncorrelated": set(), "reason": started_reason or "the capture did not run"}
+    try:
+        alive = docker.running(cid)
+    except Exception:
+        return {"names": set(), "addrs": set(), "uncorrelated": set(), "reason": "the capture sidecar could not be inspected when the persona ended"}
     try:
         docker.call("stop", "-t", "5", cid, timeout=60)
     except Exception:
@@ -289,7 +333,7 @@ def stop_capture(docker, cid, started_reason):
     try:
         text, hit = capture_logs(docker, cid)
     except Exception:
-        return {"names": set(), "addrs": set(), "reason": "the capture output could not be read"}
+        return {"names": set(), "addrs": set(), "uncorrelated": set(), "reason": "the capture output could not be read"}
     r = parse_capture(text, hit)
     if started_reason and not r["reason"]:
         r["reason"] = started_reason
@@ -298,6 +342,21 @@ def stop_capture(docker, cid, started_reason):
     elif not alive:
         r["reason"] = "the capture sidecar exited before the persona ended (%s)" % r["reason"]
     return r
+
+
+def member_addresses(docker, names):
+    """-> the set of addresses the persona's own network members (its endpoint, its tool containers, its kind node) hold on its network, or None when they cannot be read. Read while the
+    members exist (before the teardown). A connection to one of them is the persona using its own tools, not a contact with the outside"""
+    names = [n for n in names if n]
+    if not names:
+        return set()
+    try:
+        p = docker.call("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", *names)
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    return {_norm(t) for t in p.stdout.split()}
 
 
 def refuse_host_network(args):
@@ -479,24 +538,6 @@ def validate_answer(text):
 UNSETTLED = object()        # the window could not be closed: a connection stayed open or the counter kept changing for the whole ceiling
 
 
-def established_to(proc_net, port):
-    """how many ESTABLISHED sockets (state 01) have `port` as their local or remote port, from the kernel's tcp and tcp6 tables; None when neither can be read.
-    A request still being served holds its connection open until the response is written, which is before the server counts it."""
-    n, read = 0, 0
-    for name in ("tcp", "tcp6"):
-        try:
-            with open(os.path.join(proc_net, name)) as fh:
-                lines = fh.read().splitlines()[1:]
-        except OSError:
-            continue
-        read += 1
-        for ln in lines:
-            f = ln.split()
-            if len(f) >= 4 and f[3] == "01" and (f[1].rpartition(":")[2] == "%04X" % port or f[2].rpartition(":")[2] == "%04X" % port):
-                n += 1
-    return n if read else None
-
-
 def free_port():
     """a host port nothing listens on right now (the persona's own container is published there)"""
     import socket
@@ -505,15 +546,15 @@ def free_port():
         return sk.getsockname()[1]
 
 
-def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX, idle=lambda: True):
-    """close a persona's window: the real server counts AFTER its handler returns, so the total must have been UNCHANGED for `quiet_for` seconds (a change restarts the interval)
-    with no connection to the endpoint left (`idle()`), within `ceiling`. -> the total, None when /metrics cannot be read, UNSETTLED when the ceiling was hit."""
+def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX):
+    """read the endpoint's counter only once it has settled: the real server counts AFTER its handler returns, so the total must have been UNCHANGED for `quiet_for` seconds
+    (a change restarts the interval), within `ceiling`. -> the total, None when /metrics cannot be read, UNSETTLED when the ceiling was hit."""
     v = scrape(ep)
     if v is None:
         return None
     t0 = quiet = time.time()
     while True:
-        if time.time() - quiet >= quiet_for and idle():
+        if time.time() - quiet >= quiet_for:
             return v
         if time.time() - t0 >= ceiling:
             return UNSETTLED
@@ -521,7 +562,7 @@ def settled(ep, quiet_for=SETTLE_QUIET, ceiling=SETTLE_MAX, idle=lambda: True):
         w = scrape(ep)
         if w is None:
             return None
-        if w != v or not idle():
+        if w != v:
             v, quiet = w, time.time()
 
 
@@ -1262,8 +1303,8 @@ ADDR_LABEL = "Addresses observed with no DNS name in the capture (flagged):"
 NO_OBSERVED = "No outside hosts observed on the network."
 ENV_LIMITS_LINE = "Environment limits of this run (reported as friction, never blocking): " + "; ".join("(%s) %s" % (k, t) for k, t in zip("abcd", LIMITS))
 COUNTER_GUARANTEE = ("Counter guarantee: this persona ran against its OWN fresh container of the image under test, published on a host port of its own, and its request counter "
-                     "was read from that container only, at its start and again at its end (after its processes and containers were removed, no established connection to the "
-                     "container remained and the counter was unchanged for 3 seconds); the container was removed afterwards, so a request of an earlier persona can only land "
+                     "was read from that container only, at its start and again at its end, each time once it had been unchanged for 3 seconds (the closing reading after its processes and "
+                     "action containers were removed); the container was removed afterwards, so a request of an earlier persona can only land "
                      "in an earlier, removed container. If a scrape failed or the window could not be closed within 20 seconds the persona is blocking (cannot prove). Not "
                      "covered: this persona's own request still being served more than 3 seconds after its connection closed (the server exposes no in-flight gauge), which "
                      "can only cost this persona its own credit.")
@@ -1553,14 +1594,27 @@ def _main():
             out.add(h[:-len(REPO_SRC)] + " (repository source)")
         return sorted(out)
 
-    captures = {}       # persona -> the parsed capture {"names", "addrs", "reason"}
+    captures = {}       # persona -> the parsed capture {"names", "addrs", "uncorrelated", "members", "reason"}
+
+    def add_members(persona):
+        """the addresses of the persona's own network members, read while they still exist; unreadable = the capture is incomplete (they cannot be told from outside contacts)"""
+        cp = captures[persona]
+        mem = member_addresses(docker, [ep_cid] + list(tool_cids) + ([KIND_NODE] if cluster else []))
+        if mem is None:
+            cp["members"] = set()
+            cp["reason"] = cp["reason"] or "the addresses of the persona's own network members could not be read"
+        else:
+            cp["members"] = mem
 
     def observed_for(persona):
         """the network list of a persona's report: its capture minus the hosts of the docs it was given and the persona's own network members. A persona with no capture on record says so"""
         cp = captures.get(persona) or {"names": set(), "addrs": set(), "reason": "the capture did not run for this persona"}
+        members = cp.get("members") or set()
+        unc = cp.get("uncorrelated") or set()
         known = docs_hosts(persona) | set(MEMBER_NAMES) | {"localhost"}       # ONLY the documented hosts and the persona's own network members: a registry or github.com named by a persona is reported
         names = sorted(n if len(n) <= 253 else n[:60] + "... (over-long name)" for n in cp["names"] if n not in known)
-        return {"names": names, "addrs": sorted(cp["addrs"]), "reason": cp["reason"]}
+        addrs = sorted(x + (" (answered by DNS without a captured query)" if x in unc else "") for x in cp["addrs"] if x not in members)
+        return {"names": names, "addrs": addrs, "reason": cp["reason"]}
 
     def hosts_of(commands):
         """-> (hosts, number of commands whose hosts could not be extracted): one command that cannot be parsed never costs the others or the report"""
@@ -1577,19 +1631,25 @@ def _main():
                 flags[k] += 1 if info.get(k) else 0
         return hosts, bad, flags
 
-    def record(persona, answer, transcript, did_not_run=None, proven=True, extra_blocking=None):
+    def record(persona, answer, transcript, did_not_run=None, proven=True, extra_blocking=None, commands=None):
         """the persona's encrypted report and the one pass/fail line. Every step is exception-safe INSIDE this path: whatever fails here costs this persona a 'driver error'
         report, never a traceback and never an unwritten report"""
         try:
-            _record(persona, answer, transcript, did_not_run, proven, extra_blocking)
+            _record(persona, answer, transcript, did_not_run, proven, extra_blocking, commands)
         except Exception:
             text = report_text(persona, "blocking", [{"kind": "blocking", "text": "the driver failed while recording this persona (driver error)"}], None, False,
                                "the driver failed while recording (driver error)")
-            ok = encrypt(a.recipient, persona, out_dir, [text.encode(), b"\n=== TRANSCRIPT ===\ndriver error\n"])
+            try:        # the evidence collected so far still goes into the encrypted payload
+                ok = encrypt(a.recipient, persona, out_dir, itertools.chain([text.encode(), b"\n=== TRANSCRIPT ===\n"],
+                                                                            (c.encode("utf-8", "replace") for c in transcript_chunks(transcript or "", secrets))))
+            except Exception:
+                ok = False
+            if not ok:
+                ok = encrypt(a.recipient, persona, out_dir, [text.encode(), b"\n=== TRANSCRIPT ===\ndriver error\n"])
             results[persona] = {"verdict": "blocking", "findings": [], "tokens": None, "capped": False, "encfail": not ok}
             sys.stderr.write("persona-uat: %s: fail\n" % persona)
 
-    def _record(persona, answer, transcript, did_not_run, proven, extra_blocking):
+    def _record(persona, answer, transcript, did_not_run, proven, extra_blocking, commands=None):
         if answer:
             findings, tokens = list(answer["findings"]), answer["tokens"]
             if persona == "compliance-reviewer":
@@ -1609,7 +1669,10 @@ def _main():
         else:       # fail closed: whatever is not exactly the contract is a blocking persona that did not run
             findings = [{"kind": "blocking", "text": "%s did not run: %s" % (persona, did_not_run)}]
             tokens, capped, verdict = None, False, "blocking"
-            cmds_, inc_ = transcript_commands(transcript)
+            if commands is not None:
+                cmds_, inc_ = commands, 0
+            else:
+                cmds_, inc_ = transcript_commands(transcript)
             hosts, bad, fl = hosts_of(cmds_)
             fl = dict(fl or {}, incomplete=inc_)
             text = report_text(persona, verdict, [], None, False, did_not_run, hosts=labelled(hosts, persona), unparsed=bad, flags=fl, observed=observed_for(persona))
@@ -1651,14 +1714,20 @@ def _main():
                 continue
             token_seconds = min(86400, max(3600, persona_timeout + TOKEN_MARGIN))      # the persona's kubeconfig token outlives its window
             tool_cids, req_tools = [], {}
+            ep_cid = None
+            own_ports = set()          # the loopback ports THIS persona's own tool containers publish: no other persona's listener is excused
             cluster = None
             label = "persona-uat=%s" % uuid.uuid4()
             net = "persona-uat-" + label.split("=", 1)[1][:8]          # this persona's private docker network (internet open, never the host's)
             holder = net + "-holder"
             net_made = []
+            img_port = free_port()          # this persona's endpoint: a container of its own, a host port of its own, a request counter of its own (picked BEFORE any temp file exists)
             sandbox = tempfile.mkdtemp(prefix="persona-uat-")
             sandboxes.append(sandbox)
             tdir = tempfile.mkdtemp(prefix="persona-uat-tr-")          # the agent's streamed transcript: private, outside the sandbox the shell containers mount
+            tfile, jfile = os.path.join(tdir, "transcript"), os.path.join(tdir, "journal")
+            answer = transcript = None
+            cap_cid, cap_why = None, "the capture did not run for this persona"
 
             image_cids = []
 
@@ -1675,7 +1744,6 @@ def _main():
                         ok = docker.network_remove(net) and ok          # after the containers: a network with a member cannot be removed
                         del net_made[:]
                 return ok and not Cluster.leaked
-            img_port = free_port()          # this persona's endpoint: a container of its own, a host port of its own, a request counter of its own
             try:
                 files = dict(docs)
                 if persona == "readme-evaluator":
@@ -1699,6 +1767,7 @@ def _main():
                     if not docker.running(hcid):
                         raise RuntimeError("the persona's network holder is not running")
                     cid = docker.start(a.image, (img_port, 8080), net=net, alias="endpoint")
+                    ep_cid = cid
                     image_cids.append(cid)
                     started.append(cid)
                     wait_ready(docker, cid, "http://127.0.0.1:%d" % img_port, a.ready_timeout)
@@ -1711,6 +1780,11 @@ def _main():
                     continue
                 try:
                     for i, tool in enumerate(TOOLS_FOR.get(persona, ())):
+                        if TOOL_PORT.get(tool) is not None:
+                            # a listener left on a tool's port by an earlier persona (or anything else) must not stand in for THIS persona's tool: the port is free before the tool starts
+                            if a.port + TOOL_PORT[tool] in loopback_listeners(a.proc_net):
+                                raise RuntimeError("the port of the %s container is already bound on the loopback" % tool)
+                            own_ports.add(a.port + TOOL_PORT[tool])
                         if tool == "jenkins":
                             tc = docker.start(tools[tool], (a.port + 1, 8080), env=JENKINS_ENV, net=net, alias="jenkins"); tool_cids.append(tc)
                             wait_ready(docker, tc, "http://127.0.0.1:%d" % (a.port + 1), a.ready_timeout, strict=True)
@@ -1744,7 +1818,7 @@ def _main():
                     "persona": persona, "token_budget": budget, "tools": req_tools,
                 }
                 try:
-                    stray = sorted(loopback_listeners(a.proc_net) - {53, a.port, a.port + 1, a.port + 2, img_port} - set(a.allow_listen) - ({cluster.port} if cluster else set()))
+                    stray = sorted(loopback_listeners(a.proc_net) - {53, img_port} - own_ports - set(a.allow_listen) - ({cluster.port} if cluster else set()))
                 except Refuse as e:
                     record(persona, None, "did not run: %s\n" % e, "the loopback could not be inspected (%s)" % e)
                     continue
@@ -1752,8 +1826,6 @@ def _main():
                     record(persona, None, "did not run: unexpected loopback listener(s)\n",
                            "an unexpected listener is bound to the loopback (port%s %s): a persona's containers share the host network, so none runs" % ("s" if len(stray) > 1 else "", ", ".join(map(str, stray))))
                     continue
-                tfile = os.path.join(tdir, "transcript")
-                jfile = os.path.join(tdir, "journal")
                 args = ["--docker", " ".join(shlex.quote(t) for t in docker_cmd), "--tools", os.path.abspath(a.tools), "--label", label, "--network", "container:" + holder, "--transcript-file", tfile, "--journal-file", jfile]
                 ep = "http://127.0.0.1:%d" % img_port
                 # the capture sidecar listens BEFORE the persona's first command (and before the opening scrape, so the driver's own docker work stays outside the persona's window); it is
@@ -1762,14 +1834,17 @@ def _main():
                 if cap_cid:
                     image_cids.append(cap_cid)          # removed with the persona's own container after the closing scrape (a failed removal is a failed teardown)
                     started.append(cap_cid)
-                before = scrape(ep)
+                before = settled(ep, a.settle_quiet, a.settle_max)          # the opening reading is settled too: the driver's own readiness probes are counted after their response
+                if before is UNSETTLED:
+                    before = None
                 answer, transcript, why = run_agent(agent_cmd, args, request, sandbox, persona_timeout, tfile, jfile)
-                captures[persona] = stop_capture(docker, cap_cid, cap_why)
-                # the window is closed BEHIND everything of this persona: its containers (swept by label), its tool containers and cluster are removed, THEN the counter is
-                # read once no connection to the endpoint is left and it has been unchanged for the quiet interval
+                # the window is closed BEHIND everything of this persona: its action containers are swept by label FIRST (whatever they were still sending is sent), THEN the sidecar is
+                # stopped (so its log holds all of it), then its tool containers and cluster are removed, THEN the counter is read once it has been unchanged for the quiet interval
                 swept = sweep(docker, label)
+                captures[persona] = stop_capture(docker, cap_cid, cap_why)
+                add_members(persona)
                 tools_gone = teardown_tools()
-                after = settled(ep, a.settle_quiet, a.settle_max, lambda: established_to(a.proc_net, img_port) == 0)
+                after = settled(ep, a.settle_quiet, a.settle_max)
                 cleaned = cleanup(docker, label, sandbox, tools["shell"])
                 image_gone = docker.remove(image_cids)          # the persona's container goes only now, after its counter was read; whatever completes in it later counts for nobody
                 del image_cids[:]
@@ -1788,7 +1863,8 @@ def _main():
                 ok = before is not None and after is not None and after - before > 0
                 if not (swept and tools_gone and cleaned):
                     teardown_failed = True          # this persona and every later one: a survivor may have sent traffic into a window we cannot attribute
-                    record(persona, None, (transcript if answer is None else answer["transcript"]) or "", "%s%s" % (TD, "" if answer is not None else "; " + why))
+                    record(persona, None, (transcript if answer is None else answer["transcript"]) or "", "%s%s" % (TD, "" if answer is not None else "; " + why),
+                           commands=None if answer is None else answer.get("commands", []))
                 elif cannot:
                     record(persona, answer, answer["transcript"] if answer is not None else transcript, None if answer is not None else cannot, proven=False,
                            extra_blocking=cannot if answer is not None else None)
@@ -1796,6 +1872,27 @@ def _main():
                     record(persona, None, transcript, why)
                 else:
                     record(persona, answer, answer["transcript"], proven=ok)
+            except BaseException:
+                # ANY failure of the driver while this persona ran: the evidence collected so far (the agent's answer and transcript, the streamed transcript file, the action journal) is
+                # still written, encrypted; the window's work is undone like on the normal path (sidecar stopped, label sweep, root-owned sandbox emptied); then the run fails
+                try:
+                    sweep(docker, label)
+                    if persona not in captures:
+                        captures[persona] = stop_capture(docker, cap_cid, cap_why)
+                        add_members(persona)
+                except BaseException:
+                    pass
+                try:
+                    if persona not in results:
+                        prefix = "the driver failed while this persona ran (driver error)\n" + ((answer["transcript"] + "\n") if answer else "")
+                        record(persona, None, TranscriptFile(prefix, tfile, jfile), "the driver failed while this persona ran (driver error)")
+                except BaseException:
+                    pass
+                try:
+                    cleanup(docker, label, sandbox, tools["shell"])
+                except BaseException:
+                    pass
+                raise
             finally:
                 teardown_tools(image=True)
                 shutil.rmtree(tdir, ignore_errors=True)
