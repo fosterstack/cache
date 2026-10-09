@@ -10,6 +10,9 @@ Design (installed once, on import, by test_fs_guard.py, which unittest discovery
   * CPython emits no audit event for stat/realpath/readlink, so os.stat, os.lstat, os.readlink, os.path.realpath,
     os.path.exists/isfile/isdir/islink/lexists/getsize are wrapped with the same check.
   * Allowed roots, read/metadata/write (ROOTS): the temp dir, the repo, this directory, /dev/null and /dev/urandom.
+  * META: the directories the interpreter names in every sysconfig scheme and its user base (coverage realpaths them at start-up):
+    metadata of the directory itself only, never its contents. Also `<ancestor>/pyvenv.cfg` for every ancestor of an allowed root
+    (coverage asks "is this module in a virtualenv?" at each level): metadata only, never open.
   * The INTERPRETER ENVIRONMENT (ENV), read and metadata only: sys.prefix and its siblings, the directory two levels above
     sys.executable (a venv root with its pyvenv.cfg, bin/, lib/), stdlib and site-packages, every sys.path entry. A prefix that is a
     broad system directory (/usr, /usr/local, /opt, /opt/homebrew ...) is NOT taken, or /usr/local/bin would be allowed with it.
@@ -26,6 +29,7 @@ _real = {n: getattr(os, n) for n in ("stat", "lstat", "readlink", "getcwd", "fsp
 _realpath = os.path.realpath
 _installed = False
 ROOTS = []   # temp dir, repo, this dir: read, metadata AND write
+META = []    # directories the interpreter names (every sysconfig scheme, user base): METADATA of the directory only, never contents
 ENV = []     # the interpreter environment (venv, prefix, stdlib, site-packages): read and metadata only
 _busy = __import__('threading').local()
 _busy.on = False
@@ -71,12 +75,14 @@ def _resolve(p, what, orig, nofollow=False, meta=False, write=False):
     return cur
 
 
-def _ancestor(p):
+def _ancestor(p, with_meta=True):
     """A directory on the way down to an allowed root (/home and /home/user above a checkout, /var above the temp dir, / itself).
     Its METADATA (stat, lstat, realpath, exists, isdir) may be read because every path walk starts at the root and the interpreter
     resolves each module path that way; its CONTENTS (open, listdir, scandir, rename ...) never may. It must not itself be a link
     that escapes (checked by _resolve on the next hop)."""
-    return any(r.startswith(p.rstrip("/") + "/") for r in list(ROOTS) + list(ENV) + sorted(EXACT))
+    q = p.rstrip("/")
+    extra = list(META) if with_meta else []
+    return (with_meta and q in META) or any(r.startswith(q + "/") for r in list(ROOTS) + list(ENV) + extra + sorted(EXACT))
 
 
 # Prefixes too broad to treat as "the interpreter's own environment": with a system Python the prefix is /usr, and allowing it would
@@ -131,15 +137,52 @@ def _env_roots():
     return sorted(broad_ok | _canon_set(precise, drop_broad=True))
 
 
+def _meta_roots():
+    """Directories the interpreter itself names, which coverage (TreeMatcher/abs_file) realpaths at startup: every path of every
+    sysconfig scheme (scripts, include, data, ... for posix_prefix, posix_user ...) and the user base. Metadata of the directory only."""
+    cand = set()
+    for scheme in sysconfig.get_scheme_names():
+        try:
+            cand.update(sysconfig.get_paths(scheme).values())
+        except Exception:
+            pass
+    for f in (site.getuserbase, site.getusersitepackages):
+        try:
+            cand.add(f())
+        except Exception:
+            pass
+    return sorted(_canon_set(cand, drop_broad=True))
+
+
 def _under(p, write=False):
     if p in EXACT or any(p == r or p.startswith(r + "/") for r in ROOTS):
         return True
     return not write and any(p == r or p.startswith(r + "/") for r in ENV)
 
 
+def _pyvenv_probe(absp, what, orig):
+    """Metadata of `<dir>/pyvenv.cfg` where <dir> is an ancestor of an allowed root (or inside one). Only that one file name; the
+    directory walk is still judged (a link that escapes is refused), and a pyvenv.cfg that is itself a symlink is judged like any path."""
+    d = os.path.dirname(absp)
+    if not (_ancestor(d, False) or _under(d)):
+        return False
+    _busy.bypass = True
+    try:
+        res = _resolve(d, what, orig, False, True, False)
+    finally:
+        _busy.bypass = False
+    if not (_under(res) or _ancestor(res, False)):
+        return False
+    try:
+        import stat as _st
+        return not _st.S_ISLNK(_real["lstat"](absp).st_mode)
+    except OSError:
+        return True                        # absent: the common case
+
+
 def check(path, what="", nofollow=False, meta=False, write=False):
     """Raise unless `path` (lexically and after symlink resolution) is inside an allowed root."""
-    if not (ROOTS or ENV) or isinstance(path, int) or getattr(_busy, "bypass", False):
+    if not (ROOTS or ENV or META) or isinstance(path, int) or getattr(_busy, "bypass", False):
         return
     try:
         p = _real["fspath"](path)
@@ -150,6 +193,8 @@ def check(path, what="", nofollow=False, meta=False, write=False):
     if p == "":
         return
     absp = os.path.abspath(p)
+    if meta and not write and os.path.basename(absp) == "pyvenv.cfg" and _pyvenv_probe(absp, what, p):
+        return                             # coverage asks "is this file in a virtualenv?" for every ancestor of every traced module
     if write and "/__pycache__/" in absp and _under(absp):
         write = False                      # the import system caches bytecode beside the module it just read
     if not _under(absp, write) and not (meta and _ancestor(absp)):
@@ -228,12 +273,13 @@ def wrap_link(orig, name):
 
 
 def install(extra_roots=()):
-    global _installed, ROOTS, ENV
+    global _installed, ROOTS, ENV, META
     if _installed:
         return
     _installed = True
     ROOTS = _roots() + [r for r in extra_roots]
     ENV = _env_roots()
+    META = _meta_roots()
     sys.addaudithook(_hook)
     for n in ("stat", "lstat", "readlink", "access", "statvfs", "pathconf", "listxattr", "getxattr"):
         _wrap1(os, n, n in ("lstat", "readlink"))

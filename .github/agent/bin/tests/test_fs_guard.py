@@ -288,7 +288,7 @@ class Guard(unittest.TestCase):
     def test_stat_realpath_exists_readlink_listdir_of_system_paths_raise(self):
         for fn in (os.stat, os.lstat, os.readlink, os.path.realpath, os.path.exists, os.path.isfile, os.path.isdir, os.listdir):
             with self.assertRaises(G.SystemPathAccess, msg=fn.__name__):
-                fn("/usr/local/bin")
+                fn("/etc")
 
     def test_a_symlink_in_the_temp_dir_to_a_system_file_is_refused_when_followed(self):
         # The link to a system path is built by hand with the UNWRAPPED call inside the recorder test below, never here: this
@@ -326,7 +326,7 @@ class Guard(unittest.TestCase):
                         except OSError:
                             pass
                 os.path.realpath("/usr/lib/python3.12/os.py")
-                for p in (os.path.dirname(root) + "-other", "/opt/other", "/usr/local/bin", "/etc"):
+                for p in (os.path.dirname(root) + "-other", "/opt/other", "/etc"):
                     with self.assertRaises(G.SystemPathAccess, msg=p):
                         os.stat(p)
                 for p in (top, os.path.dirname(root)):                     # an ancestor's CONTENTS stay off limits
@@ -353,7 +353,7 @@ class Guard(unittest.TestCase):
                     G.check(p, "open", write=True)
             G.check("/mnt/rev/work/cache/lib/python3.12/site-packages/x/__pycache__/m.pyc", "open", write=True)   # bytecode cache
             G.check("/mnt/rev/work/cache/cache/new.txt", "open", write=True)                              # the repo is writable
-            for p in ("/mnt/rev/work/other/pyvenv.cfg", "/mnt/rev/work/cache2/pyvenv.cfg", "/mnt/rev/work/pyvenv.cfg",
+            for p in ("/mnt/rev/work/other/pyvenv.cfg", "/mnt/rev/work/cache2/pyvenv.cfg",
                       "/usr/local/bin/python3", "/etc/pyvenv.cfg"):
                 for meta in (True, False):
                     with self.assertRaises(G.SystemPathAccess, msg=p):
@@ -363,6 +363,64 @@ class Guard(unittest.TestCase):
         finally:
             G.ROOTS, G.ENV = saved
 
+    def test_coverages_virtualenv_walk_is_allowed_for_pyvenv_cfg_only(self):
+        """coverage/inorout.py asks os.path.exists(<dir>/pyvenv.cfg) for EVERY ancestor directory of each traced module."""
+        def coverage_walk(module_file):
+            d, hits = os.path.dirname(module_file), []
+            while True:
+                hits.append(os.path.exists(os.path.join(d, "pyvenv.cfg")))
+                parent = os.path.dirname(d)
+                if parent == d:
+                    return hits
+                d = parent
+        # the real walk, from a traced test module up to / (the checkout may sit anywhere: /home/runner/work/cache/cache, /Users/..)
+        self.assertTrue(coverage_walk(os.path.join(G.HERE, "test_panel.py")))
+        saved = (G.ROOTS, G.ENV)
+        try:
+            G.ROOTS, G.ENV = ["/mnt/rev/work/cache/cache"], []                       # CI shape, interpreter elsewhere
+            f = "/mnt/rev/work/cache/cache/.github/agent/bin/tests/test_panel.py"
+            d = os.path.dirname(f)
+            while True:
+                G.check(os.path.join(d, "pyvenv.cfg"), "exists", False, True)       # every ancestor, up to /
+                G.check(os.path.join(d, "pyvenv.cfg"), "lstat", True, True)
+                if os.path.dirname(d) == d:
+                    break
+                d = os.path.dirname(d)
+            for p in ("/mnt/rev/work/cache/secret", "/mnt/rev/work/cache/pyvenv.cfgx", "/mnt/rev/work/cache/xpyvenv.cfg",
+                      "/mnt/rev/work/other/pyvenv.cfg", "/mnt/rev/work/cache/other/pyvenv.cfg", "/etc/pyvenv.cfg",
+                      "/usr/local/bin/pyvenv.cfg", "/mnt/rev/work/cache/pyvenv.cfg/x"):
+                with self.assertRaises(G.SystemPathAccess, msg=p):
+                    G.check(p, "exists", False, True)
+            for kind in ("open-read", "write", "listdir-of-the-dir"):               # the file's CONTENT and any write stay refused
+                with self.assertRaises(G.SystemPathAccess, msg=kind):
+                    if kind == "open-read":
+                        G.check("/mnt/rev/work/cache/pyvenv.cfg", "open")
+                    elif kind == "write":
+                        G.check("/mnt/rev/work/cache/pyvenv.cfg", "open", False, True, write=True)
+                    else:
+                        G.check("/mnt/rev/work/cache", "os.listdir")
+            with self.assertRaises(G.SystemPathAccess):
+                os.stat("/etc/pyvenv.cfg")                                          # the installed wrappers agree
+        finally:
+            G.ROOTS, G.ENV = saved
+
+    def test_interpreter_named_directories_allow_their_own_metadata_only(self):
+        """coverage realpaths every sysconfig path (scripts, include, the user base ...) at start-up: /root/.local/bin on a bare box."""
+        saved = (G.ROOTS, G.ENV, G.META)
+        try:
+            G.ROOTS, G.ENV, G.META = ["/mnt/rev/work/cache/cache"], [], ["/mnt/q/.local/bin"]
+            for fn in ("stat", "lstat", "realpath", "exists"):
+                for p in ("/mnt", "/mnt/q", "/mnt/q/.local", "/mnt/q/.local/bin"):
+                    G.check(p, fn, False, True)
+            for p in ("/mnt/q/.local/share", "/mnt/q/.local/bin/tool", "/mnt/q/other", "/mnt/r"):
+                with self.assertRaises(G.SystemPathAccess, msg=p):
+                    G.check(p, "stat", False, True)
+            for ev in ("open", "os.listdir", "os.scandir"):                           # contents stay off limits
+                with self.assertRaises(G.SystemPathAccess, msg=ev):
+                    G.check("/mnt/q/.local/bin", ev)
+        finally:
+            G.ROOTS, G.ENV, G.META = saved
+
     def test_a_broad_system_prefix_is_never_an_environment_root(self):
         got = G._canon_set(["/usr", "/usr/local", "/opt/homebrew", "/Users", "/home", "/opt/hostedtoolcache/Python/3.12.3/x64"], drop_broad=True)
         self.assertIn("/opt/hostedtoolcache/Python/3.12.3/x64", got)
@@ -370,16 +428,16 @@ class Guard(unittest.TestCase):
         env = G._env_roots()
         self.assertNotIn("/usr", env); self.assertNotIn("/usr/local", env)
         with self.assertRaises(G.SystemPathAccess):
-            os.stat("/usr/local/bin")
+            os.stat("/etc")
 
     def test_the_other_metadata_calls_are_wrapped_too(self):
         for n in ("access", "statvfs", "pathconf"):
             with self.assertRaises(G.SystemPathAccess, msg=n):
-                getattr(os, n)("/usr/local/bin", *((os.R_OK,) if n == "access" else ("PC_NAME_MAX",) if n == "pathconf" else ()))
+                getattr(os, n)("/etc", *((os.R_OK,) if n == "access" else ("PC_NAME_MAX",) if n == "pathconf" else ()))
         for n in ("listxattr", "getxattr"):
             if hasattr(os, n):
                 with self.assertRaises(G.SystemPathAccess, msg=n):
-                    getattr(os, n)("/usr/local/bin", *(("user.x",) if n == "getxattr" else ()))
+                    getattr(os, n)("/etc", *(("user.x",) if n == "getxattr" else ()))
 
     def test_temp_repo_devnull_and_stdlib_stay_allowed(self):
         with tempfile.TemporaryDirectory() as d:
