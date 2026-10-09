@@ -2067,6 +2067,46 @@ requirements:
         then: "an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+  - id: REQ-UAT-001
+    title: Persona UAT
+    statement: >
+      Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+    source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-UAT-001-AC1
+        given: a release candidate tag v*-rc.*
+        when: its release run promotes
+        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC2
+        given: the weekly maintenance run
+        when: it runs
+        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC3
+        given: a persona finding that is friction (not broken behavior or a failing doc step)
+        when: the run ends
+        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC4
+        given: a persona run
+        when: it needs Jenkins, a GitLab runner or Kubernetes
+        then: "each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC5
+        given: a persona agent
+        when: it runs
+        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-REPO-001
     title: Branch hygiene without a human

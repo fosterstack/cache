@@ -119,6 +119,12 @@ for tag, bls, breqs, req, want, why in [
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [(pipe_req, pipe_req + "-AC1", False)]), "v0.2.1",
      "a new pipeline-only AC since the baseline: still an automatic patch"),
+    # advisor 0161 (step 5 of the persona UAT): REQ-UAT-001 governs CI testing, not the server, the image or a doc
+    # step a customer follows, so its (non-blocking) ACs ride automatic patches -- unlisted, it would be product
+    # by default and every patch would wait for the owner
+    ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
+     req_yaml(BASE + [("REQ-UAT-001", "REQ-UAT-001-AC1", False), ("REQ-UAT-001", "REQ-UAT-001-AC5", False)]), "v0.2.1",
+     "REQ-UAT-001 (persona UAT) is pipeline-only: its ACs appearing since the baseline still allow an automatic patch"),
     # advisor 0175 (REQ-SUP-001): the actions supply-chain checks govern CI, not the server, the image or a doc
     ("v0.2.2", [bl("v0.2.0"), bl("v0.2.1")], {"v0.2.1": REQ},
      req_yaml(BASE + [("REQ-SUP-001", "REQ-SUP-001-AC1", False), ("REQ-SUP-001", "REQ-SUP-001-AC10", False)]), "v0.2.1",

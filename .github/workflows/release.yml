@@ -444,6 +444,103 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
     secrets: inherit
 
+  # Persona UAT (owner ratified Oct 3 and Oct 4; REQ-UAT-001): on a release-candidate tag only (v*-rc.*), after the image is built and
+  # the chain has promoted it, five personas follow the public docs against that exact image digest (bin/persona-uat.py, pinned CI
+  # tools by digest, a kind cluster made by the pinned kind binary). Results stay private: the driver opens no issue and prints only
+  # pass/fail lines; each persona's report and transcript are ONE artifact encrypted to the committed recipient certificate
+  # (bin/persona-uat-recipient.pem) that only the owner can open (bin/persona-uat-decrypt.sh <run id>). A blocking persona fails this
+  # job; no other job needs it, so a persona failure never starts the patch-failed issue. The model identities are environment
+  # SECRETS (masked), the token budget the one variable. The `persona-uat` environment holds them.
+  # GATE: the job runs only when the repository variable PERSONA_UAT_ENABLED is exactly 'true' (unset = off). The condition is on the JOB, so while it is off the
+  # persona-uat environment is never entered and no token is minted.
+  persona-uat:
+    if: ${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') }}
+    needs: [image, promotion]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: persona-uat
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: install the pinned kind binary
+        run: ./bin/install-scanner.sh kind
+
+      - name: install the provider SDK (hash-pinned)
+        run: |
+          python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
+
+      - name: mint the federated identity token for the model provider
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const token = await core.getIDToken('https://api.anthropic.com');
+            core.setSecret(token);
+            const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';
+            fs.writeFileSync(f, token, { mode: 0o600 });
+            // Print ONLY the identity claims the Anthropic federation rule matches on (never the token, which stays masked): a token-exchange 401 is then diagnosable.
+            try {
+              const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+              const claims = {};
+              for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {
+                claims[k] = payload[k];
+              }
+              core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));
+            } catch (e) {
+              core.warning('could not decode OIDC claims for logging');
+            }
+
+      - name: keep the identity token fresh for the whole job (a detached refresher)
+        # The assertion lives about five minutes, the job up to two hours and every model call is a NEW process. A timer inside
+        # actions/github-script dies with its step, so this is a process of its own: detached (nohup, output redirected, disowned),
+        # it re-mints from the runner's OIDC endpoint into the same 0600 file until the file is removed by the last step.
+        run: |
+          set -euo pipefail
+          f="${RUNNER_TEMP}/anthropic-identity-token"
+          [ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }
+          nohup bash -c '
+            f="$1"; every="$2"
+            while [ -e "$f" ] && sleep "$every"; do
+              [ -e "$f" ] || break
+              tok=$(curl -sSf --max-time 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue
+              [ -n "$tok" ] && [ "$tok" != "null" ] || continue
+              [ -e "$f" ] || break
+              ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"
+            done
+          ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
+          disown
+
+      - name: run the five personas
+        env:
+          PERSONA_UAT_MODEL: ${{ secrets.PERSONA_UAT_MODEL }}
+          PERSONA_UAT_COMPLIANCE_MODEL: ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}
+          PERSONA_UAT_TOKEN_BUDGET: ${{ vars.PERSONA_UAT_TOKEN_BUDGET }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
+          PERSONA_UAT_IMAGE: ghcr.io/${{ github.repository }}@${{ fromJSON(needs.image.outputs.digests).production }}
+        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
+
+      - name: upload the encrypted reports and transcripts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: persona-uat-encrypted
+          path: persona-uat-out/*.cms
+          if-no-files-found: error
+
+      - name: delete the identity token file
+        if: ${{ always() }}
+        run: rm -f "${RUNNER_TEMP}/anthropic-identity-token"
+
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:

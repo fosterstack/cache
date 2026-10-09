@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 73 |
-| Acceptance criteria | 193 |
+| Active requirements | 74 |
+| Acceptance criteria | 198 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 177 |
+| ACs with mapped evidence | 182 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 30 |
+| Confidence: implementation-only | 31 |
 
 ## Cache protocol
 
@@ -892,6 +892,22 @@ Our workflows shall take no new version of an action, or of a tool, image or pac
 | REQ-SUP-001-AC9 | Given any public report or issue the checks write; when it states the result; then it says at most 'no known-compromised versions as of <date>', never 'no supply chain issues' | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC10 | Given two advisory lists that disagree about whether a version we use is affected (one says affected; the other, for the same incident, says not); when the daily check or the pull request check runs; then it neither reports clean nor rolls back: with no matching exception it reports a disputed hit, as a public-facts-only issue labelled supply-chain-hit, to the advisor; with a matching exception it passes; an exception is a checked-in entry (the advisory ids, the package, the version, evidence links, its date and each advisory's last-modified time) and applies only while both advisories are unchanged since it was written | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC13 | Given a workflow job that runs pip install; when the workflows are read; then an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown | ci-workflow |  | approved | 1 item(s) |
+
+## UAT
+
+### REQ-UAT-001 — Persona UAT
+
+Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/persona-uat.py; bin/persona-uat-agent.py; .github/workflows/release.yml; .github/workflows/go-freshness.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-UAT-001-AC1 | Given a release candidate tag v*-rc.*; when its release run promotes; then five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall | ci-workflow |  | approved | 3 item(s) |
+| REQ-UAT-001-AC2 | Given the weekly maintenance run; when it runs; then the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report) | ci-workflow |  | approved | 3 item(s) |
+| REQ-UAT-001-AC3 | Given a persona finding that is friction (not broken behavior or a failing doc step); when the run ends; then it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result | ci-workflow |  | approved | 2 item(s) |
+| REQ-UAT-001-AC4 | Given a persona run; when it needs Jenkins, a GitLab runner or Kubernetes; then each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud | ci-workflow |  | approved | 3 item(s) |
+| REQ-UAT-001-AC5 | Given a persona agent; when it runs; then it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext | ci-workflow |  | approved | 3 item(s) |
 
 ## REPO
 

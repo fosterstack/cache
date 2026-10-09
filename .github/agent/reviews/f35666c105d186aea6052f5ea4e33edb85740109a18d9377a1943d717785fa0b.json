@@ -1,0 +1,56 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "f35666c105d186aea6052f5ea4e33edb85740109a18d9377a1943d717785fa0b",
+ "change": "Persona UAT (REQ-UAT-001), machinery only: the persona driver, agent, tests and the two persona jobs gated by the repository variable PERSONA_UAT_ENABLED (no persona runs, no token minted) -- PR #180",
+ "reviewed_commit": "9d564c7b355bf8507f2938a1f18c5b75a1d68a55",
+ "closed_commit": "2561087f05eff10e09b4adb5899466c62bc5021e",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "final verification of the last round's fixes (security final)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "0ce02c9ccf34731fbc73b1fe2935f5098dbb6bbc6e279c2c560d39c16a147547"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 3,
+     "evidence_sha256": "e92f5181eb2f6a278775f7d90f8376ba7ef0543be3ced5e0809a9b1f0c4961b8"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "narrow fixes re-checked (stop-capture, IPv6, evidence ordering, expressions, gate model)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "87e948923e9829bda49f7ec28c224987256b8c85d85d57ed8194be52eb8f3fff"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "4cdcf933c1fdd4b0dd5f3973ac70a001de03aea36f540c79c3ad9d4d851a8141"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "AC3 (the downstream-job guard) is NOT met: the change was removed because its finding could not be fixed (rule 4); the guard returns to the queue as its own item",
+  "the gate compares with GitHub's case-insensitive ==, so a variable set to TRUE also enables the jobs; enabling is the owner's act and is accepted",
+  "the handler's captures.setdefault(persona, stop_capture(...)) evaluates the retry eagerly and discards its result when a capture already exists, so recovered observations in that path are dropped (the persona still fails with the incomplete warning); queued as a follow-up",
+  "an IPv4-mapped destination behind an extension header can be listed with a truncated address (the contact is still listed)",
+  "all outbound IPv6 packets now reach the capture log; a heavy IPv6 upload could hit the read cap and mark the capture incomplete (fail-closed); network_create does not enable ipv6",
+  "the loopback guard does not see IPv4-mapped ::ffff:127.0.0.1 listeners",
+  "the reviewers' sandboxes could not run the persona suites (they pass locally: 605, 821 and 231 passed, 0 failed)",
+  "no persona has run end to end: the live behaviour is untested until the owner enables PERSONA_UAT_ENABLED (not before v0.3.0 is live, advisor 0292)"
+ ],
+ "row78": "the two persona jobs only gain a job-level if on the repository variable; no uses: added; check-action-pins.py 27 files, 155 pinned actions, zero findings (both reviewers)"
+}
