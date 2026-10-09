@@ -1,0 +1,63 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "ba33e3e04850a868869e07f6d54d49f70c6a14a91934a27cac82bdd96586dabc",
+ "change": "CI pins the pip it runs: a hash-checked pip 26.2.1 installed first in every pip-installing job and in the allowlist job's virtual environment, a failed pin stops the later installs (REQ-SUP-001 AC13, issue 215) -- PR #218",
+ "reviewed_commit": "af6fee50163a41d302716995698ddf396a11ad05",
+ "closed_commit": "af6fee50163a41d302716995698ddf396a11ad05",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "phase 2 round 1 (Sonnet green, Codex holds: reviewer SDK install could run after a failed pin)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "d6446180011a6f8362c8e0eca0a06b8b35d5dec9c398c1b4327dd5f82ed4868b"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "f55ff294f1146bc46cb1337336b1c1aee1abaa5b53648b6728407dbc12228763"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "verification of the venv pin (Sonnet only; Codex covered it in round 1 residuals)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "7079900166e139e9cc2f44967e69548dc735ca8fef346e1345c8b17d3c2de17c"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "verification of the failed-pin fix and the reachability checks (both green)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "8a4efcfad53674a2c91d972b4fc1d113850536f1ee79b7016df081c29e42d7ce"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "a80f571222ae4f16cb019250cec159ddb74ab0d8e3b17426806207c30c1ceb59"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "case 8 of the wiring test has two false greens not present in the tree: a pin command inside an uncalled function, and a pin-outcome OR event condition on a conditional pin; job-level if/needs skips are not read",
+  "the pin steps of audit, panel-probe and review run only on schedule or dispatch, so PR CI does not exercise them (read statically by both reviewers)",
+  "the bootstrap runs the runner's existing pip, which hash-checks the wheel; that first pip is not pinned (stated in the requirement file header)",
+  "run as root on an apt-managed system pip the pin step would fail closed (the runner user is not root)"
+ ],
+ "row78": "every action reference in the three edited workflows is a full commit digest; no action added; check-action-pins.py 27 files, 147 pinned actions, zero findings (both reviewers); no permission, secret or credential change"
+}

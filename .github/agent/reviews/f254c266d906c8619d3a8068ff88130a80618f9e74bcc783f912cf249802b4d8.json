@@ -1,0 +1,35 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "f254c266d906c8619d3a8068ff88130a80618f9e74bcc783f912cf249802b4d8",
+ "change": "Allowlist: the requirement file that pins the pip CI runs joins the public-file allowlist (one anchored pattern) -- PR #217",
+ "reviewed_commit": "c965af91f8c64aed9d8c63548bd4b846fbae53f8",
+ "closed_commit": "c965af91f8c64aed9d8c63548bd4b846fbae53f8",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "first round, both green",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "26a4b8af7d828b1fce3ba9e453d096d10763e1a12f115e5a0756ad51ceda2eb4"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "da915a5cfe727930e3fd4405096b5e07065b50d9dc81faa58f4e051f0ab3dd42"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "line mode treats a trailing newline as a record delimiter (the trusted gate uses NUL mode and rejects it)",
+  "the pattern's comment describes the requirement file and CI install that arrive in the next change",
+  "the allowlist suite could not run in the reviewer's read-only sandbox (it passes locally and in CI)"
+ ],
+ "row78": "no workflow or action file changes; check-action-pins.py 27 files, 147 pinned actions, zero findings (both reviewers)"
+}

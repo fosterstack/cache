@@ -74,6 +74,13 @@ ALLOW_PATTERNS=(
   '^bin/check-file-allowlist-test\.sh$'
   '^bin/vex-forms\.py$'
   '^bin/vex-forms-test\.sh$'
+  '^bin/vex-index\.py$'
+  '^bin/vex-index-test\.sh$'
+  '^bin/branch-sweep\.py$'
+  '^bin/branch_sweep_test\.py$'
+  '^bin/branch-sweep-test\.sh$'
+  '^bin/local-prune\.sh$'
+  '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
@@ -145,6 +152,9 @@ ALLOW_PATTERNS=(
   # The hash-pinned adjudicator SDK requirements (anthropic + transitive tree), installed
   # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
   '^\.github/agent/adjudicator-requirements\.txt$'
+  # pip itself, pinned and hash-checked for CI (REQ-SUP-001-AC13); one requirement, bumped by the pip
+  # ecosystem in dependabot.yml under the 7-day cooldown.
+  '^\.github/agent/pip-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
   # docs/cve-auditor-matrix.md and tests/auditor-matrix-test.sh (both under .github/agent/): real

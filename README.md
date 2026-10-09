@@ -53,11 +53,12 @@ Shipped:
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
   (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
-  checksums file. Every release is built only by CI. A pre-publish snapshot
-  build is scanned by every scanner in the repo's list; the published images
-  are a separate build of the same commit and are covered by the daily
-  rescan. [`RELEASING.md`](RELEASING.md) describes the pipeline as it is,
-  including that gap.
+  checksums file. Every release is built only by CI, once. The images are assembled
+  once, and the scans, the acceptance tests and an independent
+  reproducibility rebuild all run on that exact digest; the published
+  images are that same digest, promoted without a rebuild. The daily rescan
+  then re-checks what is published. [`RELEASING.md`](RELEASING.md)
+  describes the pipeline stage by stage.
 - Acceptance-tested against a real multi-module Gradle project on every
   push/PR — a from-scratch second build must produce real `FROM-CACHE`
   hits, with the sample's local build cache disabled so a hit is remote

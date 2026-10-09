@@ -1,0 +1,34 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "4f5d1608c63717f03c07f5e6a4125528b1ebd52914b9f1c41bb157444bb8287a",
+ "change": "Allowlist: the final-index tool and its test join the public-file allowlist (two anchored patterns) -- PR #213",
+ "reviewed_commit": "247f5eb066027268a96fd207427603e5c108dc72",
+ "closed_commit": "247f5eb066027268a96fd207427603e5c108dc72",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "first round, both green",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "a2c5a5a894ea0ebd1d73d6f1bdcc8f2a3297983f71b0575a4fccc20820ab7348"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "4e454d76cfd7aa2f1589edf486d1b5fcdd5b6de5a6c18e1d3a46e07c78837b53"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "the allowlist is path-only: the contents of the two files rest on the review of their own PR",
+  "the Codex sandbox could not create fixtures, so the 66-case suite was not re-run there (it passes locally and in CI)"
+ ],
+ "row78": "no workflow or action file changes; check-action-pins.py 27 files, 147 pinned actions, zero findings (Codex)"
+}

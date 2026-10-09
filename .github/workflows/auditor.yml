@@ -221,6 +221,11 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      - name: pin pip (hash-checked)
+        if: ${{ github.event_name == 'schedule' || inputs.adjudicator == 'real' }}
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: Install the pinned adjudicator SDK (real adjudicator only, before the driver)
         # The real adjudicator client imports the anthropic SDK; it was never installed, so every
         # model call failed with ModuleNotFoundError (surfaced by the driver as "adjudicator
@@ -396,6 +401,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: Install the pinned SDKs (both seats)
         run: python3 -m pip install --quiet --require-hashes --break-system-packages -r .github/agent/adjudicator-requirements.txt
 

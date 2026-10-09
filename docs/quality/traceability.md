@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 72 |
-| Acceptance criteria | 167 |
+| Acceptance criteria | 168 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 151 |
+| ACs with mapped evidence | 152 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -891,3 +891,4 @@ Our workflows shall take no new version of an action, or of a tool, image or pac
 | REQ-SUP-001-AC8 | Given a hit with no clean version at least 7 days old, or a hit whose bad version we ran in the last 90 days; when the issue is opened; then it is labelled owner-decision (every hit carries supply-chain-hit), and the workflow never produces the runs, their environments or the secret names they could reach: not in the issue, a log or an artifact | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC9 | Given any public report or issue the checks write; when it states the result; then it says at most 'no known-compromised versions as of <date>', never 'no supply chain issues' | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC10 | Given two advisory lists that disagree about whether a version we use is affected (one says affected; the other, for the same incident, says not); when the daily check or the pull request check runs; then it neither reports clean nor rolls back: with no matching exception it reports a disputed hit, as a public-facts-only issue labelled supply-chain-hit, to the advisor; with a matching exception it passes; an exception is a checked-in entry (the advisory ids, the package, the version, evidence links, its date and each advisory's last-modified time) and applies only while both advisories are unchanged since it was written | ci-workflow |  | approved | 1 item(s) |
+| REQ-SUP-001-AC13 | Given a workflow job that runs pip install; when the workflows are read; then an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown | ci-workflow |  | approved | 1 item(s) |
