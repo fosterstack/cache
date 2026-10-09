@@ -1,0 +1,16 @@
+{
+  "_note": "ONE table of the signing tools and actions, read by bin/chain-sign-wiring-test.sh (who signs provenance: REQ-CHAIN-001-AC1) and bin/chain-records-test.sh (every produced record type has a row: REQ-CHAIN-003-AC3), so the two judges cannot disagree about what a signer is. `regex` finds the call in comment-stripped text (a shell comment or YAML comment exempts nothing: it is removed first). `prov` says whether the call signs SLSA provenance: always | never | if:<regex tested on the same logical command line, backslash continuations joined>. `pseudo` is the record type the records judge requires a row for when it has no finer resolver. Unknown signers fail closed: add the tool here, with a reason, before a workflow may use it. Modelled on: in-toto-witness docs/commands.md and options/run.go:64 (the attestations flag is -a/--attestations, a string slice, so -a slsa, -a=slsa, -a product,slsa and --attestations slsa are all the same request) and docs/attestors/slsa.md.",
+  "signers": [
+    {"name": "cosign sign", "regex": "\\bcosign\\s+(sign|sign-blob)\\b", "prov": "never", "pseudo": "urn:cosign:signature"},
+    {"name": "cosign attest", "regex": "\\bcosign\\s+(attest|attest-blob)\\b", "prov": "if:(slsa|provenance)", "pseudo": null},
+    {"name": "witness run", "regex": "\\bwitness\\s+run\\b", "prov": "if:(?:\\s-a|--attestations?|--attestors?)[ =]+\\S*slsa", "pseudo": null},
+    {"name": "witness sign", "regex": "\\bwitness\\s+sign\\b", "prov": "never", "pseudo": null},
+    {"name": "attest-build-provenance", "regex": "actions/attest-build-provenance@", "prov": "always", "pseudo": "https://slsa.dev/provenance/v1"},
+    {"name": "actions/attest", "regex": "actions/attest@", "prov": "if:(slsa|provenance)", "pseudo": null},
+    {"name": "actions/attest-sbom", "regex": "actions/attest-sbom@", "prov": "never", "pseudo": "urn:action:attest-sbom"},
+    {"name": "slsa-github-generator", "regex": "slsa-framework/slsa-github-generator|slsa-framework/", "prov": "always", "pseudo": "https://slsa.dev/provenance/v1"},
+    {"name": "gitsign", "regex": "\\bgitsign\\b", "prov": "never", "pseudo": "urn:gitsign:tag-signature"},
+    {"name": "sigstore actions", "regex": "\\bsigstore/[A-Za-z0-9._-]+@", "prov": "never", "pseudo": "urn:action:sigstore"},
+    {"name": "chain-verify sign", "regex": "chain-verify\\.py\\s+sign\\b", "prov": "always", "pseudo": "https://slsa.dev/provenance/v1"}
+  ]
+}
