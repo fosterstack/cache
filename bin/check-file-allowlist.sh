@@ -187,6 +187,33 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ is admitted by the PR that adds it.
+  # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
+  '^dependency-provenance\.json$'
+  '^bin/vendor-check\.sh$'
+  '^bin/vendor-provenance\.py$'
+  '^bin/vendoring-test\.sh$'
+  # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
+  # (build/apko.yaml, build/apko-fips.yaml).
+  '^build/melange(-fips)?\.yaml$'
+  '^build/apko(-fips)?\.yaml$'
+  # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
+  '^build/locks/apko(-fips)?\.base\.lock\.json$'
+  '^build/locks/melange\.lock$'
+  # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
+  # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
+  '^build/keys/assembly\.rsa(\.pub)?$'
+  '^build/keys/release\.rsa\.pub$'
+  # Build-chain scripts and their test: build-apk, assemble-image, apko-lock, install-build-tools,
+  # release-sign-apks, sealed-proof, lock-proof, refresh-inputs, melange-apko-test (.sh);
+  # apk-tool, compare-recipes, go-module-sbom (.py).
+  '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs|melange-apko-test)\.sh$'
+  '^bin/(apk-tool|compare-recipes|go-module-sbom)\.py$'
+  # The supply-chain harness manifest (PR #210).
+  '^\.github/agent/supply-chain/harness-manifest\.json$'
+  # The release identity record.
+  '^\.github/release-identity\.json$'
+
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
   '^bench/gradle-sample/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.(kts|java|properties|jar)$'

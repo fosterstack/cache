@@ -196,10 +196,16 @@ revrun fail "rev: private content is still blocked" "$SAME" ops/runbook.md
 
 # criss-cross history: two merge bases; the file must be unchanged against EVERY one of them
 mkrepo "$R"
-( cd "$R" && g checkout -q -b A1 main && echo '{"a":7}' > $PS && g commit -qam a1 \
-  && g checkout -q -b B1 main && echo b > other-b.go && g add -A && g commit -qm b1 \
-  && g checkout -q -b A2 A1 && g merge -q --no-edit B1 \
-  && g checkout -q -b B2 B1 && g merge -q --no-edit A1 \
+# Deterministic commit dates: `git merge-base` (no --all) returns the NEWEST of the merge bases, and with equal
+# timestamps (commits made within one second) the pick is arbitrary. Every fixture commit gets an explicit,
+# strictly increasing date after the base commit, A1 newer than B1, so the pick is always A1 (the base whose
+# content equals the head's).
+T0="$(cd "$R" && git log -1 --format=%ct main)"
+gd() { local t=$((T0+$1)); shift; GIT_AUTHOR_DATE="@$t +0000" GIT_COMMITTER_DATE="@$t +0000" g "$@"; }
+( cd "$R" && g checkout -q -b B1 main && echo b > other-b.go && g add -A && gd 10 commit -qm b1 \
+  && g checkout -q -b A1 main && echo '{"a":7}' > $PS && gd 20 commit -qam a1 \
+  && g checkout -q -b A2 A1 && gd 30 merge -q --no-edit B1 \
+  && g checkout -q -b B2 B1 && gd 40 merge -q --no-edit A1 \
   && g update-ref refs/remotes/origin/main B2 && g checkout -q A2 )
 [ "$(cd "$R" && git merge-base --all HEAD origin/main | wc -l | tr -d ' ')" = 2 ] && gp "criss-cross fixture really has two merge bases" || gf "criss-cross fixture" "expected two merge bases"
 # whichever base git would pick alone, one of the two bases has the other content: ensure the single-base pick
@@ -286,7 +292,7 @@ mkhk() {  # a repo on branch feature/x with the real hook installed; main has on
 hkexpect() {  # hkexpect <expect> <desc> <command string run in $HK>
   local expect="$1" desc="$2" out rc
   out="$(cd "$HK" && eval "$3" 2>&1)"; rc=$?
-  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'blocked'; }; then
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && grep -q 'blocked' <<<"$out"; }; then  # here-string: `printf | grep -q` under pipefail can fail by SIGPIPE when grep exits early
     echo "ok:   $desc"; pass=$((pass+1))
   else
     echo "FAIL: $desc (expected $expect with the allowlist's 'blocked' message, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
@@ -321,7 +327,7 @@ hkexpect fail "hook: merge resolution that writes a third version of an unlisted
 # the hook must not crash and must still reject a disallowed file staged in it
 mkhk; hkbranch other ops/notes.md x
 ( cd "$HK" && git rev-parse other > .git/MERGE_HEAD )
-hkexpect fail "hook: leftover MERGE_HEAD, disallowed file staged: rejected by the allowlist (not a crash)" 'echo S=1 > .env && hk add -f .env && out=$(hk commit -q -m stale 2>&1); rc=$?; echo "$out"; echo "$out" | grep -q "blocked" && exit $rc'
+hkexpect fail "hook: leftover MERGE_HEAD, disallowed file staged: rejected by the allowlist (not a crash)" 'echo S=1 > .env && hk add -f .env && out=$(hk commit -q -m stale 2>&1); rc=$?; echo "$out"; grep -q "blocked" <<<"$out" && exit $rc'
 # type / mode changes: the other parent's diff reports T (or M), which must still count as "differs from
 # that parent". The feature branch lacks ops/x, so against HEAD the path is an addition.
 hkbranch_link() { ( cd "$HK" && nohk checkout -q -b "$1" main && mkdir -p ops && ln -s target ops/x && nohk add -A && nohk commit -q -m "$1" && nohk checkout -q feature/x ); }
@@ -380,6 +386,76 @@ mkhk; hkbranch other ops/notes.md x
 hkexpect fail "hook: cherry-pick of a commit adding an unlisted file is rejected (no MERGE_HEAD)" 'hk cherry-pick -n other && hk commit -q -m cp'
 mkhk; hkbranch other ops/notes.md x
 hkexpect fail "hook: squash merge adding an unlisted file is rejected (no MERGE_HEAD)" 'hk merge -q --squash other && hk commit -q -m sq'
+
+# --- v0.3.0 build-chain paths: one exact pattern per path family (PR 1 of the v0.3.0 plan) ----------------
+# Each family: the intended path(s) pass; near-misses (extra segment, other extension, uppercase, traversal,
+# one directory up, a sibling name) are refused. vendor/ is NOT admitted yet.
+run pass "feature/x" "v030: dependency-provenance.json at the repo root" "dependency-provenance.json"
+run fail "feature/x" "v030: dependency-provenance.json nested is refused"        "tools/dependency-provenance.json"
+run fail "feature/x" "v030: dependency-provenance.json uppercase is refused"     "Dependency-Provenance.json"
+run fail "feature/x" "v030: dependency-provenance.yaml (other extension) refused" "dependency-provenance.yaml"
+run fail "feature/x" "v030: dependency-provenance.json.bak refused"              "dependency-provenance.json.bak"
+run fail "feature/x" "v030: other root json refused"                             "provenance.json"
+
+run pass "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh"
+run fail "feature/x" "v030: bin/vendor-check.sh nested refused"        "bin/x/vendor-check.sh"
+run fail "feature/x" "v030: bin/vendor-check.py (other extension) refused" "bin/vendor-check.py"
+run fail "feature/x" "v030: bin/vendor-provenance.sh (swapped extension) refused" "bin/vendor-provenance.sh"
+run fail "feature/x" "v030: bin/Vendor-check.sh uppercase refused"     "bin/Vendor-check.sh"
+run fail "feature/x" "v030: bin/vendor-other.sh (sibling name) refused" "bin/vendor-other.sh"
+run fail "feature/x" "v030: bin/../vendor-check.sh traversal refused"  "bin/../vendor-check.sh"
+run fail "feature/x" "v030: vendor-check.sh one directory up refused"  "vendor-check.sh"
+run fail "feature/x" "v030: bin/vendoring-test.py refused"             "bin/vendoring-test.py"
+
+run pass "feature/x" "v030: the four melange and apko configs" "build/melange.yaml" "build/melange-fips.yaml" "build/apko.yaml" "build/apko-fips.yaml"
+run fail "feature/x" "v030: build/melange.yml (other extension) refused"   "build/melange.yml"
+run fail "feature/x" "v030: build/melange-FIPS.yaml uppercase refused"     "build/melange-FIPS.yaml"
+run fail "feature/x" "v030: build/apko-other.yaml (unnamed suffix) refused" "build/apko-other.yaml"
+run fail "feature/x" "v030: build/apko-debug.yaml (dropped image) refused" "build/apko-debug.yaml"
+run fail "feature/x" "v030: build/apko-fips-fips.yaml (two suffixes) refused" "build/apko-fips-fips.yaml"
+run fail "feature/x" "v030: build/sub/apko.yaml (extra segment) refused"   "build/sub/apko.yaml"
+run fail "feature/x" "v030: build/docker/apko.yaml refused"                "build/docker/apko.yaml"
+run fail "feature/x" "v030: apko.yaml one directory up refused"            "apko.yaml"
+run fail "feature/x" "v030: build/../apko.yaml traversal refused"          "build/../apko.yaml"
+run fail "feature/x" "v030: build/other.yaml refused"                      "build/other.yaml"
+
+run pass "feature/x" "v030: the three lock files" "build/locks/apko.base.lock.json" "build/locks/apko-fips.base.lock.json" "build/locks/melange.lock"
+run fail "feature/x" "v030: other lock names refused" "build/locks/other.lock" "build/locks/apko-debug.base.lock.json" "build/locks/melange.lock.json" "build/locks/apko.lock"
+run fail "feature/x" "v030: nested lock refused"      "build/locks/x/melange.lock" "build/locks/sub/apko.base.lock.json"
+run fail "feature/x" "v030: uppercase lock refused"   "build/locks/Melange.lock" "build/locks/apko.base.LOCK.json"
+run fail "feature/x" "v030: lock one directory up refused" "build/melange.lock" "melange.lock" "build/apko.base.lock.json"
+run fail "feature/x" "v030: lock traversal refused"   "build/locks/../melange.lock"
+run fail "feature/x" "v030: lock with a suffix refused" "build/locks/melange.lock.bak" "build/locks/apko.base.lock.json.orig"
+
+run pass "feature/x" "v030: the assembly key pair and the release public key" "build/keys/assembly.rsa" "build/keys/assembly.rsa.pub" "build/keys/release.rsa.pub"
+run fail "feature/x" "v030: other key names refused" "build/keys/other.rsa" "build/keys/other.rsa.pub" "build/keys/release.rsa" "build/keys/assembly.pem"
+run fail "feature/x" "v030: nested key refused"      "build/keys/x/assembly.rsa" "build/keys/sub/release.rsa.pub"
+run fail "feature/x" "v030: uppercase key refused"   "build/keys/Assembly.rsa" "build/keys/assembly.RSA.pub"
+run fail "feature/x" "v030: key one directory up refused" "build/assembly.rsa" "assembly.rsa" "keys/assembly.rsa.pub"
+run fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
+run fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
+
+run pass "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh" "bin/melange-apko-test.sh"
+run pass "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/compare-recipes.py" "bin/go-module-sbom.py"
+run fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
+run fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
+run fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "bin/Build-apk.sh"
+run fail "feature/x" "v030: bin/x/assemble-image.sh (extra segment) refused" "bin/x/assemble-image.sh" "bin/x/go-module-sbom.py"
+run fail "feature/x" "v030: assemble-image.sh one directory up refused"   "assemble-image.sh" "compare-recipes.py"
+run fail "feature/x" "v030: suffixed script names refused"                "bin/assemble-image.sh.orig" "bin/apk-tool.py.bak"
+run fail "feature/x" "v030: sibling names refused"                        "bin/build-apk-test.sh" "bin/sealed-proof-test.sh" "bin/refresh-inputs.py" "bin/lock-proof.py"
+run fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "bin/../build-apk.sh"
+
+run pass "feature/x" "v030: the supply-chain harness manifest" ".github/agent/supply-chain/harness-manifest.json"
+run fail "feature/x" "v030: sibling name in supply-chain/ refused"        ".github/agent/supply-chain/harness-manifest2.json" ".github/agent/supply-chain/other.json"
+run fail "feature/x" "v030: nested harness-manifest.json refused"         ".github/agent/supply-chain/x/harness-manifest.json"
+run fail "feature/x" "v030: harness-manifest other extension refused"     ".github/agent/supply-chain/harness-manifest.yaml" ".github/agent/supply-chain/harness-manifest.json.bak"
+run fail "feature/x" "v030: Harness-Manifest.json uppercase refused"      ".github/agent/supply-chain/Harness-Manifest.json"
+run fail "feature/x" "v030: harness-manifest.json one directory up refused" ".github/agent/harness-manifest.json"
+run fail "feature/x" "v030: supply-chain/../ traversal refused"           ".github/agent/supply-chain/../harness-manifest.json"
+
+# Deferred (not admitted until the PR that adds them): the vendored tree.
+run fail "feature/x" "v030: vendor/ files are NOT admitted yet" "vendor/modules.txt" "vendor/golang.org/x/text/a.go"
 
 echo "----"
 echo "check-file-allowlist: $pass passed, $fail failed"
