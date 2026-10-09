@@ -224,7 +224,7 @@ docker run --rm -it --network=container:<name> --pid=container:<name> \
 # inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
 ```
 
-What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47) gave a
+What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47 <!-- pinned: upstream -->) gave a
 root shell on a running `fscache` container; the plain-Docker command above
 reached `/healthz` (HTTP 200) on `127.0.0.1:8080` and listed `fscache` as PID 1;
 `wolfi-base` runs as root and `apk add curl` works in it; `busybox:1.37` run as user 65532 (as the pod's security context would) read `/healthz` with `wget` and listed `fscache`. The tool images in the
