@@ -14,9 +14,12 @@ DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _utc(s):
-    if isinstance(s, dt.datetime):
-        return s
-    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    """-> an aware datetime, or None for anything that is not a complete timestamp with a time zone."""
+    try:
+        t = s if isinstance(s, dt.datetime) else dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return t if t.tzinfo is not None and t.utcoffset() is not None else None
 
 
 def parse_keep(text, now):
@@ -101,7 +104,7 @@ def plan(branches, prs, keep, now, repo="o/r", default_branch="main"):
                 out.append(d("delete", "merged-pr"))
             elif tip and tip[-1]["state"] == "closed":
                 out.append(d("delete", "closed-pr"))
-            elif not b.get("committed"):
+            elif _utc(b.get("committed")) is None:
                 out.append(d("keep", "unknown-age"))
             elif now - _utc(b["committed"]) >= IDLE:
                 out.append(d("delete", "idle-14d"))
@@ -120,10 +123,8 @@ def _enc(name):
 
 def _pages(runner, path):
     sep = "&" if "?" in path else "?"
-    items, page, prev = [], 1, None
+    items, page, prev, linkless_full = [], 1, None, False
     while True:
-        if page > PAGE_CAP:
-            raise ListingError("%s: more than %d pages" % (path, PAGE_CAP))
         st, body, hdr = runner("GET", "%s%sper_page=100&page=%d" % (path, sep, page))
         if st != 200:
             raise ListingError("%s page %d: HTTP %s" % (path, page, st))
@@ -134,12 +135,20 @@ def _pages(runner, path):
         if not isinstance(data, list):
             raise ListingError("%s page %d: not a list" % (path, page))
         nxt = 'rel="next"' in ((hdr or {}).get("link") or "")
-        if nxt and prev is not None and data == prev:
+        full = len(data) == 100
+        if (full or nxt) and data == prev:
             raise ListingError("%s page %d repeats the previous page" % (path, page))
+        if full and not nxt and linkless_full:
+            raise ListingError("%s page %d: a second full page without a next link" % (path, page))
         prev = data
         items += data
-        if len(data) < 100 and not nxt:
+        if not full and not nxt:
             return items
+        if page >= PAGE_CAP:  # the cap only matters while more pages are promised
+            if nxt:
+                raise ListingError("%s: more than %d pages" % (path, PAGE_CAP))
+            return items
+        linkless_full = full and not nxt
         page += 1
 
 
@@ -224,7 +233,8 @@ def main(argv=None, env=None, runner=None, now=None):
                         rec["committed"] = json.loads(cbody)["commit"]["committer"]["date"]
                     except Exception:
                         pass
-                if rec["committed"] is None:
+                if _utc(rec["committed"]) is None:
+                    rec["committed"] = None
                     emit("ERROR commit date unreadable for %s" % name); rc = max(rc, 1)
             nb.append(rec)
     except Exception as e:  # ListingError or a runner/parse failure before any delete: fail closed
@@ -234,35 +244,33 @@ def main(argv=None, env=None, runner=None, now=None):
         emit("ERROR keep-file: %s" % e)
     if kerrs:
         rc = max(rc, 1)
-    limited = 0  # consecutive 403/429 answers to a re-read or a delete
+    streak = {"re-read": 0, "delete": 0}  # consecutive 403/429 answers, counted apart per kind of call
     stop = False
 
-    def struck(st):
-        nonlocal limited, stop
-        limited = limited + 1 if st in (403, 429) else 0
-        if limited >= 3:
-            emit("ERROR rate limited: 3 consecutive 403/429; stopping")
+    def struck(kind, limited):
+        nonlocal stop
+        streak[kind] = streak[kind] + 1 if limited else 0
+        if streak[kind] >= 3:
+            emit("ERROR rate limited: 3 consecutive 403/429 to %ss; stopping" % kind)
             stop = True
 
     def reread(d):
-        """-> 'ok', 'changed' or 'unverified' from the branch's ref and its open pull requests, just before a delete."""
+        """-> ('ok' | 'changed' | 'unverified', throttled) from the branch's ref and its open pull requests, just before a delete."""
         enc = _enc(d["branch"])
         rst, rbody, _ = runner("GET", "repos/%s/git/ref/heads/%s" % (repo, enc))
         if rst == 404:
-            return "changed"
+            return "changed", False
         if rst != 200:
-            struck(rst)
-            return "unverified"
+            return "unverified", rst in (403, 429)
         same = json.loads(rbody)["object"]["sha"] == d["sha"]
         opened = False
         for q in ("head=%s:%s" % (urllib.parse.quote(owner), urllib.parse.quote(d["branch"], safe="")),
                   "base=%s" % urllib.parse.quote(d["branch"], safe="")):
             ost, obody, _ = runner("GET", "repos/%s/pulls?state=open&%s&per_page=1" % (repo, q))
             if ost != 200 or not isinstance(json.loads(obody), list):
-                struck(ost)
-                return "unverified"
+                return "unverified", ost in (403, 429)
             opened = opened or bool(json.loads(obody))
-        return "changed" if opened or not same else "ok"
+        return ("changed" if opened or not same else "ok"), False
 
     for d in plan(nb, prs, keep, now, repo=repo, default_branch=default):
         if d["action"] != "delete":
@@ -272,26 +280,25 @@ def main(argv=None, env=None, runner=None, now=None):
         if stop:
             continue
         try:
-            verdict = reread(d)
+            verdict, throttled = reread(d)
         except Exception:
-            verdict = "unverified"
-        if verdict == "changed":
-            limited = 0  # the answers were usable, so the run is not being throttled
+            verdict, throttled = "unverified", False
         if verdict != "ok":
             emit("SKIPPED %s %s %s %s" % (verdict, d["sha"], d["reason"], d["branch"]))
             if verdict == "unverified":
                 rc = max(rc, 1)
+        struck("re-read", throttled)
+        if verdict != "ok":
             continue
         try:
             st, _, _ = runner("DELETE", "repos/%s/git/refs/heads/%s" % (repo, _enc(d["branch"])))
         except Exception:
             st = 599
         if st == 204:
-            limited = 0
             emit("DELETE %s %s %s" % (d["sha"], d["reason"], d["branch"]))
         else:
             emit("FAILED %s %s %s" % (d["sha"], d["reason"], d["branch"])); rc = max(rc, 1)
-            struck(st)
+        struck("delete", st in (403, 429))
     if not apply_:
         emit("dry-run: nothing deleted")
     return finish(rc)

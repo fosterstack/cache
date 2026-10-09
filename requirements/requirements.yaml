@@ -2078,7 +2078,7 @@ requirements:
     origin: branch hygiene without the owner (owner, Oct 8 2026, "protect good branches from being deleted, but remove merged branches and don't keep branches around that should not be around, all without the need of a human"; advisor 0288). AC5 (a branch that is the base of an open pull request is kept) is the advisor reading of the owner's Oct 8 words "protect good branches from being deleted".
     confidence: implementation-only
     notes: >
-      The sweep is a scheduled job inside the existing reserved-branch-guard workflow (no new workflow file). Its planner is bin/branch-sweep.py; the keep-file is .github/branch-keep.json, an object {"keep": [{"branch", "expires" (YYYY-MM-DD), "reason"}]} read through the API at the default branch. The sweeper reads the runner's response headers by lower-case key (link). Branches on forks are out of scope.
+      The sweep is a scheduled job inside the existing reserved-branch-guard workflow (no new workflow file). Its planner is bin/branch-sweep.py; the keep-file is .github/branch-keep.json, an object {"keep": [{"branch", "expires" (YYYY-MM-DD), "reason"}]} read through the API at the default branch. The sweeper reads the runner's response headers by lower-case key (link). Local prune finds gone branches in a dry run with git ls-remote --heads origin (read-only); only --apply may run git fetch --prune. Branches on forks are out of scope.
     acceptance_criteria:
       - id: REQ-REPO-001-AC1
         given: "the repository's current default branch (whatever its name; a branch that was the default before a rename is an ordinary branch), with any pull request history and any age"
@@ -2131,7 +2131,7 @@ requirements:
       - id: REQ-REPO-001-AC9
         given: "a branch not in any kept class with no pull request at all, and the time of its newest commit"
         when: "the sweep applies"
-        then: "it deletes the branch with the reason idle-14d when that commit is 14 days old or older (14 days exactly is deleted), keeps it when it is younger (13 days 23 hours is kept), and keeps it when the commit date cannot be read; the age is the tip commit's committer date, not the time of the push, which is accepted; a branch that has pull requests none of which is at its tip is treated the same way"
+        then: "it deletes the branch with the reason idle-14d when that commit is 14 days old or older (14 days exactly is deleted), keeps it when it is younger (13 days 23 hours is kept), and keeps it when the commit date cannot be read (a missing, malformed, timezone-less or non-text date counts as unreadable: the branch is kept, an ERROR line names it, the rest of the sweep carries on and the run exits non-zero); the age is the tip commit's committer date, not the time of the push, which is accepted; a branch that has pull requests none of which is at its tip is treated the same way"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC10
@@ -2173,13 +2173,13 @@ requirements:
       - id: REQ-REPO-001-AC16
         given: "more than 100 branches and more than 100 pull requests"
         when: "the sweep lists them"
-        then: "it reads every page (100 per page, following the next-page link) before deciding anything; if any listing request fails (including a 404) or returns something that is not a list, or the listing is cut short, it deletes nothing, writes an ERROR line, and exits non-zero (fail closed); cut short means a next-page link whose following page fails, a page limit of 200 pages reached while a next-page link remains, or a page that repeats the one before it; exactly 100 or 200 items, and 1,050 items over 11 pages, are read in full; an empty branch list is not an error and deletes nothing"
+        then: "it reads every page (100 per page, following the next-page link) before deciding anything; if any listing request fails (including a 404) or returns something that is not a list, or the listing is cut short, it deletes nothing, writes an ERROR line, and exits non-zero (fail closed); cut short means a next-page link whose following page fails, a page limit of 200 pages reached while a next-page link remains, or a full page that repeats the one before it, with or without a next-page link; a full page with no next-page link ends the listing, the 200th page included, and is not an error; exactly 100 or 200 items, and 1,050 items over 11 pages, are read in full; an empty branch list is not an error and deletes nothing"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC17
         given: "a deletion the API refuses"
         when: "the sweep runs"
-        then: "it logs a FAILED line (a request that raises is a FAILED line too), goes on to the remaining branches, and exits non-zero at the end; after three consecutive 403 or 429 answers to deletions it stops, writes an ERROR line, makes no further deletion in that run and exits non-zero; just before each deletion it re-reads the branch and the open pull requests that have it as head or base, and if the branch's commit changed, the branch is gone, or an open pull request appeared it makes no delete call and logs a SKIPPED changed line with the planned sha, reason and branch (a re-read that answers anything but 200 with a list or a commit, a 404 on the open pull request check included, or that raises, logs SKIPPED unverified, makes no delete call and exits non-zero; a 403 or 429 answer to a re-read counts toward the same three-in-a-row stop, and any answer that is not a 403 or 429 breaks the streak); a second run over the repository left by the first deletes nothing"
+        then: "it logs a FAILED line (a request that raises is a FAILED line too), goes on to the remaining branches, and exits non-zero at the end; after three consecutive 403 or 429 answers to deletions it stops, writes an ERROR line, makes no further deletion in that run and exits non-zero; just before each deletion it re-reads the branch and the open pull requests that have it as head or base, and if the branch's commit changed, the branch is gone, or an open pull request appeared it makes no delete call and logs a SKIPPED changed line with the planned sha, reason and branch (a re-read that answers anything but 200 with a list or a commit, a 404 on the open pull request check included, or that raises, logs SKIPPED unverified, makes no delete call and exits non-zero; three consecutive 403 or 429 answers to re-reads stop the run in the same way; answers to re-reads and answers to deletions are counted as two separate streaks, and any other answer of the same kind, a clean 200 re-read included, breaks that kind's streak); a second run over the repository left by the first deletes nothing"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC18
@@ -2191,7 +2191,7 @@ requirements:
       - id: REQ-REPO-001-AC19
         given: "the same workflow"
         when: "it is read"
-        then: "the sweep job's permissions are exactly contents: write and pull-requests: read, the guard job and the workflow keep only contents: read, no secret is referenced (the job token only), no run step interpolates an expression, and every action reference is a full commit digest; the sweep job's last step, which always runs, uploads the log as the artifact branch-sweep-log with a retention of 90 days, using the same digest-pinned upload-artifact reference as the other workflows"
+        then: "the sweep job's permissions are exactly contents: write and pull-requests: read, the guard job and the workflow keep only contents: read, no secret is referenced (the job token only), no run step of any job, the guard job included, interpolates a ${{ }} expression (values reach scripts only through env), and every action reference is a full commit digest; the sweep job's last step, which always runs, uploads the log as the artifact branch-sweep-log with a retention of 90 days, using the same digest-pinned upload-artifact reference as the other workflows"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC20
@@ -2221,7 +2221,7 @@ requirements:
       - id: REQ-REPO-001-AC24
         given: "bin/local-prune.sh run without arguments"
         when: "it runs"
-        then: "it changes nothing (no branch deleted, no worktree record pruned), prints would-delete lines with the sha and a line saying dry-run, and acts only with --apply"
+        then: "it changes nothing (no branch deleted, no worktree record pruned, no ref or remote-tracking ref changed, no fetch run, no FETCH_HEAD written), prints would-delete lines with the sha and a line saying dry-run, and acts only with --apply; in a dry run gone-detection reads the remote with git ls-remote --heads origin (read-only) and a remote that cannot be read keeps every branch; --apply may run git fetch --prune first; a branch whose upstream is on a remote other than origin is kept; the merged-into-main check in a dry run uses the sha of main read from git ls-remote --heads origin, and only when that commit exists locally, otherwise (or when the remote's main does not contain the branch) the branch falls to the pull request lookup and is kept if that finds nothing, and a stale origin/main tracking ref is never used to decide"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC25

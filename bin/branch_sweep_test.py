@@ -73,13 +73,14 @@ def kentry(branch, days=10, reason="in flight"):
 class GH:
     def __init__(self, branches=(), prs=(), keep=None, keep_refs=None, default="main", repo="o/r", cap=None,
                  fail=None, fail_delete=(), bad_commit=(), keep_status=None, protected=(), before=None, delete_status=None,
-                 endless=None):
+                 endless=None, bad_date=None):
         self.repo, self.default, self.cap = repo, default, cap
         self.branches = [{"name": n, "sha": sha_of(n), "age": a} for n, a in branches]
         self.prs, self.keep, self.keep_refs = list(prs), keep, keep_refs
         self.fail, self.fail_delete, self.bad_commit, self.keep_status = fail, set(fail_delete), set(bad_commit), keep_status
         self.protected = set(protected)
         self.before, self.delete_status, self.endless = before, dict(delete_status or {}), endless
+        self.bad_date = dict(bad_date or {})
         self.calls = []
 
     def deletes(self):
@@ -112,6 +113,10 @@ class GH:
             return 200, json.dumps({"full_name": self.repo, "default_branch": self.default}), {}
         if method == "GET" and p in (r + "/branches", r + "/pulls") and self.endless:
             kind, mode = self.endless
+            if p.endswith(kind) and mode == "repeat_full":  # the same full page every time, no next link
+                items = ([{"name": "feat/r%02d" % i, "commit": {"sha": sha_of("r%d" % i)}, "protected": False} for i in range(100)]
+                         if kind == "branches" else [pr(i + 1, "feat/r%02d" % i, state="closed") for i in range(100)])
+                return 200, json.dumps(items), {}
             if p.endswith(kind):
                 pg = int(q.get("page", ["1"])[0])
                 n = 1 if mode == "repeat" else pg
@@ -139,7 +144,8 @@ class GH:
             sha = p.rsplit("/", 1)[1]
             for b in self.branches:
                 if b["sha"] == sha and b["name"] not in self.bad_commit:
-                    return 200, json.dumps({"sha": sha, "commit": {"committer": {"date": iso(NOW - b["age"])}}}), {}
+                    date = self.bad_date.get(b["name"], iso(NOW - b["age"]))
+                    return 200, json.dumps({"sha": sha, "commit": {"committer": {"date": date}}}), {}
             return (500 if any(b["sha"] == sha for b in self.branches) else 404), "{}", {}
         if method == "GET" and p == r + "/contents/.github/branch-keep.json":
             if self.keep_status:
@@ -344,6 +350,14 @@ class DeleteRules(unittest.TestCase):  # AC7-AC9
         self.assertEqual(plan_map([mk("2026-09-24T14:00:00+02:00")])["feat/a"]["action"], "delete")
         self.assertEqual(plan_map([mk("2026-09-24T15:00:00+02:00")])["feat/a"]["action"], "keep")
 
+    def test_ac9_every_kind_of_unreadable_date_keeps_and_never_raises(self):
+        for bad in ("garbage", "", "2026-09-01T00:00:00", "2026-13-45T00:00:00Z", 12345, 1.5, ["x"], {"a": 1}, dt.datetime(2026, 9, 1),
+                    "2026-09-01", "Sept 1"):
+            b = {"name": "feat/a", "sha": sha_of("feat/a"), "committed": bad}
+            d = plan_map([b, B("feat/b", 99)])
+            self.assertEqual((d["feat/a"]["action"], d["feat/a"]["reason"]), ("keep", "unknown-age"), repr(bad))
+            self.assertEqual(d["feat/b"]["action"], "delete")  # the others are still decided
+
     def test_ac9_unreadable_date_keeps(self):
         d = plan_map([B("feat/a", None)])["feat/a"]
         self.assertEqual((d["action"], d["reason"]), ("keep", "unknown-age"))
@@ -465,6 +479,14 @@ class MainSweep(unittest.TestCase):
         self.assertEqual(lines(summary, "FAILED"), [])
         looked = {p.rsplit("/", 1)[1] for m, p in gh.calls if "/commits/" in p}
         self.assertNotIn(sha_of("feat/prot2"), looked)
+
+    def test_ac9_a_garbage_or_naive_commit_date_keeps_that_branch_and_the_sweep_goes_on(self):
+        for bad in ("garbage", "2026-09-01T00:00:00", "12345", "", "2026-13-45T00:00:00Z"):
+            gh = GH([("feat/a", OLD), ("feat/b", OLD), ("feat/c", OLD)], bad_date={"feat/b": bad})
+            rc, out, summary = run_main(gh)
+            self.assertEqual(deleted_names(gh), {"feat/a", "feat/c"}, bad)
+            self.assertNotEqual(rc, 0, bad)
+            self.assertTrue([l for l in summary.splitlines() if l.startswith("ERROR") and "feat/b" in l], (bad, summary))
 
     def test_ac1_ac3_default_branch_other_than_main(self):
         gh = GH([("trunk", OLD), ("main", OLD)], default="trunk", keep=None)
@@ -597,6 +619,24 @@ class MainSweep(unittest.TestCase):
                 self.assertLessEqual(len(listing), 205, (kind, mode, len(listing)))
                 if mode == "repeat":
                     self.assertLessEqual(len(listing), 5, (kind, mode, len(listing)))  # a repeated page is noticed at once
+
+    def test_ac16_a_repeated_full_page_without_a_next_link_fails_closed(self):
+        for kind in ("branches", "pulls"):
+            gh = GH([("feat/a", OLD)], endless=(kind, "repeat_full"))
+            out, summary = self._fail_closed(gh)
+            self.assertIn("ERROR", out + summary, kind)
+            listing = [p for m, p in gh.calls if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/" + kind)]
+            self.assertLessEqual(len(listing), 5, (kind, len(listing)))
+
+    def test_ac16_a_full_last_page_without_a_next_link_ends_the_listing(self):
+        # 200 full pages, the 200th without a next link: the page limit is not an error when nothing follows
+        names = ["feat/p%05d" % i for i in range(20000)]
+        gh = GH([(n, OLD) for n in names], protected=set(names))
+        rc, out, summary = run_main(gh, ())
+        self.assertEqual(rc, 0, out[-300:])
+        self.assertNotIn("ERROR", summary)
+        asked = [p for m, p in gh.calls if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/branches")]
+        self.assertEqual(len(asked), 200)
 
     def test_ac16_empty_repository_listing_is_not_an_error(self):
         gh = GH([])
@@ -886,6 +926,30 @@ class MainSweep(unittest.TestCase):
         self.assertEqual(len(lines(summary, "FAILED")), 3)
         self.assertTrue(any("ERROR" in l and "rate" in l for l in summary.splitlines()), summary)
 
+    def test_ac17_a_plain_usable_re_read_breaks_the_streak(self):
+        names = ["feat/a", "feat/b", "feat/c", "feat/d", "feat/e"]
+        limited = {"feat/a": 403, "feat/c": 403, "feat/d": 429}
+
+        def f(m, p, q):
+            if m == "GET" and "/git/ref/heads/" in p:
+                st = limited.get(urllib.parse.unquote(p.split("/git/ref/heads/", 1)[1]))
+                if st:
+                    return st, "{}"
+        # B: a clean unchanged re-read, then its DELETE is answered 429: the clean answer broke the re-read streak (A=1, B=0,
+        # C=1, D=2), and one 429 to a delete is no streak, so nothing stops and E is reached and deleted
+        gh = GH([(n, OLD) for n in names], fail=f, delete_status={"feat/b": 429})
+        rc, out, summary = run_main(gh)
+        self.assertNotEqual(rc, 0)
+        rereads = [urllib.parse.unquote(p.split("/git/ref/heads/", 1)[1]) for m, p in gh.calls if "/git/ref/heads/" in p]
+        self.assertEqual(rereads, names)
+        self.assertFalse(any("ERROR" in l and "rate" in l for l in summary.splitlines()), summary)
+        self.assertEqual(deleted_names(gh), {"feat/b", "feat/e"})  # b was attempted (429), e deleted
+        # B: DELETE answered 204 -> the streak restarts at C: A, (B ok), C, D is only two: E is reached and deleted
+        gh = GH([(n, OLD) for n in names], fail=f)
+        rc, out, summary = run_main(gh)
+        self.assertEqual(deleted_names(gh), {"feat/b", "feat/e"})
+        self.assertFalse(any("ERROR" in l and "rate" in l for l in summary.splitlines()), summary)
+
     def test_ac17_a_success_resets_the_rate_limit_count(self):
         names = ["feat/n%d" % i for i in range(7)]
         st = {names[0]: 429, names[1]: 403, names[3]: 403, names[4]: 429, names[5]: 429}
@@ -1159,11 +1223,22 @@ class Wiring(unittest.TestCase):  # AC18-AC20
             if str(s.get("uses", "")).startswith("actions/checkout@"):
                 self.assertEqual(str((s.get("with") or {}).get("persist-credentials")).lower(), "false")
 
-    def test_no_expression_in_any_run_step_of_the_sweep(self):
+    def test_no_expression_in_any_run_step_of_any_job(self):
         d, _ = wf()
-        _, j = sweep_job(d)
-        for s in j["steps"]:
-            self.assertNotIn("${{", s.get("run") or "")
+        sweep_job(d)
+        n = 0
+        for name, j in d["jobs"].items():
+            for s in j["steps"]:
+                if "run" in s:
+                    n += 1
+                    self.assertNotIn("${{", s["run"], "job %s: values must arrive through env:" % name)
+        self.assertGreaterEqual(n, 2)
+
+    def test_the_guard_receives_the_actor_through_env(self):
+        d, _ = wf()
+        sweep_job(d)
+        steps = [s for s in d["jobs"]["guard"]["steps"] if any("github.actor" in str(v) for v in (s.get("env") or {}).values())]
+        self.assertEqual(len(steps), 1)
 
     def test_dry_run_default_is_not_bypassed(self):
         d, text = wf()
@@ -1256,12 +1331,14 @@ class Wiring(unittest.TestCase):  # AC18-AC20
     def test_guard_step_still_rejects_every_pusher_but_the_app(self):
         d, _ = wf()
         sweep_job(d)  # the guard is judged in the workflow that now also carries the sweep
-        step = [s for s in d["jobs"]["guard"]["steps"] if "github.actor" in (s.get("run") or "")][0]
+        step = [s for s in d["jobs"]["guard"]["steps"] if any("github.actor" in str(v) for v in (s.get("env") or {}).values())][0]
+        var = [k for k, v in step["env"].items() if "github.actor" in str(v)][0]
         for actor, ok in (("fosterstack-automation[bot]", True), ("fosterstack-automation", True), ("octocat", False),
-                          ("fosterstack-automation-evil", False), ("", False)):
-            text = step["run"].replace("${{ github.actor }}", actor)
-            p = subprocess.run(["bash", "-c", text], capture_output=True, text=True)
+                          ("fosterstack-automation-evil", False), ("", False),
+                          ("x'; touch /tmp/pwned-by-actor; echo '", False), ("$(touch /tmp/pwned-by-actor)", False)):
+            p = subprocess.run(["bash", "-c", step["run"]], env=dict(os.environ, **{var: actor}), capture_output=True, text=True)
             self.assertEqual(p.returncode == 0, ok, (actor, p.stderr))
+        self.assertFalse(os.path.exists("/tmp/pwned-by-actor"))
 
     def test_sweep_runs_the_checked_in_script_with_the_job_token(self):
         d, _ = wf()
@@ -1710,6 +1787,135 @@ class Prune(unittest.TestCase):  # AC22-AC24
         self.assertRegex(p.stdout, r"would delete branch feat/b [0-9a-f]{40} pr-closed")
         self.assertIn("dry-run", p.stdout)
         self.assertNotRegex(p.stdout, r"(?m)^deleted ")
+
+    def snapshot(self):
+        refs = sh("git", "for-each-ref", "--format=%(refname) %(objectname)", cwd=self.w).stdout
+        wt = sh("git", "worktree", "list", "--porcelain", cwd=self.w).stdout
+        cfg = sh("git", "config", "--list", cwd=self.w).stdout
+        fetch_head = os.path.exists(os.path.join(self.w, ".git", "FETCH_HEAD"))
+        return (refs, wt, cfg, fetch_head)
+
+    def gone_elsewhere(self, name):
+        other = os.path.join(self.td, "other")
+        if not os.path.isdir(other):
+            sh("git", "clone", "-q", self.origin, other)
+        sh("git", "push", "-q", "origin", "--delete", name, cwd=other)
+
+    def test_ac24_a_dry_run_changes_no_ref_no_fetch_head_no_worktree_record(self):
+        sha = self.branch("feat/a", merged=True)
+        self.branch("feat/s"); self.prs("feat/s", "MERGED")
+        self.gone_elsewhere("feat/a"); self.gone_elsewhere("feat/s")  # this clone's remote-tracking refs are now stale
+        wt = os.path.join(self.td, "wt")
+        self.branch("feat/wt", merged=True)
+        sh("git", "worktree", "add", "-q", wt, "feat/wt", cwd=self.w)
+        shutil.rmtree(wt)
+        before = self.snapshot()
+        self.assertIn("origin/feat/a", sh("git", "branch", "-r", cwd=self.w).stdout)
+        p = self.run_prune()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.snapshot(), before)
+        # ... and the stale clone is still judged correctly, from the remote itself
+        self.assertRegex(p.stdout, r"would delete branch feat/a %s merged-into-main" % sha)
+        self.assertRegex(p.stdout, r"would delete branch feat/s [0-9a-f]{40} pr-merged")
+        self.assertIn("dry-run", p.stdout)
+
+    def test_ac24_a_dry_run_with_an_unreachable_remote_keeps_everything(self):
+        self.branch("feat/a", merged=True); self.gone("feat/a")
+        sh("git", "remote", "set-url", "origin", os.path.join(self.td, "nowhere.git"), cwd=self.w)
+        before = self.snapshot()
+        p = self.run_prune()
+        self.assertEqual(self.snapshot(), before)
+        self.assertNotRegex(p.stdout, r"(?m)^would delete")
+        p = self.run_prune("--apply")
+        self.assertTrue(self.exists("feat/a"))
+
+    def other_clone(self):
+        other = os.path.join(self.td, "other")
+        if not os.path.isdir(other):
+            sh("git", "clone", "-q", self.origin, other)
+        return other
+
+    def test_ac24_an_unreadable_or_empty_remote_keeps_even_branches_the_pr_lookup_would_delete(self):
+        for kind in ("unreachable", "empty"):
+            self.setUp() if kind == "empty" else None
+            self.branch("feat/s"); self.prs("feat/s", "MERGED"); self.gone("feat/s")
+            self.branch("feat/c"); self.prs("feat/c", "CLOSED"); self.gone("feat/c")
+            self.branch("feat/m", merged=True); self.gone("feat/m")
+            url = os.path.join(self.td, "nowhere.git")
+            if kind == "empty":
+                url = os.path.join(self.td, "empty.git")
+                sh("git", "init", "-q", "--bare", url)
+            sh("git", "remote", "set-url", "origin", url, cwd=self.w)
+            before = self.snapshot()
+            p = self.run_prune()
+            self.assertEqual(self.snapshot(), before, kind)
+            self.assertNotRegex(p.stdout, r"(?m)^would delete", kind)
+            p = self.run_prune("--apply")
+            self.assertNotRegex(p.stdout, r"(?m)^deleted", kind)
+            for b in ("feat/s", "feat/c", "feat/m"):
+                self.assertTrue(self.exists(b), (kind, b))
+
+    def test_ac24_a_branch_whose_upstream_is_another_remote_is_kept_in_both_modes(self):
+        r2 = os.path.join(self.td, "r2.git")
+        sh("git", "init", "-q", "--bare", "-b", "main", r2)
+        sha = self.branch("feat/x", push=False, merged=True)
+        sh("git", "remote", "add", "r2", r2, cwd=self.w)
+        sh("git", "push", "-q", "-u", "r2", "feat/x", cwd=self.w)  # upstream is r2/feat/x: absent from origin
+        self.prs("feat/x", "MERGED")
+        self.assertEqual(sh("git", "config", "branch.feat/x.remote", cwd=self.w).stdout.strip(), "r2")
+        for args in ((), ("--apply",)):
+            p = self.run_prune(*args)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertTrue(self.exists("feat/x"), args)
+            self.assertNotRegex(p.stdout, r"(?m)^(deleted|would delete) branch feat/x")
+
+    def test_ac24_a_dry_run_judges_merged_from_the_remotes_main_not_a_stale_tracking_ref(self):
+        sha = self.branch("feat/m")
+        other = self.other_clone()
+        sh("git", "fetch", "-q", "origin", cwd=other)
+        sh("git", "merge", "-q", "--ff-only", "origin/feat/m", cwd=other)  # remote main now IS feat/m's tip (a commit this clone has)
+        sh("git", "push", "-q", "origin", "main", cwd=other)
+        sh("git", "push", "-q", "origin", "--delete", "feat/m", cwd=other)
+        tracking = sh("git", "rev-parse", "origin/main", cwd=self.w).stdout.strip()
+        self.assertNotEqual(tracking, sha)  # origin/main here is stale: it does not contain the branch
+        before = self.snapshot()
+        p = self.run_prune()
+        self.assertEqual(self.snapshot(), before)
+        self.assertRegex(p.stdout, r"would delete branch feat/m %s merged-into-main" % sha)
+
+    def test_ac24_a_dry_run_does_not_trust_a_stale_tracking_ref_the_remote_no_longer_has(self):
+        base = sh("git", "rev-parse", "main", cwd=self.w).stdout.strip()
+        self.branch("feat/m", merged=True)  # origin/main here now contains feat/m
+        other = self.other_clone()
+        sh("git", "push", "-q", "-f", "origin", base + ":refs/heads/main", cwd=other)  # the remote's main went back
+        sh("git", "push", "-q", "origin", "--delete", "feat/m", cwd=other)
+        self.assertEqual(sh("git", "merge-base", "--is-ancestor", "feat/m", "origin/main", cwd=self.w, check=False).returncode, 0)
+        p = self.run_prune()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(self.exists("feat/m"))
+        self.assertNotRegex(p.stdout, r"(?m)^would delete branch feat/m")
+
+    def test_ac24_remote_main_commit_missing_locally_falls_to_the_pr_lookup(self):
+        sha = self.branch("feat/m")
+        other = self.other_clone()
+        sh("git", "fetch", "-q", "origin", cwd=other)
+        sh("git", "merge", "-q", "--no-ff", "-m", "merge feat/m", "origin/feat/m", cwd=other)  # a merge commit this clone lacks
+        sh("git", "push", "-q", "origin", "main", cwd=other)
+        sh("git", "push", "-q", "origin", "--delete", "feat/m", cwd=other)
+        remote_main = sh("git", "rev-parse", "main", cwd=other).stdout.strip()
+        self.assertNotEqual(sh("git", "cat-file", "-e", remote_main, cwd=self.w, check=False).returncode, 0)
+        p = self.run_prune()  # gh knows nothing: kept
+        self.assertTrue(self.exists("feat/m"))
+        self.assertNotRegex(p.stdout, r"(?m)^would delete branch feat/m")
+        self.prs("feat/m", "MERGED")  # gh says merged at the tip: decided by the pull request, not by main
+        p = self.run_prune()
+        self.assertRegex(p.stdout, r"would delete branch feat/m %s pr-merged" % sha)
+        self.assertTrue(self.exists("feat/m"))
+
+    def test_ac22_apply_may_fetch_and_prune(self):
+        self.branch("feat/a", merged=True); self.gone_elsewhere("feat/a")
+        self.run_prune("--apply")
+        self.assertNotIn("origin/feat/a", sh("git", "branch", "-r", cwd=self.w).stdout)
 
     def test_ac24_unknown_argument_changes_nothing(self):
         self.branch("feat/a", merged=True); self.gone("feat/a")
