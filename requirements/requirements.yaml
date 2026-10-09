@@ -2355,3 +2355,121 @@ requirements:
         then: "no workflow file other than release.yml calls stage-sign.yml, and no stage-*.yml file calls another stage file, because the certificate's SAN is the file that runs the signing step, so a workflow that calls a stage file inherits that stage's SAN (proven by the nested call in the harness spike); a reference by local path or by repository path and digest counts"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
+
+  # ── The v0.3.0 release chain: Build and Rebuild (pipeline lane, PR 2) ─────
+
+  - id: REQ-CHAIN-004
+    title: Build runs sealed, under Witness, after admission, and hands Sign only a digest list
+    statement: >
+      The Build stage shall be one job on a GitHub-hosted VM, never in a container, in which Witness is installed first (pinned by checksum) and everything else runs as one committed script under Witness; that script first admits the tagged commit with every check the old admission stage made, then builds the package and the images with the cache lane's two scripts inside a network-less namespace, checks the built server reports its real version, and writes digests.json, the only thing Sign accepts; Witness's record is signed keyless under Build's own identity with the Sigstore timestamp and never contains the job's identity-token variables; Build holds no secret and no registry credential.
+    source: [.github/workflows/stage-build.yml, bin/build-stage.sh, bin/build-admit.py, bin/build-version-check.py]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 58, 62, 63, 68 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0338)
+    confidence: implementation-only
+    notes: >
+      The cache lane owns bin/build-apk.sh and bin/assemble-image.sh, the recipes, the archive and the committed assembly key; this requirement only invokes them. Interface lines not yet fixed by cache-3f's assertions are marked PROPOSED/UNVERIFIED in the tests (the exit code for a network attempt; the exact argv and output paths); the cache-pipeline-interface note replaces them. PR 1 OWNS the digests.json schema (REQ-CHAIN-001-AC2); PR 2 adds only that what Build writes passes that check. OPEN QUESTIONS FOR THE ADVISOR. (1) Cutover: rewriting stage-build.yml and stage-reproducibility.yml in place, and removing stage-image.yml and stage-admission.yml, switches the live release chain (automatic patch releases, REQ-REL-009) at this PR's merge, while PR 3 and PR 4 are not there yet. Proposal: stack PR 2, 3 and 4 on one integration branch and cut over to main in one merge, with the old chain untouched until then; the advisor decides. (2) Rule 11 builds the apk for amd64 and arm64 each on its own native runner and rule 33 assembles both architectures in one apko run: the tests treat a matrix over the two native runners as ONE job definition and mark the step where the two apks meet as PROPOSED; the advisor rules how they meet (proposal: each leg uploads its apk as a named artifact and the leg that finishes second assembles, or Build is two jobs and rule 50's one-job wording is read per architecture). (3) Witness's own fulcio signing needs the identity token as a file; the single Witness step fetches it itself before `witness run` (the harness spike's form) and the token variables are filtered out of the record with --env-filter-sensitive-vars and --env-add-sensitive-key.
+    acceptance_criteria:
+      - id: REQ-CHAIN-004-AC1
+        given: "stage-build.yml"
+        when: "it is parsed"
+        then: "it is a reusable workflow of one job (a matrix over the two native runners is still one job) on a GitHub-hosted ubuntu runner, directly on the VM: no container, no services, no job-level env or defaults, permissions exactly contents read and id-token write, no secrets, no packages write; no other workflow file is added"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC2
+        given: "the steps of the Build job"
+        when: "they are read"
+        then: "they are exactly: checkout without persisted credentials; the Witness install pinned by version and checksum; one run step that fetches the job's identity token to a masked file under the runner temp folder and then runs witness run once with fixed Fulcio and timestamp-authority addresses, an allowed attestor list, the identity-token variables filtered out of the environment record, and the single command ./bin/build-stage.sh; and the uploads of the named artifacts only (witness-build, digests, dist, locks); no third-party action runs after Witness is installed except the uploads, and nothing else leaves the job"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC3
+        given: "bin/build-stage.sh"
+        when: "its commands are read in order"
+        then: "the first command is the admission script, the next exports SOURCE_DATE_EPOCH as the digits cache's bin/build-apk.sh --print-source-date-epoch prints for the tagged commit, then comes cache's bin/build-apk.sh for each variant, then bin/assemble-image.sh for each variant, then the version check on the built binary, then the digests.json and items.json writes; it contains no network fetch (curl, wget, pip, go get, git clone), no sudo, sysctl or unshare of its own (cache's scripts do those), no direct melange or apko call, none of the variables or flags cache's scripts refuse (APK_RELEASE_SIGNING_KEY, GOPROXY, HTTPS_PROXY, HTTP_PROXY, --signing-key), and no step that ignores a failure (set +e, || true)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC4
+        given: "a tag push, with the policy inputs on protected main and the tagged commit as the thing being admitted"
+        when: "bin/build-admit.py runs"
+        then: "it makes every check stage-admission.yml makes today and drops none: the ref is a tag and matches the strict version syntax before anything else reads it; the policy files come from origin/main and never from the tagged commit; the tag is annotated and its signature is the owner's SSH key, or for a patch tag the release workflow's keyless identity with the exact issuer, repository, ref and commit, with non-empty signer evidence; the tagged commit is signed by the owner or the pinned web-flow key and is an ancestor of origin/main; every required check is green, pinned to its app, on the tagged commit (push scope) or on the merged pull request's head (pull_request scope), unknown scopes and a count that differs are refused, and commit statuses never satisfy a check; an approved, consistent ACs baseline exists for the version (a CI patch uses its line's owner-approved baseline only when the requirements are unchanged, REQ-REL-009-AC13); and it writes the canonical admission evidence; any failure exits non-zero naming the check and builds nothing"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC5
+        given: "the list of checks and steps in stage-admission.yml at main"
+        when: "bin/build-admit.py is compared with it"
+        then: "every check has a named counterpart in build-admit.py list-checks, and the only steps with no counterpart are the custom source-admission predicate and its upload, replaced by Witness's own signed record because rule 63 allows no FosterStack record type; a check added to the old stage without a counterpart fails the comparison"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC6
+        given: "the network cut and the build date"
+        when: "the stage and the scripts are read"
+        then: "the stage only exports SOURCE_DATE_EPOCH (digits, from cache's --print-source-date-epoch); cache's two scripts set the unprivileged-namespace setting and do the network cut (sudo unshare -n) around the direct melange and apko calls; Build does not wrap them, call melange or apko itself, set a proxy or module-fetch variable, or pass a flag that enables the network; when a script fails (including the PROPOSED/UNVERIFIED network-attempt exit code 4 and exit 2 refusals) the stage stops, runs nothing after it, and exits non-zero, and a stage run with a sealed-script failure produces no digests.json"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC7
+        given: "a built binary and the tag and commit it was built from"
+        when: "bin/build-version-check.py runs"
+        then: "it passes only when the binary's embedded module version equals the tag and its VCS revision equals the tagged commit; a version of (devel), a missing or different revision, a modified-tree marker, or a version that differs from the tag exits non-zero naming which"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC8
+        given: "a Witness collection written by the Build step"
+        when: "bin/chain-verify.py record-env checks it"
+        then: "the environment record holds none of the ACTIONS_ID_TOKEN_REQUEST_* variables or any token, not even obfuscated; a collection that names one of them (with its value or as a masked placeholder) is refused naming the variable; and the Build step's witness command carries the filter flag and the sensitive-key pattern that keep them out"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC9
+        given: "the digests.json that Build writes and the signed Witness record"
+        when: "bin/chain-verify.py sign --check reads them"
+        then: "the file passes PR 1's digest-list schema check and its hash is the one Witness recorded as a product, with the image and apk digests it holds equal to what the scripts reported; a digests.json with any other name, extra field or code is refused (PR 1's schema, REQ-CHAIN-001-AC2)"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-004-AC10
+        given: "the Witness record Build signs"
+        when: "bin/chain-verify.py verify checks it as stage build"
+        then: "it is signed keyless under stage-build.yml at the tag with release.yml as the top-level workflow, carries the Sigstore timestamp, is a Witness collection and nothing else (no FosterStack record type), and Build writes no other signed record"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+
+  - id: REQ-CHAIN-005
+    title: Rebuild repeats the build on a fresh machine and blocks on any difference
+    statement: >
+      The Rebuild stage shall be one job on a fresh GitHub-hosted VM that first verifies Build's signed record, then builds the same commit with the same pinned tools, the same two scripts and the same build date, compares every digest with Build's record, signs only a verdict under its own identity naming each differing item, and runs alongside Check, needing only Build.
+    source: [.github/workflows/stage-reproducibility.yml, bin/build-stage.sh, bin/chain-verify.py, .github/workflows/release.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 31, 54, 58, 59, 62, 64, 70 (owner RATIFIED Oct 9 2026; advisor read-back approved, handoff 0338)
+    confidence: implementation-only
+    notes: >
+      Release publishes Build's bytes and never Rebuild's (rule 64), so Rebuild's only output is its verdict. Which digests exist depends on cache's interface note (PROPOSED/UNVERIFIED lines in the tests: per-architecture apk, local index, full lock file, image index and per-platform manifests, binary).
+    acceptance_criteria:
+      - id: REQ-CHAIN-005-AC1
+        given: "stage-reproducibility.yml"
+        when: "it is parsed"
+        then: "it has the same job shape as Build (REQ-CHAIN-004-AC1 and AC2: one job directly on a GitHub-hosted VM, Witness first, one script under Witness, no secrets, no packages write) with its own checkout on a fresh runner, and its first action after Witness is chain-verify.py stage-start against Build's record"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-005-AC2
+        given: "bin/build-stage.sh run in Rebuild"
+        when: "it rebuilds"
+        then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-005-AC3
+        given: "Build's signed item list (items.json, a product in Build's Witness record) and Rebuild's own results for the per-architecture apks, the local package index contents, the full lock file, the image index, each platform's manifest and the binary"
+        when: "bin/chain-verify.py rebuild-compare runs"
+        then: "it checks Build's items.json against the hash Witness recorded for it (exit non-zero otherwise), requires the full committed item list on both sides, and exits zero only when every item digest is identical; one differing byte in any item exits non-zero, and the verdict names each differing item and both digests; a missing item on either side, an unlisted extra item or a malformed digest is a refusal; items are never skipped, ignored or compared by size or time"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-005-AC4
+        given: "Rebuild's output"
+        when: "the stage's uploads and signed records are listed"
+        then: "the only signed record is Rebuild's Witness verdict, signed keyless under stage-reproducibility.yml at the tag with release.yml as the top-level workflow; the only upload is that verdict; no artifact Rebuild built can reach Release, which publishes Build's bytes by digest"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-005-AC5
+        given: "the job graph of release.yml"
+        when: "it is parsed"
+        then: "Rebuild and Check each need only Build, so they run side by side; Release needs Rebuild, Check and Sign; and a failed Rebuild stops Release, naming the stage"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
