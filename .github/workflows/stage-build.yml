@@ -1,204 +1,97 @@
+# The Build stage of the v0.3.0 release chain (rules 50, 51, 59, 62, 68; REQ-CHAIN-004). Called only from release.yml.
+# Two jobs: `apk` builds the apks on a native runner of each architecture, `assemble` builds the images and archives on an
+# ubuntu-24.04 VM from them. Every command runs through bin/witnessed.sh, which signs a Witness record keylessly (Fulcio) for the
+# step; the scripts it runs are listed with their sha256 in .github/policy/chain-scripts.json. Nothing here is published: Sign gets the
+# digests.json text (the stage output `digests`), Rebuild and Check get the artifacts.
+# The shape of this file is judged by bin/chain-build-wiring-test.sh (an exact grammar), the behaviour of the scripts by the same test.
+# `hostile` is true only in a dry run on a branch (PR 1's REQ-CHAIN-001-AC5): the hostile step tries to defeat Sign and writes the raw
+# material of its attempts; it never runs in a release.
 name: 'Stage: build'
-
-# Release-chain build stage (release-chain-design.md §2 Stage 2), a
-# reusable workflow so the stage has its own OIDC identity
-# (job_workflow_ref names THIS file) and downstream verifiers can require
-# "signed by the build stage", not merely "signed by the repository".
-#
-# One controlled operation: compile the binaries and produce the archives,
-# checksums, and per-archive SBOMs. Materials are pinned — the toolchain
-# comes from go.mod with GOTOOLCHAIN=local so Go cannot download a newer
-# one, and the module manifests are verified, never mutated. In release
-# mode the stage signs a build predicate whose subjects are the archive
-# digests from checksums.txt: the digests are emitted HERE, by the
-# builder, at the source — never resolved from a registry later.
-#
-# Release mode verifies the source-admission predicate on entry: the
-# admission.json produced by stage-admission.yml arrives as an artifact,
-# its digest is recomputed here, and the signed predicate is verified for
-# that digest, for this commit, with the admission stage workflow as the
-# required signer. No admission, no build.
-
 on:
   workflow_call:
     inputs:
-      mode:
-        description: 'snapshot (PRs) or release (tag chain)'
-        required: true
-        type: string
-      admission-artifact:
-        description: 'artifact carrying the signed admission.json (required in release mode)'
-        required: false
-        type: string
-        default: ''
       hostile:
-        description: 'dry run only: run the hostile Build step (bin/chain-hostile-step.sh) and upload what it tried'
-        required: false
+        description: dry run only
         type: boolean
         default: false
     outputs:
-      checksums:
-        description: 'sha256 lines for the produced archives'
-        value: ${{ jobs.build.outputs.checksums }}
-
+      digests:
+        description: the digests.json text, for Sign
+        value: ${{ jobs.assemble.outputs.digests }}
 permissions:
   contents: read
-
 jobs:
-  build:
-    name: build
-    runs-on: ubuntu-latest
+  apk:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     permissions:
       contents: read
-      id-token: write     # release mode: sign the build predicate
-      attestations: write
-    outputs:
-      checksums: ${{ steps.sums.outputs.checksums }}
+      checks: read
+      statuses: read
+      pull-requests: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-
-      - name: release mode requires an admission artifact
-        if: inputs.mode == 'release' && inputs.admission-artifact == ''
-        run: |
-          echo "::error::release mode with no admission artifact — the chain must enter through stage-admission" >&2
-          exit 1
-
-      - name: verify the source-admission predicate on entry
-        if: inputs.mode == 'release'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ inputs.admission-artifact }}
-          path: /tmp/admission
-
-      - name: admission predicate must be signed by the admission stage for this commit
-        if: inputs.mode == 'release'
+          fetch-tags: true
+      - name: install Witness (pinned by checksum)
+        run: ./bin/install-scanner.sh witness
+      - name: apk under Witness
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          f=/tmp/admission/admission.json
-          gh attestation verify "$f" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --predicate-type https://fosterstack.com/attestations/source-admission/v1 \
-            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/stage-admission.yml" \
-            --source-digest "${GITHUB_SHA}" \
-            --source-ref "${GITHUB_REF}" \
-            --format json \
-            --jq '.[0].verificationResult.statement.predicate | {tag, sha}' > /tmp/admitted.json
-          adm_sha=$(jq -r '.sha' /tmp/admitted.json)
-          adm_tag=$(jq -r '.tag' /tmp/admitted.json)
-          [ "$adm_sha" = "${GITHUB_SHA}" ] \
-            || { echo "::error::admission predicate admits ${adm_sha}, this build is at ${GITHUB_SHA}" >&2; exit 1; }
-          [ "$adm_tag" = "${GITHUB_REF_NAME}" ] \
-            || { echo "::error::admission predicate admits tag ${adm_tag}, this ref is ${GITHUB_REF_NAME}" >&2; exit 1; }
-          echo "admitted: ${adm_tag} at ${adm_sha}"
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          go-version-file: go.mod
-          check-latest: false
-
-      - name: pin the toolchain to go.mod (no silent upgrades)
-        run: |
-          echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
-          go version
-
-      - name: verify module manifests (a build must not mutate its inputs)
-        run: |
-          go mod verify
-          git diff --exit-code go.mod go.sum
-
-      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        # Dependabot's github-actions ecosystem watches this pin; syft's
-        # own identity is recorded in every SBOM document it produces.
-
-      - name: goreleaser (binaries, archives, checksums, SBOMs — no images)
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+          name: apk-${{ matrix.runner }}
+          path: out
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          version: '2.17.1'
-          args: release ${{ inputs.mode == 'snapshot' && '--snapshot' || '' }} --clean --skip=publish,announce${{ inputs.mode == 'snapshot' && ',validate' || '' }}
-
-      - name: capture the builder's own digests
-        id: sums
-        run: |
-          set -euo pipefail
-          echo "archive digests, emitted at the source:"
-          cat dist/checksums.txt
-          {
-            echo 'checksums<<EOF'
-            cat dist/checksums.txt
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: upload dist
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          name: witness-apk-${{ matrix.runner }}
+          path: witness-apk
+  assemble:
+    needs: apk
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      digests: ${{ steps.digests.outputs.digests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: dist-${{ inputs.mode }}
-          path: dist/
-          retention-days: 7
-          if-no-files-found: error
-
-      - name: write the build predicate
-        if: inputs.mode == 'release'
-        run: |
-          set -euo pipefail
-          gosum_sha256=$(sha256sum go.sum | cut -d' ' -f1)
-          jq -n \
-            --arg goversion "$(go version)" \
-            --arg goreleaser "2.17.1" \
-            --arg commit "$GITHUB_SHA" \
-            --arg ref "$GITHUB_REF" \
-            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --arg gosum "$gosum_sha256" \
-            '{
-              stage: "build",
-              sha: $commit,
-              ref: $ref,
-              materials: {
-                go_toolchain: $goversion,
-                goreleaser: $goreleaser,
-                commit: $commit,
-                ref: $ref,
-                gosum_sha256: $gosum
-              },
-              run: $run
-            }' > /tmp/build-predicate.json
-          jq . /tmp/build-predicate.json
-
-      - name: sign the build predicate (subjects = the archive digests)
-        if: inputs.mode == 'release'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - name: install Witness (pinned by checksum)
+        run: ./bin/install-scanner.sh witness
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          subject-checksums: dist/checksums.txt
-          predicate-type: 'https://fosterstack.com/attestations/build/v1'
-          predicate-path: /tmp/build-predicate.json
-
-      # F04: authorization and the public contract require SLSA build
-      # provenance for every archive AND the checksums file itself. The
-      # subjects are everything checksums.txt lists plus checksums.txt,
-      # hashed here by the builder.
-      - name: collect provenance subjects (archives, SBOMs, checksums.txt)
-        if: inputs.mode == 'release'
-        run: |
-          set -euo pipefail
-          cp dist/checksums.txt /tmp/build-subjects.txt
-          (cd dist && sha256sum checksums.txt) >> /tmp/build-subjects.txt
-          cat /tmp/build-subjects.txt
-
-      - name: attest SLSA build provenance for the archive set
-        if: inputs.mode == 'release'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+          name: apk-ubuntu-24.04
+          path: apk/ubuntu-24.04
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          subject-checksums: /tmp/build-subjects.txt
-
-      # The dry run's hostile Build step (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5). Never runs in a real release: the release.yml
-      # caller passes hostile only from its dry-run input. It writes the raw material of six attempts; the verify job judges them.
+          name: apk-ubuntu-24.04-arm
+          path: apk/ubuntu-24.04-arm
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-apk-ubuntu-24.04
+          path: rec-apk/ubuntu-24.04
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-apk-ubuntu-24.04-arm
+          path: rec-apk/ubuntu-24.04-arm
+      - name: build under Witness
+        run: bash bin/witnessed.sh build bin/build-stage-assemble.sh
+      - id: digests
+        name: expose digests.json as the stage output
+        run: echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"
       - name: hostile step (dry run only)
         if: ${{ inputs.hostile }}
         run: bash bin/chain-hostile-step.sh
-
       - name: upload the hostile attempts (dry run only)
         if: ${{ inputs.hostile }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -206,3 +99,23 @@ jobs:
           name: hostile-attempts
           path: attempts
           if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests
+          path: digests.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: items
+          path: items.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: images
+          path: out

@@ -26,16 +26,20 @@ if (on.get("push") or {}).get("tags") != ["v*"] or (on.get("push") or {}).get("b
 if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.get("cron", "")) for c in on.get("schedule") or []):
     bad.append("no daily schedule")
 jobs = d.get("jobs") or {}
-adm = jobs.get("admission") or {}
-# PR 1 of the v0.3.0 chain: the manual dry-run trigger adds two conjuncts that keep a dry run (or any manual dispatch) out of the chain
-if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v')&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":
-    bad.append("admission is not guarded to v* tags: %s" % adm.get("if"))
-# the dry run's own jobs (sign, hostile-*) hang off the Sign boundary, not off admission; they are judged by bin/chain-hostile-test.sh
-chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes", "sign", "hostile-verify", "hostile-verdict")]
-BUILD_IF = "${{!cancelled()&&(needs.admission.result=='success'||inputs.dry-run)}}"   # a dry run has no admission; a release still needs it
+# PR 2 of the v0.3.0 chain: admission is no longer a job (it is the first step of Build's apk job, bin/build-admit.py), so the chain is guarded by the
+# ONE gate G on build and sign: a v* tag PUSH or a dry-run dispatch (bin/chain-build-wiring-test.sh judges the whole graph)
+if "admission" in jobs:
+    bad.append("release.yml still has an admission job (admission is Build's first step now)")
+GATE = "${{(github.event_name=='push'&&startsWith(github.ref,'refs/tags/v'))||inputs.dry-run==true}}"
+for g in ("build", "sign"):
+    if (jobs.get(g) or {}).get("if", "").replace(" ", "") != GATE:
+        bad.append("%s is not guarded by the gate G (a v* tag push or a dry run): %s" % (g, (jobs.get(g) or {}).get("if")))
+# the dry run's own jobs (sign, hostile-*) hang off the Sign boundary; they are judged by bin/chain-hostile-test.sh. The OLD downstream jobs (scans,
+# acceptance*, authorization, promotion; replaced by PRs 3 and 4) are skipped in a dry run and need a chain job.
+chain = [j for j in jobs if j not in ("decide", "patch-failed", "patch-notes", "build", "sign", "rebuild", "hostile-verify", "hostile-verdict")]
 for j in chain:
-    if jobs[j].get("if", "").replace(" ", "") not in (("", "${{!inputs.dry-run}}") if j != "build" else (BUILD_IF,)) or not jobs[j].get("needs"):
-        bad.append("chain job %s does not hang off admission unconditionally" % j)
+    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}") or not jobs[j].get("needs"):
+        bad.append("chain job %s is not skipped in a dry run or hangs off nothing" % j)
 dec = jobs.get("decide") or {}
 if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":
     bad.append("decide does not run on main only: %s" % dec.get("if"))
@@ -291,9 +295,11 @@ if len(create) != 1 or "patch-decide.py tag-notes" not in create[0]["run"] or "-
     bad.append("stage-promote does not post a patch tag's notes")
 # REQ-REL-009-AC13 downstream (found while wiring rule 10): admission's chosen baseline reaches every stage that reads a
 # baseline — the acceptance predicate and the release manifest — instead of each assuming requirements/releases/<tag>.yaml
+# PR 2 moved admission into Build, so these two OLD jobs no longer NEED an admission job; they keep the baseline expression until PRs 3 and 4 (Check,
+# Release) replace them and read the baseline from Build's admission evidence. The `needs` half of this check is the deviation listed in PR 2's report.
 for job in ("acceptance-predicate", "promotion"):
     j = jobs.get(job) or {}
-    if (j.get("with") or {}).get("baseline-version") != "${{ needs.admission.outputs.baseline }}" or "admission" not in (j.get("needs") or []):
+    if (j.get("with") or {}).get("baseline-version") != "${{ needs.admission.outputs.baseline }}":
         bad.append("%s does not receive admission's baseline" % job)
 # Codex #163 pin pass B01: authorization checks acceptance against the baseline the SIGNED admission predicate names, not
 # the tag's own file (a CI patch has none); B03: decide's pre-check refuses what admission refuses — the checkout's copy of
@@ -331,7 +337,7 @@ PY
 }
 J='d["jobs"]'; D="$J['decide']"
 case_ real                    ok  ""
-case_ chain-on-main           bad "$J['admission'].pop('if')"
+case_ chain-on-main           bad "$J['build'].pop('if')"
 case_ decide-anywhere         bad "$D['if'] = '\${{ always() }}'"
 case_ decide-no-env           bad "$D.pop('environment')"
 case_ decide-writes           bad "$D['permissions']['contents'] = 'write'"
@@ -500,10 +506,8 @@ stages_out=$(python3 - "$root" <<'PY'
 import os, sys, yaml
 root = sys.argv[1]
 bad = []
-adm = yaml.load(open(os.path.join(root, ".github/workflows/stage-admission.yml")), Loader=yaml.BaseLoader)
-if (adm["on"]["workflow_call"].get("outputs") or {}).get("baseline", {}).get("value") != "${{ jobs.admit.outputs.baseline }}" \
-        or adm["jobs"]["admit"]["outputs"].get("baseline") != "${{ steps.baseline.outputs.version }}":
-    bad.append("stage-admission does not output the baseline it used")
+if "baseline_version" not in open(os.path.join(root, "bin/build-admit.py")).read():
+    bad.append("bin/build-admit.py does not write the baseline it used into the admission evidence")
 for f, needle in (("stage-acceptance-predicate.yml", 'frozen_path = f"requirements/releases/{base}.yaml"'),
                   ("stage-promote.yml", '--arg baseline "requirements/releases/${base}.yaml"')):
     d = yaml.load(open(os.path.join(root, ".github/workflows", f)), Loader=yaml.BaseLoader)

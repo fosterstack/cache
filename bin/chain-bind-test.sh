@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC3 (the assemble job binds every file it uses to the verified record: rule 58), REQ-CHAIN-004-AC9 (digests.json and
-#         items.json are what an honest merge writes), REQ-CHAIN-005-AC1 (Rebuild binds the same way)
-# RED until bin/chain-verify.py has the bind, items-apk and items-merge subcommands (tests before implementation, step 4).
+# proves: REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
+# Written before the bind, items-apk and items-merge subcommands existed (tests before implementation, step 4); they are bin/chain_items.py now.
 #
 # The REAL chain-verify.py subcommands that bin/chain-test-harness.py only fakes. Needs: python3, ubuntu-24.04 or macOS. No network, no keys.
 # Records are DSSE envelopes built here (the shape of bin/chain-rebuild-test.sh): `bind` and `items-*` never check a signature, because the

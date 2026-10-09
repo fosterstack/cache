@@ -32,6 +32,7 @@ import yaml
 
 from chain_common import Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json  # noqa: E402  (next to this file)
 import chain_hostile  # noqa: E402
+import chain_items  # noqa: E402
 
 PROV = "https://slsa.dev/provenance/v1"
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
@@ -888,6 +889,7 @@ def build_parser():
     hm.add_argument("--sign-record")
     hv = sub.add_parser("hostile-verdict")
     hv.add_argument("results")
+    chain_items.add_parsers(sub)
     return p
 
 
@@ -906,6 +908,8 @@ def main(argv):
             cmd_stage_start(a)
         elif a.cmd == "actions":
             cmd_actions(a)
+        elif a.cmd in chain_items.COMMANDS:
+            chain_items.COMMANDS[a.cmd](a)
         elif a.cmd == "hostile-row":
             chain_hostile.cmd_hostile_row(a)
         elif a.cmd == "hostile-collect":

@@ -174,11 +174,14 @@ MAT = "${{ matrix.runner }}"
 # Build hands Sign the digests.json text: the stage output reads the assemble job's output, which one pinned step fills from digests.json
 STAGE_OUTPUT = "${{ jobs.assemble.outputs.digests }}"
 JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
+HOSTILE_IF = "${{ inputs.hostile }}"
+HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
+HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
     ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[],
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True,
@@ -199,12 +202,15 @@ def stage(path, family, allowed_path=None):
         return ["top-level keys beyond name/on/permissions/jobs: %s" % (sorted(set(d) - {"name", "on", "permissions", "jobs"}) if isinstance(d, dict) else d)]
     on = d.get("on")
     call = on.get("workflow_call") if isinstance(on, dict) else None
-    want_call = {"outputs": {"digests": {"value": STAGE_OUTPUT}}} if family == "build" else None
-    if family == "build" and isinstance(call, dict) and isinstance(call.get("outputs"), dict):
-        call = {"outputs": {k: {a: b for a, b in (v or {}).items() if a != "description"} for k, v in call["outputs"].items()}}   # a description is free text
+    want_call = {"inputs": {"hostile": {"type": "boolean", "default": "false"}},
+                 "outputs": {"digests": {"value": STAGE_OUTPUT}}} if family == "build" else None
+    if isinstance(call, dict):       # a description is free text
+        call = {k: {n: {a: b for a, b in (v or {}).items() if a != "description"} for n, v in (call[k] or {}).items()}
+                if isinstance(call[k], dict) else call[k] for k in call}
     if not isinstance(on, dict) or set(on) != {"workflow_call"} or (call or None) != want_call:
-        bad.append("on: must be exactly workflow_call with no inputs or secrets%s, got %s"
-                   % (" and the one output digests = %s" % STAGE_OUTPUT if want_call else " and no outputs", on))
+        bad.append("on: must be exactly workflow_call with %s, got %s"
+                   % ("the one boolean input hostile (default false; the dry run's hostile Build step) and the one output digests = %s" % STAGE_OUTPUT
+                      if want_call else "no inputs, secrets or outputs", on))
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
     if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed.sh)")
@@ -284,6 +290,14 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
             bad.append("step %d must be exactly id: digests, run: %s (the stage output is the digests.json text, compact)" % (i, EXPOSE))
+    if spec.get("hostile"):       # PR 1's static contract (bin/chain-hostile-test.sh): the dry run's hostile Build step, then its upload
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"name", "if", "run"} or s.get("if") != HOSTILE_IF or str(s.get("run") or "").strip() != HOSTILE_RUN:
+            bad.append("step %d must be exactly if: %s, run: %s (the dry run's hostile Build step; never in a release)" % (i, HOSTILE_IF, HOSTILE_RUN))
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if (set(s) - {"name", "if", "uses", "with"} or s.get("if") != HOSTILE_IF
+                or not pinned(s.get("uses"), "actions/upload-artifact", allowed) or (s.get("with") or {}) != HOSTILE_UP):
+            bad.append("step %d must be a pinned actions/upload-artifact of %s under if: %s" % (i, HOSTILE_UP, HOSTILE_IF))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
@@ -406,6 +420,7 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 RELEASE_IF = "${{ !inputs.dry-run }}"
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
+BUILD_WITH = {"hostile": "${{ inputs.dry-run == true && github.ref_type == 'branch' }}"}
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
 # PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
 # placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
@@ -456,6 +471,8 @@ def graph(path):
                 bad.append("release must carry exactly the if %s (a dry run publishes nothing), got %r" % (RELEASE_IF, job.get("if")))
         elif "if" in job:
             bad.append("%s may not carry an if (it runs after build through needs), got %r" % (name, job["if"]))
+        if name == "build" and job.get("with") != BUILD_WITH:
+            bad.append("build must pass exactly with: %s (the hostile Build step runs only in a dry run on a branch), got %s" % (BUILD_WITH, job.get("with")))
         if name == "sign":
             if job.get("permissions") != SIGN_PERMISSIONS:
                 bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))

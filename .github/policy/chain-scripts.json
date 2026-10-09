@@ -6,7 +6,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "19a6890f90099846a816fe712e6d3d2ef046a1abac7ebee456cf2e64903b17fa",
+      "sha256": "058227a559dcc30a88f5464d2390446d3c7ef80d9fc4735da9e6126d0d513946",
       "tools": [
         "make",
         "at"
@@ -18,7 +18,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "ca7b02f3df53614a081edae2915c620ea6995bac1a6c0e52d64f5390ff325487",
+      "sha256": "70c5d9528bcd3525741db9f4815c65e9a84e8cc831f04fe71b0f69438c7a3c12",
       "tools": [
         "curl",
         "trap",
@@ -59,6 +59,78 @@
       "runs": [],
       "signs": false,
       "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict)"
+    },
+    {
+      "path": "bin/witnessed.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "the one Witness wrapper (rule 68): fetches the identity token, runs witness once under timeout 540",
+      "sha256": "376b6f9a93e2f3a47aca1132f5f73adfa08a011737d72f1658bdbc4d92e8ac24"
+    },
+    {
+      "path": "bin/build-stage-apk.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
+      "sha256": "b9f1a11c7882948599a1ed2b4cd96a8f1896143f121730a4ced4f03d2bbe290c"
+    },
+    {
+      "path": "bin/build-stage-assemble.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
+      "sha256": "cf66ad448f42e0887a3ba317112643ff88eb2ffd08a755317cf3c23678bdb805"
+    },
+    {
+      "path": "bin/build-stage-rebuild-apk.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
+      "sha256": "5ba8c14ab7d74f55fd44c0b3d749bf6b55dd7f527893ae4f1b4013d53ee66e6d"
+    },
+    {
+      "path": "bin/build-stage-rebuild-assemble.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
+      "sha256": "ef78e6250a27e97e22bcdb950632b3fdea8a3f498e7e213c7b960aaaada4cec4"
+    },
+    {
+      "path": "bin/build-admit.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Build admission: every check of the former stage-admission.yml, policy from origin/main, GET-only API calls through gh",
+      "sha256": "8f19cb34587f181c3a15bef388d9a873daf2f991c9b34419eb2f6118688b38df"
+    },
+    {
+      "path": "bin/build-version-check.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "the version, revision and clean-tree check of a built binary or apk",
+      "sha256": "2e3c4ce18473f01021af68b49c5afaa3623bf5aa4d159dadd9c9317f811d61b4"
+    },
+    {
+      "path": "bin/build-archives.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "the four Linux archives from the apks (PROPOSED layout)",
+      "sha256": "8f5a81d04e0d927910bbf88787be665e78fcad6eff3e9999906e099286efcb68"
+    },
+    {
+      "path": "bin/chain_items.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
+      "sha256": "6a51f01c1637b5315e290eba66c945cc4ee36780ede116da2656cf179b86888d"
     }
   ]
 }

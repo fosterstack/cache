@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-005-AC3 (the comparison); REQ-CHAIN-005-AC1, AC2, AC4, AC5 and AC6 are proven by bin/chain-build-wiring-test.sh
+# proves: REQ-CHAIN-005-AC3 — the comparison. REQ-CHAIN-005-AC1, AC2, AC4, AC5 and AC6 are proven by bin/chain-build-wiring-test.sh
 # (the Rebuild stage-file allowlist, the script order, the job graph), which shares its judges with this lane's Build tests.
-# RED until bin/chain-verify.py has the rebuild-compare subcommand (tests before implementation, step 4 of the nine-step process).
+# Written before bin/chain-verify.py had the rebuild-compare subcommand (tests before implementation, step 4 of the nine-step process).
 #
 # Rebuild's comparison (v0.3.0 rules 31, 54, 59, 64, 70; advisor read-back 0338). Runs on ubuntu-24.04 or macOS with: bash, python3, jq.
 # No network, no keys: the comparison is plain digests. Build's record is NOT re-verified here: chain-verify.py stage-start did that

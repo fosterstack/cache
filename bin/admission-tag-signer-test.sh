@@ -5,8 +5,9 @@
 # Z >= 1, the previous patch vX.Y.(Z-1) already released); an unsigned tag, any other signature format, an ambiguous
 # tag object, or the CI identity on a minor, major or rc tag is refused. The route only picks the verifier; the
 # verifier (git verify-tag against allowed-signers, or gitsign verify-tag with the identity pinned) still has to pass.
-# The second half reads stage-admission.yml: the policy comes from protected main, and gitsign verify-tag pins the
-# exact identity, issuer, repository, ref and the tagged commit.
+# The second half of this file judged the wiring of stage-admission.yml (policy from protected main; gitsign verify-tag pinning the identity,
+# issuer, repository, ref and tagged commit; the baseline rules). PR 2 of the v0.3.0 chain removed that workflow: admission is the first step of
+# Build's apk job (bin/build-admit.py) and the same properties are judged by bin/chain-build-admit-test.sh (REQ-CHAIN-004-AC4, AC5).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$here/admission-tag-signer.py" <<'PY'
@@ -250,92 +251,3 @@ check("B01 the old --releases-dir (a directory of any origin) is gone", got == "
 print("admission-tag-signer: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
-
-# --- stage-admission.yml wiring
-pass=0; failn=0; work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-judge() { python3 - "$1" <<'PY'
-import re, sys, yaml
-d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
-steps = d["jobs"]["admit"]["steps"]
-bad = []
-pol = next((s for s in steps if "fetch policy from protected main" in s.get("name", "")), {})
-for f in ("bin/admission-tag-signer.py", "bin/install-scanner.sh"):
-    if "git show origin/main:%s" % f not in pol.get("run", ""):
-        bad.append("%s is not read from protected main" % f)
-sig = [s for s in steps if s.get("id") == "tagsig"]
-run = sig[0].get("run", "") if sig else ""
-if "/tmp/policy/admission-tag-signer.py" not in run or "/tmp/policy/install-scanner.sh gitsign" not in run:
-    bad.append("the route or the gitsign install does not come from the policy copy")
-if re.search(r"(^|[\s;(])(\./)?bin/", run):
-    bad.append("the signature step runs a script from the tagged commit")
-want = ["--certificate-identity https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/heads/main",
-        "--certificate-oidc-issuer https://token.actions.githubusercontent.com",
-        "--certificate-github-workflow-repository fosterstack/cache",
-        "--certificate-github-workflow-ref refs/heads/main",
-        '--certificate-github-workflow-sha "${GITHUB_SHA}"']
-flat = re.sub(r"\s*\\\n\s*", " ", run)
-for w in want:
-    if w not in flat:
-        bad.append("gitsign verify-tag does not pin: %s" % w)
-if "regexp" in run or "insecure" in run:
-    bad.append("a loose gitsign flag appears")
-if "gitsign verify-tag" not in run or 'git verify-tag "${GITHUB_REF_NAME}"' not in run:
-    bad.append("one of the two verifiers is missing")
-if not re.search(r'case "\$\{route\}" in\s+ssh\)', run) or not re.search(r"gitsign\)", run) or not re.search(r"\*\)\s*echo \"::error::", run):
-    bad.append("the route does not pick exactly one verifier and refuse otherwise")
-base = [s for s in steps if "baseline" in s.get("name", "") and "APPROVED" in s.get("name", "")]
-brun = base[0].get("run", "") if base else ""
-# Codex #163 r1 B01: the keyless path's baselines come only from owner-signed tags (verified against main's allowed
-# signers by main's copy of the script), and the tagged commit's copy of the chosen baseline must equal the owner's
-if "/tmp/policy/admission-tag-signer.py owner-baselines" not in brun or "--allowed-signers /tmp/policy/allowed_signers" not in brun \
-        or 'git ls-tree --name-only "${GITHUB_SHA}" requirements/releases/' in brun or "--owner-baselines" not in brun:
-    bad.append("the keyless path's baselines do not come only from owner-signed tags")
-if 'cmp -s' not in brun or 'git show "${BASE}:${f}"' not in brun:
-    bad.append("the tagged commit's copy of the chosen baseline is not checked against the owner tag's")
-if '/tmp/policy/admission-tag-signer.py baseline' not in brun or "steps.tagsig.outputs.method" not in str(base[0].get("env", {})) if base else True:
-    bad.append("the keyless path does not take its baseline from the policy's baseline rule (REQ-REL-009-AC13)")
-if 'release-workflow-keyless' not in brun or 'BASE="${GITHUB_REF_NAME}"' not in brun:
-    bad.append("owner-signed tags no longer need their own baseline, or the keyless branch is missing")
-if 'verify-freeze "${BASE}"' not in brun or "d.get('version') != base" not in brun:
-    bad.append("the chosen baseline is not verified and approval-checked")
-adm = [s for s in steps if s.get("id") == "admission"]
-if not adm or "baseline_version" not in adm[0].get("run", "") or "BASELINE" not in str(adm[0].get("env", {})):
-    bad.append("admission.json does not record the baseline used")
-print("; ".join(bad) or "ok")
-sys.exit(1 if bad else 0)
-PY
-}
-case_() {
-  local f="$work/$1.yml"
-  cp "$root/.github/workflows/stage-admission.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
-import sys, yaml
-p, edit = sys.argv[1], sys.argv[2]
-d = yaml.load(open(p), Loader=yaml.BaseLoader)
-S = d["jobs"]["admit"]["steps"]
-sig = [s for s in S if s.get("id") == "tagsig"][0]
-exec(edit)
-yaml.safe_dump(d, open(p, "w"), sort_keys=False)
-PY
-  fi
-  if out=$(judge "$f" 2>&1); then got=ok; else got=bad; fi
-  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS wiring:$1 → $got ($out)"
-  else failn=$((failn+1)); echo "FAIL wiring:$1 → $got, want $2 ($out)"; fi
-}
-case_ real               ok  ""
-case_ identity-regexp    bad "sig['run'] = sig['run'].replace('--certificate-identity ', '--certificate-identity-regexp ')"
-case_ any-issuer         bad "sig['run'] = sig['run'].replace('--certificate-oidc-issuer https://token.actions.githubusercontent.com', '--certificate-oidc-issuer-regexp .*')"
-case_ any-commit         bad "sig['run'] = sig['run'].replace('--certificate-github-workflow-sha \"\${GITHUB_SHA}\"', '')"
-case_ any-branch         bad "sig['run'] = sig['run'].replace('release.yml@refs/heads/main', 'release.yml@refs/heads/dev')"
-case_ route-from-tag     bad "sig['run'] = sig['run'].replace('/tmp/policy/admission-tag-signer.py', 'bin/admission-tag-signer.py')"
-case_ gitsign-from-tag   bad "sig['run'] = sig['run'].replace('/tmp/policy/install-scanner.sh gitsign', './bin/install-scanner.sh gitsign')"
-case_ keyless-own-baseline bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('/tmp/policy/admission-tag-signer.py baseline', 'echo')"
-case_ owner-borrows       bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('BASE=\"\${GITHUB_REF_NAME}\"', 'BASE=v0.2.1')"
-case_ unverified-base     bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('verify-freeze \"\${BASE}\"', 'verify-freeze \"\${GITHUB_REF_NAME}\"')"
-case_ unrecorded-base     bad "A = [s for s in S if s.get('id') == 'admission'][0]; A['run'] = A['run'].replace('baseline_version', 'unused')"
-case_ baselines-from-commit bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('owner-baselines', 'owner-baselinez')"
-case_ any-signer-baselines bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('--allowed-signers /tmp/policy/allowed_signers', '--allowed-signers allowed_signers')"
-case_ copy-unchecked      bad "B = [s for s in S if 'APPROVED' in s.get('name','')][0]; B['run'] = B['run'].replace('cmp -s', 'true')"
-case_ no-refuse-default  bad "sig['run'] = sig['run'].replace('*) echo \"::error::', '*) echo \"::notice::')"
-echo "admission-tag-signer wiring: $pass passed, $failn failed"
-[ "$failn" = 0 ]

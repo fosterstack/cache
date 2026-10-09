@@ -25,11 +25,10 @@
 #       The hostile-verify job makes its policy with `policy make --template .github/policy/release-policy.template.json --ref
 #       "$GITHUB_REF" --out policy.json` (pinned) for the run's own ref and judges every attempt, and ONE positive control,
 #       against that same policy.json.
-#   REACHABILITY (step-8 B-2): admission is skipped on a manual run, so `build` carries `if: ${{ !cancelled() && (needs.admission.result ==
-#       'success' || inputs.dry-run) }}` and passes `mode: ${{ inputs.dry-run && 'snapshot' || 'release' }}` (a dry run builds in snapshot
-#       mode: no admission artifact, no GitHub attestation for a branch build); without that, build, sign and both hostile jobs are
-#       skipped and the run is green with no checks. A real release still needs admission to succeed. The GitHub dry run itself cannot
-#       be green until PR 2 (Build writes no witness-build record yet; the sixth case needs the throwaway caller): see REQ-CHAIN-001 notes.
+#   REACHABILITY (step-8 B-2; amended in PR 2 by the advisor's single gate G): admission is no longer a job (it is the first step of Build's apk
+#       job), so `build` has no `needs` and carries `if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+#       inputs.dry-run == true }}` (the same text on sign, judged by bin/chain-build-wiring-test.sh); a v* tag push or a dry-run dispatch runs
+#       it, and `mode` is gone (stage-build.yml has no such input). Without a gate every job of a dry run would be skipped, green with no checks.
 #   release.yml (dry run, workflow_dispatch input dry-run): the build caller passes `hostile: ${{ inputs.dry-run == true && github.ref_type
 #       == 'branch' }}` (a null input must not reach the boolean input of the live chain; a tag dispatch must not run the hostile step); job
 #       `hostile-verify` (needs the sign job; permissions EXACTLY {contents: read}: no id-token, nothing to write) is an ALLOWLIST
@@ -453,16 +452,12 @@ else:
         bw = (jobs.get("build") or {}).get("with") or {}
         HOSTILE_EXPR = "${{ inputs.dry-run == true && github.ref_type == 'branch' }}"
         if bw.get("hostile") != HOSTILE_EXPR: bad.append("release.yml's build call must pass `hostile: %s` (a null dry-run input must not reach the boolean input of the live chain; a dry run dispatched on a TAG must not run the hostile step under the release identity): %s" % (HOSTILE_EXPR, bw))
-        # step-8 B-2 (Opus) / blocker 2b (Sonnet): the dry run must be REACHABLE. A manual run skips admission, and a job that needs a
-        # skipped job is skipped (so were sign and both hostile jobs, and the run was green with zero checks). Build therefore runs when
-        # admission succeeded OR it is a dry run, and in a dry run it builds in snapshot mode: no admission artifact is needed and no
-        # GitHub attestation is published for a branch build. A real release still needs admission to succeed.
+        # REACHABILITY (step-8 B-2, amended by PR 2's gate G, advisor ruling): the dry run must be REACHABLE. Admission is gone from the graph (it is the
+        # first step of Build's apk job now), so build, sign and the hostile jobs hang off ONE gate: a v* tag push, or a dry-run dispatch on any branch.
         bj = jobs.get("build") or {}
-        BUILD_IF = "${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
-        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks; a release must still need admission): %r" % (BUILD_IF, bj.get("if")))
-        if "admission" not in need(bj): bad.append("the build job must still need admission")
-        BUILD_MODE = "${{ inputs.dry-run && 'snapshot' || 'release' }}"
-        if bw.get("mode") != BUILD_MODE: bad.append("the build call must pass `mode: %s` (a dry run builds in snapshot mode: no admission artifact, no GitHub attestation for a branch build): %r" % (BUILD_MODE, bw.get("mode")))
+        BUILD_IF = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
+        if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
+        if need(bj): bad.append("the build job needs nothing (admission is Build's first step, not a job): %r" % need(bj))
         if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
 sp = os.path.join(root, ".github/workflows/stage-promote.yml")
 if not os.path.exists(sp): bad.append("stage-promote.yml missing (Release makes its policy there)")
@@ -518,14 +513,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: echo tag
-  admission:
-    if: \${{ startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    uses: ./.github/workflows/stage-admission.yml
   build:
-    if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}
-    needs: admission
+    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
-    with: {mode: "\${{ inputs.dry-run && 'snapshot' || 'release' }}", hostile: "\${{ inputs.dry-run == true && github.ref_type == 'branch' }}"}
+    with: {hostile: "\${{ inputs.dry-run == true && github.ref_type == 'branch' }}"}
   sign: {needs: build, uses: ./.github/workflows/stage-sign.yml}
   hostile-verify:
     if: \${{ inputs.dry-run }}
@@ -652,13 +643,14 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: hostile-verify has no checkout (the repo's verifier is not there to run)" "$d"
 d=$(mk w_persist); sed -i.bak 's/{persist-credentials: false}/{persist-credentials: true}/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify checks out with persisted credentials" "$d"
-d=$(mk w_nohostile); sed -i.bak 's/, hostile: "[^"]*"//' "$(rel "$d")"; wexpect caught "wiring: the build call does not pass hostile (the hostile step never runs in the dry run)" "$d"
-d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}
-    needs: admission
-    uses: ./.github/workflows/stage-build.yml" "    needs: admission
-    uses: ./.github/workflows/stage-build.yml"; wexpect caught "wiring: the build job has no dry-run condition: a manual run skips admission, so build, sign and the hostile jobs are all skipped and the run is green with no checks (step-8 B-2)" "$d"
-d=$(mk w_buildrelease); pymut "$(rel "$d")" "mode: \"\${{ inputs.dry-run && 'snapshot' || 'release' }}\"" "mode: release"; wexpect caught "wiring: a dry run builds in release mode (it needs the admission artifact it does not have, and would publish GitHub attestations for a branch build)" "$d"
-d=$(mk w_buildnoadm); pymut "$(rel "$d")" "(needs.admission.result == 'success' || inputs.dry-run)" "(inputs.dry-run || true)"; wexpect caught "wiring: build no longer requires admission to have succeeded for a real release" "$d"
+d=$(mk w_nohostile); sed -i.bak 's/hostile: "[^"]*"//' "$(rel "$d")"; wexpect caught "wiring: the build call does not pass hostile (the hostile step never runs in the dry run)" "$d"
+d=$(mk w_buildnoif); pymut "$(rel "$d")" "    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
+    uses: ./.github/workflows/stage-build.yml" "    uses: ./.github/workflows/stage-build.yml"; wexpect caught "wiring: the build job has no gate: a dry run (or a push to main) would run the whole chain, or nothing is reachable (step-8 B-2)" "$d"
+d=$(mk w_buildneeds); pymut "$(rel "$d")" "  build:
+" "  build:
+    needs: decide
+"; wexpect caught "wiring: the build job needs another job (admission is Build's first step; a skipped needed job would skip the dry run)" "$d"
+d=$(mk w_buildtagonly); pymut "$(rel "$d")" "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true" "startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the build gate is the tag test alone (a dry run on a branch would never run)" "$d"
 d=$(mk w_hostileold); pymut "$(rel "$d")" "inputs.dry-run == true && github.ref_type == 'branch'" "inputs.dry-run"; wexpect caught "wiring: the build call passes the bare dry-run input (null on a tag push, and not limited to a branch): step-8 SF-5" "$d"
 d=$(mk w_hostiletag); pymut "$(rel "$d")" " && github.ref_type == 'branch'" ""; wexpect caught "wiring: the hostile input is not limited to a branch ref: a dry run dispatched on a tag would run the hostile step under the release identity (step-8 SF-4)" "$d"
 d=$(mk w_nosignrec); pymut "$(rel "$d")" " --sign-record provenance/provenance.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"

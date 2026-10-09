@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC2 (Witness is installed pinned by checksum, before it starts), REQ-CHAIN-005-AC1 (the same install in Rebuild)
-# RED until bin/install-scanner.sh knows `witness` (tests before implementation, step 4).
+# proves: REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1 — Witness is installed pinned by checksum before it starts, and the same install in Rebuild
+# Written before bin/install-scanner.sh knew `witness` (tests before implementation, step 4).
 #
 # The failure-path suite for `./bin/install-scanner.sh witness [dest-dir]`, in the style of bin/install-scanner-test.sh (which this file does not edit):
 # a Witness that cannot be installed or verified exits NON-ZERO, is LABELED a pipeline failure, and installs NOTHING. Runs on ubuntu-24.04 or macOS with

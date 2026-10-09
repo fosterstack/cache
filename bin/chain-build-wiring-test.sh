@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC1, AC2, AC3, AC6, AC8, AC9, AC10 (the flags; PR 1's verify cases cover the identity), AC11 and
-#         REQ-CHAIN-005-AC1, AC2, AC4, AC5, AC6
-# RED until PR 2 is implemented: the stage files rewritten, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain-verify.py (bind, items-apk,
-# items-merge, record-env), bin/build-admit.py, bin/install-scanner.sh witness. Tests first, step 4. Fix round 2 after step-6 round 2.
+# proves: REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6 — the flags; PR 1's verify cases cover the identity
+# Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
+# items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
 # Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job graph of release.yml and what the
 # scripts DO when run against fake cache scripts (v0.3.0 rules 24, 31, 33, 38a, 38b, 39, 50, 51, 54, 58, 59, 62, 63, 68, 70).
@@ -118,7 +117,8 @@ def wrap(line, width=110):      # break a long command at its option boundaries,
 def stage_text(family):
     call = ""
     if family == "build":
-        call = "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
+        call = "    inputs:\n      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n"
+        call += "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
     out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
     for job in ("apk", "assemble"):
         sp = S.JOBS[(family, job)]
@@ -134,6 +134,10 @@ def stage_text(family):
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
+        if sp.get("hostile"):
+            out += "      - name: hostile step (dry run only)\n        if: %s\n        run: %s\n" % (S.HOSTILE_IF, S.HOSTILE_RUN)
+            out += "      - name: upload the hostile attempts (dry run only)\n        if: %s\n        uses: %s # v7.0.1\n        with:\n" % (S.HOSTILE_IF, UPLOAD)
+            out += "          name: hostile-attempts\n          path: attempts\n          if-no-files-found: error\n"
         for name, path in sp["up"]: out += "      - uses: %s # v7.0.1\n        with:\n          name: %s\n          path: %s\n" % (UPLOAD, name, path)
     return out
 
@@ -167,6 +171,8 @@ jobs:
   build:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
+    with:
+      hostile: ${{ inputs.dry-run == true && github.ref_type == 'branch' }}
   sign:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: build
@@ -276,6 +282,16 @@ st s_direct "AC2 a direct witness run in a stage file (every stage goes through 
 st s_kind   "AC2 the apk job running the assemble script" "exactly the one line" 'bin/build-stage-apk.sh' 'bin/build-stage-assemble.sh'
 st s_step "AC2 the Witness step named differently from its job (the step name selects the record path)" "exactly the one line" 'witnessed.sh apk bin' \
        'witnessed.sh build bin'
+HOSTILE_STEP='      - name: hostile step (dry run only)\n        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh\n'
+st s_hin_none "AC2 the hostile input is missing from the Build stage" "on: must be" \
+              '    inputs:\n      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n' ''
+st s_hin_str  "AC2 the hostile input is a string (a null caller input must not reach the live chain)" "on: must be" 'type: boolean' 'type: string'
+st s_hin_req  "AC2 the hostile input is required" "on: must be" '        default: false\n    outputs:' '        default: false\n        required: true\n    outputs:'
+st s_hstep_none "AC2 the hostile step is missing (PR 1's contract: a step gated by inputs.hostile in the Build job)" "hostile" "$HOSTILE_STEP" ''
+st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' '        run: bash'
+st s_hstep_alw  "AC2 the hostile step runs always()" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' '        if: always()\n        run: bash'
+st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "hostile" 'name: hostile-attempts' 'name: attempts'
+st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
 st s_outapk  "AC2 the stage output reads the apk job's output, not the assemble job's" "on: must be" 'value: ${{ jobs.assemble.outputs.digests }}' \
              'value: ${{ jobs.apk.outputs.digests }}'
 st s_outnone "AC2 the stage has no digests output (Sign would get nothing)" "on: must be" \
@@ -331,6 +347,8 @@ rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" 
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
+rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" 'workflow_call:\n' \
+             'workflow_call:\n    inputs:\n      hostile:\n        type: boolean\n        default: false\n'
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
@@ -646,6 +664,13 @@ gr g39 "005-AC5 sign passing an extra input" "      digests: \${{ needs.build.ou
 gr g40 "005-AC5 sign taking the digests from another job" "needs.build.outputs.digests" "needs.rebuild.outputs.digests" "sign must pass exactly with"
 gr g41 "005-AC5 sign taking PR 1's placeholder (raw checksums.txt text) instead of the digests.json text" "needs.build.outputs.digests" \
        "needs.build.outputs.checksums" "sign must pass exactly with"
+BHOST="hostile: \${{ inputs.dry-run == true && github.ref_type == 'branch' }}"
+gr g48 "005-AC5 build also passes mode: snapshot (a dry run builds the same way as a release)" "      $BHOST" "      $BHOST\n      mode: snapshot" \
+       "build must pass exactly with"
+gr g49 "005-AC5 build passes no hostile input (the dry run's hostile step would never run)" "    with:\n      $BHOST\n" "" \
+       "build must pass exactly with"
+gr g50 "005-AC5 build passes hostile unconditionally (a tag dispatch or a release would run the hostile step)" "$BHOST" "hostile: true" \
+       "build must pass exactly with"
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
 gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
@@ -1093,7 +1118,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=368
+EXPECT=380
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC4, REQ-CHAIN-004-AC5, REQ-CHAIN-004-AC7
-# RED until bin/build-admit.py and bin/build-version-check.py exist (tests before implementation, step 4 of the nine-step process).
+# Written before bin/build-admit.py and bin/build-version-check.py existed (tests before implementation, step 4 of the nine-step process).
 #
 # Build's first action: bin/build-admit.py keeps EVERY check the old stage-admission.yml made, none dropped (v0.3.0 rules 51, 58;
 # advisor read-back 0338 and 0325 Q2). Needs: bash, git >= 2.34, ssh-keygen, gpg, jq, python3 + PyYAML. Offline: the git repos, the
