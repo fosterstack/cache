@@ -9,8 +9,11 @@ Design (installed once, on import, by test_fs_guard.py, which unittest discovery
     chmod/chown/utime and shutil.* events whose path resolves outside the allowed roots.
   * CPython emits no audit event for stat/realpath/readlink, so os.stat, os.lstat, os.readlink, os.path.realpath,
     os.path.exists/isfile/isdir/islink/lexists/getsize are wrapped with the same check.
-  * Allowed roots: the temp dir, the repo, the interpreter's stdlib and site-packages (never the whole prefix: /usr is a prefix on Linux), every sys.path entry at
-    install time, /dev/null and /dev/urandom. A path is checked both lexically and after resolving symlinks, so a symlink
+  * Allowed roots, read/metadata/write (ROOTS): the temp dir, the repo, this directory, /dev/null and /dev/urandom.
+  * The INTERPRETER ENVIRONMENT (ENV), read and metadata only: sys.prefix and its siblings, the directory two levels above
+    sys.executable (a venv root with its pyvenv.cfg, bin/, lib/), stdlib and site-packages, every sys.path entry. A prefix that is a
+    broad system directory (/usr, /usr/local, /opt, /opt/homebrew ...) is NOT taken, or /usr/local/bin would be allowed with it.
+    Writes there are refused except bytecode under __pycache__. A path is checked both lexically and after resolving symlinks, so a symlink
     inside the temp dir that points at /etc/hostname is refused when it is followed.
   * The violation is a BaseException, so a code path under test that does `except Exception` cannot swallow it.
 Subprocesses (bash, git, a spawned python3) are not covered here; the static scan in test_fs_guard.py covers the shell tests.
@@ -22,7 +25,8 @@ REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
 _real = {n: getattr(os, n) for n in ("stat", "lstat", "readlink", "getcwd", "fspath")}
 _realpath = os.path.realpath
 _installed = False
-ROOTS = []
+ROOTS = []   # temp dir, repo, this dir: read, metadata AND write
+ENV = []     # the interpreter environment (venv, prefix, stdlib, site-packages): read and metadata only
 _busy = __import__('threading').local()
 _busy.on = False
 EXACT = {"/dev/null", "/dev/urandom", "/dev/zero", "/dev/tty"}
@@ -32,7 +36,7 @@ class SystemPathAccess(BaseException):
     """A test touched a real system path."""
 
 
-def _resolve(p, what, orig, nofollow=False, meta=False):
+def _resolve(p, what, orig, nofollow=False, meta=False, write=False):
     """Resolve symlinks component by component using the unwrapped lstat/readlink, and refuse BEFORE touching any component
     that is lexically outside the allowed roots (so a link to /etc/hostname is refused without ever stat-ing /etc)."""
     todo = [c for c in p.split("/") if c]
@@ -46,7 +50,7 @@ def _resolve(p, what, orig, nofollow=False, meta=False):
             cur = os.path.dirname(cur) or "/"
             continue
         nxt = os.path.join(cur, c)
-        if not _under(nxt) and not _ancestor(nxt):
+        if not _under(nxt, write) and not _ancestor(nxt):
             raise SystemPathAccess("test touched a real system path (%s): %s" % (what, orig))
         try:
             st = _real["lstat"](nxt)
@@ -72,34 +76,70 @@ def _ancestor(p):
     Its METADATA (stat, lstat, realpath, exists, isdir) may be read because every path walk starts at the root and the interpreter
     resolves each module path that way; its CONTENTS (open, listdir, scandir, rename ...) never may. It must not itself be a link
     that escapes (checked by _resolve on the next hop)."""
-    return any(r.startswith(p.rstrip("/") + "/") for r in list(ROOTS) + sorted(EXACT))
+    return any(r.startswith(p.rstrip("/") + "/") for r in list(ROOTS) + list(ENV) + sorted(EXACT))
+
+
+# Prefixes too broad to treat as "the interpreter's own environment": with a system Python the prefix is /usr, and allowing it would
+# allow /usr/local/bin and every other system path. Only a venv or an interpreter installed in its own directory counts.
+BROAD = {"/", "/usr", "/usr/local", "/opt", "/opt/homebrew", "/opt/local", "/System", "/Library", "/var", "/etc", "/bin", "/sbin", "/home", "/Users", "/root"}
+
+
+def _canon_set(cands, drop_broad=False):
+    """Canonical forms of the candidate roots. realpath here is the guard's own bookkeeping, so it is not itself judged."""
+    _busy.bypass = True
+    try:
+        return _canon_inner(cands, drop_broad)
+    finally:
+        _busy.bypass = False
+
+
+def _canon_inner(cands, drop_broad):
+    out = set()
+    for c in cands:
+        if c and os.path.isabs(c):
+            for v in (c.rstrip("/") or "/", _realpath(c)):
+                if not (drop_broad and v in BROAD):
+                    out.add(v)
+    out.discard("/")
+    return out
 
 
 def _roots():
     cand = {tempfile.gettempdir(), REPO, HERE}
-    cand.update(sysconfig.get_paths()[k] for k in ("stdlib", "platstdlib", "purelib", "platlib"))
-    cand.update(site.getsitepackages())
+    cand.update(os.environ.get(k, "") for k in ("COVERAGE_RCFILE", "TMPDIR"))
+    return sorted(_canon_set(cand))
+
+
+def _env_roots():
+    """The interpreter environment, read-only: sys.prefix and its siblings (a venv root holds pyvenv.cfg, bin/, lib/), the directory
+    two levels above sys.executable (where pyvenv.cfg lives), the stdlib and site-packages paths, and sys.path."""
+    _busy.bypass = True
     try:
-        cand.add(site.getusersitepackages())
+        real_exe = os.path.realpath(sys.executable)
+    finally:
+        _busy.bypass = False
+    cand = {sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix,
+            os.path.dirname(os.path.dirname(sys.executable)), os.path.dirname(os.path.dirname(real_exe))}
+    broad_ok = _canon_set(cand, drop_broad=True)
+    precise = set(sysconfig.get_paths()[k] for k in ("stdlib", "platstdlib", "purelib", "platlib"))
+    precise.update(site.getsitepackages())
+    try:
+        precise.add(site.getusersitepackages())
     except Exception:
         pass
-    cand.update(p for p in sys.path if p)
-    cand.update(os.environ.get(k, "") for k in ("COVERAGE_RCFILE", "TMPDIR"))
-    out = set()
-    for c in cand:
-        if c and os.path.isabs(c):
-            out.add(c.rstrip("/") or "/"); out.add(_realpath(c))
-    out.discard("/")
-    return sorted(out)
+    precise.update(p for p in sys.path if p)
+    return sorted(broad_ok | _canon_set(precise, drop_broad=True))
 
 
-def _under(p):
-    return p in EXACT or any(p == r or p.startswith(r + "/") for r in ROOTS)
+def _under(p, write=False):
+    if p in EXACT or any(p == r or p.startswith(r + "/") for r in ROOTS):
+        return True
+    return not write and any(p == r or p.startswith(r + "/") for r in ENV)
 
 
-def check(path, what="", nofollow=False, meta=False):
+def check(path, what="", nofollow=False, meta=False, write=False):
     """Raise unless `path` (lexically and after symlink resolution) is inside an allowed root."""
-    if not ROOTS or isinstance(path, int):
+    if not (ROOTS or ENV) or isinstance(path, int) or getattr(_busy, "bypass", False):
         return
     try:
         p = _real["fspath"](path)
@@ -110,16 +150,18 @@ def check(path, what="", nofollow=False, meta=False):
     if p == "":
         return
     absp = os.path.abspath(p)
-    if not _under(absp) and not (meta and _ancestor(absp)):
+    if write and "/__pycache__/" in absp and _under(absp):
+        write = False                      # the import system caches bytecode beside the module it just read
+    if not _under(absp, write) and not (meta and _ancestor(absp)):
         raise SystemPathAccess("test touched a real system path (%s): %s" % (what, p))
     if getattr(_busy, "on", False):
         return
     _busy.on = True
     try:
-        res = _resolve(absp, what, p, nofollow, meta)
+        res = _resolve(absp, what, p, nofollow, meta, write)
     finally:
         _busy.on = False
-    if not _under(res) and not (meta and _ancestor(res)):
+    if not _under(res, write) and not (meta and _ancestor(res)):
         raise SystemPathAccess("test touched a real system path (%s -> %s): %s" % (what, res, p))
 
 
@@ -130,17 +172,28 @@ _AUDIT_PATH = {  # event -> indexes of the path arguments
 }
 
 
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+_READ_EVENTS = {"os.listdir", "os.scandir"}
+
+
+def _open_writes(args):
+    mode = args[1] if len(args) > 1 else None
+    flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+    return (isinstance(mode, str) and any(c in mode for c in "wax+")) or bool(flags & _WRITE_FLAGS)
+
+
 def _hook(event, args):
     if event in _AUDIT_PATH:
+        write = _open_writes(args) if event == "open" else event not in _READ_EVENTS
         for i in _AUDIT_PATH[event]:
             if i < len(args) and args[i] is not None and not isinstance(args[i], int):
                 if event == "os.symlink" and i == 0:
                     continue           # a symlink's target text is data; following it is what open/stat check
-                check(args[i], event)
+                check(args[i], event, write=write)
     elif event.startswith("shutil."):
-        for a in args:
+        for i, a in enumerate(args):
             if isinstance(a, (str, bytes, os.PathLike)):
-                check(a, event)
+                check(a, event, write=not (i == 0 and event.startswith(("shutil.copy", "shutil.move"))))
 
 
 def _wrap1(mod, name, nofollow=False):
@@ -162,8 +215,8 @@ def check_link(target, dst, what):
     t = os.fsdecode(_real["fspath"](target))
     if not os.path.isabs(t):
         t = os.path.join(os.path.dirname(os.path.abspath(os.fsdecode(_real["fspath"](dst)))), t)
-    check(os.path.normpath(t), what, True)
-    check(dst, what, True)
+    check(os.path.normpath(t), what, True, write=True)
+    check(dst, what, True, write=True)
 
 
 def wrap_link(orig, name):
@@ -175,11 +228,12 @@ def wrap_link(orig, name):
 
 
 def install(extra_roots=()):
-    global _installed, ROOTS
+    global _installed, ROOTS, ENV
     if _installed:
         return
     _installed = True
     ROOTS = _roots() + [r for r in extra_roots]
+    ENV = _env_roots()
     sys.addaudithook(_hook)
     for n in ("stat", "lstat", "readlink", "access", "statvfs", "pathconf", "listxattr", "getxattr"):
         _wrap1(os, n, n in ("lstat", "readlink"))

@@ -337,6 +337,41 @@ class Guard(unittest.TestCase):
         finally:
             G.ROOTS = saved
 
+    def test_the_interpreter_environment_is_readable_not_writable_and_siblings_stay_refused(self):
+        """CI shape: venv root /mnt/rev/work/cache (pyvenv.cfg, bin/, lib/), repo /mnt/rev/work/cache/cache."""
+        saved = (G.ROOTS, G.ENV)
+        try:
+            G.ROOTS = ["/mnt/rev/work/cache/cache"]
+            G.ENV = ["/mnt/rev/work/cache", "/usr/lib/python3.12"]
+            cfg = "/mnt/rev/work/cache/pyvenv.cfg"
+            G.check(cfg, "stat", False, True)
+            G.check(cfg, "lstat", True, True)
+            G.check("/mnt/rev/work/cache/lib/python3.12/site-packages/coverage/tracer.py", "open")           # read
+            G.check("/usr/lib/python3.12/os.py", "realpath", False, True)
+            for p in (cfg, "/mnt/rev/work/cache/bin/python"):                                              # but never written
+                with self.assertRaises(G.SystemPathAccess, msg=p):
+                    G.check(p, "open", write=True)
+            G.check("/mnt/rev/work/cache/lib/python3.12/site-packages/x/__pycache__/m.pyc", "open", write=True)   # bytecode cache
+            G.check("/mnt/rev/work/cache/cache/new.txt", "open", write=True)                              # the repo is writable
+            for p in ("/mnt/rev/work/other/pyvenv.cfg", "/mnt/rev/work/cache2/pyvenv.cfg", "/mnt/rev/work/pyvenv.cfg",
+                      "/usr/local/bin/python3", "/etc/pyvenv.cfg"):
+                for meta in (True, False):
+                    with self.assertRaises(G.SystemPathAccess, msg=p):
+                        G.check(p, "stat", False, meta)
+            self.assertTrue(G._open_writes(("p", "w")) and G._open_writes(("p", "r+")) and G._open_writes(("p", None, os.O_WRONLY | os.O_CREAT)))
+            self.assertFalse(G._open_writes(("p", "r")) or G._open_writes(("p", "rb", 0)) or G._open_writes(("p", None, os.O_RDONLY)))
+        finally:
+            G.ROOTS, G.ENV = saved
+
+    def test_a_broad_system_prefix_is_never_an_environment_root(self):
+        got = G._canon_set(["/usr", "/usr/local", "/opt/homebrew", "/Users", "/home", "/opt/hostedtoolcache/Python/3.12.3/x64"], drop_broad=True)
+        self.assertIn("/opt/hostedtoolcache/Python/3.12.3/x64", got)
+        self.assertFalse({"/usr", "/usr/local", "/opt/homebrew", "/Users", "/home"} & got, got)
+        env = G._env_roots()
+        self.assertNotIn("/usr", env); self.assertNotIn("/usr/local", env)
+        with self.assertRaises(G.SystemPathAccess):
+            os.stat("/usr/local/bin")
+
     def test_the_other_metadata_calls_are_wrapped_too(self):
         for n in ("access", "statvfs", "pathconf"):
             with self.assertRaises(G.SystemPathAccess, msg=n):
