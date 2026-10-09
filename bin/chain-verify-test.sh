@@ -67,8 +67,8 @@
 #        exists under reference/: this shape rests on the cosign bundle format and Rekor's documented SET (the signed entry
 #        timestamp is over the canonical {body, integratedTime, logID, logIndex}); the real kind for DSSE is `intoto`/`dsse`,
 #        which the implementer checks against a real bundle in the dry run (flagged: the stub's body kind is hashedrekord).
-#   chain-verify.py sign --check --signer stub|cosign --digests D.json --build-record REC.json --policy POLICY.json --now ISO8601Z
-#                   --out DIR [--stub-key K.pem]
+#   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json --policy POLICY.json --now ISO8601Z
+#                   --out DIR
 #       D.json is the digest list FILE {"<name>":"sha256:<64 lower-case hex>"}. REC.json is Build's Witness collection, verified
 #       as stage build FIRST (every verify cause: chain, SAN, Build Config URI, issuer, signature, timestamp, type, tag; any
 #       failure exits 1 naming "build" and the cause). Build's command writes digests.json as a PRODUCT, so the collection holds
@@ -77,10 +77,13 @@
 #       commit subject; the check requires that subject's sha256 == sha256(the bytes of D.json) (exit 1 "digest" otherwise),
 #       THEN checks D.json's CONTENT on its own (exit 1 "format"): JSON object, no duplicate key, every name matching
 #       [a-z0-9-]+ (no upper case, slash, dot or code), every value a string sha256:<64 lower-case hex> (no sha512:, 63 hex,
-#       upper case, null, number or path). Only after both does it sign: with --signer cosign, cosign attests SLSA provenance v1
-#       (subjects = the digests, names and values as in D.json) to DIR/provenance.json (the identity token is requested by cosign
-#       inside its own process); with --signer stub (tests only; the Sign job's wiring judge allows only cosign) it signs with
-#       the local key --stub-key. A failed check writes NOTHING to DIR. DIR never holds private key material.
+#       upper case, null, number or path). Only after both does it sign, and the ONLY signer is --signer cosign (no test-only signer exists in production code):
+#       it writes the unsigned in-toto Statement v1 (SLSA provenance v1, subjects = the digests, names and values as in D.json) to a
+#       temp file and runs EXACTLY `cosign attest-blob --yes --statement STATEMENT.json --bundle DIR/provenance.bundle.json`
+#       (no --key, no --identity-token, no flag that carries key material: cosign requests the OIDC token inside its own process),
+#       then writes DIR/provenance.json = the DSSE envelope {payloadType,payload,signatures} taken from the bundle's dsseEnvelope.
+#       The tests put a fake `cosign` first on PATH that implements just that call and signs with a local key; bin/install-scanner.sh
+#       must gain a checksum-pinned cosign for the Sign job. A failed check writes NOTHING to DIR. DIR never holds private key material.
 #   chain-verify.py stage-start --stage NAME --previous PREV --record REC.json --digests D.json --policy POLICY.json
 #                               --now ISO8601Z [--rekor-stub STUB.json]
 #       runs the SAME verification as verify for stage PREV, then compares digests exactly: for a SLSA provenance record the
@@ -438,7 +441,27 @@ PY
 
 # ---- harness ----------------------------------------------------------------------------------------------------
 [ -f "$cv" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
-run() { "${netcut[@]+"${netcut[@]}"}" python3 "$cv" "$@" 2> "$work/err" > "$work/out" || return $?; }
+# a fake `cosign` (test-generated, first on PATH): implements only `attest-blob --yes --statement S --bundle B`, signs the DSSE PAE with
+# the local test key, writes a bundle holding the dsseEnvelope, and records its argv so the test can pin the exact invocation
+mkdir -p "$work/fakebin"
+cat > "$work/fakebin/cosign" <<FAKE
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$work/cosign-argv.log"
+[ "\${1:-}" = attest-blob ] && [ "\${2:-}" = --yes ] && [ "\${3:-}" = --statement ] && [ "\${5:-}" = --bundle ] && [ "\$#" = 6 ] || { echo "fake cosign: unexpected argv: \$*" >&2; exit 2; }
+python3 - "\$4" "\$6" "$work/signstub.key" "$work" <<'PYF'
+import base64, json, subprocess, sys
+st, out, key, w = sys.argv[1:5]
+body = open(st, "rb").read(); pt = "application/vnd.in-toto+json"
+pae = b"DSSEv1 %d %s %d %s" % (len(pt), pt.encode(), len(body), body)
+open(w + "/fake.pae", "wb").write(pae)
+sig = subprocess.run(["openssl", "dgst", "-sha256", "-sign", key, w + "/fake.pae"], capture_output=True, check=True).stdout
+json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "dsseEnvelope": {"payloadType": pt,
+    "payload": base64.b64encode(body).decode(), "signatures": [{"sig": base64.b64encode(sig).decode(), "keyid": ""}]}}, open(out, "w"))
+PYF
+FAKE
+chmod +x "$work/fakebin/cosign"
+run() { PATH="$work/fakebin:$PATH" "${netcut[@]+"${netcut[@]}"}" python3 "$cv" "$@" 2> "$work/err" > "$work/out" || return $?; }
 errlc() { tr 'A-Z' 'a-z' < "$work/err"; }
 # a Python crash exits 1 with a traceback: never a refusal
 crashed() { grep -F -q "Traceback" "$work/err"; }
@@ -561,7 +584,7 @@ done
 # ---- REQ-CHAIN-001-AC2: Sign takes Build's digests (a FILE), checked against Build's VERIFIED record ----------------------
 # The record binds the digest file by the sha256 of its bytes (the real product subject file:digests.json); the file's CONTENT is
 # then judged on its own, so the format cases below are attested by their own collections and equality cannot be what refuses them.
-S() { echo sign --check --signer stub --stub-key "$work/signstub.key" --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --now "${2:-$NOW}" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
+S() { echo sign --check --signer cosign --build-record "$work/${1:-build_coll}.json" --policy "$work/policy.json" --now "${2:-$NOW}" --out "$work/out-$RANDOM$RANDOM$RANDOM"; }
 expect_ok     "001-AC2 a digest file whose bytes Build's record attests is accepted (and signed)" $(S) --digests "$work/digests.json"
 for c in other:"a digest that differs" extra:"an extra entry" subset:"a missing entry" swapped:"two names with their values swapped"; do
   expect_refuse "001-AC2 ${c#*:} (other bytes than Build attested) is refused" "digest" $(S) --digests "$work/digests-${c%%:*}.json"
@@ -585,9 +608,13 @@ expect_refuse "001-AC2 Build's record under another OIDC issuer is refused" "bui
 expect_refuse "001-AC2 Build's record from a certificate under another root is refused" "build|root" $(S build_coll_wrongroot) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record signed in another repository is refused" "build|attacker/cache" $(S build_coll_wrongrepo) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record with no Build Config URI is refused" "build|build config" $(S build_coll_noconfig) --digests "$work/digests.json"
-# the sign side (rule 52: Sign WRITES the provenance only after the check passes), with the stub signer
+# the sign side (rule 52: Sign WRITES the provenance only after the check passes), with a fake cosign on PATH
 mkdir -p "$work/sd"
-rc=0; run sign --check --signer stub --stub-key "$work/signstub.key" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/ok" || rc=$?
+rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/ok" || rc=$?
+if [ -f "$work/cosign-argv.log" ] && grep -E -q '^attest-blob --yes --statement [^ ]+ --bundle [^ ]+/provenance\.bundle\.json$' "$work/cosign-argv.log" \
+   && ! grep -E -q -- '--key|--identity-token|--sk|--output-key|--signing-config|--fulcio|--rekor' "$work/cosign-argv.log"; then
+  ok "001-AC3 sign runs exactly `cosign attest-blob --yes --statement S --bundle DIR/provenance.bundle.json`, with no key, token or endpoint flag"
+else bad "001-AC3 the cosign invocation is not the pinned one ($(tr '\n' ' ' < "$work/cosign-argv.log" 2> /dev/null | head -c 200))"; fi
 python3 - "$work/sd/ok" "$work/digests.json" <<'PY' 2> /dev/null && ok "001-AC2 sign writes SLSA provenance v1 whose subjects equal the digest list (names and values)" || bad "001-AC2 the provenance written by sign is missing or wrong"
 import base64, json, os, sys
 d, df = sys.argv[1], json.load(open(sys.argv[2]))
@@ -607,11 +634,11 @@ for dp, _, fs in os.walk(sys.argv[1]):
         assert b"PRIVATE KEY" not in open(os.path.join(dp, f), "rb").read(), f
 assert n >= 1, "nothing was written"
 PY
-rc=0; run sign --check --signer stub --stub-key "$work/signstub.key" --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/bad" || rc=$?
+rc=0; run sign --check --signer cosign --build-record "$work/build_coll_tampered.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/bad" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(ls -A "$work/sd/bad" 2> /dev/null)" ]; then ok "001-AC2 a failed check writes NOTHING to the output folder"; else bad "001-AC2 a failed check left output (exit $rc)"; fi
-rc=0; run sign --check --signer stub --stub-key "$work/signstub.key" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests-other.json" --out "$work/sd/bad2" || rc=$?
+rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests-other.json" --out "$work/sd/bad2" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(ls -A "$work/sd/bad2" 2> /dev/null)" ]; then ok "001-AC2 replay: provenance is not written for digests Build did not attest"; else bad "001-AC2 replay with other digests wrote output (exit $rc)"; fi
-rc=0; run sign --signer stub --stub-key "$work/signstub.key" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocheck" || rc=$?
+rc=0; run sign --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocheck" || rc=$?
 if [ "$rc" = 1 ] && ! crashed && [ -z "$(ls -A "$work/sd/nocheck" 2> /dev/null)" ]; then ok "001-AC2 sign without --check is not a mode: it refuses and writes nothing"; else bad "001-AC2 sign without --check wrote output (exit $rc)"; fi
 
 # ---- REQ-CHAIN-003-AC1: each stage verifies the one before it, with the cause named ------------------------------------
@@ -718,7 +745,7 @@ assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", x) for x in a["actions"]), a["a
 assert all(re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", x) for x in a["images"]), a["images"]
 PY
 
-EXPECT=186
+EXPECT=187
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
