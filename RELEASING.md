@@ -47,8 +47,9 @@ step, never re-resolved from a registry.
 - **Candidate image posture** (REQ-FIPS-002-AC2): the release-artifact
   acceptance reads, in candidates mode, `/statusz` of the running
   production, `-debug` and `-fips` containers on linux/amd64 and, under
-  emulation, on linux/arm64, and compares each answer with the exact
-  expected string. The
+  emulation, on linux/arm64, and `bin/fips-image-posture.py` compares each
+  answer with the exact expected string (no redirects, status 200 only,
+  size and time capped). The
   requirement gates a release through the acceptance predicate only under
   an approved baseline frozen after it merged; the older frozen baselines
   (v0.2.0, v0.2.1) do not contain it. The stage failing blocks the
