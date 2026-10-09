@@ -75,6 +75,8 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
     best, seen = None, []
     for t, src in proofs:
+        if src == "label-mismatch":
+            return False, f"the version comment names {t!r}, which is not a tag of this commit in the action's repository: the pin is not what its comment says", None
         seen.append(src)
         if src not in SERVER_SIDE and src != "first-seen":
             continue
@@ -272,7 +274,7 @@ def _pr_clock(item, root, base, head="HEAD"):
     for c in r.stdout.split():
         try:
             if (root, c) not in _INV_CACHE:
-                _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
+                _INV_CACHE[(root, c)] = inv.load_at(root, c, manifest_rev=base)     # one parse per commit, not one per moved item
             if item.key in _INV_CACHE[(root, c)]:
                 first = c
                 break
@@ -403,6 +405,10 @@ class Live:
         self.root, self.base, self.head = root, base, head
 
     def proofs(self, item):
+        if item.kind == "action" and inv.SHA40.match(item.version or ""):
+            for lab in sorted(item.labels or {item.label}):
+                if lab and re.match(r"^v?\d", lab) and lab not in _tags_for_commit(item.name, item.version):
+                    return [(lab, "label-mismatch")]     # the tag the comment names does not resolve to this commit: no clock can rescue it
         return live_proofs(item, self.root, self.base, self.head)
 
 
@@ -429,8 +435,7 @@ def main(argv=None):
         now = parse_time(a.now) if a.now else (parse_time((fx or {}).get("now")) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
         if now is None:
             raise ValueError("--now is not an ISO time")
-        base_items = inv.load_at(a.root, a.base)
-        head_items = inv.load_at(a.root, a.head)
+        base_items, head_items = inv.pr_inventories(a.root, a.base, a.head)       # like with like: the base side exempts exactly what the head exempts under the BASE manifest
     except (OSError, ValueError, RuntimeError) as e:
         print(f"pin-age: cannot run: {e}", file=sys.stderr)
         return 2
@@ -447,8 +452,7 @@ def main(argv=None):
 
 def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
     """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
-    b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})   # a read error propagates: the check cannot run (exit 2), never "nothing found"
-    h = inv.unmeasured({**inv.tree_files(root, head), **inv.tree_scripts(root, head)})
+    b, h = inv.pr_unmeasured(root, base, head)   # a read error propagates: the check cannot run (exit 2), never "nothing found"
     return sorted(k for k, n in h.items() if n > b.get(k, 0))
 
 

@@ -186,6 +186,20 @@ GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/ancho
 NPM_TOOLS = {"snyk": "snyk"}
 
 
+def _go_major(mod, version):
+    """The module path for a version: v2 and later live at <path>/vN; the bare path is the v1 module."""
+    m = re.match(r"^v?(\d+)\.", str(version or ""))
+    if mod and m and int(m.group(1)) >= 2 and not re.search(r"/v\d+$", mod):
+        return "%s/v%s" % (mod, m.group(1))
+    return mod
+
+
+def _go_names(mod, version):
+    """Every name GitHub may list a Go module under: the path of the version and the bare path."""
+    bare = re.sub(r"/v\d+$", "", mod)
+    return {_norm_name(mod), _norm_name(bare), _norm_name(_go_major(bare, version))}
+
+
 class LiveNet:
     def __init__(self, gh, root):
         self.gh, self.root = gh, root
@@ -260,6 +274,35 @@ class LiveNet:
         return obj.get("sha") if obj.get("type") == "commit" else None
 
     @staticmethod
+    def _judged(item, tags):
+        """The union over every comment the pin carries (the same commit may be pinned twice)."""
+        out = []
+        for lab in (sorted(item.labels) or [""]):
+            for t in LiveNet._judged1(item, lab, tags):
+                if t not in out:
+                    out.append(t)
+        for lab in sorted(getattr(item, "hist_labels", ())):
+            if lab in tags:
+                for t in LiveNet._judged1(item, lab, tags):
+                    if t not in out:
+                        out.append(t)
+        return out
+
+    @staticmethod
+    def _judged1(item, label, tags):
+        """The tags one comment judges (advisor 0255): an exact tag, by that tag; a floating comment (v4, or v4.3 within its minor), by EVERY exact X.Y.Z tag on the commit, pre-releases and other
+        majors included (affected if ANY is; none: unresolved); no comment, every version-like tag."""
+        if not label:
+            return tags
+        rel = [t for t in tags if re.fullmatch(r"v?\d+\.\d+\.\d+", t)]
+        pre = [t for t in tags if re.fullmatch(r"v?\d+\.\d+\.\d+[-+.][0-9A-Za-z.+-]*", t)]
+        if label in rel or label in pre:
+            return [label]
+        if re.match(r"^v?(\d+)(?:\.(\d+))?$", label):
+            return rel + pre            # a floating comment (advisor 0255): affected if ANY exact tag on the commit is (pre-releases included, any major); none: unresolved
+        return (rel + pre) or tags
+
+    @staticmethod
     def _bounded(tags):
         if len(tags) > 200:
             raise Fail("a commit carries %d version tags: refusing to check only some of them" % len(tags))
@@ -268,13 +311,13 @@ class LiveNet:
     def versions_of(self, item):
         """Every version-like tag at an action's commit (an exception must clear them ALL), else the single version."""
         if item.kind == "action" and inv.SHA40.match(item.version):
-            return self._bounded([t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)])
+            return self._bounded(self._judged(item, [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]))
         v = self._version_of(item)
         return [v] if v else []
 
     def _version_of(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):
-            tags = [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]
+            tags = self._judged(item, [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)])
             if tags:  # the most specific tag at the commit (v4.1.5 over v4): a coarse label must not move the commit out of a range
                 return sorted(tags, key=lambda t: (t.count("."), len(t)), reverse=True)[0]
             return None  # no tag at the commit resolves to a version: even a # label is only a comment, so the commit is UNRESOLVED
@@ -292,6 +335,7 @@ class LiveNet:
             mod = age._go_module(item.name, item.version)[0]  # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
         elif item.kind == "tool":
             mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
+            mod = _go_major(mod, version)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
 
     def live_ranges(self, item, source, advisory_id):
@@ -300,7 +344,7 @@ class LiveNet:
             return None
         adv = self._gh_json(f"advisories/{advisory_id}", strict=True)
         q = self._query(item, self._version_of(item) or "")
-        names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
+        names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} | (_go_names(q["package"]["name"], self._version_of(item)) if q["package"]["ecosystem"] == "Go" else set()) if q else set())
         rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
         return rngs or None
 
@@ -311,7 +355,7 @@ class LiveNet:
 
     def lists(self, item):
         if item.kind == "action" and inv.SHA40.match(item.version):  # EVERY version-like tag at the commit: one tag must not hide another's advisory
-            tags = self._bounded([t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)])
+            tags = self._bounded(self._judged(item, [t for t in age._tags_for_commit(item.name, item.version) if re.match(r"^v?\d", t)]))
             if len(tags) > 1:
                 gh_all, osv_all = [], []
                 for t in tags:
@@ -329,21 +373,30 @@ class LiveNet:
         osv, ghs = [], []
         for v in self._osv_post(q):
             says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
-            osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
+            ent = {"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")}
+            osv.append(ent)
             for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}", strict=True)
-                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)}
+                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)} | (_go_names(q["package"]["name"], version) if q["package"]["ecosystem"] == "Go" else set())
                     rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
                             if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
                     if adv and rngs:
-                        ghs.append({"id": alias, "incident": v["id"], "affected": in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
+                        verdict = in_range(version, "|".join(rngs))
+                        ghs.append({"id": alias, "incident": v["id"], "affected": verdict, "modified": adv.get("updated_at")})
+                        if alias == v["id"]:
+                            ent["affected"] = verdict      # the OSV record IS the GitHub advisory: GitHub's own record wins over the copy
         eco = {"actions": "actions", "PyPI": "pip", "Go": "go", "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
         pkg = q["package"]["name"]
         if eco:
             seen = {g["id"] for g in ghs}
             page = []
             asked = [pkg]
+            gh_names = {_norm_name(pkg)}
+            if q["package"]["ecosystem"] == "Go":
+                bare = re.sub(r"/v\d+$", "", pkg)
+                gh_names = _go_names(pkg, version)
+                asked = sorted({pkg, bare, _go_major(bare, version)})
             if q["package"]["ecosystem"] == "PyPI":
                 info = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
                 published = (info.get("info") or {}).get("name")
@@ -364,12 +417,12 @@ class LiveNet:
                 if adv.get("ghsa_id") in seen:
                     continue
                 rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
-                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) == _norm_name(pkg)]
+                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in gh_names]
                 if rngs and in_range(version, "|".join(rngs)):
                     ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"), "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])
                     if rec and rec.get("id"):  # OSV knows this incident too: its own verdict for this version decides whether the lists AGREE
-                        osv.append({"id": rec["id"], "incident": adv["ghsa_id"], "affected": self._osv_says(rec, pkg, version, versioned=False),
+                        osv.append({"id": rec["id"], "incident": adv["ghsa_id"], "affected": True if rec["id"] == adv["ghsa_id"] else self._osv_says(rec, pkg, version, versioned=False),
                                     "modified": rec.get("modified"), "malicious": rec["id"].startswith("MAL-")})
         return ghs, osv
 
@@ -389,7 +442,12 @@ class LiveNet:
             for rg in a.get("ranges", []):
                 if rg.get("type") in ("SEMVER", "ECOSYSTEM"):
                     judged = True
-                    if covered_by_events(version, rg.get("events", [])):
+                    evs = rg.get("events", [])
+                    if covered_by_events(version, evs):
+                        hint = {**(a.get("database_specific") or {}), **(rg.get("database_specific") or {})}.get("last_known_affected_version_range")
+                        closed = any("fixed" in e or "last_affected" in e for e in evs)
+                        if not closed and isinstance(hint, str) and hint.strip() and not in_range(version, hint):
+                            continue       # no closing event: the database's own last-known range bounds it (an unreadable hint bounds nothing)
                         return True
         if not versioned and any(rg.get("type") == "GIT" for a in entries for rg in a.get("ranges", [])):
             return True  # a commit range cannot be judged by version: unresolved is never "not affected", whatever the other ranges say
@@ -508,7 +566,7 @@ class LiveNet:
                 if not mb:
                     self.incomplete_prs.append(p["number"])
                     print(f"information: open pull request #{p['number']} shares no history with its base: not audited")
-                items = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["head"]["sha"])) if mb else []
+                items = inv.moved(*inv.pr_inventories(self.root, mb, p["head"]["sha"])) if mb else []
             except (RuntimeError, ValueError) as e:
                 print(f"information: open pull request #{p['number']} was not audited: {clean(e)}")
                 self.incomplete_prs.append(p["number"])
@@ -533,7 +591,7 @@ class LiveNet:
             try:
                 head = subprocess.run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
                 mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
-                moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
+                moved = inv.moved(*inv.pr_inventories(self.root, mb, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
             try:
@@ -596,6 +654,7 @@ def load_exceptions(path, required):
             assert isinstance(e.get("osv_modified", {}), dict)
             assert isinstance(e["evidence"], list) and e["evidence"] and isinstance(e["date"], str) and e["date"]
             assert isinstance(e.get("version"), str) and e["version"].strip(), "every exception names the one version it covers"
+            assert re.fullmatch(r"v?\d+(?:\.\d+)*(?:[-+.][0-9A-Za-z.+-]*)?|v?\d+(?:\.\d+)*\.\*", e["version"].strip()), "an exception names a real version or a series, never an unparseable one"
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
         raise Fail(f"the exceptions file {path} is unreadable or malformed: {e}")
     return ex
@@ -653,9 +712,22 @@ class Finding:
 
 
 def judge(item, net, exceptions, notes, current=True):
+    if getattr(item, "incomplete", False):      # a scan that was not complete (a deep document, a budget, an include chain): a finding naming the file, now or in the history window; never an expression
+        return [Finding(item, "unparseable", ["unparseable"], "%s (at %s:%s), so its action references and installer inputs could not be checked" % (item.why, _safe(item.file, 120), item.line))]
+    if getattr(item, "expr", False) or "${{" in (item.version or ""):      # advisor 0245: an expression where a version is pinned is never resolved, never looked up, never excepted
+        where = "%s:%s" % (_safe(item.file, 120), item.line) if getattr(item, "file", "") else "a file this check could not locate"
+        if getattr(item, "why", ""):
+            return [Finding(item, "unparseable", ["unparseable"], "%s (at %s)" % (item.why, where))]
+        return [Finding(item, "unparseable", ["unparseable"], "the version is an expression (at %s), so it cannot be checked: pin an exact version" % where)]
     findings = _judge(item, net, exceptions, notes, current)
     if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of") and net.version_of(item) is None and isinstance(net, LiveNet)):
         findings.append(Finding(item, "unresolved", ["unresolved"], "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a version (the # label is not evidence)"))
+    elif item.kind == "action" and inv.SHA40.match(item.version) and isinstance(net, LiveNet):
+        tags = age._tags_for_commit(item.name, item.version)
+        for lab in sorted(item.labels):
+            if tags and re.match(r"^v?\d", lab) and lab not in tags:
+                findings.append(Finding(item, "mismatch", ["tag-mismatch"], "the version comment names %s, which is not a tag of the pinned commit (it carries %s)" % (_safe(lab), ", ".join(_safe(t) for t in tags[:5]))))
+                break
     return findings
 
 
@@ -804,15 +876,23 @@ def body_of(f, rb, owner, ran, today):
 # ---------- history: what we ran in the last 90 days ----------
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml"]
+    # no pathspec: every commit of the window is read through the SAME scope function as today's tree (an install introduced and removed between scans is found in any file kind)
     refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
-    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
+    revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs).split() if r]
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
     if before:
         revs.append(before)
     items = {}
     for r in revs:
-        items.update(inv.load_at(root, r))
+        loaded = inv.load_at(root, r, mode="history")
+        for path, why in getattr(loaded, "refused", ()):          # a file this check refuses, in a past commit: information, the daily audit goes on (today's tree and open PRs still refuse loudly)
+            print("information: history: %s %s refused (%s)" % (r[:12], clean(path), clean(why)))
+        for k, it in loaded.items():
+            it.commit = r[:12]
+            if k in items:
+                items[k].labels |= it.labels       # every comment the pin ever carried in the window
+            else:
+                items[k] = it
     return items
 
 
@@ -826,6 +906,18 @@ class Gh:
         if r.returncode and not ok_fail:
             raise Fail(f"gh {' '.join(args[:2])} failed: {r.stderr.strip()}")
         return r
+
+
+BODY_LIMIT = 60000      # GitHub refuses a body over 65,536 characters; a refused body would stop every later entry of the plan
+
+
+def cap_body(text):
+    if len(text) < BODY_LIMIT:
+        return text
+    cut = text[:BODY_LIMIT - 200]
+    cut = cut[:cut.rfind("\n")] if "\n" in cut else cut
+    more = text[len(cut):].count("\n---\n") + 1
+    return cut + "\n\n(truncated: %d more)\n" % more
 
 
 def file_issues(gh, plan, today):
@@ -927,14 +1019,22 @@ def main(argv=None):
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))
         try:
-            head = inv.load_at(a.root, a.head if (a.base and a.head) else None)
+            if a.base and a.head:
+                base_items, head = inv.pr_inventories(a.root, a.base, a.head)
+            else:
+                base_items, head = None, inv.load_at(a.root, a.head if (a.base and a.head) else None)
             if a.base:
-                audited = inv.moved(inv.load_at(a.root, a.base), head)
+                audited = inv.moved(base_items if base_items is not None else inv.load_at(a.root, a.base, exempt=False), head)
                 hist = history_items(a.root, a.base, now) if audited else {}
                 ran_keys = set(hist)
             else:
                 hist = history_items(a.root, "HEAD", now)
-                audited = [hist.get(k) or head[k] for k in sorted({**hist, **head})]
+                audited = []
+                for k in sorted({**hist, **head}):
+                    cur = head.get(k) or hist[k]
+                    if k in head and k in hist:
+                        cur.hist_labels = hist[k].labels - cur.labels       # a historical comment that still resolves to the commit is judged beside today's
+                    audited.append(cur)
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
             raise Fail(str(e))
@@ -948,7 +1048,7 @@ def main(argv=None):
             print(f"audit: recorded {len(state['first_seen'])} tag observation(s)")
         try:
             seen_um = {}
-            for (path, what, _line), n in inv.unmeasured({**inv.tree_files(a.root, None), **inv.tree_scripts(a.root, None)}).items():
+            for (path, what, _line), n in (inv.pr_unmeasured(a.root, a.base, a.head)[1] if (a.base and a.head) else inv.unmeasured(inv.tree_files(a.root, None))).items():
                 seen_um[(path, what)] = seen_um.get((path, what), 0) + n
             for (path, what), n in sorted(seen_um.items()):
                 print(f"information: not covered by this check: {what} in {clean(path)} ({n}x)")
@@ -957,6 +1057,9 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
+        for k in sorted(head):
+            if getattr(head[k], "incomplete", False):
+                print("information: %s: incompletely scanned: action references and installer inputs not read" % clean(head[k].file))
         notes, findings, incomplete = [], [], False
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
@@ -969,6 +1072,11 @@ def main(argv=None):
 
         def one(it):
             n2 = []
+            if getattr(it, "incomplete", False) and a.base is None and it.key not in head:
+                print("information: history: %s %s incompletely scanned: action references and installer inputs not read" % (getattr(it, "commit", "?"), clean(it.file)))
+            if getattr(it, "expr", False) and a.base is None and it.key not in head:
+                print("information: history, not judged: %s:%s@%s (a version in the last %d days was an expression; it is not in today's tree)" % (clean(it.file), it.line, getattr(it, "commit", "?"), LOOKBACK_DAYS))
+                return [], n2
             return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head), n2
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -977,7 +1085,7 @@ def main(argv=None):
                 notes += n2
         pr_actions = []
         if not a.base:  # daily: the pins of every OPEN pull request too (the PR job is read-only; this is how an unmerged hit reaches an issue)
-            seen_keys = {i.key for i in audited}
+            seen_keys = {i.key: set(i.labels) | set(getattr(i, "hist_labels", ())) for i in audited if not (getattr(i, "expr", False) and i.key not in head)}     # a history-only expression was not judged: an open pull request carrying it must still be
             try:
                 open_prs = net.open_pr_items()
             except (Fail, age.CouldNotLook) as e:
@@ -991,9 +1099,9 @@ def main(argv=None):
                     print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
                     incomplete = True
                 for it in items[:100]:
-                    if it.key in seen_keys:
+                    if it.key in seen_keys and it.labels <= seen_keys[it.key]:
                         continue
-                    seen_keys.add(it.key)
+                    seen_keys[it.key] = seen_keys.get(it.key, set()) | it.labels
                     try:  # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or other PRs'
                         for f in judge(it, net, exceptions, notes, current=True):
                             f.pr = number
@@ -1060,11 +1168,18 @@ def main(argv=None):
         for n in notes:
             print(f"audit: {n}")
         plan, disputes, per_item, pending = [], {}, {}, []
+        inc_seen = {}
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault(package_of(f.item), []).append(f)
                 continue
+            if getattr(f.item, "incomplete", False):    # one entry per file and class: a long history holds one such item per commit, which would otherwise fill one issue past the size limit
+                ck = (f.item.file, f.via)
+                if ck in inc_seen:
+                    inc_seen[ck][1].append(getattr(f.item, "commit", None))
+                    continue
+                inc_seen[ck] = (f, [getattr(f.item, "commit", None)])
             if (f.item.key, f.via) in per_item:  # several incidents on one pinned item: one finding, every id
                 g = per_item[(f.item.key, f.via)]
                 g.ids = sorted(set(g.ids) | set(f.ids))
@@ -1075,6 +1190,10 @@ def main(argv=None):
             ran = f.item.key in ran_keys
             owner = rb is None or rb == UNKNOWN or ran or bool(f.via)
             pending.append((f, rb, ran, owner))
+        for g, commits in inc_seen.values():
+            if len(commits) > 1:
+                named = [c for c in commits if c]
+                g.why += "; the same file is incompletely scanned in %d commits of the window%s" % (len(commits), " (first seen %s, last seen %s)" % (_safe(named[0]), _safe(named[-1])) if named else "")
         by_prefix = {}
         for f, rb, ran, owner in pending:
             t = title_of(f)
@@ -1096,6 +1215,8 @@ def main(argv=None):
             first.item = inv.Item(first.item.kind, first.item.name, first.item.version, ", ".join(versions))
             plan.append({"finding": first, "title": (f"supply-chain: disputed {_safe(pkg)}", f"supply-chain: disputed {_safe(pkg)} ({', '.join(_safe(i) for i in first.ids)})"),
                          "body": body_of(first, None, False, False, today), "owner": False})
+        for e in plan:
+            e["body"] = cap_body(e["body"])
         if plan:
             if not a.report_only:
                 file_issues(gh, plan, today)

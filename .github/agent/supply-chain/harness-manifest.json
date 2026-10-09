@@ -1,0 +1,44 @@
+{
+ "files": [
+  {
+   "path": ".github/agent/tests/auditor-matrix-test.sh",
+   "sha256": "7335d67ac51c57f185b0fe447f43806a3289ae3e7c1ce01382634a3e2e5aa67f",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": ".github/agent/tests/check-action-pins-test.sh",
+   "sha256": "d9e260d2d1bf99a2c94f26f8d2203b5a40b874280822436b9ea922fc7d46a398",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": ".github/agent/tests/k8s-harness-fence-test.sh",
+   "sha256": "db412b5dcd814aad71a9a2e436ac7a255507aa9a79f0f6a66884d889f67038c9",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": ".github/agent/tests/pin-age-check-test.sh",
+   "sha256": "5120fdb2d6fb992c97726d3c56707652fbf4e12f6d136986950cf548d2ac84bb",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": "bin/dependabot-reviewer-test.sh",
+   "sha256": "1cdc71c3e0fcda84b6bdd274e9364b8752f87489b2f64644367999e747f041c7",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": "bin/release-patch-wiring-test.sh",
+   "sha256": "d499258d6ae69dbfa7f8ee2b7b0e83f953327c5a59c7b20a0acff07b32696006",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": "bin/vex-forms-test.sh",
+   "sha256": "f882f567ae351d8a70fd724cfd342adb06b0e69eb23bb0043750a19229a1d0b5",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  },
+  {
+   "path": "bin/workflow-consolidation-test.sh",
+   "sha256": "c914f948e1b0a7e32606b30f4ec74ae86b485f1fdaf014cb5c599e1fa6a2e49f",
+   "reason": "test harness: its install-looking strings are fixture data for the checks it proves"
+  }
+ ]
+}
