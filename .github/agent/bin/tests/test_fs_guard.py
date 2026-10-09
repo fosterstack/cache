@@ -326,7 +326,7 @@ class Guard(unittest.TestCase):
                         except OSError:
                             pass
                 os.path.realpath("/usr/lib/python3.12/os.py")
-                for p in (os.path.dirname(root) + "-other", "/opt/other", "/usr/local", "/etc"):
+                for p in (os.path.dirname(root) + "-other", "/opt/other", "/usr/local/bin", "/etc"):
                     with self.assertRaises(G.SystemPathAccess, msg=p):
                         os.stat(p)
                 for p in (top, os.path.dirname(root)):                     # an ancestor's CONTENTS stay off limits
