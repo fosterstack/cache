@@ -69,7 +69,19 @@ path = sys.argv[1]
 _ld = sys.argv[2].split("\n")
 loaded = _ld[0]; bash_list = _ld[1:]
 errs = []
-lines = open(path).read().split("\n")
+# Read the script ONCE as bytes; every later step (region detection, form checks, numbering, hash slice) uses this
+# same line list, split on b"\n" only. Fail closed: refuse any \r (lone or CRLF), NUL or other control character
+# except \t and \n, any non-UTF-8 byte, and any Unicode line/paragraph separator (U+2028/2029, U+0085).
+_raw = open(path, 'rb').read()
+_bad = re.search(rb'[\x00-\x08\x0b-\x1f\x7f]', _raw)
+if _bad: errs.append("script contains a forbidden control byte 0x%02x at offset %d (only tab and LF are allowed)" % (_bad.group(0)[0], _bad.start()))
+_rawlines = _raw.split(b"\n")
+lines = []
+for _n, _bl in enumerate(_rawlines, 1):
+    try: _t = _bl.decode('utf-8')
+    except UnicodeDecodeError: errs.append("line %d: not valid UTF-8" % _n); _t = _bl.decode('utf-8', 'replace')
+    if re.search('[\u0085\u2028\u2029]', _t): errs.append("line %d: Unicode line separator" % _n)
+    lines.append(_t)
 # PR each declared path belongs to is named in the comments
 DECLARED = set("""
 dependency-provenance.json
@@ -148,7 +160,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 PINNED_SHA256 = "593f7d74f6f183c538935cd568d926240ec3c781b0db6ca5a8a7bd8b8fa677cf"
 if rstart and rend:
     import hashlib
-    _b = open(path, 'rb').read().split(b"\n")
+    _b = _rawlines
     _dg = hashlib.sha256(b"\n".join(_b[:rstart-1] + _b[rend:])).hexdigest()
     if _dg != PINNED_SHA256:
         errs.append("script text outside the v0.3.0 region changed (sha256 %s, pinned %s); if intended, update PINNED_SHA256 in the same commit" % (_dg, PINNED_SHA256))
@@ -267,6 +279,24 @@ sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_
 sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
 sed -E "345s/return 0/return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
 sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
+# B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
+# Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
+bytemut() { # <desc> <python expression over b (bytes of the real script) returning the mutated bytes>
+  python3 -c 'import sys; b=open("bin/check-file-allowlist.sh","rb").read(); open(sys.argv[1],"wb").write(eval(sys.argv[2]))' "$_mut_dir/m.sh" "$2"
+  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: $1" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" ""; else gp "struct check kills mutant: $1"; fi
+}
+bytemut "lone CRs in region comments + merged patterns + junk bench line (the round-6 probe)" \
+  'b.replace(b"  \x27^bin/vendor-check\\.sh$\x27\n  \x27^bin/vendor-provenance\\.py$\x27\n", b"  \x27^bin/vendor-(check\\.sh|provenance\\.py)$\x27\n").replace(b"# Archive scripts: push, pull (.sh) and verify (.py).", b"# Archive scripts:\r  # push, pull (.sh) and verify (.py).").replace(b"# OCI digest and network-probe tools.", b"# OCI digest and\r  # network-probe tools.").replace(b"  \x27^\\.github/release-identity\\.json$\x27\n\n", b"  \x27^\\.github/release-identity\\.json$\x27\n\n  \x27^bench/.*$\x27\n\n",1)'
+bytemut "a lone CR in an older comment line"      'b.replace(b"ALLOW_PATTERNS=(\n", b"ALLOW_PATTERNS=(\n  # x\ry\n", 1)'
+bytemut "CRLF line endings throughout"           'b.replace(b"\n", b"\r\n")'
+bytemut "a NUL byte in a comment inside the span" 'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\x00 and network-probe tools.")'
+bytemut "a NUL byte outside the span"            'b.replace(b"ALLOW_PATTERNS=(\n", b"ALLOW_PATTERNS=(\n  # x\x00y\n", 1)'
+bytemut "a vertical tab in a comment"            'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\x0b and network-probe tools.")'
+bytemut "a form feed in a comment"               'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\x0c and network-probe tools.")'
+bytemut "U+2028 in a comment"                    'b.replace(b"# OCI digest and network-probe tools.", "# OCI digest  and network-probe tools.".encode())'
+bytemut "a lone CR in the NOTE comments"         'b.replace(b"# NOTE: only the PATH is gated here, not the file", b"# NOTE: only the PATH\r is gated here, not the file")'
+bytemut "the region marker line with a trailing CR" 'b.replace(b"vendor/ is admitted by the PR that adds it.\n", b"vendor/ is admitted by the PR that adds it.\r\n", 1)'
+bytemut "invalid UTF-8 byte in a comment"        'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\xff and network-probe tools.")'
 rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
 run_ref() {
