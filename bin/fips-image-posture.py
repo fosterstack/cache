@@ -57,10 +57,13 @@ def fail(variant, why, code=1):
     sys.exit(code)
 
 
-def tracking_response(*a, **k):
-    r = http.client.HTTPResponse(*a, **k)
-    SEEN.append(r)
-    return r
+class TrackingResponse(http.client.HTTPResponse):
+    """Notes that a complete status line (an interim 1xx included) was received."""
+
+    def _read_status(self):
+        line = http.client.HTTPResponse._read_status(self)
+        SEEN.append(line)
+        return line
 
 
 def pairs(p):
@@ -110,7 +113,7 @@ def main(argv):
     t0 = time.monotonic()
     try:
         conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)
-        conn.response_class = tracking_response
+        conn.response_class = TrackingResponse
         conn.request("GET", "/statusz", headers=hdrs)
         resp = conn.getresponse()
         if resp.status != 200:
@@ -128,7 +131,7 @@ def main(argv):
         if resp.length not in (None, 0) or (resp.chunked and resp.chunk_left not in (None, 0)):
             fail(variant, "incomplete body")
     except (OSError, http.client.HTTPException) as e:
-        got_status = bool(SEEN) and isinstance(SEEN[0].status, int)
+        got_status = bool(SEEN)
         no_response = isinstance(e, OSError) or isinstance(e, http.client.RemoteDisconnected)
         fail(variant, "request failed: %s" % q(e), 1 if got_status or not no_response else 2)
     signal.alarm(0)

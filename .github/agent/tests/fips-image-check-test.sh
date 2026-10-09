@@ -61,7 +61,7 @@
 #   caveat   The image-identity comparison is UNVERIFIED where Docker uses the containerd image store (the container's
 #     .Image and the image's .Id can differ), as arm64 under emulation is UNVERIFIED until the first run.
 #   exit     Exit 0: success. Exit 2 ONLY for 'no complete HTTP response yet': connection refused, reset or closed before a status
-#     line was received, or the deadline expiring before a status line. EVERY failure after a status line was received (a non-200
+#     line was received (ANY complete HTTP status line counts, interim 1xx ones such as '100 Continue' included), or the deadline expiring before a status line. EVERY failure after a status line was received (a non-200
 #     status, a header, framing or body error, a truncated body, a deadline during the headers or the body, a wrong note, bad JSON)
 #     and every argument error exits 1 and is FINAL. A garbage status line is a response: exit 1. In the steps, posture() retries
 #     ONLY exit 2 (at least 20 attempts or 10 s, at most 120 and 120 s); exit 1, 3 or anything else other than 0 fails the step
@@ -995,6 +995,16 @@ for n, b in [("a newline and ::error::", jb("x\n::error::pwned")), ("a carriage 
 for v in ("fips", "debug"):
     case("%s body is not JSON" % v, v, body="<html>", auth=(v == "fips"))
     case("%s body has a duplicate key" % v, v, body='{"fips140_note":"%s","fips140_note":"%s"}' % (NOTE[v], NOTE[v]), auth=(v == "fips"))
+CONT = [(b"HTTP/1.1 100 Continue\r\n\r\n", 0)]
+for v in ("production", "fips"):
+    au = (v == "fips"); G = jb(NOTE[v])
+    case("%s: '100 Continue', then the connection closes (a status line WAS received: exit 1)" % v, v, mode="raw", raw=CONT, auth=au)
+    case("%s: '100 Continue', then a reset (exit 1)" % v, v, mode="raw", raw=CONT + [(b"", 0.4), "rst"], auth=au)
+    case("%s: '102 Processing', then the connection closes (exit 1)" % v, v, mode="raw", raw=[(b"HTTP/1.1 102 Processing\r\n\r\n", 0)], auth=au)
+    case("%s: '100 Continue', then a good 200 response with the right note (exit 0, one row)" % v, v, mode="raw",
+         raw=CONT + RAW("HTTP/1.1 200 OK", [("Content-Length", len(G)), ("Connection", "close")], G), ok=True, auth=au)
+    case("%s: '100 Continue', then a 200 with the wrong note (exit 1)" % v, v, mode="raw",
+         raw=CONT + RAW("HTTP/1.1 200 OK", [("Content-Length", len(jb("on"))), ("Connection", "close")], jb("on")), auth=au)
 case("connection refused", kind="refused", exit=2)
 for v in ("production", "fips"):
     au = (v == "fips")
@@ -1032,6 +1042,9 @@ case("the status line arrives at one byte per second (the deadline expires befor
 G0 = jb("off")
 case("the response arrives in three phases of 1.2 s each (3.6 s in all): the budget is for the whole call", mode="raw",
      raw=[(b"HTTP/1.1 200 OK\r\n", 1.2), (b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(G0), 1.2), (G0, 1.2)], kind="slow")
+case("'100 Continue', then silence until the deadline (a status line was received: exit 1)", mode="raw", raw=CONT + [(b"", 30)], kind="slow")
+case("'HTTP/1.1 100 Continue' dribbled at one byte per second: the deadline expires before the line completes (exit 2)", mode="raw",
+     raw=[(bytes([x]), 1.0) for x in b"HTTP/1.1 100 Continue\r\n\r\n"], kind="slow", exit=2)
 case("a header arrives at one byte per second", mode="raw", raw=[(b"HTTP/1.1 200 OK\r\n", 0)] + [(bytes([x]), 1.0) for x in b"X-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"], kind="slow")
 case("the chunk-size lines arrive at one byte per second", mode="raw", raw=[(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", 0)] + [(bytes([x]), 1.0) for x in b"16\r\n" + b"0" * 30], kind="slow")
 
@@ -1083,7 +1096,7 @@ def run_case_on(sp, c, SRV, OTHER, DECOY):
     if c["kind"] in ("http", "refused", "slow") and not p.stderr.startswith("variant %s:" % c["v"]): return False
     if c["kind"] == "http" and SRV.hits and SRV.hits[0][0] != "/statusz" and c["status"] != 200: return False
     return True
-FOCUS = [("per-phase", r"never answers|dribbl|per second|phases"), ("5 s", r"never answers|dribbl|per second"), ("followed", r"HTTP 30|redirect"), ("any 2xx", r"HTTP 20|204|205|304"), ("3xx", r"HTTP 30"), ("any status", r"HTTP (40|50)"),
+FOCUS = [("interim", r"100 Continue|102"), ("per-phase", r"never answers|dribbl|per second|phases"), ("5 s", r"never answers|dribbl|per second"), ("followed", r"HTTP 30|redirect"), ("any 2xx", r"HTTP 20|204|205|304"), ("3xx", r"HTTP 30"), ("any status", r"HTTP (40|50)"),
          ("size cap", r"oversize|6553|cap"), ("timeout", r"never answers|dribbl|per second"), ("deadline", r"never answers|dribbl|per second"),
          ("NaN", r"NaN|Infinity"), ("truncated", r"truncated|cut short|Content-Length"), ("proxy", r"exact good"), ("nested", r"nested"), ("JSON decoding", r"nested"),
          ("protocol error", r"garbage|150 headers|70000 bytes|empty reply|reset"), ("printed raw", r"newline|carriage|holding|::error::"),
@@ -1118,6 +1131,12 @@ MATRIX = None
 ARCH = None
 VARIANT = "?"
 PASSWORD = None
+RECEIVED = []
+class Resp(http.client.HTTPResponse):      # records that a status line (any, interim 1xx included) was read
+    def _read_status(self):
+        r = http.client.HTTPResponse._read_status(self)
+        RECEIVED.append(r[1])
+        return r
 def on_alarm(sig, frame): raise TimeoutError("deadline")
 def bad_constant(c): raise ValueError("constant %r" % (c,))
 def q(x):
@@ -1162,11 +1181,10 @@ def main(argv):
     hdrs = {}
     if "--user" in d:
         hdrs["Authorization"] = "Basic " + base64.b64encode(("%s:%s" % (d["--user"], d["--password"])).encode()).decode()
-    seen = []
     t0 = time.monotonic()
     try:
         conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)
-        conn.response_class = lambda sock, **kw: (seen.append(http.client.HTTPResponse(sock, **kw)), seen[-1])[1]
+        conn.response_class = Resp
         conn.request("GET", "/statusz", headers=hdrs)
         resp = conn.getresponse()
         if resp.status != 200: fail(variant, "HTTP status %s" % q(resp.status))
@@ -1179,7 +1197,7 @@ def main(argv):
             if len(buf) > CAP: fail(variant, "body over the size cap")
         if resp.length not in (None, 0) or (resp.chunked and resp.chunk_left not in (None, 0)): fail(variant, "incomplete body")
     except (OSError, http.client.HTTPException) as e:
-        got_status = bool(seen) and isinstance(seen[0].status, int)
+        got_status = bool(RECEIVED)
         garbage = isinstance(e, http.client.BadStatusLine) and not isinstance(e, http.client.RemoteDisconnected)
         too_long = isinstance(e, http.client.LineTooLong)
         fail(variant, "request failed: %s" % q(e), 1 if (got_status or garbage or too_long) else 2)
@@ -1218,7 +1236,7 @@ REFMUT = [
  ("the deadline covers only the body loop", [("signal.alarm(int(DEADLINE))", "pass")]),
  ("NaN and Infinity are accepted", [(", parse_constant=bad_constant", "")]),
  ("a truncated body is accepted", [('        if resp.length not in (None, 0) or (resp.chunked and resp.chunk_left not in (None, 0)): fail(variant, "incomplete body")\n', "")]),
- ("the environment's proxy is used (default urllib handlers)", [('        conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)\n        conn.response_class = lambda sock, **kw: (seen.append(http.client.HTTPResponse(sock, **kw)), seen[-1])[1]\n        conn.request("GET", "/statusz", headers=hdrs)\n        resp = conn.getresponse()\n',
+ ("the environment's proxy is used (default urllib handlers)", [('        conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)\n        conn.response_class = Resp\n        conn.request("GET", "/statusz", headers=hdrs)\n        resp = conn.getresponse()\n',
    '        import urllib.request\n        resp = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%s/statusz" % d["--port"], headers=hdrs), timeout=DEADLINE)\n')]),
  ("the size cap is off by one (>=)", [("if len(buf) > CAP:", "if len(buf) >= CAP:")]),
  ("the size cap is one too large", [("CAP = 64 * 1024", "CAP = 64 * 1024 + 1")]),
@@ -1240,6 +1258,7 @@ REFMUT = [
  ("the password is printed in a usage-style line", [('    print("variant %s: %s" % (variant, why[:300]), file=sys.stderr)\n', '    print("variant %s: %s [%s]" % (variant, why[:300], PASSWORD), file=sys.stderr)\n')]),
  ("a wrong answer exits 2", [('"reports %s, want %s" % (q(got), q(want)))', '"reports %s, want %s" % (q(got), q(want)), 2)')]),
  ("a non-200 status exits 2", [('fail(variant, "HTTP status %s" % q(resp.status))', 'fail(variant, "HTTP status %s" % q(resp.status), 2)')]),
+ ("an interim 1xx status line is not counted as a status line received (no response yet: exit 2)", [("        RECEIVED.append(r[1])\n", "        if r[1] >= 200: RECEIVED.append(r[1])\n")]),
  ("a refused connection exits 1", [("1 if (got_status or garbage or too_long) else 2", "1")]),
  ("a failure after the status line (headers, body, deadline) exits 2", [("1 if (got_status or garbage or too_long) else 2", "1 if (garbage or too_long) else 2")]),
  ("a garbage status line exits 2", [("1 if (got_status or garbage or too_long) else 2", "1 if (got_status or too_long) else 2")]),
