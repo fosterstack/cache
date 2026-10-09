@@ -204,11 +204,20 @@ ALLOW_PATTERNS=(
   # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
   '^build/keys/assembly\.rsa(\.pub)?$'
   '^build/keys/release\.rsa\.pub$'
-  # Build-chain scripts and their test: build-apk, assemble-image, apko-lock, install-build-tools,
-  # release-sign-apks, sealed-proof, lock-proof, refresh-inputs, melange-apko-test (.sh);
-  # apk-tool, compare-recipes, go-module-sbom (.py).
-  '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs|melange-apko-test)\.sh$'
+  # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, compare-recipes, go-module-sbom (.py).
+  '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
   '^bin/(apk-tool|compare-recipes|go-module-sbom)\.py$'
+  # The shared test library and the split build-chain tests.
+  '^bin/melange-apko-lib\.sh$'
+  '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
+  # OCI digest and network-probe tools.
+  '^bin/(oci-digest|net-probe)\.py$'
+  # Archive scripts: push, pull (.sh) and verify (.py).
+  '^bin/archive-(push|pull)\.sh$'
+  '^bin/archive-verify\.py$'
+  # Secret-scanning configuration (paths-ignore for the committed non-secret assembly key).
+  '^\.github/secret_scanning\.yml$'
   # The supply-chain harness manifest (PR #210).
   '^\.github/agent/supply-chain/harness-manifest\.json$'
   # The release identity record.

@@ -464,7 +464,7 @@ runeach fail "feature/x" "v030: key one directory up refused" "build/assembly.rs
 runeach fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
 runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
 
-passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh" "bin/melange-apko-test.sh"
+passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
 passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/compare-recipes.py" "bin/go-module-sbom.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
 runeach fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
@@ -472,11 +472,16 @@ runeach fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "b
 runeach fail "feature/x" "v030: bin/x/assemble-image.sh (extra segment) refused" "bin/x/assemble-image.sh" "bin/x/go-module-sbom.py"
 runeach fail "feature/x" "v030: assemble-image.sh one directory up refused"   "assemble-image.sh" "compare-recipes.py"
 runeach fail "feature/x" "v030: suffixed script names refused"                "bin/assemble-image.sh.orig" "bin/apk-tool.py.bak"
-runeach fail "feature/x" "v030: sibling names refused"                        "bin/build-apk-test.sh" "bin/sealed-proof-test.sh" "bin/refresh-inputs.py" "bin/lock-proof.py"
+runeach fail "feature/x" "v030: sibling names refused"                        "bin/sealed-proof-test.sh" "bin/build-apk-lib.sh" "bin/melange-apko-test.sh" "bin/refresh-inputs.py" "bin/lock-proof.py"
 runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "bin/../build-apk.sh"
 
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
+passfam "feature/x" "v030: the split build-chain test files and library" "bin/melange-apko-lib.sh" "bin/build-helpers-test.sh" "bin/refresh-inputs-test.sh" "bin/build-apk-test.sh" "bin/assemble-image-test.sh"
+passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
+passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
+passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
+runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "build/archive.json" "secret_scanning.yml"
 passfam "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/release-identity.json"
 runeach fail "feature/x" "REQ-REL-009: release-identity near-miss refused" ".github/release-identity.json.bak" ".github/Release-Identity.json" ".github/release-identity.yaml" ".github/other.json" ".github/nested/release-identity.json" ".github/x/release-identity.json" "release-identity.json" ".github/release-identity.json " ".github/release-identityXjson" ".github/policy/../release-identity.json"
 
