@@ -16,7 +16,7 @@ THE ITEMS (PROPOSED/UNVERIFIED layout; cache-3f's note fixes the apk digest, the
   digests.json (Sign's only input, PR 1's schema): image-production, image-fips, apk-<standard|fips>-<amd64|arm64>, and the four Linux archives
       archive-linux-<amd64|arm64>, archive-fips-linux-<amd64|arm64> (the goreleaser names fscache_<ver>_linux_<arch>.tar.gz, fscache-fips_...).
   items.json (Rebuild's comparison, bin/chain-rebuild-test.sh REQUIRED): those archives and the apks (named by x86_64|aarch64), apkindex-<arch>,
-      binary-<variant>-<arch>, modules-sbom-<variant>, inputs-manifest-<variant>, lock-<image>, image-<image>, image-<image>-manifest-<amd64|arm64>,
+      binary-<variant>-<arch> (sha256 of `apk-tool.py cat APK usr/bin/fscache`), modules-sbom-<variant>, inputs-manifest-<variant>, lock-<image>, image-<image>, image-<image>-manifest-<amd64|arm64>,
       sbom-<image>, archive-checksums.
 """
 import hashlib, json, os, re, shutil, sys
@@ -48,6 +48,11 @@ def apk_digest(b):
     return "sha256:" + sha(b.split(b"\n", 1)[1])        # the signature line is not part of the digest
 
 
+def apk_binary(b):
+    """What `apk-tool.py cat APK usr/bin/fscache` prints: bytes derived from the apk's content, never from its signature line."""
+    return b"BIN\n" + b.split(b"\n", 1)[1]
+
+
 def write(path, data, mode=None):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     open(path, "wb" if isinstance(data, bytes) else "w").write(data)
@@ -70,7 +75,7 @@ def fragment(arch, tag):
     items = {}
     for v in ("standard", "fips"):
         items["apk-%s-%s" % (v, arch)] = apk_digest(apk_bytes(v, arch, tag))
-        items["binary-%s-%s" % (v, arch)] = "sha256:" + sha(("BIN|%s|%s" % (v, pkgver(tag))).encode())
+        items["binary-%s-%s" % (v, arch)] = "sha256:" + sha(apk_binary(apk_bytes(v, arch, tag)))
         items["modules-sbom-" + v] = "sha256:" + sha(("sbom|" + v).encode())
         items["inputs-manifest-" + v] = "sha256:" + sha(("inputs|" + v).encode())
     items["apkindex-" + arch] = "sha256:" + sha(("idx|" + arch).encode())
@@ -153,8 +158,11 @@ sys.exit(int(os.environ.get("FAKE_VERSION_RC", "0")) or (0 if len(found) == 1 el
 FAKE_APKTOOL = '''#!/usr/bin/env python3
 import hashlib, sys
 a = sys.argv[1:]
+body = open(a[1], "rb").read().split(b"\\n", 1)[1]
 if a[0] == "digest":
-    sys.stdout.write("sha256:" + hashlib.sha256(open(a[1], "rb").read().split(b"\\n", 1)[1]).hexdigest() + "\\n")
+    sys.stdout.write("sha256:" + hashlib.sha256(body).hexdigest() + "\\n")
+elif a[0] == "cat" and a[2] == "usr/bin/fscache":
+    sys.stdout.buffer.write(b"BIN\\n" + body)
 '''
 FAKE_BUILD_APK = '''#!/usr/bin/env bash
 if [ "${1:-}" = --print-source-date-epoch ]; then

@@ -111,16 +111,39 @@ SCRIPTS = {"witnessed": "bin/witnessed.sh", "apk": "bin/build-stage-apk.sh", "as
            "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "rebuild-assemble": "bin/build-stage-rebuild-assemble.sh"}
 
 
+def read_exact(path):
+    """The bytes as bash sees them: newline="" keeps a lone CR or a CRLF, which Python's default reading would turn into a plain newline."""
+    return open(path, newline="").read()
+
+
 def control_chars(raw):
-    """Only tab and newline are allowed. Python's splitlines() and strip() treat VT, FF, FS, NEL and U+2028 as line breaks or space and bash does not,
-    so a committed script is read with split("\\n") and refused if it holds any other control character."""
+    """Only tab and newline are allowed (so a CR is refused too). Python's splitlines() and strip() treat VT, FF, FS, NEL and U+2028 as line breaks
+    or space and bash does not; read with split("\\n") and refused if the script holds any other control character."""
     return sorted({"U+%04X" % ord(c) for c in raw if (ord(c) < 32 and c not in "\t\n") or 127 <= ord(c) <= 159 or c in "\u2028\u2029"})
 
 
 def commands_of(raw):
-    """The command lines of a committed script: a trailing-backslash break is joined, comments and blank lines are dropped, nothing is stripped."""
-    joined = re.sub(r"[ \t]*\\\n[ \t]*", " ", raw)
-    return [l for l in joined.split("\n") if l.strip(" \t") and not l.lstrip(" \t").startswith("#")]
+    """(commands, faults) of a committed script, read the way bash reads it. Blank lines and comment lines are dropped. A command line may end in
+    ` \\` (a space and one backslash): bash then joins the next physical line, and so does this. A comment line is never joined, even if it ends in a
+    backslash (bash does not continue a comment: the next line is a command and is judged as one). A backslash at the end of any other line is a fault."""
+    commands, faults, pending = [], [], None
+    lines = raw.split("\n")
+    for number, line in enumerate(lines, 1):
+        if pending is not None and number == len(lines) and not line:
+            break                                   # the file ends right after a continuation: pending is reported below
+        if pending is not None:
+            line, pending = pending + " " + line.lstrip(" \t"), None
+        elif line.lstrip(" \t").startswith("#") or not line.strip(" \t"):
+            continue
+        if line.endswith(" \\"):
+            pending = line[:-2]
+        elif line.endswith("\\"):
+            faults.append("line %d ends in a backslash that is not preceded by a space (bash joins the next line with no space)" % number)
+        else:
+            commands.append(line)
+    if pending is not None:
+        faults.append("the script ends in a line continuation")
+    return commands, faults
 
 
 def compare(got, want, what):
@@ -136,9 +159,9 @@ def compare(got, want, what):
 
 
 def script(path, kind):
-    raw = open(path).read()
-    bad = ["control character %s in the script" % c for c in control_chars(raw)]
-    return bad + compare(commands_of(raw), expected_lines(kind), "the script")
+    raw = read_exact(path)
+    commands, faults = commands_of(raw)
+    return ["control character %s in the script" % c for c in control_chars(raw)] + faults + compare(commands, expected_lines(kind), "the script")
 
 
 # ---- the stage files -----------------------------------------------------------------------------------------------------------
@@ -161,10 +184,6 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
 }
-
-
-def lines_of(v):
-    return [l.strip() for l in str(v).strip().splitlines() if l.strip()]
 
 
 def stage(path, family, allowed_path=None):
@@ -271,6 +290,7 @@ def witnessed_lines():
     return ["set -euo pipefail", 'step="$1"', "shift",
             'case "$step" in apk|build|rapk|rebuild) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-$step"'] + TOKEN + [
+            "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
             '--signer-fulcio-token-path "$RUNNER_TEMP/tok" -t https://timestamp.sigstore.dev/api/v1/timestamp '
@@ -287,9 +307,9 @@ def witness_seam(run, spec, family):
 
 def helper(path):
     """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags and `timeout 540` live."""
-    raw = open(path).read()
-    bad = ["control character %s in the helper" % c for c in control_chars(raw)]
-    return bad + compare(commands_of(raw), witnessed_lines(), "the helper")
+    raw = read_exact(path)
+    commands, faults = commands_of(raw)
+    return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + compare(commands, witnessed_lines(), "the helper")
 
 
 def directwitness(files):
@@ -297,7 +317,7 @@ def directwitness(files):
     bad = []
     for f in files:
         try:
-            if re.search(r"\bwitness\s+run\b", open(f).read()): bad.append("%s names `witness run` directly (every stage goes through bin/witnessed.sh)" % f)
+            if re.search(r"\bwitness\s+run\b", read_exact(f)): bad.append("%s names `witness run` directly (every stage goes through bin/witnessed.sh)" % f)
         except FileNotFoundError:
             bad.append("missing file: %s" % f)
     return bad
@@ -310,7 +330,7 @@ def lockflow(files):
     asm = []
     for f in files[:2]:
         try:
-            asm.append([l for l in commands_of(open(f).read()) if l.startswith("./bin/assemble-image.sh")])
+            asm.append([l for l in commands_of(read_exact(f))[0] if l.startswith("./bin/assemble-image.sh")])
         except FileNotFoundError:
             bad.append("missing file: %s" % f); asm.append([])
     if not bad and (not asm[0] or asm[0] != asm[1]):
@@ -347,22 +367,42 @@ CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage
 NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"], "release": ["check", "rebuild", "sign"]}
 
 
+# The jobs of release.yml that are not chain jobs, with the exact permissions each may hold (a workflow-level permissions block is contents: read).
+# decide, patch-notes and patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof and may hold
+# contents: read and nothing else. Anything else is a fault: a job that is not one of these is a way to publish around Rebuild or Check.
+NON_CHAIN = {"decide": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"},
+             "patch-notes": {"contents": "read"}, "patch-failed": {"contents": "read", "issues": "write"}}
+
+
 def graph(path):
-    bad = []
-    d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
-    jobs = d.get("jobs") or {}
-    for n, f in CHAIN.items():
-        j = jobs.get(n)
-        if j is None: bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % n); continue
-        extra = set(j) - {"uses", "needs", "permissions", "with"}
-        if extra: bad.append("%s: keys outside {uses, needs, permissions, with}: %s (no if, continue-on-error, secrets, strategy, env)" % (n, sorted(extra)))
-        if j.get("uses") != "./.github/workflows/" + f: bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (n, f, j.get("uses")))
-        nd = j.get("needs"); nd = [] if nd is None else ([nd] if isinstance(nd, str) else list(nd))
-        if sorted(nd) != NEEDS[n]: bad.append("%s must need exactly %s, got %s" % (n, NEEDS[n], sorted(nd)))
-    for n, j in jobs.items():
-        u = str((j or {}).get("uses", ""))
-        if n not in CHAIN and (u.startswith("./") or "stage-" in u):
-            bad.append("job %s calls %s but is not one of the five chain jobs (a copy of Release's call would publish around Rebuild or Check)" % (n, u))
+    d = yaml.load(read_exact(path), Loader=yaml.BaseLoader)
+    jobs, bad = d.get("jobs") or {}, []
+    if d.get("permissions") != {"contents": "read"}:
+        bad.append("workflow-level permissions must be exactly contents: read (every job asks for what it needs), got %s" % d.get("permissions"))
+    for name, file in CHAIN.items():
+        job = jobs.get(name)
+        if job is None:
+            bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % name); continue
+        if set(job) - {"uses", "needs", "permissions", "with"}:
+            bad.append("%s: keys outside {uses, needs, permissions, with}: %s (no if, continue-on-error, secrets, strategy, env)" % (name, sorted(set(job) - {"uses", "needs", "permissions", "with"})))
+        if job.get("uses") != "./.github/workflows/" + file:
+            bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (name, file, job.get("uses")))
+        needs = job.get("needs"); needs = [] if needs is None else ([needs] if isinstance(needs, str) else list(needs))
+        if sorted(needs) != NEEDS[name]:
+            bad.append("%s must need exactly %s, got %s" % (name, NEEDS[name], sorted(needs)))
+    for name, job in jobs.items():
+        if name in CHAIN:
+            continue
+        job = job or {}
+        granted = job.get("permissions", d.get("permissions"))
+        if "uses" in job:
+            bad.append("job %s has a job-level uses (%s): only the five chain jobs call a workflow" % (name, job["uses"]))
+        if name.startswith("hostile-"):
+            if granted != {"contents": "read"}: bad.append("job %s may hold contents: read and nothing else, got %s" % (name, granted))
+        elif name not in NON_CHAIN:
+            bad.append("job %s is not one of the five chain jobs or the allowed non-chain jobs %s" % (name, sorted(NON_CHAIN)))
+        elif granted != NON_CHAIN[name]:
+            bad.append("job %s must hold exactly the permissions %s, got %s" % (name, NON_CHAIN[name], granted))
     return bad
 
 

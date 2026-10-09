@@ -29,17 +29,18 @@
 # repo root, and Witness names a product subject relative to the working directory, so the real subject is file:items.json (and file:digests.json for
 # PR 1's sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json, a product of Rebuild's record
 # (subject file:witness-rebuild/verdict.json) uploaded in the witness-rebuild artifact: that is how the verdict travels (it is the stage's only output).
-# THE ITEMS (cache-3f's interface note and its UPDATE; fix round 2 adds the four Linux archives, PROPOSED, advisor to confirm: rule 54 compares every digest
-# Release will publish, and Sign's digests.json covers them, rules 35 and 51: archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64,
-# archive-fips-linux-arm64, each the sha256 of the archive file). THE APK ITEM is cache's `apk-tool.py digest` BY NAME, in its output form sha256:<hex>:
-# the sections it covers are cache's to change (control and data, signature excluded), so this test does not name them; what matters here is only that
-# it is a digest string like the others. bin/chain-bind-test.sh proves, against the real items-apk, that it differs from the whole-file sha256 and
-# ignores the signature.: per-architecture apk by apk-tool.py digest [F L748]; the modules SBOM and the
-# full lock file by sha256 of the bytes [F L744, L894-895]; the IMAGE is the OCI INDEX digest as the registry shows it, which
-# assemble-image.sh writes as OUT/<variant>.digest, plus one item per per-architecture manifest from OUT/<variant>.manifests
-# (`<arch> sha256:<hex>`, arch amd64|arm64; bin/oci-digest.py TAR verifies every blob hashes to its name): image-<variant> and
-# image-<variant>-manifest-<arch>. PROPOSED/UNVERIFIED (no cache test fixes them): the apkindex, inputs-manifest, SBOM-directory and
-# binary item layouts.
+# THE ITEMS (29, the list REQUIRED below), from cache-3f's interface note and its UPDATE. What cache's tests fix:
+#   - the apk item is `apk-tool.py digest APK` by name, in its output form sha256:<hex> [F L748]. Which sections it covers is cache's to change
+#     (control and data, signature excluded), so this test does not name them; bin/chain-bind-test.sh proves, against the real items-apk, that the item
+#     differs from the whole-file sha256 and ignores the signature;
+#   - the full lock file and the modules SBOM are the sha256 of their bytes [F L744, L894-895];
+#   - the image is the OCI INDEX digest as the registry shows it, which assemble-image.sh writes as OUT/<variant>.digest, plus one item per platform
+#     manifest from OUT/<variant>.manifests (`<arch> sha256:<hex>`, arch amd64|arm64; bin/oci-digest.py TAR verifies every blob hashes to its name):
+#     image-<variant> and image-<variant>-manifest-<arch>.
+#   Added in fix round 2 (PROPOSED, advisor to confirm): the four Linux archives archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64 and
+#   archive-fips-linux-arm64, each the sha256 of the archive file, because rule 54 compares every digest Release will publish and Sign's digests.json
+#   covers them (rules 35 and 51).
+#   PROPOSED/UNVERIFIED (no cache test fixes them): the apkindex, inputs-manifest, SBOM-directory and binary item layouts.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 CV="$root/bin/chain-verify.py"
