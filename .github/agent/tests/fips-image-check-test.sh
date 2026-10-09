@@ -40,6 +40,14 @@
 #   job      The artifacts job has timeout-minutes (at most 120). No step issues docker tag, pull (amd64 step), rmi, load,
 #     import, build, commit or login; every `docker run` of the two container steps must start; a retry around the check
 #     is bounded (at most 120 attempts or 120 s of sleep).
+#   escapes  No `command`, `env`, `exec`, `eval`, `sh -c`, `xargs`, `builtin`, `enable`, `source`, backslash-escaped tool name or
+#     process wrapper in the container and results steps (they would run a tool around the PATH of the stubs).
+#   deadline Every deadline/timeout constant in the program is at most 3 s; the slow cases must fail within 4.5 s.
+#   imports  The program imports only the standard modules sys, json, http, urllib, socket, argparse, signal, time, base64, re,
+#     stat, errno and os.path; no subprocess, pathlib, shutil, ctypes or importlib, no os.environ/os.system/..., no eval/exec/
+#     __import__, no path under ~/.docker.
+#   (not checked) The pulled image's RepoDigests are not compared with the candidate digest inside the container steps: the
+#     pull step, pinned by hash and executed above, is what ties the local tag to the digest.
 #   caveat   The image-identity comparison is UNVERIFIED where Docker uses the containerd image store (the container's
 #     .Image and the image's .Id can differ), as arm64 under emulation is UNVERIFIED until the first run.
 #   steps    In both container steps, per variant, after that variant's healthz wait and while its container runs (before
@@ -129,6 +137,8 @@ check("RELEASING.md says AC2 gates only under a baseline frozen after it merged,
       "frozen after it merged" in flat and "v0.2.0" in flat and "v0.2.1" in flat and "blocks the release regardless" in flat, flat)
 check("RELEASING.md describes the artifact acceptance (candidates mode, amd64 and arm64), not the Kubernetes stage",
       "linux/amd64" in flat and "linux/arm64" in flat and "candidates mode" in flat and "Kubernetes" not in flat, flat)
+check("RELEASING.md says the posture check also runs in archives mode (the PR chain) and can fail those runs",
+      "archives mode" in flat and "PR chain" in flat and "can fail" in flat, flat)
 
 lap('part 0')
 # ---------------------------------------------------------------- A. the workflow
@@ -181,8 +191,15 @@ check("no step before 'exercise the images' touches bin/, PATH, GITHUB_PATH or G
 SHADOW = re.compile(r"^\s*(?:function\s+)?(?:curl|docker|jq|python3|sleep|stat|seq|bash)\s*\(\)|^\s*alias\s|\bPATH=|PATH\+=|\bsudo\b|\bhash\s+-|GITHUB_PATH|GITHUB_ENV|\bexport\s+-f\b", re.M)
 ABS = re.compile(r"(?<!--entrypoint )(?<![\w.-])/(?:usr/(?:local/)?)?s?bin/(?:curl|docker|jq|python3?|sleep|stat|seq)\b")
 CALL = re.compile(r"python3 -I bin/fips-image-posture\.py check\b")
+ESC = [(r"\bcommand\b", "command"), (r"(^|[;&|(`\s])env\s", "env"), (r"\bexec\b", "exec"), (r"\beval\b", "eval"), (r"\b(?:ba|z|da)?sh\s+-\w*c\b", "sh -c"),
+       (r"\bxargs\b", "xargs"), (r"\bbuiltin\b", "builtin"), (r"(?<![\w$-])\\(?:docker|curl|jq|python3|sleep|stat|seq)\b", "backslash-escaped tool"), (r"\benable\b", "enable"),
+       (r"\bsource\b", "source"), (r"(^|[;&|(\s])\.\s+\S", ". file"), (r"\b(?:nohup|setsid|chroot|nsenter|timeout)\s", "wrapper")]
+def escapes(t):
+    code = [l for l in t.splitlines() if not l.strip().startswith("#")]
+    return [n for rx, n in ESC if any(re.search(rx, l) for l in code)]
 for name, s in ((EX, ex), (ARM, arm), (RES, res)):
     t = (s or {}).get("run", "")
+    check("%s: nothing runs a tool around the PATH stubs (command, env, exec, eval, sh -c, xargs, builtin, escaped names)" % name, s is not None and not escapes(t), escapes(t))
     hosts = {m.split("/")[0].split(":")[0] for m in re.findall(r"https?://([^\s'\"]+)", t)}
     check("%s: no shadowing of tools, no PATH or GITHUB_ENV/PATH edits" % name, s is not None and not SHADOW.search(t), SHADOW.findall(t))
     redir = [l.strip() for l in t.splitlines() if re.search(r"\bcurl\b", l) and re.search(r"(?<![\w-])(?:-[A-Za-z]*L[A-Za-z]*|--location(?:-trusted)?|-K|--config|--proto-redir\S*|--next)(?![\w-])", l)]
@@ -199,6 +216,10 @@ for name, s in ((EX, ex), (ARM, arm), (RES, res)):
           s is not None and all(CALL.search(l) for l in code if re.search(r"\bpython\w*\b", l)), [l for l in code if re.search(r"\bpython\w*\b", l)])
     check("%s: no tee, no here-string or pipe feeding a response around" % name,
           s is not None and not [l for l in code if re.search(r"\btee\b", l)], [l for l in code if re.search(r"\btee\b", l)])
+for form in ("command -p docker tag localhost/fa-fips x || true", "env docker tag a b", "exec docker tag a b", 'eval "docker tag a b"', "bash -c 'docker tag a b'",
+             "sh -c 'docker tag a b'", "echo a | xargs docker tag", "\\docker tag a b", "builtin command -p docker tag a b", "source /tmp/x", ". /tmp/x", "nohup docker tag a b", "timeout 5 docker tag a b",
+             "/usr/bin/docker tag a b"):
+    check("static scan catches an escape: %s" % form, ex is not None and bool(escapes(ex["run"] + "\n" + form) or ABS.search(form)), form)
 check("the posture program is referenced only by the two container steps",
       all(("fips-image-posture" in (s.get("run") or "")) == (s.get("name") in (EX, ARM)) for s in steps))
 g = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
@@ -616,14 +637,17 @@ def judge_bad(label, arch, step, cfg, digests=None, absent=None, flaky=False):
         if absent:
             check("%s: the failing variant is not claimed in the posture matrix" % label, ("linux/%s %s\n" % (arch, absent)) not in (r["matrix"] or ""), r["matrix"])
             cs = [k for k, x in enumerate(log) if x.get("cmd") == "posture-check" and x["d"].get("variant") == absent]
-            if cs: check("%s: the retry around the check is bounded (%d attempts, %.0fs of sleep; at most 120 and 120)" % (label, len(cs), sleep_total(log, cs[0])),
-                         len(cs) <= 120 and sleep_total(log, cs[0]) <= 120)
+            check("%s: the check is called at least once" % label, bool(cs), len(cs))
+            if cs:
+                sl = sleep_total(log, cs[0])
+                check("%s: the check is retried (%d attempts, %.0fs of sleep; at least 20 attempts or 10 s)" % (label, len(cs), sl), len(cs) >= 20 or sl >= 10)
+                check("%s: the retry around the check is bounded (at most 120 attempts and 120 s)" % label, len(cs) <= 120 and sl <= 120)
     else:   # the retry budget: a call that is retried must be retried for >= 20 attempts or >= 10 s
         calls = [k for k, x in enumerate(log) if x.get("cmd") == "posture-check" and x["d"].get("variant") == "fips"]
         n = len(calls)
         slept = sleep_total(log, calls[0]) if calls else 0
         check("%s: a retried posture check does not give up early (attempts %d, sleeps %.1fs)" % (label, n, slept),
-              r["rc"] is not None and (r["rc"] == 0 or n <= 1 or n >= 20 or slept >= 10), (r["rc"], n))
+              r["rc"] is not None and (r["rc"] == 0 or n >= 20 or slept >= 10), (r["rc"], n))
         if r["rc"] == 0: judge_good(arch, r, label + " (passed on retry)", retried=True)
 
 TA = []
@@ -869,6 +893,11 @@ for v in VARIANTS:
     case("%s: a reset in the middle of the body" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("Content-Length", 5000), ("Connection", "close")], G[:10]) + ["rst"], auth=au)
     case("%s: 150 headers" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("X-%d" % i, "v") for i in range(150)] + [("Content-Length", len(G))], G), auth=au)
     case("%s: a header line of 70000 bytes" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("X-Long", "a" * 70000), ("Content-Length", len(G))], G), auth=au)
+    case("%s: a good body followed by 70000 spaces" % v, v, body=jb(NOTE[v]) + b" " * 70000, auth=au)
+    case("%s: a good body followed by 70000 spaces, chunked" % v, v, body=jb(NOTE[v]) + b" " * 70000, mode="chunked", auth=au)
+    case("%s: a good body followed by 70000 spaces, ended by EOF" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("Connection", "close")], jb(NOTE[v]) + b" " * 70000), auth=au)
+    case("%s body has duplicate keys before the field" % v, v, body='{"a":1,"a":2,"fips140_note":"%s"}' % NOTE[v], auth=au)
+    case("%s body has duplicate keys in a nested object" % v, v, body='{"x":{"b":1,"b":2},"fips140_note":"%s"}' % NOTE[v], auth=au)
     case("%s: a body nested 60000 deep (a RecursionError on older Pythons)" % v, v, body=b"[" * 60000, auth=au)
 case("production: a redirect loop to itself, with a good body", status=302, headers={"Location": "/statusz"})
 case("production: a redirect to another path on the same server, with a good body", status=307, headers={"Location": "/other"})
@@ -948,7 +977,7 @@ def run_case_on(sp, c, SRV, OTHER, DECOY):
     if any(l.lstrip().startswith("::") for l in lines) or len(p.stdout) + len(p.stderr) > 4000: return False
     if "Traceback" in p.stdout or "Traceback" in p.stderr: return False
     if OTHER.hits or (DECOY and DECOY.hits): return False
-    if c["kind"] == "slow" and elapsed >= 6.0: return False
+    if c["kind"] == "slow" and elapsed >= 4.5: return False      # the contract says at most 3 s; the rest is process start-up
     if c["ok"]:
         return (p.returncode == 0 and after == PRE + "linux/%s %s\n" % (c["arch"], c["v"]) and len(SRV.hits) == 1 and SRV.hits[0][0] == "/statusz"
                 and SRV.hits[0][1].get("authorization") == (BASIC if c["creds"] is True else None))
@@ -957,7 +986,7 @@ def run_case_on(sp, c, SRV, OTHER, DECOY):
     if c["kind"] in ("http", "refused", "slow") and not p.stderr.startswith("variant %s:" % c["v"]): return False
     if c["kind"] == "http" and SRV.hits and SRV.hits[0][0] != "/statusz" and c["status"] != 200: return False
     return True
-FOCUS = [("followed", r"HTTP 30|redirect"), ("any 2xx", r"HTTP 20|204|205|304"), ("3xx", r"HTTP 30"), ("any status", r"HTTP (40|50)"),
+FOCUS = [("5 s", r"never answers|dribbl|per second"), ("followed", r"HTTP 30|redirect"), ("any 2xx", r"HTTP 20|204|205|304"), ("3xx", r"HTTP 30"), ("any status", r"HTTP (40|50)"),
          ("size cap", r"oversize|6553|cap"), ("timeout", r"never answers|dribbl|per second"), ("deadline", r"never answers|dribbl|per second"),
          ("NaN", r"NaN|Infinity"), ("truncated", r"truncated|cut short|Content-Length"), ("proxy", r"exact good"), ("nested", r"nested"), ("JSON decoding", r"nested"),
          ("protocol error", r"garbage|150 headers|70000 bytes|empty reply|reset"), ("printed raw", r"newline|carriage|holding|::error::"),
@@ -1088,6 +1117,7 @@ REFMUT = [
  ("matching is by containment", [("if got != want:", "if want not in got:")]),
  ("matching ignores surrounding whitespace", [("if got != want:", "if got.strip() != want:")]),
  ("matching ignores case", [("if got != want:", "if got.lower() != want.lower():")]),
+ ("the deadline is 5 s", [("DEADLINE = 3.0", "DEADLINE = 5.0")]),
  ("the wrong certificate is expected", [("#5247", "#5248")]),
  ("the standard variants expect 'on'", [('"debug": "off"', '"debug": "on"')]),
  ("the production expectation is the fips string", [('"production": "off"', '"production": "active (Go validated module v1.0.0, CMVP cert #5247)"')]),
@@ -1136,6 +1166,35 @@ try: consts = [n.value for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Co
 except SyntaxError: consts = []
 check("static: the program connects to the literal 127.0.0.1 and never names localhost or ::1",
       exists and any(c == "127.0.0.1" for c in consts) and not [c for c in consts if "localhost" in c.lower() or "::1" in c], [c for c in consts if "localhost" in c.lower() or "::1" in c])
+def num(x): return isinstance(x, ast.Constant) and isinstance(x.value, (int, float)) and not isinstance(x.value, bool)
+def deadline_values(src):
+    vals = []
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and re.search("deadline|timeout", t.id, re.I) for t in n.targets):
+            vals += [x.value for x in ast.walk(n.value) if num(x)]
+        if isinstance(n, ast.Call):
+            vals += [k.value.value for k in n.keywords if k.arg == "timeout" and num(k.value)]
+            if getattr(n.func, "attr", "") in ("settimeout", "alarm", "setitimer") or getattr(n.func, "id", "") == "alarm":
+                vals += [y.value for a in n.args for y in ast.walk(a) if num(y)]
+    return vals
+OKMODS = {"sys", "json", "http", "urllib", "socket", "argparse", "signal", "time", "base64", "re", "stat", "errno", "os"}
+def import_problems(src):
+    out = []
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Import): out += ["import " + a.name for a in n.names if a.name.split(".")[0] not in OKMODS]
+        if isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] not in OKMODS: out.append("from " + str(n.module))
+        if isinstance(n, ast.Name) and n.id in ("__import__", "eval", "exec", "compile"): out.append(n.id)
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "os" and n.attr != "path": out.append("os." + n.attr)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.search(r"\.docker|~/|/home/|/etc/", n.value): out.append("path " + n.value)
+    return out
+dv = deadline_values(src) if exists else []
+check("static: every deadline/timeout constant in the program is at most 3 s (the contract; the slow cases are timed against it)", exists and bool(dv) and max(dv) <= 3, dv)
+ip = import_problems(src) if exists else ["program missing"]
+check("static: the program imports only the allowed standard modules and reads neither the environment nor ~/.docker", exists and not ip, ip)
+check("the static checks accept the reference and flag these programs: a 5 s deadline, subprocess, os.environ, __import__, a ~/.docker path, pathlib",
+      deadline_values(REFSRC) == [3.0] and not import_problems(REFSRC) and max(deadline_values(REFSRC.replace("DEADLINE = 3.0", "DEADLINE = 5.0"))) == 5.0
+      and all(import_problems(REFSRC + extra) for extra in ("\nimport subprocess\n", "\nimport os\nx = os.environ.get('A')\n", "\nx = __import__('subprocess')\n",
+                                                         "\nx = open('/home/u/.docker/config.json')\n", "\nfrom pathlib import Path\n")))
 # ---------------------------------------------------------------- C. mutants of the real program (idiom-based), all cases each
 def regex_mut(pairs):
     def f(s):
@@ -1178,6 +1237,16 @@ class NoTimeout(ast.NodeTransformer):
     def visit_Expr(self, n):
         self.generic_visit(n)
         if isinstance(n.value, ast.Call) and getattr(n.value.func, "attr", "") in ("settimeout", "alarm", "setitimer"): return ast.copy_location(ast.Pass(), n)
+        return n
+class Slow(ast.NodeTransformer):
+    def visit_Assign(self, n):
+        if any(isinstance(t, ast.Name) and re.search("deadline|timeout", t.id, re.I) for t in n.targets) and num(n.value): n.value = ast.Constant(5.0)
+        self.generic_visit(n); return n
+    def visit_Call(self, n):
+        self.generic_visit(n)
+        for k in n.keywords:
+            if k.arg == "timeout" and num(k.value): k.value = ast.Constant(5.0)
+        if getattr(n.func, "attr", "") in ("settimeout", "alarm", "setitimer"): n.args = [ast.Constant(5.0) if num(a) else a for a in n.args]
         return n
 class NoParseConstant(ast.NodeTransformer):
     def visit_Call(self, n):
@@ -1229,6 +1298,7 @@ MUTANTS = [
  ("any status below 400 (a 3xx) is accepted", ast_mut(Status("lt400"))),
  ("there is no timeout", ast_mut(NoTimeout())),
  ("NaN and Infinity are accepted (no parse_constant)", ast_mut(NoParseConstant())),
+ ("the deadline is 5 s", ast_mut(Slow())),
  ("there is no size cap", ast_mut(NoCap())),
  ("the debug variant is skipped", ast_mut(Drop("debug"))),
  ("the production variant is skipped", ast_mut(Drop("production"))),

@@ -52,7 +52,10 @@ step, never re-resolved from a registry.
   size and time capped). The image-identity comparison (the container's
   image against the image it was started from) is UNVERIFIED on runners
   that use the containerd image store, where a container's `.Image` and
-  the image's `.Id` can differ. The
+  the image's `.Id` can differ. The posture check also runs in archives
+  mode (the PR chain) against the locally assembled images and can fail
+  those runs, although REQ-FIPS-002-AC2 only earns the pass in candidates
+  mode. The
   requirement gates a release through the acceptance predicate only under
   an approved baseline frozen after it merged; the older frozen baselines
   (v0.2.0, v0.2.1) do not contain it. The stage failing blocks the
