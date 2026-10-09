@@ -137,14 +137,14 @@ Docker, and Gradle 9.8.0 on macOS arm64. Other Gradle versions and JDKs were not
 tested, and neither was a rejected *push*.)
 
 What you will see when the credentials are wrong or missing: the build succeeds,
-and Gradle prints, at the default log level,
+and Gradle prints, at the default log level (your host and port will differ),
 
 ```text
 Could not load entry <key> from remote build cache: Loading entry from 'http://127.0.0.1:8080/<key>' response status 401: Unauthorized
 The remote build cache was disabled during the build due to errors.
 ```
 
-Two things to do, in order of durability:
+Two things to do, the first being the durable one:
 
 1. **Put it in your user `gradle.properties`** — `~/.gradle/gradle.properties`,
    never the one in the repo, and never committed:
@@ -162,7 +162,7 @@ Two things to do, in order of durability:
    fresh daemon; we did not need it in our tests.
 
 A warm *local* cache still serves hits regardless of whether the remote is
-working, so a build can look fast while the remote rejects every request; the
+working, so a build can look fast while the remote is rejecting requests (Gradle then switches it off for that build); the
 401 line above is how you notice (see §6).
 
 ## 6. Verify it's actually being used
