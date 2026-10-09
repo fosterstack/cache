@@ -45,6 +45,9 @@ WITNESS_STAGES = ("build", "rebuild", "check")
 
 
 # ---- minimal DER reading (certificate fields the policy needs) ---------------------------------------------------
+# BOUNDARY: this is not a general DER parser. It reads the fields below from a certificate that openssl has verified to chain to a
+# Fulcio root (the same DER, see single_cert_der); it trusts the structure of a Fulcio-signed TBS and refuses what it cannot read
+# (a repeated extension, a second SAN) instead of guessing. Do not point it at bytes nobody has verified.
 def _tlv(b, i):
     tag, ln = b[i], b[i + 1]
     if ln < 0x80:
@@ -131,6 +134,8 @@ def parse_cert(der):
                 xk = _children(der, x[1], x[2])
                 oid = _oid(der, xk[0][1], xk[0][2])
                 val = xk[-1]
+                if oid in exts:
+                    raise ValueError("repeated extension %s" % oid)   # a second SAN or Fulcio field would otherwise silently replace the first
                 exts[oid] = der[val[1]:val[2]]
     return {"not_before": nb, "not_after": na, "exts": exts, "der": der}
 
@@ -183,7 +188,8 @@ def policy_make(a):
             refuse("policy", "ref %r is neither refs/tags/vX.Y.Z nor a branch (tag)" % ref)
     trust = load_json(trust_p, "trust file")
     try:
-        fulcio_text, tsa_text, rekor_text = open(fulcio_p).read(), open(tsa_p).read(), open(rekor_p).read()
+        with open(fulcio_p) as f1, open(tsa_p) as f2, open(rekor_p) as f3:
+            fulcio_text, tsa_text, rekor_text = f1.read(), f2.read(), f3.read()
     except OSError as ex:
         raise Refuse("policy", "trust: cannot read %s" % ex)
     froot, fblocks = first_cert_der(fulcio_text)
@@ -242,21 +248,49 @@ def read_record(stage, path):
 # a Sigstore bundle stores the whole DER TimeStampResponse (protobuf-specs sigstore_common.proto RFC3161SignedTimestamp,
 # sigstore-go pkg/sign/timestamping.go). The type of the entry says which: "tsp" is a token, "rfc3161-response" a response.
 STAMP_TOKEN, STAMP_RESPONSE = "tsp", "rfc3161-response"
+# Which form each record type carries: a Witness collection stores the bare token, a Sigstore bundle (the provenance) the whole
+# TimeStampResponse. The signed release policy may carry either (PR 4 decides how Release signs it).
+STAMP_FORM = {COLL: STAMP_TOKEN, PROV: STAMP_RESPONSE}
+FORM_NAME = {STAMP_TOKEN: "bare token (tsp)", STAMP_RESPONSE: "whole response (rfc3161-response)"}
 
 
-def token_flags(kind):
-    return ["-token_in"] if kind == STAMP_TOKEN else []
+def expected_stamp_kind(ptype, payload):
+    """The stamp form the record's type carries, or None (any) when the type is not known here: check_record_type refuses it later."""
+    if ptype == POLT:
+        return None
+    try:
+        return STAMP_FORM.get(strict_json(payload).get("predicateType"))
+    except (ValueError, AttributeError):
+        return None
 
 
-def stamp_time(tok_der, kind, tmp):
-    p = os.path.join(tmp, "tok.der")
-    with open(p, "wb") as f:
-        f.write(tok_der)
-    txt = ssl("ts", "-reply", "-in", p, *token_flags(kind), "-text").stdout.decode(errors="replace")
-    m = re.search(r"Time stamp:\s+(\w{3})\s+(\d+)\s+(\d\d):(\d\d):(\d\d)\s+(\d{4})", txt)
-    if not m:
-        raise RuntimeError("no time in the timestamp token")
-    return dt.datetime.strptime("%s %s %s:%s:%s %s" % m.groups(), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc), p
+def stamp_token(stamp_der, kind, tmp):
+    """The bare timestamp token (a file) of a stamp. A whole response is first checked for a clean status and then reduced to its
+    token, so that the time is read from, and the TSA's signature is verified over, the SAME token bytes. The response's status
+    section (a status string, a failure info) is outside the TSA's signature: reading the time from the response text let an edited
+    status string `x\\nTime stamp: <date>` set the time that is compared with the certificate's validity."""
+    resp = os.path.join(tmp, "stamp.der")
+    with open(resp, "wb") as f:
+        f.write(stamp_der)
+    if kind == STAMP_TOKEN:
+        return resp
+    text = ssl("ts", "-reply", "-in", resp, "-text").stdout.decode(errors="replace")
+    status = re.search(r"^Status info:\n(.*?)(?=^TST info:|\Z)", text, re.S | re.M)
+    fields = dict(re.findall(r"^(Status|Status description|Failure info): (.*)$", status.group(1) if status else "", re.M))
+    if fields.get("Status") != "Granted." or fields.get("Status description", "unspecified") != "unspecified" or fields.get("Failure info", "unspecified") != "unspecified":
+        raise ValueError("the response carries a status string or failure info (status)")
+    token = os.path.join(tmp, "stamp-token.der")
+    ssl("ts", "-reply", "-in", resp, "-token_out", "-out", token)
+    return token
+
+
+def stamp_time(token_path):
+    """genTime of a bare token: the one `Time stamp:` line of `openssl ts -reply -token_in -text` (no status section exists there)."""
+    text = ssl("ts", "-reply", "-in", token_path, "-token_in", "-text").stdout.decode(errors="replace")
+    hits = re.findall(r"^Time stamp: (\w{3})\s+(\d+) (\d\d):(\d\d):(\d\d)(?:\.\d+)? (\d{4}) GMT$", text, re.M)   # a fraction of a second is dropped
+    if len(hits) != 1:
+        raise ValueError("not exactly one genTime in the timestamp token")
+    return dt.datetime.strptime("%s %s %s:%s:%s %s" % hits[0], "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
 
 
 def stamp_text(when):
@@ -315,7 +349,7 @@ def check_signature(stage, leaf_p, ptype, payload, sig, tmp):
         refuse(stage, "signature does not verify over the payload")
 
 
-def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp):
+def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp, want_kind=None):
     """A stamp over sha256(signature) from a policy authority, inside the certificate's validity (the cert may have expired since)."""
     stamps = signature_entry.get("timestamps") or []
     if not stamps:
@@ -327,9 +361,13 @@ def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp):
             kind = st["type"]
             if kind not in (STAMP_TOKEN, STAMP_RESPONSE):
                 raise ValueError(kind)
-            when, tokp = stamp_time(b64d(st["data"]), kind, tmp)
-        except Exception:
-            why = "timestamp token is malformed"
+            if want_kind and kind != want_kind:
+                why = "timestamp type %s is not the form this record carries: %s" % (kind, FORM_NAME[want_kind])
+                continue
+            tokp = stamp_token(b64d(st["data"]), kind, tmp)
+            when = stamp_time(tokp)
+        except Exception as ex:
+            why = "timestamp token is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__)
             continue
         for aid, auth in pol.get("timestampauthorities", {}).items():
             cp = os.path.join(tmp, "tsa-%s.pem" % aid[:12])
@@ -338,7 +376,7 @@ def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp):
                 f.write(b64d(auth["certificate"]).decode())
             with open(ip, "w") as f:
                 f.write("".join(b64d(x).decode().rstrip("\n") + "\n" for x in auth.get("intermediates", [])))
-            r = ssl("ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, *token_flags(kind), "-CAfile", cp, "-untrusted", ip, "-no_check_time", check=False)
+            r = ssl("ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, "-token_in", "-CAfile", cp, "-untrusted", ip, "-no_check_time", check=False)
             if r.returncode == 0:
                 stamped = when
                 break
@@ -403,7 +441,7 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     check_identity(stage, pol, leaf)
     leaf_p = check_chain(stage, pol, cert_pem, intermediates, tmp)
     check_signature(stage, leaf_p, ptype, payload, sig, tmp)
-    check_timestamp(stage, pol, entry, sig, leaf, now, tmp)
+    check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
     stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
     if needs_rekor:
         check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf)
@@ -692,15 +730,23 @@ def cmd_sign(a):
         with open(bundle) as f:
             bundle_to_outputs(json.load(f), a.out, pol)
         if dry:
-            open(os.path.join(a.out, "DRY-RUN"), "w").write("dry run: Release can never accept this record\n")
+            with open(os.path.join(a.out, "DRY-RUN"), "w") as f:
+                f.write("dry run: Release can never accept this record\n")
     print("ok")
 
 
 # ---- actions: every reference is a listed full digest ------------------------------------------------------------
 def _walk_uses(tree, out, where=""):
+    """Collect every reference: ("uses", ref) for a step, ("jobuses", ref) for a job-level `uses:` (a reusable workflow call)."""
     if isinstance(tree, dict):
         for k, v in tree.items():
-            if k == "uses" and isinstance(v, str):
+            if k == "jobs" and isinstance(v, dict) and where == "":
+                for job in v.values():
+                    if isinstance(job, dict):
+                        if isinstance(job.get("uses"), str):
+                            out.append(("jobuses", job["uses"], where))
+                        _walk_uses({kk: vv for kk, vv in job.items() if kk != "uses"}, out, where)
+            elif k == "uses" and isinstance(v, str):
                 out.append(("uses", v, where))
             elif k == "container":
                 out.append(("image", v.get("image") if isinstance(v, dict) else v, where))
@@ -717,13 +763,15 @@ def _walk_uses(tree, out, where=""):
             _walk_uses(x, out, where)
 
 
-def follow_local(ref, allowed, root, seen, errs):
-    """A local reference must be listed by path; a listed local action (anything but a workflow file) is read and judged too."""
+def follow_local(ref, allowed, root, seen, errs, job_level):
+    """A local reference must be listed by path; a listed local action is read and judged too. Only a JOB-level `uses:` names a
+    reusable workflow FILE (judged as a workflow of its own, so not opened here); a step-level reference names an action directory
+    wherever it sits and whatever it is called."""
     p = ref[2:]
     if p not in set(allowed.get("local", [])):
         errs.append("%s is a local reference that is not on the allowed list" % ref)
-    elif p.endswith((".yml", ".yaml")) or p in seen:
-        return  # a reusable workflow file is judged as a workflow of its own; a composite action is a directory, wherever it sits
+    elif (job_level and p.endswith((".yml", ".yaml"))) or p in seen:
+        return
     elif not root:
         errs.append("%s is a listed local action but no --root was given to read it" % ref)
     else:
@@ -737,7 +785,8 @@ def follow_local(ref, allowed, root, seen, errs):
 
 def check_actions(path, allowed, root, seen, errs):
     try:
-        d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
+        with open(path) as f:
+            d = yaml.load(f.read(), Loader=yaml.BaseLoader)
     except Exception as ex:
         errs.append("%s is not YAML (%s)" % (path, type(ex).__name__))
         return
@@ -749,6 +798,8 @@ def check_actions(path, allowed, root, seen, errs):
     for kind, ref, _w in refs:
         if ref is None or not isinstance(ref, str):
             continue
+        job_level = kind == "jobuses"
+        kind = "uses" if job_level else kind
         if "${{" in ref:
             errs.append("%s is an expression, not a pinned reference" % ref)
         elif kind in ("image", "runsimage") or ref.startswith("docker://"):
@@ -760,7 +811,7 @@ def check_actions(path, allowed, root, seen, errs):
             elif img not in imgs:
                 errs.append("%s is a digest that is not on the allowed list" % ref)
         elif ref.startswith("./"):
-            follow_local(ref, allowed, root, seen, errs)
+            follow_local(ref, allowed, root, seen, errs, job_level)
         else:
             if not re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", ref):
                 errs.append("%s is not pinned by a full lower-case commit digest" % ref)

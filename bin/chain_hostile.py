@@ -33,7 +33,8 @@ def cmd_hostile_row(a):
         print("error: attempt %r is not one of %s" % (a.attempt, ", ".join(ALL_ROWS)), file=sys.stderr)
         sys.exit(1)
     try:
-        err = open(a.stderr, errors="replace").read()
+        with open(a.stderr, errors="replace") as f:
+            err = f.read()
     except OSError:
         err = ""
     if "Traceback" in err:
@@ -58,7 +59,8 @@ def cmd_hostile_collect(a):
         if not fn.endswith(".json"):
             continue
         try:
-            r = json.load(open(os.path.join(a.dir, fn)))
+            with open(os.path.join(a.dir, fn)) as f:
+                r = json.load(f)
         except ValueError:
             errs.append("error: %s is not JSON" % fn)
             continue
@@ -81,7 +83,8 @@ def cmd_hostile_collect(a):
 
 def _transcript(path):
     try:
-        lines = open(path, errors="replace").read().splitlines()
+        with open(path, errors="replace") as f:
+            lines = f.read().splitlines()
     except OSError:
         print("error: cannot read %s" % path, file=sys.stderr)
         sys.exit(2)
@@ -98,7 +101,8 @@ def _transcript(path):
 def sign_key_hash(record_path):
     """sha256 of the public key (DER) in the certificate of Sign's own provenance: the key a stolen private key would have to match."""
     try:
-        sg = strict_json(open(record_path, "rb").read())["signatures"][0]
+        with open(record_path, "rb") as f:
+            sg = strict_json(f.read())["signatures"][0]
         with tempfile.TemporaryDirectory() as d:
             cp = os.path.join(d, "cert.pem")
             with open(cp, "wb") as f:
@@ -169,7 +173,8 @@ def cmd_hostile_material(a):
 
 def cmd_hostile_verdict(a):
     try:
-        d = json.load(open(a.results))
+        with open(a.results) as f:
+            d = json.load(f)
         rows = d["attempts"]
     except Exception:
         print("error: %s is not the JSON results file (json)" % a.results, file=sys.stderr)

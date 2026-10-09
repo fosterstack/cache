@@ -270,14 +270,15 @@ for t in ("tsa", "othertsa"):
         ess_cert_id_alg = sha256
         """ % p(t + ".serial")))
     open(p(t + ".serial"), "w").write("0A\n")
-def stamp(sigbytes, tsa, response=False):
+    open(p(t + ".frac.cnf"), "w").write(open(p(t + ".cnf")).read() + "clock_precision_digits = 3\n")   # the same TSA, genTime with milliseconds
+def stamp(sigbytes, tsa, response=False, frac=False):
     # Witness stores the bare token (go-witness timestamp/tsp.go returns RawToken); a Sigstore bundle stores the whole DER
     # TimeStampResponse (protobuf-specs sigstore_common.proto RFC3161SignedTimestamp): response=True makes the second form
     q = sh("openssl", "ts", "-query", "-digest", hashlib.sha256(sigbytes).hexdigest(), "-sha256", "-cert", "-no_nonce")
     open(p("q.tsq"), "wb").write(q)
     ca = "tsaroot" if tsa == "tsa" else "othertsaroot"
     sh("openssl", "ts", "-reply", "-queryfile", p("q.tsq"), "-signer", p(tsa + ".pem"), "-inkey", p(tsa + ".key"),
-       "-chain", p(ca + ".pem"), "-config", p(tsa + ".cnf"), "-section", "t", *([] if response else ["-token_out"]), "-out", p("r.tst"))
+       "-chain", p(ca + ".pem"), "-config", p(tsa + (".frac.cnf" if frac else ".cnf")), "-section", "t", *([] if response else ["-token_out"]), "-out", p("r.tst"))
     return b64(open(p("r.tst"), "rb").read())
 def gitoid(data, algo): return hashlib.new(algo, b"blob %d\0" % len(data) + data).hexdigest()
 def pae(t, b): return b"DSSEv1 %d %s %d %s" % (len(t), t.encode(), len(b), b)
@@ -521,6 +522,53 @@ for src in ("build_coll", "rebuild_coll", "check_coll", "sign_prov"):
     for v, fn in CERT_VARIANTS.items(): reshape(src, src + "_c" + v, fn)
 reshape("check_as_build", "check_attack", lambda g: ATK_PAD_PEM + "\n" + g)
 reshape("check_as_build", "check_attack_b64", lambda g: base64.b64encode(ATK_PAD_DER).decode() + "\n" + g)   # the coordinator's exact shape: bare base64 then the genuine PEM   # signed by a genuine key of the WRONG identity, field says check
+# ---- step-8 round 3: the TIME of a stamp is read from the TSA-signed token, never from the unsigned status section of a response ----
+def tlv(tag, c): n = len(c); l = bytes([n]) if n < 128 else (bytes([0x80 | len(n.to_bytes((n.bit_length() + 7) // 8, "big"))]) + n.to_bytes((n.bit_length() + 7) // 8, "big")); return bytes([tag]) + l + c
+def rd(b, i):
+    ln = b[i + 1]
+    if ln < 0x80: return b[i], i + 2, i + 2 + ln
+    k = ln & 0x7F; n = int.from_bytes(b[i + 2:i + 2 + k], "big"); return b[i], i + 2 + k, i + 2 + k + n
+def inject_status(resp, text):
+    """A TimeStampResp whose PKIStatusInfo got a statusString: it sits OUTSIDE the TSA's signature, so the response still verifies."""
+    _, s, e = rd(resp, 0); _, ss, se = rd(resp, s)
+    status = resp[ss:se] + tlv(0x30, tlv(0x0C, text.encode()))
+    return tlv(0x30, tlv(0x30, status) + resp[se:e])
+def gmt(x): return "%s %2d %s %d GMT" % (x.strftime("%b"), x.day, x.strftime("%H:%M:%S"), x.year)
+def restamp(src, name, kind, inject=None, frac=False, label=None, tsa="tsa"):
+    r = json.load(open(p(src + ".json"))); sg = r["signatures"][0]; sigb = base64.b64decode(sg["sig"])
+    der = base64.b64decode(stamp(sigb, tsa, response=(kind == "rfc3161-response"), frac=frac))
+    if inject: der = inject_status(der, inject)
+    sg["timestamps"] = [{"type": label or kind, "data": b64(der)}]; json.dump(r, open(p(name + ".json"), "w"))
+WINDOW_MID = gmt(now - dt.timedelta(minutes=90))   # inside the certificate window of the *_sa fixtures (it ended an hour ago)
+INJ = "x\nTime stamp: " + WINDOW_MID
+add("build_sa", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
+add("rebuild_sa", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
+add("check_sa", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
+restamp("sign_stampafter", "sign_sa_inj", "rfc3161-response", inject=INJ)          # a genuine post-expiry stamp with a backdated TEXT in its status string
+for s in ("build", "rebuild", "check"):
+    restamp(s + "_sa", s + "_sa_inj", "rfc3161-response", inject=INJ)                 # the same injection on a Witness record that (wrongly) carries a response
+    restamp(s + "_coll", s + "_coll_resp", "rfc3161-response")                       # a Witness record carrying a whole response (no injection)
+restamp("sign_prov", "sign_prov_tok", "tsp")                                          # a provenance carrying a bare token
+restamp("sign_prov", "sign_prov_toklabel", "tsp", label="rfc3161-response")          # token bytes labelled as a response
+restamp("sign_prov", "sign_prov_frac", "rfc3161-response", frac=True)                # genTime with milliseconds, genuinely inside the window
+# a repeated extension in the certificate (the DER reader used to let the last one win, so a second SAN could replace the first)
+OID_SAN, OID_CFG = bytes.fromhex("551d11"), bytes.fromhex("2b06010401" + "83bf30" + "0112")
+def dup_ext(der, oid):
+    _, s, e = rd(der, 0); _, ts, te = rd(der, s)
+    kids = []; i = ts
+    while i < te: tg, cs, ce = rd(der, i); kids.append((tg, cs, ce, der[i:ce])); i = ce
+    out = []
+    for tg, cs, ce, raw in kids:
+        if tg == 0xA3:
+            _, ls, le = rd(der, cs); exts = []; j = ls
+            while j < le: _tg, xs, xe = rd(der, j); exts.append(der[j:xe]); j = xe
+            more = [x for x in exts if oid in x[:16]]
+            assert more, "extension not found"
+            raw = tlv(0xA3, tlv(0x30, b"".join(exts) + more[0]))
+        out.append(raw)
+    return tlv(0x30, tlv(0x30, b"".join(out)) + der[te:e])
+for nm, oid in (("dupsan", OID_SAN), ("dupcfg", OID_CFG)):
+    reshape("build_coll", "build_" + nm, lambda g, oid=oid: to_pem(dup_ext(pem_der(g), oid)))
 # UTF-16 spellings of the same JSON (json.loads on bytes would guess the encoding from the first bytes)
 for src in ("build_coll", "sign_prov"):
     open(p(src + "_u16.json"), "wb").write(open(p(src + ".json"), "rb").read().decode().encode("utf-16"))
@@ -1226,6 +1274,39 @@ expect_refuse "S-1 a composite action stored under .github/workflows/ is followe
 expect_ok     "S-1 control: a pinned composite action under .github/workflows/ is accepted" actions "$work/w_s1ok.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
 expect_ok     "S-1 control: a listed reusable workflow file (.yml) is not opened as an action directory" actions "$work/w_s1wf.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
 
+# ---- step-8 round 3: B-1 the time of a stamp comes from the TSA-signed token only; the stamp form is bound to the record type -----------------
+# (a) a genuine stamp taken AFTER the certificate expired, whose response got a statusString `x\nTime stamp: <date inside the window>`: the
+#     status section is outside the TSA's signature, so the response still verifies; the old reader took the time from the first
+#     `Time stamp:` line of the whole text and backdated the stamp into the window.
+expect_refuse "B-1 control: the genuine post-expiry stamp is refused as outside the certificate window" "outside|validity" verify $(V) --stage sign $(rec sign_stampafter) $(R)
+expect_refuse "B-1 (a) a response with an injected statusString that fakes a time inside the window is refused (status), not accepted as backdated" "timestamp|status" verify $(V) --stage sign $(rec sign_sa_inj) $(R)
+expect_refuse "B-1 (a) the same injected response through stage-start (release <- sign)" "timestamp|status" $(ST release sign) $(rec sign_sa_inj) $(R) --digests "$work/digests.json"
+for s in build rebuild check; do
+  expect_refuse "B-1 (a) the injection on a $s record that carries a response is refused: timestamp" "timestamp" verify $(V) --stage $s $(rec ${s}_sa_inj) $(R)
+  expect_refuse "B-1 (b) a $s Witness record carrying a whole response instead of the bare token is refused: names the form" "timestamp|form" verify $(V) --stage $s $(rec ${s}_coll_resp) $(R)
+done
+expect_refuse "B-1 (a) the injected record through stage-start (release <- check)" "timestamp" $(ST release check) $(rec check_sa_inj) --digests "$work/digests.json"
+expect_refuse "B-1 (a) the injected record through check-build-record (build)" "timestamp" check-build-record --digests "$work/digests.json" --build-record "$work/build_sa_inj.json" --policy "$work/policy.json" --now "$NOW"
+expect_refuse "B-1 (b) a Witness record with a response-form stamp through check-build-record" "timestamp|form" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll_resp.json" --policy "$work/policy.json" --now "$NOW"
+expect_refuse "B-1 (b) a Witness record with a response-form stamp through stage-start (release <- check)" "timestamp|form" $(ST release check) $(rec check_coll_resp) --digests "$work/digests.json"
+expect_refuse "B-1 (c) a provenance carrying a BARE TOKEN (type tsp) is refused: names the form" "timestamp|form" verify $(V) --stage sign $(rec sign_prov_tok) $(R)
+expect_refuse "B-1 (c) token bytes labelled as a response are refused (a response is not parsable from a token)" "timestamp" verify $(V) --stage sign $(rec sign_prov_toklabel) $(R)
+# (d) a genTime with milliseconds is read (the fraction is dropped) and accepted when the stamp is genuinely inside the window
+expect_ok     "B-1 (d) a stamp whose genTime has milliseconds does not crash and is accepted when it is inside the window (the fraction is dropped)" verify $(V) --stage sign $(rec sign_prov_frac) $(R)
+# S-1 (Sonnet): a certificate with a repeated extension is refused, whatever it says (a second SAN used to replace the first)
+expect_refuse "S-1 a certificate with a second SAN extension is refused before anything is trusted: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupsan) $(R)
+expect_refuse "S-1 a certificate with a second Build Config URI extension is refused: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupcfg) $(R)
+expect_refuse "S-1 a repeated extension through check-build-record" "certificate|repeated" check-build-record --digests "$work/digests.json" --build-record "$work/build_dupsan.json" --policy "$work/policy.json" --now "$NOW"
+# N-c: only a JOB-level `uses:` naming a .yml/.yaml file is a reusable workflow (not opened as a directory); a STEP-level reference to a
+# directory that is called thing.yml and holds an action.yml is followed
+mkdir -p "$work/tree/.github/workflows/acts/d.yml"
+printf 'name: t\nruns:\n  using: composite\n  steps:\n    - uses: evil/act@main\n' > "$work/tree/.github/workflows/acts/d.yml/action.yml"
+echo '{"actions":["actions/checkout@'$a40'"],"images":[],"local":[".github/workflows/acts/d.yml"]}' > "$work/allowed-nc.json"
+w w_ncstep "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: ./.github/workflows/acts/d.yml\n"
+printf 'name: t\non: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/acts/d.yml\n' > "$work/w_ncjob.yml"
+expect_refuse "N-c a STEP-level local path that is a directory named d.yml holding an action.yml is followed: the unpinned action inside it is rejected" "evil/act" actions "$work/w_ncstep.yml" --allowed "$work/allowed-nc.json" --root "$work/tree"
+expect_ok     "N-c the same path at JOB level is a reusable workflow file and is not opened as a directory" actions "$work/w_ncjob.yml" --allowed "$work/allowed-nc.json" --root "$work/tree"
+
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs (never one for a refusal)
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
 if [ "$n" = "$SIGNS_OK" ] && [ "$SIGNS_OK" -ge 1 ] && ! grep -E -v -q "$ARGV_RE" "$work/cosign-all.log"; then ok "001-AC2 cosign was called exactly once per successful sign ($SIGNS_OK) and always with the pinned argv"; else bad "001-AC2 cosign calls ($n) != successful signs ($SIGNS_OK), or an unpinned argv was used"; fi
@@ -1237,7 +1318,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=368
+EXPECT=389
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
