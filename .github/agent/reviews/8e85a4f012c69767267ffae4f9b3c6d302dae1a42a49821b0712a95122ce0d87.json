@@ -1,0 +1,70 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "8e85a4f012c69767267ffae4f9b3c6d302dae1a42a49821b0712a95122ce0d87",
+ "change": "REQ-FIPS-002-AC2: the candidate FIPS image reports the validated module (bin/fips-image-posture.py and the posture reads in the artifact acceptance's amd64 and arm64 steps) -- PR #228",
+ "reviewed_commit": "0a4b3b040a7dbfa1ef839529c4988a0b15472569",
+ "closed_commit": "0a4b3b040a7dbfa1ef839529c4988a0b15472569",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "step 8 first round (security tier)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "53893225c4d39a7f15ffeb6cda306da465743339c4cf7fc2702113cbf67abf74"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "db39ac55d3a609663117642e7fd6bbb828dc584b79477c462deb78b070da7de2"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "retry fix verified + row 78 adversarial pass",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "9d94da2852c67c211b83b2b37037a938be8d3088ca4b8f1105c3f6027410bc95"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "da0328aa6b87f43b5d9a687c0d6f77cdf5b741d81847efdf947786c7b30e9f4a"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "verify the interim-status fix only (security final)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "cc15dc9ba8ce9ebb1f06ccb88ba98df29eb8585159ee55bed80f9515c10c9464"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "676b302d6b6320530894145f4c55aced7d6a374aa3117446363025ecc8849a15"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "the pin-age check fails on the edited arm64 step (an existing variable image reference is re-keyed by the edit; no version moved); fixed structurally by #210, which this PR waits for",
+  "arm64 under QEMU and the container .Image versus image .Id comparison on a containerd image store are UNVERIFIED until the first candidates run; a mismatch fails closed",
+  "the AC's 'by candidate digest' is met on amd64 through the local tag created by the hash-pinned pull step; the check reads the container's self-report, not the binary",
+  "a status line cut off at EOF with no newline counts as received (exit 1, the safe direction); the fix relies on the private HTTPResponse._read_status, covered by the test",
+  "the reviewers' read-only sandboxes could not run the 649-check suite (it passes locally: 649 passed, 0 failed)",
+  "the test takes about 90-110 s on a 10-core machine; it may take longer in the allowlist job"
+ ],
+ "row78": "stage-acceptance-artifacts.yml: two existing steps, the results step and timeout-minutes edited; no uses: added; check-action-pins.py 27 files, 148 pinned actions, zero findings (both reviewers); the row 78 adversarial pass by both vendors: zero security blockers"
+}
