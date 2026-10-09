@@ -15,7 +15,7 @@
 #
 # The token and key attempts write a first line `# transcript: ...` (what was tried) and then the attempt's own output; a file
 # without both is an error for the verifier, never a sign of isolation. No token or key is ever copied into the material: only
-# the CLAIMS of this job's own token (header.payload., no signature) and the PATHS of anything key-like.
+# the CLAIMS of this job's own token (header.payload., no signature) and the sha256 of the PUBLIC key of every key file found.
 # Every file this step writes has a LITERAL path (the pin checker refuses a job that runs a committed file and also writes to a
 # path it cannot place), so the work directory is the literal hostile-work/ in the workspace.
 set -uo pipefail
@@ -62,20 +62,24 @@ attempt_read_sign_token() {
   {
     echo "# transcript: searched /proc/*/environ for a token belonging to the sign job, then asked the runner for this job's own token"
     grep -l -a 'ACTIONS_ID_TOKEN_REQUEST' /proc/[0-9]*/environ 2> /dev/null | head -5 | sed 's#^#a process on this runner holds a token request address: #'
-    own_claims || echo "no token could be fetched from this runner"
+    # the claims of the token this job can get (no signature): the verifier reads job_workflow_ref from them. If no token can be
+    # fetched there is nothing to grade and the verifier reports an error, so the dry run is red instead of vacuously green.
+    claims=$(own_claims) && echo "claims: $claims"
   } > attempts/read_sign_token.txt
 }
 
+# Sign's key lives in cosign's memory on another VM; whatever key files this runner holds are not it unless their public key is the
+# one in Sign's certificate. So the material is each key file's PUBLIC key hash (the private key is never copied) and the number
+# of files searched (a search of nothing proves nothing); the verifier compares the hashes with Sign's certificate.
+# The workspace is not searched: it holds this repository, whose test files contain key-shaped text.
 attempt_read_sign_key() {
-  local hits
-  hits=$(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm . 2> /dev/null | grep -v -e '^./attempts/' -e '^./hostile-work/' | head -20)
+  local f
   {
-    echo "# transcript: searched HOME, RUNNER_TEMP, /tmp, /dev/shm and the workspace for private key material"
-    if [ -n "$hits" ]; then
-      echo "-----BEGIN PRIVATE KEY----- (named by the search, contents not copied) in: $hits"
-    else
-      echo "no key material found in the searched places"
-    fi
+    echo "# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one's public key"
+    echo "searched: $(grep -rIl '' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm 2> /dev/null | wc -l | tr -d ' ') files"
+    for f in $(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm 2> /dev/null | head -50); do
+      printf 'pubkey-sha256: %s\n' "$(openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)"
+    done
   } > attempts/read_sign_key.txt
 }
 
@@ -91,9 +95,14 @@ attempt_forge_provenance() {
   return 0
 }
 
+# The record comes from a throwaway second workflow that calls stage-sign.yml on this ref; without it this attempt did not run, and
+# a dry run that skipped an attempt must be red, not green.
 attempt_call_sign_from_other_workflow() {
-  [ -f hostile-caller/record.json ] && cp hostile-caller/record.json attempts/call_sign_from_other_workflow.json
-  return 0
+  if [ ! -f hostile-caller/record.json ]; then
+    echo "attempt_call_sign_from_other_workflow: hostile-caller/record.json is missing: the throwaway second-caller workflow did not run on this ref" >&2
+    return 1
+  fi
+  cp hostile-caller/record.json attempts/call_sign_from_other_workflow.json
 }
 
 attempt_mint_sign_cert

@@ -352,13 +352,16 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     uses: ./.github/workflows/stage-admission.yml
 
+  # A real release builds only after admission succeeded. A dry run has no admission (a manual run skips it), so it builds in
+  # snapshot mode, which neither needs the admission artifact nor publishes GitHub attestations for a branch build.
   build:
+    if: ${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}
     needs: admission
     uses: ./.github/workflows/stage-build.yml
     with:
-      mode: release
+      mode: ${{ inputs.dry-run && 'snapshot' || 'release' }}
       admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
-      hostile: ${{ inputs.dry-run }}   # the hostile Build step runs only in the dry run (PR 1; the chain proper arrives in PR 2)
+      hostile: ${{ inputs.dry-run == true && github.ref_type == 'branch' }}   # the hostile Build step runs only in a dry run on a branch
 
   # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here. In PR 1 it runs only in the dry run; PR 4 makes
   # it part of the chain. The digests are a placeholder until PR 2's Build writes digests.json.
@@ -516,12 +519,12 @@ jobs:
       - name: attempt read_sign_key
         run: |
           rc=0
-          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json 2> /tmp/read_sign_key.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
       - name: attempt hand_sign_code
         run: |
           rc=0
-          python3 bin/chain-verify.py sign --check --signer cosign --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json --out attempts/out-hand_sign_code 2> /tmp/hand_sign_code.err || rc=$?
+          python3 bin/chain-verify.py check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json 2> /tmp/hand_sign_code.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "$rc" --stderr /tmp/hand_sign_code.err --out results/hand_sign_code.json
       - name: attempt forge_provenance
         run: |

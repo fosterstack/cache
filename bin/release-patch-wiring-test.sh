@@ -32,8 +32,9 @@ if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v'
     bad.append("admission is not guarded to v* tags: %s" % adm.get("if"))
 # the dry run's own jobs (sign, hostile-*) hang off the Sign boundary, not off admission; they are judged by bin/chain-hostile-test.sh
 chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes", "sign", "hostile-verify", "hostile-verdict")]
+BUILD_IF = "${{!cancelled()&&(needs.admission.result=='success'||inputs.dry-run)}}"   # a dry run has no admission; a release still needs it
 for j in chain:
-    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}") or not jobs[j].get("needs"):
+    if jobs[j].get("if", "").replace(" ", "") not in (("", "${{!inputs.dry-run}}") if j != "build" else (BUILD_IF,)) or not jobs[j].get("needs"):
         bad.append("chain job %s does not hang off admission unconditionally" % j)
 dec = jobs.get("decide") or {}
 if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":

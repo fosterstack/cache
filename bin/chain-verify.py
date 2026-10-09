@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The plain verifier of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67).
 
-Subcommands: policy make, verify, sign --check, stage-start, actions, hostile-row, hostile-collect,
+Subcommands: policy make, verify, sign --check, check-build-record, stage-start, actions, hostile-row, hostile-collect,
 hostile-material, hostile-verdict. The CLI contract is the header of the verify test; the hostile
 subcommands are specified in the header of the hostile test.
 
@@ -17,7 +17,6 @@ options/verify.go:80-99 (the Fulcio extensions Witness itself can pin), docs/tut
 in-toto-attestation spec/v1/statement.md:11,19 (_type, subject, predicateType), spec/predicates/provenance.md:3.
 """
 import argparse
-import base64
 import datetime as dt
 import hashlib
 import json
@@ -28,7 +27,9 @@ import subprocess
 import sys
 import tempfile
 
-OPENSSL = os.environ.get("OPENSSL", "openssl")
+from chain_common import Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json  # noqa: E402  (next to this file)
+import chain_hostile  # noqa: E402
+
 PROV = "https://slsa.dev/provenance/v1"
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
 POLT = "https://witness.testifysec.com/policy/v0.1"
@@ -38,31 +39,6 @@ PRODUCT = "https://witness.dev/attestations/product/v0.1/file:digests.json"
 OID_ISSUER, OID_CONFIG = "1.3.6.1.4.1.57264.1.8", "1.3.6.1.4.1.57264.1.18"
 STAGES = ("build", "sign", "rebuild", "check", "release")
 WITNESS_STAGES = ("build", "rebuild", "check")
-
-
-class Refuse(Exception):
-    def __init__(self, stage, reason):
-        super().__init__(reason)
-        self.stage, self.reason = stage, reason
-
-
-def refuse(stage, reason):
-    raise Refuse(stage, reason)
-
-
-def b64d(s):
-    return base64.b64decode(s)
-
-
-def b64e(b):
-    return base64.b64encode(b).decode()
-
-
-def ssl(*args, inp=None, check=True):
-    r = subprocess.run((OPENSSL,) + args, input=inp, capture_output=True)
-    if check and r.returncode:
-        raise RuntimeError("openssl %s failed: %s" % (" ".join(args[:2]), r.stderr.decode(errors="replace")[:200]))
-    return r
 
 
 # ---- minimal DER reading (certificate fields the policy needs) ---------------------------------------------------
@@ -160,27 +136,7 @@ def san_uris(cert):
     return [raw[cs:ce].decode() for tag, cs, ce in _children(raw, s, e) if tag == 0x86]
 
 
-# ---- time ---------------------------------------------------------------------------------------------------------
-def parse_now(s):
-    if not s:
-        return dt.datetime.now(dt.timezone.utc)
-    for f in ("%Y%m%d%H%M%SZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            return dt.datetime.strptime(s, f).replace(tzinfo=dt.timezone.utc)
-        except ValueError:
-            pass
-    raise SystemExit("error: --now must be ISO 8601 UTC (YYYYmmddHHMMSSZ or YYYY-mm-ddTHH:MM:SSZ)")
-
-
 # ---- the policy ----------------------------------------------------------------------------------------------------
-def load_json(path, what):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, ValueError) as ex:
-        raise Refuse("policy", "%s %s is missing or not JSON: %s" % (what, path, ex))
-
-
 def first_cert_der(pem_text):
     blocks = pem_blocks(pem_text)
     if not blocks:
@@ -251,83 +207,87 @@ def read_record(stage, path):
     try:
         with open(path, "rb") as f:
             raw = f.read()
-    except OSError as ex:
+    except OSError:
         refuse(stage, "record missing or unreadable: %s" % os.path.basename(path))
     try:
-        dsse = json.loads(raw)
+        dsse = strict_json(raw)
         payload = b64d(dsse["payload"])
         ptype = dsse["payloadType"]
         assert isinstance(dsse.get("signatures"), list)
     except Exception as ex:
-        refuse(stage, "record is not a DSSE envelope (%s)" % type(ex).__name__)
+        refuse(stage, "record is not a DSSE envelope (%s)" % (ex if isinstance(ex, ValueError) and "duplicate" in str(ex) else type(ex).__name__))
+    if len(dsse["signatures"]) != 1:
+        refuse(stage, "record must carry exactly one signature, it has %d" % len(dsse["signatures"]))
     return dsse, payload, ptype
 
 
-def stamp_time(tok_der, tmp):
+# The two timestamp forms in the chain: Witness stores the bare token (go-witness timestamp/tsp.go: `return timestamp.RawToken`),
+# a Sigstore bundle stores the whole DER TimeStampResponse (protobuf-specs sigstore_common.proto RFC3161SignedTimestamp,
+# sigstore-go pkg/sign/timestamping.go). The type of the entry says which: "tsp" is a token, "rfc3161-response" a response.
+STAMP_TOKEN, STAMP_RESPONSE = "tsp", "rfc3161-response"
+
+
+def token_flags(kind):
+    return ["-token_in"] if kind == STAMP_TOKEN else []
+
+
+def stamp_time(tok_der, kind, tmp):
     p = os.path.join(tmp, "tok.der")
     with open(p, "wb") as f:
         f.write(tok_der)
-    txt = ssl("ts", "-reply", "-in", p, "-token_in", "-text").stdout.decode(errors="replace")
+    txt = ssl("ts", "-reply", "-in", p, *token_flags(kind), "-text").stdout.decode(errors="replace")
     m = re.search(r"Time stamp:\s+(\w{3})\s+(\d+)\s+(\d\d):(\d\d):(\d\d)\s+(\d{4})", txt)
     if not m:
         raise RuntimeError("no time in the timestamp token")
     return dt.datetime.strptime("%s %s %s:%s:%s %s" % m.groups(), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc), p
 
 
-def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
-    """Verify one stage's DSSE record against the policy. Returns (statement-or-policy-dict, payload, envelope)."""
-    if stage not in STAGES or stage not in pol.get("stages", {}):
-        refuse(stage, "stage %r is not in the policy" % stage)
-    if pol.get("dry_run") and stage != "sign":
-        refuse(stage, "the policy is a dry-run policy (dry): it is accepted only for stage sign")
-    dsse, payload, ptype = read_record(stage, rec_path)
-    sigs = dsse["signatures"]
-    if not sigs:
-        refuse(stage, "record has no signature")
-    sg = sigs[0]
-    try:
-        cert_pem = b64d(sg["certificate"]).decode()
-        leaf = parse_cert(pem_to_der(cert_pem))
-        inter = [b64d(x).decode() for x in sg.get("intermediates", [])]
-        sig = b64d(sg["sig"])
-    except Exception as ex:
-        refuse(stage, "record certificate or signature is malformed (%s)" % type(ex).__name__)
+def stamp_text(when):
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def check_identity(stage, pol, leaf):
+    """The certificate must be the stage's workflow file at the ref, called by release.yml at the same ref, from GitHub's issuer."""
     want_id = pol["stages"][stage]["identity"]
-    uris = san_uris(leaf)
+    try:
+        uris = san_uris(leaf)
+        cfg = ext_string(leaf, OID_CONFIG)
+        iss = ext_string(leaf, OID_ISSUER)
+    except (UnicodeDecodeError, IndexError, ValueError):
+        refuse(stage, "certificate identity fields are malformed")
     if uris != [want_id]:
         refuse(stage, "certificate identity %s is not %s" % (", ".join(uris) or "(none)", want_id))
-    cfg = ext_string(leaf, OID_CONFIG)
     if cfg is None:
         refuse(stage, "certificate has no build config URI extension (the calling workflow)")
     if cfg != pol["caller_identity"]:
         refuse(stage, "certificate build config URI %s is not %s" % (cfg, pol["caller_identity"]))
-    iss = ext_string(leaf, OID_ISSUER)
     if iss is None:
         refuse(stage, "certificate has no OIDC issuer extension")
     if iss != pol["oidc_issuer"]:
         refuse(stage, "certificate issuer %s is not %s" % (iss, pol["oidc_issuer"]))
-    # chain to a policy root (validity is judged below against the timestamp, not the clock)
-    untrusted = os.path.join(tmp, "untrusted.pem")
+
+
+def check_chain(stage, pol, cert_pem, intermediates, tmp):
+    """The certificate must chain to a root of the policy and to nothing else: the system trust store is switched off."""
     leaf_p = os.path.join(tmp, "leaf.pem")
     with open(leaf_p, "w") as f:
         f.write(cert_pem)
-    chain_ders = []
-    for root in pol["roots"].values():
-        chain_ders += [b64d(x).decode() for x in root.get("intermediates", [])]
+    untrusted = os.path.join(tmp, "untrusted.pem")
+    policy_inter = [b64d(x).decode() for root in pol["roots"].values() for x in root.get("intermediates", [])]
     with open(untrusted, "w") as f:
-        f.write("".join(x.rstrip("\n") + "\n" for x in inter + chain_ders))
-    chained = None
+        f.write("".join(x.rstrip("\n") + "\n" for x in intermediates + policy_inter))
     for rid, root in pol["roots"].items():
         rp = os.path.join(tmp, "root-%s.pem" % rid[:12])
         with open(rp, "w") as f:
             f.write(b64d(root["certificate"]).decode())
-        r = ssl("verify", "-no_check_time", "-CAfile", rp, "-untrusted", untrusted, leaf_p, check=False)
+        # no default file, directory or store: only the policy's root is trusted, whatever SSL_CERT_FILE / SSL_CERT_DIR say
+        r = ssl("verify", "-no_check_time", "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", rp, "-untrusted", untrusted, leaf_p, check=False)
         if r.returncode == 0:
-            chained = rid
-            break
-    if chained is None:
-        refuse(stage, "certificate does not chain to a root of the policy (root)")
-    # the signature over the DSSE PAE
+            return leaf_p
+    refuse(stage, "certificate does not chain to a root of the policy (root)")
+
+
+def check_signature(stage, leaf_p, ptype, payload, sig, tmp):
     pub = os.path.join(tmp, "leaf.pub")
     with open(pub, "wb") as f:
         f.write(ssl("x509", "-in", leaf_p, "-pubkey", "-noout").stdout)
@@ -336,16 +296,21 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
             f.write(data)
     if ssl("dgst", "-sha256", "-verify", pub, "-signature", os.path.join(tmp, "sig.bin"), os.path.join(tmp, "pae.bin"), check=False).returncode != 0:
         refuse(stage, "signature does not verify over the payload")
-    # the timestamp: a stamp over sha256(sig) from a policy authority, inside the certificate's validity
-    stamps = sg.get("timestamps") or []
+
+
+def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp):
+    """A stamp over sha256(signature) from a policy authority, inside the certificate's validity (the cert may have expired since)."""
+    stamps = signature_entry.get("timestamps") or []
     if not stamps:
         refuse(stage, "record has no timestamp, so a certificate that has expired cannot be accepted")
-    stamped = None
     why = "no authority of the policy accepts the timestamp"
+    stamped = None
     for st in stamps:
         try:
-            tok = b64d(st["data"])
-            when, tokp = stamp_time(tok, tmp)
+            kind = st["type"]
+            if kind not in (STAMP_TOKEN, STAMP_RESPONSE):
+                raise ValueError(kind)
+            when, tokp = stamp_time(b64d(st["data"]), kind, tmp)
         except Exception:
             why = "timestamp token is malformed"
             continue
@@ -356,7 +321,7 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
                 f.write(b64d(auth["certificate"]).decode())
             with open(ip, "w") as f:
                 f.write("".join(b64d(x).decode().rstrip("\n") + "\n" for x in auth.get("intermediates", [])))
-            r = ssl("ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, "-token_in", "-CAfile", cp, "-untrusted", ip, "-no_check_time", check=False)
+            r = ssl("ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, *token_flags(kind), "-CAfile", cp, "-untrusted", ip, "-no_check_time", check=False)
             if r.returncode == 0:
                 stamped = when
                 break
@@ -365,107 +330,169 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     if stamped is None:
         refuse(stage, "timestamp: " + why)
     if not (leaf["not_before"] <= stamped <= leaf["not_after"]):
-        refuse(stage, "timestamp time %s is outside the certificate validity %s..%s" % (stamped.strftime("%Y-%m-%dT%H:%M:%SZ"), leaf["not_before"].strftime("%Y-%m-%dT%H:%M:%SZ"), leaf["not_after"].strftime("%Y-%m-%dT%H:%M:%SZ")))
+        refuse(stage, "timestamp time %s is outside the certificate validity %s..%s" % (stamp_text(stamped), stamp_text(leaf["not_before"]), stamp_text(leaf["not_after"])))
     if stamped > now + dt.timedelta(minutes=10):
-        refuse(stage, "timestamp time %s is later than the verification time" % stamped.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    # the record type, bound to the stage
+        refuse(stage, "timestamp time %s is later than the verification time" % stamp_text(stamped))
+
+
+def check_record_type(stage, pol, ptype, payload):
+    """Bind the record type to the stage. Returns (statement, needs_rekor)."""
     if ptype == POLT:
         if stage != "release":
             refuse(stage, "predicate: the signed policy type (policy payloadType) is the release stage's record, not %s's" % stage)
         try:
-            stmt = json.loads(payload)
+            return strict_json(payload), True
         except ValueError:
             refuse(stage, "predicate: the policy payload is not JSON")
-        needs_rekor, dry_record = True, False
-    elif ptype == DSSE_STMT:
-        try:
-            stmt = json.loads(payload)
-            st_type, pt = stmt["_type"], stmt["predicateType"]
-        except Exception:
-            refuse(stage, "predicate: the payload is not an in-toto statement")
-        if st_type not in STMT_TYPES:
-            refuse(stage, "predicate: statement type %s is not allowed" % st_type)
-        if pt == PROV:
-            if stage != "sign":
-                refuse(stage, "predicate type provenance is the sign stage's record type, not %s's" % stage)
-            needs_rekor = True
-        elif pt == COLL:
-            if stage not in WITNESS_STAGES:
-                refuse(stage, "predicate type %s (a witness collection) is not the %s stage's record type" % (pt, stage))
-            needs_rekor = False
-        else:
-            refuse(stage, "predicate type %s is not allowed for stage %s" % (pt, stage))
-        dry_record = bool((stmt.get("predicate") or {}).get("dryRun")) if pt == PROV else False
-    else:
+    if ptype != DSSE_STMT:
         refuse(stage, "predicate: payloadType %s is not allowed" % ptype)
-    if dry_record and not pol.get("dry_run"):
-        refuse(stage, "the provenance says dryRun true (dry): only a dry-run policy accepts it")
+    try:
+        stmt = strict_json(payload)
+        st_type, pt = stmt["_type"], stmt["predicateType"]
+    except Exception:
+        refuse(stage, "predicate: the payload is not an in-toto statement")
+    if st_type not in STMT_TYPES:
+        refuse(stage, "predicate: statement type %s is not allowed" % st_type)
+    if pt == PROV:
+        if stage != "sign":
+            refuse(stage, "predicate type provenance is the sign stage's record type, not %s's" % stage)
+        predicate = stmt.get("predicate")
+        if isinstance(predicate, dict) and predicate.get("dryRun") and not pol.get("dry_run"):
+            refuse(stage, "the provenance says dryRun true (dry): only a dry-run policy accepts it")
+        return stmt, True
+    if pt == COLL:
+        if stage not in WITNESS_STAGES:
+            refuse(stage, "predicate type %s (a witness collection) is not the %s stage's record type" % (pt, stage))
+        return stmt, False
+    refuse(stage, "predicate type %s is not allowed for stage %s" % (pt, stage))
+
+
+def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
+    """Verify one stage's DSSE record against the policy. Returns (statement-or-policy-dict, payload, envelope)."""
+    if stage not in STAGES or stage not in pol.get("stages", {}):
+        refuse(stage, "stage %r is not in the policy" % stage)
+    if pol.get("dry_run") and stage != "sign":
+        refuse(stage, "the policy is a dry-run policy (dry): it is accepted only for stage sign")
+    dsse, payload, ptype = read_record(stage, rec_path)
+    entry = dsse["signatures"][0]
+    try:
+        cert_pem = b64d(entry["certificate"]).decode()
+        leaf = parse_cert(pem_to_der(cert_pem))
+        intermediates = [b64d(x).decode() for x in entry.get("intermediates", [])]
+        sig = b64d(entry["sig"])
+    except Exception as ex:
+        refuse(stage, "record certificate or signature is malformed (%s)" % type(ex).__name__)
+    check_identity(stage, pol, leaf)
+    leaf_p = check_chain(stage, pol, cert_pem, intermediates, tmp)
+    check_signature(stage, leaf_p, ptype, payload, sig, tmp)
+    check_timestamp(stage, pol, entry, sig, leaf, now, tmp)
+    stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
     if needs_rekor:
-        check_rekor(pol, stage, rekor_path, payload, sig, sg["certificate"])
+        check_rekor(pol, stage, rekor_path, payload, sig, pem_to_der(cert_pem), leaf)
     return stmt, payload, dsse
 
 
-def check_rekor(pol, stage, rekor_path, payload, sig, cert_b64):
+# ---- Rekor (v1 log, the DSSE entry kind that `cosign attest-blob` writes) -----------------------------------------------
+# An entry is a protobuf-JSON TransparencyLogEntry as it sits in a Sigstore bundle's verificationMaterial.tlogEntries
+# (protobuf-specs sigstore_rekor.proto: logIndex and integratedTime are strings, logId.keyId and canonicalizedBody are base64,
+# inclusionPromise.signedEntryTimestamp is the log's signature). Its canonical body is a Rekor `dsse` 0.0.1 entry:
+# {"apiVersion","kind":"dsse","spec":{"envelopeHash","payloadHash","signatures":[{"signature","verifier"}]}} where signature
+# is the base64 DSSE signature and verifier the base64 PEM certificate. The signed entry timestamp is an ECDSA signature over
+# the canonical JSON {body, integratedTime, logID, logIndex} (sigstore-go pkg/tlog/entry.go VerifySET).
+def rekor_entry_fields(e):
+    return {
+        "body": e["canonicalizedBody"],
+        "integratedTime": int(e["integratedTime"]),
+        "logID": b64d(e["logId"]["keyId"]).hex(),
+        "logIndex": int(e["logIndex"]),
+    }
+
+
+def set_is_valid(e, key_pem):
+    canon = json.dumps(rekor_entry_fields(e), sort_keys=True, separators=(",", ":")).encode()
+    with tempfile.TemporaryDirectory() as d:
+        for name, data in (("key.pem", key_pem.encode()), ("set.bin", canon), ("set.sig", b64d(e["inclusionPromise"]["signedEntryTimestamp"]))):
+            with open(os.path.join(d, name), "wb") as f:
+                f.write(data)
+        r = ssl("dgst", "-sha256", "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "set.sig"), os.path.join(d, "set.bin"), check=False)
+    return r.returncode == 0
+
+
+def rekor_log_id(key_pem):
+    with tempfile.TemporaryDirectory() as d:
+        kp = os.path.join(d, "key.pem")
+        with open(kp, "w") as f:
+            f.write(key_pem)
+        return hashlib.sha256(ssl("pkey", "-pubin", "-in", kp, "-outform", "DER").stdout).hexdigest()
+
+
+def rekor_body(e):
+    """The decoded canonical body of a dsse entry, or None when the entry is of another kind."""
+    kv = e.get("kindVersion") or {}
+    if kv.get("kind") != "dsse" or kv.get("version") != "0.0.1":
+        return None
+    body = strict_json(b64d(e["canonicalizedBody"]))
+    return body if body.get("kind") == "dsse" and body.get("apiVersion") == "0.0.1" else None
+
+
+def check_rekor_entry(pol, e, body, payload, sig, leaf_der, leaf):
+    """Returns None when the entry is good, else the reason it is not."""
+    spec = body["spec"]
+    if not set_is_valid(e, pol["rekor_public_key"]):
+        return "rekor entry: the signed entry timestamp does not verify against the policy's rekor key"
+    if rekor_entry_fields(e)["logID"] != rekor_log_id(pol["rekor_public_key"]):
+        return "rekor entry names another log (log id is not the policy's rekor key)"
+    signatures = spec.get("signatures") or []
+    if len(signatures) != 1 or signatures[0].get("signature") != b64e(sig):
+        return "rekor entry body is for another signature than this record's"
+    try:
+        verifier_der = pem_to_der(b64d(signatures[0]["verifier"]).decode())
+    except Exception:
+        return "rekor entry body has no usable certificate (verifier)"
+    if verifier_der != leaf_der:
+        return "rekor entry body is for another certificate than this record's"
+    when = dt.datetime.fromtimestamp(rekor_entry_fields(e)["integratedTime"], dt.timezone.utc)
+    if not (leaf["not_before"] <= when <= leaf["not_after"]):
+        return "rekor entry integrated time %s is outside the certificate validity" % stamp_text(when)
+    return None
+
+
+def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
     if not rekor_path:
         refuse(stage, "rekor entry required for this record type but no --rekor-stub was given")
     try:
         with open(rekor_path) as f:
-            entries = json.load(f).get("entries", [])
-    except (OSError, ValueError):
-        refuse(stage, "rekor stub is missing or not JSON")
-    ph = hashlib.sha256(payload).hexdigest()
-    cands = []
+            entries = strict_json(f.read())["entries"]
+    except (OSError, ValueError, KeyError, TypeError):
+        refuse(stage, "rekor entries file is missing or not JSON")
+    payload_hash = hashlib.sha256(payload).hexdigest()
+    candidates = []
     for e in entries:
         try:
-            body = json.loads(b64d(e["canonicalizedBody"]))
-            if body["spec"]["data"]["hash"]["value"] == ph:
-                cands.append((e, body))
+            body = rekor_body(e)
+            if body and body["spec"]["payloadHash"]["value"] == payload_hash and body["spec"]["payloadHash"]["algorithm"] == "sha256":
+                candidates.append((e, body))
         except Exception:
             continue
-    if not cands:
-        refuse(stage, "no rekor entry binds this record's payload hash")
-    pubp = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False)
-    try:
-        pubp.write(pol["rekor_public_key"])
-        pubp.close()
-        logid = hashlib.sha256(ssl("pkey", "-pubin", "-in", pubp.name, "-outform", "DER").stdout).hexdigest()
-        first = None
-        for e, body in cands:
-            try:
-                canon = json.dumps({"body": e["canonicalizedBody"], "integratedTime": e["integratedTime"], "logID": e["logID"], "logIndex": e["logIndex"]}, sort_keys=True, separators=(",", ":")).encode()
-                tmpd = tempfile.mkdtemp()
-                try:
-                    with open(tmpd + "/set.bin", "wb") as f:
-                        f.write(canon)
-                    with open(tmpd + "/set.sig", "wb") as f:
-                        f.write(b64d(e["signedEntryTimestamp"]))
-                    ok = ssl("dgst", "-sha256", "-verify", pubp.name, "-signature", tmpd + "/set.sig", tmpd + "/set.bin", check=False).returncode == 0
-                finally:
-                    shutil.rmtree(tmpd, ignore_errors=True)
-            except Exception:
-                ok = False
-            if not ok:
-                first = first or "rekor entry: the signed entry timestamp does not verify against the policy's rekor key"
-                continue
-            if e["logID"] != logid:
-                first = first or "rekor entry names another log (log id is not the policy's rekor key)"
-                continue
-            spec = body["spec"]
-            if spec.get("signature", {}).get("content") != b64e(sig):
-                first = first or "rekor entry body is for another signature than this record's"
-                continue
-            if spec.get("signature", {}).get("publicKey", {}).get("content") != cert_b64:
-                first = first or "rekor entry body is for another certificate than this record's"
-                continue
+    if not candidates:
+        refuse(stage, "no rekor entry (kind dsse) binds this record's payload hash")
+    first = None
+    for e, body in candidates:
+        try:
+            why = check_rekor_entry(pol, e, body, payload, sig, leaf_der, leaf)
+        except Exception:
+            why = "rekor entry is malformed"
+        if why is None:
             return
-        refuse(stage, first or "rekor entry does not verify")
-    finally:
-        os.unlink(pubp.name)
+        first = first or why
+    refuse(stage, first)
 
 
 def digest_compare(stage_prev, stmt, d_bytes, d_obj):
     """Compare the given digest list with the record's subjects (provenance) or its product subject (collection)."""
-    subs = stmt.get("subject") or []
+    subs = stmt.get("subject")
+    if not isinstance(subs, list) or not all(isinstance(s, dict) for s in subs):
+        refuse(stage_prev, "the record's subjects are malformed")
     if stmt.get("predicateType") == PROV:
         got = {s.get("name"): "sha256:" + str((s.get("digest") or {}).get("sha256")) for s in subs}
         if len(got) != len(subs) or got != d_obj:
@@ -512,7 +539,13 @@ def cmd_verify(a):
     print("ok")
 
 
+# the stage that may start from each earlier stage's record (rule 58: each stage verifies the one before it)
+STARTS_FROM = {"rebuild": ("build",), "check": ("build",), "sign": ("build",), "release": ("build", "sign", "rebuild", "check")}
+
+
 def cmd_stage_start(a):
+    if a.previous not in STARTS_FROM.get(a.stage, ()):
+        refuse(a.previous, "stage %s does not start from the %s stage's record (stage)" % (a.stage, a.previous))
     pol = load_json(a.policy, "policy")
     now = parse_now(a.now)
     if pol.get("dry_run"):
@@ -520,25 +553,26 @@ def cmd_stage_start(a):
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
-        d_obj = json.loads(d_bytes)
+        d_obj = strict_json(d_bytes)
     except (OSError, ValueError):
         refuse(a.previous, "digest file is missing or not JSON")
     with tempfile.TemporaryDirectory() as tmp:
         stmt, payload, dsse = verify_record(pol, a.previous, a.record, a.rekor_stub, now, tmp)
-    if isinstance(stmt, dict) and stmt.get("predicateType") in (PROV, COLL):
-        digest_compare(a.previous, stmt, d_bytes, d_obj)
+    if dsse["payloadType"] == POLT:
+        refuse(a.previous, "predicate: a signed release policy is not a record a stage starts from")
+    digest_compare(a.previous, stmt, d_bytes, d_obj)
     print("ok")
 
 
 def make_policy_from_template(a, tpl_path):
     ref = os.environ.get("GITHUB_REF", "")
     ev = os.environ.get("GITHUB_EVENT_NAME", "")
-    if re.fullmatch(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+", ref):
-        mode = "tag"
-    elif ev == "workflow_dispatch" and ref.startswith("refs/heads/") and len(ref) > len("refs/heads/"):
-        mode = "ref"
-    else:
-        refuse("sign", "GITHUB_REF %r (event %r) is neither refs/tags/vX.Y.Z nor a workflow_dispatch on a branch (tag)" % (ref, ev))
+    is_tag = re.fullmatch(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+", ref)
+    is_branch = ref.startswith("refs/heads/") and len(ref) > len("refs/heads/")
+    if is_tag and ev == "workflow_dispatch":
+        refuse("sign", "a workflow_dispatch on the tag %s is not a production run: production tags come from a push (tag)" % ref)
+    if not (is_tag and ev == "push") and not (is_branch and ev == "workflow_dispatch"):
+        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
     ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, trust=a.trust, fulcio_chain=a.fulcio_chain, tsa_chain=a.tsa_chain, rekor_key=a.rekor_key, out=out.name)
@@ -550,16 +584,13 @@ def make_policy_from_template(a, tpl_path):
         os.unlink(out.name)
 
 
-def cmd_sign(a):
-    if not a.check:
-        refuse("sign", "sign requires --check: the check comes before the signature")
-    if a.signer != "cosign":
-        refuse("sign", "the only signer is cosign")
+def check_build_record(a):
+    """What Sign must establish before it signs anything: Build's record is genuine, the digest list is the one Build attested,
+    and the list has the right format. Returns (policy, digest-object). Signs nothing and calls no tool."""
     pol = load_json(a.policy, "policy")
     if "roots" not in pol:
         pol = make_policy_from_template(a, a.policy)
     now = parse_now(a.now)
-    d_bytes_obj = None
     try:
         with open(a.digests, "rb") as f:
             d_bytes = f.read()
@@ -570,55 +601,84 @@ def cmd_sign(a):
     pol_b.pop("dry_run", None)
     with tempfile.TemporaryDirectory() as tmp:
         stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, None, now, tmp)
-    hits = [s for s in (stmt.get("subject") or []) if s.get("name") == PRODUCT]
+    hits = [s for s in (stmt.get("subject") or []) if isinstance(s, dict) and s.get("name") == PRODUCT]
     if len(hits) != 1 or (hits[0].get("digest") or {}).get("sha256") != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
     raw, obj = parse_digest_file(a.digests)
-    dry = bool(pol.get("dry_run"))
-    sign_id = pol["stages"]["sign"]["identity"]
+    return pol, obj
+
+
+def cmd_check_build_record(a):
+    check_build_record(a)
+    print("ok")
+
+
+def provenance_statement(pol, obj, dry):
+    """The SLSA v1 provenance Sign signs: what was built (the digests), from which source and run (GitHub's own variables)."""
+    repo, ref = pol["repository"], pol.get("ref", "")
+    run_url = "%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", "https://github.com"), repo, os.environ.get("GITHUB_RUN_ID", "0"))
+    commit = os.environ.get("GITHUB_SHA", "")
     statement = {
         "_type": "https://in-toto.io/Statement/v1", "predicateType": PROV,
         "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in sorted(obj.items())],
         "predicate": {
-            "buildDefinition": {"buildType": "https://github.com/%s/release-chain/v0.3.0" % pol["repository"],
-                                "externalParameters": {"ref": pol.get("ref", "")}, "internalParameters": {}, "resolvedDependencies": []},
-            "runDetails": {"builder": {"id": sign_id}, "metadata": {"invocationId": "sign"}},
+            "buildDefinition": {
+                "buildType": "https://github.com/%s/release-chain/v0.3.0" % repo,
+                "externalParameters": {"ref": ref, "workflow": pol["caller_identity"]},
+                "internalParameters": {},
+                "resolvedDependencies": [{"uri": "git+https://github.com/%s@%s" % (repo, ref), "digest": {"gitCommit": commit}}],
+            },
+            "runDetails": {"builder": {"id": pol["stages"]["sign"]["identity"]}, "metadata": {"invocationId": run_url}},
         },
     }
     if dry:
         statement["predicate"]["dryRun"] = True
-    tmpd = tempfile.mkdtemp()
-    try:
+    return statement
+
+
+def bundle_to_outputs(bun, out_dir, pol):
+    """Turn the Sigstore bundle cosign wrote into the two files Release verifies: the DSSE envelope with its certificate chain and
+    timestamps (provenance.json) and the bundle's own Rekor entries, untouched (provenance.rekor.json)."""
+    vm = bun["verificationMaterial"]
+    leaf_pem = der_to_pem(b64d(vm["certificate"]["rawBytes"]))
+    dsse = bun["dsseEnvelope"]
+    chain = []
+    for root in pol["roots"].values():
+        chain += root.get("intermediates", []) + [root["certificate"]]
+    stamps = vm.get("timestampVerificationData", {}).get("rfc3161Timestamps", [])
+    envelope = {
+        "payloadType": dsse["payloadType"], "payload": dsse["payload"],
+        "signatures": [{"keyid": "", "sig": dsse["signatures"][0]["sig"], "certificate": b64e(leaf_pem.encode()), "intermediates": chain,
+                        "timestamps": [{"type": STAMP_RESPONSE, "data": s["signedTimestamp"]} for s in stamps]}],
+    }
+    with open(os.path.join(out_dir, "provenance.json"), "w") as f:
+        json.dump(envelope, f)
+    with open(os.path.join(out_dir, "provenance.rekor.json"), "w") as f:
+        json.dump({"entries": vm.get("tlogEntries", [])}, f)
+
+
+def cmd_sign(a):
+    if not a.check:
+        refuse("sign", "sign requires --check: the check comes before the signature")
+    if a.signer != "cosign":
+        refuse("sign", "the only signer is cosign")
+    pol, obj = check_build_record(a)
+    dry = bool(pol.get("dry_run"))
+    signing_config = os.path.join(os.path.dirname(os.path.abspath(a.policy)), "cosign-signing-config.json")
+    with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
         with open(sp, "w") as f:
-            json.dump(statement, f, sort_keys=True)
+            json.dump(provenance_statement(pol, obj, dry), f, sort_keys=True)
         os.makedirs(a.out, exist_ok=True)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
-        r = subprocess.run(["cosign", "attest-blob", "--yes", "--statement", sp, "--bundle", bundle], capture_output=True)
+        r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
         if r.returncode != 0:
             shutil.rmtree(a.out, ignore_errors=True)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
         with open(bundle) as f:
-            bun = json.load(f)
-        vm = bun["verificationMaterial"]
-        leaf_pem = der_to_pem(b64d(vm["certificate"]["rawBytes"]))
-        sg = bun["dsseEnvelope"]["signatures"][0]
-        chain = []
-        for root in pol["roots"].values():
-            chain += root.get("intermediates", []) + [root["certificate"]]
-        env_out = {
-            "payloadType": bun["dsseEnvelope"]["payloadType"], "payload": bun["dsseEnvelope"]["payload"],
-            "signatures": [{"keyid": "", "sig": sg["sig"], "certificate": b64e(leaf_pem.encode()), "intermediates": chain,
-                            "timestamps": [{"type": "tsp", "data": t["signedTimestamp"]} for t in vm.get("timestampVerificationData", {}).get("rfc3161Timestamps", [])]}],
-        }
-        with open(os.path.join(a.out, "provenance.json"), "w") as f:
-            json.dump(env_out, f)
-        with open(os.path.join(a.out, "provenance.rekor.json"), "w") as f:
-            json.dump({"entries": vm.get("tlogEntries", [])}, f)
+            bundle_to_outputs(json.load(f), a.out, pol)
         if dry:
             open(os.path.join(a.out, "DRY-RUN"), "w").write("dry run: Release can never accept this record\n")
-    finally:
-        shutil.rmtree(tmpd, ignore_errors=True)
     print("ok")
 
 
@@ -641,6 +701,24 @@ def _walk_uses(tree, out, where=""):
     elif isinstance(tree, list):
         for x in tree:
             _walk_uses(x, out, where)
+
+
+def follow_local(ref, allowed, root, seen, errs):
+    """A local reference must be listed by path; a listed local action (anything but a workflow file) is read and judged too."""
+    p = ref[2:]
+    if p not in set(allowed.get("local", [])):
+        errs.append("%s is a local reference that is not on the allowed list" % ref)
+    elif p.startswith(".github/workflows/") or p in seen:
+        return
+    elif not root:
+        errs.append("%s is a listed local action but no --root was given to read it" % ref)
+    else:
+        seen.add(p)
+        found = [os.path.join(root, p, n) for n in ("action.yml", "action.yaml") if os.path.exists(os.path.join(root, p, n))]
+        if not found:
+            errs.append("%s is a listed local action with no action.yml or action.yaml under --root" % ref)
+        for f in found:
+            check_actions(f, allowed, root, seen, errs)
 
 
 def check_actions(path, allowed, root, seen, errs):
@@ -669,14 +747,7 @@ def check_actions(path, allowed, root, seen, errs):
             elif img not in imgs:
                 errs.append("%s is a digest that is not on the allowed list" % ref)
         elif ref.startswith("./"):
-            p = ref[2:]
-            if p not in local:
-                errs.append("%s is a local reference that is not on the allowed list" % ref)
-            elif root and ref.startswith("./.github/actions/") and p not in seen:
-                seen.add(p)
-                f = os.path.join(root, p, "action.yml")
-                if os.path.exists(f):
-                    check_actions(f, allowed, root, seen, errs)
+            follow_local(ref, allowed, root, seen, errs)
         else:
             if not re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", ref):
                 errs.append("%s is not pinned by a full lower-case commit digest" % ref)
@@ -690,180 +761,6 @@ def cmd_actions(a):
     check_actions(a.workflow, allowed, a.root, set(), errs)
     if errs:
         refuse("actions", "; ".join(errs))
-    print("ok")
-
-
-# ---- the hostile dry run's rows ------------------------------------------------------------------------------------
-ATTEMPTS = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance", "call_sign_from_other_workflow"]
-ALL_ROWS = ATTEMPTS + ["positive_control"]
-ROW_STAGES = ("runner", "build", "sign", "rebuild", "check", "release")
-# (allowed stages, cause words) per attempt; a refusal counts only when stage and cause fit
-FITS = {
-    "mint_sign_cert": (("sign", "release"), ("stage-sign.yml", "identity")),
-    "read_sign_token": (("runner",), ("nothing usable",)),
-    "read_sign_key": (("runner",), ("nothing usable",)),
-    "hand_sign_code": (("sign",), ("digest", "format")),
-    "forge_provenance": (("sign", "release"), ("identity", "stage-sign.yml", "signature", "root")),
-    "call_sign_from_other_workflow": (("sign", "release"), ("release.yml", "build config")),
-}
-MISSING = ("no such file", "does not exist", "missing", "not found")
-UNREAD = ("cannot read", "unreadable", "permission denied")
-
-
-def cmd_hostile_row(a):
-    if a.attempt not in ALL_ROWS:
-        print("error: attempt %r is not one of %s" % (a.attempt, ", ".join(ALL_ROWS)), file=sys.stderr)
-        sys.exit(1)
-    try:
-        err = open(a.stderr, errors="replace").read()
-    except OSError:
-        err = ""
-    if "Traceback" in err:
-        print("error: the verifier crashed (traceback); a crash is not a refusal", file=sys.stderr)
-        sys.exit(1)
-    if a.exit_code == 0:
-        row = {"attempt": a.attempt, "outcome": "accepted", "stage": "sign", "reason": "accepted", "judged_by": "verifier", "exit_code": 0}
-    else:
-        first = err.splitlines()[0] if err.splitlines() else ""
-        m = re.fullmatch(r"refused at (runner|build|sign|rebuild|check|release): (.+)", first)
-        if a.exit_code != 1 or not m:
-            print("error: the verifier's first line is not 'refused at <stage>: <reason>' (stage), so it is not a refusal (not a 'refused at' line)", file=sys.stderr)
-            sys.exit(1)
-        row = {"attempt": a.attempt, "outcome": "refused", "stage": m.group(1), "reason": m.group(2), "judged_by": "verifier", "exit_code": a.exit_code}
-    with open(a.out, "w") as f:
-        json.dump(row, f)
-
-
-def cmd_hostile_collect(a):
-    rows, errs = {}, []
-    for fn in sorted(os.listdir(a.dir)):
-        if not fn.endswith(".json"):
-            continue
-        try:
-            r = json.load(open(os.path.join(a.dir, fn)))
-        except ValueError:
-            errs.append("error: %s is not JSON" % fn)
-            continue
-        n = r.get("attempt")
-        if n not in ALL_ROWS:
-            errs.append("error: extra row %r in %s" % (n, fn))
-        elif n in rows:
-            errs.append("error: duplicate row for %s" % n)
-        else:
-            rows[n] = r
-    for n in ALL_ROWS:
-        if n not in rows:
-            errs.append("error: missing row for %s" % n)
-    if errs:
-        print("\n".join(errs), file=sys.stderr)
-        sys.exit(1)
-    with open(a.out, "w") as f:
-        json.dump({"attempts": [rows[n] for n in ALL_ROWS]}, f)
-
-
-def _transcript(path):
-    try:
-        lines = open(path, errors="replace").read().splitlines()
-    except OSError as ex:
-        print("error: cannot read %s" % path, file=sys.stderr)
-        sys.exit(2)
-    if not lines or not lines[0].startswith("# transcript:") or len(lines[0][len("# transcript:"):].strip()) < 20:
-        print("error: %s has no transcript line of at least 20 characters" % path, file=sys.stderr)
-        sys.exit(2)
-    rest = [x for x in lines[1:] if x.strip()]
-    if not rest:
-        print("error: %s has a transcript but no output of the attempt" % path, file=sys.stderr)
-        sys.exit(2)
-    return rest
-
-
-def cmd_hostile_material(a):
-    if a.kind not in ("token", "key"):
-        print("error: unknown kind %r (kind must be token or key)" % a.kind, file=sys.stderr)
-        sys.exit(1)
-    rest = _transcript(a.file)
-    text = "\n".join(rest)
-    if a.kind == "key":
-        if "PRIVATE KEY" in text:
-            print("ok")
-            return
-        refuse("runner", "nothing usable for Sign: no key material")
-    m = re.search(r"[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*", text)
-    if not m:
-        refuse("runner", "nothing usable for Sign: no token")
-    try:
-        seg = m.group(1)
-        claims = json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
-    except Exception:
-        print("error: the token's payload is not decodable", file=sys.stderr)
-        sys.exit(2)
-    ref = claims.get("job_workflow_ref")
-    if not ref:
-        print("error: the token has no job_workflow_ref claim, so it cannot be graded", file=sys.stderr)
-        sys.exit(2)
-    if "/stage-sign.yml@" in ref:
-        print("ok")
-        return
-    refuse("runner", "nothing usable for Sign: the token's job_workflow_ref is %s" % ref)
-
-
-def cmd_hostile_verdict(a):
-    try:
-        d = json.load(open(a.results))
-        rows = d["attempts"]
-    except Exception as ex:
-        print("error: %s is not the JSON results file (json)" % a.results, file=sys.stderr)
-        sys.exit(1)
-    errs, by = [], {}
-    if not rows:
-        errs.append("error: no attempt rows (attempt)")
-    for r in rows:
-        n = r.get("attempt")
-        if n not in ALL_ROWS:
-            errs.append("error: %r is not one of the six attempts or the positive control" % n)
-        elif n in by:
-            errs.append("error: duplicate row for %s" % n)
-        else:
-            by[n] = r
-    for n in ALL_ROWS:
-        if rows and n not in by:
-            errs.append("error: missing row for %s" % n)
-    for n, r in by.items():
-        if r.get("judged_by") != "verifier":
-            errs.append("error: %s: the outcome was not judged by the verifier (judged_by %r)" % (n, r.get("judged_by")))
-            continue
-        if n == "positive_control":
-            if r.get("outcome") != "accepted" or r.get("exit_code") != 0:
-                errs.append("error: positive_control must be accepted (exit 0) by the same policy: %s" % r.get("reason"))
-            continue
-        if r.get("outcome") != "refused":
-            errs.append("error: %s was %s: the system accepted a hostile attempt" % (n, r.get("outcome")))
-            continue
-        if r.get("exit_code") in (0, None):
-            errs.append("error: %s: outcome refused contradicts exit code %r" % (n, r.get("exit_code")))
-            continue
-        stage, reason = r.get("stage"), str(r.get("reason") or "")
-        if stage not in ROW_STAGES:
-            errs.append("error: %s: stage %r is not a stage" % (n, stage))
-            continue
-        if len(reason.strip()) < 2:
-            errs.append("error: %s: the refusal has no reason" % n)
-            continue
-        low = reason.lower()
-        if any(w in low for w in UNREAD):
-            errs.append("error: %s: its material was unreadable: the refusal does not count (cause: unreadable)" % n)
-            continue
-        if any(w in low for w in MISSING):
-            errs.append("error: %s: its material was missing: the refusal does not count (cause: missing)" % n)
-            continue
-        stages, words = FITS[n]
-        if stage not in stages:
-            errs.append("error: %s: refused at stage %s, expected %s (stage)" % (n, stage, "|".join(stages)))
-        elif not any(w in low for w in words):
-            errs.append("error: %s: the reason does not fit this attempt (cause): %s" % (n, reason))
-    if errs:
-        print("\n".join(errs), file=sys.stderr)
-        sys.exit(1)
     print("ok")
 
 
@@ -897,6 +794,12 @@ def build_parser():
     s.add_argument("--out", required=True)
     for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
         s.add_argument("--" + n)
+    cb = sub.add_parser("check-build-record")
+    for n in ("digests", "build-record", "policy"):
+        cb.add_argument("--" + n, required=True)
+    cb.add_argument("--now")
+    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
+        cb.add_argument("--" + n)
     st = sub.add_parser("stage-start")
     st.add_argument("--stage", required=True)
     st.add_argument("--previous", required=True)
@@ -920,6 +823,7 @@ def build_parser():
     hm = sub.add_parser("hostile-material")
     hm.add_argument("--kind", required=True)
     hm.add_argument("--file", required=True)
+    hm.add_argument("--sign-record")
     hv = sub.add_parser("hostile-verdict")
     hv.add_argument("results")
     return p
@@ -934,18 +838,20 @@ def main(argv):
             cmd_verify(a)
         elif a.cmd == "sign":
             cmd_sign(a)
+        elif a.cmd == "check-build-record":
+            cmd_check_build_record(a)
         elif a.cmd == "stage-start":
             cmd_stage_start(a)
         elif a.cmd == "actions":
             cmd_actions(a)
         elif a.cmd == "hostile-row":
-            cmd_hostile_row(a)
+            chain_hostile.cmd_hostile_row(a)
         elif a.cmd == "hostile-collect":
-            cmd_hostile_collect(a)
+            chain_hostile.cmd_hostile_collect(a)
         elif a.cmd == "hostile-material":
-            cmd_hostile_material(a)
+            chain_hostile.cmd_hostile_material(a)
         elif a.cmd == "hostile-verdict":
-            cmd_hostile_verdict(a)
+            chain_hostile.cmd_hostile_verdict(a)
     except Refuse as r:
         print("refused at %s: %s" % (r.stage, r.reason), file=sys.stderr)
         sys.exit(1)

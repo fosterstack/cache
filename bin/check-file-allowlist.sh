@@ -127,9 +127,12 @@ ALLOW_PATTERNS=(
   # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
   # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
   # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)
-  '^bin/chain-(verify|hostile-step)\.(py|sh)$'
+  '^bin/chain-verify\.py$'
+  '^bin/chain_(common|hostile)\.py$'
+  '^bin/chain-hostile-step\.sh$'
   '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
   '^bin/chain-test-signers\.(py|json)$'
+  '^\.github/policy/cosign-signing-config\.json$'
   '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
   '^\.github/policy/rekor\.pub$'
   '^results/\.gitkeep$'
