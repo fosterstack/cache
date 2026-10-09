@@ -81,6 +81,7 @@ jobs:
         id: gate
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}   # read-only: resolves each `# vX` tag to its commit
           # the PR's identity, as the ci allowlist job sees it, for main's copy of the allowlist guard
           GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -91,9 +92,11 @@ jobs:
           # judged against the checked-out default branch (HEAD), never the event's base
           base="$(git merge-base HEAD "$HEAD_SHA")" || { echo "verdict=failure" >> "$GITHUB_OUTPUT"; exit 1; }
           verdict=success
-          python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$HEAD_SHA" || verdict=failure
+          # --pr and --subs-rev HEAD (REQ-AUD-018 AC4): the PR number scopes a recorded substitute, and its allow-list is
+          # read from the checked-out default branch, never from the PR
+          python3 -I .github/agent/bin/auditor-review-gate.py --base "$base" --head "$HEAD_SHA" --pr "$PR" --subs-rev HEAD || verdict=failure
           # row 78: every action reference in the head is a commit digest (git objects only)
-          python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
+          python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
           # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
           # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
           git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
@@ -197,8 +200,8 @@ jobs:
             git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
             [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
             conclusion=failure
-            if base="$(git merge-base HEAD "$sha")" && python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$sha" \
-               && GH_TOKEN="$LIST_TOKEN" python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
+            if base="$(git merge-base HEAD "$sha")" && python3 -I .github/agent/bin/auditor-review-gate.py --base "$base" --head "$sha" --pr "$n" --subs-rev HEAD \
+               && GH_TOKEN="$LIST_TOKEN" python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
                && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
                && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh; then

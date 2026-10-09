@@ -629,3 +629,6 @@ mappings:
   - ac: REQ-REPO-001-AC25
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-AUD-018-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
