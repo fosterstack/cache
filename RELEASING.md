@@ -45,9 +45,10 @@ step, never re-resolved from a registry.
   release-artifact scenarios plus the Gradle and Maven acceptance
   suites run against the exact candidate image.
 - **Candidate image posture** (REQ-FIPS-002-AC2): the release-artifact
-  acceptance reads `/statusz` of the running production, `-debug` and
-  `-fips` containers on linux/amd64 and, under emulation, on linux/arm64,
-  and compares each answer with the exact expected string. The
+  acceptance reads, in candidates mode, `/statusz` of the running
+  production, `-debug` and `-fips` containers on linux/amd64 and, under
+  emulation, on linux/arm64, and compares each answer with the exact
+  expected string. The
   requirement gates a release through the acceptance predicate only under
   an approved baseline frozen after it merged; the older frozen baselines
   (v0.2.0, v0.2.1) do not contain it. The stage failing blocks the

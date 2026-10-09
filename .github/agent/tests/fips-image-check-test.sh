@@ -66,7 +66,7 @@ VARIANTS = ("production", "debug", "fips")
 
 # ---------------------------------------------------------------- 0. the AC and the release note, as parsed
 EXPECT = {
- "given": "the candidate image variants of a release (production, -debug and -fips) by candidate digest, running as the containers the artifact acceptance already starts on linux/amd64 and, under emulation, on linux/arm64 (the emulated arm64 containers are UNVERIFIED until the first run shows they serve /statusz)",
+ "given": "in candidates mode, the candidate image variants of a release (production, -debug and -fips) by candidate digest, running as the containers the artifact acceptance already starts on linux/amd64 and, under emulation, on linux/arm64 (the emulated arm64 containers are UNVERIFIED until the first run shows they serve /statusz)",
  "when": "/statusz is read from each running container",
  "then": "the -fips containers report 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug containers report 'off', and any other report (including the forced-mode line on a standard image), a container that does not answer /statusz with a successful HTTP status, a container that is not the image pulled by that digest, or a missing variant on either architecture blocks the release",
 }
@@ -94,13 +94,13 @@ mm = [m for m in (maps.get("mappings") or []) if m.get("ac") == "REQ-FIPS-002-AC
 refs = " ".join(e.get("ref", "") for m in mm for e in m.get("evidence", []))
 check("the evidence mapping names the two artifact-acceptance steps and this test, and no k8s stage",
       "stage-acceptance-artifacts.yml" in refs and "exercise the images" in refs and "R11" in refs
-      and ".github/agent/tests/fips-image-check-test.sh" in refs and "k8s" not in refs, refs)
+      and ".github/agent/tests/fips-image-check-test.sh" in refs and "k8s" not in refs and "only in candidates mode" in refs, refs)
 paras = [p for p in rd("RELEASING.md").split("\n\n") if "REQ-FIPS-002-AC2" in p]
 flat = " ".join(" ".join(paras).split())
 check("RELEASING.md says AC2 gates only under a baseline frozen after it merged, v0.2.0 and v0.2.1 lacking it, the job failing blocks anyway",
       "frozen after it merged" in flat and "v0.2.0" in flat and "v0.2.1" in flat and "blocks the release regardless" in flat, flat)
 check("RELEASING.md describes the artifact acceptance (amd64 and arm64), not the Kubernetes stage",
-      "linux/amd64" in flat and "linux/arm64" in flat and "Kubernetes" not in flat, flat)
+      "linux/amd64" in flat and "linux/arm64" in flat and "candidates mode" in flat and "Kubernetes" not in flat, flat)
 
 # ---------------------------------------------------------------- A. the steps, executed
 ART = ".github/workflows/stage-acceptance-artifacts.yml"
@@ -112,23 +112,26 @@ job = wf["jobs"]["artifacts"]
 steps = job["steps"]
 EX, ARM, RES = ("exercise the images", "run every variant on arm64 under QEMU (R11)",
                 "report the ACs this stage asserted (derived from the served matrix)")
-INV = [  # (name, uses-prefix, if, id): the step inventory of the job; a new, removed or reordered step is a deliberate act
- (None, "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", None, None),
- (None, "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", None, None),
- ("verify the archives against the builder's digests", None, None, None),
- ("archive set is exactly the six, and binaries execute", None, None, None),
- ("fips artifact embeds the validated-module selection", None, None, None),
- ("fips posture is truthful in all three runtime configurations", None, None, None),
- ("assemble the images from these binaries (archives mode)", None, "inputs.mode != 'candidates'", None),
- ("pull the exact candidates by digest (candidates mode)", None, "inputs.mode == 'candidates'", None),
- (EX, None, None, None),
- ("arm64 production candidate boots and serves (QEMU)", "docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1", "inputs.mode == 'candidates'", None),
- (ARM, None, "inputs.mode == 'candidates'", None),
- (RES, None, None, "results"),
+PULL = "pull the exact candidates by digest (candidates mode)"
+INV = [  # (name, action, if, id, first 16 hex of sha256(run:)): the step inventory; action digests only need to be 40-hex
+ (None, "actions/checkout", None, None, None),
+ (None, "actions/download-artifact", None, None, None),
+ ("verify the archives against the builder's digests", None, None, None, "e95a5aa23b96dfb9"),
+ ("archive set is exactly the six, and binaries execute", None, None, None, "287097a217480a69"),
+ ("fips artifact embeds the validated-module selection", None, None, None, "78b93ebda4082ed4"),
+ ("fips posture is truthful in all three runtime configurations", None, None, None, "777f48bd8858214d"),
+ ("assemble the images from these binaries (archives mode)", None, "inputs.mode != 'candidates'", None, "32371c97f6d9772e"),
+ (PULL, None, "inputs.mode == 'candidates'", None, "beb4de03675f3a89"),
+ (EX, None, None, None, None),
+ ("arm64 production candidate boots and serves (QEMU)", "docker/setup-qemu-action", "inputs.mode == 'candidates'", None, None),
+ (ARM, None, "inputs.mode == 'candidates'", None, None),
+ (RES, None, None, "results", None),
 ]
-got_inv = [(s.get("name"), (s.get("uses") or "").split(" ")[0] or None, s.get("if"), s.get("id")) for s in steps]
-check("the step inventory of the job is exactly the pinned one (names, action digests, conditions, ids)",
-      [(a, (b or None), c, d) for a, b, c, d in got_inv] == INV, got_inv)
+INV_H = {r[0]: r[4] for r in INV if r[4]}
+got_inv = [(s.get("name"), (s.get("uses") or "").split("@")[0] or None, s.get("if"), s.get("id"),
+            hashlib.sha256(s["run"].encode()).hexdigest()[:16] if INV_H.get(s.get("name")) else None) for s in steps]
+check("the step inventory is exactly the pinned one (names, actions, conditions, ids), and the run: text of every step before 'exercise the images' is unchanged",
+      got_inv == INV, [g for g, i in zip(got_inv, INV) if g != i] or got_inv)
 check("no step has continue-on-error or a shell override", all(not {"continue-on-error", "shell"} & set(s) for s in steps))
 check("the job has no job-level if:, continue-on-error, env, container or services", not {"if", "continue-on-error", "env", "container", "services"} & set(job), sorted(job))
 check("the workflow has no defaults or workflow-level env", "defaults" not in wf and "env" not in wf, [str(k) for k in wf])
@@ -142,15 +145,17 @@ byname = {s.get("name"): s for s in steps}
 ex, arm, res = byname.get(EX), byname.get(ARM), byname.get(RES)
 idx = {s.get("name"): i for i, s in enumerate(steps)}
 before = steps[:idx.get(EX, 0)]
-BAD_EARLY = re.compile(r"(?<![\w.-])bin/|GITHUB_PATH|GITHUB_ENV|\bPATH=|fips-image-posture")
+BAD_EARLY = re.compile(r"(?<![\w.-])bin/|GITHUB_PATH|GITHUB_ENV|\bPATH=|PATH\+=|\bsudo\b|/usr/local/bin|\bhash\s+-|fips-image-posture")
 check("no step before 'exercise the images' touches bin/, PATH, GITHUB_PATH or GITHUB_ENV",
       not [s.get("name") for s in before if BAD_EARLY.search(s.get("run") or "")], [s.get("name") for s in before if BAD_EARLY.search(s.get("run") or "")])
-SHADOW = re.compile(r"^\s*(?:function\s+)?(?:curl|docker|jq|python3|sleep|stat|seq|bash)\s*\(\)|^\s*alias\s|\bPATH=|GITHUB_PATH|GITHUB_ENV|\bexport\s+-f\b", re.M)
+SHADOW = re.compile(r"^\s*(?:function\s+)?(?:curl|docker|jq|python3|sleep|stat|seq|bash)\s*\(\)|^\s*alias\s|\bPATH=|PATH\+=|\bsudo\b|\bhash\s+-|GITHUB_PATH|GITHUB_ENV|\bexport\s+-f\b", re.M)
 ABS = re.compile(r"(?<!--entrypoint )(?<![\w.-])/(?:usr/(?:local/)?)?s?bin/(?:curl|docker|jq|python3?|sleep|stat|seq)\b")
 for name, s in ((EX, ex), (ARM, arm), (RES, res)):
     t = (s or {}).get("run", "")
     hosts = {m.split("/")[0].split(":")[0] for m in re.findall(r"https?://([^\s'\"]+)", t)}
     check("%s: no shadowing of tools, no PATH or GITHUB_ENV/PATH edits" % name, s is not None and not SHADOW.search(t), SHADOW.findall(t))
+    redir = [l.strip() for l in t.splitlines() if re.search(r"\bcurl\b", l) and re.search(r"(?<![\w-])(?:-[A-Za-z]*L[A-Za-z]*|--location(?:-trusted)?|-K|--config|--proto-redir\S*|--next)(?![\w-])", l)]
+    check("%s: no curl follows redirects or reads a config file" % name, s is not None and not redir, redir)
     check("%s: no absolute-path tool invocation" % name, s is not None and not ABS.search(t), ABS.findall(t))
     check("%s: every URL host is 127.0.0.1 or localhost" % name, s is not None and hosts <= {"127.0.0.1", "localhost"}, hosts)
     check("%s: set -euo pipefail, no per-step env: or working-directory:" % name,
@@ -166,7 +171,7 @@ if g.returncode == 0:
         d = subprocess.run(["git", "-C", root, "diff", "--stat", "origin/main", "--", ".github/workflows/" + f], capture_output=True, text=True).stdout.strip()
         check("%s is untouched relative to origin/main" % f, d == "", d)
 else:
-    print("note: origin/main not available; the no-new-workflow and k8s/predicate-untouched checks are left to the diff review")
+    print("SKIPPED (LOUD): origin/main is not resolvable here, so 'no new workflow file' and 'k8s and predicate untouched' were NOT checked; they run (and fail on a difference) wherever origin/main exists")
 check("the k8s stage has nothing to do with AC2", "FIPS-002" not in rd(".github/workflows/stage-acceptance-k8s.yml") and "fips-image-posture" not in rd(".github/workflows/stage-acceptance-k8s.yml"))
 
 OWNER, TOKEN = "fixture-owner", "TOKEN-CANARY-8f3a91"
@@ -202,7 +207,7 @@ def images():
 IMG = images()
 def load():
     try: return json.load(open(ST))
-    except Exception: return {"c": {}, "local": [tag(v) for v in DIG], "health": {}, "sz": {}, "n": 0}
+    except Exception: return {"c": {}, "local": [] if CFG.get("no_local_tags") else [tag(v) for v in DIG], "health": {}, "sz": {}, "n": 0, "tags": {}}
 def save(s): json.dump(s, open(ST, "w"))
 def log(**r): open(D + "/log.jsonl", "a").write(json.dumps(r) + "\n")
 VALUED = {"--name", "-p", "--publish", "-e", "--env", "--platform", "--entrypoint", "-v", "--volume", "--mount", "--user", "-u",
@@ -230,7 +235,7 @@ def docker(a):
     if sub in ("container", "image") and rest:
         sub, rest = rest[0], rest[1:]
     if sub == "login":
-        log(cmd="docker", sub="login", args=rest); sys.stdin.read(); sys.exit(0)
+        inp = sys.stdin.read(); log(cmd="docker", sub="login", args=rest, stdin=inp); sys.exit(0)
     if sub == "buildx":
         log(cmd="docker", sub="buildx", args=rest)
         pos = [x for x in rest[3:] if not x.startswith("-")] if rest[:3] == ["imagetools", "inspect", "--raw"] else []
@@ -248,11 +253,14 @@ def docker(a):
             if not rest[i].startswith("-"): pos.append(rest[i])
             i += 1
         log(cmd="docker", sub="pull", args=rest, positional=pos)
-        if len(pos) != 1 or pos[0] not in IMG or pos[0].startswith("localhost/"):
+        if len(pos) != 1 or pos[0] not in IMG or pos[0].startswith("localhost/") or IMG[pos[0]][0] in CFG.get("pull_fail", []):
             sys.stderr.write("Error: pull failed\n"); sys.exit(1)
         s["local"].append(pos[0]); save(s); sys.exit(0)
     if sub == "tag":
-        log(cmd="docker", sub="tag", args=rest); sys.exit(0)
+        log(cmd="docker", sub="tag", args=rest)
+        if len(rest) != 2 or rest[0] not in s["local"] or rest[0] not in IMG or not rest[1].startswith("localhost/fa-"):
+            sys.stderr.write("Error: No such image\n"); sys.exit(1)
+        s["tags"][rest[1]] = rest[0]; s["local"].append(rest[1]); save(s); sys.exit(0)
     if sub == "run":
         i, image, name, port, env, fg, ent = 0, None, None, None, [], "-d" not in rest and "--detach" not in rest, None
         while i < len(rest):
@@ -335,12 +343,14 @@ def docker(a):
     sys.stderr.write("stub: unexpected docker subcommand %s\n" % sub); sys.exit(1)
 def curl(a):
     s = load()
+    follow = False
     fail, url, out, wo, meth, user, data, i = False, None, None, None, None, None, None, 0
     LV = {"--max-time", "--connect-timeout", "--retry", "--retry-delay", "--retry-max-time", "--output", "--write-out", "--header",
           "--user", "--request", "--data", "--data-binary", "--url", "--resolve", "--interface", "--proxy"}
     while i < len(a):
         x = a[i]
         if x in ("--fail", "--fail-with-body"): fail = True
+        elif x in ("--location", "--location-trusted"): follow = True
         elif x in LV or (x.startswith("--") and "=" in x and x.split("=")[0] in LV):
             if "=" in x: k, v = x.split("=", 1)
             else: k, v = x, (a[i + 1] if i + 1 < len(a) else ""); i += 1
@@ -356,6 +366,7 @@ def curl(a):
             while j < len(x):
                 ch = x[j]
                 if ch == "f": fail = True
+                if ch == "L": follow = True
                 if ch in "moHuXAdwT":
                     v = x[j + 1:] if x[j + 1:] else (a[i + 1] if i + 1 < len(a) else "")
                     if not x[j + 1:]: i += 1
@@ -390,7 +401,8 @@ def curl(a):
         code, rb = 401, "unauthorized"
     elif path == "/statusz":
         k = s["sz"].get(c["id"], 0); s["sz"][c["id"]] = k + 1; save(s)
-        if key in CFG["http_error"]: code, rb = 500, '{"error":"internal"}'
+        if key in CFG.get("redirect", []): code, rb = 302, ""
+        elif key in CFG["http_error"]: code, rb = 500, '{"error":"internal"}'
         elif k < CFG["statusz_flaky"].get(key, 0): code, rb = 503, "warming up"
         else: code, rb = 200, CFG["bodies"][key]
     elif (meth or "") == "PUT" or data is not None:
@@ -398,6 +410,8 @@ def curl(a):
     else:
         code, rb = (200, c["data"][path]) if path in c["data"] else (404, "not found")
     log(result="ok" if code < 400 else "http_error", code=code, variant=v, arch=arch, **rec)
+    if code == 302 and follow:   # -L: the answer comes from the redirect target, here another host serving a good-looking body
+        log(cmd="curl-redirect", followed=True); code, rb = 200, CFG["bodies"][key]
     if code >= 400 and fail:
         sys.stderr.write("curl: (22) The requested URL returned error: %d\n" % code); sys.exit(22)
     wtxt = (wo or "").replace("%{http_code}", str(code))
@@ -424,17 +438,21 @@ if len(d) == 1 and os.path.isdir(d[0]):
         p = os.path.join(d[0], f)
         files[f] = open(p, "rb").read().decode("latin-1") if os.path.isfile(p) else None
 open(D + "/log.jsonl", "a").write(json.dumps({"cmd": "posture", "argv": d, "files": files, "script": os.path.realpath(__file__)}) + "\\n")
-sys.exit(1 if any(v and "WRONG" in v for v in files.values()) else json.load(open(D + "/cfg.json"))["posture_exit"])
+cfg = json.load(open(D + "/cfg.json"))
+need = ("production.json", "debug.json", "fips.json")
+bad = not all(k in files for k in need) or any(files[k] is None or "WRONG" in files[k] or files[k] not in set(cfg["bodies"].values()) for k in need if k in files)
+sys.exit(1 if bad else cfg["posture_exit"])
 '''
 TOOLS = ["bash", "sh", "jq", "python3", "mktemp", "cat", "mkdir", "rm", "seq", "tr", "cut", "head", "tail", "grep", "sed", "awk",
          "printf", "date", "true", "false", "test", "[", "dirname", "basename", "tee", "wc", "sort", "cmp", "diff", "env",
          "readlink", "cp", "mv", "ls", "chmod", "expr", "xargs", "id", "uname", "touch", "echo"]
-ALLOWED = {EX: set(), ARM: {"github.repository_owner", "inputs.digests"}, RES: {"inputs.mode"}}
+ALLOWED = {EX: set(), ARM: {"github.repository_owner", "inputs.digests"}, RES: {"inputs.mode"},
+           PULL: {"github.token", "github.actor", "github.repository_owner", "inputs.digests"}}
 
-def run_step(step, cfg, digests=None, mode="candidates", mats=None):
+def run_step(step, cfg, digests=None, mode="candidates", mats=None, tmp_dir=None):
     """Execute a step's run: whole. mats: {file: text} pre-placed in the redirected /tmp."""
     d = tempfile.mkdtemp(dir=work)
-    stub, tools, ws, tmp = d + "/stub", d + "/tools", d + "/ws", d + "/tmp"
+    stub, tools, ws, tmp = d + "/stub", d + "/tools", d + "/ws", (tmp_dir or d + "/tmp")
     for p in (stub, tools, ws + "/bin", tmp, d + "/home"): os.makedirs(p, exist_ok=True)
     open(stub + "/stublib.py", "w").write(STUBLIB)
     json.dump(cfg, open(stub + "/cfg.json", "w"))
@@ -466,7 +484,8 @@ def run_step(step, cfg, digests=None, mode="candidates", mats=None):
     log = [json.loads(l) for l in open(logf)] if os.path.exists(logf) else []
     mf = lambda f: open(tmp + "/" + f).read() if os.path.exists(tmp + "/" + f) else None
     intact = (hashlib.sha256(open(ws + "/bin/fips-image-posture.py", "rb").read()).hexdigest() == h0 and os.listdir(ws + "/bin") == ["fips-image-posture.py"])
-    return dict(rc=rc, err=err, log=log, problems=problems, tmp=tmp, matrix=mf("posture-matrix.txt"), output=mf("gh-output"), intact=intact)
+    state = json.load(open(stub + "/state.json")) if os.path.exists(stub + "/state.json") else {}
+    return dict(state=state, rc=rc, err=err, log=log, problems=problems, tmp=tmp, matrix=mf("posture-matrix.txt"), output=mf("gh-output"), intact=intact)
 
 def arg_lists(log, sub, **kw):
     return [r["args"] for r in log if r.get("cmd") == "docker" and r.get("sub") == sub and all(r.get(k) == v for k, v in kw.items())]
@@ -579,30 +598,94 @@ if arm is not None:
     judge_bad("arm64 the fips digest key is missing", "arm64", arm, base_cfg(), digests={"production": DIG["production"], "debug": DIG["debug"]})
     judge_bad("arm64 the debug digest is null", "arm64", arm, base_cfg(), digests={"production": DIG["production"], "debug": None, "fips": DIG["fips"]})
 
+# the pull step: by digest, nothing else
+pull = byname.get(PULL)
+def pull_failures(step):
+    out = []
+    r = run_step(step, base_cfg(no_local_tags=True))
+    log = r["log"]
+    if r["rc"] != 0: out.append("the good run exits %s (%s)" % (r["rc"], r["err"].strip()[-120:]))
+    if r["problems"]: out.append(r["problems"])
+    lg = [x for x in log if x.get("cmd") == "docker" and x["sub"] == "login"]
+    if len(lg) != 1 or lg[0]["args"] != ["ghcr.io", "-u", "actor-fixture", "--password-stdin"] or lg[0]["stdin"].strip() != TOKEN:
+        out.append("login %s" % [x["args"] for x in lg])
+    refs = ["%s@%s" % (REPO, DIG[v]) for v in VARIANTS]
+    if arg_lists(log, "pull") != [["-q", x] for x in refs]: out.append("pulls %s" % arg_lists(log, "pull"))
+    if arg_lists(log, "tag") != [[x, "localhost/fa-" + v] for x, v in zip(refs, VARIANTS)]: out.append("tags %s" % arg_lists(log, "tag"))
+    if r["state"].get("tags") != {"localhost/fa-" + v: x for x, v in zip(refs, VARIANTS)}: out.append("recorded tags %s" % r["state"].get("tags"))
+    if [x for x in log if x.get("unexpected")]: out.append("unexpected docker subcommand")
+    for label, dg in (("null", {"production": DIG["production"], "debug": DIG["debug"], "fips": None}),
+                      ("missing", {"debug": DIG["debug"], "fips": DIG["fips"]}), ("empty", {"production": DIG["production"], "debug": "", "fips": DIG["fips"]})):
+        r2 = run_step(step, base_cfg(no_local_tags=True), digests=dg)
+        if r2["rc"] in (0, None): out.append("a %s digest is accepted" % label)
+        if [x for x in arg_lists(r2["log"], "pull") if x[-1] not in refs]: out.append("a pull was attempted for a %s digest" % label)
+    r3 = run_step(step, base_cfg(no_local_tags=True, pull_fail=["fips"]))
+    if r3["rc"] in (0, None): out.append("a failed pull is accepted")
+    return out
+if pull is None: check("the pull step exists to be run", False)
+else:
+    fl = pull_failures(pull)
+    check("the pull step, executed: login to ghcr.io on stdin, the three pulls exactly -q <owner>/cache-candidates@<that variant's digest>, the three tags exactly <that ref> localhost/fa-<variant>, null/missing/empty digests and a failed pull fail",
+          not fl, fl)
+    PM = [("the pull uses a tag, not the digest", lambda t: t.replace('docker pull -q "${repo}@${d}"', 'docker pull -q "${repo}:latest"')),
+          ("the tag is made from a tag, not the digest", lambda t: t.replace('docker tag "${repo}@${d}"', 'docker tag "${repo}:latest"')),
+          ("another registry is used", lambda t: re.sub(r'repo="[^"]*"', 'repo="docker.io/evil/cache"', t)),
+          ("the null-digest guard is deleted", lambda t: "\n".join(l for l in t.split("\n") if "no digest for" not in l)),
+          ("the tag is overwritten", lambda t: t.replace('"localhost/fa-${v}"', '"localhost/fa-production"')),
+          ("every variant takes the production digest", lambda t: t.replace("'.[$v]'", "'.production'")),
+          ("the login goes to another registry", lambda t: t.replace("docker login ghcr.io", "docker login docker.io"))]
+    for name, f in PM:
+        m = dict(pull); m["run"] = f(pull["run"])
+        check("pull-step mutant is caught: " + name, m["run"] != pull["run"] and bool(pull_failures(m)), "not applied" if m["run"] == pull["run"] else "")
+for arch, step in (("amd64", ex), ("arm64", arm)):
+    for v in VARIANTS:
+        if step is not None:
+            judge_bad("%s %s /statusz answers a 302 (to another host)" % (arch, v), arch, step, base_cfg(redirect=["%s:%s" % (arch, v)]))
+if ex is not None and arm is not None:
+    AMD = {BODIES["amd64:" + v] for v in VARIANTS}; ARMB = {BODIES["arm64:" + v] for v in VARIANTS}
+    r1 = run_step(ex, base_cfg()); r2 = run_step(arm, base_cfg(), tmp_dir=r1["tmp"])
+    post = [x for x in r2["log"] if x.get("cmd") == "posture"]
+    check("shared /tmp, amd64 then arm64: the arm64 comparison sees only arm64 bodies",
+          r2["rc"] == 0 and len(post) == 1 and all(post[0]["files"].get(v + ".json") == BODIES["arm64:" + v] for v in VARIANTS), (r2["rc"], post and post[0]["files"]))
+    r1 = run_step(ex, base_cfg()); r2 = run_step(arm, base_cfg(http_error=["arm64:fips"]), tmp_dir=r1["tmp"])
+    check("shared /tmp, amd64 then a failing arm64 read: the step fails and no amd64 file reaches the arm64 comparison",
+          r2["rc"] not in (0, None) and not [x for x in r2["log"] if x.get("cmd") == "posture" and AMD & set(x["files"].values())], r2["rc"])
+    r1 = run_step(arm, base_cfg()); r2 = run_step(ex, base_cfg(http_error=["amd64:fips"]), tmp_dir=r1["tmp"])
+    check("shared /tmp, arm64 then a failing amd64 read: the step fails and no arm64 file reaches the amd64 comparison",
+          r2["rc"] not in (0, None) and not [x for x in r2["log"] if x.get("cmd") == "posture" and ARMB & set(x["files"].values())], r2["rc"])
+
 # the results step: AC2 is derived from the posture matrix, like REQ-PLAT-002 from the served matrix
 SERVED6 = "".join("linux/%s %s\n" % (a, v) for a in ("amd64", "arm64") for v in VARIANTS)
 POST6, POST3 = SERVED6, "".join("linux/amd64 %s\n" % v for v in VARIANTS)
-def results_case(label, mode, served, posture, want_ok):
+def results_case(label, mode, served, posture, want):
     if res is None: check(label + ": the results step exists", False); return
     mats = {"served-matrix.txt": served}
     if posture is not None: mats["posture-matrix.txt"] = posture
     r = run_step(res, {"owner": OWNER, "digests": DIG, "bodies": {}, "health": {}, "http_error": [], "statusz_flaky": {}, "inspect": "ok", "posture_exit": 0}, mode=mode, mats=mats)
-    if not want_ok:
+    if want == "fail":
         check(label + ": the stage fails", r["rc"] not in (0, None) and not (r["output"] or "").strip(), (r["rc"], r["err"][-150:], r["output"]))
         return
     try: out = json.loads((r["output"] or "").strip().split("results=", 1)[1])
     except Exception as e: out = repr(e)
     pairs = {(x["ac"], x["result"]) for x in out} if isinstance(out, list) else set()
-    check(label + ": the stage passes and reports REQ-FIPS-002-AC2 pass beside the others",
-          r["rc"] == 0 and ("REQ-FIPS-002-AC2", "pass") in pairs and ("REQ-FIPS-002-AC1", "pass") in pairs and ("REQ-PLAT-002-AC1", "pass") in pairs, (r["rc"], r["err"][-150:], out))
-results_case("candidates mode, all six posture lines", "candidates", SERVED6, POST6, True)
-results_case("archives mode, the three amd64 posture lines", "archives", "".join("linux/amd64 %s\n" % v for v in VARIANTS), POST3, True)
+    base = r["rc"] == 0 and ("REQ-FIPS-002-AC1", "pass") in pairs and ("REQ-PLAT-002-AC1", "pass") in pairs
+    if want == "pass":
+        check(label + ": the stage passes and reports REQ-FIPS-002-AC2 pass beside the others", base and ("REQ-FIPS-002-AC2", "pass") in pairs, (r["rc"], r["err"][-150:], out))
+    else:
+        check(label + ": the stage passes but does NOT report REQ-FIPS-002-AC2 as pass", base and ("REQ-FIPS-002-AC2", "pass") not in pairs, (r["rc"], r["err"][-150:], out))
+SERVED6 = "".join("linux/%s %s\n" % (a, v) for a in ("amd64", "arm64") for v in VARIANTS)
+POST6, POST3 = SERVED6, "".join("linux/amd64 %s\n" % v for v in VARIANTS)
+results_case("candidates mode, all six posture lines", "candidates", SERVED6, POST6, "pass")
+results_case("archives mode (locally assembled images, no arm64), the three amd64 posture lines", "archives", POST3, POST3, "nopass")
+results_case("archives mode, no posture matrix", "archives", POST3, None, "nopass")
+results_case("archives mode, even a full six-line posture matrix", "archives", POST3, POST6, "nopass")
 for gone in ("linux/arm64 fips", "linux/arm64 production", "linux/amd64 debug"):
-    results_case("candidates mode, posture line '%s' missing" % gone, "candidates", SERVED6, POST6.replace(gone + "\n", ""), False)
-results_case("candidates mode, only the amd64 posture lines", "candidates", SERVED6, POST3, False)
-results_case("candidates mode, no posture matrix at all", "candidates", SERVED6, None, False)
-results_case("archives mode, posture line 'linux/amd64 fips' missing", "archives", "".join("linux/amd64 %s\n" % v for v in VARIANTS), POST3.replace("linux/amd64 fips\n", ""), False)
-results_case("archives mode, no posture matrix at all", "archives", "".join("linux/amd64 %s\n" % v for v in VARIANTS), None, False)
+    results_case("candidates mode, posture line '%s' missing" % gone, "candidates", SERVED6, POST6.replace(gone + "\n", ""), "fail")
+results_case("candidates mode, only the amd64 posture lines", "candidates", SERVED6, POST3, "fail")
+results_case("candidates mode, no posture matrix at all", "candidates", SERVED6, None, "fail")
+results_case("candidates mode, 'linux/amd64 fips' replaced by 'linux/amd64 fips-extra' (whole-line match)", "candidates", SERVED6, POST6.replace("linux/amd64 fips\n", "linux/amd64 fips-extra\n"), "fail")
+results_case("candidates mode, 'linux/arm64 debug' with a trailing space", "candidates", SERVED6, POST6.replace("linux/arm64 debug\n", "linux/arm64 debug \n"), "fail")
+results_case("candidates mode, 'linux/arm64 production' as a longer line", "candidates", SERVED6, POST6.replace("linux/arm64 production\n", "xlinux/arm64 production\n"), "fail")
 
 # ---------------------------------------------------------------- B. the comparison script
 script = os.path.join(root, "bin/fips-image-posture.py")
@@ -640,6 +723,11 @@ for v in VARIANTS:
     case("the %s body has a duplicate key (wrong last)" % v, mut(**{v: '{"fips140_note":"%s","fips140_note":"x"}' % want}), False, [v])
     case("the %s file is a symlink to a good body" % v, mut(**{v: ("symlink", jbody(want))}), False, [v])
     case("the %s file is a directory" % v, mut(**{v: ("dir",)}), False, [v])
+for v in ("production", "fips"):
+    case("the %s note holds a newline and ::error::" % v, mut(**{v: json.dumps({"fips140_note": "x\n::error::pwned"})}), False, [v])
+    case("the %s note holds a carriage return and ::stop-commands::" % v, mut(**{v: json.dumps({"fips140_note": "x\r::stop-commands::tok"})}), False, [v])
+    case("the %s body has a duplicate key holding a newline and ::error::" % v, mut(**{v: '{"a\\n::error::x":1,"a\\n::error::x":2}'}), False, [v])
+    case("the %s body is invalid JSON whose text holds ::error::" % v, mut(**{v: '::error::x\n{'}), False, [v])
 case("a note in a nested object only", mut(fips='{"x":{"fips140_note":"%s"}}' % GOOD_FIPS), False, ["fips"])
 case("all three variants are missing", {k: None for k in GOOD}, False)
 case("two variants are bad: both are named", mut(production=jbody(GOOD_FIPS), debug=jbody(FORCED)), False, ["production", "debug"])
@@ -666,6 +754,9 @@ def run_case(sp, c):
     except subprocess.TimeoutExpired:
         return False
     if ok: return p.returncode == 0
+    lines = (p.stdout + "\n" + p.stderr).replace("\r", "\n").split("\n")
+    if any(l.lstrip().startswith("::") for l in lines): return False      # a workflow command smuggled through an echoed value
+    if who and not p.stderr.startswith("variant "): return False
     return p.returncode != 0 and all(("variant %s:" % w) in p.stderr for w in who)
 def first_failure(sp):
     for c in CASES:
@@ -688,7 +779,7 @@ def check(d, name, want):
         if raw.startswith(b"\xef\xbb\xbf"): return "BOM"
         doc = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs)
     except Exception as e:
-        return "unreadable: %s" % e
+        return "unreadable: %r" % (e,)
     if not isinstance(doc, dict): return "not an object"
     got = doc.get("fips140_note")
     if not isinstance(got, str): return "no fips140_note string"
@@ -710,7 +801,9 @@ REFMUT = [
  ("a missing file is accepted", 'if not stat.S_ISREG(os.lstat(path).st_mode): return "not a regular file"',
   'if not os.path.lexists(path): return None\n        if not stat.S_ISREG(os.lstat(path).st_mode): return "not a regular file"'),
  ("an empty body is accepted", 'raw = open(path, "rb").read()', 'raw = open(path, "rb").read()\n        if not raw.strip(): return None'),
- ("a JSON error is swallowed as a pass", 'return "unreadable: %s" % e', "return None"),
+ ("a JSON error is swallowed as a pass", 'return "unreadable: %r" % (e,)', "return None"),
+ ("the exception text is printed raw", 'return "unreadable: %r" % (e,)', 'return "unreadable: %s" % e'),
+ ("the note is printed raw", 'return "reports %r, want %r" % (got, want)', 'return "reports %s, want %r" % (got, want)'),
  ("a symlink is followed", "os.lstat(path)", "os.stat(path)"),
  ("a BOM is tolerated", 'if raw.startswith(b"\\xef\\xbb\\xbf"): return "BOM"', 'raw = raw.lstrip(b"\\xef\\xbb\\xbf")'),
  ("a duplicate key is tolerated", "raise ValueError", "pass; #"),
@@ -796,6 +889,7 @@ EXIT = regex_mut([(r"sys\.exit\(\s*1\s*\)", "sys.exit(0)"), (r"raise SystemExit\
                   (r"\bexit\(\s*1\s*\)", "exit(0)"), (r"\breturn 1\b", "return 0"), (r"\bsys\.exit\(\s*(?!0\b)[A-Za-z_]\w*\s*\)", "sys.exit(0)")])
 MUTANTS = [
  ("the certificate number is changed", lambda s: s.replace("#5247", "#5248")),
+ ("echoed input is printed raw", regex_mut([(r"%r", "%s"), (r"!r\b", "!s"), (r"\brepr\(", "str("), (r"json\.dumps\(", "str(")])),
  ("the module version is changed", lambda s: s.replace("v1.0.0", "v1.0.1")),
  ("the standard variants expect 'on'", regex_mut([(r"""(["'])off\1""", r"\1on\1")])),
  ("every failing exit becomes a success", EXIT),

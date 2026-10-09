@@ -230,7 +230,7 @@ mappings:
       - { type: go-test, ref: "internal/buildinfo:TestFIPSNoteIsTruthfulPerModeAndModule" }
   - ac: REQ-FIPS-002-AC2
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the steps 'exercise the images' (linux/amd64) and 'run every variant on arm64 under QEMU (R11)' read /statusz of each running production, debug and fips container, check the container is the image pulled, and have bin/fips-image-posture.py compare the exact posture strings (fips active with the validated module, production and debug off, anything else, a failed read or a missing variant fails); the stage reports REQ-FIPS-002-AC2 only when the posture matrix is complete" }
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the steps 'exercise the images' (linux/amd64) and 'run every variant on arm64 under QEMU (R11)' read /statusz of each running production, debug and fips container, check the container is the image pulled, and have bin/fips-image-posture.py compare the exact posture strings (fips active with the validated module, production and debug off, anything else, a failed read or a missing variant fails); the stage reports REQ-FIPS-002-AC2 only in candidates mode and only when the posture matrix is complete" }
       - { type: shell-test, ref: ".github/agent/tests/fips-image-check-test.sh" }
   - ac: REQ-PRIV-001-AC1
     evidence:
