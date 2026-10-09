@@ -248,10 +248,16 @@ d=$(mk unres); printf 'jobs:\n  c:\n    steps:\n      - run: bash "$SOME_DIR/pub
 expect_named "a script path in an unknown variable is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
 d=$(mk missing); printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
 expect_named "a script reference with no such file is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
+d=$(mk nvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
+expect_named "a script that reaches its next script through a variable is an error naming the script, not skipped (round 6)" "$d" "bin/a.sh"
+d=$(mk ntest); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect_named "a *-test.sh with an unresolved reference, reached from a stage file, is judged strictly" "$d" "bin/x-test.sh"
+d=$(mk ntest2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect ok "a *-test.sh that builds throw-away scripts and is reached only from ci.yml is not an error" "$d"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=60
+EXPECT=63
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

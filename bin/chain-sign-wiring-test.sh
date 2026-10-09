@@ -471,6 +471,16 @@ d=$(mk t_unres); printf 'jobs:\n  b:\n    steps:\n      - run: bash "$SOME_DIR/p
 expect caught "AC1 a script path in an unknown variable is an error naming the workflow (fail closed)" tree "$d"
 d=$(mk t_gone); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "AC1 a script reference with no such file is an error (fail closed)" tree "$d"
+d=$(mk t_nvar); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
+expect caught "AC1 a script that reaches its next script through a variable (S=bin/pub; bash \"\$S.sh\") is an error, not skipped (round 6)" tree "$d"
+d=$(mk t_ntest); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect caught "AC1 a *-test.sh with an unresolved reference, reached from a STAGE file, is judged strictly" tree "$d"
+d=$(mk t_ntest2); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect ok "AC1 a *-test.sh that builds throw-away scripts and is reached only from ci.yml is not an error" tree "$d"
+d=$(mk t_nplain); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x.sh"
+expect caught "AC1 a non-test script with an unresolved reference is strict even from ci.yml" tree "$d"
+d=$(mk t_nboth); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
+expect caught "AC1 the same test script reached from ci.yml AND a stage file is strict" tree "$d"
 d=$(mk t_heredoc); printf 'jobs:\n  b:\n    steps:\n      - run: |\n          cat > x.sh <<EOF\n          cosign sign --yes img\n          EOF\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "AC1 a signing call written inside a heredoc of a workflow step is still seen" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
@@ -499,7 +509,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=122
+EXPECT=127
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -2243,7 +2243,7 @@ requirements:
     origin: v0.3.0 rules 50, 50a, 52, 52a, 59 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0325)
     confidence: implementation-only
     notes: >
-      stage-sign.yml is the one new workflow file v0.3.0 adds (rule 52). PR 1 builds the Sign side and the verify side; Release's own signing of the policy (rule 57) is PR 4. Public copy says "designed to SLSA Build Level 3", never "certified" (rule 50a, 84).
+      stage-sign.yml is the one new workflow file v0.3.0 adds (rule 52). PR 1 builds the Sign side and the verify side; Release's own signing of the policy (rule 57) is PR 4. Public copy says "designed to SLSA Build Level 3", never "certified" (rule 50a, 84). Dry run (pipeline design, round 5-6; advisor to confirm): on a workflow_dispatch on a branch Sign writes a record marked dryRun and its SAN ref is the branch; such a record can only be judged under a dry_run policy by the dry run's own verify job (stage sign only), while Release makes its policy with --tag, every stage-start refuses a dry_run policy, and a provenance carrying dryRun true is refused under any non-dry policy; every job after Sign also carries the tag-ref conjunct in release.yml.
     acceptance_criteria:
       - id: REQ-CHAIN-001-AC1
         given: "the workflow files of the release chain"

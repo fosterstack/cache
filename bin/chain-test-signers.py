@@ -13,7 +13,7 @@ or a comma (`-a` / value on the next line); for a YAML step (`uses: actions/atte
 Scripts (round 5): every file a workflow or composite action runs is found with `reachable_scripts` (bash/sh/python/node/ruby/
 perl/source/`.` plus a path, ./path with or without an extension if it starts with `#!`, $GITHUB_WORKSPACE and
 ${{ github.workspace }} prefixes, `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
-scripts, transitively). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
+scripts, transitively: the scripts they call are judged STRICTLY too, round 6). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
 closed), never skipped. Stated exclusion: a bare `./name` with no extension that is not a file in the tree is taken to be a built
 binary and ignored. Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import json, os, re
@@ -235,14 +235,23 @@ def script_refs_ex(base, text, owndir=None, strict=True):
             elif mm: errs.append("make -C names a directory with no %s in the tree" % mk)
     return refs, errs
 
+TEST_WORKFLOWS = {".github/workflows/ci.yml"}
+
+def is_test_script(sp):
+    return os.path.basename(sp).endswith("-test.sh") or sp.startswith(".github/agent/tests/")
+
 def reachable_scripts(base, texts):
-    """texts: {relpath of a workflow/action file: its text}. Returns ({script relpath: {who}}, [errors naming the file])."""
-    found, errs, queue = {}, [], []
+    """texts: {relpath of a workflow/action file: its text}. Returns ({script relpath: {who}}, [errors naming the file]).
+    Round 6: scripts called by scripts are judged STRICTLY (an unresolved reference is an error). The one carve-out: a TEST script
+    (`*-test.sh`, `.github/agent/tests/*`) that is reached ONLY from ci.yml (the workflow that runs the tests) may build
+    throw-away scripts at run time ($work/x.py, $sut): its unresolved references are not errors. The same script reached from
+    any other workflow (a stage file, release.yml) is judged strictly, and a non-test script is always judged strictly."""
+    found, errs, queue, serrs, roots = {}, [], [], {}, {}
     for rel, txt in sorted(texts.items()):
         refs, e = script_refs_ex(base, txt)
         errs += ["%s: %s" % (rel, x) for x in e]
         for r in refs:
-            found.setdefault(r, set()).add(rel); queue.append(r)
+            found.setdefault(r, set()).add(rel); roots.setdefault(r, set()).add(rel); queue.append(r)
     seen = set()
     while queue:
         sp = queue.pop()
@@ -252,9 +261,19 @@ def reachable_scripts(base, texts):
         except OSError: continue
         if not (sp.endswith((".sh", ".bash")) or txt.startswith(("#!/bin/sh", "#!/bin/bash", "#!/usr/bin/env bash", "#!/usr/bin/env sh"))):
             continue                          # python/js/ruby source is scanned for signing calls but not tokenised for further scripts (stated exclusion)
-        refs, e = script_refs_ex(base, txt, owndir=os.path.dirname(sp) or ".", strict=False)
-        errs += ["%s (run by %s): %s" % (sp, ", ".join(sorted(found.get(sp, []))), x) for x in e]
+        refs, e = script_refs_ex(base, txt, owndir=os.path.dirname(sp) or ".", strict=True)
+        serrs[sp] = e
         for r in refs:
             found.setdefault(r, set()).add(sp)
             if r not in seen: queue.append(r)
+    grow = True
+    while grow:                               # which workflows reach each script, transitively
+        grow = False
+        for sp, who in found.items():
+            for w in list(who):
+                for rr in roots.get(w, set()) if w in roots else ([w] if w in texts else []):
+                    if rr not in roots.setdefault(sp, set()): roots[sp].add(rr); grow = True
+    for sp, e in serrs.items():
+        if is_test_script(sp) and roots.get(sp, set()) <= TEST_WORKFLOWS: continue
+        errs += ["%s (run by %s): %s" % (sp, ", ".join(sorted(found.get(sp, []))), x) for x in e]
     return found, errs
