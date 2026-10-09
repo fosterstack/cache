@@ -9,12 +9,21 @@ name: Reserved branch guard
 on:
   push:
     branches: ['auditor/**']
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'list what the branch sweep would delete and delete nothing'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   guard:
+    if: github.event_name == 'push'
     name: only-the-app-pushes-auditor-lane
     runs-on: ubuntu-latest
     steps:
@@ -30,3 +39,33 @@ jobs:
               echo "::error::auditor/* is the auditor's delivery lane — only the fosterstack-automation App may push it (got ${actor}). Development branches must use feat/ or req/." >&2
               exit 1 ;;
           esac
+
+  sweep:
+    name: sweep-stale-branches
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || (format('{0}', inputs.dry-run) == 'false' && 'false' || 'true') }}
+          BRANCH_SWEEP_LOG: ${{ runner.temp }}/branch-sweep.log
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN}" = "false" ]; then flag=--apply; else flag=; fi
+          python3 bin/branch-sweep.py ${flag}
+      - name: keep the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: branch-sweep-log
+          path: ${{ runner.temp }}/branch-sweep.log
+          retention-days: 90
+          if-no-files-found: ignore

@@ -2078,7 +2078,7 @@ requirements:
     origin: branch hygiene without the owner (owner, Oct 8 2026, "protect good branches from being deleted, but remove merged branches and don't keep branches around that should not be around, all without the need of a human"; advisor 0288). AC5 (a branch that is the base of an open pull request is kept) is the advisor reading of the owner's Oct 8 words "protect good branches from being deleted".
     confidence: implementation-only
     notes: >
-      The sweep is a scheduled job inside the existing reserved-branch-guard workflow (no new workflow file). Its planner is bin/branch-sweep.py; the keep-file is .github/branch-keep.json, an object {"keep": [{"branch", "expires" (YYYY-MM-DD), "reason"}]} read through the API at the default branch. Branches on forks are out of scope.
+      The sweep is a scheduled job inside the existing reserved-branch-guard workflow (no new workflow file). Its planner is bin/branch-sweep.py; the keep-file is .github/branch-keep.json, an object {"keep": [{"branch", "expires" (YYYY-MM-DD), "reason"}]} read through the API at the default branch. The sweeper reads the runner's response headers by lower-case key (link). Branches on forks are out of scope.
     acceptance_criteria:
       - id: REQ-REPO-001-AC1
         given: "the repository's current default branch (whatever its name; a branch that was the default before a rename is an ordinary branch), with any pull request history and any age"
@@ -2155,7 +2155,7 @@ requirements:
       - id: REQ-REPO-001-AC13
         given: "a sweep that deletes or would delete a branch"
         when: "it writes its job summary (and standard output)"
-        then: "each deletion is one line, DELETE <full commit sha> <reason> <branch> when applied and WOULD-DELETE <full commit sha> <reason> <branch> in a dry run, so the branch can be recreated with git push origin <sha>:refs/heads/<name> while GitHub still stores the commit (a branch that had a pull request also stays reachable through refs/pull/N/head); a failed deletion is a FAILED line in the same form; the same lines are also written to a log file that the job uploads as the artifact branch-sweep-log, retained 90 days, because job summaries age out"
+        then: "each deletion is one line, DELETE <full commit sha> <reason> <branch> when applied and WOULD-DELETE <full commit sha> <reason> <branch> in a dry run, so the branch can be recreated with git push origin <sha>:refs/heads/<name> while GitHub still stores the commit (a branch that had a pull request also stays reachable through refs/pull/N/head); a failed deletion is a FAILED line in the same form; the same lines are also written to a log file that the job uploads as the artifact branch-sweep-log, retained 90 days, because job summaries age out; each DELETE, SKIPPED and FAILED line is appended to that log file and flushed before the next API call, so a cancelled, timed-out or crashed run keeps the lines for the branches already handled; a branch restored from its logged sha is swept again by the same rules on the next run, with no special protection"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC14
@@ -2179,7 +2179,7 @@ requirements:
       - id: REQ-REPO-001-AC17
         given: "a deletion the API refuses"
         when: "the sweep runs"
-        then: "it logs a FAILED line (a request that raises is a FAILED line too), goes on to the remaining branches, and exits non-zero at the end; after three consecutive 403 or 429 answers to deletions it stops, writes an ERROR line, makes no further deletion in that run and exits non-zero; just before each deletion it re-reads the branch and the open pull requests that have it as head or base, and if the branch's commit changed, the branch is gone, or an open pull request appeared it makes no delete call and logs a SKIPPED changed line with the planned sha, reason and branch (a re-read that fails logs SKIPPED unverified and exits non-zero); a second run over the repository left by the first deletes nothing"
+        then: "it logs a FAILED line (a request that raises is a FAILED line too), goes on to the remaining branches, and exits non-zero at the end; after three consecutive 403 or 429 answers to deletions it stops, writes an ERROR line, makes no further deletion in that run and exits non-zero; just before each deletion it re-reads the branch and the open pull requests that have it as head or base, and if the branch's commit changed, the branch is gone, or an open pull request appeared it makes no delete call and logs a SKIPPED changed line with the planned sha, reason and branch (a re-read that answers anything but 200 with a list or a commit, a 404 on the open pull request check included, or that raises, logs SKIPPED unverified, makes no delete call and exits non-zero; a 403 or 429 answer to a re-read counts toward the same three-in-a-row stop, and any answer that is not a 403 or 429 breaks the streak); a second run over the repository left by the first deletes nothing"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REPO-001-AC18

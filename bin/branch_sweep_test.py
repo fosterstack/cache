@@ -749,6 +749,129 @@ class MainSweep(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertEqual(gh.deletes(), [])
 
+    def test_ac17_any_unusable_open_pr_recheck_answer_skips_as_unverified(self):
+        for st, body in ((404, "[]"), (404, '{"message":"Not Found"}'), (500, "[]"), (403, "[]"), (429, "[]"), (200, "{}"), (200, "null")):
+            for which in ("head", "base"):
+                gh = GH([("feat/a", OLD), ("feat/b", OLD)],
+                        fail=lambda m, p, q, st=st, body=body, which=which: (st, body) if (
+                            p.endswith("/pulls") and q.get("state") == ["open"] and which in q) else None)
+                rc, out, summary = run_main(gh)
+                self.assertNotEqual(rc, 0, (st, body, which))
+                self.assertEqual(gh.deletes(), [], (st, body, which))
+                self.assertTrue(lines(summary, "SKIPPED"), summary)
+                for l in lines(summary, "SKIPPED"):
+                    self.assertRegex(l, r"SKIPPED unverified [0-9a-f]{40} idle-14d feat/[ab]$")
+
+    def test_ac17_rate_limited_rereads_count_toward_the_stop(self):
+        names = ["feat/n%d" % i for i in range(7)]
+        for how in ("pulls", "ref"):
+            if how == "pulls":
+                f = lambda m, p, q: (429, "[]") if (p.endswith("/pulls") and q.get("state") == ["open"]) else None
+            else:
+                f = lambda m, p, q: (403, "{}") if "/git/ref/heads/" in p else None
+            gh = GH([(n, OLD) for n in names], fail=f)
+            rc, out, summary = run_main(gh)
+            self.assertNotEqual(rc, 0, how)
+            self.assertEqual(gh.deletes(), [], how)
+            self.assertEqual(len(lines(summary, "SKIPPED")), 3, how)
+            self.assertTrue(any("ERROR" in l and "rate" in l for l in summary.splitlines()), summary)
+            reread = [p for m, p in gh.calls if "/git/ref/heads/" in p]
+            self.assertLessEqual(len(reread), 3, how)
+
+    def test_ac17_a_success_between_rate_limited_rereads_resets_the_count(self):
+        names = ["feat/n%d" % i for i in range(5)]
+        limited = {"feat/n0", "feat/n1", "feat/n3", "feat/n4"}
+
+        def f(m, p, q):
+            if "/git/ref/heads/" in p and urllib.parse.unquote(p.rsplit("/git/ref/heads/", 1)[1]) in limited:
+                return 429, "{}"
+        gh = GH([(n, OLD) for n in names], fail=f)
+        rc, out, summary = run_main(gh)
+        self.assertEqual(deleted_names(gh), {"feat/n2"})
+        self.assertEqual(len(lines(summary, "SKIPPED")), 4)  # never three in a row
+
+    def test_ac13_each_line_is_in_the_log_before_the_next_api_call(self):
+        with tempfile.TemporaryDirectory() as td:
+            lp = os.path.join(td, "log")
+            seen = []
+
+            def before(gh, m, p):
+                if m == "GET" and "/git/ref/heads/" in p or m == "DELETE":
+                    seen.append((m, p, open(lp).read().splitlines() if os.path.exists(lp) else []))
+            gh = GH([("feat/a", OLD), ("feat/b", OLD), ("feat/c", OLD), ("feat/d", OLD)], fail_delete={"feat/b"}, before=before)
+
+            def skip_c(g, m, p):
+                before(g, m, p)
+                if m == "GET" and p.startswith("repos/o/r/git/ref/heads/feat/c"):
+                    for b in g.branches:
+                        if b["name"] == "feat/c":
+                            b["sha"] = "f" * 40
+            gh.before = skip_c
+            run_main(gh, env={"BRANCH_SWEEP_LOG": lp})
+        # the call after each outcome already finds that outcome's line in the log
+        kinds = [(m, urllib.parse.unquote(re.split(r"/git/refs?/heads/", p)[1]), [l.split(" ")[0] for l in log]) for m, p, log in seen]
+        by = {}
+        for m, name, log in kinds:
+            by.setdefault((m, name), log)
+        self.assertEqual(by[("GET", "feat/b")], ["DELETE"])                       # a's DELETE line is there
+        self.assertEqual(by[("GET", "feat/c")], ["DELETE", "FAILED"])             # b's FAILED line is there
+        self.assertEqual(by[("GET", "feat/d")], ["DELETE", "FAILED", "SKIPPED"])  # c's SKIPPED line is there
+
+    def test_ac13_an_interrupted_sweep_keeps_the_lines_already_written(self):
+        class Boom(BaseException):
+            pass
+
+        def f(m, p, q):
+            if m == "DELETE" and p.endswith("/feat/c"):
+                raise Boom()
+        names = ["feat/a", "feat/b", "feat/c", "feat/d"]
+        gh = GH([(n, OLD) for n in names], fail=f)
+        with tempfile.TemporaryDirectory() as td:
+            lp = os.path.join(td, "log")
+            with self.assertRaises(Boom), contextlib.redirect_stdout(io.StringIO()):
+                S().main(["--apply"], {"GITHUB_REPOSITORY": "o/r", "BRANCH_SWEEP_LOG": lp}, gh, NOW)
+            got = open(lp).read().splitlines()
+        self.assertEqual([l.split(" ")[3] for l in lines("\n".join(got), "DELETE")], ["feat/a", "feat/b"])
+        for l in got:
+            self.assertRegex(l, r"^(DELETE|SKIPPED|FAILED|WOULD-DELETE|ERROR) ")
+
+    def test_ac17_a_re_read_that_raises_is_unverified_and_the_sweep_carries_on(self):
+        probes = {"ref": lambda m, p, q: m == "GET" and p.endswith("/git/ref/heads/feat/a"),
+                  "head query": lambda m, p, q: p.endswith("/pulls") and q.get("state") == ["open"] and q.get("head") == ["o:feat/a"],
+                  "base query": lambda m, p, q: p.endswith("/pulls") and q.get("state") == ["open"] and q.get("base") == ["feat/a"]}
+        for name, hit in probes.items():
+            def boom(m, p, q, hit=hit):
+                if hit(m, p, q):
+                    raise OSError("connection reset")
+            gh = GH([("feat/a", OLD), ("feat/b", OLD), ("feat/c", OLD)], fail=boom)
+            rc, out, summary = run_main(gh)
+            self.assertNotEqual(rc, 0, name)
+            self.assertEqual(deleted_names(gh), {"feat/b", "feat/c"}, name)
+            self.assertFalse([p for p in gh.deletes() if p.endswith("/feat/a")], name)
+            sk = lines(summary, "SKIPPED")
+            self.assertEqual(len(sk), 1, (name, summary))
+            self.assertEqual(sk[0], "SKIPPED unverified %s idle-14d feat/a" % sha_of("feat/a"), name)
+
+    def test_ac17_a_changed_answer_breaks_the_rate_limit_streak(self):
+        names = ["feat/a", "feat/b", "feat/c", "feat/d", "feat/e"]
+        limited = {"feat/a", "feat/c", "feat/d"}
+
+        def f(m, p, q):
+            if m == "GET" and "/git/ref/heads/" in p and urllib.parse.unquote(p.split("/git/ref/heads/", 1)[1]) in limited:
+                return 429, "{}"
+
+        def before(gh, m, p):
+            if m == "GET" and p.startswith("repos/o/r/git/ref/heads/feat/b"):
+                for b in gh.branches:
+                    if b["name"] == "feat/b":
+                        b["sha"] = "f" * 40  # b moved: a clean, usable answer that says changed
+        gh = GH([(n, OLD) for n in names], fail=f, before=before)
+        rc, out, summary = run_main(gh)
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(deleted_names(gh), {"feat/e"})  # no stop: e was still reached
+        self.assertEqual(len(lines(summary, "SKIPPED")), 4)
+        self.assertFalse(any("ERROR" in l and "rate" in l for l in summary.splitlines()), summary)
+
     def test_ac14_a_dry_run_makes_no_recheck_and_no_ref_call(self):
         gh = standard()
         run_main(gh, ())
