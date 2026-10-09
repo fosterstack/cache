@@ -23,7 +23,11 @@
 #       with the exact identity flags for a patch route. Exit 0: wrote admission.json. Exit 1: the first line of stderr is
 #       `admission refused at <check>: <reason>` and NO admission.json is left. Exit 2: usage or environment error.
 #   python3 bin/build-admit.py list-checks                    one check name per line, in order (below)
-#   python3 bin/build-version-check.py --binary PATH --tag vX.Y.Z --sha SHA
+#   python3 bin/build-version-check.py (--binary PATH | --apk-dir DIR --variant standard|fips) --tag TAG --sha SHA
+#       With --apk-dir the checker finds the ONE apk of the variant in DIR (standard: fscache-<version>-r0.apk, fips: fscache-fips-<version>-r0.apk; the
+#       version is 0.3.0, or 0.3.0_rc1 for a release candidate: PROPOSED/UNVERIFIED, cache-3f) so that no stage names an apk file; it extracts
+#       usr/bin/fscache to a temporary file with `python3 bin/apk-tool.py cat APK usr/bin/fscache` (run from the working directory) and then checks that
+#       binary exactly as --binary does. Zero or two apks of a variant, or both options, are refused (exit 1 "apk" for the first two, exit 2 for the usage).
 #       Reads the embedded build info with `go version -m PATH` (no execution of the binary): `mod <path> <version>` and
 #       `build vcs.revision=<sha>` / `build vcs.modified=true` lines (internal/buildinfo/buildinfo.go:21-59 is what the server reports).
 #       Exit 0 only for module version == the tag and vcs.revision == SHA and not modified; otherwise exit 1 naming
@@ -154,6 +158,26 @@ printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fs
   | vcf refuse "AC7 two vcs.revision lines are ambiguous and refused" revision
 printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" "	build	vcs.revision=$SHA" "	build	vcs.modified=false" "	dep	example.com/other	v0.3.0	h1:abc=" \
   | vcf ok "AC7 a dep line that also says v0.3.0 is not an obstacle when the main module and the revision are right" ""
+# the apk directory form: the checker finds the variant's apk itself, extracts the binary with apk-tool, then checks as --binary does
+mkdir -p "$W/vcwd/bin"; printf '%s\n' '#!/usr/bin/env python3' 'import os, sys' 'open(os.environ.get("FAKE_LOG", "/dev/null"), "a").write("apk-tool " + " ".join(sys.argv[1:]) + "\n")' 'sys.stdout.write("BINARY")' > "$W/vcwd/bin/apk-tool.py"
+vca() { # vca ok|refuse LABEL WORD VARIANT TAG VERSION APK...   (APK: the file names in the apk directory)
+  local want=$1 label=$2 word=$3 variant=$4 tag=$5 ver=$6 rc=0; shift 6
+  if [ ! -f "$BV" ]; then bad "$label (bin/build-version-check.py does not exist: RED)"; return; fi
+  rm -rf "$W/apkd"; mkdir -p "$W/apkd"; for n in "$@"; do : > "$W/apkd/$n"; done; : > "$W/vc.log"
+  bi out/fscache "$ver" "$SHA" false > "$W/buildinfo.txt"
+  (cd "$W/vcwd" && PATH="$FB:$PATH" FAKE_LOG="$W/vc.log" FAKE_BUILDINFO="$W/buildinfo.txt" python3 "$BV" --apk-dir "$W/apkd" --variant "$variant" --tag "$tag" --sha "$SHA" > "$W/vc.out" 2> "$W/vc.err") || rc=$?
+  if grep -q Traceback "$W/vc.err"; then bad "$label -> a Python traceback is a crash, not a refusal"; return; fi
+  if [ "$want" = ok ]; then [ "$rc" = 0 ] && grep -Fq -- "apk-tool cat $W/apkd/$word" "$W/vc.log" && ok "$label" || bad "$label -> exit $rc, apk-tool log '$(head -c 120 "$W/vc.log")', stderr $(head -c 120 "$W/vc.err")"
+  else [ "$rc" = 1 ] && grep -Fqi -- "$word" "$W/vc.err" && ok "$label" || bad "$label -> exit $rc, wanted 1 naming '$word': $(head -c 150 "$W/vc.err")"; fi
+}
+vca ok     "AC7 apk directory: the standard apk is found by its variant and its binary is checked" fscache-0.3.0-r0.apk standard v0.3.0 v0.3.0 fscache-0.3.0-r0.apk fscache-fips-0.3.0-r0.apk
+vca ok     "AC7 apk directory: the fips apk is found by its variant (not the standard one)" fscache-fips-0.3.0-r0.apk fips v0.3.0 v0.3.0 fscache-0.3.0-r0.apk fscache-fips-0.3.0-r0.apk
+vca ok     "AC7 apk directory: a release candidate's apk (fscache-0.3.0_rc1-r0.apk, PROPOSED) is found and its embedded version v0.3.0-rc.1 matches the tag" fscache-0.3.0_rc1-r0.apk standard v0.3.0-rc.1 v0.3.0-rc.1 fscache-0.3.0_rc1-r0.apk fscache-fips-0.3.0_rc1-r0.apk
+vca refuse "AC7 apk directory: two standard apks are ambiguous and refused" apk standard v0.3.0 v0.3.0 fscache-0.3.0-r0.apk fscache-0.3.1-r0.apk
+vca refuse "AC7 apk directory: no fips apk is refused" apk fips v0.3.0 v0.3.0 fscache-0.3.0-r0.apk
+vca refuse "AC7 apk directory: a binary whose version is not the tag is refused (the check after the extraction is the same)" version standard v0.3.0 v0.3.1 fscache-0.3.0-r0.apk
+if [ -f "$BV" ]; then rc=0; (cd "$W/vcwd" && PATH="$FB:$PATH" python3 "$BV" --apk-dir "$W/apkd" --binary "$W/fscache" --variant standard --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err") || rc=$?
+  [ "$rc" = 2 ] && ok "AC7 both --binary and --apk-dir is a usage error (exit 2)" || bad "AC7 both options -> exit $rc, wanted 2"; else bad "AC7 both options (bin/build-version-check.py does not exist: RED)"; fi
 # ---- the admission fixtures ----------------------------------------------------------------------------------------------
 mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25519 -N "" -C "$k@example.com" -f "$W/keys/$k"; done
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/keys/ci.key" -out "$W/keys/ci.crt" -subj "/CN=release-workflow" -days 2 2> /dev/null
@@ -473,6 +497,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=107
+EXPECT_TOTAL=114
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
