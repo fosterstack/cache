@@ -163,7 +163,7 @@ def first_cert_der(pem_text):
     blocks = pem_blocks(pem_text)
     if not blocks:
         raise Refuse("policy", "trust: no certificate in the chain file")
-    return base64.b64decode(re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", blocks[0])), blocks
+    return base64.b64decode(re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", blocks[0]), validate=True), blocks
 
 
 def policy_make(a):
@@ -223,7 +223,7 @@ def policy_make(a):
 
 # ---- DSSE records --------------------------------------------------------------------------------------------------
 def pae(t, body):
-    return b"DSSEv1 %d %s %d %s" % (len(t), t.encode(), len(body), body)
+    return b"DSSEv1 %d %s %d %s" % (len(t.encode()), t.encode(), len(body), body)
 
 
 def read_record(stage, path):
@@ -559,13 +559,9 @@ def digest_compare(stage_prev, stmt, d_bytes, d_obj):
         refuse(stage_prev, "digest of the digest file differs from the digests file the record attests")
 
 
-def parse_digest_file(path):
-    """Return (bytes, object) or raise Refuse('sign', 'format ...')."""
-    try:
-        with open(path, "rb") as f:
-            raw = f.read()
-    except OSError:
-        refuse("sign", "digest file is missing or unreadable (format)")
+def parse_digest_bytes(raw):
+    """The digest list from the bytes that were read ONCE, or raise Refuse('sign', 'format ...'): the hash Build attested and the
+    subjects of the provenance are then made from the same bytes, never from two reads of a file that could change in between."""
     try:
         obj = strict_json(raw)
     except ValueError as ex:
@@ -577,7 +573,7 @@ def parse_digest_file(path):
             refuse("sign", "digest file format: name %r is not [a-z0-9-]+" % k)
         if not isinstance(v, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", v):
             refuse("sign", "digest file format: value of %r is not sha256:<64 lower-case hex>" % k)
-    return raw, obj
+    return obj
 
 
 # ---- subcommands ---------------------------------------------------------------------------------------------------
@@ -656,8 +652,7 @@ def check_build_record(a):
     hits = [s for s in (stmt.get("subject") or []) if isinstance(s, dict) and s.get("name") == PRODUCT]
     if len(hits) != 1 or (hits[0].get("digest") or {}).get("sha256") != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
-    raw, obj = parse_digest_file(a.digests)
-    return pol, obj
+    return pol, parse_digest_bytes(d_bytes)
 
 
 def cmd_check_build_record(a):

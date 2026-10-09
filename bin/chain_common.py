@@ -20,7 +20,9 @@ def refuse(stage, reason):
 
 
 def b64d(s):
-    return base64.b64decode(s)
+    """Standard base64 and nothing else: validate=True refuses any character outside the alphabet (junk, whitespace, the URL-safe
+    - and _), which the default decoder would silently drop or, for - and _, treat as junk too."""
+    return base64.b64decode(s, validate=True)
 
 
 def b64e(b):

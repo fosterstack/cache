@@ -569,6 +569,24 @@ def dup_ext(der, oid):
     return tlv(0x30, tlv(0x30, b"".join(out)) + der[te:e])
 for nm, oid in (("dupsan", OID_SAN), ("dupcfg", OID_CFG)):
     reshape("build_coll", "build_" + nm, lambda g, oid=oid: to_pem(dup_ext(pem_der(g), oid)))
+# step-8 round 4 (S-2): base64 is standard base64 and nothing else. Junk inside a field, and the URL-safe alphabet, are refused, not dropped/accepted.
+def mutate_field(src, name, fn):
+    r = json.load(open(p(src + ".json"))); fn(r); json.dump(r, open(p(name + ".json"), "w"))
+def ins(s, ch, at=6): return s[:at] + ch + s[at:]
+mutate_field("sign_prov", "sign_prov_junkpay", lambda r: r.__setitem__("payload", ins(r["payload"], "!!-_ \n")))
+mutate_field("sign_prov", "sign_prov_junksig", lambda r: r["signatures"][0].__setitem__("sig", ins(r["signatures"][0]["sig"], "*", 4)))
+mutate_field("sign_prov", "sign_prov_junkcert", lambda r: r["signatures"][0].__setitem__("certificate", ins(r["signatures"][0]["certificate"], "*", 10)))
+mutate_field("sign_prov", "sign_prov_junkinter", lambda r: r["signatures"][0]["intermediates"].__setitem__(0, ins(r["signatures"][0]["intermediates"][0], "*", 10)))
+mutate_field("sign_prov", "sign_prov_junkstamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", ins(r["signatures"][0]["timestamps"][0]["data"], "*", 10)))
+def urlsafe(s): return s.replace("+", "-").replace("/", "_")
+for src in ("sign_prov", "sign_prov_frac", "sign_stampafter", "sign_br"):
+    r = json.load(open(p(src + ".json")))
+    if ("+" in r["signatures"][0]["sig"] or "/" in r["signatures"][0]["sig"]) and ("+" in r["signatures"][0]["timestamps"][0]["data"] or "/" in r["signatures"][0]["timestamps"][0]["data"]):
+        URLSRC = src; break
+else: raise SystemExit("no fixture with + or / in both its signature and its stamp: regenerate")
+mutate_field(URLSRC, "sign_us_sig", lambda r: r["signatures"][0].__setitem__("sig", urlsafe(r["signatures"][0]["sig"])))
+mutate_field(URLSRC, "sign_us_stamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", urlsafe(r["signatures"][0]["timestamps"][0]["data"])))
+open(p("urlsrc.txt"), "w").write(URLSRC)
 # UTF-16 spellings of the same JSON (json.loads on bytes would guess the encoding from the first bytes)
 for src in ("build_coll", "sign_prov"):
     open(p(src + "_u16.json"), "wb").write(open(p(src + ".json"), "rb").read().decode().encode("utf-16"))
@@ -577,8 +595,9 @@ for src in ("build_coll", "sign_prov"):
 # sigstore-go v1.2.2 pkg/tlog/entry.go (VerifySET: the log signs the canonical {body, integratedTime, logID, logIndex}; for a DSSE
 # entry Signature() and PublicKey() read the body's signatures[0].signature and .verifier, GetDssePayloadHash() its payloadHash).
 # The body is a Rekor `dsse` 0.0.1 entry, the kind `cosign attest-blob` writes by default (cosign v3.1.3 options.go rekorEntryTypes).
-def tlog_entry(body_obj, idx, key="rekor", logkey="rekor", itime=None, kind="dsse", version="0.0.1"):
+def tlog_entry(body_obj, idx, key="rekor", logkey="rekor", itime=None, kind="dsse", version="0.0.1", junk=False):
     body = b64(json.dumps(body_obj, sort_keys=True, separators=(",", ":")).encode())
+    if junk: body = body[:8] + "\n" + body[8:]   # a character outside the base64 alphabet that a lenient decoder drops; the log signs the string as it is
     logid = der_sha(p(logkey + ".pub"), True)
     itime = int(now.timestamp()) if itime is None else itime
     open(p("set.bin"), "wb").write(json.dumps({"body": body, "integratedTime": itime, "logID": logid, "logIndex": idx}, sort_keys=True, separators=(",", ":")).encode())
@@ -597,6 +616,9 @@ dj("rekor-empty.json", {"entries": []})
 # a Rekor entry whose body names a verifier that is a genuine PEM followed by junk (validly signed by the log): the comparison is by the one DER
 _vb = dsse_body("sign_prov"); _vb["spec"]["signatures"][0]["verifier"] = b64(base64.b64decode(_vb["spec"]["signatures"][0]["verifier"]) + b"junk")
 dj("rekor-verifierjunk.json", {"entries": [tlog_entry(_vb, 7)]})
+dj("rekor-bodyjunk.json", {"entries": [tlog_entry(dsse_body("sign_prov"), 7, junk=True)]})
+_ks = tlog_entry(dsse_body("sign_prov"), 7); _ks["inclusionPromise"]["signedEntryTimestamp"] = _ks["inclusionPromise"]["signedEntryTimestamp"][:6] + "*" + _ks["inclusionPromise"]["signedEntryTimestamp"][6:]
+dj("rekor-setjunk.json", {"entries": [_ks]})
 open(p("rekor-u16.json"), "wb").write(open(p("rekor.json"), "rb").read().decode().encode("utf-16"))
 open(p("digests-u16.json"), "wb").write(open(p("digests.json"), "rb").read().decode().encode("utf-16"))
 dj("rekor-br.json", {"entries": [entry("sign_br", 11)]})
@@ -1307,6 +1329,42 @@ printf 'name: t\non: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/a
 expect_refuse "N-c a STEP-level local path that is a directory named d.yml holding an action.yml is followed: the unpinned action inside it is rejected" "evil/act" actions "$work/w_ncstep.yml" --allowed "$work/allowed-nc.json" --root "$work/tree"
 expect_ok     "N-c the same path at JOB level is a reusable workflow file and is not opened as a directory" actions "$work/w_ncjob.yml" --allowed "$work/allowed-nc.json" --root "$work/tree"
 
+# ---- step-8 round 4: S-1 one read of the digest file; S-2 strict base64; N-4 the PAE length is in bytes ----------------------------
+python3 - "$root" "$work" "$NOW" 2>&1 <<'PY' && ok "S-1 check-build-record reads the digest file ONCE: the hash and the subjects come from the same bytes, even if the file changes after the first read" || bad "S-1 the digest file is opened more than once (or its content from a second read was used)"
+import argparse, builtins, importlib.util, json, sys
+root, w, now = sys.argv[1:4]
+sys.path.insert(0, root + "/bin")
+spec = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real_open, opened = builtins.open, []
+def spy(f, *a, **k):
+    if isinstance(f, str) and f.endswith("/digests.json"):
+        opened.append(f)
+        if len(opened) > 1: f = w + "/digests-other.json"   # the file "changes" under a second read
+    return real_open(f, *a, **k)
+builtins.open = spy
+ns = argparse.Namespace(template=None, policy=w + "/policy.json", now=now, digests=w + "/digests.json", build_record=w + "/build_coll.json", trust=None, fulcio_chain=None, tsa_chain=None, rekor_key=None)
+pol, obj = m.check_build_record(ns)
+builtins.open = real_open
+assert len(opened) == 1, "digest file opened %d times" % len(opened)
+assert obj == json.load(open(w + "/digests.json")), "the digest object does not match the attested file"
+PY
+python3 - "$root" 2>&1 <<'PY' && ok "N-4 the DSSE pre-authentication length counts BYTES of the payload type, not characters" || bad "N-4 pae() counts characters"
+import importlib.util, sys
+root = sys.argv[1]; sys.path.insert(0, root + "/bin")
+spec = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert m.pae("\u00e9", b"x") == b"DSSEv1 2 \xc3\xa9 1 x", m.pae("\u00e9", b"x")
+PY
+expect_refuse "S-2 junk characters inside the payload base64 ('!!-_ ' and a newline) are refused, not dropped" "envelope" verify $(V) --stage sign $(rec sign_prov_junkpay) $(R)
+expect_refuse "S-2 a '*' inside the signature base64 is refused" "malformed|signature" verify $(V) --stage sign $(rec sign_prov_junksig) $(R)
+expect_refuse "S-2 a '*' inside the certificate base64 is refused" "certificate|malformed" verify $(V) --stage sign $(rec sign_prov_junkcert) $(R)
+expect_refuse "S-2 a '*' inside an intermediate's base64 is refused" "malformed|certificate" verify $(V) --stage sign $(rec sign_prov_junkinter) $(R)
+expect_refuse "S-2 a '*' inside the timestamp data base64 is refused" "timestamp" verify $(V) --stage sign $(rec sign_prov_junkstamp) $(R)
+expect_refuse "S-2 the URL-safe alphabet (- and _) in the signature is refused" "malformed|signature" verify $(V) --stage sign $(rec sign_us_sig) $(R)
+expect_refuse "S-2 the URL-safe alphabet in the timestamp data is refused" "timestamp" verify $(V) --stage sign $(rec sign_us_stamp) $(R)
+expect_refuse "S-2 a newline inside the Rekor entry's canonical body, signed by the log as it is, is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-bodyjunk.json)
+expect_refuse "S-2 a '*' inside the signed entry timestamp is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-setjunk.json)
+expect_ok     "S-2 control: the genuine record with the genuine Rekor entry is still accepted (standard, unpadded-newline-free base64)" verify $(V) --stage sign $(rec sign_prov) $(R)
+
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs (never one for a refusal)
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
 if [ "$n" = "$SIGNS_OK" ] && [ "$SIGNS_OK" -ge 1 ] && ! grep -E -v -q "$ARGV_RE" "$work/cosign-all.log"; then ok "001-AC2 cosign was called exactly once per successful sign ($SIGNS_OK) and always with the pinned argv"; else bad "001-AC2 cosign calls ($n) != successful signs ($SIGNS_OK), or an unpinned argv was used"; fi
@@ -1318,7 +1376,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=389
+EXPECT=401
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
