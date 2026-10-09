@@ -9,8 +9,11 @@
 # on mutated copies (a judge that cannot fail proves nothing), then applied to the real repository, which must pass.
 #
 # THE CACHE INTERFACE THIS ASSUMES (cache-3f's note ops/handoffs/outbox/2026-10-09-cache-pipeline-interface.md; [F n] = fixed by an
-# assertion of bin/melange-apko-test.sh in cache's branch, [P] = PROPOSED/UNVERIFIED and may change; the two lines most likely to change:
-# the network-attempt exit code (PROPOSED exit 4, no cache test fixes it) and the exact argv/output layout of the two scripts):
+# assertion of bin/melange-apko-test.sh in cache's branch, [P] = PROPOSED/UNVERIFIED and may change). cache-3f's UPDATE (Oct 9) now FIXES the
+# exit codes by cache tests: 0, 2 (a named refusal before any tool), 4 (a network attempt inside the sealed call: the sealed tool
+# exits non-zero, its stderr matches ENETUNREACH|network is unreachable|dial tcp|no such host AND `sudo unshare -n python3 bin/net-probe.py`
+# exits 101), any other failure non-zero and not 4; and the image digest is the OCI INDEX digest (OUT/<variant>.digest, .tar,
+# .manifests; bin/oci-digest.py). Still [P]: the layout of the apkindex/inputs-manifest/binary items, the SBOM directory, sudo's PATH.
 #   ./bin/build-apk.sh --print-source-date-epoch --source-dir DIR       [F L740-741] prints the commit time, digits only
 #   ./bin/build-apk.sh --variant standard|fips --arch x86_64|aarch64 --version X.Y.Z --source-dir DIR --repo DIR --keyring FILE
 #                      --go-archive DIR --melange-lock FILE --out DIR   [F L665-666]; SOURCE_DATE_EPOCH digits required [F L674-675]
@@ -20,8 +23,7 @@
 #   [F L613]; build-apk.sh refuses APK_RELEASE_SIGNING_KEY, GOPROXY other than off, HTTPS_PROXY and --signing-key [F L676-679] so the
 #   stage sets none of them. Outputs: OUT/<arch>/fscache-0.3.0-r0.apk + APKINDEX.tar.gz, OUT/fscache-modules.spdx.json,
 #   OUT/inputs-manifest.json [F L722-731]; OUT/V.full.lock.json, OUT/V.digest ("sha256:<64hex>\n") [F L890-895]. NOT fixed by cache's
-#   tests, so PROPOSED here: the OCI layout/index.json digest (V.digest is derived from apko's output file, [P]), the SBOM directory,
-#   inputs-manifest structure, whether sudo's PATH finds melange/apko on a runner.
+#   tests, so PROPOSED here: the apkindex/inputs-manifest/binary item layouts, the SBOM directory, whether sudo's PATH finds melange/apko.
 #   bin/build-version-check.py --binary PATH --tag vX.Y.Z --sha SHA is this lane's (REQ-CHAIN-004-AC7, bin/chain-build-admit-test.sh).
 #
 # THE STAGE SCRIPT bin/build-stage.sh build|rebuild (this lane): commands in the order bin/chain-test-shape.py `script` pins.
@@ -316,7 +318,7 @@ for variant in fixture real; do
   [ ! -e "$d/digests.json" ] || bad "AC3 $tag: digests.json written after a refused admission"
   for rcv in 2 4; do
     rm -rf "$d"; mk_tree "$d" "$s"; rc=$(run_stage "$d" build FAKE_APK_RC=$rcv); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-    if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then ok "AC6 $tag: build-apk.sh exit $rcv ($( [ $rcv = 4 ] && echo 'PROPOSED network-attempt code, UNVERIFIED' || echo 'a named refusal')) stops the stage, assembles nothing, writes no digests.json"; else bad "AC6 $tag: build-apk.sh exit $rcv -> rc=$rc calls=$calls"; fi
+    if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then ok "AC6 $tag: build-apk.sh exit $rcv ($( [ $rcv = 4 ] && echo 'a network attempt in the sealed call, FIXED by cache tests' || echo 'a named refusal')) stops the stage, assembles nothing, writes no digests.json"; else bad "AC6 $tag: build-apk.sh exit $rcv -> rc=$rc calls=$calls"; fi
   done
   rm -rf "$d"; mk_tree "$d" "$s"; rc=$(run_stage "$d" build FAKE_IMAGE_RC=4)
   if [ "$rc" != 0 ] && [ ! -e "$d/digests.json" ]; then ok "AC6 $tag: assemble-image.sh failing stops the stage before any digests.json"; else bad "AC6 $tag: assemble failure -> rc=$rc, digests.json present=$([ -e "$d/digests.json" ] && echo yes || echo no)"; fi
