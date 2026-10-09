@@ -41,13 +41,20 @@ if re.search(r"\bsecrets\s*\.|secrets\[|\bsecrets:\s*inherit", text):
 steps = [s for j in jobs.values() for s in (j.get("steps") or [])]
 for s in steps:
     u = s.get("uses", "") or ""
-    if re.search(r"download-artifact|upload-artifact|cache/restore|cache@", u):
-        bad.append("AC2: step %r moves build output through an artifact or cache" % s.get("name"))
+    if re.search(r"download-artifact|cache/restore|cache/save|cache@", u):
+        bad.append("AC2: step %r brings build output in through an artifact or cache" % s.get("name"))
+    if "upload-artifact" in u:
+        up = str((s.get("with") or {}).get("path", "")).strip()
+        if not re.fullmatch(r"provenance(/[A-Za-z0-9._-]*)?", up):
+            bad.append("AC3 (artifact sink): step %r uploads %r; only the provenance bundle may leave Sign" % (s.get("name"), up))
     run = s.get("run") or ""
-    if re.search(r"ACTIONS_ID_TOKEN_REQUEST_(TOKEN|URL)", run) and re.search(r">>?\s*\S|GITHUB_(OUTPUT|ENV|STEP_SUMMARY)|tee\b|upload", run):
-        bad.append("AC3: step %r handles the identity token request next to a write" % s.get("name"))
-    if re.search(r"(\$|\\\$)\{?ACTIONS_ID_TOKEN_REQUEST_(TOKEN|URL)\}?", run) and re.search(r"echo|printf|cat\b", run):
-        bad.append("AC3: step %r prints the identity token request" % s.get("name"))
+    # every sink rule 52a names (file, artifact, log, step output): Sign's steps never touch the token request at all;
+    # the signing tool asks for the token inside its own process
+    if re.search(r"ACTIONS_ID_TOKEN|ACTIONS_RUNTIME_TOKEN|id-token|oidc|\bsigstore/.*(key|token)", run, re.I):
+        sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|set\s+-\w*x|--verbose|-v\b"),
+                                 ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", r"upload"))
+                 if re.search(rx, run)]
+        bad.append("AC3: step %r touches the identity token request (sinks reachable: %s)" % (s.get("name"), ", ".join(sinks) or "none, but no step may touch it"))
     for k in ("env", "with"):
         for ek, ev in (s.get(k) or {}).items():
             if re.search(r"ACTIONS_ID_TOKEN_REQUEST|id-token|\$\{\{\s*(github\.token|secrets)", str(ev)):
@@ -94,7 +101,12 @@ jobs:
           DIGESTS: ${{ inputs.digests }}
         run: |
           set -euo pipefail
-          python3 bin/chain-verify.py sign --digests "$DIGESTS"
+          python3 bin/chain-verify.py sign --digests "$DIGESTS" --out provenance
+      - name: hand the provenance bundle to Release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provenance
+          path: provenance
 EOF
 mutate() { # label  python-regex-sub  replacement
   python3 - "$good" "$work/$1.yml" "$2" "$3" <<'PY'
@@ -113,7 +125,11 @@ mutate m_in 'digests:' 'digests:\n        type: string\n      script:\n        t
 mutate m_dl 'steps:' 'steps:\n      - uses: actions/download-artifact@0000000000000000000000000000000000000000 # v1\n        with: {name: dist}' && expect caught "AC2 downloads build output" "$work/m_dl.yml"
 mutate m_run 'python3 bin/chain-verify.py sign --digests "\$DIGESTS"' 'bash dist/run.sh' && expect caught "AC2 runs a build output" "$work/m_run.yml"
 mutate m_sec 'DIGESTS: \$\{\{ inputs.digests \}\}' 'DIGESTS: ${{ inputs.digests }}\n          K: ${{ secrets.KEY }}' && expect caught "AC3 secret reference" "$work/m_sec.yml"
-mutate m_tok 'set -euo pipefail' 'set -euo pipefail\n          echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> "$GITHUB_OUTPUT"' && expect caught "AC3 token written to output" "$work/m_tok.yml"
+mutate m_tok 'set -euo pipefail' 'set -euo pipefail\n          echo "tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> "$GITHUB_OUTPUT"' && expect caught "AC3 sink step output" "$work/m_tok.yml"
+mutate m_tokf 'set -euo pipefail' 'set -euo pipefail\n          curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL" > "$RUNNER_TEMP/tok"' && expect caught "AC3 sink file" "$work/m_tokf.yml"
+mutate m_tokl 'set -euo pipefail' 'set -euo pipefail\n          set -x; t=$ACTIONS_ID_TOKEN_REQUEST_TOKEN; echo "$t"' && expect caught "AC3 sink log" "$work/m_tokl.yml"
+mutate m_toka 'path: provenance' 'path: ${{ runner.temp }}/tok' && expect caught "AC3 sink artifact" "$work/m_toka.yml"
+mutate m_tokv 'set -euo pipefail' 'set -euo pipefail\n          export T=$(oidc-token)' && expect caught "AC3 token helper in a run step" "$work/m_tokv.yml"
 mutate m_perm 'id-token: write' 'id-token: write\n      packages: write' && expect caught "AC3 extra write permission" "$work/m_perm.yml"
 mutate m_noid 'id-token: write' 'id-token: none' && expect caught "AC3 no id-token" "$work/m_noid.yml"
 real="$root/.github/workflows/stage-sign.yml"

@@ -165,6 +165,15 @@ add("sign_othertsa", STAGES["sign"], T, PROV, D, tsa="othertsa")
 add("sign_stampbefore", STAGES["sign"], T, PROV, D, start=now + dt.timedelta(hours=1), end=now + dt.timedelta(minutes=70))
 add("sign_unsigned", STAGES["sign"], T, PROV, D, signed=False)
 add("sign_otherdigests", STAGES["sign"], T, PROV, Dother)
+# tamper cases (advisor 0328 item 2): a good record changed after signing, three ways
+_g = json.load(open(p("sign_prov.json")))
+_t = json.loads(json.dumps(_g)); _st = json.loads(base64.b64decode(_t["payload"]))
+_st["subject"][0]["digest"]["sha256"] = "e" * 64; _t["payload"] = base64.b64encode(json.dumps(_st).encode()).decode()
+json.dump(_t, open(p("sign_tamper_payload.json"), "w"))
+_t = json.loads(json.dumps(_g)); _sg = bytearray(base64.b64decode(_t["signatures"][0]["sig"])); _sg[-1] ^= 1
+_t["signatures"][0]["sig"] = base64.b64encode(bytes(_sg)).decode(); json.dump(_t, open(p("sign_tamper_sig.json"), "w"))
+_t = json.loads(json.dumps(_g)); _t["signatures"][0]["timestamps"] = json.load(open(p("sign_othertag.json")))["signatures"][0]["timestamps"]
+json.dump(_t, open(p("sign_tamper_stamp.json"), "w"))
 add("build_coll", STAGES["build"], T, COLL, D)
 add("build_coll_nostamp", STAGES["build"], T, COLL, D, tsa=None)
 add("build_madeup", STAGES["build"], T, "https://example.com/made-up/v1", D)
@@ -245,6 +254,9 @@ expect_ok     "002-AC1 the same record inside the certificate window" verify --p
 expect_refuse "002-AC1 no timestamp after expiry is refused" "timestamp" verify $(V) --stage sign --record "$work/sign_nostamp.json" --kind witness
 expect_refuse "002-AC1 a stamp from another authority is refused" "timestamp" verify $(V) --stage sign --record "$work/sign_othertsa.json" --kind witness
 expect_refuse "002-AC1 a stamp outside the certificate's validity is refused" "validity" verify $(V) --stage sign --record "$work/sign_stampbefore.json" --kind witness
+expect_refuse "002-AC1 tamper: payload changed after signing is refused" "signature" verify $(V) --stage sign --record "$work/sign_tamper_payload.json" --kind witness
+expect_refuse "002-AC1 tamper: signature bytes altered is refused" "signature" verify $(V) --stage sign --record "$work/sign_tamper_sig.json" --kind witness
+expect_refuse "002-AC1 tamper: a stamp taken over a different signature is refused" "timestamp" verify $(V) --stage sign --record "$work/sign_tamper_stamp.json" --kind witness
 python3 - "$work/policy.json" "$work/policy-notsa.json" <<'PY' || true
 import json, sys
 d = json.load(open(sys.argv[1])); d["timestamp_authorities"] = []; json.dump(d, open(sys.argv[2], "w"))

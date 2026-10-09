@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC5
 # The hostile Build step (v0.3.0 rules 52a, 59; owner RATIFIED Oct 9), static half. A dry run on a branch runs
-# bin/chain-hostile-step.sh as a Build step; it makes five attempts (certificate in Sign's identity, read Sign's token or
-# key, hand Sign a path instead of digests, forge provenance under Build's identity, change Build's output after Witness
-# recorded it) and writes one line per attempt to hostile-results.json. The dry-run job must then judge that file with
+# bin/chain-hostile-step.sh as a Build step; it makes five attempts (certificate in Sign's identity, read Sign's token,
+# read Sign's key material, hand Sign code instead of digests, forge provenance Release would accept: rule 52a) and writes one line per attempt to hostile-results.json. The dry-run job must then judge that file with
 # bin/chain-verify.py hostile-verdict, which fails if any attempt was accepted. Here: the verdict judge is proven on a
 # fixture and mutations (one accepted attempt, a missing attempt, an unnamed refusal), then the real wiring is checked.
 # The runtime half is the dry-run on GitHub; its run URL goes in the PR body.
@@ -11,7 +10,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
-attempts="mint-sign-cert read-sign-token hand-sign-code forge-provenance alter-output"
+attempts="mint-sign-cert read-sign-token read-sign-key hand-sign-code forge-provenance"
 verdict() { python3 - "$1" $attempts <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); need = sys.argv[2:]; bad = []

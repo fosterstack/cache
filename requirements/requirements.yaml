@@ -2260,7 +2260,7 @@ requirements:
       - id: REQ-CHAIN-001-AC3
         given: "the Sign job's identity token and signing key"
         when: "every step of every stage file is read"
-        then: "the token request address and token are never written to a file, artifact, log, job output or environment file by any step, the short-lived signing key exists only in the signing tool's memory for that run, and Sign's workflow file references no repository or environment secret"
+        then: "no step of Sign touches the identity token request at all (the signing tool asks for it inside its own process), so it is never written to a file, an artifact, a log or a step output (or the environment file); the only artifact Sign uploads is the provenance bundle; the short-lived signing key exists only in the signing tool's memory for that run; and Sign's workflow file references no repository or environment secret"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-001-AC4
@@ -2270,9 +2270,9 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-001-AC5
-        given: "a dry run on a branch in which a deliberately hostile Build step runs"
-        when: "the step tries, each on its own, to obtain a certificate in Sign's identity, to read Sign's token or key, to hand Sign code or a path instead of digests, to forge provenance under Build's identity, and to change Build's output after Witness recorded it"
-        then: "every attempt fails or is refused by Release's checks, the refusal names the stage and the reason, and the test fails if any attempt is accepted"
+        given: "a dry run on GitHub in which a deliberately hostile Build step runs (the runtime proof; the static judge alone does not satisfy this AC)"
+        when: "the step tries, as five separate cases each on its own, to mint a certificate in Sign's identity, to read Sign's token, to read Sign's key material, to hand Sign code or a path instead of digests, and to forge provenance that Release would accept"
+        then: "every attempt fails or is refused by Release's checks, the refusal names the stage and the reason, the test fails if any attempt is accepted, and the GitHub dry run must be green and its run linked in the pull request before the pull request merges"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
 
