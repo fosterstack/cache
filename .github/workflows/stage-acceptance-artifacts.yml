@@ -47,6 +47,7 @@ jobs:
   artifacts:
     name: artifacts
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: read      # candidates mode: pull the private digests
@@ -181,9 +182,29 @@ jobs:
       - name: exercise the images
         run: |
           set -euo pipefail
+          # the posture matrix is initialised here and only appended to by the posture program
+          : > /tmp/posture-matrix.txt
+          # REQ-FIPS-002-AC2: ask the running container what /statusz reports, through the one program that judges it.
+          # The retry is around the CALL (the program makes exactly one request per call); its failure fails the step.
+          posture() {
+            for _ in $(seq 1 20); do
+              python3 -I bin/fips-image-posture.py check "$@" --matrix /tmp/posture-matrix.txt && return 0
+              sleep 1
+            done
+            echo "::error::the posture check never passed after 20 attempts" >&2
+            return 1
+          }
+          # The container must be the image the step started it from.
+          same_image() {
+            cont=$(docker inspect -f '{{.Image}}' "$1")
+            img=$(docker inspect -f '{{.Id}}' "$2")
+            [ -n "$cont" ] && [ "$cont" = "$img" ] || { echo "::error::container $1 is not the image $2" >&2; return 1; }
+          }
           # production serves cache traffic, as nonroot, data under /home/nonroot
           docker run --pull=never -d --name fa-prod -p 127.0.0.1:19010:8080 localhost/fa-production
           for _ in $(seq 1 20); do curl -sf localhost:19010/healthz >/dev/null && break; sleep 0.5; done
+          posture --arch amd64 --variant production --port 19010
+          same_image fa-prod localhost/fa-production
           curl -s -X PUT --data-binary 'artifact-bytes' localhost:19010/acckey -o /dev/null -w 'PUT %{http_code}\n'
           [ "$(curl -s localhost:19010/acckey)" = "artifact-bytes" ] || { echo "::error::round trip failed in the production image" >&2; exit 1; }
           # docker top with custom -o columns is unreliable across runner
@@ -206,6 +227,8 @@ jobs:
           # debug image serves cache traffic too (not only a shell check)
           docker run --pull=never -d --name fa-debugrun -p 127.0.0.1:19012:8080 localhost/fa-debug
           for _ in $(seq 1 20); do curl -sf localhost:19012/healthz >/dev/null && break; sleep 0.5; done
+          posture --arch amd64 --variant debug --port 19012
+          same_image fa-debugrun localhost/fa-debug
           curl -s -X PUT --data-binary 'debug-bytes' localhost:19012/dk -o /dev/null
           [ "$(curl -s localhost:19012/dk)" = "debug-bytes" ] || { echo "::error::debug image round trip failed" >&2; exit 1; }
 
@@ -213,6 +236,8 @@ jobs:
           docker run --pull=never -d --name fa-fipsrun -p 127.0.0.1:19011:8080 \
             -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw localhost/fa-fips
           for _ in $(seq 1 20); do curl -sf localhost:19011/healthz >/dev/null && break; sleep 0.5; done
+          posture --arch amd64 --variant fips --port 19011 --user acc --password accpw
+          same_image fa-fipsrun localhost/fa-fips
           curl -s -u acc:accpw -X PUT --data-binary 'fips-bytes' localhost:19011/fk -o /dev/null
           [ "$(curl -s -u acc:accpw localhost:19011/fk)" = "fips-bytes" ] || { echo "::error::fips image round trip failed" >&2; exit 1; }
           docker rm -f fa-prod fa-debugrun fa-fipsrun >/dev/null
@@ -234,6 +259,22 @@ jobs:
         if: inputs.mode == 'candidates'
         run: |
           set -euo pipefail
+          # REQ-FIPS-002-AC2: ask the running container what /statusz reports, through the one program that judges it.
+          # The retry is around the CALL (the program makes exactly one request per call); its failure fails the step.
+          posture() {
+            for _ in $(seq 1 20); do
+              python3 -I bin/fips-image-posture.py check "$@" --matrix /tmp/posture-matrix.txt && return 0
+              sleep 1
+            done
+            echo "::error::the posture check never passed after 20 attempts" >&2
+            return 1
+          }
+          # The container must be the image the step started it from.
+          same_image() {  # arm64 emulation and the containerd image store: UNVERIFIED until the first run
+            cont=$(docker inspect -f '{{.Image}}' "$1")
+            img=$(docker inspect -f '{{.Id}}' "$2")
+            [ -n "$cont" ] && [ "$cont" = "$img" ] || { echo "::error::container $1 is not the image $2" >&2; return 1; }
+          }
           repo="ghcr.io/${{ github.repository_owner }}/cache-candidates"
           port=19021
           for v in production debug fips; do
@@ -264,6 +305,12 @@ jobs:
             curl -s ${creds} -X PUT --data-binary "arm-${v}" "localhost:${port}/armkey" -o /dev/null
             # shellcheck disable=SC2086
             [ "$(curl -s ${creds} "localhost:${port}/armkey")" = "arm-${v}" ] || { echo "::error::arm64 ${v} round trip failed" >&2; exit 1; }
+            if [ "$v" = fips ]; then
+              posture --arch arm64 --variant "$v" --port "${port}" --user acc --password accpw
+            else
+              posture --arch arm64 --variant "$v" --port "${port}"
+            fi
+            same_image "fa-arm64-$v" "${repo}@${childd}"
             docker rm -f "fa-arm64-$v" >/dev/null
             printf 'linux/arm64 %s\n' "$v" >> /tmp/served-matrix.txt
             echo "arm64 ${v} served cache traffic under QEMU"
@@ -281,6 +328,7 @@ jobs:
           # ran, so a nonfunctional arm64 debug/fips server leaves an entry
           # missing and fails here (R11).
           plat2_note="linux/amd64 only (PR snapshot mode; no candidate arches)"
+          ac2='[]'
           if [ '${{ inputs.mode }}' = 'candidates' ]; then
             need="linux/amd64 production
           linux/amd64 debug
@@ -294,9 +342,19 @@ jobs:
               grep -qxF "$line" /tmp/served-matrix.txt || { echo "::error::variant/arch did not serve: ${line}" >&2; missing=1; }
             done <<< "$need"
             [ "$missing" -eq 0 ] || { echo "::error::the platform matrix is incomplete - refusing to mark REQ-PLAT-002 pass" >&2; exit 1; }
+            # REQ-FIPS-002-AC2 is DERIVED the same way: the posture program appends a line to the posture
+            # matrix only after a container answered /statusz as the variant must; all six lines, whole, no more.
+            posture_missing=0
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              grep -qxF "$line" /tmp/posture-matrix.txt || { echo "::error::variant/arch posture not confirmed: ${line}" >&2; posture_missing=1; }
+            done <<< "$need"
+            [ "$(wc -l < /tmp/posture-matrix.txt)" -eq 6 ] || { echo "::error::the posture matrix does not hold exactly six lines" >&2; posture_missing=1; }
+            [ "$posture_missing" -eq 0 ] || { echo "::error::the posture matrix is incomplete - refusing to mark REQ-FIPS-002-AC2 pass" >&2; exit 1; }
+            ac2='[{"ac": "REQ-FIPS-002-AC2", "result": "pass", "note": "the -fips containers report the validated module on linux/amd64 and linux/arm64 (QEMU); production and debug report off"}]'
             plat2_note="linux/amd64 + linux/arm64 (QEMU), all three variants served; darwin archives are the documented equivalent (reproducible, checksum-verified, not executed on a Linux runner)"
           fi
-          jq -c -n --arg p2 "$plat2_note" '[
+          jq -c -n --arg p2 "$plat2_note" --argjson ac2 "$ac2" '[
             {ac: "REQ-PLAT-001-AC1", result: "pass", note: "six-archive set present; linux/amd64+arm64 binaries execute; darwin is the documented equivalent (reproducible + checksum-verified, not executed here)"},
             {ac: "REQ-PLAT-002-AC1", result: "pass", note: $p2},
             {ac: "REQ-PLAT-003-AC1", result: "pass"},
@@ -304,4 +362,4 @@ jobs:
             {ac: "REQ-FIPS-001-AC1", result: "pass"},
             {ac: "REQ-FIPS-001-AC2", result: "pass"},
             {ac: "REQ-FIPS-002-AC1", result: "pass"}
-          ]' | sed 's/^/results=/' >> "$GITHUB_OUTPUT"
+          ] + $ac2' | sed 's/^/results=/' >> "$GITHUB_OUTPUT"
