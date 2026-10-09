@@ -32,8 +32,8 @@ protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
 Maven Build Cache Extension][maven-cache]'s remote HTTP mode
 (`GET`/`PUT`/`HEAD`) — same server, same core. The Gradle path is
 acceptance-tested against a real multi-module build in CI, and so is the Maven
-path: a real multi-module Maven project with the extension (versions 1.2.0 and
-1.2.3) restores its second build from the remote cache with byte-identical jars,
+path: a real multi-module Maven project with the extension (versions 1.2.0 and 1.2.3 <!-- pinned: upstream -->)
+restores its second build from the remote cache with byte-identical jars,
 and wrong or missing credentials fail the documented way. The Maven suite is a
 release-blocking check.
 
