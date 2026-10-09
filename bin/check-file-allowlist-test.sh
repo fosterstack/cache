@@ -53,6 +53,125 @@ passfam() {
 # every ALLOW_PATTERNS / SUPPRESSION_PATTERNS entry is anchored at both ends (parsed from the script itself)
 anch="$(awk '/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1;next} f&&/^\)/{f=0} f&&/^ *\x27/{n++; if ($0 !~ /^ *\x27\^/ || $0 !~ /\$\x27 *(#.*)?$/) print "UNANCHORED: " $0} END{print "count=" n}' bin/check-file-allowlist.sh)"
 case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anch";; *) gp "every allowlist pattern starts with ^ and ends with \$ ($anch)";; esac
+# Structural checks on the pattern arrays, parsed from the script itself (python3; no regex engine involved).
+# ALLOWLIST_STRUCT_FILE=<file> runs ONLY these checks against that file (used to prove them red on mutants).
+# (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
+#     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
+#     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
+# (B) the v0.3.0 region admits an EXACT, declared set of 39 paths: only literals, \. , (a|b) groups and (x)?
+#     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
+struct_check() {
+  local f="$1" loaded
+  loaded="$(bash -c 'eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"; echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]}))' _ "$f" 2>&1)"
+  python3 - "$f" "$loaded" <<'PYEOF'
+import re, sys, itertools
+path, loaded = sys.argv[1], sys.argv[2]
+errs = []
+lines = open(path).read().split("\n")
+# PR each declared path belongs to is named in the comments
+DECLARED = set("""
+dependency-provenance.json
+bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh
+build/melange.yaml build/melange-fips.yaml build/apko.yaml build/apko-fips.yaml
+build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock
+build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub
+bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
+bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
+bin/apk-tool.py bin/compare-recipes.py bin/go-module-sbom.py
+bin/melange-apko-lib.sh
+bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
+bin/oci-digest.py bin/net-probe.py
+bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
+.github/secret_scanning.yml
+.github/agent/supply-chain/harness-manifest.json
+.github/release-identity.json
+""".split())
+if len(DECLARED) != 39: errs.append("declared list is not 39 paths: %d" % len(DECLARED))
+pats = []   # (lineno, pattern) for both arrays
+region = [] # patterns of the v0.3.0 region
+inarr = False; inregion = False; n = 0
+for i, l in enumerate(lines, 1):
+    if re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l): inarr = True; inregion = False; continue
+    if inarr and l == ')': inarr = False; inregion = False; continue
+    if not inarr:
+        if re.search(r'PATTERNS\+=', l) and l.strip() != 'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")':
+            errs.append("line %d: PATTERNS+= outside the arrays: %s" % (i, l))
+        continue
+    if l.strip() == '' : inregion = False; continue
+    if l.lstrip().startswith('#'):
+        if l.startswith('  # v0.3.0 build chain'): inregion = True
+        continue
+    m = re.match(r"^  '([^']*)'( *#.*)?$", l)
+    if not m:
+        errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
+    pats.append((i, m.group(1)))
+    if inregion: region.append((i, m.group(1)))
+if not str(loaded).isdigit(): errs.append("could not load the arrays in bash: %s" % loaded)
+elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash loads %s" % (len(pats), loaded))
+def toplevel_bar(p):
+    d = 0; i = 0
+    while i < len(p):
+        c = p[i]
+        if c == '\\': i += 2; continue
+        if c == '[':
+            i += 1
+            while i < len(p) and p[i] != ']':
+                i += 2 if p[i] == '\\' else 1
+        elif c == '(': d += 1
+        elif c == ')': d -= 1
+        elif c == '|' and d == 0: return True
+        i += 1
+    return False
+for i, p in pats:
+    if toplevel_bar(p): errs.append("line %d: top-level '|' in %s" % (i, p))
+def expand(p):
+    if not (p.startswith('^') and p.endswith('$')): raise ValueError("not anchored")
+    p = p[1:-1]; pos = 0; sets = []
+    lit = r'(?:[A-Za-z0-9/_-]|\\\.)'
+    while pos < len(p):
+        m = re.compile(r'(%s)' % lit).match(p, pos)
+        if m: sets.append([m.group(1).replace('\\', '')]); pos = m.end(); continue
+        m = re.compile(r'\(((?:%s)+(?:\|(?:%s)+)*)\)(\?)?' % (lit, lit)).match(p, pos)
+        if not m: raise ValueError("construct not allowed at offset %d: %r" % (pos, p[pos:]))
+        alts = [a.replace('\\', '') for a in m.group(1).split('|')]
+        if m.group(2): alts.append('')
+        sets.append(alts); pos = m.end()
+    return {''.join(t) for t in itertools.product(*sets)}
+union = set()
+if len(region) == 0: errs.append("v0.3.0 region not found")
+for i, p in region:
+    try: union |= expand(p)
+    except ValueError as e: errs.append("line %d: %s: %s" % (i, e, p))
+if union != DECLARED:
+    errs.append("region admits %d paths, declared %d; extra=%s missing=%s" % (len(union), len(DECLARED), sorted(union - DECLARED), sorted(DECLARED - union)))
+print("\n".join(errs) if errs else "OK region=%d patterns, %d paths; %d pattern lines == loaded %s" % (len(region), len(union), len(pats), loaded))
+sys.exit(1 if errs else 0)
+PYEOF
+}
+if [ -n "${ALLOWLIST_STRUCT_FILE:-}" ]; then struct_check "$ALLOWLIST_STRUCT_FILE"; exit $?; fi
+sc="$(struct_check bin/check-file-allowlist.sh)" && gp "structure: $sc" || gf "structure of the pattern arrays" "$sc"
+# the structural check must itself catch each mutation (cheap: python only, no allowlist run)
+_mut_dir="$(mktemp -d)"
+mutcheck() { # <desc> <sed-expr>
+  sed -E "$2" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+  if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "struct mutant did not apply: $1" "$2"; return; fi
+  if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" "$2"; else gp "struct check kills mutant: $1"; fi
+}
+mutcheck "suffix on one alternative"      "s/\(build-apk\|assemble-image\|/(build-apk|assemble-image[a-z]+|/"
+mutcheck "extension widened"              "s/\(apk-tool\|compare-recipes\|go-module-sbom\)\\\\\.py\\$/(apk-tool|compare-recipes|go-module-sbom)\\\\.(json|py|sh)\$/"
+mutcheck "group made optional"            "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)?(-x)?/"
+mutcheck "group repeated with +"          "s/\^build\/apko\(-fips\)\?/^build\/apko(-fips)+/"
+mutcheck "? turned into *"                "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)*/"
+mutcheck "first letter case-insensitive"  "s/'\^bin\/vendor-check/'^[bB]in\/vendor-check/"
+mutcheck "a letter turned into a wildcard" "s/vendor-provenance/vendor-prov.nance/"
+mutcheck "unescaped dot"                  "s/'\^dependency-provenance\\\\\.json/'^dependency-provenance.json/"
+mutcheck "double-quoted pattern"          "s/^  '(\^bin\/vendor-check\\\\\.sh\\$)'/  \"\1\"/"
+mutcheck "dollar-quote form"              "s/^  '(\^bin\/vendor-check\\\\\.sh\\$)'/  \$'\1'/"
+mutcheck "tab-indented"                   "s/^  ('\^bin\/vendor-check)/\t\1/"
+mutcheck "two patterns on one line"       "s/^  ('\^bin\/vendor-check\\\\\.sh\\$')/  \1 '^x\$'/"
+mutcheck "top-level bar pattern"          "s/^  '\^bin\/vendor-check\\\\\.sh\\$'/  '^.*|x\$'/"
+mutcheck "extra ALLOW_PATTERNS+= outside" "s/^SUPPRESSION_PATTERNS=\(/ALLOW_PATTERNS+=('^.*\$')\nSUPPRESSION_PATTERNS=(/"
+rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
 run_ref() {
   local expect="$1"; local ref="$2"; local desc="$3"; shift 3

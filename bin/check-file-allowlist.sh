@@ -217,10 +217,14 @@ ALLOW_PATTERNS=(
   '^bin/archive-(push|pull)\.sh$'
   '^bin/archive-verify\.py$'
   # Secret-scanning configuration (paths-ignore for the committed non-secret assembly key).
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/secret_scanning.yml must pin
+  # its content (an exact-content test) and add it to the guarded list.
   '^\.github/secret_scanning\.yml$'
   # The supply-chain harness manifest (PR #210).
   '^\.github/agent/supply-chain/harness-manifest\.json$'
   # The release identity record.
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/release-identity.json must
+  # pin its content (an exact-content test) and add it to the guarded list.
   '^\.github/release-identity\.json$'
 
   # The real Gradle project the benchmark builds against.
