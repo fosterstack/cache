@@ -14,13 +14,31 @@
 #       (.github/workflows/hostile-caller.yml), its record is uploaded as the artifact the script reads, and the commit is
 #       removed before the merge. The unit half is chain-verify-test.sh (sign_othercaller). It writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
 #       writes an outcome: the words refused/accepted/outcome do not appear in its code, so it cannot grade itself.
-#   release.yml (dry run, workflow_dispatch input dry-run): job `hostile-verify` (needs the sign job; permissions EXACTLY
-#       {contents: read}: no id-token, nothing to write) has one step per attempt, each exactly three lines:
+#   release.yml (dry run, workflow_dispatch input dry-run): the build caller passes `hostile: ${{ inputs.dry-run }}`; job
+#       `hostile-verify` (needs the sign job; permissions EXACTLY {contents: read}: no id-token, nothing to write) starts with
+#       actions/checkout (persist-credentials: false) and actions/download-artifact name `hostile-attempts` path attempts (the
+#       raw material each attempt made: without it every verify would read a missing file), then has one step per attempt,
+#       each exactly three lines:
 #           rc=0
 #           python3 bin/chain-verify.py <verify|sign|stage-start|hostile-material> ... || rc=$?
 #           python3 bin/chain-verify.py hostile-row --attempt <attempt> --exit-code "$rc" --stderr <file> --out results/<attempt>.json
 #       (the verifier's OWN exit code, captured per attempt from its own invocation; `|| true`, `|| echo`, echo/printf/cat
-#       writing JSON, or a static row fail the wiring judge), then one step `python3 bin/chain-verify.py hostile-collect results
+#       writing JSON, or a static row fail the wiring judge). The verifier line is PINNED per attempt (the exact subcommand,
+#       --stage and material path; $NOW is the run's verify time, policy.json the per-tag policy):
+#         mint_sign_cert    verify --stage sign --record attempts/mint_sign_cert.json --policy policy.json --now "$NOW"
+#         read_sign_token   hostile-material --kind token --file attempts/read_sign_token.txt
+#         read_sign_key     hostile-material --kind key --file attempts/read_sign_key.txt
+#         hand_sign_code    sign --check --signer cosign --digests attempts/hand_sign_code.json --build-record attempts/build-collection.json --policy policy.json --out attempts/out-hand_sign_code
+#         forge_provenance  verify --stage sign --record attempts/forge_provenance.json --policy policy.json --now "$NOW"
+#         call_sign_from_other_workflow  verify --stage sign --record attempts/call_sign_from_other_workflow.json --policy policy.json --now "$NOW"
+#       A refusal only counts when its stage and cause fit the attempt (the verdict checks): mint_sign_cert -> stage sign|release,
+#       cause names the identity or stage-sign.yml; read_sign_token / read_sign_key -> stage runner, `nothing usable`;
+#       hand_sign_code -> stage sign, cause digest|format; forge_provenance -> stage sign|release, cause provenance|identity|
+#       stage-sign.yml; call_sign_from_other_workflow -> stage sign|release, cause release.yml|build config. A refusal whose
+#       reason says the material was missing or unreadable NEVER counts (an attempt that never ran must not read as isolation).
+#       ERROR vs REFUSAL: a missing or unreadable material file is an ERROR (hostile-material exits 2 with `error: ...`, hostile-row
+#       writes NO row for exit 2 or any stderr whose first line is not `refused at <stage>: <reason>`), so the collect step
+#       fails and the dry run is red. then one step `python3 bin/chain-verify.py hostile-collect results
 #       --out hostile-results.json` and an upload of the artifact `hostile-results`. Job `hostile-verdict` (needs hostile-verify;
 #       permissions {contents: read}) downloads that artifact and runs `python3 bin/chain-verify.py hostile-verdict
 #       hostile-results/hostile-results.json`. No hostile-results*.json may be a file of the repository tree (it must come from
@@ -35,8 +53,9 @@
 #           accepted when N == 0; exit 1 (no row) for a traceback, an empty or unparsable stderr with N != 0, or an unknown attempt.
 #       chain-verify.py hostile-collect DIR --out F      merges the six rows; exit 1 naming a missing, duplicate or extra attempt.
 #       chain-verify.py hostile-material --kind token|key --file F
-#           exit 0 when F holds usable material (a JWT-shaped token; a PEM PRIVATE KEY block), else exit 1 with
-#           `refused at runner: nothing usable` (the runner VM was isolated, the attempt got nothing); an unknown kind exits 1.
+#           exit 0 when F holds usable material (a JWT-shaped token; a PEM PRIVATE KEY block), exit 1 with
+#           `refused at runner: nothing usable` when F exists and is empty or holds none (the runner VM was isolated, the attempt
+#           got nothing); exit 2 with `error: ...` when F is missing or unreadable (no row); an unknown kind exits 2.
 #   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it)
 # Modelled on: this repo's bin/release-patch-wiring-test.sh (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
 # verifier's refusal is its exit code and message, not a field the attacker writes); the spike evidence
@@ -53,8 +72,12 @@ attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_prov
 python3 - "$work" $attempts <<'PY'
 import copy, json, sys
 w, att = sys.argv[1], sys.argv[2:]
+DEF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
+       "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
+       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml"),
+       "call_sign_from_other_workflow": ("release", "build config URI is scan.yml; release.yml required")}
 def row(a, **k):
-    r = {"attempt": a, "outcome": "refused", "stage": "release", "reason": "identity is stage-build.yml, not stage-sign.yml", "judged_by": "verifier", "exit_code": 1}
+    r = {"attempt": a, "outcome": "refused", "stage": DEF.get(a, ("release", "x"))[0], "reason": DEF.get(a, ("release", "identity is stage-build.yml"))[1], "judged_by": "verifier", "exit_code": 1}
     r.update(k); return r
 good = {"attempts": [row(a) for a in att]}
 def save(n, d): json.dump(d, open("%s/%s.json" % (w, n), "w"))
@@ -69,6 +92,13 @@ mut("exit0", 1, exit_code=0)
 mut("noreason", 0, reason="")
 mut("vague", 0, reason="x")
 mut("badstage", 2, stage="x")
+mut("wrongcause_call", 5, reason="attempt material is missing: attempts/call_sign_from_other_workflow.json (no such file)")
+mut("wrongcause_call2", 5, reason="something unrelated went wrong")
+mut("wrongcause_forge", 4, reason="digest mismatch")
+mut("wrongstage_token", 1, stage="sign")
+mut("wrongcause_hand", 3, reason="identity is stage-build.yml")
+mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
+mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
 m = copy.deepcopy(good); del m["attempts"][1]; save("missing", m)
 m = copy.deepcopy(good); m["attempts"].append(row("mint_sign_cert")); save("duplicate", m)
@@ -96,6 +126,13 @@ expect refuse "verdict: a 'refused' outcome with exit code 0 is a contradiction"
 expect refuse "verdict: a refusal with no reason" noreason "reason"
 expect refuse "verdict: a one-character reason" vague "reason"
 expect refuse "verdict: a stage that is not a stage" badstage "stage"
+expect refuse "verdict: the sixth case refused only because its material was missing does not count" wrongcause_call "cause"
+expect refuse "verdict: the sixth case refused for an unrelated reason (not release.yml / build config) does not count" wrongcause_call2 "cause"
+expect refuse "verdict: a forged provenance refused for a digest mismatch (not its identity) does not count" wrongcause_forge "cause"
+expect refuse "verdict: a token attempt graded at stage sign instead of runner does not count" wrongstage_token "stage"
+expect refuse "verdict: hand_sign_code refused for an identity reason (not digest/format) does not count" wrongcause_hand "cause"
+expect refuse "verdict: a key attempt refused because the file was missing does not count" wrongcause_key "cause"
+expect refuse "verdict: a certificate mint refused for a digest mismatch does not count" wrongcause_mint "cause"
 expect refuse "verdict: an empty stage" nostage "stage"
 expect refuse "verdict: a missing attempt (read_sign_token)" missing "read_sign_token"
 expect refuse "verdict: a duplicated attempt" duplicate "mint_sign_cert"
@@ -140,11 +177,27 @@ xexpect refuse "hostile-material: an empty token file means the runner isolation
 xexpect ok "hostile-material: a PEM private key in the file means the attempt got material" - -- hostile-material --kind key --file "$work/key_yes.txt"
 xexpect refuse "hostile-material: no key material" "refused at runner" -- hostile-material --kind key --file "$work/tok_no.txt"
 xexpect refuse "hostile-material: an unknown kind" kind -- hostile-material --kind password --file "$work/tok_no.txt"
+mrc=0; cvx hostile-material --kind token --file "$work/does-not-exist.txt" || mrc=$?
+if [ "$mrc" = 2 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "error" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: a MISSING file is an error (exit 2, no 'refused at' line), never a refusal"; else bad "hostile-material: missing file must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
+printf 'error: cannot read attempts/read_sign_token.txt\n' > "$work/e_err.txt"; printf 'usage: chain-verify.py hostile-material [-h] --kind {token,key} --file FILE\n' > "$work/e_usage.txt"
+xexpect refuse "hostile-row: exit 2 with an 'error:' first line writes no row (an attempt that never ran is not isolation)" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_err.txt" --out "$work/rows/x9.json"
+xexpect refuse "hostile-row: exit 2 with a 'usage:' message (argparse) writes no row" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_usage.txt" --out "$work/rows/x10.json"
+[ ! -e "$work/rows/x9.json" ] && [ ! -e "$work/rows/x10.json" ] && ok "hostile-row: neither failed call left a row file behind" || bad "hostile-row: a row file exists for an error"
 # ---- the wiring, by parsing the YAML and the script (not by grepping for substrings) ---------------------------------
 cat > "$work/wiring.py" <<'PY'
 import glob, os, re, sys, yaml
 root = sys.argv[1]; bad = []
 ATT = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance", "call_sign_from_other_workflow"]
+PIN = {
+ "mint_sign_cert": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/mint_sign_cert\.json --policy policy\.json --now "\$NOW"',
+ "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
+ "read_sign_key": r'python3 bin/chain-verify\.py hostile-material --kind key --file attempts/read_sign_key\.txt',
+ "hand_sign_code": r'python3 bin/chain-verify\.py sign --check --signer cosign --digests attempts/hand_sign_code\.json --build-record attempts/build-collection\.json --policy policy\.json --out attempts/out-hand_sign_code',
+ "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json --now "\$NOW"',
+ "call_sign_from_other_workflow": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/call_sign_from_other_workflow\.json --policy policy\.json --now "\$NOW"',
+}
+GATE = re.compile(r"^\$\{\{ ?(?:[^|]*&& ?)?!inputs\.dry-run ?\}\}$")
+OPEN = {"build", "sign", "rebuild", "check"}
 def load(rel):
     p = os.path.join(root, rel)
     return yaml.load(open(p).read(), Loader=yaml.BaseLoader) if os.path.exists(p) else None
@@ -174,6 +227,12 @@ else:
         if "hostile-verify" not in need(hd): bad.append("hostile-verdict must need hostile-verify")
         if hv.get("permissions") != {"contents": "read"}: bad.append("hostile-verify permissions must be exactly {contents: read} (no id-token, nothing to write): %s" % hv.get("permissions"))
         if hd.get("permissions") != {"contents": "read"}: bad.append("hostile-verdict permissions must be exactly {contents: read}: %s" % hd.get("permissions"))
+        hs = hv.get("steps") or []
+        co = [s for s in hs if "actions/checkout" in str(s.get("uses", ""))]
+        if len(co) != 1 or (co[0].get("with") or {}).get("persist-credentials") != "false": bad.append("hostile-verify must check the repo out once with persist-credentials: false (it runs the repo's verifier)")
+        dl = [s for s in hs if "download-artifact" in str(s.get("uses", "")) and (s.get("with") or {}).get("name") == "hostile-attempts" and (s.get("with") or {}).get("path") == "attempts"]
+        if len(dl) != 1: bad.append("hostile-verify must download the artifact hostile-attempts into attempts (without it every verify reads a missing file)")
+        if hs and not (co and dl and hs.index(co[0]) < hs.index(dl[0]) < min([hs.index(s) for s in hs if "--attempt" in str(s.get("run", ""))] or [99])): bad.append("hostile-verify steps must run checkout, then the download, then the attempts")
         # one three-line step per attempt, the exit code captured from the verifier's own invocation
         seen = {}
         for s in hv.get("steps") or []:
@@ -182,9 +241,11 @@ else:
             if not m: continue
             a = m.group(1); seen[a] = seen.get(a, 0) + 1
             ok = (len(lines) == 3 and lines[0] == "rc=0"
-                  and re.fullmatch(r"python3 bin/chain-verify\.py (verify|sign|stage-start|hostile-material) .*\|\| rc=\$\?", lines[1])
+                  and a in PIN and re.fullmatch(PIN[a] + r" 2> \S+ \|\| rc=\$\?", lines[1])
                   and re.fullmatch(r"python3 bin/chain-verify\.py hostile-row --attempt %s --exit-code \"\$rc\" --stderr \S+ --out results/%s\.json" % (a, a), lines[2]))
-            if not ok: bad.append("hostile-verify step for %s is not the three-line shape (rc=0; verifier ... || rc=$?; hostile-row ... --exit-code \"$rc\")" % a)
+            if not ok: bad.append("hostile-verify step for %s is not the pinned three-line shape (rc=0; the pinned verifier invocation for this attempt 2> FILE || rc=$?; hostile-row ... --exit-code \"$rc\")" % a)
+            e1, e2 = re.search(r"2> (\S+) \|\|", run), re.search(r"--stderr (\S+)", run)
+            if not e1 or not e2 or e1.group(1) != e2.group(1): bad.append("hostile-verify step for %s: hostile-row must read the stderr file the verifier wrote" % a)
             if re.search(r"\|\|\s*(true|:|echo|exit\s+0)\b|\becho\b|\bprintf\b|\bcat\b|\btee\b|>\s*results|set \+e", run): bad.append("hostile-verify step for %s swallows or writes the outcome by hand" % a)
         for a in ATT:
             if seen.get(a, 0) != 1: bad.append("hostile-verify has %d steps for attempt %s (need exactly one)" % (seen.get(a, 0), a))
@@ -197,11 +258,11 @@ else:
         if not any((s.get("run") or "").strip() == "python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json" for s in hd.get("steps") or []):
             bad.append("hostile-verdict does not run `python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json`")
         for jn, j in jobs.items():
-            if jn in ("hostile-verify", "hostile-verdict"): continue
-            gated = str(j.get("uses", "")).endswith("stage-promote.yml") or jn == "decide"
-            if not gated: continue
+            if jn in OPEN or jn.startswith("hostile-"): continue
             cond = str(j.get("if", ""))
-            if "!inputs.dry-run" not in cond or "||" in cond: bad.append("the job %s is not skipped in a dry run (its if: needs the conjunct !inputs.dry-run and no ||): %r" % (jn, cond))
+            if not GATE.match(cond): bad.append("the job %s is not skipped in a dry run (its if: must be exactly ${{ !inputs.dry-run }} or have it as an && conjunct, no ||): %r" % (jn, cond))
+        bw = (jobs.get("build") or {}).get("with") or {}
+        if bw.get("hostile") != "${{ inputs.dry-run }}": bad.append("release.yml's build call must pass `hostile: ${{ inputs.dry-run }}` (else the hostile step never runs): %s" % bw)
         if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
 for f in glob.glob(os.path.join(root, "**/hostile-results*.json"), recursive=True):
     if "/.git/" not in f: bad.append("a hostile-results file is part of the tree (%s): the rows must come from the run" % os.path.relpath(f, root))
@@ -245,23 +306,34 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: echo tag
-  build: {uses: ./.github/workflows/stage-build.yml}
+  build:
+    uses: ./.github/workflows/stage-build.yml
+    with: {hostile: "\${{ inputs.dry-run }}"}
   sign: {needs: build, uses: ./.github/workflows/stage-sign.yml}
   hostile-verify:
     needs: sign
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
+      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}
 EOF
-    for a in mint_sign_cert forge_provenance call_sign_from_other_workflow hand_sign_code; do
-      sub=verify; [ "$a" = hand_sign_code ] && sub=sign
+    for a in mint_sign_cert forge_provenance call_sign_from_other_workflow; do
       cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py $sub --stage sign --record attempts/$a.json 2> err-$a.txt || rc=\$?
+          python3 bin/chain-verify.py verify --stage sign --record attempts/$a.json --policy policy.json --now "\$NOW" 2> err-$a.txt || rc=\$?
           python3 bin/chain-verify.py hostile-row --attempt $a --exit-code "\$rc" --stderr err-$a.txt --out results/$a.json
 EOF
     done
+    cat <<EOF
+      - run: |
+          rc=0
+          python3 bin/chain-verify.py sign --check --signer cosign --digests attempts/hand_sign_code.json --build-record attempts/build-collection.json --policy policy.json --out attempts/out-hand_sign_code 2> err-hand_sign_code.txt || rc=\$?
+          python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "\$rc" --stderr err-hand_sign_code.txt --out results/hand_sign_code.json
+EOF
     for a in read_sign_token read_sign_key; do
       kind=token; [ "$a" = read_sign_key ] && kind=key
       cat <<EOF
@@ -294,6 +366,12 @@ EOF
 }
 wexpect ok "fixture: the known-good wiring passes the judge" "$(mk w_good)"
 rel() { echo "$1/.github/workflows/release.yml"; }
+pymut() { python3 - "$1" "$2" "$3" <<'PY'
+import sys
+t = open(sys.argv[1]).read(); assert sys.argv[2] in t, "mutation target not found: " + sys.argv[2]
+open(sys.argv[1], "w").write(t.replace(sys.argv[2], sys.argv[3], 1))
+PY
+}
 d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
 d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
 d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
@@ -323,7 +401,46 @@ open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: one attempt has no verify step (read_sign_key)" "$d"
 d=$(mk w_noexitcode); sed -i.bak 's/--exit-code "\$rc"/--exit-code 1/' "$(rel "$d")"; wexpect caught "wiring: the row is given a constant exit code, not the captured one" "$d"
-d=$(mk w_nodownload); sed -i.bak 's/uses: actions\/download-artifact.*/run: true/' "$(rel "$d")"; wexpect caught "wiring: the verdict job does not download the run's artifact" "$d"
+d=$(mk w_nodownload); python3 - "$(rel "$d")" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("      - uses: actions/download-artifact@" + "a" * 40 + " # v8\n        with: {name: hostile-results, path: hostile-results}", "      - run: true", 1)
+open(sys.argv[1], "w").write(t)
+PY
+wexpect caught "wiring: the verdict job does not download the run's hostile-results artifact" "$d"
+d=$(mk w_noattdl); python3 - "$(rel "$d")" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("      - uses: actions/download-artifact@" + "a" * 40 + " # v8\n        with: {name: hostile-attempts, path: attempts}\n", "", 1)
+open(sys.argv[1], "w").write(t)
+PY
+wexpect caught "wiring: hostile-verify never downloads hostile-attempts (every verify would read a missing file and 'refuse')" "$d"
+d=$(mk w_nocheckout); python3 - "$(rel "$d")" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+t = t.replace("      - uses: actions/checkout@" + "a" * 40 + " # v7\n        with: {persist-credentials: false}\n", "", 1)
+open(sys.argv[1], "w").write(t)
+PY
+wexpect caught "wiring: hostile-verify has no checkout (the repo's verifier is not there to run)" "$d"
+d=$(mk w_persist); sed -i.bak 's/{persist-credentials: false}/{persist-credentials: true}/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify checks out with persisted credentials" "$d"
+d=$(mk w_nohostile); sed -i.bak 's/    with: {hostile: .*}$/    with: {}/' "$(rel "$d")"; wexpect caught "wiring: the build call does not pass hostile (the hostile step never runs in the dry run)" "$d"
+d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_provenance" "--stage build --record attempts/forge_provenance"; wexpect caught "wiring: the forge attempt is verified as stage build, not as the Sign stage (pinned invocation)" "$d"
+d=$(mk w_pinrec); pymut "$(rel "$d")" "--record attempts/call_sign_from_other_workflow.json --policy" "--record attempts/forge_provenance.json --policy"; wexpect caught "wiring: the sixth case verifies another attempt's material (pinned --record)" "$d"
+d=$(mk w_pinpol); pymut "$(rel "$d")" "--stage sign --record attempts/mint_sign_cert.json --policy policy.json" "--stage sign --record attempts/mint_sign_cert.json --policy /dev/null"; wexpect caught "wiring: an attempt is verified against a different policy than the tag's" "$d"
+d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key.txt" "--kind token --file attempts/read_sign_key.txt"; wexpect caught "wiring: the key attempt is judged with the token kind (pinned hostile-material)" "$d"
+d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr err-mint_sign_cert.txt" "--stderr other.txt"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
+d=$(mk w_other); python3 - "$(rel "$d")" <<'PY'
+import sys
+t = open(sys.argv[1]).read() + "  patch-notes:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
+open(sys.argv[1], "w").write(t)
+PY
+wexpect caught "wiring: any other job (patch-notes) without the dry-run gate still runs in a dry run" "$d"
+d=$(mk w_okjobs); python3 - "$(rel "$d")" <<'PY'
+import sys
+t = open(sys.argv[1]).read() + "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  check:\n    needs: build\n    uses: ./.github/workflows/stage-verify.yml\n"
+open(sys.argv[1], "w").write(t)
+PY
+wexpect ok "wiring: the rebuild and check stages run in a dry run (allowlist: build, sign, rebuild, check, hostile-*)" "$d"
 d=$(mk w_tracked); echo '{"attempts":[]}' > "$d/hostile-results.json"; wexpect caught "wiring: a hostile-results.json is checked into the tree" "$d"
 d=$(mk w_nodry); sed -i.bak 's/if: .*!inputs.dry-run }}$/if: true/' "$(rel "$d")"; wexpect caught "wiring: the release job (or the tag job) still runs in a dry run" "$d"
 d=$(mk w_nodrydecide); sed -i.bak "s/ \&\& !inputs.dry-run//" "$(rel "$d")"; wexpect caught "wiring: the decide (tag) job is not gated by !inputs.dry-run" "$d"
@@ -335,7 +452,7 @@ d=$(mk w_selfgrade); echo 'echo "{\"outcome\": \"refused\"}" > results.json' >> 
 d=$(mk w_callsverifier); echo 'python3 bin/chain-verify.py verify --record x' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step runs the verifier itself" "$d"
 d=$(mk w_comment); echo '# a refused attempt is written by the verifier, not here' >> "$d/bin/chain-hostile-step.sh"; wexpect ok "wiring: the word refused in a comment is fine (comments are not code)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-EXPECT=58
+EXPECT=80
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

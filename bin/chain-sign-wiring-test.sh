@@ -10,8 +10,10 @@
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
 #                 5. run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json
-#                         --build-record witness-build/<name>.json --policy .github/policy/<name>.json --out provenance
-#                         (verifies Build's record, compares the digests, THEN signs; the identity token is requested by cosign
+#                         --build-record witness-build/build-collection.json --policy .github/policy/release-policy.template.json --out provenance
+#                         (the filenames are PINNED: `--policy` names the committed template, from which `sign --check` makes the
+#                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
+#                          record, compares the digests, THEN signs; the identity token is requested by cosign
 #                          inside its own process and no step ever names it)
 #                 6. actions/upload-artifact name provenance path provenance
 #               Everything else fails closed (rules 52, 52a; 001-AC1..AC3). The four sinks rule 52a names (file, artifact, log,
@@ -30,6 +32,9 @@
 #               listed in chain-signers.json under that script's path, with a reason); bin/chain-verify.py itself is the one script
 #               allowed to contain signing calls (the Sign job's signature), because only `chain-verify.py sign` in stage-sign.yml
 #               reaches them (the table makes `chain-verify.py sign` anywhere else a provenance signer).
+# Stated exclusions: a signer reached only through an argv array in a github-script/JS file (exec.exec('cosign', ['sign'])) or a binary
+# downloaded at run time is not seen by a text table; the Sign job's own allowlist and the dry run cover the Sign side. The engine and
+# table are bin/chain-test-signers.py / .json (shared with chain-records-test.sh).
 # Needs python3 with PyYAML (apt: python3-yaml).
 # Modelled on: this repo's bin/workflow-consolidation-test.sh (judge + mutation pattern); in-toto-witness docs/commands.md
 # (witness run / sign flags) and docs/attestors/slsa.md for the signing-call patterns.
@@ -45,27 +50,17 @@ TOKEN = r"ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|id-token|getIDToken|oidc|/proc/\S*env
 def load(path):
     return yaml.load(open(path).read(), Loader=yaml.BaseLoader), open(path).read()
 
-TABLE = json.load(open(os.environ["CHAIN_SIGNER_TABLE"]))["signers"]
-def strip(text):
-    out = []
-    for l in text.splitlines():
-        if l.lstrip().startswith("#"): continue
-        out.append(re.sub(r"(?<=\s)#.*$", "", l))
-    return "\n".join(out)
-def logical(text): return re.sub(r"\\\n\s*", " ", text)
-def signer_calls(text):
-    """[(entry, is_provenance, logical line)] for every signing call in comment-stripped text."""
-    res = []
-    for line in logical(strip(text)).splitlines():
-        for e in TABLE:
-            if re.search(e["regex"], line):
-                pv = e["prov"] == "always" or (e["prov"].startswith("if:") and re.search(e["prov"][3:], line, re.I) is not None)
-                res.append((e, pv, line.strip()))
-    return res
+sys.path.insert(0, os.path.join(os.environ["CHAIN_ROOT"], "bin"))
+import importlib.util
+_spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
+_cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
+TABLE = _cts.load_table()
+strip, logical = _cts.strip, _cts.logical
+def signer_calls(text): return _cts.signer_calls(text, TABLE)
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_INSTALL = r"\./bin/install-scanner\.sh cosign"
-R_SIGN = r"python3 bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/[A-Za-z0-9._-]+\.json --policy \.github/policy/[A-Za-z0-9._-]+\.json --out provenance"
+R_SIGN = r"python3 bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --policy \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     d, text = load(path); bad = []
@@ -144,20 +139,22 @@ def judge_build(path):
     wf_env = d.get("env") or {}
     for jn, j in (d.get("jobs") or {}).items():
         steps = j.get("steps") or []
-        signs = [s for s in steps if signer_calls(yaml.dump(s))]
+        signs = [s for s in steps if signer_calls(yaml.dump(s, width=10**6))]
         if not signs: continue
-        job_blob = yaml.dump([j.get("env") or {}, j.get("secrets") or {}, wf_env])
+        job_blob = yaml.dump([j.get("env") or {}, j.get("secrets") or {}, wf_env], width=10**6)
         if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", job_blob) or j.get("environment") or j.get("secrets"):
             bad.append("002-AC4: job %s has signing steps and job/workflow-level env, secrets or an environment that can hand a secret to them" % jn)
+        for s in steps:
+            if re.search(r"GITHUB_ENV", str(s.get("run") or "")) and re.search(r"secrets\.|github\.token|toJSON|ACTIONS_ID_TOKEN|\$\{\{", str(s.get("run") or "") + yaml.dump(s.get("env") or {}, width=10**6)):
+                bad.append("002-AC4: job %s writes a secret or token into GITHUB_ENV in a job that signs" % jn)
         for s in signs:
-            blob = yaml.dump(s); nm = s.get("name") or s.get("uses")
+            blob = yaml.dump(s, width=10**6); nm = s.get("name") or s.get("uses")
             if re.search(r"secrets\.|secrets\[|github\.token|toJSON|secrets\b", blob):
                 bad.append("002-AC4: signing step %r takes a secret or the job token" % nm)
             for fm in re.finditer(r"--(annotation|certificate-[a-z-]+|oidc-[a-z-]+|fulcio-oidc-client-id|signer-fulcio-[a-z-]+)[ =]+\S*\$\{\{", blob):
                 bad.append("002-AC4: signing step %r puts an expression into %s" % (nm, fm.group(1)))
     return bad
 
-RUNNER = re.compile(r"(?:\b(?:bash|sh|python3?|source)\s+|(?<![\w/.-])\.\s+|(?<![\w/.-]))(\.?/?(?:[\w.-]+/)*[\w.-]+\.(?:sh|py))\b")
 def judge_tree(base):
     bad = []
     known = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
@@ -190,8 +187,7 @@ stage-verify.yml supply-chain.yml""".split())
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         text = open(f).read()
         check(rel, text, "")
-        for m in RUNNER.finditer(logical(strip(text))):
-            sp = os.path.normpath(m.group(1).lstrip("./") if m.group(1).startswith("./") else m.group(1))
+        for sp in _cts.script_refs(text):
             scripts.setdefault(sp, set()).add(rel)
     for sp, by in sorted(scripts.items()):
         full = os.path.join(base, sp)
@@ -224,7 +220,7 @@ if __name__ == "__main__":
     bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
     print("; ".join(dict.fromkeys(bad)) or "ok"); sys.exit(1 if bad else 0)
 PY
-export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json"
+export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
 judge() { python3 "$work/judge.py" "$@"; }
 expect() { # expect ok|caught LABEL judge ARG
   local out rc=0
@@ -309,6 +305,9 @@ caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witne
 caught "AC2 the signing tool is not installed from the pinned installer" 'run: ./bin/install-scanner.sh cosign' 'run: curl -sL https://example.com/cosign -o cosign'
 caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: ./bin/install-scanner.sh cosign\n' ''
 caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --policy .github/policy/release-policy.template.json --out provenance"
+caught "AC2 a permissive policy file instead of the template" 'release-policy.template.json' 'permissive.json'
+caught "AC2 a different Build record file name" 'witness-build/build-collection.json' 'witness-build/other.json'
+caught "AC2 the policy argument points outside .github/policy" '--policy .github/policy/release-policy.template.json' '--policy /tmp/p.json'
 caught "AC3 checkout without persist-credentials: false" '        with:\n          persist-credentials: false\n' ''
 caught "AC3 checkout with persist-credentials: true" 'persist-credentials: false' 'persist-credentials: true'
 caught "AC3 secret reference" 'DIGESTS: \$\{\{ inputs.digests \}\}' 'DIGESTS: ${{ inputs.digests }}\n          K: ${{ secrets.KEY }}'
@@ -350,6 +349,10 @@ printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    environment: r
 expect caught "002-AC4 a job that signs runs in a GitHub environment (environment secrets)" build "$work/build-environment.yml"
 printf '%s\n' "env:" '  K: ${{ secrets.KEY }}' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "      - run: witness run --step build -- ./bin/build.sh" > "$work/build-wfenv.yml"
 expect caught "002-AC4 a secret in the WORKFLOW-level env of a file that signs" build "$work/build-wfenv.yml"
+printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "      - name: long line" "        run: echo start && echo a-very-long-prefix-that-forces-a-yaml-dump-to-wrap-the-line-at-eighty-columns-xxxxxxxxxxxxxxxxxxxx && witness run --step build -- ./bin/build.sh" "        env:" '          K: ${{ secrets.KEY }}' > "$work/build-wrap.yml"
+expect caught "002-AC4 a secret in a signing step whose command line is long enough for yaml.dump to wrap" build "$work/build-wrap.yml"
+printf '%s\n' "jobs:" "  build:" "    runs-on: ubuntu-24.04" "    steps:" "      - run: echo \"K=\${{ secrets.KEY }}\" >> \"\$GITHUB_ENV\"" "      - run: witness run --step build -- ./bin/build.sh" > "$work/build-ghenv.yml"
+expect caught "002-AC4 a secret written to GITHUB_ENV by an earlier step of a job that signs" build "$work/build-ghenv.yml"
 # 001-AC1: the tree judge on a fixture tree
 mk() {
   local d="$work/$1"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
@@ -396,6 +399,26 @@ f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
 j["signers"].append({"file": "bin/publish.sh", "tool": "cosign sign", "reason": "image signature at publish (rule 56)"}); json.dump(j, open(f, "w"))
 PY
 expect ok "AC1 an invoked script that signs is fine when listed under its own path with a reason" tree "$d"
+d=$(mk t_gflag); printf 'jobs:\n  b:\n    steps:\n      - run: witness --log-level debug run --step build -a slsa -- ./bin/build.sh\n' > "$d/.github/workflows/stage-build.yml"
+expect caught "AC1 a global flag before the subcommand does not hide the signer (witness --log-level debug run -a slsa)" tree "$d"
+d=$(mk t_cflag); printf 'jobs:\n  b:\n    steps:\n      - run: cosign --verbose attest --yes --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 cosign --verbose attest of SLSA provenance" tree "$d"
+d=$(mk t_aslsa); printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -aslsa -- ./bin/build.sh\n' > "$d/.github/workflows/stage-build.yml"
+expect caught "AC1 witness run -aslsa (shorthand with the value attached)" tree "$d"
+d=$(mk t_wcfg); printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -c witness.yaml -- ./bin/build.sh\n' > "$d/.github/workflows/stage-build.yml"
+expect caught "AC1 witness run -c config with no explicit -a (the config file can list the slsa attestor): flagged" tree "$d"
+d=$(mk t_blob); printf 'jobs:\n  b:\n    steps:\n      - run: cosign attest-blob --yes --statement prov.json --bundle b.json\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 cosign attest-blob with no literal non-provenance type is provenance (fail closed)" tree "$d"
+d=$(mk t_atvar); printf 'jobs:\n  b:\n    steps:\n      - run: cosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 cosign attest with a shell-variable type is provenance (fail closed)" tree "$d"
+d=$(mk t_quote); printf 'jobs:\n  b:\n    steps:\n      - run: echo "step #1"; cosign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 a '#' inside quotes does not hide a signer on the same line (echo \"step #1\"; cosign sign)" tree "$d"
+d=$(mk t_wra); printf 'jobs:\n  b:\n    steps:\n      - uses: testifysec/witness-run-action@%s # v1\n' "$sha" > "$d/.github/workflows/stage-build.yml"
+expect caught "AC1 testifysec/witness-run-action is a provenance signer (its attestors cannot be resolved statically)" tree "$d"
+d=$(mk t_make); printf 'jobs:\n  b:\n    steps:\n      - run: make publish\n' > "$d/.github/workflows/stage-verify.yml"; printf 'publish:\n\tcosign attest --yes --type slsaprovenance1 --predicate p.json $(IMG)\n' > "$d/Makefile"
+expect caught "AC1 a Makefile target a workflow runs signs provenance" tree "$d"
+d=$(mk t_js); printf 'jobs:\n  b:\n    steps:\n      - run: node scripts/pub.js\n' > "$d/.github/workflows/stage-verify.yml"; mkdir -p "$d/scripts"; printf 'require("child_process").execSync("cosign sign --yes " + process.env.IMG)\n' > "$d/scripts/pub.js"
+expect caught "AC1 a node script a workflow runs signs an image and is not listed" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
 expect caught "AC1 a second new workflow file" tree "$d"
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
@@ -422,7 +445,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=82
+EXPECT=97
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

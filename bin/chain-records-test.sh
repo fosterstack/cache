@@ -49,15 +49,11 @@ else:
     rows = json.load(open(rf)).get("records") or []
 wf = os.path.join(base, ".github/workflows")
 files = sorted(glob.glob(wf + "/*.yml") + glob.glob(wf + "/*.yaml") + glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml")))
-TABLE = json.load(open(os.environ["CHAIN_SIGNER_TABLE"]))["signers"]
-def strip(text):
-    out = []
-    for l in text.splitlines():
-        if l.lstrip().startswith("#"): continue
-        out.append(re.sub(r"(?<=\s)#.*$", "", l))
-    return "\n".join(out)
-def logical(text): return re.sub(r"\\\n\s*", " ", text)
-RUNNER = re.compile(r"(?:\b(?:bash|sh|python3?|source)\s+|(?<![\w/.-])\.\s+|(?<![\w/.-]))(\.?/?(?:[\w.-]+/)*[\w.-]+\.(?:sh|py))\b")
+import importlib.util
+_spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
+_cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
+TABLE = _cts.load_table()
+strip, logical = _cts.strip, _cts.logical
 def scan(rel, text):
     def add(t): produced.setdefault(t, set()).add(rel)
     for line in logical(strip(text)).splitlines():
@@ -66,7 +62,7 @@ def scan(rel, text):
             n = e["name"]
             if n == "witness run":
                 add(COLL)
-                if e["prov"].startswith("if:") and re.search(e["prov"][3:], line, re.I): add(PROV)
+                if _cts.is_prov(e, line): add(PROV)
             elif n == "witness sign":
                 dt = re.search(r"(?:-t|--datatype)[ =]+(\S+)", line)
                 if not dt: add(POLT)
@@ -88,8 +84,7 @@ scripts = {}
 for f in files:
     rel = os.path.relpath(f, base); txt = open(f).read()
     scan(rel, txt)
-    for m in RUNNER.finditer(logical(strip(txt))):
-        sp = os.path.normpath(m.group(1))
+    for sp in _cts.script_refs(txt):
         scripts.setdefault(sp, set()).add(rel)
 for sp in sorted(scripts):
     full = os.path.join(base, sp)
@@ -109,7 +104,7 @@ for c in set(claims):
 print("; ".join(dict.fromkeys(bad)) or "ok")
 sys.exit(1 if bad else 0)
 PY
-export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json"
+export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
 judge() { python3 "$work/judge.py" "$1"; }
 expect() { # expect ok|caught LABEL DIR
   local out rc=0
@@ -118,6 +113,13 @@ expect() { # expect ok|caught LABEL DIR
   elif [ "$1" = caught ] && [ "$rc" != 0 ]; then pass=$((pass + 1)); echo "ok   $2 (caught: ${out:0:140})"
   else failn=$((failn + 1)); echo "FAIL $2 -> ${out:0:500}"; fi
 }
+expect_named() { # expect_named LABEL DIR FILE : the judge fails AND its message names FILE (so the mutation, not the fixture, is what failed)
+  local out rc=0
+  out=$(judge "$2") || rc=$?
+  if [ "$rc" != 0 ] && printf '%s' "$out" | grep -qF -- "$3"; then pass=$((pass + 1)); echo "ok   $1 (caught: ${out:0:140})"
+  else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc, message does not name $3: ${out:0:300}"; fi
+}
+nosign() { rm -f "$1/.github/workflows/stage-sign.yml"; }
 mk() { # mk NAME  -> a known-good tree
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy"
   printf 'jobs:\n  sign:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --digests "$D" --build-record b.json\n' > "$d/.github/workflows/stage-sign.yml"
@@ -169,16 +171,30 @@ d=$(mk yaml); printf 'jobs:\n  c:\n    steps:\n      - run: witness sign -f poli
 expect caught "a .yaml workflow signing the policy with no row fails" "$d"
 d=$(mk comp); mkdir -p "$d/.github/actions/x"; printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
 expect caught "a composite action that signs with no row fails" "$d"
-d=$(mk wsl); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c -a slsa -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json" 2>/dev/null || true
-expect caught "witness run -a slsa produces provenance; with its row removed it fails" "$d"
+d=$(mk wsl); nosign "$d"; printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c -a slsa -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
+expect_named "witness run -a slsa is the ONLY provenance producer here; with its row removed the judge names stage-verify.yml" "$d" "stage-verify.yml"
 d=$(mk sbom); printf 'jobs:\n  c:\n    steps:\n      - uses: actions/attest-sbom@%s # v3\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"
 expect caught "actions/attest-sbom (a known signer with no finer resolver) with no row fails" "$d"
-d=$(mk gen); printf 'jobs:\n  c:\n    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@%s\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json" 2>/dev/null || true
-expect caught "slsa-github-generator produces provenance; with its row removed it fails" "$d"
-for form in '-a=slsa' '-a product,slsa' '--attestations slsa' '--attestor slsa'; do
-  d=$(mk "wf_$(printf '%s' "$form" | tr -c 'a-z' _)"); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c %s -- ./x\n' "$form" > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json" 2>/dev/null || true
-  expect caught "witness run $form produces provenance; with its row removed it fails" "$d"
+d=$(mk gen); nosign "$d"; printf 'jobs:\n  c:\n    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@%s\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
+expect_named "slsa-github-generator is the ONLY provenance producer here; with its row removed the judge names stage-verify.yml" "$d" "stage-verify.yml"
+for form in '-a=slsa' '-aslsa' '-a product,slsa' '--attestations slsa' '--attestations=slsa' '--attestor slsa' '-c witness.yaml'; do
+  d=$(mk "wf_$(printf '%s' "$form" | tr -c 'a-z' _)"); nosign "$d"; printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c %s -- ./x\n' "$form" > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
+  expect_named "witness run $form is the only provenance producer; with its row removed the judge names stage-verify.yml" "$d" "stage-verify.yml"
 done
+d=$(mk gflag); nosign "$d"; printf 'jobs:\n  c:\n    steps:\n      - run: witness --log-level debug run --step c -a slsa -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
+expect_named "a global flag before the subcommand does not hide witness run -a slsa" "$d" "stage-verify.yml"
+d=$(mk cblob); printf 'jobs:\n  c:\n    steps:\n      - run: cosign attest-blob --yes --statement s.json --bundle b.json\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "cosign attest-blob with no --type is unresolved and fails closed, naming the file" "$d" "stage-verify.yml"
+d=$(mk cflag); printf 'jobs:\n  c:\n    steps:\n      - run: cosign --verbose sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "cosign --verbose sign (a global flag first) is still an image signature with no row" "$d" "stage-verify.yml"
+d=$(mk hashq); printf 'jobs:\n  c:\n    steps:\n      - run: echo "step #1"; cosign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "a '#' inside quotes does not hide a signer on the same line" "$d" "stage-verify.yml"
+d=$(mk wra); printf 'jobs:\n  c:\n    steps:\n      - uses: testifysec/witness-run-action@%s # v1\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
+expect_named "testifysec/witness-run-action is a provenance producer (fail closed) and needs a row" "$d" "stage-verify.yml"
+d=$(mk make); printf 'jobs:\n  c:\n    steps:\n      - run: make publish\n' > "$d/.github/workflows/stage-verify.yml"; printf 'publish:\n\tcosign sign --yes $(IMG)\n' > "$d/Makefile"
+expect_named "a Makefile a workflow runs signs an image with no row" "$d" "Makefile"
+d=$(mk js); mkdir -p "$d/scripts"; printf 'jobs:\n  c:\n    steps:\n      - run: node scripts/pub.js\n' > "$d/.github/workflows/stage-verify.yml"; printf 'require("child_process").execSync("cosign sign --yes " + process.env.IMG)\n' > "$d/scripts/pub.js"
+expect_named "a node script a workflow runs signs an image with no row" "$d" "scripts/pub.js"
 d=$(mk trailing); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG" # verify only\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "a trailing comment exempts nothing (cosign sign with no row still fails)" "$d"
 d=$(mk script); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"
@@ -190,7 +206,7 @@ expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a ro
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=29
+EXPECT=39
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
