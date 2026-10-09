@@ -204,7 +204,7 @@ suggestion will not affect anything described here.
 ## Local-only quickstart
 
 ```sh
-docker run -d -p 8080:8080 ghcr.io/fosterstack/cache:latest
+docker run -d -p 127.0.0.1:8080:8080 ghcr.io/fosterstack/cache:latest
 ```
 
 Point `buildCache.remote.url` at `http://127.0.0.1:8080/` and build:

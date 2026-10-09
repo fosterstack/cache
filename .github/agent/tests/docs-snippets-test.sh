@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# proves: (no AC fits; docs drift guard, advisor handoffs 0309 and 0310) the Gradle and Maven snippets documented in docs/ match the
-# client configuration the acceptance jobs run, so a customer who copies them gets a working cache.
+# proves: (no AC fits; docs drift guard, advisor handoffs 0309 and 0310) the Gradle and Maven snippets documented in docs/ have the
+# same STRUCTURE as the client configuration the acceptance jobs run (not identical text: ids, URLs, the schema version and how uploads
+# are switched on differ), and the Kubernetes reset runs in the right order. It does not run Gradle or Maven.
 # Gradle: the documented local snippet addresses the cache by the loopback address 127.0.0.1 (Gradle refuses plain http for the NAME
 #   localhost), no documented fenced block or prose line uses http://localhost for Gradle, every documented http (non-https) remote
 #   sets isAllowInsecureProtocol = true unless it is the loopback address, and every documented remote sets push, as the
@@ -123,7 +124,7 @@ mutant "gradle push missing (loopback)"     GRADLE_DOC 's=s.replace("        isP
 mutant "maven saveToRemote missing"         MAVEN_DOC  's=s.replace(" saveToRemote=\"true\"","")'
 mutant "maven remote before configuration" MAVEN_DOC 'i=s.index("    <!-- FosterStack Cache"); j=s.index("</remote>")+len("</remote>"); blk=s[i:j]; s=s[:i]+s[j:]; s=s.replace("  <configuration>\n","  "+blk.strip()+"\n  <configuration>\n",1)'
 mutant "maven remote sibling of configuration" MAVEN_DOC 'i=s.index("    <!-- FosterStack Cache"); j=s.index("</remote>")+len("</remote>"); blk=s[i:j]; s=s[:i]+s[j:]; s=s.replace("  </configuration>\n","  </configuration>\n"+blk+"\n",1)'
-mutant "k8s reset without the re-apply"    DEPLOY_DOC 's=s.replace("kubectl apply -f fscache-pvc.yaml   # the PersistentVolumeClaim manifest from kubernetes.md\n","")'
+mutant "k8s reset without the re-apply"    DEPLOY_DOC 'import re; s=re.sub(r"kubectl apply -f fscache-pvc.yaml[^\n]*\n","",s)'
 mutant "maven server id mismatch"           MAVEN_DOC  's=s.replace("<id>fosterstack-cache</id>","<id>other</id>")'
 echo "mutants caught: $caught/$mut"
 [ "$rc" -eq 0 ] && [ "$caught" -eq "$mut" ]
