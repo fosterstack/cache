@@ -908,6 +908,18 @@ class Gh:
         return r
 
 
+BODY_LIMIT = 60000      # GitHub refuses a body over 65,536 characters; a refused body would stop every later entry of the plan
+
+
+def cap_body(text):
+    if len(text) < BODY_LIMIT:
+        return text
+    cut = text[:BODY_LIMIT - 200]
+    cut = cut[:cut.rfind("\n")] if "\n" in cut else cut
+    more = text[len(cut):].count("\n---\n") + 1
+    return cut + "\n\n(truncated: %d more)\n" % more
+
+
 def file_issues(gh, plan, today):
     gh.run("label", "create", HIT_LABEL, "--description", "A supply-chain hit on a pinned version", ok_fail=True)
     if any(p["owner"] for p in plan):
@@ -1156,11 +1168,18 @@ def main(argv=None):
         for n in notes:
             print(f"audit: {n}")
         plan, disputes, per_item, pending = [], {}, {}, []
+        inc_seen = {}
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault(package_of(f.item), []).append(f)
                 continue
+            if getattr(f.item, "incomplete", False):    # one entry per file and class: a long history holds one such item per commit, which would otherwise fill one issue past the size limit
+                ck = (f.item.file, f.via)
+                if ck in inc_seen:
+                    inc_seen[ck][1].append(getattr(f.item, "commit", None))
+                    continue
+                inc_seen[ck] = (f, [getattr(f.item, "commit", None)])
             if (f.item.key, f.via) in per_item:  # several incidents on one pinned item: one finding, every id
                 g = per_item[(f.item.key, f.via)]
                 g.ids = sorted(set(g.ids) | set(f.ids))
@@ -1171,6 +1190,10 @@ def main(argv=None):
             ran = f.item.key in ran_keys
             owner = rb is None or rb == UNKNOWN or ran or bool(f.via)
             pending.append((f, rb, ran, owner))
+        for g, commits in inc_seen.values():
+            if len(commits) > 1:
+                named = [c for c in commits if c]
+                g.why += "; the same file is incompletely scanned in %d commits of the window%s" % (len(commits), " (first seen %s, last seen %s)" % (_safe(named[0]), _safe(named[-1])) if named else "")
         by_prefix = {}
         for f, rb, ran, owner in pending:
             t = title_of(f)
@@ -1192,6 +1215,8 @@ def main(argv=None):
             first.item = inv.Item(first.item.kind, first.item.name, first.item.version, ", ".join(versions))
             plan.append({"finding": first, "title": (f"supply-chain: disputed {_safe(pkg)}", f"supply-chain: disputed {_safe(pkg)} ({', '.join(_safe(i) for i in first.ids)})"),
                          "body": body_of(first, None, False, False, today), "owner": False})
+        for e in plan:
+            e["body"] = cap_body(e["body"])
         if plan:
             if not a.report_only:
                 file_issues(gh, plan, today)

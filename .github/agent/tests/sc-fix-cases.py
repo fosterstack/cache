@@ -3807,6 +3807,12 @@ def i_tree_digest_agrees_between_modes():
     os.remove(os.path.join(repo, "tools/l"))
     os.symlink("elsewhere", os.path.join(repo, "tools/l"))
     assert inv.tree_digest(repo, None) != d1, "a symlink retargeted"
+    ga, gb = history_repo({**files, "tools/sub": ("gitlink", "2" * 40)}), history_repo({**files, "tools/sub": ("gitlink", "3" * 40)})
+    for mode in (None, "HEAD"):
+        assert inv.tree_digest(ga, mode) != inv.tree_digest(gb, mode), ("a gitlink pointer change moves the digest", mode)
+        ka = sorted(k for k in inv.load_at(ga, mode) if "scan limit reached" in k)
+        kb = sorted(k for k in inv.load_at(gb, mode) if "scan limit reached" in k)
+        assert ka and ka != kb, ("a gitlink pointer change moves the incomplete item key", mode, ka, kb)
     many = {"f/%03d.txt" % i: "v%d\n" % i for i in range(150)}
     a, b = history_repo(many), history_repo({**many, "f/149.txt": "changed\n"})
     assert inv.tree_digest(a, "HEAD") != inv.tree_digest(b, "HEAD"), "a change to the LAST file of a large tree still changes the digest"
@@ -3818,6 +3824,25 @@ def i_tree_digest_agrees_between_modes():
     finally:
         inv.tree_digest = orig
     assert len(ks) == 3 and len(calls) == 1, ("the digest is computed ONCE per run", len(ks), len(calls))
+
+
+@case("age", "AC11", "i: the incomplete-scan key carries the FULL 64-hex sha256 (never a truncation a grinder could collide): `#file:` is followed by exactly 64 lowercase hex characters, in both modes, and two trees that differ in one byte of an unread file give keys that differ beyond the first 10 hex characters of the digest part's prefix too (the whole digest is the key)")
+def i_incomplete_key_is_full_digest():
+    base = {WFPATH: deep_wf(400), "docs/a.txt": "one\n"}
+    repos = [history_repo({**base, "docs/a.txt": "one%d\n" % i}) for i in range(3)]
+    seen = set()
+    for mode in (None, "HEAD"):
+        for r in repos:
+            ks = [k for k in inv.load_at(r, mode) if "scan limit reached" in k]
+            assert len(ks) == 1, (mode, ks)
+            m = re.search(r"#file:([^#~]*)", ks[0])
+            assert m and re.fullmatch(r"[0-9a-f]{64}", m.group(1)), ("the key's digest is the full sha256", mode, ks[0])
+            seen.add(m.group(1))
+    assert len(seen) == 3, ("each tree has its own key", len(seen))
+    # the digest is the sha256 of path NUL tree digest, untruncated: a key that equals another's in its first 10 hex characters is still a different key
+    d = inv.tree_digest(repos[0], "HEAD")
+    want = hashlib.sha256((WFPATH + "\0" + d).encode()).hexdigest()
+    assert want in seen, "the key is the untruncated digest of the path and the tree digest"
 
 
 @case("age", "AC11", "x: the incomplete item is computed in LINEAR time: a requirements file with 4000 include lines (36 KB) at the include-depth boundary, over 4000 tracked files, is read by the age check on an unchanged tree in under 10 s (a child process with a deadline), and the tree digest of a 20000-file revision is computed in under 2 s")
@@ -3844,6 +3869,57 @@ def x_incomplete_item_is_linear():
     dig = inv.tree_digest(big, "HEAD")
     took = time.time() - t0
     assert took < 2 and len(dig) == 64, (took, dig)
+
+@case("age", "AC11", "i: the tree digest is UNAMBIGUOUS: a tracked path containing a newline cannot forge the record of another file (a one-file tree whose path is `p\\n100644 <oid> q` and the two-file tree it imitates have different digests, in both modes), and a mode change alone (chmod +x) moves the digest, in both modes")
+def i_tree_digest_is_unambiguous():
+    repo0 = history_repo({"README.md": "r\n"})
+    put = lambda data: subprocess.run(["git", "-C", repo0, "hash-object", "--stdin"], input=data, capture_output=True, check=True).stdout.strip().decode()
+    (o_lo, c_lo), (o_hi, c_hi) = sorted([(put(b"a\n"), "a\n"), (put(b"b\n"), "b\n")])      # the digest sorts its records: the forged one-file path carries the SECOND record after the first
+    forged = "x\n100644 %s\ty" % o_hi
+    solo, pair = history_repo({forged: c_lo}), history_repo({"x": c_lo, "y": c_hi})
+    assert os.path.exists(os.path.join(solo, forged)), "the fixture holds a newline in a path"
+    for mode in (None, "HEAD"):
+        assert inv.tree_digest(solo, mode) != inv.tree_digest(pair, mode), ("a newline in a path forges nothing", mode)
+    ex = history_repo({"bin/t.sh": "echo\n"})
+    d0 = inv.tree_digest(ex, None)
+    assert d0 == inv.tree_digest(ex, "HEAD")
+    os.chmod(os.path.join(ex, "bin/t.sh"), 0o755)
+    d1 = inv.tree_digest(ex, None)
+    assert d1 != d0, "chmod +x moves the working-tree digest"
+    _git(ex, "add", "bin/t.sh")
+    _git(ex, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "x")
+    assert inv.tree_digest(ex, "HEAD") == d1 != d0, "and the revision that records it"
+
+
+@case("audit", "AC12", "h: a long history cannot overflow an issue: 130 commits that each carry the same incompletely scanned workflow (beside a vulnerable pin that is a real hit in another file) file ONE issue for the incomplete scan (its body names the file and the number of commits, under 60,000 characters) and the vulnerable pin still gets its own issue; no call fails, the run exits 1; any body is capped below 60,000 characters with an explicit `(truncated: N more)` tail")
+def h_history_incomplete_collapses_per_file():
+    work = tempfile.mkdtemp(dir=TMP)
+    gh = os.path.join(work, "gh")
+    open(gh, "w").write("#!/usr/bin/env python3\nimport json, os, sys\na = sys.argv[1:]\nopen(os.environ['GH_LOG'], 'a').write(json.dumps(a) + '\\n')\n"
+                        "if a[:2] == ['issue', 'list']:\n    print('[]')\n"
+                        "elif a[:2] == ['issue', 'create']:\n    bf = a[a.index('--body-file') + 1]\n    if os.path.getsize(bf) > 65536:\n        sys.stderr.write('gh: body too long\\n'); sys.exit(1)\n"
+                        "    open(os.environ['GH_LOG'] + '.bodies', 'a').write(open(bf).read() + '\\n=====\\n')\n    print('https://github.com/x/y/issues/9')\n")
+    os.chmod(gh, 0o755)
+    vers = [{WFPATH: deep_wf(400), "bin/x.sh": SHEBANG_BASH + PIP_REAL, "README.md": "r%d\n" % i} for i in range(130)]
+    repo = history_repo(*vers)
+    fx = repo + ".fx.json"
+    json.dump({"lists": {PYPIN: {"github": [{"id": "GHSA-8q59-q68h-6hv4", "incident": "I", "affected": True, "modified": "2026-01-01T00:00:00Z"}], "osv": []}}, "upstream": {}, "nested": {}, "versions": {}, "prs": []}, open(fx, "w"))
+    env = dict(os.environ, GH_LOG=os.path.join(work, "gh.log"))
+    r = subprocess.run([sys.executable, os.path.join(SC, "pin-audit.py"), "--root", repo, "--fixtures", fx, "--now", now_iso(), "--gh", gh], capture_output=True, text=True, env=env)
+    out = r.stdout + r.stderr
+    assert r.returncode == 1 and "Traceback" not in out, (r.returncode, out[-400:])
+    calls = [json.loads(l) for l in open(env["GH_LOG"]).read().splitlines()]
+    creates = [c for c in calls if c[:2] == ["issue", "create"]]
+    bodies = [b for b in open(env["GH_LOG"] + ".bodies").read().split("\n=====\n") if b.strip()]
+    assert len(creates) == 2 and len(bodies) == 2, ("one issue for the incomplete scan, one for the pin", [c[c.index("--title") + 1] for c in creates])
+    assert all(len(b) < 60000 for b in bodies), [len(b) for b in bodies]
+    assert any("GHSA-8q59-q68h-6hv4" in b for b in bodies), "the real hit is still filed"
+    inc = [b for b in bodies if "incompletely scanned" in b]
+    assert len(inc) == 1 and WFPATH in inc[0] and "130" in inc[0], ("the collapsed entry names the file and the commit count", inc[0][:400] if inc else None)
+    cap = pa.cap_body("x" * 70000)
+    assert len(cap) < 60000 and re.search(r"\(truncated: \d+ more\)\s*$", cap), cap[-80:]
+    assert pa.cap_body("short") == "short"
+
 
 def main(argv):
     suites = {c[0] for c in CASES}

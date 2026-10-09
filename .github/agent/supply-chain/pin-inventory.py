@@ -1066,7 +1066,7 @@ def tree_digest(root, rev=None):
             except OSError:
                 entries[path] = (entries[path][0], b"deleted")
         lines = [mode + b" " + oid + b"\t" + path for path, (mode, oid) in entries.items()]
-    return hashlib.sha256(b"\n".join(sorted(lines))).hexdigest()
+    return hashlib.sha256(b"\0".join(sorted(lines))).hexdigest()      # NUL-joined: a path can hold a newline, never a NUL, so no path forges another record
 
 
 def manifest_text(root, rev):
@@ -1749,7 +1749,7 @@ def inventory(files, manifest=_UNSET, mode="daily", exempt_on=True, exempt_set=N
             if tree_key[0] is None:                                              # ONE digest of the whole tree per run: any change to any tracked file moves every incomplete item
                 tree_key[0] = files.digest_fn() if getattr(files, "digest_fn", None) else hashlib.sha256("\n".join("%s\0%s" % (q, hashlib.sha256(files[q].encode("utf-8", "replace")).hexdigest()) for q in sorted(files)).encode("utf-8", "replace")).hexdigest()
             basis = path + "\0" + tree_key[0]
-            lim.step = "file:" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()[:10]
+            lim.step = "file:" + hashlib.sha256(basis.encode("utf-8", "replace")).hexdigest()      # the FULL digest: a truncated key could be ground to collide with the base key
             lim.incomplete, lim.why, lim.file, lim.line = True, "incompletely scanned: action references and installer inputs not read", path, 1       # its own class: judged as an unparseable finding naming the file, never an expression
             found.append(lim)           # a bound was hit: the file was not read in full, which is reported, never silent
         used = set()
