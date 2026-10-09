@@ -384,7 +384,10 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 # (.github/workflows/release.yml), under which build also runs in a manual dry run; the tag gate stays the only non-dry-run path to a release.
 TAG_GATE = "${{ startsWith(github.ref, 'refs/tags/v') }}"
 DRY_RUN_GATE = "${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
+GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate (Build hands it the digests)
 BUILD_IF = (TAG_GATE, DRY_RUN_GATE)
+SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
+SIGN_WITH = {"digests": "${{ needs.build.outputs.checksums }}", "witness-artifact": "witness-build"}
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
 # (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
@@ -417,11 +420,17 @@ def graph(path):
         if extra:
             bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
                        % (name, sorted(extra)))
-        if name == "build":
+        if name in GATED:
             if job.get("if") not in BUILD_IF:
-                bad.append("build must carry exactly one if, the tag gate %s (or PR 1's dry-run form), got %r" % (TAG_GATE, job.get("if")))
+                bad.append("%s must carry exactly one if, the tag gate %s (or PR 1's dry-run form), got %r" % (name, TAG_GATE, job.get("if")))
         elif "if" in job:
-            bad.append("%s may not carry an if (only build is gated, by the tag; the others are skipped by their needs), got %r" % (name, job["if"]))
+            bad.append("%s may not carry an if (only build and sign are gated; the others are skipped by their needs), got %r" % (name, job["if"]))
+        if name == "sign":
+            if job.get("permissions") != SIGN_PERMISSIONS:
+                bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))
+            with_ = job.get("with") or {}
+            if "digests" not in with_ or set(with_) - set(SIGN_WITH) or any(with_[k] != SIGN_WITH[k] for k in with_):
+                bad.append("sign must pass only with: %s (the digests of build's output and the witness-build artifact name), got %s" % (SIGN_WITH, with_))
         if job.get("uses") != "./.github/workflows/" + file:
             bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (name, file, job.get("uses")))
         if sorted(needs_of(job)) != NEEDS[name]:

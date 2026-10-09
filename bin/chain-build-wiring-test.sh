@@ -157,8 +157,15 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/stage-build.yml
   sign:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     needs: build
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.checksums }}
+      witness-artifact: witness-build
   rebuild:
     needs: build
     uses: ./.github/workflows/stage-reproducibility.yml
@@ -521,10 +528,11 @@ expect caught "AC3 a script that is not a row of chain-scripts.json is refused" 
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 expect ok "005-AC5 fixture: build -> (rebuild || check) -> release with sign beside them; other jobs ignored" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
+SIGN_HEAD="  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build"
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
 gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
 gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
-gr g4  "005-AC5 sign does not need build" '  sign:\n    needs: build' '  sign:\n    needs: check' "sign must need exactly"
+gr g4  "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: check" "sign must need exactly"
 gr g5 "005-AC5 rebuild runs even when build failed (if: always())" '  rebuild:\n    needs: build' '  rebuild:\n    needs: build\n    if: always()' \
        "may not carry an if"
 gr g6  "005-AC5 release runs when a stage failed (if: always())" '  release:\n    needs: [rebuild, check, sign]' \
@@ -567,8 +575,7 @@ gr g24 "005-AC5 the tag gate with an extra conjunct" "if: \${{ startsWith(github
 gr g25 "005-AC5 the tag gate moved to another chain job (build ungated)" \
     "    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    uses: ./.github/workflows/stage-build.yml" \
        "    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
-gr g26 "005-AC5 the tag gate on sign as well as build" "  sign:\n    needs: build" \
-    "  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build" "sign may not carry an if"
+gr g26 "005-AC5 the tag gate on rebuild as well as build" "  rebuild:\n    needs: build" "  rebuild:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build" "rebuild may not carry an if"
 gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    needs: sign" \
     "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
 HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:'
@@ -583,6 +590,16 @@ gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: 
 replace "$work/release.yml" "$work/g33.yml" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
         "if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}" \
   && expect ok "005-AC5 PR 1's dry-run form of the build gate (quoted from its branch) is the second accepted string" "" graph "$work/g33.yml"
+gr g34 "005-AC5 sign without the gate (it would run on every push and the daily cron)" "$SIGN_HEAD" "  sign:\n    needs: build" "sign must carry exactly one if"
+gr g35 "005-AC5 sign gated by another condition" "$SIGN_HEAD" "  sign:\n    if: always()\n    needs: build" "sign must carry exactly one if"
+gr g36 "005-AC5 sign gated by the dry-run flag alone (not enough: a tag push must run it)" "$SIGN_HEAD" \
+       "  sign:\n    if: \${{ inputs.dry-run }}\n    needs: build" "sign must carry exactly one if"
+replace "$work/release.yml" "$work/g37.yml" "$SIGN_HEAD" "  sign:\n    if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}\n    needs: build" \
+  && expect ok "005-AC5 sign with PR 1's dry-run form is accepted like build" "" graph "$work/g37.yml"
+gr g38 "005-AC5 sign with write permissions beyond id-token and contents read" "      contents: read\n      id-token: write\n    uses" \
+       "      contents: write\n      id-token: write\n    uses" "sign must hold exactly the permissions"
+gr g39 "005-AC5 sign passing an extra input" "      witness-artifact: witness-build" "      witness-artifact: witness-build\n      token: x" "sign must pass only with"
+gr g40 "005-AC5 sign taking the digests from another job" "digests: \${{ needs.build.outputs.checksums }}" "digests: \${{ needs.rebuild.outputs.checksums }}" "sign must pass only with"
 gr g20 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions:\n  contents: read\njobs' \
        'permissions:\n  contents: write\njobs' "workflow-level permissions"
 # ---- the Witness record never holds the token variables (REQ-CHAIN-004-AC8); the consumer is `chain-verify.py verify` of the next stage --------
@@ -1017,7 +1034,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=340
+EXPECT=347
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
