@@ -13,25 +13,57 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
 judge() { python3 - "$1" <<'PY'
-import glob, os, re, sys, yaml
+import os, sys, yaml
 
 tree = sys.argv[1]
-GUARDED = ("scan.yml", "main-candidate-rescan.yml")
-NAMES = r"(scan|main-candidate-rescan)\.ya?ml"
-CALLS_GUARDED = re.compile(r"(^|/)\.github/workflows/" + NAMES + r"(@|$)")
+# The only triggers each guarded file may have. Anything else (workflow_call in any spelling or case, a merge key,
+# a missing `on`) fails: the allowlist is the rule, workflow_call is just the case we care about most.
+ALLOWED = {
+    "scan.yml": {"pull_request", "push"},
+    "main-candidate-rescan.yml": {"schedule", "workflow_dispatch"},
+}
+GUARDED_STEMS = ("scan", "main-candidate-rescan")
 bad = []
 
-def load(path):
-    # BaseLoader keeps the key `on` as the string "on" (the default loader turns it into True)
+def read(path):
     with open(path) as fh:
-        return yaml.load(fh, Loader=yaml.BaseLoader) or {}
+        return fh.read()
 
-def declares_workflow_call(on):
+def triggers(on):
     if isinstance(on, dict):
-        return "workflow_call" in on
+        return set(on)
     if isinstance(on, list):
-        return "workflow_call" in on
-    return on == "workflow_call"
+        return set(on)
+    return {on} if isinstance(on, str) and on else None
+
+def check_guarded(name, text):
+    # No anchors, aliases or merge keys anywhere in a guarded file: they could hide a trigger from this reader.
+    for ev in yaml.parse(text):
+        if getattr(ev, "anchor", None) or isinstance(ev, yaml.AliasEvent):
+            return "%s uses a YAML anchor or alias" % name
+        if isinstance(ev, yaml.ScalarEvent) and ev.value == "<<":
+            return "%s uses a YAML merge key" % name
+    doc = yaml.load(text, Loader=yaml.BaseLoader) or {}
+    if not isinstance(doc, dict) or "on" not in doc:
+        return "%s has no literal top-level `on` key" % name
+    found = triggers(doc["on"])
+    if not found:
+        return "%s has an empty `on`" % name
+    extra = sorted(found - ALLOWED[name])
+    if extra:
+        return "%s has triggers outside its allowlist: %s" % (name, ", ".join(extra))
+    return None
+
+def calls_guarded(value):
+    """True if a `uses:` value points at a guarded file. No normalisation at all: the path before `@` ends in
+    /<file> or is the bare file name, compared case-insensitively, so every odd spelling of the path is caught."""
+    path = value.strip().split("@", 1)[0].lower()
+    for stem in GUARDED_STEMS:
+        for ext in (".yml", ".yaml"):
+            name = stem + ext
+            if path == name or path.endswith("/" + name):
+                return True
+    return False
 
 def uses_values(node):
     """Every value of a `uses` key anywhere in the document (job level, step level, composite action steps)."""
@@ -45,21 +77,26 @@ def uses_values(node):
         for item in node:
             yield from uses_values(item)
 
-for name in GUARDED:
+for name in ALLOWED:
     path = os.path.join(tree, ".github", "workflows", name)
     if not os.path.exists(path):
         bad.append("%s is missing" % name)
         continue
-    if declares_workflow_call(load(path).get("on")):
-        bad.append("%s declares workflow_call" % name)
+    problem = check_guarded(name, read(path))
+    if problem:
+        bad.append(problem)
 
+# Every workflow file (dotfiles included: os.listdir, not glob) and every composite action under .github/actions.
 files = []
-for pattern in ("*.yml", "*.yaml"):
-    files += glob.glob(os.path.join(tree, ".github", "workflows", pattern))
-    files += glob.glob(os.path.join(tree, ".github", "actions", "**", pattern), recursive=True)
+wf_dir = os.path.join(tree, ".github", "workflows")
+if os.path.isdir(wf_dir):
+    files += [os.path.join(wf_dir, n) for n in os.listdir(wf_dir) if n.lower().endswith((".yml", ".yaml"))]
+for dirpath, _dirs, names in os.walk(os.path.join(tree, ".github", "actions")):
+    files += [os.path.join(dirpath, n) for n in names if n.lower() in ("action.yml", "action.yaml")]
 for path in sorted(files):
-    for value in uses_values(load(path)):
-        if CALLS_GUARDED.search(value.strip()):
+    doc = yaml.load(read(path), Loader=yaml.BaseLoader) or {}
+    for value in uses_values(doc):
+        if calls_guarded(value):
             bad.append("%s calls %s" % (os.path.relpath(path, tree), value.strip()))
 
 print("; ".join(bad) or "ok")
@@ -112,6 +149,37 @@ expect caught "a .yaml neighbour workflow calls scan.yml" "$(mutate c7 .github/w
 expect caught "a composite action step names scan.yml" "$(mutate c8 .github/actions/x/action.yml $'name: x\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/workflows/scan.yml')"
 expect caught "a nested composite action under .github/actions/a/b" "$(t=$(fixture c9); mkdir -p "$t/.github/actions/a/b"; printf 'name: y\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/workflows/main-candidate-rescan.yml\n' > "$t/.github/actions/a/b/action.yaml"; echo "$t")"
 
+# 2b. odd spellings of the path: no normalisation is applied, so each form is rejected on its ending alone
+caller() { mutate "$1" .github/workflows/other.yml "name: other
+on: push
+jobs:
+  b:
+    uses: $2"; }
+expect caught "path form: ./.github/workflows/../workflows/scan.yml" "$(caller p1 './.github/workflows/../workflows/scan.yml')"
+expect caught "path form: /./scan.yml" "$(caller p2 '/./scan.yml')"
+expect caught "path form: //scan.yml" "$(caller p3 '//scan.yml')"
+expect caught "path form: Scan.yml (case)" "$(caller p4 'Scan.yml')"
+expect caught "path form: sub/../scan.yml" "$(caller p5 'sub/../scan.yml')"
+expect caught "path form: ./.github//workflows/scan.yml" "$(caller p6 './.github//workflows/scan.yml')"
+expect caught "path form: bare scan.yml" "$(caller p7 'scan.yml')"
+expect caught "path form: .yaml spelling of scan" "$(caller p8 './.github/workflows/scan.yaml')"
+expect caught "path form: MAIN-CANDIDATE-RESCAN.YAML@main" "$(caller p9 'o/r/.github/workflows/MAIN-CANDIDATE-RESCAN.YAML@main')"
+expect caught "path form: ./main-candidate-rescan.yml" "$(caller p10 './main-candidate-rescan.yml')"
+expect caught "a dotfile workflow calls scan.yml" "$(mutate d1 .github/workflows/.hidden.yml $'name: h\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml')"
+expect ok "a name that only ends the same way is not a guarded file: other-scan.yml, rescan.yml" "$(t=$(caller n1 './.github/workflows/other-scan.yml'); printf 'name: o\non: push\njobs:\n  c:\n    uses: ./.github/workflows/rescan.yml\n' > "$t/.github/workflows/o2.yml"; echo "$t")"
+
+# 2c. the on: allowlist (fail closed): each guarded file has a literal `on` with only its own triggers
+expect caught "scan.yml: merge key in on" "$(mutate a1 .github/workflows/scan.yml $'x: &t {pull_request: {}}\non:\n  <<: *t\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: capitalised On: key" "$(mutate a2 .github/workflows/scan.yml $'On:\n  pull_request:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: Workflow_Call (case)" "$(mutate a3 .github/workflows/scan.yml $'on:\n  pull_request:\n  Workflow_Call:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: on: WORKFLOW_CALL (scalar, case)" "$(mutate a4 .github/workflows/scan.yml $'on: WORKFLOW_CALL\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: an unlisted extra event (release)" "$(mutate a5 .github/workflows/scan.yml $'on:\n  pull_request:\n  release:\n    types: [published]\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "main-candidate-rescan.yml: push is not one of its triggers" "$(mutate a6 .github/workflows/main-candidate-rescan.yml $'on:\n  schedule:\n    - cron: "41 7 * * *"\n  push:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: no on key at all" "$(mutate a7 .github/workflows/scan.yml $'name: scan\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: empty on:" "$(mutate a8 .github/workflows/scan.yml $'on:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+expect caught "scan.yml: an anchor elsewhere in the file" "$(mutate a9 .github/workflows/scan.yml $'on:\n  pull_request:\nenv: &e\n  A: b\njobs:\n  s:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: echo')"
+expect ok "scan.yml: pull_request with a branch filter and push with tags stays allowed" "$(mutate a10 .github/workflows/scan.yml $'on:\n  pull_request:\n  push:\n    branches: [main]\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
+
 # 3. the guarded files themselves must exist (a renamed file would silently escape the check)
 expect caught "scan.yml is missing" "$(t=$(fixture r1); rm "$t/.github/workflows/scan.yml"; echo "$t")"
 expect caught "main-candidate-rescan.yml is missing" "$(t=$(fixture r2); rm "$t/.github/workflows/main-candidate-rescan.yml"; echo "$t")"
@@ -122,7 +190,7 @@ expect ok "a neighbour that calls stage-build.yml and mentions scan.yml in a run
 # the real repository (green today)
 expect ok "the real repository: neither file is callable and nothing calls them" "$root"
 
-EXPECT=20
+EXPECT=42
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
